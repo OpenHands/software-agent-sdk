@@ -4,11 +4,61 @@ from __future__ import annotations
 
 import base64
 import copy
-import re
 from typing import Annotated, Any, Literal
 
 from fastmcp.mcp_config import MCPConfig as FastMCPConfig
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    SerializationInfo,
+    ValidationInfo,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
+
+from openhands.sdk.utils.pydantic_secrets import (
+    REDACTED_SECRET_VALUE,
+    resolve_expose_mode,
+    serialize_secret,
+    validate_secret,
+)
+
+
+def _validate_optional_secret(value: Any, info: ValidationInfo) -> Any:
+    if isinstance(value, str | SecretStr):
+        return validate_secret(value, info)
+    return value
+
+
+def _serialize_optional_secret(value: SecretStr | None, info: SerializationInfo) -> Any:
+    if value is not None and resolve_expose_mode(info.context) == "redact":
+        return REDACTED_SECRET_VALUE
+    return serialize_secret(value, info)
+
+
+def _validate_secret_map(value: Any, info: ValidationInfo) -> Any:
+    if not isinstance(value, dict):
+        return value
+    validated = {}
+    for key, item in value.items():
+        if isinstance(item, str | SecretStr):
+            secret = validate_secret(item, info)
+            if secret is not None:
+                validated[key] = secret
+        else:
+            validated[key] = item
+    return validated
+
+
+def _serialize_secret_map(
+    value: dict[str, SecretStr] | None, info: SerializationInfo
+) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    return {key: serialize_secret(secret, info) for key, secret in value.items()}
 
 
 class MCPNoneAuthCredential(BaseModel):
@@ -17,35 +67,142 @@ class MCPNoneAuthCredential(BaseModel):
 
 class MCPApiKeyAuthCredential(BaseModel):
     strategy: Literal["api_key"]
-    value: str
+    value: SecretStr | None = None
     header_name: str | None = None
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def _validate_value(cls, value: Any, info: ValidationInfo) -> Any:
+        return _validate_optional_secret(value, info)
+
+    @field_serializer("value", when_used="always")
+    def _serialize_value(
+        self, value: SecretStr | None, info: SerializationInfo
+    ) -> str | None:
+        return _serialize_optional_secret(value, info)
 
 
 class MCPBearerAuthCredential(BaseModel):
     strategy: Literal["bearer"]
-    value: str
+    value: SecretStr | None = None
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def _validate_value(cls, value: Any, info: ValidationInfo) -> Any:
+        return _validate_optional_secret(value, info)
+
+    @field_serializer("value", when_used="always")
+    def _serialize_value(
+        self, value: SecretStr | None, info: SerializationInfo
+    ) -> str | None:
+        return _serialize_optional_secret(value, info)
 
 
 class MCPBasicAuthCredential(BaseModel):
     strategy: Literal["basic"]
     username: str
-    password: str
+    password: SecretStr | None = None
+
+    @field_validator("password", mode="before")
+    @classmethod
+    def _validate_password(cls, value: Any, info: ValidationInfo) -> Any:
+        return _validate_optional_secret(value, info)
+
+    @field_serializer("password", when_used="always")
+    def _serialize_password(
+        self, value: SecretStr | None, info: SerializationInfo
+    ) -> str | None:
+        return _serialize_optional_secret(value, info)
 
 
 class MCPHeaderAuthCredential(BaseModel):
     strategy: Literal["header"]
-    headers: dict[str, str] = Field(default_factory=dict)
+    headers: dict[str, SecretStr] = Field(default_factory=dict)
+
+    @field_validator("headers", mode="before")
+    @classmethod
+    def _validate_headers(cls, value: Any, info: ValidationInfo) -> Any:
+        return _validate_secret_map(value, info)
+
+    @field_serializer("headers", when_used="always")
+    def _serialize_headers(
+        self, value: dict[str, SecretStr], info: SerializationInfo
+    ) -> dict[str, Any]:
+        return _serialize_secret_map(value, info) or {}
+
+
+class MCPOAuthTokenState(BaseModel):
+    access_token: SecretStr | None = None
+    token_type: Literal["Bearer"] = "Bearer"
+    expires_in: int | None = None
+    scope: str | None = None
+    refresh_token: SecretStr | None = None
+
+    @field_validator("access_token", "refresh_token", mode="before")
+    @classmethod
+    def _validate_secret(cls, value: Any, info: ValidationInfo) -> Any:
+        return _validate_optional_secret(value, info)
+
+    @field_serializer("access_token", "refresh_token", when_used="always")
+    def _serialize_secret(
+        self, value: SecretStr | None, info: SerializationInfo
+    ) -> str | None:
+        return _serialize_optional_secret(value, info)
+
+
+class MCPOAuthClientInfoState(BaseModel):
+    redirect_uris: list[str] | None = None
+    token_endpoint_auth_method: (
+        Literal[
+            "none",
+            "client_secret_post",
+            "client_secret_basic",
+            "private_key_jwt",
+        ]
+        | None
+    ) = None
+    grant_types: list[str] = Field(
+        default_factory=lambda: ["authorization_code", "refresh_token"]
+    )
+    response_types: list[str] = Field(default_factory=lambda: ["code"])
+    scope: str | None = None
+    client_name: str | None = None
+    client_uri: str | None = None
+    logo_uri: str | None = None
+    contacts: list[str] | None = None
+    tos_uri: str | None = None
+    policy_uri: str | None = None
+    jwks_uri: str | None = None
+    jwks: Any | None = None
+    software_id: str | None = None
+    software_version: str | None = None
+    client_id: str | None = None
+    client_secret: SecretStr | None = None
+    client_id_issued_at: int | None = None
+    client_secret_expires_at: int | None = None
+
+    @field_validator("client_secret", mode="before")
+    @classmethod
+    def _validate_client_secret(cls, value: Any, info: ValidationInfo) -> Any:
+        return _validate_optional_secret(value, info)
+
+    @field_serializer("client_secret", when_used="always")
+    def _serialize_client_secret(
+        self, value: SecretStr | None, info: SerializationInfo
+    ) -> str | None:
+        return _serialize_optional_secret(value, info)
+
+
+class MCPOAuthState(BaseModel):
+    tokens: MCPOAuthTokenState | None = None
+    client_info: MCPOAuthClientInfoState | None = None
+    token_expires_at: float | None = None
 
 
 class MCPOAuthAuthCredential(BaseModel):
     strategy: Literal["oauth2"]
     authentication: dict[str, Any] | None = None
-    credentials: dict[str, Any] = Field(default_factory=dict)
-
-
-class MCPCustomAuthCredential(BaseModel):
-    strategy: Literal["custom"]
-    fastmcp: dict[str, Any] = Field(default_factory=dict)
+    state: MCPOAuthState | None = None
 
 
 MCPAuthCredential = Annotated[
@@ -54,52 +211,9 @@ MCPAuthCredential = Annotated[
     | MCPBearerAuthCredential
     | MCPBasicAuthCredential
     | MCPHeaderAuthCredential
-    | MCPOAuthAuthCredential
-    | MCPCustomAuthCredential,
+    | MCPOAuthAuthCredential,
     Field(discriminator="strategy"),
 ]
-
-
-def _auth_from_legacy_server(server: dict[str, Any]) -> dict[str, Any] | None:
-    auth = server.get("auth")
-    authentication = server.pop("authentication", None)
-    oauth_credentials = server.pop("oauth_credentials", None)
-
-    if isinstance(auth, dict):
-        if auth.get("strategy") == "oauth2":
-            if authentication is not None and "authentication" not in auth:
-                auth["authentication"] = authentication
-            if oauth_credentials is not None and "credentials" not in auth:
-                auth["credentials"] = oauth_credentials
-        return auth
-
-    if auth == "oauth":
-        credential: dict[str, Any] = {"strategy": "oauth2"}
-        if authentication is not None:
-            credential["authentication"] = authentication
-        if oauth_credentials is not None:
-            credential["credentials"] = oauth_credentials
-        return credential
-
-    if isinstance(auth, str) and auth:
-        return {"strategy": "bearer", "value": auth}
-
-    api_key = server.pop("api_key", None)
-    if isinstance(api_key, str) and api_key:
-        return {"strategy": "api_key", "value": api_key}
-
-    headers = server.get("headers")
-    if isinstance(headers, dict):
-        authorization = headers.get("Authorization") or headers.get("authorization")
-        if isinstance(authorization, str) and authorization:
-            headers.pop("Authorization", None)
-            headers.pop("authorization", None)
-            if not headers:
-                server.pop("headers", None)
-            bearer = re.sub(r"^Bearer\s+", "", authorization, flags=re.IGNORECASE)
-            return {"strategy": "bearer", "value": bearer}
-
-    return None
 
 
 class OpenHandsMCPServer(BaseModel):
@@ -115,21 +229,21 @@ class OpenHandsMCPServer(BaseModel):
     transport: str | None = None
     command: str | None = None
     args: list[str] | None = None
-    env: dict[str, str] | None = None
+    env: dict[str, SecretStr] | None = None
     cwd: str | None = None
-    headers: dict[str, str] | None = None
+    headers: dict[str, SecretStr] | None = None
     auth: MCPAuthCredential | None = None
 
-    @model_validator(mode="before")
+    @field_validator("env", "headers", mode="before")
     @classmethod
-    def _migrate_legacy_auth(cls, value: Any) -> Any:
-        if not isinstance(value, dict):
-            return value
-        data = copy.deepcopy(value)
-        auth = _auth_from_legacy_server(data)
-        if auth is not None:
-            data["auth"] = auth
-        return data
+    def _validate_secret_mapping(cls, value: Any, info: ValidationInfo) -> Any:
+        return _validate_secret_map(value, info)
+
+    @field_serializer("env", "headers", when_used="always")
+    def _serialize_secret_mapping(
+        self, value: dict[str, SecretStr] | None, info: SerializationInfo
+    ) -> dict[str, Any] | None:
+        return _serialize_secret_map(value, info)
 
 
 class OpenHandsMCPConfig(BaseModel):
@@ -192,10 +306,6 @@ def _normalize_server_for_fastmcp(server: dict[str, Any]) -> dict[str, Any]:
             authentication = auth.get("authentication")
             if isinstance(authentication, dict):
                 server["authentication"] = authentication
-        elif strategy == "custom":
-            fastmcp = auth.get("fastmcp")
-            if isinstance(fastmcp, dict):
-                server.update(fastmcp)
     elif isinstance(auth, str):
         server["auth"] = auth
 
@@ -209,8 +319,18 @@ def _normalize_server_for_fastmcp(server: dict[str, Any]) -> dict[str, Any]:
 
 def dump_openhands_mcp_config(
     config: OpenHandsMCPConfig | FastMCPConfig | dict,
+    *,
+    context: dict[str, Any] | None = None,
 ) -> dict:
-    if isinstance(config, (OpenHandsMCPConfig, FastMCPConfig)):
+    if isinstance(config, OpenHandsMCPConfig):
+        dump_context = context or {"expose_secrets": "plaintext"}
+        return config.model_dump(
+            mode="json",
+            context=dump_context,
+            exclude_none=True,
+            exclude_defaults=True,
+        )
+    if isinstance(config, FastMCPConfig):
         return config.model_dump(exclude_none=True, exclude_defaults=True)
     return copy.deepcopy(config)
 

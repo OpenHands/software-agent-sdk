@@ -48,6 +48,7 @@ from openhands.sdk.llm.utils.openhands_provider import (
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import (
     OpenHandsMCPConfig as MCPConfig,
+    OpenHandsMCPServer,
     to_fastmcp_mcp_config,
 )
 from openhands.sdk.plugin import PluginSource
@@ -90,73 +91,6 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-def _walk_mcp_secret_values(
-    config: dict[str, Any],
-    transform: Callable[[str], str],
-) -> dict[str, Any]:
-    """Return a copy of ``config`` with ``transform`` applied to every string
-    value inside each MCP server's secret-bearing fields. Does not mutate input."""
-    config = copy.deepcopy(config)
-    servers = config.get("mcpServers")
-    if not isinstance(servers, dict):
-        return config
-
-    def transform_string_leaves(value: Any) -> Any:
-        if isinstance(value, str):
-            return transform(value)
-        if isinstance(value, dict):
-            return {k: transform_string_leaves(v) for k, v in value.items()}
-        if isinstance(value, list):
-            return [transform_string_leaves(item) for item in value]
-        return value
-
-    for server in servers.values():
-        if not isinstance(server, dict):
-            continue
-        auth = server.get("auth")
-        if isinstance(auth, str) and auth != "oauth":
-            server["auth"] = transform(auth)
-        elif isinstance(auth, dict):
-            strategy = auth.get("strategy")
-            if strategy in {"api_key", "bearer"}:
-                value = auth.get("value")
-                if isinstance(value, str):
-                    auth["value"] = transform(value)
-            elif strategy == "basic":
-                password = auth.get("password")
-                if isinstance(password, str):
-                    auth["password"] = transform(password)
-            elif strategy == "header":
-                mapping = auth.get("headers")
-                if isinstance(mapping, dict):
-                    auth["headers"] = {
-                        k: (transform(v) if isinstance(v, str) else v)
-                        for k, v in mapping.items()
-                    }
-            elif strategy == "oauth2":
-                credentials = auth.get("credentials")
-                if isinstance(credentials, dict):
-                    auth["credentials"] = transform_string_leaves(credentials)
-            elif strategy == "custom":
-                fastmcp = auth.get("fastmcp")
-                if isinstance(fastmcp, dict):
-                    auth["fastmcp"] = transform_string_leaves(fastmcp)
-        legacy_oauth_credentials = server.get("oauth_credentials")
-        if isinstance(legacy_oauth_credentials, dict):
-            server["oauth_credentials"] = transform_string_leaves(
-                legacy_oauth_credentials
-            )
-        for key in ("env", "headers"):
-            mapping = server.get(key)
-            if not isinstance(mapping, dict):
-                continue
-            server[key] = {
-                k: (transform(v) if isinstance(v, str) else v)
-                for k, v in mapping.items()
-            }
-    return config
-
-
 _MCP_SERVER_KNOWN_FIELDS = frozenset(
     {
         "url",
@@ -167,7 +101,6 @@ _MCP_SERVER_KNOWN_FIELDS = frozenset(
         "cwd",
         "headers",
         "auth",
-        "oauth_credentials",
     }
 )
 
@@ -188,15 +121,6 @@ def _sanitize_mcp_extra_fields(config: dict[str, Any]) -> dict[str, Any]:
     return config
 
 
-def _decrypt_mcp_value_or_keep(cipher: Cipher, value: str) -> str:
-    """Decrypt a single MCP secret-bearing value when it is a
-    Fernet token. Thin local wrapper that binds the user-facing
-    log description; the leaf decryption lives in
-    :func:`decrypt_str_with_cipher_or_keep` and is shared with every
-    other dict-of-string secret-bearing field."""
-    return decrypt_str_with_cipher_or_keep(cipher, value, description="MCP secrets")
-
-
 # ---------------------------------------------------------------------------
 # Shared ``mcp_config`` field (de)serialization, used verbatim by every
 # settings variant that exposes an ``mcp_config: MCPConfig | None`` field
@@ -212,23 +136,6 @@ def normalize_empty_mcp_config(value: Any) -> Any:
     return None if value in (None, {}) else value
 
 
-def decrypt_mcp_config_secrets(value: Any, info: ValidationInfo) -> Any:
-    """Decrypt MCP secret-bearing values when a cipher is in context.
-
-    The on-disk load path. Values that aren't valid Fernet tokens pass through
-    as plaintext (e.g. migrating from a build that wrote them unencrypted).
-    Mirrors :func:`serialize_mcp_config`'s per-value encryption.
-    """
-    if not isinstance(value, dict):
-        return value
-    cipher: Cipher | None = info.context.get("cipher") if info.context else None
-    if cipher is None:
-        return value
-    return _walk_mcp_secret_values(
-        value, lambda v: _decrypt_mcp_value_or_keep(cipher, v)
-    )
-
-
 def serialize_mcp_config(
     value: MCPConfig | None, info: SerializationInfo
 ) -> dict[str, Any]:
@@ -236,27 +143,24 @@ def serialize_mcp_config(
     the active expose mode (``plaintext`` / ``encrypted`` / redacted)."""
     if value is None:
         return {}
-    dumped = value.model_dump(exclude_none=True, exclude_defaults=True)
     ctx = info.context or {}
     mode = resolve_expose_mode(ctx)
 
-    if mode == "plaintext":
-        return dumped
-
-    if mode == "encrypted":
-        cipher: Cipher | None = ctx.get("cipher")
-        if cipher is None:
-            raise MissingCipherError(
-                "Cannot encrypt MCP secrets: no cipher configured. "
-                "Set OH_SECRET_KEY environment variable."
-            )
-        # cipher.encrypt returns None only for None input; SecretStr(v) never is.
-        return _walk_mcp_secret_values(
-            dumped, lambda v: cast(str, cipher.encrypt(SecretStr(v)))
+    if mode == "encrypted" and ctx.get("cipher") is None:
+        raise MissingCipherError(
+            "Cannot encrypt MCP secrets: no cipher configured. "
+            "Set OH_SECRET_KEY environment variable."
         )
 
-    redacted = _walk_mcp_secret_values(dumped, lambda _: "<redacted>")
-    return _sanitize_mcp_extra_fields(redacted)
+    dumped = value.model_dump(
+        mode="json",
+        context=ctx,
+        exclude_none=True,
+        exclude_defaults=True,
+    )
+    if mode == "redact":
+        return _sanitize_mcp_extra_fields(dumped)
+    return dumped
 
 
 def _encrypt_secret_str_or_keep(cipher: Cipher, value: Any) -> Any:
@@ -285,8 +189,44 @@ def _transform_mapping_secret_values(
         mapping[key] = transform(value)
 
 
+def _dump_mcp_config_secret_values(
+    value: Any,
+    *,
+    cipher: Cipher,
+    expose_secrets: Literal["encrypted", "plaintext"],
+) -> Any:
+    if not isinstance(value, Mapping):
+        return value
+    servers = value.get("mcpServers")
+    if not isinstance(servers, Mapping):
+        return value
+
+    validate_context = {"cipher": cipher} if expose_secrets == "plaintext" else None
+    dump_context = {"cipher": cipher, "expose_secrets": expose_secrets}
+    updated = copy.deepcopy(dict(value))
+    updated["mcpServers"] = {
+        name: OpenHandsMCPServer.model_validate(
+            server,
+            context=validate_context,
+        ).model_dump(
+            mode="json",
+            context=dump_context,
+            exclude_none=True,
+            exclude_defaults=True,
+        )
+        if isinstance(server, Mapping)
+        else copy.deepcopy(server)
+        for name, server in servers.items()
+    }
+    return updated
+
+
 def _transform_agent_settings_secret_values(
-    payload: Mapping[str, Any], transform: Callable[[Any], Any]
+    payload: Mapping[str, Any],
+    transform: Callable[[Any], Any],
+    *,
+    cipher: Cipher,
+    mcp_expose_secrets: Literal["encrypted", "plaintext"],
 ) -> dict[str, Any]:
     from openhands.sdk.llm.llm import LLM_SECRET_FIELDS
 
@@ -308,7 +248,11 @@ def _transform_agent_settings_secret_values(
 
     mcp_config = updated.get("mcp_config")
     if isinstance(mcp_config, dict):
-        updated["mcp_config"] = _walk_mcp_secret_values(mcp_config, transform)
+        updated["mcp_config"] = _dump_mcp_config_secret_values(
+            mcp_config,
+            cipher=cipher,
+            expose_secrets=mcp_expose_secrets,
+        )
 
     return updated
 
@@ -322,7 +266,10 @@ def encrypt_agent_settings_secret_values(
     persisted payloads without expanding sparse settings diffs into full settings.
     """
     return _transform_agent_settings_secret_values(
-        payload, lambda value: _encrypt_secret_str_or_keep(cipher, value)
+        payload,
+        lambda value: _encrypt_secret_str_or_keep(cipher, value),
+        cipher=cipher,
+        mcp_expose_secrets="encrypted",
     )
 
 
@@ -331,7 +278,10 @@ def decrypt_agent_settings_secret_values(
 ) -> dict[str, Any]:
     """Decrypt secret leaves in a full or sparse agent-settings payload."""
     return _transform_agent_settings_secret_values(
-        payload, lambda value: _decrypt_secret_str_or_keep(cipher, value)
+        payload,
+        lambda value: _decrypt_secret_str_or_keep(cipher, value),
+        cipher=cipher,
+        mcp_expose_secrets="plaintext",
     )
 
 
@@ -1279,11 +1229,6 @@ class OpenHandsAgentSettings(AgentSettingsBase):
     def _normalize_empty_mcp_config(cls, value: Any) -> Any:
         return normalize_empty_mcp_config(value)
 
-    @field_validator("mcp_config", mode="before")
-    @classmethod
-    def _decrypt_mcp_secret_values(cls, value: Any, info: ValidationInfo) -> Any:
-        return decrypt_mcp_config_secrets(value, info)
-
     @field_serializer("mcp_config")
     def _serialize_mcp_config(
         self, value: MCPConfig | None, info: SerializationInfo
@@ -1546,11 +1491,6 @@ class ACPAgentSettings(AgentSettingsBase):
     @classmethod
     def _normalize_empty_mcp_config(cls, value: Any) -> Any:
         return normalize_empty_mcp_config(value)
-
-    @field_validator("mcp_config", mode="before")
-    @classmethod
-    def _decrypt_mcp_secret_values(cls, value: Any, info: ValidationInfo) -> Any:
-        return decrypt_mcp_config_secrets(value, info)
 
     @field_serializer("mcp_config")
     def _serialize_mcp_config(

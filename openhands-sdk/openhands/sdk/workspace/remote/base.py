@@ -529,7 +529,12 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         if settings.mcp_config is None:
             return {}
 
-        return settings.mcp_config.model_dump(exclude_none=True, exclude_defaults=True)
+        return settings.mcp_config.model_dump(
+            mode="json",
+            context={"expose_secrets": "plaintext"},
+            exclude_none=True,
+            exclude_defaults=True,
+        )
 
     # ── Repository Cloning Methods ─────────────────────────────────────────
 

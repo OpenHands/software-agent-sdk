@@ -38,10 +38,12 @@ def _oauth_auth_from_authentication_config(
             "none",
             "client_secret_post",
             "client_secret_basic",
+            "private_key_jwt",
         }:
             raise ValueError(
                 "MCP OAuth authentication.client_auth_method must be one of "
-                "'none', 'client_secret_post', or 'client_secret_basic'"
+                "'none', 'client_secret_post', 'client_secret_basic', or "
+                "'private_key_jwt'"
             )
         additional_client_metadata["token_endpoint_auth_method"] = client_auth_method
 

@@ -185,7 +185,7 @@ def test_prepare_mcp_config_applies_explicit_oauth_authentication():
                 "auth": "oauth",
                 "authentication": {
                     "type": "oauth",
-                    "client_auth_method": "none",
+                    "client_auth_method": "private_key_jwt",
                     "additional_client_metadata": {
                         "application_type": "native",
                     },
@@ -204,7 +204,7 @@ def test_prepare_mcp_config_applies_explicit_oauth_authentication():
     assert isinstance(auth, OAuth)
     assert auth._additional_client_metadata == {
         "application_type": "native",
-        "token_endpoint_auth_method": "none",
+        "token_endpoint_auth_method": "private_key_jwt",
     }
     assert auth._scopes == ["email", "offline_access"]
     assert auth._client_name == "OpenHands"

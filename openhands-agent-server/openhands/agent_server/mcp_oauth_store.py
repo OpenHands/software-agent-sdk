@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import time
 from collections.abc import Mapping, Sequence
-from typing import Any, SupportsFloat, cast
+from typing import Any, SupportsFloat
 
 from key_value.aio.protocols import AsyncKeyValue
 
@@ -14,18 +13,28 @@ from openhands.agent_server.config import Config
 from openhands.agent_server.persistence import PersistedSettings, get_settings_store
 from openhands.sdk.agent.base import MCPOAuthTokenStorageFactory
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp.config import OpenHandsMCPConfig
+from openhands.sdk.mcp.config import (
+    MCPOAuthClientInfoState,
+    MCPOAuthState,
+    MCPOAuthTokenState,
+    OpenHandsMCPConfig,
+)
 
 
 logger = get_logger(__name__)
 
-_DEFAULT_COLLECTION = "default"
-_OAUTH_CREDENTIALS_FIELD = "credentials"
-_FASTMCP_OAUTH_KEY_SUFFIXES = ("/tokens", "/client_info", "/token_expiry")
+_TOKEN_COLLECTION = "mcp-oauth-token"
+_CLIENT_INFO_COLLECTION = "mcp-oauth-client-info"
+_TOKEN_EXPIRY_COLLECTION = "mcp-oauth-token-expiry"
 
-
-def _collection_name(collection: str | None) -> str:
-    return collection or _DEFAULT_COLLECTION
+_TOKEN_KEY_SUFFIX = "/tokens"
+_CLIENT_INFO_KEY_SUFFIX = "/client_info"
+_TOKEN_EXPIRY_KEY_SUFFIX = "/token_expiry"
+_FASTMCP_OAUTH_KEY_SUFFIXES = (
+    _TOKEN_KEY_SUFFIX,
+    _CLIENT_INFO_KEY_SUFFIX,
+    _TOKEN_EXPIRY_KEY_SUFFIX,
+)
 
 
 def _server_url_from_fastmcp_key(key: str) -> str:
@@ -37,14 +46,15 @@ def _server_url_from_fastmcp_key(key: str) -> str:
 
 
 def _dump_mcp_config(settings: PersistedSettings) -> dict[str, Any]:
-    mcp_config = getattr(settings.agent_settings, "mcp_config", None)
+    mcp_config = settings.agent_settings.mcp_config
     if mcp_config is None:
         return {"mcpServers": {}}
-    if isinstance(mcp_config, OpenHandsMCPConfig):
-        return mcp_config.model_dump(exclude_none=True, exclude_defaults=True)
-    if isinstance(mcp_config, dict):
-        return copy.deepcopy(mcp_config)
-    return {"mcpServers": {}}
+    return mcp_config.model_dump(
+        mode="json",
+        context={"expose_secrets": "plaintext"},
+        exclude_none=True,
+        exclude_defaults=True,
+    )
 
 
 def _set_mcp_config(settings: PersistedSettings, mcp_config: dict[str, Any]) -> None:
@@ -79,34 +89,121 @@ def _find_matching_server(
     return None
 
 
-def _entry_value_and_expiry(
-    entry: Any, *, now: float
-) -> tuple[dict[str, Any] | None, float | None]:
-    if not isinstance(entry, dict):
-        return None, None
-    value = entry.get("value")
-    if not isinstance(value, dict):
-        return None, None
-    expires_at = entry.get("expires_at")
-    if isinstance(expires_at, (int, float)) and expires_at <= now:
-        return None, None
-    return (
-        copy.deepcopy(value),
-        float(expires_at) if isinstance(expires_at, (int, float)) else None,
+def _state_model_to_dict(state: MCPOAuthState) -> dict[str, Any]:
+    return state.model_dump(
+        mode="json",
+        context={"expose_secrets": "plaintext"},
+        exclude_none=True,
+        exclude_defaults=True,
     )
 
 
+def _state_from_auth(auth: Mapping[str, Any]) -> MCPOAuthState:
+    state = auth.get("state")
+    if not isinstance(state, Mapping):
+        return MCPOAuthState()
+    return MCPOAuthState.model_validate(state)
+
+
+def _state_has_values(state: dict[str, Any]) -> bool:
+    return bool(
+        state.get("tokens")
+        or state.get("client_info")
+        or state.get("token_expires_at") is not None
+    )
+
+
+def _get_state_value(
+    state: MCPOAuthState,
+    key: str,
+    collection: str | None,
+) -> dict[str, Any] | None:
+    if collection == _TOKEN_COLLECTION and key.endswith(_TOKEN_KEY_SUFFIX):
+        if state.tokens is None or state.tokens.access_token is None:
+            return None
+        return state.tokens.model_dump(
+            mode="json",
+            context={"expose_secrets": "plaintext"},
+            exclude_none=True,
+            exclude_defaults=True,
+        )
+
+    if (
+        collection == _CLIENT_INFO_COLLECTION
+        and key.endswith(_CLIENT_INFO_KEY_SUFFIX)
+        and state.client_info is not None
+    ):
+        return state.client_info.model_dump(
+            mode="json",
+            context={"expose_secrets": "plaintext"},
+            exclude_none=True,
+            exclude_defaults=True,
+        )
+
+    if (
+        collection == _TOKEN_EXPIRY_COLLECTION
+        and key.endswith(_TOKEN_EXPIRY_KEY_SUFFIX)
+        and state.token_expires_at is not None
+    ):
+        return {"expires_at": state.token_expires_at}
+
+    return None
+
+
+def _put_state_value(
+    state: dict[str, Any],
+    key: str,
+    value: Mapping[str, Any],
+    collection: str | None,
+) -> bool:
+    if collection == _TOKEN_COLLECTION and key.endswith(_TOKEN_KEY_SUFFIX):
+        state["tokens"] = MCPOAuthTokenState.model_validate(value).model_dump(
+            mode="json",
+            context={"expose_secrets": "plaintext"},
+            exclude_none=True,
+            exclude_defaults=True,
+        )
+        return True
+
+    if collection == _CLIENT_INFO_COLLECTION and key.endswith(_CLIENT_INFO_KEY_SUFFIX):
+        state["client_info"] = MCPOAuthClientInfoState.model_validate(value).model_dump(
+            mode="json",
+            context={"expose_secrets": "plaintext"},
+            exclude_none=True,
+            exclude_defaults=True,
+        )
+        return True
+
+    if collection == _TOKEN_EXPIRY_COLLECTION and key.endswith(
+        _TOKEN_EXPIRY_KEY_SUFFIX
+    ):
+        expires_at = value.get("expires_at")
+        state["token_expires_at"] = (
+            float(expires_at) if isinstance(expires_at, int | float) else None
+        )
+        return True
+
+    return False
+
+
+def _delete_state_value(
+    state: dict[str, Any],
+    key: str,
+    collection: str | None,
+) -> bool:
+    if collection == _TOKEN_COLLECTION and key.endswith(_TOKEN_KEY_SUFFIX):
+        return state.pop("tokens", None) is not None
+    if collection == _CLIENT_INFO_COLLECTION and key.endswith(_CLIENT_INFO_KEY_SUFFIX):
+        return state.pop("client_info", None) is not None
+    if collection == _TOKEN_EXPIRY_COLLECTION and key.endswith(
+        _TOKEN_EXPIRY_KEY_SUFFIX
+    ):
+        return state.pop("token_expires_at", None) is not None
+    return False
+
+
 class MCPSettingsOAuthTokenStore:
-    """FastMCP OAuth token storage persisted inside ``settings.mcp_config``.
-
-    FastMCP stores tokens under keys derived from the remote MCP server URL.
-    We attach those records to the matching persisted MCP server object under
-    ``auth.credentials`` so every setting required to start future conversations
-    lives in the settings DataModel.
-    """
-
-    def __init__(self, *, now: Any = time.time):
-        self._now = now
+    """FastMCP OAuth token storage persisted inside ``settings.mcp_config``."""
 
     def _get_entry_sync(
         self, key: str, collection: str | None
@@ -121,18 +218,9 @@ class MCPSettingsOAuthTokenStore:
             return None, None
         _, server = match
         auth = server.get("auth")
-        credentials = (
-            auth.get(_OAUTH_CREDENTIALS_FIELD) if isinstance(auth, dict) else None
-        )
-        if not isinstance(credentials, dict):
+        if not isinstance(auth, Mapping):
             return None, None
-        bucket = credentials.get(_collection_name(collection))
-        if not isinstance(bucket, dict):
-            return None, None
-        value, expires_at = _entry_value_and_expiry(
-            bucket.get(key), now=float(self._now())
-        )
-        return value, expires_at
+        return _get_state_value(_state_from_auth(auth), key, collection), None
 
     async def get(
         self, key: str, *, collection: str | None = None
@@ -143,14 +231,7 @@ class MCPSettingsOAuthTokenStore:
     async def ttl(
         self, key: str, *, collection: str | None = None
     ) -> tuple[dict[str, Any] | None, float | None]:
-        value, expires_at = await asyncio.to_thread(
-            self._get_entry_sync, key, collection
-        )
-        if value is None:
-            return None, None
-        if expires_at is None:
-            return value, None
-        return value, max(0.0, expires_at - float(self._now()))
+        return await asyncio.to_thread(self._get_entry_sync, key, collection)
 
     def _put_sync(
         self,
@@ -160,41 +241,32 @@ class MCPSettingsOAuthTokenStore:
         collection: str | None = None,
         ttl: SupportsFloat | None = None,
     ) -> None:
-        expires_at = None if ttl is None else float(self._now()) + float(ttl)
+        del ttl
         stored_value = copy.deepcopy(dict(value))
-        collection_key = _collection_name(collection)
 
         def apply_update(settings: PersistedSettings) -> PersistedSettings:
             mcp_config = _dump_mcp_config(settings)
             match = _find_matching_server(mcp_config, key)
             if match is None:
                 logger.warning(
-                    "Could not persist MCP OAuth credentials: no configured MCP "
+                    "Could not persist MCP OAuth state: no configured MCP "
                     "server matches FastMCP key %r",
                     key,
                 )
                 return settings
 
             _, server = match
-            auth_value = server.get("auth")
-            if isinstance(auth_value, dict):
-                auth = cast(dict[str, Any], auth_value)
+            auth = server.get("auth")
+            if not isinstance(auth, dict):
+                return settings
+
+            state = _state_model_to_dict(_state_from_auth(auth))
+            if not _put_state_value(state, key, stored_value, collection):
+                return settings
+            if _state_has_values(state):
+                auth["state"] = state
             else:
-                auth: dict[str, Any] = {"strategy": "oauth2"}
-                server["auth"] = auth
-            credentials_value = auth.get(_OAUTH_CREDENTIALS_FIELD)
-            if isinstance(credentials_value, dict):
-                credentials = cast(dict[str, Any], credentials_value)
-            else:
-                credentials: dict[str, Any] = {}
-                auth[_OAUTH_CREDENTIALS_FIELD] = credentials
-            bucket_value = credentials.get(collection_key)
-            if isinstance(bucket_value, dict):
-                bucket = cast(dict[str, Any], bucket_value)
-            else:
-                bucket: dict[str, Any] = {}
-                credentials[collection_key] = bucket
-            bucket[key] = {"value": stored_value, "expires_at": expires_at}
+                auth.pop("state", None)
             _set_mcp_config(settings, mcp_config)
             return settings
 
@@ -217,7 +289,6 @@ class MCPSettingsOAuthTokenStore:
         )
 
     def _delete_sync(self, key: str, collection: str | None = None) -> bool:
-        collection_key = _collection_name(collection)
         deleted = False
 
         def apply_update(settings: PersistedSettings) -> PersistedSettings:
@@ -227,24 +298,17 @@ class MCPSettingsOAuthTokenStore:
             if match is None:
                 return settings
             _, server = match
-            auth_value = server.get("auth")
-            if not isinstance(auth_value, dict):
+            auth = server.get("auth")
+            if not isinstance(auth, dict):
                 return settings
-            auth = cast(dict[str, Any], auth_value)
-            credentials_value = auth.get(_OAUTH_CREDENTIALS_FIELD)
-            if not isinstance(credentials_value, dict):
+            state = _state_model_to_dict(_state_from_auth(auth))
+            deleted = _delete_state_value(state, key, collection)
+            if not deleted:
                 return settings
-            credentials = cast(dict[str, Any], credentials_value)
-            bucket_value = credentials.get(collection_key)
-            if not isinstance(bucket_value, dict) or key not in bucket_value:
-                return settings
-            bucket = cast(dict[str, Any], bucket_value)
-            del bucket[key]
-            deleted = True
-            if not bucket:
-                credentials.pop(collection_key, None)
-            if not credentials:
-                auth.pop(_OAUTH_CREDENTIALS_FIELD, None)
+            if _state_has_values(state):
+                auth["state"] = state
+            else:
+                auth.pop("state", None)
             _set_mcp_config(settings, mcp_config)
             return settings
 
@@ -288,56 +352,31 @@ class MCPSettingsOAuthTokenStore:
 
 
 class InMemoryMCPOAuthTokenStore:
-    """In-memory store used by non-mutating MCP install probes.
-
-    The probe endpoint cannot write to persisted settings before the user has
-    accepted the install. This store lets FastMCP complete OAuth, then exports
-    the captured records so the response can hand one complete MCP server object
-    back to the client for normal settings persistence.
-    """
+    """In-memory store used by non-mutating MCP install probes."""
 
     def __init__(
         self,
         *,
-        credentials: dict[str, Any] | None = None,
-        now: Any = time.time,
+        state: dict[str, Any] | MCPOAuthState | None = None,
     ):
-        self._now = now
-        self._credentials: dict[str, dict[str, dict[str, Any]]] = (
-            copy.deepcopy(credentials) if credentials is not None else {}
+        self._state = (
+            state
+            if isinstance(state, MCPOAuthState)
+            else MCPOAuthState.model_validate(state or {})
         )
 
-    def export_credentials(self) -> dict[str, Any]:
-        now = float(self._now())
-        exported: dict[str, Any] = {}
-        for collection, bucket in self._credentials.items():
-            live_bucket = {}
-            for key, entry in bucket.items():
-                value, expires_at = _entry_value_and_expiry(entry, now=now)
-                if value is None:
-                    continue
-                live_bucket[key] = {"value": value, "expires_at": expires_at}
-            if live_bucket:
-                exported[collection] = live_bucket
-        return exported
+    def export_state(self) -> dict[str, Any]:
+        return _state_model_to_dict(self._state)
 
     async def get(
         self, key: str, *, collection: str | None = None
     ) -> dict[str, Any] | None:
-        value, _ = await self.ttl(key, collection=collection)
-        return value
+        return _get_state_value(self._state, key, collection)
 
     async def ttl(
         self, key: str, *, collection: str | None = None
     ) -> tuple[dict[str, Any] | None, float | None]:
-        collection_key = _collection_name(collection)
-        entry = self._credentials.get(collection_key, {}).get(key)
-        value, expires_at = _entry_value_and_expiry(entry, now=float(self._now()))
-        if value is None:
-            return None, None
-        if expires_at is None:
-            return value, None
-        return value, max(0.0, expires_at - float(self._now()))
+        return await self.get(key, collection=collection), None
 
     async def put(
         self,
@@ -347,19 +386,17 @@ class InMemoryMCPOAuthTokenStore:
         collection: str | None = None,
         ttl: SupportsFloat | None = None,
     ) -> None:
-        expires_at = None if ttl is None else float(self._now()) + float(ttl)
-        bucket = self._credentials.setdefault(_collection_name(collection), {})
-        bucket[key] = {"value": copy.deepcopy(dict(value)), "expires_at": expires_at}
+        del ttl
+        state = _state_model_to_dict(self._state)
+        if _put_state_value(state, key, value, collection):
+            self._state = MCPOAuthState.model_validate(state)
 
     async def delete(self, key: str, *, collection: str | None = None) -> bool:
-        collection_key = _collection_name(collection)
-        bucket = self._credentials.get(collection_key)
-        if not bucket or key not in bucket:
-            return False
-        del bucket[key]
-        if not bucket:
-            self._credentials.pop(collection_key, None)
-        return True
+        state = _state_model_to_dict(self._state)
+        deleted = _delete_state_value(state, key, collection)
+        if deleted:
+            self._state = MCPOAuthState.model_validate(state)
+        return deleted
 
     async def get_many(
         self, keys: Sequence[str], *, collection: str | None = None
@@ -401,7 +438,7 @@ def create_mcp_oauth_token_storage_factory(
     get_settings_store(config)
     if config.secret_key is None:
         logger.warning(
-            "Saving MCP OAuth credentials without encryption "
+            "Saving MCP OAuth state without encryption "
             "(no OH_SECRET_KEY configured). Configure OH_SECRET_KEY for "
             "production deployments."
         )

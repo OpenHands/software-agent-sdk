@@ -565,7 +565,7 @@ def test_mcp_test_accepts_explicit_oauth_authentication(
     assert set(body["tools"]) == {"echo", "add"}
 
 
-def test_mcp_test_returns_encrypted_oauth_credentials_from_probe(
+def test_mcp_test_returns_encrypted_oauth_state_from_probe(
     monkeypatch: pytest.MonkeyPatch,
 ):
     config = Config(session_api_keys=[], secret_key=SecretStr("test-secret-key"))
@@ -600,6 +600,24 @@ def test_mcp_test_returns_encrypted_oauth_credentials_from_probe(
                 collection="mcp-oauth-token",
             )
         )
+        asyncio.run(
+            mcp_oauth_token_storage.put(
+                key="https://mcp.example.com/mcp/client_info",
+                value={
+                    "redirect_uris": ["http://127.0.0.1:64801/callback"],
+                    "client_id": "superhuman-client",
+                    "client_secret": "superhuman-client-secret",
+                },
+                collection="mcp-oauth-client-info",
+            )
+        )
+        asyncio.run(
+            mcp_oauth_token_storage.put(
+                key="https://mcp.example.com/mcp/token_expiry",
+                value={"expires_at": 12345.0},
+                collection="mcp-oauth-token-expiry",
+            )
+        )
         return FakeClient()
 
     monkeypatch.setattr(
@@ -630,12 +648,14 @@ def test_mcp_test_returns_encrypted_oauth_credentials_from_probe(
     assert body["ok"] is True
     assert len(calls) == 1
     assert body["server"]["auth"]["strategy"] == "oauth2"
-    oauth_value = body["server"]["auth"]["credentials"]["mcp-oauth-token"][
-        "https://mcp.example.com/mcp/tokens"
-    ]["value"]
+    oauth_state = body["server"]["auth"]["state"]
+    oauth_value = oauth_state["tokens"]
     assert oauth_value["access_token"].startswith("gAAAA")
     assert oauth_value["refresh_token"].startswith("gAAAA")
     assert oauth_value["access_token"] != "oauth-access-token"
+    assert oauth_state["client_info"]["client_id"] == "superhuman-client"
+    assert oauth_state["client_info"]["client_secret"].startswith("gAAAA")
+    assert oauth_state["token_expires_at"] == 12345.0
 
 
 def test_mcp_test_rejects_legacy_top_level_oauth_authentication(client: TestClient):

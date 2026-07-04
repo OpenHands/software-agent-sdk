@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import json
 import os
 import re
@@ -35,6 +34,7 @@ from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
+from openhands.sdk.mcp.config import OpenHandsMCPConfig, to_fastmcp_mcp_config
 from openhands.sdk.tool import (
     BUILT_IN_TOOL_CLASSES,
     BUILT_IN_TOOLS,
@@ -62,23 +62,9 @@ logger = get_logger(__name__)
 MCPOAuthTokenStorageFactory = Callable[[], AsyncKeyValue]
 
 
-def _decrypt_mcp_value_or_keep(cipher: Cipher, value: str) -> str:
-    if not value.startswith(FERNET_TOKEN_PREFIX):
-        return value
-    decrypted = cipher.try_decrypt_str(value)
-    if decrypted is None:
-        logger.warning(
-            "MCP env/headers value looks encrypted but could not be decrypted "
-            "(cipher mismatch or corruption); leaving the ciphertext in place."
-        )
-        return value
-    return decrypted
-
-
 def _decrypt_mcp_secret_values(
     config: dict[str, Any], cipher: Cipher
 ) -> dict[str, Any]:
-    config = copy.deepcopy(config)
     if "mcpServers" not in config:
         return config
     servers = config["mcpServers"]
@@ -89,34 +75,6 @@ def _decrypt_mcp_secret_values(
             raise ValueError(
                 f"mcp_config.mcpServers[{server_name!r}] must be a dictionary"
             )
-        auth = server.get("auth")
-        if isinstance(auth, str) and auth != "oauth":
-            server["auth"] = _decrypt_mcp_value_or_keep(cipher, auth)
-        elif isinstance(auth, dict):
-            strategy = auth.get("strategy")
-            if strategy in {"api_key", "bearer"}:
-                value = auth.get("value")
-                if isinstance(value, str):
-                    auth["value"] = _decrypt_mcp_value_or_keep(cipher, value)
-            elif strategy == "basic":
-                password = auth.get("password")
-                if isinstance(password, str):
-                    auth["password"] = _decrypt_mcp_value_or_keep(cipher, password)
-            elif strategy == "header":
-                mapping = auth.get("headers")
-                if isinstance(mapping, dict):
-                    auth["headers"] = {
-                        name: _decrypt_mcp_value_or_keep(cipher, value)
-                        if isinstance(value, str)
-                        else value
-                        for name, value in mapping.items()
-                    }
-            elif strategy == "oauth2":
-                credentials = auth.get("credentials")
-                if isinstance(credentials, dict):
-                    auth["credentials"] = _decrypt_mcp_secret_leaves(
-                        cipher, credentials
-                    )
         for key in ("env", "headers"):
             if key not in server:
                 continue
@@ -126,23 +84,9 @@ def _decrypt_mcp_secret_values(
                     f"mcp_config.mcpServers[{server_name!r}].{key} must be "
                     "a dictionary when provided"
                 )
-            server[key] = {
-                name: _decrypt_mcp_value_or_keep(cipher, value)
-                if isinstance(value, str)
-                else value
-                for name, value in mapping.items()
-            }
-    return config
-
-
-def _decrypt_mcp_secret_leaves(cipher: Cipher, value: Any) -> Any:
-    if isinstance(value, str):
-        return _decrypt_mcp_value_or_keep(cipher, value)
-    if isinstance(value, dict):
-        return {k: _decrypt_mcp_secret_leaves(cipher, v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_decrypt_mcp_secret_leaves(cipher, item) for item in value]
-    return value
+    return to_fastmcp_mcp_config(
+        OpenHandsMCPConfig.model_validate(config, context={"cipher": cipher})
+    )
 
 
 # -- SOUL.md loader -------------------------------------------------------

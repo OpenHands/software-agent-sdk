@@ -13,19 +13,19 @@ The optional tool call exists because listing tools does not exercise the
 credentials many servers only use inside tool handlers (e.g. the Slack MCP
 server starts fine with a bogus token); callers must pick a read-only tool.
 For OAuth MCP servers, any token/client metadata acquired during the probe is
-returned on the success response's ``server.auth.credentials`` field so the
+returned on the success response's ``server.auth.state`` field so the
 caller can persist one complete MCP server object through the settings API.
 """
 
 from __future__ import annotations
 
 import asyncio
-import copy
 from typing import Annotated, Any, Literal
 
 import mcp.types
 from fastapi import APIRouter, Request
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from openhands.agent_server._secrets_exposure import get_cipher
 from openhands.agent_server.mcp_oauth_store import (
@@ -36,11 +36,12 @@ from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.mcp.config import (
     MCPAuthCredential,
     MCPOAuthAuthCredential,
+    MCPOAuthState,
+    OpenHandsMCPConfig,
     to_fastmcp_mcp_config,
 )
 from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
 from openhands.sdk.utils.cipher import Cipher
-from openhands.sdk.utils.pydantic_secrets import decrypt_str_with_cipher_or_keep
 
 
 logger = get_logger(__name__)
@@ -109,7 +110,12 @@ class _RemoteMCPServerSpec(BaseModel):
         transport = "http" if self.type == "shttp" else self.type
         out: dict[str, Any] = {"url": self.url, "transport": transport}
         if self.auth is not None:
-            out["auth"] = self.auth.model_dump(exclude_none=True, exclude_defaults=True)
+            out["auth"] = self.auth.model_dump(
+                mode="json",
+                context={"expose_secrets": "plaintext"},
+                exclude_none=True,
+                exclude_defaults=True,
+            )
         headers = dict(self.headers)
         if headers:
             out["headers"] = headers
@@ -202,7 +208,7 @@ class MCPTestSuccess(BaseModel):
         default=None,
         description=(
             "Updated remote server spec when the probe acquired or refreshed "
-            "OAuth credentials. Clients should persist this server object."
+            "OAuth state. Clients should persist this server object."
         ),
     )
 
@@ -231,111 +237,56 @@ MCPTestResponse = MCPTestSuccess | MCPTestFailure
 # ---------------------------------------------------------------------------
 
 
-def _decrypt_mapping(cipher: Cipher | None, mapping: dict[str, str]) -> dict[str, str]:
-    """Decrypt Fernet-encrypted values round-tripped from settings.
-
-    The GUI fetches stored settings with ``X-Expose-Secrets: encrypted`` and
-    forwards the ciphertext unchanged so the edit flow can test the *real*
-    stored credentials without ever seeing them. Plaintext values (the
-    common case: freshly typed input) pass through untouched.
-    """
-    if cipher is None:
-        return dict(mapping)
-    return {
-        key: decrypt_str_with_cipher_or_keep(
-            cipher, value, description="MCP test env/headers"
-        )
-        for key, value in mapping.items()
-    }
+def _mcp_validation_context(cipher: Cipher | None) -> dict[str, Any] | None:
+    return {"cipher": cipher} if cipher is not None else None
 
 
-def _walk_string_leaves(value: Any, transform: Any) -> Any:
-    if isinstance(value, str):
-        return transform(value)
-    if isinstance(value, dict):
-        return {k: _walk_string_leaves(v, transform) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_walk_string_leaves(item, transform) for item in value]
-    return value
-
-
-def _decrypt_remote_auth(cipher: Cipher | None, auth: Any) -> Any:
-    if cipher is None or not isinstance(auth, dict):
-        return copy.deepcopy(auth)
-    auth = copy.deepcopy(auth)
-    strategy = auth.get("strategy")
-    if strategy in {"api_key", "bearer"}:
-        value = auth.get("value")
-        if isinstance(value, str):
-            auth["value"] = decrypt_str_with_cipher_or_keep(
-                cipher, value, description="MCP test auth"
-            )
-    elif strategy == "basic":
-        password = auth.get("password")
-        if isinstance(password, str):
-            auth["password"] = decrypt_str_with_cipher_or_keep(
-                cipher, password, description="MCP test auth"
-            )
-    elif strategy == "header":
-        headers = auth.get("headers")
-        if isinstance(headers, dict):
-            auth["headers"] = {
-                key: decrypt_str_with_cipher_or_keep(
-                    cipher, value, description="MCP test auth"
-                )
-                if isinstance(value, str)
-                else value
-                for key, value in headers.items()
-            }
-    elif strategy == "oauth2":
-        credentials = auth.get("credentials")
-        if isinstance(credentials, dict):
-            auth["credentials"] = _decrypt_oauth_credentials(cipher, credentials)
-    return auth
-
-
-def _decrypt_oauth_credentials(
-    cipher: Cipher | None, credentials: dict[str, Any]
+def _server_to_openhands_config(
+    spec: _StdioMCPServerSpec | _RemoteMCPServerSpec,
 ) -> dict[str, Any]:
-    if cipher is None:
-        return copy.deepcopy(credentials)
-    return _walk_string_leaves(
-        credentials,
-        lambda value: decrypt_str_with_cipher_or_keep(
-            cipher, value, description="MCP OAuth credentials"
-        ),
-    )
+    if isinstance(spec, _StdioMCPServerSpec):
+        out: dict[str, Any] = {"command": spec.command, "args": list(spec.args)}
+        if spec.env:
+            out["env"] = dict(spec.env)
+        if spec.cwd:
+            out["cwd"] = spec.cwd
+        return out
+    return spec.to_openhands_dict()
 
 
-def _encrypt_oauth_credentials(
-    cipher: Cipher | None, credentials: dict[str, Any]
-) -> dict[str, Any]:
-    if cipher is None:
-        return copy.deepcopy(credentials)
-    return _walk_string_leaves(
-        credentials,
-        lambda value: cipher.encrypt(SecretStr(value)) or value,
+def _oauth_state_to_plain_dict(
+    state: MCPOAuthState | None,
+    cipher: Cipher | None,
+) -> dict[str, Any] | None:
+    if state is None:
+        return None
+    dumped = state.model_dump(
+        mode="json",
+        context={"expose_secrets": "plaintext"},
+        exclude_none=True,
+        exclude_defaults=True,
     )
+    validated = MCPOAuthState.model_validate(
+        dumped,
+        context=_mcp_validation_context(cipher),
+    )
+    plaintext = validated.model_dump(
+        mode="json",
+        context={"expose_secrets": "plaintext"},
+        exclude_none=True,
+        exclude_defaults=True,
+    )
+    return plaintext or None
 
 
 def _server_to_fastmcp_dict(
     spec: _StdioMCPServerSpec | _RemoteMCPServerSpec, cipher: Cipher | None
 ) -> dict:
-    if isinstance(spec, _StdioMCPServerSpec):
-        out: dict[str, Any] = {"command": spec.command, "args": list(spec.args)}
-        if spec.env:
-            out["env"] = _decrypt_mapping(cipher, spec.env)
-        if spec.cwd:
-            out["cwd"] = spec.cwd
-        return out
-    remote = spec.to_openhands_dict()
-    if "auth" in remote:
-        remote["auth"] = _decrypt_remote_auth(cipher, remote["auth"])
-    if "headers" in remote:
-        remote["headers"] = _decrypt_mapping(cipher, remote["headers"])
-    return to_fastmcp_mcp_config({"mcpServers": {"server": remote}})["mcpServers"][
-        "server"
-    ]
+    config = OpenHandsMCPConfig.model_validate(
+        {"mcpServers": {"server": _server_to_openhands_config(spec)}},
+        context=_mcp_validation_context(cipher),
+    )
+    return to_fastmcp_mcp_config(config)["mcpServers"]["server"]
 
 
 def _run_tool_call(
@@ -403,7 +354,7 @@ def _probe_mcp_server(
         oauth_token_storage: InMemoryMCPOAuthTokenStore | None = None
         if oauth_auth is not None:
             oauth_token_storage = InMemoryMCPOAuthTokenStore(
-                credentials=_decrypt_oauth_credentials(cipher, oauth_auth.credentials)
+                state=_oauth_state_to_plain_dict(oauth_auth.state, cipher)
             )
         # ``create_mcp_tools`` returns a client that owns a background loop
         # and a (possibly long-lived) subprocess. Use the context-manager
@@ -421,14 +372,12 @@ def _probe_mcp_server(
                 )
             response_server: _RemoteMCPServerSpec | None = None
             if oauth_token_storage is not None and oauth_server is not None:
-                credentials = oauth_token_storage.export_credentials()
-                if credentials:
+                state = oauth_token_storage.export_state()
+                if state:
                     response_server = oauth_server.model_copy(deep=True)
                     response_auth = response_server.auth
                     assert isinstance(response_auth, MCPOAuthAuthCredential)
-                    response_auth.credentials = _encrypt_oauth_credentials(
-                        cipher, credentials
-                    )
+                    response_auth.state = MCPOAuthState.model_validate(state)
             return MCPTestSuccess(
                 tools=tool_names,
                 tool_result=tool_result,
@@ -471,7 +420,7 @@ def _probe_mcp_server(
         "Attempt to connect to a candidate MCP server and list its tools, "
         "without persisting any settings. Useful for validating user input "
         "in 'add MCP server' flows before storing the config. "
-        "For OAuth servers, any acquired credentials are returned in the "
+        "For OAuth servers, any acquired state is returned in the "
         "success response so clients can persist them in the MCP server object. "
         "Optionally invokes one caller-chosen (read-only) tool via "
         "`tool_call` and reports its outcome in `tool_result`, so callers "
@@ -484,15 +433,27 @@ def _probe_mcp_server(
 )
 async def test_mcp_server(
     request: MCPTestRequest, http_request: Request
-) -> MCPTestResponse:
+) -> JSONResponse:
     """Probe a single MCP server config and report whether it works."""
     # Resolve the cipher here: the threadpool function below must not
     # reach back into ``http_request.app.state``.
     cipher = get_cipher(http_request)
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
+    result = await loop.run_in_executor(
         None,
         _probe_mcp_server,
         request,
         cipher,
+    )
+    context = (
+        {"cipher": cipher, "expose_secrets": "encrypted"}
+        if cipher is not None
+        else {"expose_secrets": "plaintext"}
+    )
+    return JSONResponse(
+        content=result.model_dump(
+            mode="json",
+            context=context,
+            exclude_none=True,
+        )
     )

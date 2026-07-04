@@ -1411,22 +1411,8 @@ def test_agent_settings_storage_helpers_encrypt_full_payload() -> None:
                         "url": "https://mcp.oauth.example.com",
                         "auth": {
                             "strategy": "oauth2",
-                            "credentials": {
-                                "mcp-oauth-token": {
-                                    "https://mcp.oauth.example.com/tokens": {
-                                        "value": {"access_token": "oauth-access-secret"}
-                                    }
-                                }
-                            },
-                        },
-                    },
-                    "custom": {
-                        "url": "https://mcp.custom.example.com",
-                        "auth": {
-                            "strategy": "custom",
-                            "fastmcp": {
-                                "auth": "custom-auth-secret",
-                                "nested": {"token": "custom-nested-secret"},
+                            "state": {
+                                "tokens": {"access_token": "oauth-access-secret"}
                             },
                         },
                     },
@@ -1449,8 +1435,6 @@ def test_agent_settings_storage_helpers_encrypt_full_payload() -> None:
         "basic-password-secret",
         "header-auth-secret",
         "oauth-access-secret",
-        "custom-auth-secret",
-        "custom-nested-secret",
     ):
         assert secret not in serialized
     sparse_stored = dump_agent_settings_for_storage(
@@ -1472,21 +1456,20 @@ def test_agent_settings_storage_helpers_encrypt_full_payload() -> None:
     assert loaded.verification.critic_api_key.get_secret_value() == "critic-secret"
     assert loaded.agent_context.secrets == {"AGENT_TOKEN": "agent-secret"}
     assert loaded.mcp_config is not None
-    servers = loaded.mcp_config.model_dump(exclude_none=True)["mcpServers"]
+    servers = loaded.mcp_config.model_dump(
+        mode="json",
+        context={"expose_secrets": "plaintext"},
+        exclude_none=True,
+    )["mcpServers"]
     assert servers["http"]["headers"]["X-MCP-Token"] == "header-secret"
     assert servers["http"]["auth"]["value"] == "bearer-secret"
     assert servers["api-key"]["auth"]["value"] == "api-key-secret"
     assert servers["basic"]["auth"]["username"] == "service-account"
     assert servers["basic"]["auth"]["password"] == "basic-password-secret"
     assert servers["header-auth"]["auth"]["headers"]["X-Auth"] == "header-auth-secret"
-    oauth_value = servers["oauth"]["auth"]["credentials"]["mcp-oauth-token"][
-        "https://mcp.oauth.example.com/tokens"
-    ]["value"]
-    assert oauth_value["access_token"] == "oauth-access-secret"
-    assert servers["custom"]["auth"]["fastmcp"]["auth"] == "custom-auth-secret"
     assert (
-        servers["custom"]["auth"]["fastmcp"]["nested"]["token"]
-        == "custom-nested-secret"
+        servers["oauth"]["auth"]["state"]["tokens"]["access_token"]
+        == "oauth-access-secret"
     )
 
 
@@ -1535,38 +1518,7 @@ def test_agent_settings_secret_value_helpers_preserve_sparse_diffs() -> None:
                     "url": "https://mcp.oauth.example.com",
                     "auth": {
                         "strategy": "oauth2",
-                        "credentials": {
-                            "mcp-oauth-token": {
-                                "https://mcp.oauth.example.com/tokens": {
-                                    "value": {"access_token": "oauth-access-secret"}
-                                }
-                            }
-                        },
-                    },
-                },
-                "custom": {
-                    "url": "https://mcp.custom.example.com",
-                    "auth": {
-                        "strategy": "custom",
-                        "fastmcp": {
-                            "auth": "custom-auth-secret",
-                            "nested": {"token": "custom-nested-secret"},
-                        },
-                    },
-                },
-                "legacy-bearer": {
-                    "url": "https://mcp.legacy-bearer.example.com",
-                    "auth": "legacy-bearer-secret",
-                },
-                "legacy-oauth": {
-                    "url": "https://mcp.legacy-oauth.example.com",
-                    "auth": "oauth",
-                    "oauth_credentials": {
-                        "mcp-oauth-token": {
-                            "https://mcp.legacy-oauth.example.com/tokens": {
-                                "value": {"access_token": "legacy-oauth-secret"}
-                            }
-                        }
+                        "state": {"tokens": {"access_token": "oauth-access-secret"}},
                     },
                 },
             }
@@ -1587,10 +1539,6 @@ def test_agent_settings_secret_value_helpers_preserve_sparse_diffs() -> None:
         "basic-password-secret",
         "header-auth-secret",
         "oauth-access-secret",
-        "custom-auth-secret",
-        "custom-nested-secret",
-        "legacy-bearer-secret",
-        "legacy-oauth-secret",
     ):
         assert secret not in serialized
 
@@ -1636,7 +1584,7 @@ def test_mcp_config_encrypts_env_and_headers_with_cipher() -> None:
     serialized = json.dumps(dumped)
     assert "ghp-mcp-secret" not in serialized
     assert "tok-mcp-secret" not in serialized
-    assert "<redacted>" not in serialized
+    assert "**********" not in serialized
 
     # Values must be Fernet ciphertext (base64; starts with "gAAAA").
     assert enc_token.startswith("gAAAA")
@@ -1649,7 +1597,11 @@ def test_mcp_config_encrypts_env_and_headers_with_cipher() -> None:
     # Round-trip: decrypt with the same cipher recovers the originals.
     restored = OpenHandsAgentSettings.model_validate(dumped, context={"cipher": cipher})
     assert restored.mcp_config is not None
-    restored_dump = restored.mcp_config.model_dump(exclude_none=True)
+    restored_dump = restored.mcp_config.model_dump(
+        mode="json",
+        context={"expose_secrets": "plaintext"},
+        exclude_none=True,
+    )
     assert (
         restored_dump["mcpServers"]["github"]["env"]["GITHUB_TOKEN"] == "ghp-mcp-secret"
     )
@@ -1690,7 +1642,7 @@ def test_mcp_config_encrypts_bearer_auth_with_cipher() -> None:
     redacted = settings.model_dump(mode="json")
     assert redacted["mcp_config"]["mcpServers"]["linear"]["auth"] == {
         "strategy": "bearer",
-        "value": "<redacted>",
+        "value": "**********",
     }
     assert redacted["mcp_config"]["mcpServers"]["superhuman"]["auth"] == {
         "strategy": "oauth2"
@@ -1698,14 +1650,17 @@ def test_mcp_config_encrypts_bearer_auth_with_cipher() -> None:
 
     restored = OpenHandsAgentSettings.model_validate(dumped, context={"cipher": cipher})
     assert restored.mcp_config is not None
-    restored_servers = restored.mcp_config.model_dump(exclude_none=True)["mcpServers"]
+    restored_servers = restored.mcp_config.model_dump(
+        mode="json",
+        context={"expose_secrets": "plaintext"},
+        exclude_none=True,
+    )["mcpServers"]
     assert restored_servers["linear"]["auth"] == {
         "strategy": "bearer",
         "value": "lin-api-secret",
     }
     assert restored_servers["superhuman"]["auth"] == {
         "strategy": "oauth2",
-        "credentials": {},
     }
 
 
@@ -1771,9 +1726,11 @@ def test_openhands_agent_settings_mcp_config_decrypt_legacy_plaintext_on_disk() 
     )
     assert restored.mcp_config is not None
     assert (
-        restored.mcp_config.model_dump(exclude_none=True)["mcpServers"]["github"][
-            "env"
-        ]["GITHUB_TOKEN"]
+        restored.mcp_config.model_dump(
+            mode="json",
+            context={"expose_secrets": "plaintext"},
+            exclude_none=True,
+        )["mcpServers"]["github"]["env"]["GITHUB_TOKEN"]
         == "ghp-legacy-plaintext"
     )
 
