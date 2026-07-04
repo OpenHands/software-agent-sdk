@@ -15,9 +15,18 @@ from fastmcp import FastMCP
 from fastmcp.client.auth import OAuth
 from fastmcp.mcp_config import MCPConfig as FastMCPConfig, RemoteMCPServer
 from key_value.aio.stores.memory import MemoryStore
+from pydantic import SecretStr
 
 from openhands.sdk.mcp import create_mcp_tools
-from openhands.sdk.mcp.config import coerce_mcp_config
+from openhands.sdk.mcp.config import (
+    MCPApiKeyAuthCredential,
+    MCPBasicAuthCredential,
+    MCPBearerAuthCredential,
+    MCPHeaderAuthCredential,
+    MCPNoneAuthCredential,
+    MCPOAuthAuthCredential,
+    coerce_mcp_config,
+)
 from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
 from openhands.sdk.mcp.utils import _prepare_mcp_config
 
@@ -25,6 +34,48 @@ from openhands.sdk.mcp.utils import _prepare_mcp_config
 logger = logging.getLogger(__name__)
 
 MCPTransport = Literal["http", "streamable-http", "sse"]
+
+
+@pytest.mark.parametrize(
+    ("credential", "expected"),
+    [
+        (MCPNoneAuthCredential(strategy="none"), {}),
+        (
+            MCPApiKeyAuthCredential(strategy="api_key", value=SecretStr("token")),
+            {"Authorization": "Bearer token"},
+        ),
+        (
+            MCPApiKeyAuthCredential(
+                strategy="api_key",
+                value=SecretStr("token"),
+                header_name="X-API-Key",
+            ),
+            {"X-API-Key": "token"},
+        ),
+        (
+            MCPBearerAuthCredential(strategy="bearer", value=SecretStr("token")),
+            {"Authorization": "Bearer token"},
+        ),
+        (
+            MCPBasicAuthCredential(
+                strategy="basic",
+                username="user",
+                password=SecretStr("pass"),
+            ),
+            {"Authorization": "Basic dXNlcjpwYXNz"},
+        ),
+        (
+            MCPHeaderAuthCredential(
+                strategy="header",
+                headers={"X-Token": SecretStr("token")},
+            ),
+            {"X-Token": "token"},
+        ),
+        (MCPOAuthAuthCredential(strategy="oauth2"), None),
+    ],
+)
+def test_mcp_auth_credentials_to_http_headers(credential, expected):
+    assert credential.to_http_headers() == expected
 
 
 def _find_free_port() -> int:

@@ -102,6 +102,9 @@ class _MCPBaseModel(BaseModel):
 class MCPNoneAuthCredential(_MCPBaseModel):
     strategy: Literal["none"]
 
+    def to_http_headers(self) -> dict[str, str] | None:
+        return {}
+
 
 class MCPApiKeyAuthCredential(_MCPBaseModel):
     strategy: Literal["api_key"]
@@ -119,6 +122,14 @@ class MCPApiKeyAuthCredential(_MCPBaseModel):
     ) -> str | None:
         return _serialize_optional_secret(value, info)
 
+    def to_http_headers(self) -> dict[str, str] | None:
+        if self.value is None:
+            return {}
+        value = self.value.get_secret_value()
+        if self.header_name:
+            return {self.header_name: value}
+        return {"Authorization": f"Bearer {value}"}
+
 
 class MCPBearerAuthCredential(_MCPBaseModel):
     strategy: Literal["bearer"]
@@ -134,6 +145,11 @@ class MCPBearerAuthCredential(_MCPBaseModel):
         self, value: SecretStr | None, info: SerializationInfo
     ) -> str | None:
         return _serialize_optional_secret(value, info)
+
+    def to_http_headers(self) -> dict[str, str] | None:
+        if self.value is None:
+            return {}
+        return {"Authorization": f"Bearer {self.value.get_secret_value()}"}
 
 
 class MCPBasicAuthCredential(_MCPBaseModel):
@@ -152,6 +168,16 @@ class MCPBasicAuthCredential(_MCPBaseModel):
     ) -> str | None:
         return _serialize_optional_secret(value, info)
 
+    def to_http_headers(self) -> dict[str, str] | None:
+        if self.password is None:
+            return {}
+        return {
+            "Authorization": _basic_auth_header(
+                self.username,
+                self.password.get_secret_value(),
+            )
+        }
+
 
 class MCPHeaderAuthCredential(_MCPBaseModel):
     strategy: Literal["header"]
@@ -167,6 +193,9 @@ class MCPHeaderAuthCredential(_MCPBaseModel):
         self, value: dict[str, SecretStr], info: SerializationInfo
     ) -> dict[str, str | None]:
         return _serialize_secret_map(value, info) or {}
+
+    def to_http_headers(self) -> dict[str, str] | None:
+        return {name: value.get_secret_value() for name, value in self.headers.items()}
 
 
 class MCPOAuthTokenState(_MCPBaseModel):
@@ -352,6 +381,9 @@ class MCPOAuthAuthCredential(_MCPBaseModel):
     @classmethod
     def _drop_empty_state(cls, value: MCPOAuthState | None) -> MCPOAuthState | None:
         return value if value is not None and value.has_values else None
+
+    def to_http_headers(self) -> dict[str, str] | None:
+        return None
 
 
 MCPAuthCredential = Annotated[

@@ -17,7 +17,6 @@ See https://agentclientprotocol.com/protocol/overview
 from __future__ import annotations
 
 import asyncio
-import base64
 import inspect
 import json
 import os
@@ -74,14 +73,7 @@ from openhands.sdk.event import (
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import LLM, ImageContent, Message, MessageToolCall, TextContent
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp.config import (
-    MCPApiKeyAuthCredential,
-    MCPBasicAuthCredential,
-    MCPBearerAuthCredential,
-    MCPHeaderAuthCredential,
-    MCPOAuthAuthCredential,
-    MCPServer,
-)
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.observability.laminar import maybe_init_laminar, observe
 from openhands.sdk.settings.acp_providers import (
     ACPFileSecretSpec,
@@ -555,43 +547,18 @@ def _remote_mcp_headers(server: MCPServer, name: str) -> list[HttpHeader]:
         for name, value in (server.headers or {}).items()
     ]
 
-    auth = server.auth
-    if isinstance(auth, MCPBearerAuthCredential):
-        if auth.value is not None:
-            headers.append(
-                HttpHeader(
-                    name="Authorization",
-                    value=f"Bearer {auth.value.get_secret_value()}",
-                )
-            )
-    elif isinstance(auth, MCPApiKeyAuthCredential):
-        if auth.value is not None:
-            headers.append(
-                HttpHeader(
-                    name=auth.header_name or "Authorization",
-                    value=auth.value.get_secret_value()
-                    if auth.header_name
-                    else f"Bearer {auth.value.get_secret_value()}",
-                )
-            )
-    elif isinstance(auth, MCPBasicAuthCredential):
-        if auth.password is not None:
-            token = base64.b64encode(
-                f"{auth.username}:{auth.password.get_secret_value()}".encode()
-            ).decode("ascii")
-            headers.append(HttpHeader(name="Authorization", value=f"Basic {token}"))
-    elif isinstance(auth, MCPHeaderAuthCredential):
-        headers.extend(
-            HttpHeader(name=name, value=value.get_secret_value())
-            for name, value in auth.headers.items()
-        )
-    elif isinstance(auth, MCPOAuthAuthCredential):
+    auth_headers = server.auth.to_http_headers() if server.auth is not None else {}
+    if auth_headers is None:
         logger.warning(
             "ACP MCP server %r uses unsupported remote MCP auth type %r; "
             "only header-compatible auth can be forwarded",
             name,
-            type(auth).__name__,
+            type(server.auth).__name__,
         )
+        return headers
+    headers.extend(
+        HttpHeader(name=name, value=value) for name, value in auth_headers.items()
+    )
     return headers
 
 
