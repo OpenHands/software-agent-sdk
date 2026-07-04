@@ -509,6 +509,221 @@ def test_validate_agent_settings_migrates_legacy_openhands_proxy_llm() -> None:
     assert settings.llm.base_url is None
 
 
+def test_validate_agent_settings_migrates_legacy_mcp_auth_shapes() -> None:
+    settings = validate_agent_settings(
+        {
+            "schema_version": 4,
+            "agent_kind": "openhands",
+            "mcp_config": {
+                "mcpServers": {
+                    "oauth-top-level": {
+                        "url": "https://mcp.oauth.example.com/mcp",
+                        "unknown_secret": "drop-me",
+                        "auth": "oauth",
+                        "authentication": {
+                            "type": "oauth",
+                            "client_auth_method": "none",
+                        },
+                        "oauth_credentials": {
+                            "mcp-oauth-token": {
+                                "https://mcp.oauth.example.com/mcp/tokens": {
+                                    "value": {
+                                        "access_token": "access-secret",
+                                        "refresh_token": "refresh-secret",
+                                    }
+                                }
+                            },
+                            "mcp-oauth-client-info": {
+                                "https://mcp.oauth.example.com/mcp/client_info": {
+                                    "value": {
+                                        "client_id": "client-id",
+                                        "client_secret": "client-secret",
+                                    }
+                                }
+                            },
+                            "mcp-oauth-token-expiry": {
+                                "https://mcp.oauth.example.com/mcp/token_expiry": {
+                                    "value": {"expires_at": 1234.5},
+                                    "expires_at": 9999.0,
+                                }
+                            },
+                        },
+                    },
+                    "oauth-auth-field": {
+                        "url": "https://mcp.auth.example.com/mcp",
+                        "auth": {
+                            "strategy": "oauth2",
+                            "credentials": {
+                                "mcp-oauth-token": {
+                                    "https://mcp.auth.example.com/mcp/tokens": {
+                                        "value": {"access_token": "field-secret"}
+                                    }
+                                }
+                            },
+                        },
+                    },
+                    "fastmcp-fields": {
+                        "url": "https://mcp.fields.example.com/mcp",
+                        "type": "streamable-http",
+                        "description": "Fields server",
+                        "icon": "https://example.com/icon.png",
+                        "timeout": 10,
+                        "sse_read_timeout": 20,
+                        "keep_alive": True,
+                        "unknown_secret": "drop-me",
+                    },
+                    "bearer": {
+                        "url": "https://mcp.bearer.example.com/mcp",
+                        "auth": "bearer-secret",
+                    },
+                    "api-key": {
+                        "url": "https://mcp.api.example.com/mcp",
+                        "api_key": "api-secret",
+                    },
+                    "authorization": {
+                        "url": "https://mcp.header.example.com/mcp",
+                        "headers": {
+                            "Authorization": "Bearer header-secret",
+                            "X-Other": "other",
+                        },
+                    },
+                    "custom": {
+                        "url": "https://mcp.custom.example.com/mcp",
+                        "auth": {
+                            "strategy": "custom",
+                            "fastmcp": {
+                                "auth": "custom-secret",
+                                "nested": {"token": "dropped-secret"},
+                            },
+                        },
+                    },
+                    "sse": {
+                        "url": "https://mcp.linear.app/sse",
+                        "transport": "sse",
+                        "auth": {"strategy": "bearer", "value": "linear-secret"},
+                    },
+                }
+            },
+        }
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert settings.mcp_config is not None
+    servers = settings.mcp_config.model_dump(
+        mode="json",
+        context={"expose_secrets": "plaintext"},
+        exclude_none=True,
+        exclude_defaults=True,
+    )["mcpServers"]
+
+    assert servers["oauth-top-level"]["auth"] == {
+        "strategy": "oauth2",
+        "authentication": {"type": "oauth", "client_auth_method": "none"},
+        "state": {
+            "tokens": {
+                "access_token": "access-secret",
+                "refresh_token": "refresh-secret",
+            },
+            "client_info": {
+                "client_id": "client-id",
+                "client_secret": "client-secret",
+            },
+            "token_expires_at": 1234.5,
+        },
+    }
+    assert "oauth_credentials" not in servers["oauth-top-level"]
+    assert "authentication" not in servers["oauth-top-level"]
+    assert "unknown_secret" not in servers["oauth-top-level"]
+
+    assert servers["fastmcp-fields"] == {
+        "url": "https://mcp.fields.example.com/mcp",
+        "type": "streamable-http",
+        "description": "Fields server",
+        "icon": "https://example.com/icon.png",
+        "timeout": 10.0,
+        "sse_read_timeout": 20.0,
+        "keep_alive": True,
+    }
+
+    assert servers["oauth-auth-field"]["auth"] == {
+        "strategy": "oauth2",
+        "state": {"tokens": {"access_token": "field-secret"}},
+    }
+    assert servers["bearer"]["auth"] == {
+        "strategy": "bearer",
+        "value": "bearer-secret",
+    }
+    assert servers["api-key"]["auth"] == {
+        "strategy": "api_key",
+        "value": "api-secret",
+    }
+    assert servers["authorization"]["auth"] == {
+        "strategy": "bearer",
+        "value": "header-secret",
+    }
+    assert servers["authorization"]["headers"] == {"X-Other": "other"}
+    assert servers["custom"]["auth"] == {
+        "strategy": "bearer",
+        "value": "custom-secret",
+    }
+    assert "nested" not in servers["custom"]
+    assert "sse" not in servers
+    assert servers["shttp"] == {
+        "url": "https://mcp.linear.app/mcp",
+        "auth": {"strategy": "bearer", "value": "linear-secret"},
+    }
+
+
+def test_openhands_mcp_config_rejects_unknown_server_fields() -> None:
+    with pytest.raises(ValidationError):
+        OpenHandsMCPConfig.model_validate(
+            {
+                "mcpServers": {
+                    "server": {
+                        "url": "https://mcp.example.com/mcp",
+                        "unknown_secret": "not-a-datamodel-field",
+                    }
+                }
+            }
+        )
+
+
+def test_validate_agent_settings_mcp_linear_migration_does_not_duplicate() -> None:
+    settings = validate_agent_settings(
+        {
+            "schema_version": 4,
+            "agent_kind": "openhands",
+            "mcp_config": {
+                "mcpServers": {
+                    "sse": {
+                        "url": "https://mcp.linear.app/sse",
+                        "transport": "sse",
+                        "auth": {"strategy": "bearer", "value": "old-secret"},
+                    },
+                    "shttp": {
+                        "url": "https://mcp.linear.app/mcp",
+                        "auth": {"strategy": "bearer", "value": "manual-secret"},
+                    },
+                }
+            },
+        }
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.mcp_config is not None
+    assert settings.mcp_config.model_dump(
+        mode="json",
+        context={"expose_secrets": "plaintext"},
+        exclude_none=True,
+    )["mcpServers"] == {
+        "shttp": {
+            "url": "https://mcp.linear.app/mcp",
+            "auth": {"strategy": "bearer", "value": "manual-secret"},
+        }
+    }
+
+
 def test_validate_agent_settings_rejects_newer_schema_version() -> None:
     with pytest.raises(
         ValueError,

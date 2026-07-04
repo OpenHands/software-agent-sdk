@@ -217,20 +217,22 @@ MCPAuthCredential = Annotated[
 
 
 class OpenHandsMCPServer(BaseModel):
-    """One MCP server in the settings DataModel.
+    """One MCP server in the settings DataModel."""
 
-    Extra fields are preserved so this remains forward-compatible with
-    FastMCP server options that OpenHands does not interpret.
-    """
-
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
     url: str | None = None
+    type: str | None = None
     transport: str | None = None
     command: str | None = None
     args: list[str] | None = None
     env: dict[str, SecretStr] | None = None
     cwd: str | None = None
+    description: str | None = None
+    icon: str | None = None
+    timeout: float | None = None
+    sse_read_timeout: float | None = None
+    keep_alive: bool | None = None
     headers: dict[str, SecretStr] | None = None
     auth: MCPAuthCredential | None = None
 

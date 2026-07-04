@@ -744,7 +744,10 @@ def _profile_with_mcp_secret(token_value: str) -> dict:
                     "mcpServers": {
                         "svc": {
                             "url": "https://x.test",
-                            "headers": {"Authorization": f"Bearer {token_value}"},
+                            "auth": {
+                                "strategy": "bearer",
+                                "value": token_value,
+                            },
                         }
                     }
                 },

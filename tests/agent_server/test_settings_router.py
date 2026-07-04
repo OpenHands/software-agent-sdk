@@ -235,9 +235,11 @@ def test_get_settings_migrates_legacy_openhands_settings_and_resaves_current(
     assert "security_analyzer" not in agent_settings["verification"]
     servers = agent_settings["mcp_config"]["mcpServers"]
     assert servers["github"]["env"]["GITHUB_TOKEN"] == "ghp-legacy-mcp-token"
-    assert servers["remote"]["headers"] == {
-        "Authorization": "Bearer legacy-mcp-token",
+    assert servers["remote"]["auth"] == {
+        "strategy": "header",
+        "headers": {"Authorization": "Bearer legacy-mcp-token"},
     }
+    assert "headers" not in servers["remote"]
     assert body["conversation_settings"] == {
         "schema_version": CONVERSATION_SETTINGS_SCHEMA_VERSION,
         "max_iterations": 42,
@@ -275,9 +277,11 @@ def test_get_settings_migrates_legacy_openhands_settings_and_resaves_current(
     assert body["agent_settings"]["llm"]["api_key"] == "sk-legacy-agent-key"
     servers = body["agent_settings"]["mcp_config"]["mcpServers"]
     assert servers["github"]["env"]["GITHUB_TOKEN"] == "ghp-legacy-mcp-token"
-    assert servers["remote"]["headers"] == {
-        "Authorization": "Bearer legacy-mcp-token",
+    assert servers["remote"]["auth"] == {
+        "strategy": "header",
+        "headers": {"Authorization": "Bearer legacy-mcp-token"},
     }
+    assert "headers" not in servers["remote"]
     assert body["conversation_settings"]["max_iterations"] == 84
 
 

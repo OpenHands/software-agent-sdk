@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import socket
+import threading
+import time
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
+import httpx
 import pytest
+from fastmcp import FastMCP
+from fastmcp.client.auth import OAuth
+from fastmcp.server.auth.providers.in_memory import InMemoryOAuthProvider
+from mcp.server.auth.settings import ClientRegistrationOptions
 from pydantic import SecretStr
 
+import openhands.sdk.mcp.utils as mcp_utils
 from openhands.agent_server.config import Config
 from openhands.agent_server.mcp_oauth_store import (
     create_mcp_oauth_token_storage_factory,
@@ -15,7 +26,97 @@ from openhands.agent_server.persistence import (
     get_settings_store,
     reset_stores,
 )
+from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.mcp.config import OpenHandsMCPConfig
+
+
+def _find_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("", 0))
+        return int(sock.getsockname()[1])
+
+
+def _wait_for_http_server(port: int, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with httpx.Client(timeout=0.2) as client:
+                client.get(f"http://127.0.0.1:{port}/")
+            return
+        except httpx.ConnectError:
+            time.sleep(0.05)
+        except Exception:
+            return
+    raise RuntimeError(f"Timed out waiting for test MCP server on port {port}")
+
+
+class _HeadlessOAuth(OAuth):
+    """FastMCP OAuth client that follows the authorization redirect itself.
+
+    This preserves the real DCR/PKCE/token exchange while avoiding an external
+    browser and local callback server in CI.
+    """
+
+    reject_redirects = False
+    redirect_count = 0
+
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("callback_port", _find_free_port())
+        super().__init__(*args, **kwargs)
+        self._redirect_location: str | None = None
+
+    async def redirect_handler(self, authorization_url: str) -> None:
+        type(self).redirect_count += 1
+        if type(self).reject_redirects:
+            raise AssertionError("OAuth redirect should not run with stored tokens")
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
+            response = await client.get(authorization_url)
+        assert response.status_code in {302, 303, 307, 308}
+        self._redirect_location = response.headers["location"]
+
+    async def callback_handler(self) -> tuple[str, str | None]:
+        assert self._redirect_location is not None
+        query = parse_qs(urlparse(self._redirect_location).query)
+        code = query.get("code", [None])[0]
+        assert code is not None
+        return code, query.get("state", [None])[0]
+
+
+@pytest.fixture
+def protected_oauth_mcp_server():
+    port = _find_free_port()
+    provider = InMemoryOAuthProvider(
+        base_url=f"http://127.0.0.1:{port}",
+        client_registration_options=ClientRegistrationOptions(
+            enabled=True,
+            valid_scopes=["mail.read"],
+            default_scopes=["mail.read"],
+        ),
+        required_scopes=["mail.read"],
+    )
+    mcp = FastMCP("protected-oauth-mcp", auth=provider)
+
+    @mcp.tool()
+    def read_subject(subject: str) -> str:
+        return f"OAuth mail subject: {subject}"
+
+    def run() -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(
+            mcp.run_http_async(
+                host="127.0.0.1",
+                port=port,
+                transport="http",
+                show_banner=False,
+                path="/mcp",
+            )
+        )
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    _wait_for_http_server(port)
+    yield f"http://127.0.0.1:{port}/mcp"
 
 
 @pytest.mark.asyncio
@@ -127,6 +228,104 @@ async def test_mcp_oauth_token_storage_factory_persists_values_in_settings(
             "client_info": client_info,
             "token_expires_at": 12345.0,
         }
+    finally:
+        reset_stores()
+
+
+def test_oauth_mcp_connection_persists_and_reuses_settings_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    protected_oauth_mcp_server: str,
+):
+    """Authenticate to a protected MCP server once, serialize, reload, and reuse.
+
+    The server uses FastMCP's in-memory OAuth provider. The client uses the
+    normal OpenHands MCP settings shape plus FastMCP OAuth; only the human
+    browser/callback step is replaced with a deterministic redirect follower.
+    """
+
+    reset_stores()
+    _HeadlessOAuth.redirect_count = 0
+    _HeadlessOAuth.reject_redirects = False
+    monkeypatch.setattr(mcp_utils, "OAuth", _HeadlessOAuth)
+    try:
+        config = Config(
+            session_api_keys=[],
+            conversations_path=tmp_path / "conversations",
+            secret_key=SecretStr("mcp-oauth-e2e-test-key"),
+        )
+        mcp_config = OpenHandsMCPConfig.model_validate(
+            {
+                "mcpServers": {
+                    "mail": {
+                        "url": protected_oauth_mcp_server,
+                        "type": "http",
+                        "auth": {
+                            "strategy": "oauth2",
+                            "authentication": {
+                                "type": "oauth",
+                                "client_auth_method": "none",
+                                "scopes": ["mail.read"],
+                            },
+                        },
+                    }
+                }
+            }
+        )
+        settings = PersistedSettings()
+        settings.agent_settings = settings.agent_settings.model_copy(
+            update={"mcp_config": mcp_config}
+        )
+        settings_store = get_settings_store(config)
+        settings_store.save(settings)
+        token_storage_factory = create_mcp_oauth_token_storage_factory(config)
+
+        with create_mcp_tools(
+            mcp_config,
+            timeout=10.0,
+            mcp_oauth_token_storage=token_storage_factory(),
+        ) as client:
+            tool = next(tool for tool in client.tools if tool.name == "read_subject")
+            assert tool.executor is not None
+            observation = tool.executor(
+                tool.action_from_arguments({"subject": "Quarterly Plan"})
+            )
+            assert "OAuth mail subject: Quarterly Plan" in observation.text
+
+        assert _HeadlessOAuth.redirect_count == 1
+        on_disk_text = (tmp_path / ".openhands" / "settings.json").read_text()
+        assert "test_access_token_" not in on_disk_text
+        assert "test_refresh_token_" not in on_disk_text
+
+        reloaded = settings_store.load()
+        assert reloaded is not None
+        assert reloaded.agent_settings.mcp_config is not None
+        persisted_mcp_config = reloaded.agent_settings.mcp_config
+        server = persisted_mcp_config.model_dump(
+            mode="json",
+            context={"expose_secrets": "plaintext"},
+            exclude_none=True,
+            exclude_defaults=True,
+        )["mcpServers"]["mail"]
+        state = server["auth"]["state"]
+        assert state["tokens"]["access_token"].startswith("test_access_token_")
+        assert state["tokens"]["refresh_token"].startswith("test_refresh_token_")
+        assert state["client_info"]["client_id"]
+
+        _HeadlessOAuth.reject_redirects = True
+        with create_mcp_tools(
+            persisted_mcp_config,
+            timeout=10.0,
+            mcp_oauth_token_storage=token_storage_factory(),
+        ) as client:
+            tool = next(tool for tool in client.tools if tool.name == "read_subject")
+            assert tool.executor is not None
+            observation = tool.executor(
+                tool.action_from_arguments({"subject": "Follow-up"})
+            )
+            assert "OAuth mail subject: Follow-up" in observation.text
+
+        assert _HeadlessOAuth.redirect_count == 1
     finally:
         reset_stores()
 

@@ -47,7 +47,7 @@ from openhands.sdk.tool.builtins.vision_inspect import (
     VisionInspectTool,
     has_vision_profile_available,
 )
-from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
+from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.models import DiscriminatedUnionMixin, get_handler_class_name
 
 

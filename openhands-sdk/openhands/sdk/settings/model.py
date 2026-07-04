@@ -94,11 +94,17 @@ logger = get_logger(__name__)
 _MCP_SERVER_KNOWN_FIELDS = frozenset(
     {
         "url",
+        "type",
         "transport",
         "command",
         "args",
         "env",
         "cwd",
+        "description",
+        "icon",
+        "timeout",
+        "sse_read_timeout",
+        "keep_alive",
         "headers",
         "auth",
     }
@@ -685,7 +691,7 @@ def _default_llm_settings() -> LLM:
 
 _RequestT = TypeVar("_RequestT")
 
-AGENT_SETTINGS_SCHEMA_VERSION = 4
+AGENT_SETTINGS_SCHEMA_VERSION = 5
 CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 
 
@@ -841,6 +847,253 @@ def _migrate_agent_settings_v3_to_v4(payload: dict[str, Any]) -> dict[str, Any]:
     return migrated
 
 
+_MCP_OAUTH_TOKEN_COLLECTION = "mcp-oauth-token"
+_MCP_OAUTH_CLIENT_INFO_COLLECTION = "mcp-oauth-client-info"
+_MCP_OAUTH_TOKEN_EXPIRY_COLLECTION = "mcp-oauth-token-expiry"
+_LINEAR_DEPRECATED_SSE_URL = "https://mcp.linear.app/sse"
+_LINEAR_SHTTP_URL = "https://mcp.linear.app/mcp"
+_MCP_MIGRATABLE_FASTMCP_FIELDS = _MCP_SERVER_KNOWN_FIELDS | {"authentication"}
+
+
+def _is_deprecated_linear_sse(url: Any, transport: Any) -> bool:
+    if not isinstance(url, str) or transport != "sse":
+        return False
+    return url.split("?", 1)[0].rstrip("/") == _LINEAR_DEPRECATED_SSE_URL
+
+
+def _is_auto_mcp_server_key(name: Any, base: str) -> bool:
+    if not isinstance(name, str):
+        return False
+    if name == base:
+        return True
+    prefix = f"{base}_"
+    return name.startswith(prefix) and name[len(prefix) :].isdigit()
+
+
+def _reserve_mcp_server_key(name: str, servers: Mapping[str, Any]) -> str:
+    if name not in servers:
+        return name
+    index = 1
+    while f"{name}_{index}" in servers:
+        index += 1
+    return f"{name}_{index}"
+
+
+def _legacy_cache_entry_value(entry: Any) -> dict[str, Any] | None:
+    if not isinstance(entry, Mapping):
+        return None
+    value = entry.get("value")
+    if isinstance(value, Mapping):
+        return copy.deepcopy(dict(value))
+    return copy.deepcopy(dict(entry))
+
+
+def _legacy_oauth_bucket_value(
+    credentials: Mapping[str, Any],
+    collection: str,
+    key_suffix: str,
+) -> dict[str, Any] | None:
+    bucket = credentials.get(collection)
+    if not isinstance(bucket, Mapping):
+        return None
+    fallback: dict[str, Any] | None = None
+    for key, entry in bucket.items():
+        value = _legacy_cache_entry_value(entry)
+        if value is None:
+            continue
+        if isinstance(key, str) and key.endswith(key_suffix):
+            return value
+        if fallback is None:
+            fallback = value
+    return fallback
+
+
+def _migrate_legacy_oauth_credentials(
+    credentials: Any,
+) -> dict[str, Any]:
+    if not isinstance(credentials, Mapping):
+        return {}
+
+    state: dict[str, Any] = {}
+    tokens = _legacy_oauth_bucket_value(
+        credentials, _MCP_OAUTH_TOKEN_COLLECTION, "/tokens"
+    )
+    if tokens:
+        state["tokens"] = tokens
+
+    client_info = _legacy_oauth_bucket_value(
+        credentials, _MCP_OAUTH_CLIENT_INFO_COLLECTION, "/client_info"
+    )
+    if client_info:
+        state["client_info"] = client_info
+
+    token_expiry = _legacy_oauth_bucket_value(
+        credentials, _MCP_OAUTH_TOKEN_EXPIRY_COLLECTION, "/token_expiry"
+    )
+    if token_expiry:
+        expires_at = token_expiry.get("expires_at")
+        if isinstance(expires_at, int | float):
+            state["token_expires_at"] = float(expires_at)
+
+    return state
+
+
+def _merge_oauth_state(
+    existing_state: Any,
+    legacy_credentials: Any,
+) -> dict[str, Any] | None:
+    state = (
+        copy.deepcopy(dict(existing_state))
+        if isinstance(existing_state, Mapping)
+        else {}
+    )
+    for key, value in _migrate_legacy_oauth_credentials(legacy_credentials).items():
+        state.setdefault(key, value)
+    return state or None
+
+
+def _migrate_authorization_header(headers: dict[str, Any]) -> dict[str, Any] | None:
+    for key, value in list(headers.items()):
+        if key.lower() != "authorization" or not isinstance(value, str) or not value:
+            continue
+        headers.pop(key, None)
+        parts = value.split(None, 1)
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            return {"strategy": "bearer", "value": parts[1]}
+        return {"strategy": "header", "headers": {key: value}}
+    return None
+
+
+def _drop_unknown_mcp_server_fields(server: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value for key, value in server.items() if key in _MCP_SERVER_KNOWN_FIELDS
+    }
+
+
+def _migrate_mcp_server_auth(server: Any) -> Any:
+    if not isinstance(server, Mapping):
+        return server
+
+    migrated = copy.deepcopy(dict(server))
+    authentication = migrated.pop("authentication", None)
+    oauth_credentials = migrated.pop("oauth_credentials", None)
+    api_key = migrated.pop("api_key", None)
+    auth = migrated.get("auth")
+
+    if isinstance(auth, Mapping) and auth.get("strategy") == "custom":
+        fastmcp = auth.get("fastmcp")
+        migrated.pop("auth", None)
+        if isinstance(fastmcp, Mapping):
+            migrated.update(
+                {
+                    key: copy.deepcopy(value)
+                    for key, value in fastmcp.items()
+                    if key in _MCP_MIGRATABLE_FASTMCP_FIELDS
+                }
+            )
+        return _migrate_mcp_server_auth(migrated)
+
+    if isinstance(auth, Mapping):
+        auth = copy.deepcopy(dict(auth))
+        if auth.get("strategy") == "oauth2":
+            if authentication is not None and "authentication" not in auth:
+                auth["authentication"] = authentication
+            state = _merge_oauth_state(
+                auth.get("state"),
+                auth.pop("credentials", None) or oauth_credentials,
+            )
+            if state is not None:
+                auth["state"] = state
+        migrated["auth"] = auth
+        return _drop_unknown_mcp_server_fields(migrated)
+
+    if auth == "oauth":
+        oauth_auth: dict[str, Any] = {"strategy": "oauth2"}
+        if authentication is not None:
+            oauth_auth["authentication"] = authentication
+        state = _merge_oauth_state(None, oauth_credentials)
+        if state is not None:
+            oauth_auth["state"] = state
+        migrated["auth"] = oauth_auth
+        return _drop_unknown_mcp_server_fields(migrated)
+
+    if isinstance(auth, str) and auth:
+        migrated["auth"] = {"strategy": "bearer", "value": auth}
+        return _drop_unknown_mcp_server_fields(migrated)
+
+    if isinstance(api_key, str) and api_key:
+        migrated["auth"] = {"strategy": "api_key", "value": api_key}
+        return _drop_unknown_mcp_server_fields(migrated)
+
+    headers = migrated.get("headers")
+    if isinstance(headers, Mapping):
+        headers = copy.deepcopy(dict(headers))
+        header_auth = _migrate_authorization_header(headers)
+        if header_auth is not None:
+            migrated["auth"] = header_auth
+            if headers:
+                migrated["headers"] = headers
+            else:
+                migrated.pop("headers", None)
+
+    return _drop_unknown_mcp_server_fields(migrated)
+
+
+def _migrate_mcp_auth_shape(mcp_config: Any) -> Any:
+    if not isinstance(mcp_config, Mapping):
+        return mcp_config
+    servers = mcp_config.get("mcpServers")
+    if not isinstance(servers, Mapping):
+        return mcp_config
+
+    migrated = copy.deepcopy(dict(mcp_config))
+    migrated_servers: dict[str, Any] = {}
+    deferred_linear_servers: dict[str, Any] = {}
+    linear_shttp_exists = any(
+        isinstance(server, Mapping)
+        and isinstance(server.get("url"), str)
+        and server["url"].rstrip("/") == _LINEAR_SHTTP_URL
+        for server in servers.values()
+    )
+
+    for name, server in servers.items():
+        server = _migrate_mcp_server_auth(server)
+        if isinstance(server, Mapping) and _is_deprecated_linear_sse(
+            server.get("url"), server.get("transport")
+        ):
+            migrated_linear = copy.deepcopy(dict(server))
+            migrated_linear["url"] = _LINEAR_SHTTP_URL
+            migrated_linear.pop("transport", None)
+            if not linear_shttp_exists:
+                target_name = (
+                    "shttp" if _is_auto_mcp_server_key(name, "sse") else str(name)
+                )
+                deferred_linear_servers[
+                    _reserve_mcp_server_key(
+                        target_name,
+                        {**migrated_servers, **deferred_linear_servers},
+                    )
+                ] = migrated_linear
+                linear_shttp_exists = True
+            continue
+        migrated_servers[name] = server
+
+    migrated_servers.update(deferred_linear_servers)
+    migrated["mcpServers"] = migrated_servers
+    return migrated
+
+
+def _migrate_agent_settings_v4_to_v5(payload: dict[str, Any]) -> dict[str, Any]:
+    """Move branch-era MCP auth encodings into the canonical auth DataModel."""
+
+    migrated = dict(payload)
+    mcp_config = migrated.get("mcp_config")
+    if isinstance(mcp_config, Mapping):
+        migrated["mcp_config"] = _migrate_mcp_auth_shape(mcp_config)
+    migrated["schema_version"] = 5
+    return migrated
+
+
 def _migrate_conversation_settings_v0_to_v1(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
@@ -854,6 +1107,7 @@ _AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     1: _migrate_agent_settings_v1_to_v2,
     2: _migrate_agent_settings_v2_to_v3,
     3: _migrate_agent_settings_v3_to_v4,
+    4: _migrate_agent_settings_v4_to_v5,
 }
 _CONVERSATION_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     0: _migrate_conversation_settings_v0_to_v1,

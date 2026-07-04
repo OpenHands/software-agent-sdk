@@ -39,9 +39,7 @@ SECRET_KEY_PATTERNS = frozenset(
 
 # Keys that should have ALL nested values redacted (not just detected secret keys).
 # These typically contain environment variables or headers that may include secrets.
-REDACT_ALL_VALUES_KEYS = frozenset(
-    {"environment", "env", "headers", "oauth_credentials"}
-)
+REDACT_ALL_VALUES_KEYS = frozenset({"environment", "env", "headers"})
 
 # Specific URL query parameter names (lowercased) that should always be redacted,
 # in addition to any parameter matching SECRET_KEY_PATTERNS via is_secret_key().
