@@ -1101,3 +1101,49 @@ async def test_streaming_accepts_async_generator(mock_stream_builder, mock_acomp
     assert len(received) == 3
     mock_stream_builder.assert_called_once()
     assert response.message.role == "assistant"
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.litellm_acompletion", new_callable=AsyncMock)
+@patch("openhands.sdk.llm.llm.litellm.stream_chunk_builder")
+async def test_streaming_accepts_sync_generator_in_async_path(
+    mock_stream_builder, mock_acompletion
+):
+    """A sync generator returned from the async transport path must work.
+
+    Regression test for Engel's review comment on PR #3975: lmnr 0.7.47's
+    litellm wrapper wraps ``litellm.completion`` (sync) and the resulting
+    sync generator propagates back through ``litellm_acompletion``. The
+    awaited value is therefore a plain ``generator`` (no ``__aiter__``)
+    rather than an async generator. ``_atransport_call`` must detect this
+    at runtime and iterate via plain ``for`` instead of ``async for``.
+    """
+    chunks = _make_streaming_chunks()
+
+    def _return_sync_generator(*args, **kwargs):
+        # ``await litellm_acompletion(...)`` evaluates to this value in
+        # the lmnr-async case — a plain sync generator.
+        return (c for c in chunks)
+
+    mock_acompletion.side_effect = _return_sync_generator
+    mock_stream_builder.return_value = create_mock_response("Hello world!")
+
+    llm = LLM(
+        usage_id="test-llm",
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        num_retries=2,
+        retry_min_wait=1,
+        retry_max_wait=2,
+    )
+
+    received: list[ModelResponseStream] = []
+    response = await llm.acompletion(
+        messages=[Message(role="user", content=[TextContent(text="Hi")])],
+        stream=True,
+        on_token=received.append,
+    )
+
+    assert received == chunks
+    mock_stream_builder.assert_called_once()
+    assert response.message.role == "assistant"

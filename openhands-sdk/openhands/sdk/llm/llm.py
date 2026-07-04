@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 import importlib
 import json
@@ -2062,10 +2063,22 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
             if enable_streaming and on_token is not None:
                 chunks: list[ModelResponseStream] = []
-                stream = cast(AsyncIterable[ModelResponseStream], ret)
-                async for chunk in stream:
-                    await _invoke_token_callback(on_token, chunk)
-                    chunks.append(chunk)
+                # Some litellm wrappers (lmnr 0.7.47's instrumentor) hand
+                # back a plain sync generator from ``litellm_acompletion``
+                # even on the async transport path. Detect that at runtime
+                # (``cast`` is only a type hint) and, for sync iterables,
+                # compile the chunks in a background thread so iteration
+                # does not block the event loop.
+                if hasattr(ret, "__aiter__"):
+                    stream = cast(AsyncIterable[ModelResponseStream], ret)
+                    async for chunk in stream:
+                        await _invoke_token_callback(on_token, chunk)
+                        chunks.append(chunk)
+                else:
+                    loop = asyncio.get_running_loop()
+                    chunks = await loop.run_in_executor(None, list, ret)
+                    for chunk in chunks:
+                        await _invoke_token_callback(on_token, chunk)
                 ret = litellm.stream_chunk_builder(chunks, messages=messages)
 
             assert isinstance(ret, ModelResponse), (
