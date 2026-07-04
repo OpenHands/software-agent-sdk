@@ -462,7 +462,7 @@ def _default_llm_settings() -> LLM:
 
 _RequestT = TypeVar("_RequestT")
 
-AGENT_SETTINGS_SCHEMA_VERSION = 7
+AGENT_SETTINGS_SCHEMA_VERSION = 5
 CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 
 
@@ -844,46 +844,32 @@ def _migrate_mcp_auth_shape(mcp_config: Any) -> Any:
     return migrated
 
 
+def _migrate_mcp_config_to_server_map(
+    mcp_config: Mapping[str, Any],
+) -> dict[str, Any]:
+    migrated = _migrate_mcp_auth_shape(mcp_config)
+    if not isinstance(migrated, Mapping):
+        return copy.deepcopy(dict(mcp_config))
+    server_map = migrated.get("mcpServers")
+    if not isinstance(server_map, Mapping):
+        server_map = migrated
+
+    return {
+        str(name): _migrate_mcp_server_auth(server)
+        if isinstance(server, Mapping)
+        else server
+        for name, server in server_map.items()
+    }
+
+
 def _migrate_agent_settings_v4_to_v5(payload: dict[str, Any]) -> dict[str, Any]:
-    """Move branch-era MCP auth encodings into the canonical auth DataModel."""
+    """Move persisted MCP settings to the native server map shape."""
 
     migrated = dict(payload)
     mcp_config = migrated.get("mcp_config")
     if isinstance(mcp_config, Mapping):
-        migrated["mcp_config"] = _migrate_mcp_auth_shape(mcp_config)
+        migrated["mcp_config"] = _migrate_mcp_config_to_server_map(mcp_config)
     migrated["schema_version"] = 5
-    return migrated
-
-
-def _migrate_agent_settings_v5_to_v6(payload: dict[str, Any]) -> dict[str, Any]:
-    """Move SDK-owned MCP settings from FastMCP config wrapper to server map."""
-
-    migrated = dict(payload)
-    legacy_mcp_config = migrated.get("mcp_config")
-    if isinstance(legacy_mcp_config, Mapping):
-        mcp_config = _migrate_mcp_auth_shape(legacy_mcp_config)
-        servers = (
-            mcp_config.get("mcpServers") if isinstance(mcp_config, Mapping) else None
-        )
-        if isinstance(servers, Mapping):
-            migrated["mcp_config"] = copy.deepcopy(dict(servers))
-    migrated["schema_version"] = 6
-    return migrated
-
-
-def _migrate_agent_settings_v6_to_v7(payload: dict[str, Any]) -> dict[str, Any]:
-    """Normalize MCP server transport to the native ``transport`` field."""
-
-    migrated = dict(payload)
-    mcp_config = migrated.get("mcp_config")
-    if isinstance(mcp_config, Mapping):
-        migrated["mcp_config"] = {
-            name: drop_unknown_mcp_server_fields(server)
-            if isinstance(server, Mapping)
-            else server
-            for name, server in mcp_config.items()
-        }
-    migrated["schema_version"] = 7
     return migrated
 
 
@@ -901,8 +887,6 @@ _AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     2: _migrate_agent_settings_v2_to_v3,
     3: _migrate_agent_settings_v3_to_v4,
     4: _migrate_agent_settings_v4_to_v5,
-    5: _migrate_agent_settings_v5_to_v6,
-    6: _migrate_agent_settings_v6_to_v7,
 }
 _CONVERSATION_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     0: _migrate_conversation_settings_v0_to_v1,

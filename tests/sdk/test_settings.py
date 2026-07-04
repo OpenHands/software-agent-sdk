@@ -653,7 +653,7 @@ def test_validate_agent_settings_migrates_legacy_mcp_auth_shapes() -> None:
 def test_validate_agent_settings_migrates_mcp_type_to_transport() -> None:
     settings = validate_agent_settings(
         {
-            "schema_version": 6,
+            "schema_version": 4,
             "agent_kind": "openhands",
             "mcp_config": {
                 "http": {
