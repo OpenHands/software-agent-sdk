@@ -24,7 +24,6 @@ from typing import Annotated, Any, Literal
 
 import mcp.types
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from openhands.agent_server._secrets_exposure import get_cipher
@@ -192,6 +191,77 @@ class MCPToolCallResult(BaseModel):
     text: str = Field(description="Concatenated text content of the result.")
 
 
+class MCPOAuthTokenStateResponse(BaseModel):
+    """Serialized OAuth token state returned by ``POST /api/mcp/test``."""
+
+    access_token: str | None = None
+    token_type: Literal["Bearer"] = "Bearer"
+    expires_in: int | None = None
+    scope: str | None = None
+    refresh_token: str | None = None
+
+
+class MCPOAuthClientInfoStateResponse(BaseModel):
+    """Serialized OAuth client metadata returned by ``POST /api/mcp/test``."""
+
+    redirect_uris: list[str] | None = None
+    token_endpoint_auth_method: (
+        Literal[
+            "none",
+            "client_secret_post",
+            "client_secret_basic",
+            "private_key_jwt",
+        ]
+        | None
+    ) = None
+    grant_types: list[str] = Field(
+        default_factory=lambda: ["authorization_code", "refresh_token"]
+    )
+    response_types: list[str] = Field(default_factory=lambda: ["code"])
+    scope: str | None = None
+    client_name: str | None = None
+    client_uri: str | None = None
+    logo_uri: str | None = None
+    contacts: list[str] | None = None
+    tos_uri: str | None = None
+    policy_uri: str | None = None
+    jwks_uri: str | None = None
+    jwks: Any | None = None
+    software_id: str | None = None
+    software_version: str | None = None
+    client_id: str | None = None
+    client_secret: str | None = None
+    client_id_issued_at: int | None = None
+    client_secret_expires_at: int | None = None
+
+
+class MCPOAuthStateResponse(BaseModel):
+    """Serialized OAuth state returned by ``POST /api/mcp/test``."""
+
+    tokens: MCPOAuthTokenStateResponse | None = None
+    client_info: MCPOAuthClientInfoStateResponse | None = None
+    token_expires_at: float | None = None
+
+
+class MCPOAuthAuthCredentialResponse(BaseModel):
+    """OAuth auth credential with already-serialized state."""
+
+    strategy: Literal["oauth2"] = "oauth2"
+    authentication: dict[str, Any] | None = None
+    state: MCPOAuthStateResponse | None = None
+
+
+class _RemoteMCPServerResponse(BaseModel):
+    """Remote MCP server object returned by ``POST /api/mcp/test``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["http", "shttp", "streamable-http", "sse"]
+    url: str
+    headers: dict[str, str] = Field(default_factory=dict)
+    auth: MCPOAuthAuthCredentialResponse | None = None
+
+
 class MCPTestSuccess(BaseModel):
     """Response when the candidate server connects and lists its tools."""
 
@@ -204,7 +274,7 @@ class MCPTestSuccess(BaseModel):
         default=None,
         description=("Outcome of the requested `tool_call`, when one was supplied."),
     )
-    server: _RemoteMCPServerSpec | None = Field(
+    server: _RemoteMCPServerResponse | None = Field(
         default=None,
         description=(
             "Updated remote server spec when the probe acquired or refreshed "
@@ -239,6 +309,12 @@ MCPTestResponse = MCPTestSuccess | MCPTestFailure
 
 def _mcp_validation_context(cipher: Cipher | None) -> dict[str, Any] | None:
     return {"cipher": cipher} if cipher is not None else None
+
+
+def _mcp_response_context(cipher: Cipher | None) -> dict[str, Any]:
+    if cipher is None:
+        return {"expose_secrets": "plaintext"}
+    return {"cipher": cipher, "expose_secrets": "encrypted"}
 
 
 def _server_to_openhands_config(
@@ -277,6 +353,36 @@ def _oauth_state_to_plain_dict(
         exclude_defaults=True,
     )
     return plaintext or None
+
+
+def _oauth_state_to_response(
+    state: MCPOAuthState,
+    cipher: Cipher | None,
+) -> MCPOAuthStateResponse:
+    return MCPOAuthStateResponse.model_validate(
+        state.model_dump(
+            mode="json",
+            context=_mcp_response_context(cipher),
+            exclude_none=True,
+        )
+    )
+
+
+def _remote_oauth_server_to_response(
+    server: _RemoteMCPServerSpec,
+    auth: MCPOAuthAuthCredential,
+    state: MCPOAuthState,
+    cipher: Cipher | None,
+) -> _RemoteMCPServerResponse:
+    return _RemoteMCPServerResponse(
+        type=server.type,
+        url=server.url,
+        headers=dict(server.headers),
+        auth=MCPOAuthAuthCredentialResponse(
+            authentication=auth.authentication,
+            state=_oauth_state_to_response(state, cipher),
+        ),
+    )
 
 
 def _server_to_fastmcp_dict(
@@ -370,14 +476,17 @@ def _probe_mcp_server(
                 tool_result = _run_tool_call(
                     client, request.tool_call, tool_names, request.timeout
                 )
-            response_server: _RemoteMCPServerSpec | None = None
+            response_server: _RemoteMCPServerResponse | None = None
             if oauth_token_storage is not None and oauth_server is not None:
                 state = oauth_token_storage.export_state()
                 if state:
-                    response_server = oauth_server.model_copy(deep=True)
-                    response_auth = response_server.auth
-                    assert isinstance(response_auth, MCPOAuthAuthCredential)
-                    response_auth.state = MCPOAuthState.model_validate(state)
+                    assert oauth_auth is not None
+                    response_server = _remote_oauth_server_to_response(
+                        server=oauth_server,
+                        auth=oauth_auth,
+                        state=MCPOAuthState.model_validate(state),
+                        cipher=cipher,
+                    )
             return MCPTestSuccess(
                 tools=tool_names,
                 tool_result=tool_result,
@@ -433,7 +542,7 @@ def _probe_mcp_server(
 )
 async def test_mcp_server(
     request: MCPTestRequest, http_request: Request
-) -> JSONResponse:
+) -> MCPTestResponse:
     """Probe a single MCP server config and report whether it works."""
     # Resolve the cipher here: the threadpool function below must not
     # reach back into ``http_request.app.state``.
@@ -445,15 +554,4 @@ async def test_mcp_server(
         request,
         cipher,
     )
-    context = (
-        {"cipher": cipher, "expose_secrets": "encrypted"}
-        if cipher is not None
-        else {"expose_secrets": "plaintext"}
-    )
-    return JSONResponse(
-        content=result.model_dump(
-            mode="json",
-            context=context,
-            exclude_none=True,
-        )
-    )
+    return result

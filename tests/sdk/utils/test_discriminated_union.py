@@ -227,6 +227,33 @@ def test_model_containing_polymorphic_field():
     assert loaded == pack
 
 
+def test_polymorphic_field_dump_honors_include_and_exclude():
+    pack = AnimalPack(
+        members=[
+            Wolf(name="Larry"),
+            Dog(name="Curly", barking=False),
+            Cat(name="Moe"),
+        ]
+    )
+
+    assert pack.model_dump(include={"alpha": {"kind", "name"}}) == {
+        "alpha": {"kind": "Wolf", "name": "Larry"}
+    }
+    assert pack.model_dump(
+        exclude={
+            "members": {"__all__": {"name"}},
+            "alpha": {"genus"},
+        }
+    ) == {
+        "members": [
+            {"kind": "Wolf", "genus": "Canis"},
+            {"kind": "Dog", "barking": False},
+            {"kind": "Cat"},
+        ],
+        "alpha": {"kind": "Wolf", "name": "Larry"},
+    }
+
+
 def test_duplicate_kind():
     # nAn error should be raised when a duplicate class name is detected
 

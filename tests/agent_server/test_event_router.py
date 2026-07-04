@@ -18,6 +18,10 @@ from openhands.agent_server.event_router import (
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import EventPage, SendMessageRequest
 from openhands.sdk import Message
+from openhands.sdk.event.conversation_state import (
+    FULL_STATE_KEY,
+    ConversationStateUpdateEvent,
+)
 from openhands.sdk.event.llm_convertible.message import MessageEvent
 from openhands.sdk.llm.message import ImageContent, TextContent
 
@@ -622,6 +626,48 @@ class TestSearchEventsEndpoint:
             assert call_args[0][3] == "agent"  # source should be "agent"
         finally:
             # Clean up the dependency override
+            client.app.dependency_overrides.clear()
+
+    @pytest.mark.asyncio
+    async def test_search_events_returns_stable_rest_wire_events(
+        self, client, sample_conversation_id, mock_event_service
+    ):
+        """REST event responses should stay readable by older SDK clients."""
+        client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
+        event = ConversationStateUpdateEvent(
+            id="state_event",
+            parent_id="parent_event",
+            key=FULL_STATE_KEY,
+            value={
+                "tools": [
+                    {"kind": "TerminalTool", "name": "terminal"},
+                    {
+                        "kind": "VisionInspectTool",
+                        "name": "inspect_image_with_vision",
+                    },
+                ]
+            },
+        )
+
+        try:
+            mock_event_service.search_events = AsyncMock(
+                return_value=EventPage(items=[event], next_page_id=None)
+            )
+
+            response = client.get(
+                f"/api/conversations/{sample_conversation_id}/events/search"
+            )
+
+            assert response.status_code == 200
+            body = response.json()
+            assert body["next_page_id"] is None
+            assert len(body["items"]) == 1
+            item = body["items"][0]
+            assert "parent_id" not in item
+            assert item["value"]["tools"] == [
+                {"kind": "TerminalTool", "name": "terminal"}
+            ]
+        finally:
             client.app.dependency_overrides.clear()
 
     @pytest.mark.asyncio
