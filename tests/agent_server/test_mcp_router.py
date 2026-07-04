@@ -647,8 +647,8 @@ def test_mcp_test_returns_encrypted_oauth_state_from_probe(
     body = response.json()
     assert body["ok"] is True
     assert len(calls) == 1
-    assert body["server"]["auth"]["strategy"] == "oauth2"
-    oauth_state = body["server"]["auth"]["state"]
+    assert "server" not in body
+    oauth_state = body["oauth_state"]
     oauth_value = oauth_state["tokens"]
     assert oauth_value["access_token"].startswith("gAAAA")
     assert oauth_value["refresh_token"].startswith("gAAAA")

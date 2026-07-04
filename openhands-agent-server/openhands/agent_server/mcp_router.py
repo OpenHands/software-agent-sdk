@@ -13,8 +13,8 @@ The optional tool call exists because listing tools does not exercise the
 credentials many servers only use inside tool handlers (e.g. the Slack MCP
 server starts fine with a bogus token); callers must pick a read-only tool.
 For OAuth MCP servers, any token/client metadata acquired during the probe is
-returned on the success response's ``server.auth.state`` field so the
-caller can persist one complete MCP server object through the settings API.
+returned on the success response's ``oauth_state`` field so the caller can
+persist it through the settings API under the tested server's ``auth.state``.
 """
 
 from __future__ import annotations
@@ -176,25 +176,6 @@ class MCPToolCallResult(BaseModel):
     text: str = Field(description="Concatenated text content of the result.")
 
 
-class MCPOAuthAuthCredentialResponse(BaseModel):
-    """OAuth auth credential with already-serialized state."""
-
-    strategy: Literal["oauth2"] = "oauth2"
-    authentication: dict[str, Any] | None = None
-    state: dict[str, Any] | None = None
-
-
-class _RemoteMCPServerResponse(BaseModel):
-    """Remote MCP server object returned by ``POST /api/mcp/test``."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    type: Literal["http", "shttp", "streamable-http", "sse"]
-    url: str
-    headers: dict[str, str] = Field(default_factory=dict)
-    auth: MCPOAuthAuthCredentialResponse | None = None
-
-
 class MCPTestSuccess(BaseModel):
     """Response when the candidate server connects and lists its tools."""
 
@@ -207,11 +188,11 @@ class MCPTestSuccess(BaseModel):
         default=None,
         description=("Outcome of the requested `tool_call`, when one was supplied."),
     )
-    server: _RemoteMCPServerResponse | None = Field(
+    oauth_state: dict[str, Any] | None = Field(
         default=None,
         description=(
-            "Updated remote server spec when the probe acquired or refreshed "
-            "OAuth state. Clients should persist this server object."
+            "Serialized OAuth state acquired or refreshed by the probe. "
+            "Clients should persist this under the tested server's auth.state."
         ),
     )
 
@@ -308,23 +289,6 @@ def _oauth_state_to_response(
     )
 
 
-def _remote_oauth_server_to_response(
-    server: _RemoteMCPServerSpec,
-    auth: MCPOAuthAuthCredential,
-    state: MCPOAuthState,
-    cipher: Cipher | None,
-) -> _RemoteMCPServerResponse:
-    return _RemoteMCPServerResponse(
-        type=server.type,
-        url=server.url,
-        headers=dict(server.headers),
-        auth=MCPOAuthAuthCredentialResponse(
-            authentication=auth.authentication,
-            state=_oauth_state_to_response(state, cipher),
-        ),
-    )
-
-
 def _server_to_fastmcp_dict(
     spec: _StdioMCPServerSpec | _RemoteMCPServerSpec, cipher: Cipher | None
 ) -> dict:
@@ -390,12 +354,10 @@ def _probe_mcp_server(
     }
 
     try:
-        oauth_server: _RemoteMCPServerSpec | None = None
         oauth_auth: MCPOAuthAuthCredential | None = None
         if isinstance(request.server, _RemoteMCPServerSpec) and isinstance(
             request.server.auth, MCPOAuthAuthCredential
         ):
-            oauth_server = request.server
             oauth_auth = request.server.auth
         oauth_token_storage: InMemoryMCPOAuthTokenStore | None = None
         if oauth_auth is not None:
@@ -416,21 +378,17 @@ def _probe_mcp_server(
                 tool_result = _run_tool_call(
                     client, request.tool_call, tool_names, request.timeout
                 )
-            response_server: _RemoteMCPServerResponse | None = None
-            if oauth_token_storage is not None and oauth_server is not None:
+            oauth_state: dict[str, Any] | None = None
+            if oauth_token_storage is not None:
                 state = oauth_token_storage.export_state()
                 if state:
-                    assert oauth_auth is not None
-                    response_server = _remote_oauth_server_to_response(
-                        server=oauth_server,
-                        auth=oauth_auth,
-                        state=MCPOAuthState.model_validate(state),
-                        cipher=cipher,
+                    oauth_state = _oauth_state_to_response(
+                        MCPOAuthState.model_validate(state), cipher
                     )
             return MCPTestSuccess(
                 tools=tool_names,
                 tool_result=tool_result,
-                server=response_server,
+                oauth_state=oauth_state,
             )
     except MCPTimeoutError as exc:
         logger.info("MCP test timed out for server %r: %s", request.name, exc)
@@ -469,8 +427,8 @@ def _probe_mcp_server(
         "Attempt to connect to a candidate MCP server and list its tools, "
         "without persisting any settings. Useful for validating user input "
         "in 'add MCP server' flows before storing the config. "
-        "For OAuth servers, any acquired state is returned in the "
-        "success response so clients can persist them in the MCP server object. "
+        "For OAuth servers, any acquired state is returned as `oauth_state` "
+        "so clients can persist it under the MCP server object's `auth.state`. "
         "Optionally invokes one caller-chosen (read-only) tool via "
         "`tool_call` and reports its outcome in `tool_result`, so callers "
         "can verify credentials that are only exercised on tool invocation. "
