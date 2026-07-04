@@ -2,7 +2,7 @@ import inspect
 import logging
 import threading
 from abc import ABC
-from typing import Annotated, Any, Self, Union, cast
+from typing import Annotated, Any, Self, Union
 
 from pydantic import (
     BaseModel,
@@ -266,8 +266,6 @@ class DiscriminatedUnionMixin(OpenHandsModel):
         # Delegate to the implementing class
         result = self.model_dump(
             mode=info.mode,
-            include=cast(Any, info.include),
-            exclude=cast(Any, info.exclude),
             context=info.context,
             by_alias=info.by_alias,
             exclude_unset=info.exclude_unset,

@@ -191,64 +191,12 @@ class MCPToolCallResult(BaseModel):
     text: str = Field(description="Concatenated text content of the result.")
 
 
-class MCPOAuthTokenStateResponse(BaseModel):
-    """Serialized OAuth token state returned by ``POST /api/mcp/test``."""
-
-    access_token: str | None = None
-    token_type: Literal["Bearer"] = "Bearer"
-    expires_in: int | None = None
-    scope: str | None = None
-    refresh_token: str | None = None
-
-
-class MCPOAuthClientInfoStateResponse(BaseModel):
-    """Serialized OAuth client metadata returned by ``POST /api/mcp/test``."""
-
-    redirect_uris: list[str] | None = None
-    token_endpoint_auth_method: (
-        Literal[
-            "none",
-            "client_secret_post",
-            "client_secret_basic",
-            "private_key_jwt",
-        ]
-        | None
-    ) = None
-    grant_types: list[str] = Field(
-        default_factory=lambda: ["authorization_code", "refresh_token"]
-    )
-    response_types: list[str] = Field(default_factory=lambda: ["code"])
-    scope: str | None = None
-    client_name: str | None = None
-    client_uri: str | None = None
-    logo_uri: str | None = None
-    contacts: list[str] | None = None
-    tos_uri: str | None = None
-    policy_uri: str | None = None
-    jwks_uri: str | None = None
-    jwks: Any | None = None
-    software_id: str | None = None
-    software_version: str | None = None
-    client_id: str | None = None
-    client_secret: str | None = None
-    client_id_issued_at: int | None = None
-    client_secret_expires_at: int | None = None
-
-
-class MCPOAuthStateResponse(BaseModel):
-    """Serialized OAuth state returned by ``POST /api/mcp/test``."""
-
-    tokens: MCPOAuthTokenStateResponse | None = None
-    client_info: MCPOAuthClientInfoStateResponse | None = None
-    token_expires_at: float | None = None
-
-
 class MCPOAuthAuthCredentialResponse(BaseModel):
     """OAuth auth credential with already-serialized state."""
 
     strategy: Literal["oauth2"] = "oauth2"
     authentication: dict[str, Any] | None = None
-    state: MCPOAuthStateResponse | None = None
+    state: dict[str, Any] | None = None
 
 
 class _RemoteMCPServerResponse(BaseModel):
@@ -358,13 +306,11 @@ def _oauth_state_to_plain_dict(
 def _oauth_state_to_response(
     state: MCPOAuthState,
     cipher: Cipher | None,
-) -> MCPOAuthStateResponse:
-    return MCPOAuthStateResponse.model_validate(
-        state.model_dump(
-            mode="json",
-            context=_mcp_response_context(cipher),
-            exclude_none=True,
-        )
+) -> dict[str, Any]:
+    return state.model_dump(
+        mode="json",
+        context=_mcp_response_context(cipher),
+        exclude_none=True,
     )
 
 

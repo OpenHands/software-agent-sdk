@@ -16,12 +16,8 @@ from openhands.agent_server.event_router import (
     normalize_datetime_to_server_timezone,
 )
 from openhands.agent_server.event_service import EventService
-from openhands.agent_server.models import EventPage, SendMessageRequest
+from openhands.agent_server.models import SendMessageRequest
 from openhands.sdk import Message
-from openhands.sdk.event.conversation_state import (
-    FULL_STATE_KEY,
-    ConversationStateUpdateEvent,
-)
 from openhands.sdk.event.llm_convertible.message import MessageEvent
 from openhands.sdk.llm.message import ImageContent, TextContent
 
@@ -372,7 +368,7 @@ class TestSearchEventsEndpoint:
         try:
             # Mock the search_events method to return a sample result
             mock_event_service.search_events = AsyncMock(
-                return_value=EventPage(items=[], next_page_id=None)
+                return_value={"items": [], "next_page_id": None}
             )
 
             # Test with naive datetime
@@ -408,7 +404,7 @@ class TestSearchEventsEndpoint:
         try:
             # Mock the search_events method to return a sample result
             mock_event_service.search_events = AsyncMock(
-                return_value=EventPage(items=[], next_page_id=None)
+                return_value={"items": [], "next_page_id": None}
             )
 
             # Test with timezone-aware datetime (UTC)
@@ -445,7 +441,7 @@ class TestSearchEventsEndpoint:
         try:
             # Mock the search_events method to return a sample result
             mock_event_service.search_events = AsyncMock(
-                return_value=EventPage(items=[], next_page_id=None)
+                return_value={"items": [], "next_page_id": None}
             )
 
             # Test with both timestamp filters using timezone-aware datetimes
@@ -549,7 +545,7 @@ class TestSearchEventsEndpoint:
         try:
             # Mock the search_events method to return a sample result
             mock_event_service.search_events = AsyncMock(
-                return_value=EventPage(items=[], next_page_id=None)
+                return_value={"items": [], "next_page_id": None}
             )
 
             # Test 1: UTC timezone
@@ -604,7 +600,7 @@ class TestSearchEventsEndpoint:
         try:
             # Mock the search_events method to return a sample result
             mock_event_service.search_events = AsyncMock(
-                return_value=EventPage(items=[], next_page_id=None)
+                return_value={"items": [], "next_page_id": None}
             )
 
             # Test with source filter
@@ -629,48 +625,6 @@ class TestSearchEventsEndpoint:
             client.app.dependency_overrides.clear()
 
     @pytest.mark.asyncio
-    async def test_search_events_returns_stable_rest_wire_events(
-        self, client, sample_conversation_id, mock_event_service
-    ):
-        """REST event responses should stay readable by older SDK clients."""
-        client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
-        event = ConversationStateUpdateEvent(
-            id="state_event",
-            parent_id="parent_event",
-            key=FULL_STATE_KEY,
-            value={
-                "tools": [
-                    {"kind": "TerminalTool", "name": "terminal"},
-                    {
-                        "kind": "VisionInspectTool",
-                        "name": "inspect_image_with_vision",
-                    },
-                ]
-            },
-        )
-
-        try:
-            mock_event_service.search_events = AsyncMock(
-                return_value=EventPage(items=[event], next_page_id=None)
-            )
-
-            response = client.get(
-                f"/api/conversations/{sample_conversation_id}/events/search"
-            )
-
-            assert response.status_code == 200
-            body = response.json()
-            assert body["next_page_id"] is None
-            assert len(body["items"]) == 1
-            item = body["items"][0]
-            assert "parent_id" not in item
-            assert item["value"]["tools"] == [
-                {"kind": "TerminalTool", "name": "terminal"}
-            ]
-        finally:
-            client.app.dependency_overrides.clear()
-
-    @pytest.mark.asyncio
     async def test_search_events_with_multiple_filters(
         self, client, sample_conversation_id, mock_event_service
     ):
@@ -681,7 +635,7 @@ class TestSearchEventsEndpoint:
         try:
             # Mock the search_events method to return a sample result
             mock_event_service.search_events = AsyncMock(
-                return_value=EventPage(items=[], next_page_id=None)
+                return_value={"items": [], "next_page_id": None}
             )
 
             # Test with multiple filters including source

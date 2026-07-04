@@ -4,7 +4,7 @@ Local Event router for OpenHands SDK.
 
 import logging
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastapi import (
     APIRouter,
@@ -16,7 +16,6 @@ from fastapi import (
 
 from openhands.agent_server.dependencies import get_event_service
 from openhands.agent_server.event_service import EventService
-from openhands.agent_server.event_wire import dump_conversation_event_for_wire
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
     EventPage,
@@ -63,24 +62,7 @@ def normalize_datetime_to_server_timezone(dt: datetime) -> datetime:
         return dt
 
 
-_EVENT_RESPONSE_EXCLUDE = {"parent_id"}
-_EVENT_PAGE_RESPONSE_EXCLUDE = {"items": {"__all__": _EVENT_RESPONSE_EXCLUDE}}
-_EVENT_LIST_RESPONSE_EXCLUDE = {"__all__": _EVENT_RESPONSE_EXCLUDE}
-
-
-def _dump_event_page_for_wire(page: EventPage) -> dict[str, Any]:
-    return {
-        "items": [dump_conversation_event_for_wire(event) for event in page.items],
-        "next_page_id": page.next_page_id,
-    }
-
-
-@event_router.get(
-    "/search",
-    response_model=EventPage,
-    response_model_exclude=_EVENT_PAGE_RESPONSE_EXCLUDE,
-    responses={404: {"description": "Conversation not found"}},
-)
+@event_router.get("/search", responses={404: {"description": "Conversation not found"}})
 async def search_conversation_events(
     page_id: Annotated[
         str | None,
@@ -132,10 +114,9 @@ async def search_conversation_events(
         normalize_datetime_to_server_timezone(timestamp__lt) if timestamp__lt else None
     )
 
-    page = await event_service.search_events(
+    return await event_service.search_events(
         page_id, limit, kind, source, body, sort_order, normalized_gte, normalized_lt
     )
-    return EventPage.model_validate(_dump_event_page_for_wire(page))
 
 
 @event_router.get("/count", responses={404: {"description": "Conversation not found"}})
@@ -182,12 +163,7 @@ async def count_conversation_events(
     return count
 
 
-@event_router.get(
-    "/{event_id}",
-    response_model=Event,
-    response_model_exclude=_EVENT_RESPONSE_EXCLUDE,
-    responses={404: {"description": "Item not found"}},
-)
+@event_router.get("/{event_id}", responses={404: {"description": "Item not found"}})
 async def get_conversation_event(
     event_id: str,
     event_service: EventService = Depends(get_event_service),
@@ -196,14 +172,10 @@ async def get_conversation_event(
     event = await event_service.get_event(event_id)
     if event is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
-    return Event.model_validate(dump_conversation_event_for_wire(event))
+    return event
 
 
-@event_router.get(
-    "",
-    response_model=list[Event | None],
-    response_model_exclude=_EVENT_LIST_RESPONSE_EXCLUDE,
-)
+@event_router.get("")
 async def batch_get_conversation_events(
     event_ids: list[str],
     event_service: EventService = Depends(get_event_service),
@@ -211,12 +183,7 @@ async def batch_get_conversation_events(
     """Get a batch of local events given their ids, returning null for any
     missing item."""
     events = await event_service.batch_get_events(event_ids)
-    return [
-        Event.model_validate(dump_conversation_event_for_wire(event))
-        if event is not None
-        else None
-        for event in events
-    ]
+    return events
 
 
 @event_router.post("")

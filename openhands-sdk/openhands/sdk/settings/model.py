@@ -891,7 +891,6 @@ _MCP_OAUTH_CLIENT_INFO_COLLECTION = "mcp-oauth-client-info"
 _MCP_OAUTH_TOKEN_EXPIRY_COLLECTION = "mcp-oauth-token-expiry"
 _LINEAR_DEPRECATED_SSE_URL = "https://mcp.linear.app/sse"
 _LINEAR_SHTTP_URL = "https://mcp.linear.app/mcp"
-_MCP_MIGRATABLE_FASTMCP_FIELDS = _MCP_SERVER_KNOWN_FIELDS | {"authentication"}
 
 
 def _is_deprecated_linear_sse(url: Any, transport: Any) -> bool:
@@ -1018,19 +1017,6 @@ def _migrate_mcp_server_auth(server: Any) -> Any:
     oauth_credentials = migrated.pop("oauth_credentials", None)
     api_key = migrated.pop("api_key", None)
     auth = migrated.get("auth")
-
-    if isinstance(auth, Mapping) and auth.get("strategy") == "custom":
-        fastmcp = auth.get("fastmcp")
-        migrated.pop("auth", None)
-        if isinstance(fastmcp, Mapping):
-            migrated.update(
-                {
-                    key: copy.deepcopy(value)
-                    for key, value in fastmcp.items()
-                    if key in _MCP_MIGRATABLE_FASTMCP_FIELDS
-                }
-            )
-        return _migrate_mcp_server_auth(migrated)
 
     if isinstance(auth, Mapping):
         auth = copy.deepcopy(dict(auth))

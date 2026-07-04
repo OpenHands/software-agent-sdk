@@ -587,16 +587,6 @@ def test_validate_agent_settings_migrates_legacy_mcp_auth_shapes() -> None:
                             "X-Other": "other",
                         },
                     },
-                    "custom": {
-                        "url": "https://mcp.custom.example.com/mcp",
-                        "auth": {
-                            "strategy": "custom",
-                            "fastmcp": {
-                                "auth": "custom-secret",
-                                "nested": {"token": "dropped-secret"},
-                            },
-                        },
-                    },
                     "sse": {
                         "url": "https://mcp.linear.app/sse",
                         "transport": "sse",
@@ -663,11 +653,6 @@ def test_validate_agent_settings_migrates_legacy_mcp_auth_shapes() -> None:
         "value": "header-secret",
     }
     assert servers["authorization"]["headers"] == {"X-Other": "other"}
-    assert servers["custom"]["auth"] == {
-        "strategy": "bearer",
-        "value": "custom-secret",
-    }
-    assert "nested" not in servers["custom"]
     assert "sse" not in servers
     assert servers["shttp"] == {
         "url": "https://mcp.linear.app/mcp",

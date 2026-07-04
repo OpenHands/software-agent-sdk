@@ -38,7 +38,6 @@ from openhands.agent_server.conversation_service import (
     get_default_conversation_service,
 )
 from openhands.agent_server.event_router import normalize_datetime_to_server_timezone
-from openhands.agent_server.event_wire import dump_conversation_event_for_wire
 from openhands.agent_server.models import (
     BashError,
     BashEventBase,
@@ -360,7 +359,7 @@ async def events_socket(
                         code=e.__class__.__name__,
                         detail=str(e),
                     )
-                    dumped = dump_conversation_event_for_wire(error_event)
+                    dumped = error_event.model_dump(mode="json")
                     await websocket.send_json(dumped)
                     # Log after - if send event raises an error logging is handled
                     # in the except block
@@ -477,7 +476,7 @@ async def _send_event(event: Event, websocket: WebSocket):
         logger.debug("skip_sending_event_socket_disconnected: %r", event)
         return
     try:
-        dumped = dump_conversation_event_for_wire(event)
+        dumped = event.model_dump(mode="json")
         await websocket.send_json(dumped)
     except (RuntimeError, WebSocketDisconnect) as e:
         # Expected race: client disconnected between our state check and send.

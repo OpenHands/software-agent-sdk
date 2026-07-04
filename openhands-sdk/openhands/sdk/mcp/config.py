@@ -132,10 +132,9 @@ class MCPHeaderAuthCredential(BaseModel):
 
 
 class MCPOAuthTokenState(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     access_token: SecretStr | None = None
-    token_type: Literal["Bearer"] = "Bearer"
-    expires_in: int | None = None
-    scope: str | None = None
     refresh_token: SecretStr | None = None
 
     @field_validator("access_token", "refresh_token", mode="before")
@@ -151,35 +150,9 @@ class MCPOAuthTokenState(BaseModel):
 
 
 class MCPOAuthClientInfoState(BaseModel):
-    redirect_uris: list[str] | None = None
-    token_endpoint_auth_method: (
-        Literal[
-            "none",
-            "client_secret_post",
-            "client_secret_basic",
-            "private_key_jwt",
-        ]
-        | None
-    ) = None
-    grant_types: list[str] = Field(
-        default_factory=lambda: ["authorization_code", "refresh_token"]
-    )
-    response_types: list[str] = Field(default_factory=lambda: ["code"])
-    scope: str | None = None
-    client_name: str | None = None
-    client_uri: str | None = None
-    logo_uri: str | None = None
-    contacts: list[str] | None = None
-    tos_uri: str | None = None
-    policy_uri: str | None = None
-    jwks_uri: str | None = None
-    jwks: Any | None = None
-    software_id: str | None = None
-    software_version: str | None = None
-    client_id: str | None = None
+    model_config = ConfigDict(extra="allow")
+
     client_secret: SecretStr | None = None
-    client_id_issued_at: int | None = None
-    client_secret_expires_at: int | None = None
 
     @field_validator("client_secret", mode="before")
     @classmethod

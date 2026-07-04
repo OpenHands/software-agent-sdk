@@ -9,15 +9,10 @@ import pytest
 from fastapi import WebSocketDisconnect
 
 from openhands.agent_server.event_service import EventService
-from openhands.agent_server.event_wire import dump_conversation_event_for_wire
 from openhands.agent_server.models import EventPage
 from openhands.agent_server.sockets import _WebSocketSubscriber
 from openhands.sdk import Message
 from openhands.sdk.event import Event
-from openhands.sdk.event.conversation_state import (
-    FULL_STATE_KEY,
-    ConversationStateUpdateEvent,
-)
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm.message import TextContent
 
@@ -66,43 +61,6 @@ async def test_websocket_subscriber_call_success(mock_websocket):
     mock_websocket.send_json.assert_called_once()
     call_args = mock_websocket.send_json.call_args[0][0]
     assert call_args["id"] == "test_event"
-
-
-@pytest.mark.asyncio
-async def test_websocket_subscriber_omits_parent_id_from_wire_event(mock_websocket):
-    """The unversioned WebSocket contract must stay readable by older SDKs."""
-    subscriber = _WebSocketSubscriber(websocket=mock_websocket)
-    event = MessageEvent(
-        id="test_event",
-        parent_id="parent_event",
-        source="user",
-        llm_message=Message(role="user", content=[TextContent(text="test")]),
-    )
-
-    await subscriber(event)
-
-    call_args = mock_websocket.send_json.call_args[0][0]
-    assert call_args["id"] == "test_event"
-    assert "parent_id" not in call_args
-
-
-def test_event_wire_filters_new_tool_kinds_from_state_update():
-    event = ConversationStateUpdateEvent(
-        id="state_event",
-        parent_id="parent_event",
-        key=FULL_STATE_KEY,
-        value={
-            "tools": [
-                {"kind": "TerminalTool", "name": "terminal"},
-                {"kind": "VisionInspectTool", "name": "inspect_image_with_vision"},
-            ]
-        },
-    )
-
-    dumped = dump_conversation_event_for_wire(event)
-
-    assert "parent_id" not in dumped
-    assert dumped["value"]["tools"] == [{"kind": "TerminalTool", "name": "terminal"}]
 
 
 @pytest.mark.asyncio
