@@ -590,6 +590,7 @@ def create_app(config: Config | None = None) -> FastAPI:
         config = get_default_config()
     app = _create_fastapi_instance(config)
     app.state.config = config
+
     _add_api_routes(app)
     _setup_static_files(app, config)
     app.add_middleware(
