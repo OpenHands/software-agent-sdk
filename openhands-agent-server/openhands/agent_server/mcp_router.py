@@ -105,21 +105,6 @@ class _RemoteMCPServerSpec(BaseModel):
             )
         return self
 
-    def to_openhands_dict(self) -> dict[str, Any]:
-        transport = "http" if self.type == "shttp" else self.type
-        out: dict[str, Any] = {"url": self.url, "transport": transport}
-        if self.auth is not None:
-            out["auth"] = self.auth.model_dump(
-                mode="json",
-                context={"expose_secrets": "plaintext"},
-                exclude_none=True,
-                exclude_defaults=True,
-            )
-        headers = dict(self.headers)
-        if headers:
-            out["headers"] = headers
-        return out
-
 
 class MCPToolCallSpec(BaseModel):
     """A single tool invocation to run as part of the connection test.
@@ -275,7 +260,16 @@ def _server_to_openhands_config(
         if spec.cwd:
             out["cwd"] = spec.cwd
         return out
-    return spec.to_openhands_dict()
+
+    out = spec.model_dump(
+        mode="json",
+        context={"expose_secrets": "plaintext"},
+        exclude_none=True,
+        exclude_defaults=True,
+    )
+    transport = out.pop("type")
+    out["transport"] = "http" if transport == "shttp" else transport
+    return out
 
 
 def _oauth_state_to_plain_dict(
