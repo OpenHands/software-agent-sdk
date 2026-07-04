@@ -169,10 +169,78 @@ class MCPOAuthClientInfoState(BaseModel):
         return _serialize_optional_secret(value, info)
 
 
+MCPOAuthTokenStorageField = Literal["tokens", "client_info", "token_expires_at"]
+
+
 class MCPOAuthState(BaseModel):
     tokens: MCPOAuthTokenState | None = None
     client_info: MCPOAuthClientInfoState | None = None
     token_expires_at: float | None = None
+
+    @property
+    def has_values(self) -> bool:
+        return bool(self.to_plain_dict())
+
+    def get_token_storage_value(
+        self, field: MCPOAuthTokenStorageField
+    ) -> dict[str, Any] | None:
+        if field == "tokens":
+            if self.tokens is None or self.tokens.access_token is None:
+                return None
+            return self.tokens.model_dump(
+                mode="json",
+                context={"expose_secrets": "plaintext"},
+                exclude_none=True,
+                exclude_defaults=True,
+            )
+        if field == "client_info":
+            if self.client_info is None:
+                return None
+            return self.client_info.model_dump(
+                mode="json",
+                context={"expose_secrets": "plaintext"},
+                exclude_none=True,
+                exclude_defaults=True,
+            )
+        if self.token_expires_at is None:
+            return None
+        return {"expires_at": self.token_expires_at}
+
+    def with_token_storage_value(
+        self, field: MCPOAuthTokenStorageField, value: Mapping[str, Any]
+    ) -> MCPOAuthState:
+        if field == "tokens":
+            return self.model_copy(
+                update={"tokens": MCPOAuthTokenState.model_validate(value)}
+            )
+        if field == "client_info":
+            return self.model_copy(
+                update={"client_info": MCPOAuthClientInfoState.model_validate(value)}
+            )
+
+        expires_at = value.get("expires_at")
+        return self.model_copy(
+            update={
+                "token_expires_at": (
+                    float(expires_at) if isinstance(expires_at, int | float) else None
+                )
+            }
+        )
+
+    def without_token_storage_value(
+        self, field: MCPOAuthTokenStorageField
+    ) -> tuple[MCPOAuthState, bool]:
+        if field == "tokens":
+            return self.model_copy(update={"tokens": None}), self.tokens is not None
+        if field == "client_info":
+            return (
+                self.model_copy(update={"client_info": None}),
+                self.client_info is not None,
+            )
+        return (
+            self.model_copy(update={"token_expires_at": None}),
+            self.token_expires_at is not None,
+        )
 
     def to_plain_dict(self, *, cipher: Any | None = None) -> dict[str, Any]:
         """Dump OAuth state with secret values in plaintext.

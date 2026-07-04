@@ -38,7 +38,6 @@ from openhands.sdk.mcp.config import (
     MCPOAuthState,
     OpenHandsMCPConfig,
     OpenHandsMCPServer,
-    to_fastmcp_mcp_config,
 )
 from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
 from openhands.sdk.utils.cipher import Cipher
@@ -74,6 +73,19 @@ class _StdioMCPServerSpec(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
     cwd: str | None = None
 
+    def to_openhands_server(
+        self, *, cipher: Cipher | None = None
+    ) -> OpenHandsMCPServer:
+        out: dict[str, Any] = {"command": self.command, "args": list(self.args)}
+        if self.env:
+            out["env"] = dict(self.env)
+        if self.cwd:
+            out["cwd"] = self.cwd
+        return OpenHandsMCPServer.model_validate(
+            out,
+            context=_mcp_validation_context(cipher),
+        )
+
 
 class _RemoteMCPServerSpec(BaseModel):
     """Remote (HTTP / SSE) MCP server spec."""
@@ -94,6 +106,10 @@ class _RemoteMCPServerSpec(BaseModel):
         ),
     )
 
+    @property
+    def oauth_auth(self) -> MCPOAuthAuthCredential | None:
+        return self.auth if isinstance(self.auth, MCPOAuthAuthCredential) else None
+
     @model_validator(mode="after")
     def _no_auth_conflict(self) -> _RemoteMCPServerSpec:
         has_authorization_header = any(
@@ -105,6 +121,22 @@ class _RemoteMCPServerSpec(BaseModel):
                 "'Authorization' header; use auth.strategy='header' instead."
             )
         return self
+
+    def to_openhands_server(
+        self, *, cipher: Cipher | None = None
+    ) -> OpenHandsMCPServer:
+        out = self.model_dump(
+            mode="json",
+            context={"expose_secrets": "plaintext"},
+            exclude_none=True,
+            exclude_defaults=True,
+        )
+        transport = out.pop("type")
+        out["transport"] = "http" if transport == "shttp" else transport
+        return OpenHandsMCPServer.model_validate(
+            out,
+            context=_mcp_validation_context(cipher),
+        )
 
 
 class MCPToolCallSpec(BaseModel):
@@ -121,6 +153,37 @@ class MCPToolCallSpec(BaseModel):
         default_factory=dict,
         description="Arguments passed to the tool unchanged.",
     )
+
+    def run(
+        self, client: Any, tool_names: list[str], timeout: float
+    ) -> MCPToolCallResult:
+        """Invoke this tool call and return the raw MCP outcome."""
+        if self.name not in tool_names:
+            return MCPToolCallResult(
+                is_error=True,
+                text=(
+                    f"Tool {self.name!r} not advertised by server "
+                    f"(available: {', '.join(tool_names) or 'none'})"
+                ),
+            )
+        try:
+            result: mcp.types.CallToolResult = client.call_async_from_sync(
+                client.call_tool_mcp,
+                name=self.name,
+                arguments=self.arguments,
+                timeout=timeout,
+            )
+        except TimeoutError:
+            return MCPToolCallResult(
+                is_error=True,
+                text=f"Tool {self.name!r} call timed out after {timeout} seconds",
+            )
+        text = "\n".join(
+            block.text
+            for block in result.content
+            if isinstance(block, mcp.types.TextContent)
+        )
+        return MCPToolCallResult(is_error=bool(result.isError), text=text)
 
 
 class MCPTestRequest(BaseModel):
@@ -162,6 +225,29 @@ class MCPTestRequest(BaseModel):
         # whitespace-only names would silently bypass min_length=1 above.
         self.name = self.name.strip() or _DEFAULT_SERVER_NAME
         return self
+
+    @property
+    def oauth_auth(self) -> MCPOAuthAuthCredential | None:
+        if isinstance(self.server, _RemoteMCPServerSpec):
+            return self.server.oauth_auth
+        return None
+
+    def initial_oauth_state(
+        self, *, cipher: Cipher | None = None
+    ) -> dict[str, Any] | None:
+        auth = self.oauth_auth
+        if auth is None or auth.state is None:
+            return None
+        return auth.state.to_plain_dict(cipher=cipher)
+
+    def to_openhands_config(
+        self, *, cipher: Cipher | None = None
+    ) -> OpenHandsMCPConfig:
+        return OpenHandsMCPConfig(
+            mcpServers={
+                self.name: self.server.to_openhands_server(cipher=cipher),
+            }
+        )
 
 
 class MCPToolCallResult(BaseModel):
@@ -226,82 +312,6 @@ def _mcp_validation_context(cipher: Cipher | None) -> dict[str, Any] | None:
     return {"cipher": cipher} if cipher is not None else None
 
 
-def _server_to_openhands_server(
-    spec: _StdioMCPServerSpec | _RemoteMCPServerSpec,
-    cipher: Cipher | None,
-) -> OpenHandsMCPServer:
-    if isinstance(spec, _StdioMCPServerSpec):
-        out: dict[str, Any] = {"command": spec.command, "args": list(spec.args)}
-        if spec.env:
-            out["env"] = dict(spec.env)
-        if spec.cwd:
-            out["cwd"] = spec.cwd
-        return OpenHandsMCPServer.model_validate(
-            out,
-            context=_mcp_validation_context(cipher),
-        )
-
-    out = spec.model_dump(
-        mode="json",
-        context={"expose_secrets": "plaintext"},
-        exclude_none=True,
-        exclude_defaults=True,
-    )
-    transport = out.pop("type")
-    out["transport"] = "http" if transport == "shttp" else transport
-    return OpenHandsMCPServer.model_validate(
-        out,
-        context=_mcp_validation_context(cipher),
-    )
-
-
-def _server_to_fastmcp_dict(
-    spec: _StdioMCPServerSpec | _RemoteMCPServerSpec, cipher: Cipher | None
-) -> dict:
-    config = OpenHandsMCPConfig(
-        mcpServers={"server": _server_to_openhands_server(spec, cipher)}
-    )
-    return to_fastmcp_mcp_config(config)["mcpServers"]["server"]
-
-
-def _run_tool_call(
-    client: Any, spec: MCPToolCallSpec, tool_names: list[str], timeout: float
-) -> MCPToolCallResult:
-    """Invoke the requested tool on the connected client.
-
-    Uses ``call_tool_mcp`` (not ``call_tool``, which raises on ``isError``)
-    so in-band failures come back as data -- mirrors ``MCPToolExecutor``.
-    A timeout is reported as an errored result rather than failing the
-    whole test: the server did connect and list, which is still useful.
-    """
-    if spec.name not in tool_names:
-        return MCPToolCallResult(
-            is_error=True,
-            text=(
-                f"Tool {spec.name!r} not advertised by server "
-                f"(available: {', '.join(tool_names) or 'none'})"
-            ),
-        )
-    try:
-        result: mcp.types.CallToolResult = client.call_async_from_sync(
-            client.call_tool_mcp,
-            name=spec.name,
-            arguments=spec.arguments,
-            timeout=timeout,
-        )
-    except TimeoutError:
-        return MCPToolCallResult(
-            is_error=True,
-            text=f"Tool {spec.name!r} call timed out after {timeout} seconds",
-        )
-    text = "\n".join(
-        block.text
-        for block in result.content
-        if isinstance(block, mcp.types.TextContent)
-    )
-    return MCPToolCallResult(is_error=bool(result.isError), text=text)
-
-
 def _probe_mcp_server(
     request: MCPTestRequest,
     cipher: Cipher | None,
@@ -314,22 +324,14 @@ def _probe_mcp_server(
     threadpool first.
     """
 
-    config = {
-        "mcpServers": {request.name: _server_to_fastmcp_dict(request.server, cipher)}
-    }
+    config = request.to_openhands_config(cipher=cipher)
 
     try:
-        oauth_auth: MCPOAuthAuthCredential | None = None
-        if isinstance(request.server, _RemoteMCPServerSpec) and isinstance(
-            request.server.auth, MCPOAuthAuthCredential
-        ):
-            oauth_auth = request.server.auth
+        oauth_auth = request.oauth_auth
         oauth_token_storage: InMemoryMCPOAuthTokenStore | None = None
         if oauth_auth is not None:
             oauth_token_storage = InMemoryMCPOAuthTokenStore(
-                state=oauth_auth.state.to_plain_dict(cipher=cipher)
-                if oauth_auth.state is not None
-                else None
+                state=request.initial_oauth_state(cipher=cipher)
             )
         # ``create_mcp_tools`` returns a client that owns a background loop
         # and a (possibly long-lived) subprocess. Use the context-manager
@@ -342,9 +344,7 @@ def _probe_mcp_server(
             tool_names = [tool.name for tool in client.tools]
             tool_result: MCPToolCallResult | None = None
             if request.tool_call is not None:
-                tool_result = _run_tool_call(
-                    client, request.tool_call, tool_names, request.timeout
-                )
+                tool_result = request.tool_call.run(client, tool_names, request.timeout)
             oauth_state: dict[str, Any] | None = None
             if oauth_token_storage is not None:
                 state = oauth_token_storage.export_state()

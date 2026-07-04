@@ -19,10 +19,11 @@ from openhands.agent_server.persistence import PersistedSettings, get_settings_s
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import (
-    MCPOAuthClientInfoState,
+    MCPOAuthAuthCredential,
     MCPOAuthState,
-    MCPOAuthTokenState,
+    MCPOAuthTokenStorageField,
     OpenHandsMCPConfig,
+    OpenHandsMCPServer,
 )
 from openhands.sdk.mcp.utils import create_mcp_tools
 
@@ -51,152 +52,38 @@ def _server_url_from_fastmcp_key(key: str) -> str:
     return key.rsplit("/", 1)[0].rstrip("/")
 
 
-def _dump_mcp_config(settings: PersistedSettings) -> dict[str, Any]:
-    mcp_config = settings.agent_settings.mcp_config
-    if mcp_config is None:
-        return {"mcpServers": {}}
-    return mcp_config.model_dump(
-        mode="json",
-        context={"expose_secrets": "plaintext"},
-        exclude_none=True,
-        exclude_defaults=True,
-    )
-
-
-def _set_mcp_config(settings: PersistedSettings, mcp_config: dict[str, Any]) -> None:
-    settings.agent_settings = settings.agent_settings.model_copy(
-        update={"mcp_config": OpenHandsMCPConfig.model_validate(mcp_config)}
-    )
-
-
 def _server_url_matches_key(server_url: str, key: str) -> bool:
     return server_url.rstrip("/") == _server_url_from_fastmcp_key(key)
 
 
-def _find_matching_server(
-    mcp_config: dict[str, Any],
+def _find_matching_oauth_server(
+    mcp_config: OpenHandsMCPConfig,
     key: str,
-) -> tuple[str, dict[str, Any]] | None:
-    servers = mcp_config.get("mcpServers")
-    if not isinstance(servers, dict):
-        return None
-
-    for server_name, server in servers.items():
-        if not isinstance(server, dict):
+) -> tuple[str, OpenHandsMCPServer, MCPOAuthAuthCredential] | None:
+    for server_name, server in mcp_config.mcpServers.items():
+        if server.url is None or not _server_url_matches_key(server.url, key):
             continue
-        server_url = server.get("url")
-        if not isinstance(server_url, str) or not _server_url_matches_key(
-            server_url, key
-        ):
-            continue
-        auth = server.get("auth")
-        if isinstance(auth, dict) and auth.get("strategy") == "oauth2":
-            return server_name, server
+        auth = server.auth
+        if isinstance(auth, MCPOAuthAuthCredential):
+            return server_name, server, auth
     return None
 
 
-def _state_from_auth(auth: Mapping[str, Any]) -> MCPOAuthState:
-    state = auth.get("state")
-    if not isinstance(state, Mapping):
-        return MCPOAuthState()
-    return MCPOAuthState.model_validate(state)
-
-
-def _state_has_values(state: dict[str, Any]) -> bool:
-    return bool(
-        state.get("tokens")
-        or state.get("client_info")
-        or state.get("token_expires_at") is not None
-    )
-
-
-def _get_state_value(
-    state: MCPOAuthState,
+def _state_field_for_fastmcp_key(
     key: str,
     collection: str | None,
-) -> dict[str, Any] | None:
+) -> MCPOAuthTokenStorageField | None:
     if collection == _TOKEN_COLLECTION and key.endswith(_TOKEN_KEY_SUFFIX):
-        if state.tokens is None or state.tokens.access_token is None:
-            return None
-        return state.tokens.model_dump(
-            mode="json",
-            context={"expose_secrets": "plaintext"},
-            exclude_none=True,
-            exclude_defaults=True,
-        )
-
-    if (
-        collection == _CLIENT_INFO_COLLECTION
-        and key.endswith(_CLIENT_INFO_KEY_SUFFIX)
-        and state.client_info is not None
-    ):
-        return state.client_info.model_dump(
-            mode="json",
-            context={"expose_secrets": "plaintext"},
-            exclude_none=True,
-            exclude_defaults=True,
-        )
-
-    if (
-        collection == _TOKEN_EXPIRY_COLLECTION
-        and key.endswith(_TOKEN_EXPIRY_KEY_SUFFIX)
-        and state.token_expires_at is not None
-    ):
-        return {"expires_at": state.token_expires_at}
-
-    return None
-
-
-def _put_state_value(
-    state: dict[str, Any],
-    key: str,
-    value: Mapping[str, Any],
-    collection: str | None,
-) -> bool:
-    if collection == _TOKEN_COLLECTION and key.endswith(_TOKEN_KEY_SUFFIX):
-        state["tokens"] = MCPOAuthTokenState.model_validate(value).model_dump(
-            mode="json",
-            context={"expose_secrets": "plaintext"},
-            exclude_none=True,
-            exclude_defaults=True,
-        )
-        return True
+        return "tokens"
 
     if collection == _CLIENT_INFO_COLLECTION and key.endswith(_CLIENT_INFO_KEY_SUFFIX):
-        state["client_info"] = MCPOAuthClientInfoState.model_validate(value).model_dump(
-            mode="json",
-            context={"expose_secrets": "plaintext"},
-            exclude_none=True,
-            exclude_defaults=True,
-        )
-        return True
+        return "client_info"
 
     if collection == _TOKEN_EXPIRY_COLLECTION and key.endswith(
         _TOKEN_EXPIRY_KEY_SUFFIX
     ):
-        expires_at = value.get("expires_at")
-        state["token_expires_at"] = (
-            float(expires_at) if isinstance(expires_at, int | float) else None
-        )
-        return True
-
-    return False
-
-
-def _delete_state_value(
-    state: dict[str, Any],
-    key: str,
-    collection: str | None,
-) -> bool:
-    if collection == _TOKEN_COLLECTION and key.endswith(_TOKEN_KEY_SUFFIX):
-        return state.pop("tokens", None) is not None
-    if collection == _CLIENT_INFO_COLLECTION and key.endswith(_CLIENT_INFO_KEY_SUFFIX):
-        return state.pop("client_info", None) is not None
-    if collection == _TOKEN_EXPIRY_COLLECTION and key.endswith(
-        _TOKEN_EXPIRY_KEY_SUFFIX
-    ):
-        return state.pop("token_expires_at", None) is not None
-    return False
+        return "token_expires_at"
+    return None
 
 
 class MCPSettingsOAuthTokenStore:
@@ -205,19 +92,23 @@ class MCPSettingsOAuthTokenStore:
     def _get_entry_sync(
         self, key: str, collection: str | None
     ) -> tuple[dict[str, Any] | None, float | None]:
+        field = _state_field_for_fastmcp_key(key, collection)
+        if field is None:
+            return None, None
+
         store = get_settings_store()
         settings = store.load()
         if settings is None:
             return None, None
 
-        match = _find_matching_server(_dump_mcp_config(settings), key)
+        mcp_config = settings.agent_settings.mcp_config
+        if mcp_config is None:
+            return None, None
+        match = _find_matching_oauth_server(mcp_config, key)
         if match is None:
             return None, None
-        _, server = match
-        auth = server.get("auth")
-        if not isinstance(auth, Mapping):
-            return None, None
-        return _get_state_value(_state_from_auth(auth), key, collection), None
+        _, _, auth = match
+        return (auth.state or MCPOAuthState()).get_token_storage_value(field), None
 
     async def get(
         self, key: str, *, collection: str | None = None
@@ -239,11 +130,16 @@ class MCPSettingsOAuthTokenStore:
         ttl: SupportsFloat | None = None,
     ) -> None:
         del ttl
+        field = _state_field_for_fastmcp_key(key, collection)
+        if field is None:
+            return
         stored_value = copy.deepcopy(dict(value))
 
         def apply_update(settings: PersistedSettings) -> PersistedSettings:
-            mcp_config = _dump_mcp_config(settings)
-            match = _find_matching_server(mcp_config, key)
+            mcp_config = settings.agent_settings.mcp_config
+            if mcp_config is None:
+                return settings
+            match = _find_matching_oauth_server(mcp_config, key)
             if match is None:
                 logger.warning(
                     "Could not persist MCP OAuth state: no configured MCP "
@@ -252,19 +148,26 @@ class MCPSettingsOAuthTokenStore:
                 )
                 return settings
 
-            _, server = match
-            auth = server.get("auth")
-            if not isinstance(auth, dict):
-                return settings
+            server_name, server, auth = match
 
-            state = _state_from_auth(auth).to_plain_dict()
-            if not _put_state_value(state, key, stored_value, collection):
-                return settings
-            if _state_has_values(state):
-                auth["state"] = state
-            else:
-                auth.pop("state", None)
-            _set_mcp_config(settings, mcp_config)
+            state = (auth.state or MCPOAuthState()).with_token_storage_value(
+                field, stored_value
+            )
+            updated_servers = dict(mcp_config.mcpServers)
+            updated_servers[server_name] = server.model_copy(
+                update={
+                    "auth": auth.model_copy(
+                        update={"state": state if state.has_values else None}
+                    )
+                }
+            )
+            settings.agent_settings = settings.agent_settings.model_copy(
+                update={
+                    "mcp_config": mcp_config.model_copy(
+                        update={"mcpServers": updated_servers}
+                    )
+                }
+            )
             return settings
 
         get_settings_store().update(apply_update)
@@ -286,27 +189,41 @@ class MCPSettingsOAuthTokenStore:
         )
 
     def _delete_sync(self, key: str, collection: str | None = None) -> bool:
+        field = _state_field_for_fastmcp_key(key, collection)
+        if field is None:
+            return False
+
         deleted = False
 
         def apply_update(settings: PersistedSettings) -> PersistedSettings:
             nonlocal deleted
-            mcp_config = _dump_mcp_config(settings)
-            match = _find_matching_server(mcp_config, key)
+            mcp_config = settings.agent_settings.mcp_config
+            if mcp_config is None:
+                return settings
+            match = _find_matching_oauth_server(mcp_config, key)
             if match is None:
                 return settings
-            _, server = match
-            auth = server.get("auth")
-            if not isinstance(auth, dict):
-                return settings
-            state = _state_from_auth(auth).to_plain_dict()
-            deleted = _delete_state_value(state, key, collection)
+            server_name, server, auth = match
+            state, deleted = (
+                auth.state or MCPOAuthState()
+            ).without_token_storage_value(field)
             if not deleted:
                 return settings
-            if _state_has_values(state):
-                auth["state"] = state
-            else:
-                auth.pop("state", None)
-            _set_mcp_config(settings, mcp_config)
+            updated_servers = dict(mcp_config.mcpServers)
+            updated_servers[server_name] = server.model_copy(
+                update={
+                    "auth": auth.model_copy(
+                        update={"state": state if state.has_values else None}
+                    )
+                }
+            )
+            settings.agent_settings = settings.agent_settings.model_copy(
+                update={
+                    "mcp_config": mcp_config.model_copy(
+                        update={"mcpServers": updated_servers}
+                    )
+                }
+            )
             return settings
 
         get_settings_store().update(apply_update)
@@ -368,7 +285,10 @@ class InMemoryMCPOAuthTokenStore:
     async def get(
         self, key: str, *, collection: str | None = None
     ) -> dict[str, Any] | None:
-        return _get_state_value(self._state, key, collection)
+        field = _state_field_for_fastmcp_key(key, collection)
+        if field is None:
+            return None
+        return self._state.get_token_storage_value(field)
 
     async def ttl(
         self, key: str, *, collection: str | None = None
@@ -384,15 +304,17 @@ class InMemoryMCPOAuthTokenStore:
         ttl: SupportsFloat | None = None,
     ) -> None:
         del ttl
-        state = self._state.to_plain_dict()
-        if _put_state_value(state, key, value, collection):
-            self._state = MCPOAuthState.model_validate(state)
+        field = _state_field_for_fastmcp_key(key, collection)
+        if field is not None:
+            self._state = self._state.with_token_storage_value(field, value)
 
     async def delete(self, key: str, *, collection: str | None = None) -> bool:
-        state = self._state.to_plain_dict()
-        deleted = _delete_state_value(state, key, collection)
+        field = _state_field_for_fastmcp_key(key, collection)
+        if field is None:
+            return False
+        state, deleted = self._state.without_token_storage_value(field)
         if deleted:
-            self._state = MCPOAuthState.model_validate(state)
+            self._state = state
         return deleted
 
     async def get_many(

@@ -12,6 +12,7 @@ from pydantic import SecretStr
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
+from openhands.sdk.mcp.config import OpenHandsMCPConfig, to_fastmcp_mcp_config
 
 # Reuse the real FastMCP-based test-server helper from the SDK tests; spinning
 # up a real subprocess MCP server inside a unit test is unreliable across CI
@@ -290,7 +291,7 @@ def test_mcp_test_decrypts_encrypted_remote_auth_before_connect(
     cipher = config.cipher
     assert cipher is not None
     client = TestClient(create_app(config), raise_server_exceptions=False)
-    seen_configs: list[dict] = []
+    seen_configs: list[OpenHandsMCPConfig] = []
 
     class FakeClient:
         def __init__(self):
@@ -303,7 +304,7 @@ def test_mcp_test_decrypts_encrypted_remote_auth_before_connect(
             return None
 
     def fake_create_mcp_tools(
-        config,
+        config: OpenHandsMCPConfig,
         timeout=30.0,
         *,
         mcp_oauth_token_storage=None,
@@ -334,7 +335,7 @@ def test_mcp_test_decrypts_encrypted_remote_auth_before_connect(
 
     assert response.status_code == 200, response.text
     assert response.json()["ok"] is True
-    assert seen_configs == [
+    assert [to_fastmcp_mcp_config(config) for config in seen_configs] == [
         {
             "mcpServers": {
                 "linear": {

@@ -47,6 +47,7 @@ from openhands.sdk.llm.utils.openhands_provider import (
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import (
+    MCPOAuthState,
     OpenHandsMCPConfig as MCPConfig,
     drop_unknown_mcp_server_fields,
     dump_mcp_config_secret_values,
@@ -847,28 +848,26 @@ def _migrate_legacy_oauth_credentials(
     if not isinstance(credentials, Mapping):
         return {}
 
-    state: dict[str, Any] = {}
+    state = MCPOAuthState()
     tokens = _legacy_oauth_bucket_value(
         credentials, _MCP_OAUTH_TOKEN_COLLECTION, "/tokens"
     )
     if tokens:
-        state["tokens"] = tokens
+        state = state.with_token_storage_value("tokens", tokens)
 
     client_info = _legacy_oauth_bucket_value(
         credentials, _MCP_OAUTH_CLIENT_INFO_COLLECTION, "/client_info"
     )
     if client_info:
-        state["client_info"] = client_info
+        state = state.with_token_storage_value("client_info", client_info)
 
     token_expiry = _legacy_oauth_bucket_value(
         credentials, _MCP_OAUTH_TOKEN_EXPIRY_COLLECTION, "/token_expiry"
     )
     if token_expiry:
-        expires_at = token_expiry.get("expires_at")
-        if isinstance(expires_at, int | float):
-            state["token_expires_at"] = float(expires_at)
+        state = state.with_token_storage_value("token_expires_at", token_expiry)
 
-    return state
+    return state.to_plain_dict()
 
 
 def _merge_oauth_state(
