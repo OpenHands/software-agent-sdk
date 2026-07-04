@@ -708,22 +708,18 @@ def _get_persistence_dir(config: Config | None = None) -> Path:
     return DEFAULT_PERSISTENCE_DIR
 
 
-def _get_sensitive_persistence_dir() -> Path:
-    """Get the base dir for stores that can hold credentials.
+def _get_profile_persistence_dir() -> Path:
+    """Get the base dir for LLM/agent profile stores.
 
-    Absent ``OH_PERSISTENCE_DIR``, credential-bearing local stores fall back to
-    the user's ``~/.openhands`` rather than the workspace-relative agent-server
-    default, keeping bare local secrets out of project directories.
+    Profiles can hold credentials (LLM API keys), so absent
+    ``OH_PERSISTENCE_DIR`` they fall back to the user's ``~/.openhands``
+    rather than the workspace-relative agent-server default, keeping bare
+    local profile secrets in the expected user config directory.
     """
     env_dir = os.environ.get("OH_PERSISTENCE_DIR")
     if env_dir:
         return Path(env_dir)
     return Path.home() / ".openhands"
-
-
-def _get_profile_persistence_dir() -> Path:
-    """Get the base dir for LLM/agent profile stores."""
-    return _get_sensitive_persistence_dir()
 
 
 def _get_cipher(config: Config | None = None) -> Cipher | None:
@@ -759,7 +755,7 @@ def get_settings_store(config: Config | None = None) -> FileSettingsStore:
         # Double-check after acquiring lock
         if _settings_store is None:
             _settings_store = FileSettingsStore(
-                persistence_dir=_get_sensitive_persistence_dir(),
+                persistence_dir=_get_profile_persistence_dir(),
                 cipher=_get_cipher(config),
             )
         return _settings_store
@@ -791,7 +787,7 @@ def get_secrets_store(config: Config | None = None) -> FileSecretsStore:
         # Double-check after acquiring lock
         if _secrets_store is None:
             _secrets_store = FileSecretsStore(
-                persistence_dir=_get_sensitive_persistence_dir(),
+                persistence_dir=_get_profile_persistence_dir(),
                 cipher=_get_cipher(config),
             )
         return _secrets_store
