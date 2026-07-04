@@ -37,6 +37,7 @@ from openhands.sdk.mcp.config import (
     MCPOAuthAuthCredential,
     MCPOAuthState,
     OpenHandsMCPConfig,
+    OpenHandsMCPServer,
     to_fastmcp_mcp_config,
 )
 from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
@@ -231,16 +232,20 @@ def _mcp_response_context(cipher: Cipher | None) -> dict[str, Any]:
     return {"cipher": cipher, "expose_secrets": "encrypted"}
 
 
-def _server_to_openhands_config(
+def _server_to_openhands_server(
     spec: _StdioMCPServerSpec | _RemoteMCPServerSpec,
-) -> dict[str, Any]:
+    cipher: Cipher | None,
+) -> OpenHandsMCPServer:
     if isinstance(spec, _StdioMCPServerSpec):
         out: dict[str, Any] = {"command": spec.command, "args": list(spec.args)}
         if spec.env:
             out["env"] = dict(spec.env)
         if spec.cwd:
             out["cwd"] = spec.cwd
-        return out
+        return OpenHandsMCPServer.model_validate(
+            out,
+            context=_mcp_validation_context(cipher),
+        )
 
     out = spec.model_dump(
         mode="json",
@@ -250,7 +255,10 @@ def _server_to_openhands_config(
     )
     transport = out.pop("type")
     out["transport"] = "http" if transport == "shttp" else transport
-    return out
+    return OpenHandsMCPServer.model_validate(
+        out,
+        context=_mcp_validation_context(cipher),
+    )
 
 
 def _oauth_state_to_plain_dict(
@@ -292,9 +300,8 @@ def _oauth_state_to_response(
 def _server_to_fastmcp_dict(
     spec: _StdioMCPServerSpec | _RemoteMCPServerSpec, cipher: Cipher | None
 ) -> dict:
-    config = OpenHandsMCPConfig.model_validate(
-        {"mcpServers": {"server": _server_to_openhands_config(spec)}},
-        context=_mcp_validation_context(cipher),
+    config = OpenHandsMCPConfig(
+        mcpServers={"server": _server_to_openhands_server(spec, cipher)}
     )
     return to_fastmcp_mcp_config(config)["mcpServers"]["server"]
 
