@@ -260,9 +260,6 @@ class TestMcpConfigPreservation:
 
         When a cipher is provided (the production flow), mcp_config should be
         encrypted on save and decrypted on restore, preserving all values.
-
-        Without a cipher, mcp_config is fully redacted (None) to prevent
-        accidental secret leakage to API responses and WebSocket events.
         """
         from openhands.sdk.utils.cipher import Cipher
 
@@ -272,6 +269,7 @@ class TestMcpConfigPreservation:
                 "fetch": {
                     "command": "uvx",
                     "args": ["mcp-server-fetch"],
+                    "env": {"API_KEY": "sk-mcp-secret"},
                 }
             }
         }
@@ -297,12 +295,15 @@ class TestMcpConfigPreservation:
 
         agent_data = persisted_json.get("agent", {})
 
-        # With cipher, mcp_config should be encrypted (not plaintext, not None)
-        assert "encrypted_mcp_config" in agent_data, (
-            "mcp_config should be encrypted when cipher is provided"
-        )
-        assert agent_data.get("mcp_config") is None or "mcp_config" not in agent_data, (
-            "plaintext mcp_config should not be present when encrypted"
+        encrypted_key = agent_data["mcp_config"]["mcpServers"]["fetch"]["env"][
+            "API_KEY"
+        ]
+        assert encrypted_key != "sk-mcp-secret"
+        decrypted_key = cipher.decrypt(encrypted_key)
+        assert decrypted_key is not None
+        assert decrypted_key.get_secret_value() == "sk-mcp-secret"
+        assert "sk-mcp-secret" not in json.dumps(agent_data), (
+            "plaintext mcp_config secrets should not be present when encrypted"
         )
 
         # Verify roundtrip: restore with same cipher should get original config
