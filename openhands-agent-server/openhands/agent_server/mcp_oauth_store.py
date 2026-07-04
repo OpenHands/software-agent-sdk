@@ -1,4 +1,10 @@
-"""Settings-backed OAuth token storage for MCP clients."""
+"""Settings-backed OAuth token storage for FastMCP MCP clients.
+
+FastMCP's OAuth client reads and writes an ``AsyncKeyValue`` token store.
+This adapter maps FastMCP's token/client-info/expiry keys onto OpenHands
+settings so MCP OAuth credentials remain in the settings DataModel and use
+the same encryption/redaction path as other settings secrets.
+"""
 
 from __future__ import annotations
 
