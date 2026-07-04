@@ -1,6 +1,6 @@
 {
   "__expected__": {
-    "schema_version": 6,
+    "schema_version": 5,
     "agent_kind": "openhands",
     "mcp_config.superhuman-mail.auth.strategy": "oauth2",
     "mcp_config.superhuman-mail.auth.state.tokens.access_token": "token-value",
@@ -12,21 +12,19 @@
     "model": "openhands/gpt-5.5"
   },
   "mcp_config": {
-    "mcpServers": {
-      "superhuman-mail": {
-        "url": "https://mcp.mail.superhuman.com/mcp",
-        "type": "http",
-        "auth": {
-          "strategy": "oauth2",
-          "state": {
-            "tokens": {
-              "access_token": "token-value"
-            },
-            "client_info": {
-              "client_id": "client-id"
-            },
-            "token_expires_at": 1234567890.0
-          }
+    "superhuman-mail": {
+      "url": "https://mcp.mail.superhuman.com/mcp",
+      "transport": "http",
+      "auth": {
+        "strategy": "oauth2",
+        "state": {
+          "tokens": {
+            "access_token": "token-value"
+          },
+          "client_info": {
+            "client_id": "client-id"
+          },
+          "token_expires_at": 1234567890.0
         }
       }
     }
