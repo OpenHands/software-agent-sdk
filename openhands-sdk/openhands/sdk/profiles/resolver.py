@@ -32,7 +32,7 @@ from fastmcp.mcp_config import MCPConfig as FastMCPConfig
 from pydantic import BaseModel, Field, SecretStr
 
 from openhands.sdk.context.agent_context import AgentContext
-from openhands.sdk.mcp.config import OpenHandsMCPConfig
+from openhands.sdk.mcp.config import MCPConfig
 from openhands.sdk.profiles.agent_profile import (
     ACPAgentProfile,
     OpenHandsAgentProfile,
@@ -133,16 +133,16 @@ class AgentProfileDiagnostics(BaseModel):
     resolved_settings: dict[str, Any] | None = None
 
 
-MCPConfigInput = OpenHandsMCPConfig | FastMCPConfig | dict[str, Any] | None
+MCPConfigInput = MCPConfig | FastMCPConfig | dict[str, Any] | None
 
 
-def _coerce_mcp_config(mcp_config: MCPConfigInput) -> OpenHandsMCPConfig | None:
-    if mcp_config is None or isinstance(mcp_config, OpenHandsMCPConfig):
+def _coerce_mcp_config(mcp_config: MCPConfigInput) -> MCPConfig | None:
+    if mcp_config is None or isinstance(mcp_config, MCPConfig):
         return mcp_config
-    return OpenHandsMCPConfig.model_validate(mcp_config)
+    return MCPConfig.model_validate(mcp_config)
 
 
-def _server_names(mcp_config: OpenHandsMCPConfig | None) -> list[str]:
+def _server_names(mcp_config: MCPConfig | None) -> list[str]:
     return list(mcp_config.mcp_servers.keys()) if mcp_config is not None else []
 
 
@@ -170,7 +170,7 @@ def _partition_refs(
 def _compute_mcp_filter(
     mcp_config: MCPConfigInput,
     refs: list[str] | None,
-) -> tuple[OpenHandsMCPConfig | None, list[str], list[str]]:
+) -> tuple[MCPConfig | None, list[str], list[str]]:
     """Resolve ``mcp_server_refs`` against the user's ``mcp_config``.
 
     ``None`` → passthrough (all servers); a non-null list filters to the named
@@ -183,7 +183,7 @@ def _compute_mcp_filter(
     available = config.mcp_servers if config is not None else {}
     resolved, dangling = _partition_refs(refs, available)
     filtered = {k: available[k] for k in resolved}
-    filtered_config = OpenHandsMCPConfig(mcp_servers=filtered) if filtered else None
+    filtered_config = MCPConfig(mcp_servers=filtered) if filtered else None
     return filtered_config, resolved, dangling
 
 

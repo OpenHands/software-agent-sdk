@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from openhands.sdk.context.condenser import CondenserBase, NoOpCondenser
 from openhands.sdk.hooks.config import HookConfig
-from openhands.sdk.mcp.config import OpenHandsMCPConfig
+from openhands.sdk.mcp.config import MCPConfig
 from openhands.sdk.utils.path import to_posix_path
 
 
@@ -81,7 +81,7 @@ def _extract_skills(fm: dict[str, object]) -> list[str]:
     return skills
 
 
-def _extract_mcp_config(fm: dict[str, Any]) -> OpenHandsMCPConfig:
+def _extract_mcp_config(fm: dict[str, Any]) -> MCPConfig:
     """Extract MCP configuration from frontmatter.
 
     Variable placeholders (``${VAR}`` and ``${VAR:-default}``) are preserved
@@ -94,13 +94,13 @@ def _extract_mcp_config(fm: dict[str, Any]) -> OpenHandsMCPConfig:
     """
     mcp_servers_raw = fm.get("mcp_servers")
     if mcp_servers_raw is None:
-        return OpenHandsMCPConfig()
+        return MCPConfig()
     if not isinstance(mcp_servers_raw, dict):
         raise ValueError(
             f"mcp_servers must be a mapping of server names to configs, "
             f"got {type(mcp_servers_raw)}"
         )
-    return OpenHandsMCPConfig.model_validate({"mcpServers": mcp_servers_raw})
+    return MCPConfig.model_validate({"mcpServers": mcp_servers_raw})
 
 
 def _extract_profile_store_dir(fm: dict[str, object]) -> str | None:
@@ -250,8 +250,8 @@ class AgentDefinition(BaseModel):
         "Must be strictly positive, or None for no budget.",
         gt=0,
     )
-    mcp_config: OpenHandsMCPConfig = Field(
-        default_factory=OpenHandsMCPConfig,
+    mcp_config: MCPConfig = Field(
+        default_factory=MCPConfig,
         description="MCP configuration for this agent.",
         examples=[
             {"mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}}

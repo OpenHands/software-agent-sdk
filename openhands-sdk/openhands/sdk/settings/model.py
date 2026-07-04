@@ -47,8 +47,8 @@ from openhands.sdk.llm.utils.openhands_provider import (
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import (
+    MCPConfig,
     MCPOAuthState,
-    OpenHandsMCPConfig as MCPConfig,
     drop_unknown_mcp_server_fields,
     dump_mcp_config_secret_values,
     normalize_empty_mcp_config,

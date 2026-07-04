@@ -11,9 +11,9 @@ from openhands.sdk import (
     get_logger,
 )
 from openhands.sdk.mcp import (
+    MCPConfig,
     MCPOAuthAuthCredential,
-    OpenHandsMCPConfig,
-    OpenHandsMCPServer,
+    MCPServer,
 )
 from openhands.sdk.tool import Tool
 from openhands.tools.file_editor import FileEditorTool
@@ -42,9 +42,9 @@ tools = [
     Tool(name=FileEditorTool.name),
 ]
 
-mcp_config = OpenHandsMCPConfig(
+mcp_config = MCPConfig(
     mcp_servers={
-        "Notion": OpenHandsMCPServer(
+        "Notion": MCPServer(
             url="https://mcp.notion.com/mcp",
             auth=MCPOAuthAuthCredential(strategy="oauth2"),
         )

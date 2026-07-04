@@ -6,12 +6,12 @@ from typing import Any
 import mcp.types
 from fastmcp.client.auth import OAuth
 from fastmcp.client.logging import LogMessage
-from fastmcp.mcp_config import MCPConfig, RemoteMCPServer
+from fastmcp.mcp_config import MCPConfig as FastMCPConfig, RemoteMCPServer
 from key_value.aio.protocols import AsyncKeyValue
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient
-from openhands.sdk.mcp.config import OpenHandsMCPConfig, to_fastmcp_mcp_config
+from openhands.sdk.mcp.config import MCPConfig, to_fastmcp_mcp_config
 from openhands.sdk.mcp.exceptions import MCPTimeoutError
 from openhands.sdk.mcp.tool import MCPToolDefinition
 
@@ -25,7 +25,7 @@ def _oauth_auth_from_authentication_config(
     *,
     mcp_oauth_token_storage: AsyncKeyValue | None = None,
 ) -> OAuth | None:
-    """Build FastMCP OAuth auth from explicit OpenHands MCP auth metadata."""
+    """Build FastMCP OAuth auth from explicit SDK MCP auth metadata."""
     if not authentication or authentication.get("type") != "oauth":
         return None
 
@@ -65,15 +65,15 @@ def _oauth_auth_from_authentication_config(
 
 
 def _prepare_mcp_config(
-    config: dict | MCPConfig | OpenHandsMCPConfig,
+    config: dict | FastMCPConfig | MCPConfig,
     *,
     mcp_oauth_token_storage: AsyncKeyValue | None = None,
-) -> MCPConfig:
+) -> FastMCPConfig:
     """Validate MCP config and apply explicit OpenHands runtime auth metadata."""
-    if isinstance(config, MCPConfig):
+    if isinstance(config, FastMCPConfig):
         prepared = config.model_copy(deep=True)
     else:
-        prepared = MCPConfig.model_validate(to_fastmcp_mcp_config(config))
+        prepared = FastMCPConfig.model_validate(to_fastmcp_mcp_config(config))
 
     for server in prepared.mcpServers.values():
         if not isinstance(server, RemoteMCPServer) or server.auth != "oauth":
@@ -115,7 +115,7 @@ async def _connect_and_list_tools(client: MCPClient) -> None:
 
 
 def create_mcp_tools(
-    config: dict | MCPConfig | OpenHandsMCPConfig,
+    config: dict | FastMCPConfig | MCPConfig,
     timeout: float = 30.0,
     *,
     mcp_oauth_token_storage: AsyncKeyValue | None = None,

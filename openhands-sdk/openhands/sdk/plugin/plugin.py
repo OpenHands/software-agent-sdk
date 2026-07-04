@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp.config import OpenHandsMCPConfig
+from openhands.sdk.mcp.config import MCPConfig
 from openhands.sdk.plugin.fetch import fetch_plugin
 from openhands.sdk.plugin.types import (
     CommandDefinition,
@@ -64,7 +64,7 @@ class Plugin(BaseModel):
     hooks: HookConfig | None = Field(
         default=None, description="Hook configuration from hooks/hooks.json"
     )
-    mcp_config: OpenHandsMCPConfig | None = Field(
+    mcp_config: MCPConfig | None = Field(
         default=None, description="MCP configuration from .mcp.json"
     )
     agents: list[AgentDefinition] = Field(
@@ -176,8 +176,8 @@ class Plugin(BaseModel):
 
     def add_mcp_config_to(
         self,
-        mcp_config: OpenHandsMCPConfig | None = None,
-    ) -> OpenHandsMCPConfig:
+        mcp_config: MCPConfig | None = None,
+    ) -> MCPConfig:
         """Add this plugin's MCP servers to an MCP config.
 
         Plugin MCP servers override existing servers with the same name.
@@ -196,7 +196,7 @@ class Plugin(BaseModel):
             >>> new_mcp = plugin.add_mcp_config_to(agent.mcp_config)
             >>> agent = agent.model_copy(update={"mcp_config": new_mcp})
         """
-        base_config = mcp_config or OpenHandsMCPConfig()
+        base_config = mcp_config or MCPConfig()
         plugin_config = self.mcp_config
 
         if plugin_config is None:
@@ -209,7 +209,7 @@ class Plugin(BaseModel):
                 logger.warning(
                     f"Plugin MCP server '{server_name}' overrides existing server"
                 )
-        return OpenHandsMCPConfig(mcp_servers={**existing_servers, **plugin_servers})
+        return MCPConfig(mcp_servers={**existing_servers, **plugin_servers})
 
     @classmethod
     def fetch(
@@ -435,7 +435,7 @@ def _load_hooks(plugin_dir: Path) -> HookConfig | None:
         return None
 
 
-def _load_mcp_config(plugin_dir: Path) -> OpenHandsMCPConfig | None:
+def _load_mcp_config(plugin_dir: Path) -> MCPConfig | None:
     """Load MCP configuration from .mcp.json.
 
     Note: Variables are NOT fully expanded during plugin loading. Only SKILL_ROOT
@@ -460,7 +460,7 @@ def _load_mcp_config(plugin_dir: Path) -> OpenHandsMCPConfig | None:
                 mcp_json,
                 len(config["mcpServers"]),
             )
-        return OpenHandsMCPConfig.model_validate(config)
+        return MCPConfig.model_validate(config)
     except Exception as e:
         logger.warning(f"Failed to load MCP config from {mcp_json}: {e}")
         return None

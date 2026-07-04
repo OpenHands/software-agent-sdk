@@ -27,7 +27,7 @@ from openhands.agent_server.persistence import (
     get_settings_store,
     reset_stores,
 )
-from openhands.sdk.mcp.config import OpenHandsMCPConfig
+from openhands.sdk.mcp.config import MCPConfig
 
 
 def _find_free_port() -> int:
@@ -133,7 +133,7 @@ async def test_mcp_oauth_token_store_persists_values_in_settings(
         settings = PersistedSettings()
         settings.agent_settings = settings.agent_settings.model_copy(
             update={
-                "mcp_config": OpenHandsMCPConfig.model_validate(
+                "mcp_config": MCPConfig.model_validate(
                     {
                         "mcpServers": {
                             "superhuman": {
@@ -241,7 +241,7 @@ def test_oauth_mcp_connection_persists_and_reuses_settings_state(
     """Authenticate to a protected MCP server once, serialize, reload, and reuse.
 
     The server uses FastMCP's in-memory OAuth provider. The client uses the
-    normal OpenHands MCP settings shape plus FastMCP OAuth; only the human
+    normal SDK MCP settings shape plus FastMCP OAuth; only the human
     browser/callback step is replaced with a deterministic redirect follower.
     """
 
@@ -255,7 +255,7 @@ def test_oauth_mcp_connection_persists_and_reuses_settings_state(
             conversations_path=tmp_path / "conversations",
             secret_key=SecretStr("mcp-oauth-e2e-test-key"),
         )
-        mcp_config = OpenHandsMCPConfig.model_validate(
+        mcp_config = MCPConfig.model_validate(
             {
                 "mcpServers": {
                     "mail": {
@@ -344,7 +344,7 @@ async def test_mcp_oauth_token_storage_does_not_attach_to_non_oauth_server(
         settings = PersistedSettings()
         settings.agent_settings = settings.agent_settings.model_copy(
             update={
-                "mcp_config": OpenHandsMCPConfig.model_validate(
+                "mcp_config": MCPConfig.model_validate(
                     {
                         "mcpServers": {
                             "plain": {

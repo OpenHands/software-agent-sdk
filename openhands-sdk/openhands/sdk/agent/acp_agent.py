@@ -73,7 +73,7 @@ from openhands.sdk.event import (
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import LLM, ImageContent, Message, MessageToolCall, TextContent
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp.config import OpenHandsMCPConfig, to_fastmcp_mcp_config
+from openhands.sdk.mcp.config import MCPConfig, to_fastmcp_mcp_config
 from openhands.sdk.observability.laminar import maybe_init_laminar, observe
 from openhands.sdk.settings.acp_providers import (
     ACPFileSecretSpec,
@@ -561,7 +561,7 @@ def _remote_mcp_headers(spec: dict[str, Any], name: str) -> list[HttpHeader]:
 
 
 def _mcp_config_to_acp_servers(
-    mcp_config: OpenHandsMCPConfig,
+    mcp_config: MCPConfig,
     mcp_capabilities: Any,
 ) -> list[_ACPMcpServer]:
     """Translate an OpenHands ``mcp_config`` into ACP MCP server objects.
@@ -570,7 +570,7 @@ def _mcp_config_to_acp_servers(
     :attr:`AgentBase.mcp_config` serializes to) and returns the
     list to pass to ``new_session()`` / ``load_session()`` so the ACP
     subprocess connects to those servers itself.  Unlike the built-in Agent
-    these are *not* turned into in-process OpenHands MCP tools
+    these are *not* turned into in-process SDK MCP tools
     (:attr:`ACPAgent.supports_openhands_mcp` stays ``False``) — the ACP server
     owns the MCP connection and exposes the tools through its own turn.
 
@@ -1925,7 +1925,7 @@ class ACPAgent(AgentBase):
         # server tools and context-window management remain owned by the server.
         # mcp_config IS supported: its servers are forwarded to the subprocess at
         # session creation (see _mcp_config_to_acp_servers) rather than turned
-        # into in-process OpenHands MCP tools.
+        # into in-process SDK MCP tools.
         if self.tools:
             raise NotImplementedError(
                 "ACPAgent does not support custom tools; "

@@ -34,10 +34,10 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.mcp.config import (
     MCPAuthCredential,
+    MCPConfig,
     MCPOAuthAuthCredential,
     MCPOAuthState,
-    OpenHandsMCPConfig,
-    OpenHandsMCPServer,
+    MCPServer,
 )
 from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
 from openhands.sdk.utils.cipher import Cipher
@@ -73,15 +73,13 @@ class _StdioMCPServerSpec(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
     cwd: str | None = None
 
-    def to_openhands_server(
-        self, *, cipher: Cipher | None = None
-    ) -> OpenHandsMCPServer:
+    def to_mcp_server(self, *, cipher: Cipher | None = None) -> MCPServer:
         out: dict[str, Any] = {"command": self.command, "args": list(self.args)}
         if self.env:
             out["env"] = dict(self.env)
         if self.cwd:
             out["cwd"] = self.cwd
-        return OpenHandsMCPServer.model_validate(
+        return MCPServer.model_validate(
             out,
             context=_mcp_validation_context(cipher),
         )
@@ -122,9 +120,7 @@ class _RemoteMCPServerSpec(BaseModel):
             )
         return self
 
-    def to_openhands_server(
-        self, *, cipher: Cipher | None = None
-    ) -> OpenHandsMCPServer:
+    def to_mcp_server(self, *, cipher: Cipher | None = None) -> MCPServer:
         out = self.model_dump(
             mode="json",
             context={"expose_secrets": "plaintext"},
@@ -133,7 +129,7 @@ class _RemoteMCPServerSpec(BaseModel):
         )
         transport = out.pop("type")
         out["transport"] = "http" if transport == "shttp" else transport
-        return OpenHandsMCPServer.model_validate(
+        return MCPServer.model_validate(
             out,
             context=_mcp_validation_context(cipher),
         )
@@ -209,12 +205,10 @@ class MCPTestRequest(BaseModel):
             return None
         return auth.state.to_plain_dict(cipher=cipher)
 
-    def to_openhands_config(
-        self, *, cipher: Cipher | None = None
-    ) -> OpenHandsMCPConfig:
-        return OpenHandsMCPConfig(
+    def to_mcp_config(self, *, cipher: Cipher | None = None) -> MCPConfig:
+        return MCPConfig(
             mcp_servers={
-                self.name: self.server.to_openhands_server(cipher=cipher),
+                self.name: self.server.to_mcp_server(cipher=cipher),
             }
         )
 
@@ -330,7 +324,7 @@ def _probe_mcp_server(
     threadpool first.
     """
 
-    config = request.to_openhands_config(cipher=cipher)
+    config = request.to_mcp_config(cipher=cipher)
 
     try:
         oauth_auth = request.oauth_auth

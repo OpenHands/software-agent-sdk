@@ -57,7 +57,7 @@ from openhands.sdk.event import (
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import ImageContent, Message, TextContent
-from openhands.sdk.mcp.config import OpenHandsMCPConfig
+from openhands.sdk.mcp.config import MCPConfig
 from openhands.sdk.secret import SecretSource
 from openhands.sdk.skills import KeywordTrigger, Skill
 from openhands.sdk.tool.builtins.finish import FinishAction
@@ -90,7 +90,7 @@ class _FakeLookupSecret(SecretSource):
 
 def _make_agent(**kwargs) -> ACPAgent:
     if isinstance(kwargs.get("mcp_config"), dict):
-        kwargs["mcp_config"] = OpenHandsMCPConfig.model_validate(kwargs["mcp_config"])
+        kwargs["mcp_config"] = MCPConfig.model_validate(kwargs["mcp_config"])
     return ACPAgent(acp_command=["echo", "test"], **kwargs)
 
 
@@ -257,7 +257,7 @@ class TestACPAgentValidation:
         """
         agent = ACPAgent(
             acp_command=["echo"],
-            mcp_config=OpenHandsMCPConfig.model_validate(
+            mcp_config=MCPConfig.model_validate(
                 {"mcpServers": {"test": {"command": "echo"}}}
             ),
         )
@@ -7694,8 +7694,8 @@ class TestMcpConfigToAcpServers:
         return McpCapabilities(http=http, sse=sse)
 
     @staticmethod
-    def _config(config: dict[str, Any]) -> OpenHandsMCPConfig:
-        return OpenHandsMCPConfig.model_validate(config)
+    def _config(config: dict[str, Any]) -> MCPConfig:
+        return MCPConfig.model_validate(config)
 
     def test_stdio_always_forwarded(self):
         from acp.schema import McpServerStdio
@@ -7821,7 +7821,7 @@ class TestMcpConfigToAcpServers:
 
     def test_empty_configs(self):
         caps = self._caps(http=True, sse=True)
-        assert _mcp_config_to_acp_servers(OpenHandsMCPConfig(), caps) == []
+        assert _mcp_config_to_acp_servers(MCPConfig(), caps) == []
         assert _mcp_config_to_acp_servers(self._config({"mcpServers": {}}), caps) == []
 
     def test_none_capabilities_drops_remote_keeps_stdio(self):

@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp.config import OpenHandsMCPConfig
+from openhands.sdk.mcp.config import MCPConfig
 from openhands.sdk.plugin.plugin import Plugin
 from openhands.sdk.plugin.types import PluginSource
 from openhands.sdk.skills.utils import SecretLookup, expand_mcp_variables
@@ -110,7 +110,7 @@ def load_plugins(
         expanded_mcp = expand_mcp_variables(
             merged_mcp.to_plain_dict(), {}, get_secret=get_secret, expand_defaults=True
         )
-        merged_mcp = OpenHandsMCPConfig.model_validate(expanded_mcp)
+        merged_mcp = MCPConfig.model_validate(expanded_mcp)
         logger.debug("Expanded MCP config variables")
 
     # Combine all hook configs (concatenation semantics)

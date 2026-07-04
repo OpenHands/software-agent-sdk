@@ -3,15 +3,15 @@
 import pytest
 
 from openhands.sdk.context import AgentContext
-from openhands.sdk.mcp.config import OpenHandsMCPConfig, OpenHandsMCPServer
+from openhands.sdk.mcp.config import MCPConfig, MCPServer
 from openhands.sdk.plugin import Plugin, PluginManifest
 from openhands.sdk.skills import Skill
 
 
 def mcp_config(
-    servers: dict[str, OpenHandsMCPServer] | None = None,
-) -> OpenHandsMCPConfig:
-    return OpenHandsMCPConfig(mcp_servers=servers or {})
+    servers: dict[str, MCPServer] | None = None,
+) -> MCPConfig:
+    return MCPConfig(mcp_servers=servers or {})
 
 
 class TestPluginAddSkillsTo:
@@ -174,8 +174,8 @@ class TestPluginAddMcpConfigTo:
 
     def test_add_mcp_config_to_merges_configs(self):
         """Test add_mcp_config_to returns correctly merged MCP config."""
-        base_mcp = mcp_config({"server1": OpenHandsMCPServer(command="base")})
-        plugin_mcp = mcp_config({"server2": OpenHandsMCPServer(command="plugin")})
+        base_mcp = mcp_config({"server1": MCPServer(command="base")})
+        plugin_mcp = mcp_config({"server2": MCPServer(command="plugin")})
 
         plugin = Plugin(
             manifest=PluginManifest(name="test", version="1.0.0", description="Test"),
@@ -191,18 +191,10 @@ class TestPluginAddMcpConfigTo:
     def test_add_mcp_config_to_plugin_overrides(self):
         """Test plugin config overrides base config for same key."""
         base_mcp = mcp_config(
-            {
-                "server1": OpenHandsMCPServer(
-                    command="python", args=["-m", "base_server"]
-                )
-            }
+            {"server1": MCPServer(command="python", args=["-m", "base_server"])}
         )
         plugin_mcp = mcp_config(
-            {
-                "server1": OpenHandsMCPServer(
-                    command="python", args=["-m", "plugin_server"]
-                )
-            }
+            {"server1": MCPServer(command="python", args=["-m", "plugin_server"])}
         )
 
         plugin = Plugin(
@@ -216,8 +208,8 @@ class TestPluginAddMcpConfigTo:
 
     def test_add_mcp_config_to_does_not_modify_inputs(self):
         """Test add_mcp_config_to does not modify input configs."""
-        base_mcp = mcp_config({"server1": OpenHandsMCPServer(command="python")})
-        plugin_mcp = mcp_config({"server2": OpenHandsMCPServer(command="node")})
+        base_mcp = mcp_config({"server1": MCPServer(command="python")})
+        plugin_mcp = mcp_config({"server2": MCPServer(command="node")})
         original_base = base_mcp.model_dump()
         original_plugin = plugin_mcp.model_dump()
 
@@ -234,8 +226,8 @@ class TestPluginAddMcpConfigTo:
 
     def test_add_mcp_config_to_merges_mcp_servers(self):
         """Test add_mcp_config_to merges mcpServers by server name."""
-        base_mcp = mcp_config({"server1": OpenHandsMCPServer(command="base")})
-        plugin_mcp = mcp_config({"server2": OpenHandsMCPServer(command="plugin")})
+        base_mcp = mcp_config({"server1": MCPServer(command="base")})
+        plugin_mcp = mcp_config({"server2": MCPServer(command="plugin")})
 
         plugin = Plugin(
             manifest=PluginManifest(name="test", version="1.0.0", description="Test"),
@@ -250,8 +242,8 @@ class TestPluginAddMcpConfigTo:
 
     def test_add_mcp_config_to_mcp_servers_plugin_overrides(self):
         """Test plugin mcpServers override base mcpServers for same server name."""
-        base_mcp = mcp_config({"server1": OpenHandsMCPServer(command="base")})
-        plugin_mcp = mcp_config({"server1": OpenHandsMCPServer(command="plugin")})
+        base_mcp = mcp_config({"server1": MCPServer(command="base")})
+        plugin_mcp = mcp_config({"server1": MCPServer(command="plugin")})
 
         plugin = Plugin(
             manifest=PluginManifest(name="test", version="1.0.0", description="Test"),
@@ -317,6 +309,6 @@ def mock_plugin_with_mcp():
         ),
         path="/tmp/mcp",
         mcp_config=mcp_config(
-            {"server1": OpenHandsMCPServer(command="python", args=["-m", "server1"])}
+            {"server1": MCPServer(command="python", args=["-m", "server1"])}
         ),
     )

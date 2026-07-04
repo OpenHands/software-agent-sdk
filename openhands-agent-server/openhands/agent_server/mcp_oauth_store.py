@@ -19,11 +19,11 @@ from openhands.agent_server.persistence import PersistedSettings, get_settings_s
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import (
+    MCPConfig,
     MCPOAuthAuthCredential,
     MCPOAuthState,
     MCPOAuthTokenStorageField,
-    OpenHandsMCPConfig,
-    OpenHandsMCPServer,
+    MCPServer,
 )
 from openhands.sdk.mcp.utils import create_mcp_tools
 
@@ -57,9 +57,9 @@ def _server_url_matches_key(server_url: str, key: str) -> bool:
 
 
 def _find_matching_oauth_server(
-    mcp_config: OpenHandsMCPConfig,
+    mcp_config: MCPConfig,
     key: str,
-) -> tuple[str, OpenHandsMCPServer, MCPOAuthAuthCredential] | None:
+) -> tuple[str, MCPServer, MCPOAuthAuthCredential] | None:
     for server_name, server in mcp_config.mcp_servers.items():
         if server.url is None or not _server_url_matches_key(server.url, key):
             continue
@@ -354,9 +354,7 @@ class InMemoryMCPOAuthTokenStore:
 class SettingsBackedMCPToolProvider:
     """Create MCP tools with FastMCP OAuth state persisted in settings."""
 
-    def create_tools(
-        self, config: OpenHandsMCPConfig, timeout: float = 30.0
-    ) -> MCPClient:
+    def create_tools(self, config: MCPConfig, timeout: float = 30.0) -> MCPClient:
         return create_mcp_tools(
             config,
             timeout,

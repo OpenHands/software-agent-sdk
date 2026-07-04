@@ -49,9 +49,9 @@ logger = get_logger(__name__)
 
 
 def _validate_openhands_mcp_config(value: dict):
-    from openhands.sdk.mcp.config import OpenHandsMCPConfig
+    from openhands.sdk.mcp.config import MCPConfig
 
-    return OpenHandsMCPConfig.model_validate(value)
+    return MCPConfig.model_validate(value)
 
 
 class SkillInfo(BaseModel):

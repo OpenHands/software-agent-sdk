@@ -27,7 +27,7 @@ from openhands.sdk.critic.base import CriticBase
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp.config import OpenHandsMCPConfig
+from openhands.sdk.mcp.config import MCPConfig
 from openhands.sdk.tool import (
     BUILT_IN_TOOL_CLASSES,
     BUILT_IN_TOOLS,
@@ -129,8 +129,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             },
         ],
     )
-    mcp_config: OpenHandsMCPConfig = Field(
-        default_factory=OpenHandsMCPConfig,
+    mcp_config: MCPConfig = Field(
+        default_factory=MCPConfig,
         description="Optional MCP configuration to create MCP tools.",
         examples=[
             {"mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}}

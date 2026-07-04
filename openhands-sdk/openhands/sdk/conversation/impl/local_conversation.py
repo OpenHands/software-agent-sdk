@@ -56,7 +56,7 @@ from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
 from openhands.sdk.marketplace.registry import MarketplaceRegistry
-from openhands.sdk.mcp.config import OpenHandsMCPConfig
+from openhands.sdk.mcp.config import MCPConfig
 from openhands.sdk.mcp.runtime import DefaultMCPToolProvider, MCPToolProvider
 from openhands.sdk.observability.laminar import observe
 from openhands.sdk.plugin import (
@@ -957,7 +957,7 @@ class LocalConversation(BaseConversation):
                 get_secret=self._state.secret_registry.get_secret_value,
                 expand_defaults=True,
             )
-            merged_mcp = OpenHandsMCPConfig.model_validate(expanded_mcp)
+            merged_mcp = MCPConfig.model_validate(expanded_mcp)
             logger.debug("Expanded MCP config variables")
 
         # Update agent with merged content only if something changed.
@@ -1099,7 +1099,7 @@ class LocalConversation(BaseConversation):
         self._hook_processor.run_session_start()
 
     def _runtime_mcp_tools_for_plugin(
-        self, plugin_mcp_config: OpenHandsMCPConfig | None
+        self, plugin_mcp_config: MCPConfig | None
     ) -> list[ToolDefinition]:
         if plugin_mcp_config is None or not plugin_mcp_config.mcp_servers:
             return []
@@ -1162,7 +1162,7 @@ class LocalConversation(BaseConversation):
                 get_secret=get_secret,
                 expand_defaults=True,
             )
-            runtime_plugin_mcp = OpenHandsMCPConfig.model_validate(expanded_plugin_mcp)
+            runtime_plugin_mcp = MCPConfig.model_validate(expanded_plugin_mcp)
         merged_context = plugin.add_skills_to(self.agent.agent_context)
         merged_mcp = plugin.add_mcp_config_to(self.agent.mcp_config)
         if merged_mcp.mcp_servers:
@@ -1172,7 +1172,7 @@ class LocalConversation(BaseConversation):
                 get_secret=get_secret,
                 expand_defaults=True,
             )
-            merged_mcp = OpenHandsMCPConfig.model_validate(expanded_mcp)
+            merged_mcp = MCPConfig.model_validate(expanded_mcp)
         runtime_mcp_tools = (
             self._runtime_mcp_tools_for_plugin(runtime_plugin_mcp)
             if self._agent_ready

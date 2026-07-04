@@ -16,7 +16,7 @@ from openhands.sdk.agent.agent import Agent
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.llm import LLM
-from openhands.sdk.mcp.config import OpenHandsMCPConfig
+from openhands.sdk.mcp.config import MCPConfig
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -45,7 +45,7 @@ def agent_with_secret_in_mcp_config():
             }
         }
     }
-    return Agent(llm=llm, mcp_config=OpenHandsMCPConfig.model_validate(mcp_config))
+    return Agent(llm=llm, mcp_config=MCPConfig.model_validate(mcp_config))
 
 
 class TestMcpSecretsDoNotLeakToPersistence:
@@ -275,7 +275,7 @@ class TestMcpConfigPreservation:
         }
         agent = Agent(
             llm=llm,
-            mcp_config=OpenHandsMCPConfig.model_validate(mcp_config),
+            mcp_config=MCPConfig.model_validate(mcp_config),
         )
         cipher = Cipher(secret_key="test-encryption-key")
 

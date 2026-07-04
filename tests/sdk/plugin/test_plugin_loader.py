@@ -10,7 +10,7 @@ from openhands.sdk import LLM, Agent
 from openhands.sdk.context import AgentContext
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.hooks.config import HookDefinition, HookMatcher
-from openhands.sdk.mcp.config import OpenHandsMCPConfig
+from openhands.sdk.mcp.config import MCPConfig
 from openhands.sdk.plugin import (
     PluginFetchError,
     PluginSource,
@@ -56,7 +56,7 @@ def agent_with_mcp(mock_llm):
     return Agent(
         llm=mock_llm,
         tools=[],
-        mcp_config=OpenHandsMCPConfig.model_validate(
+        mcp_config=MCPConfig.model_validate(
             {"mcpServers": {"existing-server": {"command": "test"}}}
         ),
     )

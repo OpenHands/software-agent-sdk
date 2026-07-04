@@ -12,14 +12,14 @@ from openhands.sdk.agent import Agent
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.llm import LLM
 from openhands.sdk.mcp.client import MCPClient
-from openhands.sdk.mcp.config import OpenHandsMCPConfig
+from openhands.sdk.mcp.config import MCPConfig
 from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.tool.tool import ToolDefinition
 from openhands.sdk.utils.models import OpenHandsModel
 
 
-def mcp_config_model(config: dict[str, Any]) -> OpenHandsMCPConfig:
-    return OpenHandsMCPConfig.model_validate(config)
+def mcp_config_model(config: dict[str, Any]) -> MCPConfig:
+    return MCPConfig.model_validate(config)
 
 
 def dump_mcp_config(agent: AgentBase) -> dict[str, Any]:
