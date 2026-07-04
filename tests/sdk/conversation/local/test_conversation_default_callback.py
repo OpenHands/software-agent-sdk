@@ -19,9 +19,7 @@ class ConversationDefaultCallbackDummyAgent(AgentBase):
         super().__init__(llm=llm, tools=[])
 
     def init_state(
-        self,
-        state: ConversationState,
-        on_event: ConversationCallbackType,
+        self, state: ConversationState, on_event: ConversationCallbackType
     ) -> None:
         event = SystemPromptEvent(
             source="agent", system_prompt=TextContent(text="dummy"), tools=[]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.request import urlopen
@@ -13,7 +14,7 @@ import tenacity
 from pydantic import Field, PrivateAttr, SecretStr
 
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp.config import MCPServer
+from openhands.sdk.mcp.config import MCPServer, MCPTransport
 from openhands.sdk.workspace.remote.base import RemoteWorkspace
 from openhands.sdk.workspace.repo import CloneResult, RepoMapping, RepoSource
 
@@ -35,6 +36,12 @@ _MAX_RETRIES = 3
 
 # Default port the agent-server listens on inside a Cloud Runtime
 DEFAULT_AGENT_SERVER_PORT = 60000
+
+
+def _mcp_api_key_headers(api_key: object) -> dict[str, SecretStr] | None:
+    if not api_key:
+        return None
+    return {"Authorization": SecretStr(f"Bearer {api_key}")}
 
 
 def _is_retryable_error(error: BaseException) -> bool:
@@ -727,52 +734,36 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         )
         data = resp.json()
 
-        mcp_config_data = data.get("mcp_config")
-        if not mcp_config_data:
+        cloud_mcp_config = data.get("mcp_config")
+        if not isinstance(cloud_mcp_config, Mapping):
             return {}
 
         mcp_config: dict[str, MCPServer] = {}
 
-        # Transform SSE servers → RemoteMCPServer format
-        for i, sse_server in enumerate(mcp_config_data.get("sse_servers") or []):
-            headers = None
-            if sse_server.get("api_key"):
-                headers = {
-                    "Authorization": SecretStr(f"Bearer {sse_server['api_key']}")
-                }
-            server_name = f"sse_{i}"
-            mcp_config[server_name] = MCPServer(
-                url=sse_server["url"],
-                transport="sse",
-                headers=headers,
-            )
+        server_sources: tuple[tuple[str, str | None, MCPTransport | None], ...] = (
+            ("sse_servers", "sse", "sse"),
+            ("shttp_servers", "shttp", "streamable-http"),
+            ("stdio_servers", None, None),
+        )
+        for source, name_prefix, transport in server_sources:
+            for index, server in enumerate(cloud_mcp_config.get(source) or []):
+                if transport is None:
+                    mcp_config[server["name"]] = MCPServer(
+                        command=server["command"],
+                        args=server.get("args", []),
+                        env=server.get("env"),
+                    )
+                    continue
 
-        # Transform SHTTP servers → RemoteMCPServer format
-        for i, shttp_server in enumerate(mcp_config_data.get("shttp_servers") or []):
-            headers = None
-            if shttp_server.get("api_key"):
-                headers = {
-                    "Authorization": SecretStr(f"Bearer {shttp_server['api_key']}")
-                }
-            server_name = f"shttp_{i}"
-            mcp_config[server_name] = MCPServer(
-                url=shttp_server["url"],
-                transport="streamable-http",
-                headers=headers,
-                timeout=shttp_server.get("timeout"),
-            )
-
-        # Transform STDIO servers → StdioMCPServer format
-        for stdio_server in mcp_config_data.get("stdio_servers") or []:
-            # STDIO servers have an explicit name field
-            mcp_config[stdio_server["name"]] = MCPServer(
-                command=stdio_server["command"],
-                args=stdio_server.get("args", []),
-                env=stdio_server.get("env"),
-            )
-
-        if not mcp_config:
-            return {}
+                assert name_prefix is not None
+                mcp_config[f"{name_prefix}_{index}"] = MCPServer(
+                    url=server["url"],
+                    transport=transport,
+                    headers=_mcp_api_key_headers(server.get("api_key")),
+                    timeout=server.get("timeout")
+                    if transport == "streamable-http"
+                    else None,
+                )
 
         return mcp_config
 
