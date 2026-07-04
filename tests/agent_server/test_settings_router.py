@@ -552,6 +552,7 @@ def test_patch_settings_decrypts_encrypted_mcp_oauth_state(
     assert plaintext_value == {
         "access_token": "oauth-access-token",
         "refresh_token": "oauth-refresh-token",
+        "token_type": "Bearer",
     }
 
     on_disk_text = (temp_persistence_dir / "settings.json").read_text()
