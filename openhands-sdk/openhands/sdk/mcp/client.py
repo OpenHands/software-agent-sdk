@@ -24,7 +24,7 @@ class MCPClient(AsyncMCPClient):
 
     After create_mcp_tools() populates it, use as a sync context manager:
 
-        with create_mcp_tools(mcp_config) as client:
+        with create_mcp_tools(config) as client:
             for tool in client.tools:
                 # use tool
         # Connection automatically closed

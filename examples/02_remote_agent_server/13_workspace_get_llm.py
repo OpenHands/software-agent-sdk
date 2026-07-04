@@ -222,9 +222,9 @@ with ManagedAPIServer(
         client.delete("/api/settings/secrets/TEST_SECRET")
         logger.info("   Test secret deleted")
 
-        # get_mcp_config() returns empty dict if no MCP servers are set
+        # get_mcp_config() returns empty dict if no MCP config is set
         mcp_config = workspace.get_mcp_config()
-        logger.info(f"✅ MCP servers: {mcp_config or '(none configured)'}")
+        logger.info(f"✅ MCP config: {mcp_config or '(none configured)'}")
 
         logger.info("\n" + "=" * 60)
         logger.info("🎉 Example completed successfully!")
@@ -235,7 +235,7 @@ Key takeaways:
 2. RemoteWorkspace.api_key passes X-Session-API-Key header
 3. workspace.get_llm() retrieves LLM with authentication
 4. workspace.get_secrets() returns LookupSecrets with auth headers
-5. workspace.get_mcp_config() retrieves MCP servers with auth
+5. workspace.get_mcp_config() retrieves MCP config with auth
 """)
 
     finally:
