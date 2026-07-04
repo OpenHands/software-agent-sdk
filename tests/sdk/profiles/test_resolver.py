@@ -96,7 +96,7 @@ def test_openhands_resolves_to_settings_with_injected_llm(
     assert settings.llm.api_key.get_secret_value() == _LLM_SECRET
     # MCP filtered to the referenced key.
     assert settings.mcp_config is not None
-    assert list(settings.mcp_config.mcpServers.keys()) == ["fetch"]
+    assert list(settings.mcp_config.mcp_servers.keys()) == ["fetch"]
     # Output feeds the unchanged create_agent path.
     assert isinstance(settings.create_agent(), Agent)
 
@@ -383,7 +383,7 @@ def test_mcp_null_refs_passes_config_through(
     )
     assert settings.mcp_config is not None
     assert isinstance(settings.mcp_config, OpenHandsMCPConfig)
-    assert set(settings.mcp_config.mcpServers.keys()) == {"fetch", "other"}
+    assert set(settings.mcp_config.mcp_servers.keys()) == {"fetch", "other"}
 
 
 def test_mcp_empty_refs_means_none(
@@ -416,7 +416,7 @@ def test_mcp_filter_selects_named_keys(
         cipher=None,
     )
     assert settings.mcp_config is not None
-    assert list(settings.mcp_config.mcpServers.keys()) == ["other"]
+    assert list(settings.mcp_config.mcp_servers.keys()) == ["other"]
 
 
 def test_mcp_dangling_ref_raises(
@@ -540,7 +540,7 @@ def test_acp_resolves_to_settings_without_credentials(
     assert settings.acp_command == ["codex-acp", "--foo"]
     assert settings.acp_args == ["--flag"]
     assert settings.mcp_config is not None
-    assert list(settings.mcp_config.mcpServers.keys()) == ["fetch"]
+    assert list(settings.mcp_config.mcp_servers.keys()) == ["fetch"]
     # No credential is injected; the deprecated llm channel stays empty.
     assert settings.llm.api_key is None
     assert isinstance(settings.create_agent(), ACPAgent)

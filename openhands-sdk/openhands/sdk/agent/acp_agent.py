@@ -561,7 +561,7 @@ def _remote_mcp_headers(spec: dict[str, Any], name: str) -> list[HttpHeader]:
 
 
 def _mcp_config_to_acp_servers(
-    mcp_config: OpenHandsMCPConfig | dict[str, Any],
+    mcp_config: OpenHandsMCPConfig,
     mcp_capabilities: Any,
 ) -> list[_ACPMcpServer]:
     """Translate an OpenHands ``mcp_config`` into ACP MCP server objects.
@@ -593,8 +593,8 @@ def _mcp_config_to_acp_servers(
     models are normalized through the same FastMCP boundary used by the
     built-in Agent before ACP translation.
     """
-    mcp_config = to_fastmcp_mcp_config(mcp_config)
-    servers = mcp_config.get("mcpServers")
+    fastmcp_config = to_fastmcp_mcp_config(mcp_config)
+    servers = fastmcp_config.get("mcpServers")
     if not isinstance(servers, dict):
         return []
     http_ok = bool(getattr(mcp_capabilities, "http", False))

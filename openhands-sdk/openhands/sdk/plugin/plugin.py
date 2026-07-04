@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.config import OpenHandsMCPConfig
 from openhands.sdk.plugin.fetch import fetch_plugin
 from openhands.sdk.plugin.types import (
     CommandDefinition,
@@ -63,7 +64,7 @@ class Plugin(BaseModel):
     hooks: HookConfig | None = Field(
         default=None, description="Hook configuration from hooks/hooks.json"
     )
-    mcp_config: dict[str, Any] | None = Field(
+    mcp_config: OpenHandsMCPConfig | None = Field(
         default=None, description="MCP configuration from .mcp.json"
     )
     agents: list[AgentDefinition] = Field(
@@ -175,63 +176,40 @@ class Plugin(BaseModel):
 
     def add_mcp_config_to(
         self,
-        mcp_config: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+        mcp_config: OpenHandsMCPConfig | None = None,
+    ) -> OpenHandsMCPConfig:
         """Add this plugin's MCP servers to an MCP config.
 
         Plugin MCP servers override existing servers with the same name.
 
-        Merge semantics (Claude Code compatible):
-        - mcpServers: deep-merge by server name (last plugin wins for same server)
-        - Other top-level keys: shallow override (plugin wins)
+        Merge semantics: ``mcpServers`` are merged by server name, and the
+        plugin wins when the same server is present in both configs.
 
         Args:
             mcp_config: Existing MCP config (or None to create new)
 
         Returns:
-            New MCP config dict with this plugin's servers added
+            New MCP config with this plugin's servers added
 
         Example:
             >>> plugin = Plugin.load(Plugin.fetch("github:owner/plugin"))
             >>> new_mcp = plugin.add_mcp_config_to(agent.mcp_config)
             >>> agent = agent.model_copy(update={"mcp_config": new_mcp})
         """
-        base_config = mcp_config
+        base_config = mcp_config or OpenHandsMCPConfig()
         plugin_config = self.mcp_config
 
-        if base_config is None and plugin_config is None:
-            return {}
-        if base_config is None:
-            return dict(plugin_config) if plugin_config else {}
         if plugin_config is None:
-            return dict(base_config)
+            return base_config
 
-        # Shallow copy to avoid mutating inputs
-        result = dict(base_config)
-
-        # Merge mcpServers by server name (Claude Code compatible behavior)
-        if "mcpServers" in plugin_config:
-            existing_servers = result.get("mcpServers", {})
-            for server_name in plugin_config["mcpServers"]:
-                if server_name in existing_servers:
-                    logger.warning(
-                        f"Plugin MCP server '{server_name}' overrides existing server"
-                    )
-            result["mcpServers"] = {
-                **existing_servers,
-                **plugin_config["mcpServers"],
-            }
-
-        # Other top-level keys: plugin wins (shallow override)
-        for key, value in plugin_config.items():
-            if key != "mcpServers":
-                if key in result:
-                    logger.warning(
-                        f"Plugin MCP config key '{key}' overrides existing value"
-                    )
-                result[key] = value
-
-        return result
+        existing_servers = base_config.mcp_servers
+        plugin_servers = plugin_config.mcp_servers
+        for server_name in plugin_servers:
+            if server_name in existing_servers:
+                logger.warning(
+                    f"Plugin MCP server '{server_name}' overrides existing server"
+                )
+        return OpenHandsMCPConfig(mcp_servers={**existing_servers, **plugin_servers})
 
     @classmethod
     def fetch(
@@ -457,7 +435,7 @@ def _load_hooks(plugin_dir: Path) -> HookConfig | None:
         return None
 
 
-def _load_mcp_config(plugin_dir: Path) -> dict[str, Any] | None:
+def _load_mcp_config(plugin_dir: Path) -> OpenHandsMCPConfig | None:
     """Load MCP configuration from .mcp.json.
 
     Note: Variables are NOT fully expanded during plugin loading. Only SKILL_ROOT
@@ -482,7 +460,7 @@ def _load_mcp_config(plugin_dir: Path) -> dict[str, Any] | None:
                 mcp_json,
                 len(config["mcpServers"]),
             )
-        return config
+        return OpenHandsMCPConfig.model_validate(config)
     except Exception as e:
         logger.warning(f"Failed to load MCP config from {mcp_json}: {e}")
         return None

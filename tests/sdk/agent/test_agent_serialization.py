@@ -94,7 +94,7 @@ def test_agent_serialization_redacts_mcp_config_by_default() -> None:
     serialized = json.dumps(agent_dump)
     assert "super-secret-key" not in serialized
     assert "secret-token" not in serialized
-    server = agent_dump["mcp_config"]["mcpServers"]["dummy"]
+    server = agent_dump["mcp_config"]["mcp_servers"]["dummy"]
     assert server["env"]["API_KEY"] == "**********"
     assert server["headers"]["Authorization"] == "**********"
 
@@ -115,7 +115,7 @@ def test_agent_serialization_exposes_mcp_config_with_expose_secrets() -> None:
 
     # With expose_secrets=True, mcp_config should be returned as-is
     agent_dump = agent.model_dump(mode="json", context={"expose_secrets": True})
-    server = agent_dump["mcp_config"]["mcpServers"]["dummy"]
+    server = agent_dump["mcp_config"]["mcp_servers"]["dummy"]
     assert server["command"] == "echo"
     assert server["args"] == ["dummy-mcp"]
     assert server["env"]["API_KEY"] == "super-secret-key"
@@ -145,7 +145,7 @@ def test_agent_serialization_encrypts_mcp_config_with_cipher() -> None:
     cipher = Cipher(secret_key="test-encryption-key")
 
     agent_dump = agent.model_dump(mode="json", context={"cipher": cipher})
-    encrypted = agent_dump["mcp_config"]["mcpServers"]["dummy"]["env"]["API_KEY"]
+    encrypted = agent_dump["mcp_config"]["mcp_servers"]["dummy"]["env"]["API_KEY"]
     assert encrypted != "super-secret-key"
     decrypted = cipher.decrypt(encrypted)
     assert decrypted is not None

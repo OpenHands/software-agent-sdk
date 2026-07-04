@@ -220,6 +220,7 @@ async def test_mcp_oauth_token_store_persists_values_in_settings(
         server = loaded.agent_settings.mcp_config.model_dump(
             mode="json",
             context={"expose_secrets": "plaintext"},
+            by_alias=True,
             exclude_none=True,
             exclude_defaults=True,
         )["mcpServers"]["superhuman"]
@@ -303,6 +304,7 @@ def test_oauth_mcp_connection_persists_and_reuses_settings_state(
         server = persisted_mcp_config.model_dump(
             mode="json",
             context={"expose_secrets": "plaintext"},
+            by_alias=True,
             exclude_none=True,
             exclude_defaults=True,
         )["mcpServers"]["mail"]
@@ -369,7 +371,7 @@ async def test_mcp_oauth_token_storage_does_not_attach_to_non_oauth_server(
         assert loaded is not None
         assert loaded.agent_settings.mcp_config is not None
         server = loaded.agent_settings.mcp_config.model_dump(
-            exclude_none=True, exclude_defaults=True
+            by_alias=True, exclude_none=True, exclude_defaults=True
         )["mcpServers"]["plain"]
         assert "auth" not in server
     finally:

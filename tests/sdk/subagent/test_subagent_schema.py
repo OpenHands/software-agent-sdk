@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from openhands.sdk.hooks.config import HookConfig
+from openhands.sdk.mcp.config import OpenHandsMCPConfig, OpenHandsMCPServer
 from openhands.sdk.subagent.schema import (
     AgentDefinition,
     _extract_examples,
@@ -378,11 +379,17 @@ Content.
         agent = AgentDefinition(name="test")
         assert agent.mcp_servers is None
 
-    def test_mcp_servers_as_dict(self):
-        """Test creating AgentDefinition with mcp_servers as dict."""
-        servers = {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}
-        agent = AgentDefinition(name="mcp-agent", mcp_servers=servers)
-        assert agent.mcp_servers == servers
+    def test_mcp_config(self):
+        """Test creating AgentDefinition with typed MCP config."""
+        servers = {
+            "fetch": OpenHandsMCPServer(command="uvx", args=["mcp-server-fetch"])
+        }
+        agent = AgentDefinition(
+            name="mcp-agent", mcp_config=OpenHandsMCPConfig(mcp_servers=servers)
+        )
+        assert agent.mcp_servers == {
+            "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}
+        }
 
     def test_load_mcp_servers_from_frontmatter(self, tmp_path: Path):
         """Test loading mcp_servers from YAML frontmatter."""

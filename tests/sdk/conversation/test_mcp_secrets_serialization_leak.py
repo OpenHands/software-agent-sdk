@@ -295,7 +295,7 @@ class TestMcpConfigPreservation:
 
         agent_data = persisted_json.get("agent", {})
 
-        encrypted_key = agent_data["mcp_config"]["mcpServers"]["fetch"]["env"][
+        encrypted_key = agent_data["mcp_config"]["mcp_servers"]["fetch"]["env"][
             "API_KEY"
         ]
         assert encrypted_key != "sk-mcp-secret"

@@ -718,9 +718,9 @@ class TestPluginMcpConfigLoading:
 
         # Variable without default should remain as placeholder
         assert plugin.mcp_config is not None
-        auth_header = plugin.mcp_config["mcpServers"]["test-server"]["headers"][
-            "Authorization"
-        ]
+        auth_header = plugin.mcp_config.to_plain_dict()["mcpServers"]["test-server"][
+            "headers"
+        ]["Authorization"]
         assert auth_header == "Bearer ${SECRET_TOKEN}", (
             f"Expected placeholder to be preserved, got '{auth_header}'"
         )
@@ -772,9 +772,9 @@ class TestPluginMcpConfigLoading:
         # CRITICAL: Variable with default should be preserved as a placeholder,
         # NOT replaced with "fallback" during plugin loading
         assert plugin.mcp_config is not None
-        auth_header = plugin.mcp_config["mcpServers"]["test-server"]["headers"][
-            "Authorization"
-        ]
+        auth_header = plugin.mcp_config.to_plain_dict()["mcpServers"]["test-server"][
+            "headers"
+        ]["Authorization"]
 
         # This assertion will FAIL with the current implementation
         expected = "Bearer ${SECRET_TOKEN:-fallback}"
@@ -821,6 +821,8 @@ class TestPluginMcpConfigLoading:
 
         # SKILL_ROOT should be expanded to the plugin directory
         assert plugin.mcp_config is not None
-        command = plugin.mcp_config["mcpServers"]["test-server"]["command"]
+        command = plugin.mcp_config.to_plain_dict()["mcpServers"]["test-server"][
+            "command"
+        ]
         assert str(plugin_dir) in command
         assert "${SKILL_ROOT}" not in command

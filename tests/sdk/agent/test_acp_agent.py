@@ -7693,6 +7693,10 @@ class TestMcpConfigToAcpServers:
 
         return McpCapabilities(http=http, sse=sse)
 
+    @staticmethod
+    def _config(config: dict[str, Any]) -> OpenHandsMCPConfig:
+        return OpenHandsMCPConfig.model_validate(config)
+
     def test_stdio_always_forwarded(self):
         from acp.schema import McpServerStdio
 
@@ -7706,7 +7710,9 @@ class TestMcpConfigToAcpServers:
             }
         }
         # Even with no advertised remote capabilities, stdio is forwarded.
-        out = _mcp_config_to_acp_servers(cfg, self._caps(http=False, sse=False))
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=False, sse=False)
+        )
         assert len(out) == 1
         srv = out[0]
         assert isinstance(srv, McpServerStdio)
@@ -7727,9 +7733,16 @@ class TestMcpConfigToAcpServers:
             }
         }
         # Dropped when the server doesn't advertise http.
-        assert _mcp_config_to_acp_servers(cfg, self._caps(http=False, sse=False)) == []
+        assert (
+            _mcp_config_to_acp_servers(
+                self._config(cfg), self._caps(http=False, sse=False)
+            )
+            == []
+        )
         # Forwarded when advertised.
-        out = _mcp_config_to_acp_servers(cfg, self._caps(http=True, sse=False))
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=False)
+        )
         assert len(out) == 1
         assert isinstance(out[0], HttpMcpServer)
         assert out[0].type == "http"
@@ -7745,11 +7758,13 @@ class TestMcpConfigToAcpServers:
             "mcpServers": {
                 "remote": {
                     "url": "https://h/mcp",
-                    "auth": "token-y",
+                    "auth": {"strategy": "bearer", "value": "token-y"},
                 }
             }
         }
-        out = _mcp_config_to_acp_servers(cfg, self._caps(http=True, sse=False))
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=False)
+        )
         assert len(out) == 1
         assert isinstance(out[0], HttpMcpServer)
         assert [(h.name, h.value) for h in out[0].headers] == [
@@ -7762,11 +7777,13 @@ class TestMcpConfigToAcpServers:
                 "remote": {
                     "url": "https://h/mcp",
                     "headers": {"authorization": "Bearer explicit"},
-                    "auth": "token-y",
+                    "auth": {"strategy": "bearer", "value": "token-y"},
                 }
             }
         }
-        out = _mcp_config_to_acp_servers(cfg, self._caps(http=True, sse=False))
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=False)
+        )
         assert [(h.name, h.value) for h in out[0].headers] == [
             ("authorization", "Bearer explicit")
         ]
@@ -7775,8 +7792,15 @@ class TestMcpConfigToAcpServers:
         from acp.schema import SseMcpServer
 
         cfg = {"mcpServers": {"s": {"url": "https://s/sse", "transport": "sse"}}}
-        assert _mcp_config_to_acp_servers(cfg, self._caps(http=True, sse=False)) == []
-        out = _mcp_config_to_acp_servers(cfg, self._caps(http=True, sse=True))
+        assert (
+            _mcp_config_to_acp_servers(
+                self._config(cfg), self._caps(http=True, sse=False)
+            )
+            == []
+        )
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=True)
+        )
         assert len(out) == 1
         assert isinstance(out[0], SseMcpServer)
         assert out[0].type == "sse"
@@ -7789,18 +7813,16 @@ class TestMcpConfigToAcpServers:
                 "s": {"url": "https://h/mcp", "transport": "streamable-http"}
             }
         }
-        out = _mcp_config_to_acp_servers(cfg, self._caps(http=True, sse=True))
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=True)
+        )
         assert len(out) == 1
         assert isinstance(out[0], HttpMcpServer)
 
-    def test_empty_and_malformed_configs(self):
+    def test_empty_configs(self):
         caps = self._caps(http=True, sse=True)
-        assert _mcp_config_to_acp_servers({}, caps) == []
-        assert _mcp_config_to_acp_servers({"mcpServers": {}}, caps) == []
-        # Not a dict -> skipped, no crash.
-        assert _mcp_config_to_acp_servers({"mcpServers": {"bad": 123}}, caps) == []
-        # No command and no url -> skipped.
-        assert _mcp_config_to_acp_servers({"mcpServers": {"x": {}}}, caps) == []
+        assert _mcp_config_to_acp_servers(OpenHandsMCPConfig(), caps) == []
+        assert _mcp_config_to_acp_servers(self._config({"mcpServers": {}}), caps) == []
 
     def test_none_capabilities_drops_remote_keeps_stdio(self):
         from acp.schema import McpServerStdio
@@ -7811,7 +7833,7 @@ class TestMcpConfigToAcpServers:
                 "remote": {"url": "https://h/mcp"},
             }
         }
-        out = _mcp_config_to_acp_servers(cfg, None)
+        out = _mcp_config_to_acp_servers(self._config(cfg), None)
         assert [type(s).__name__ for s in out] == [McpServerStdio.__name__]
 
 

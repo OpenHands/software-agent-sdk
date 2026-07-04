@@ -9,6 +9,7 @@ from typing import Annotated, Any, Literal
 
 from fastmcp.mcp_config import MCPConfig as FastMCPConfig
 from pydantic import (
+    AliasChoices,
     BaseModel,
     ConfigDict,
     Field,
@@ -417,7 +418,13 @@ class OpenHandsMCPConfig(BaseModel):
     runtime config. Use :func:`to_fastmcp_mcp_config` at runtime boundaries.
     """
 
-    mcpServers: dict[str, OpenHandsMCPServer] = Field(default_factory=dict)
+    model_config = ConfigDict(populate_by_name=True)
+
+    mcp_servers: dict[str, OpenHandsMCPServer] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("mcp_servers", "mcpServers"),
+        serialization_alias="mcpServers",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -436,6 +443,7 @@ class OpenHandsMCPConfig(BaseModel):
         return self.model_dump(
             mode="json",
             context={"expose_secrets": "plaintext"},
+            by_alias=True,
             exclude_none=True,
             exclude_defaults=True,
         )
@@ -500,6 +508,7 @@ def dump_openhands_mcp_config(
         return config.model_dump(
             mode="json",
             context=dump_context,
+            by_alias=True,
             exclude_none=True,
             exclude_defaults=True,
         )

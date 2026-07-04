@@ -437,7 +437,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         event history during initialization.
         """
         mcp_tools: list[ToolDefinition] = []
-        if not self._initialized and self.mcp_config.mcpServers:
+        if not self._initialized and self.mcp_config.mcp_servers:
             provider = mcp_tool_provider or DefaultMCPToolProvider()
             mcp_tools = list(provider.create_tools(self.mcp_config, 30))
 

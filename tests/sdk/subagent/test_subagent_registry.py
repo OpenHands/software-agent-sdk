@@ -9,6 +9,7 @@ from openhands.sdk import LLM, Agent
 from openhands.sdk.context.condenser import LLMSummarizingCondenser, NoOpCondenser
 from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.mcp.config import OpenHandsMCPConfig, OpenHandsMCPServer
 from openhands.sdk.subagent.registry import (
     _reset_registry_for_tests,
     agent_definition_to_factory,
@@ -819,9 +820,11 @@ def test_agent_definition_to_factory_mcp_servers() -> None:
         model="inherit",
         tools=[],
         system_prompt="",
-        mcp_servers={
-            "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]},
-        },
+        mcp_config=OpenHandsMCPConfig(
+            mcp_servers={
+                "fetch": OpenHandsMCPServer(command="uvx", args=["mcp-server-fetch"]),
+            }
+        ),
     )
 
     factory = agent_definition_to_factory(agent_def)
@@ -846,7 +849,7 @@ def test_agent_definition_to_factory_no_mcp_servers() -> None:
     llm = _make_test_llm()
     agent = factory(llm)
 
-    assert agent.mcp_config.mcpServers == {}
+    assert agent.mcp_config.mcp_servers == {}
 
 
 def test_register_file_agents_passes_mcp_config_to_agent(tmp_path: Path) -> None:

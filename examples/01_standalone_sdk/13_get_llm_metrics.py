@@ -10,6 +10,7 @@ from openhands.sdk import (
     LLMConvertibleEvent,
     get_logger,
 )
+from openhands.sdk.mcp import OpenHandsMCPConfig, OpenHandsMCPServer
 from openhands.sdk.tool import Tool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.terminal import TerminalTool
@@ -36,7 +37,9 @@ tools = [
 ]
 
 # Add MCP Tools
-mcp_config = {"mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}}
+mcp_config = OpenHandsMCPConfig(
+    mcp_servers={"fetch": OpenHandsMCPServer(command="uvx", args=["mcp-server-fetch"])}
+)
 
 # Agent
 agent = Agent(llm=llm, tools=tools, mcp_config=mcp_config)

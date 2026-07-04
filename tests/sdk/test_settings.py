@@ -603,6 +603,7 @@ def test_validate_agent_settings_migrates_legacy_mcp_auth_shapes() -> None:
     servers = settings.mcp_config.model_dump(
         mode="json",
         context={"expose_secrets": "plaintext"},
+        by_alias=True,
         exclude_none=True,
         exclude_defaults=True,
     )["mcpServers"]
@@ -700,6 +701,7 @@ def test_validate_agent_settings_mcp_linear_migration_does_not_duplicate() -> No
     assert settings.mcp_config.model_dump(
         mode="json",
         context={"expose_secrets": "plaintext"},
+        by_alias=True,
         exclude_none=True,
     )["mcpServers"] == {
         "shttp": {
@@ -1659,6 +1661,7 @@ def test_agent_settings_storage_helpers_encrypt_full_payload() -> None:
     servers = loaded.mcp_config.model_dump(
         mode="json",
         context={"expose_secrets": "plaintext"},
+        by_alias=True,
         exclude_none=True,
     )["mcpServers"]
     assert servers["http"]["headers"]["X-MCP-Token"] == "header-secret"
@@ -1800,6 +1803,7 @@ def test_mcp_config_encrypts_env_and_headers_with_cipher() -> None:
     restored_dump = restored.mcp_config.model_dump(
         mode="json",
         context={"expose_secrets": "plaintext"},
+        by_alias=True,
         exclude_none=True,
     )
     assert (
@@ -1853,6 +1857,7 @@ def test_mcp_config_encrypts_bearer_auth_with_cipher() -> None:
     restored_servers = restored.mcp_config.model_dump(
         mode="json",
         context={"expose_secrets": "plaintext"},
+        by_alias=True,
         exclude_none=True,
     )["mcpServers"]
     assert restored_servers["linear"]["auth"] == {
@@ -1932,6 +1937,7 @@ def test_openhands_agent_settings_mcp_config_decrypt_legacy_plaintext_on_disk() 
         restored.mcp_config.model_dump(
             mode="json",
             context={"expose_secrets": "plaintext"},
+            by_alias=True,
             exclude_none=True,
         )["mcpServers"]["github"]["env"]["GITHUB_TOKEN"]
         == "ghp-legacy-plaintext"

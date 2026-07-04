@@ -60,7 +60,7 @@ def _find_matching_oauth_server(
     mcp_config: OpenHandsMCPConfig,
     key: str,
 ) -> tuple[str, OpenHandsMCPServer, MCPOAuthAuthCredential] | None:
-    for server_name, server in mcp_config.mcpServers.items():
+    for server_name, server in mcp_config.mcp_servers.items():
         if server.url is None or not _server_url_matches_key(server.url, key):
             continue
         auth = server.auth
@@ -153,7 +153,7 @@ class MCPSettingsOAuthTokenStore:
             state = (auth.state or MCPOAuthState()).with_token_storage_value(
                 field, stored_value
             )
-            updated_servers = dict(mcp_config.mcpServers)
+            updated_servers = dict(mcp_config.mcp_servers)
             updated_servers[server_name] = server.model_copy(
                 update={
                     "auth": auth.model_copy(
@@ -164,7 +164,7 @@ class MCPSettingsOAuthTokenStore:
             settings.agent_settings = settings.agent_settings.model_copy(
                 update={
                     "mcp_config": mcp_config.model_copy(
-                        update={"mcpServers": updated_servers}
+                        update={"mcp_servers": updated_servers}
                     )
                 }
             )
@@ -209,7 +209,7 @@ class MCPSettingsOAuthTokenStore:
             ).without_token_storage_value(field)
             if not deleted:
                 return settings
-            updated_servers = dict(mcp_config.mcpServers)
+            updated_servers = dict(mcp_config.mcp_servers)
             updated_servers[server_name] = server.model_copy(
                 update={
                     "auth": auth.model_copy(
@@ -220,7 +220,7 @@ class MCPSettingsOAuthTokenStore:
             settings.agent_settings = settings.agent_settings.model_copy(
                 update={
                     "mcp_config": mcp_config.model_copy(
-                        update={"mcpServers": updated_servers}
+                        update={"mcp_servers": updated_servers}
                     )
                 }
             )

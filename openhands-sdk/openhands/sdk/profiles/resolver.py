@@ -143,7 +143,7 @@ def _coerce_mcp_config(mcp_config: MCPConfigInput) -> OpenHandsMCPConfig | None:
 
 
 def _server_names(mcp_config: OpenHandsMCPConfig | None) -> list[str]:
-    return list(mcp_config.mcpServers.keys()) if mcp_config is not None else []
+    return list(mcp_config.mcp_servers.keys()) if mcp_config is not None else []
 
 
 def _partition_refs(
@@ -180,10 +180,10 @@ def _compute_mcp_filter(
     config = _coerce_mcp_config(mcp_config)
     if refs is None:
         return config, _server_names(config), []
-    available = config.mcpServers if config is not None else {}
+    available = config.mcp_servers if config is not None else {}
     resolved, dangling = _partition_refs(refs, available)
     filtered = {k: available[k] for k in resolved}
-    filtered_config = OpenHandsMCPConfig(mcpServers=filtered) if filtered else None
+    filtered_config = OpenHandsMCPConfig(mcp_servers=filtered) if filtered else None
     return filtered_config, resolved, dangling
 
 

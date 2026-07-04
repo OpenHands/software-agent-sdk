@@ -213,7 +213,7 @@ class MCPTestRequest(BaseModel):
         self, *, cipher: Cipher | None = None
     ) -> OpenHandsMCPConfig:
         return OpenHandsMCPConfig(
-            mcpServers={
+            mcp_servers={
                 self.name: self.server.to_openhands_server(cipher=cipher),
             }
         )
