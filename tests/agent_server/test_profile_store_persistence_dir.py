@@ -1,10 +1,8 @@
-"""Regression test for #3815.
+"""Regression tests for credential-bearing store persistence directories.
 
-Without this, ``get_llm_profile_store`` / ``get_agent_profile_store`` would
-read and write the user's ``~/.openhands/profiles/`` and
-``~/.openhands/agent-profiles/`` regardless of ``OH_PERSISTENCE_DIR``,
-leaking host state into supposedly-isolated agent-server instances and
-making first-run / onboarding tests non-reproducible.
+``OH_PERSISTENCE_DIR`` must isolate profile stores for agent-server instances,
+while the default fallback must keep profile, settings, and secrets data in
+``~/.openhands`` rather than workspace-relative project directories.
 """
 
 from __future__ import annotations
@@ -16,9 +14,13 @@ from pathlib import Path
 
 import pytest
 
+from openhands.agent_server.config import Config
 from openhands.agent_server.persistence import (
+    PersistedSettings,
     get_agent_profile_store,
     get_llm_profile_store,
+    get_secrets_store,
+    get_settings_store,
     reset_stores,
 )
 
@@ -88,6 +90,44 @@ def test_agent_profile_store_falls_back_to_home(
     assert (
         store.base_dir == home_without_persistence_env / ".openhands" / "agent-profiles"
     )
+
+
+def test_settings_store_falls_back_to_home(
+    home_without_persistence_env: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.chdir(repo)
+
+    store = get_settings_store(
+        Config(conversations_path=Path("workspace/conversations"))
+    )
+    store.save(PersistedSettings())
+
+    assert store.persistence_dir == home_without_persistence_env / ".openhands"
+    assert (home_without_persistence_env / ".openhands" / "settings.json").is_file()
+    assert not (repo / "workspace" / ".openhands" / "settings.json").exists()
+
+
+def test_secrets_store_falls_back_to_home(
+    home_without_persistence_env: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.chdir(repo)
+
+    store = get_secrets_store(
+        Config(conversations_path=Path("workspace/conversations"))
+    )
+    store.set_secret("OPENAI_API_KEY", "sk-test")
+
+    assert store.persistence_dir == home_without_persistence_env / ".openhands"
+    assert (home_without_persistence_env / ".openhands" / "secrets.json").is_file()
+    assert not (repo / "workspace" / ".openhands" / "secrets.json").exists()
 
 
 def test_profile_stores_do_not_read_home_directory(
