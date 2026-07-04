@@ -32,8 +32,7 @@ from openhands.sdk.critic.base import CriticBase
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp.config import OpenHandsMCPConfig, to_fastmcp_mcp_config
-from openhands.sdk.mcp.runtime import DefaultMCPToolProvider, MCPToolProvider
+from openhands.sdk.mcp.config import OpenHandsMCPConfig
 from openhands.sdk.tool import (
     BUILT_IN_TOOL_CLASSES,
     BUILT_IN_TOOLS,
@@ -136,9 +135,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             },
         ],
     )
-    mcp_config: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Optional MCP configuration dictionary to create MCP tools.",
+    mcp_config: OpenHandsMCPConfig = Field(
+        default_factory=OpenHandsMCPConfig,
+        description="Optional MCP configuration to create MCP tools.",
         examples=[
             {"mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}}
         ],
@@ -276,10 +275,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         encrypted = data.pop("encrypted_mcp_config", None)
         if not has_encrypted_mcp_config:
             mcp_config = data.get("mcp_config")
-            if mcp_config is not None and not isinstance(mcp_config, dict):
+            if mcp_config is None:
+                data.pop("mcp_config", None)
+            elif not isinstance(mcp_config, dict | OpenHandsMCPConfig):
                 raise ValueError("mcp_config must be a dictionary when provided")
-            if isinstance(mcp_config, dict) and cipher is not None:
-                data["mcp_config"] = to_fastmcp_mcp_config(mcp_config, cipher=cipher)
             return data
 
         if not isinstance(encrypted, str):
@@ -352,13 +351,13 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         # - expose_secrets=True: keep as-is (explicitly requested)
         # - cipher present: encrypt and store in encrypted_mcp_config, omit original
         # - default: omit (redact sensitive data)
-        if not self.mcp_config:  # Only process non-empty configs
+        if not self.mcp_config.mcpServers:  # Only process non-empty configs
             result.pop("mcp_config", None)
             return result
         elif info.context and info.context.get("cipher"):
             # Encrypt and add encrypted_mcp_config
             cipher: Cipher = info.context["cipher"]
-            json_str = json.dumps(self.mcp_config)
+            json_str = json.dumps(self.mcp_config.to_plain_dict())
             encrypted = cipher.encrypt(SecretStr(json_str))
             if encrypted:
                 result["encrypted_mcp_config"] = encrypted
@@ -366,7 +365,12 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             result.pop("mcp_config", None)
             return result
         elif info.context and info.context.get("expose_secrets"):
-            # Keep mcp_config as-is (already in result from handler)
+            result["mcp_config"] = self.mcp_config.model_dump(
+                mode="json",
+                context=info.context,
+                exclude_none=True,
+                exclude_defaults=True,
+            )
             return result
         else:
             # Default: redact by omitting
@@ -414,17 +418,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     # Runtime materialized tools; private and non-serializable
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)
     _initialized: bool = PrivateAttr(default=False)
-    _mcp_tool_provider: MCPToolProvider = PrivateAttr(
-        default_factory=DefaultMCPToolProvider
-    )
-
-    def set_mcp_tool_provider(
-        self,
-        tool_provider: MCPToolProvider | None,
-    ) -> None:
-        object.__setattr__(
-            self, "_mcp_tool_provider", tool_provider or DefaultMCPToolProvider()
-        )
 
     @property
     def prompt_dir(self) -> str:
@@ -649,7 +642,12 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         """
         self._initialize(state)
 
-    def _initialize(self, state: ConversationState):
+    def _initialize(
+        self,
+        state: ConversationState,
+        *,
+        extra_tools: Sequence[ToolDefinition] = (),
+    ):
         """Create an AgentBase instance from an AgentSpec."""
 
         if self._initialized:
@@ -667,20 +665,12 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 future = executor.submit(resolve_tool, tool_spec, state)
                 futures.append(future)
 
-            # Submit MCP tools creation if configured
-            if self.mcp_config:
-                mcp_config = OpenHandsMCPConfig.model_validate(self.mcp_config)
-                future = executor.submit(
-                    self._mcp_tool_provider.create_tools,
-                    mcp_config,
-                    30,
-                )
-                futures.append(future)
-
             # Collect results as they complete
             for future in futures:
                 result = future.result()
                 tools.extend(result)
+
+        tools.extend(extra_tools)
 
         logger.info("Loaded %d tools from spec", len(tools))
         if self.filter_tools_regex:

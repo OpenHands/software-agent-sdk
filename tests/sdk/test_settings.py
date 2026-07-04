@@ -835,7 +835,7 @@ def test_llm_create_agent_serializes_typed_mcp_config_compactly() -> None:
 
     agent = settings.create_agent()
 
-    assert agent.mcp_config == {
+    assert agent.mcp_config.to_plain_dict() == {
         "mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}
     }
 
@@ -1864,9 +1864,7 @@ def test_mcp_config_encrypts_bearer_auth_with_cipher() -> None:
     }
 
 
-def test_openhands_agent_settings_create_agent_normalizes_mcp_auth_for_fastmcp() -> (
-    None
-):
+def test_openhands_agent_settings_create_agent_preserves_mcp_auth_model() -> None:
     mcp_config = OpenHandsMCPConfig.model_validate(
         {
             "mcpServers": {
@@ -1890,12 +1888,17 @@ def test_openhands_agent_settings_create_agent_normalizes_mcp_auth_for_fastmcp()
 
     agent = OpenHandsAgentSettings(mcp_config=mcp_config).create_agent()
 
-    servers = agent.mcp_config["mcpServers"]
-    assert servers["linear"]["auth"] == "lin-api-secret"
-    assert servers["superhuman"]["auth"] == "oauth"
-    assert servers["superhuman"]["authentication"] == {
-        "type": "oauth",
-        "client_auth_method": "none",
+    servers = agent.mcp_config.to_plain_dict()["mcpServers"]
+    assert servers["linear"]["auth"] == {
+        "strategy": "bearer",
+        "value": "lin-api-secret",
+    }
+    assert servers["superhuman"]["auth"] == {
+        "strategy": "oauth2",
+        "authentication": {
+            "type": "oauth",
+            "client_auth_method": "none",
+        },
     }
 
 
@@ -2018,7 +2021,10 @@ def test_openhands_agent_settings_create_agent_keeps_real_mcp_secrets() -> None:
     )
     agent = OpenHandsAgentSettings(mcp_config=mcp_config).create_agent()
 
-    assert agent.mcp_config["mcpServers"]["leaky"]["env"]["API_KEY"] == "sk-mcp-secret"
+    assert (
+        agent.mcp_config.to_plain_dict()["mcpServers"]["leaky"]["env"]["API_KEY"]
+        == "sk-mcp-secret"
+    )
 
 
 def test_acp_agent_settings_mcp_config_redacts_env_and_headers() -> None:
@@ -2064,9 +2070,14 @@ def test_acp_agent_settings_create_agent_keeps_real_mcp_secrets() -> None:
     agent = ACPAgentSettings(acp_command=["echo"], mcp_config=mcp_config).create_agent()
 
     assert isinstance(agent, ACPAgent)
-    assert agent.mcp_config["mcpServers"]["leaky"]["env"]["API_KEY"] == "sk-mcp-secret"
     assert (
-        agent.mcp_config["mcpServers"]["leaky"]["headers"]["X-API-Token"]
+        agent.mcp_config.to_plain_dict()["mcpServers"]["leaky"]["env"]["API_KEY"]
+        == "sk-mcp-secret"
+    )
+    assert (
+        agent.mcp_config.to_plain_dict()["mcpServers"]["leaky"]["headers"][
+            "X-API-Token"
+        ]
         == "tok-mcp-secret"
     )
 

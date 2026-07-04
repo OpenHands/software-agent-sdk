@@ -307,7 +307,6 @@ class LocalConversation(BaseConversation):
             if new_tools:
                 agent = agent.model_copy(update={"tools": [*agent.tools, *new_tools]})
 
-        agent.set_mcp_tool_provider(self._mcp_tool_provider)
         self.agent = agent
         if isinstance(workspace, (str, Path)):
             # LocalWorkspace accepts both str and Path via BeforeValidator
@@ -454,10 +453,6 @@ class LocalConversation(BaseConversation):
             conversation_tags=tags,
         )
         self.delete_on_close = delete_on_close
-
-    def _attach_runtime_agent_config(self, agent: AgentBase) -> AgentBase:
-        agent.set_mcp_tool_provider(self._mcp_tool_provider)
-        return agent
 
     def _tree_stamping(
         self, inner: ConversationCallbackType
@@ -769,7 +764,11 @@ class LocalConversation(BaseConversation):
         explicit_plugin_names: set[str] = set()
 
         merged_context = self.agent.agent_context
-        merged_mcp = dict(self.agent.mcp_config) if self.agent.mcp_config else {}
+        merged_mcp = (
+            self.agent.mcp_config.to_plain_dict()
+            if self.agent.mcp_config.mcpServers
+            else {}
+        )
 
         # Track whether we have plugins or MCP config to process
         has_mcp_config = bool(merged_mcp)
@@ -972,13 +971,11 @@ class LocalConversation(BaseConversation):
             or project_skills_loaded
             or ambient_plugins_loaded
         ):
-            self.agent = self._attach_runtime_agent_config(
-                self.agent.model_copy(
-                    update={
-                        "agent_context": merged_context,
-                        "mcp_config": merged_mcp,
-                    }
-                )
+            self.agent = self.agent.model_copy(
+                update={
+                    "agent_context": merged_context,
+                    "mcp_config": OpenHandsMCPConfig.model_validate(merged_mcp),
+                }
             )
 
             # Also update the agent in _state so API responses reflect loaded plugins
@@ -1173,7 +1170,9 @@ class LocalConversation(BaseConversation):
         )
         merged_context = plugin.add_skills_to(self.agent.agent_context)
         merged_mcp = plugin.add_mcp_config_to(
-            dict(self.agent.mcp_config) if self.agent.mcp_config else {}
+            self.agent.mcp_config.to_plain_dict()
+            if self.agent.mcp_config.mcpServers
+            else {}
         )
         if merged_mcp:
             merged_mcp = expand_mcp_variables(
@@ -1189,13 +1188,11 @@ class LocalConversation(BaseConversation):
         )
 
         with self._state:
-            self.agent = self._attach_runtime_agent_config(
-                self.agent.model_copy(
-                    update={
-                        "agent_context": merged_context,
-                        "mcp_config": merged_mcp,
-                    }
-                )
+            self.agent = self.agent.model_copy(
+                update={
+                    "agent_context": merged_context,
+                    "mcp_config": OpenHandsMCPConfig.model_validate(merged_mcp),
+                }
             )
 
             if plugin.agents:
@@ -1279,7 +1276,16 @@ class LocalConversation(BaseConversation):
             self._register_file_based_agents()
 
             # Initialize agent with complete configuration
-            self.agent.init_state(self._state, on_event=self._on_event)
+            from openhands.sdk.agent.agent import Agent
+
+            if isinstance(self.agent, Agent):
+                self.agent.init_state(
+                    self._state,
+                    on_event=self._on_event,
+                    mcp_tool_provider=self._mcp_tool_provider,
+                )
+            else:
+                self.agent.init_state(self._state, on_event=self._on_event)
 
             # Register LLMs in the registry (still holding lock).
             # `registered` is updated after each add so that duplicate usage_ids
@@ -1406,9 +1412,7 @@ class LocalConversation(BaseConversation):
                     self.agent.llm,
                     new_llm,
                 )
-            self.agent = self._attach_runtime_agent_config(
-                self.agent.model_copy(update=update)
-            )
+            self.agent = self.agent.model_copy(update=update)
             self._state.agent = self.agent
             self._bind_conversation_context(new_llm)
             # Invalidate the cached ask-agent LLM so it re-clones.
@@ -1513,9 +1517,7 @@ class LocalConversation(BaseConversation):
             # Pre-session there is no runtime to hand off, so release_runtime is
             # unnecessary (the discarded agent's close() is already a no-op).
             old_agent = self.agent
-            new_agent = self._attach_runtime_agent_config(
-                old_agent.model_copy(update={"acp_model": model})
-            )
+            new_agent = old_agent.model_copy(update={"acp_model": model})
             if live:
                 old_agent.release_runtime()
             # ``self.agent`` is the live reference used by subsequent ``step()``

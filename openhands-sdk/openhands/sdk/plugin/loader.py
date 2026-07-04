@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.config import OpenHandsMCPConfig
 from openhands.sdk.plugin.plugin import Plugin
 from openhands.sdk.plugin.types import PluginSource
 from openhands.sdk.skills.utils import SecretLookup, expand_mcp_variables
@@ -74,7 +75,9 @@ def load_plugins(
 
     # Start with agent's existing context and MCP config
     merged_context: AgentContext | None = agent.agent_context
-    merged_mcp: dict[str, Any] = dict(agent.mcp_config) if agent.mcp_config else {}
+    merged_mcp: dict[str, Any] = (
+        agent.mcp_config.to_plain_dict() if agent.mcp_config.mcpServers else {}
+    )
     all_hooks: list[HookConfig] = []
 
     for spec in plugin_specs:
@@ -118,7 +121,7 @@ def load_plugins(
     updated_agent = agent.model_copy(
         update={
             "agent_context": merged_context,
-            "mcp_config": merged_mcp,
+            "mcp_config": OpenHandsMCPConfig.model_validate(merged_mcp),
         }
     )
 

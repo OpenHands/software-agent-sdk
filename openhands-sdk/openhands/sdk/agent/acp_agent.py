@@ -73,6 +73,7 @@ from openhands.sdk.event import (
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import LLM, ImageContent, Message, MessageToolCall, TextContent
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.config import OpenHandsMCPConfig, to_fastmcp_mcp_config
 from openhands.sdk.observability.laminar import maybe_init_laminar, observe
 from openhands.sdk.settings.acp_providers import (
     ACPFileSecretSpec,
@@ -560,13 +561,13 @@ def _remote_mcp_headers(spec: dict[str, Any], name: str) -> list[HttpHeader]:
 
 
 def _mcp_config_to_acp_servers(
-    mcp_config: dict[str, Any],
+    mcp_config: OpenHandsMCPConfig | dict[str, Any],
     mcp_capabilities: Any,
 ) -> list[_ACPMcpServer]:
-    """Translate an OpenHands ``mcp_config`` dict into ACP MCP server objects.
+    """Translate an OpenHands ``mcp_config`` into ACP MCP server objects.
 
     Reads the standard ``{"mcpServers": {name: {...}}}`` shape (the same shape
-    :attr:`AgentBase.mcp_config` carries for the built-in Agent) and returns the
+    :attr:`AgentBase.mcp_config` serializes to) and returns the
     list to pass to ``new_session()`` / ``load_session()`` so the ACP
     subprocess connects to those servers itself.  Unlike the built-in Agent
     these are *not* turned into in-process OpenHands MCP tools
@@ -588,9 +589,11 @@ def _mcp_config_to_acp_servers(
     not sink the whole conversation.  ``env`` / ``headers`` maps are converted
     to the protocol's ``[{name, value}]`` list form; string ``auth`` values are
     forwarded as bearer ``Authorization`` headers when no explicit
-    ``Authorization`` header is already present.  Their values were already
-    decrypted by :class:`AgentBase`'s ``mcp_config`` validator.
+    ``Authorization`` header is already present.  OpenHands auth credential
+    models are normalized through the same FastMCP boundary used by the
+    built-in Agent before ACP translation.
     """
+    mcp_config = to_fastmcp_mcp_config(mcp_config)
     servers = mcp_config.get("mcpServers")
     if not isinstance(servers, dict):
         return []

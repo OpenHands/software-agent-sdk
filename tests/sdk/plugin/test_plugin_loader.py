@@ -10,6 +10,7 @@ from openhands.sdk import LLM, Agent
 from openhands.sdk.context import AgentContext
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.hooks.config import HookDefinition, HookMatcher
+from openhands.sdk.mcp.config import OpenHandsMCPConfig
 from openhands.sdk.plugin import (
     PluginFetchError,
     PluginSource,
@@ -55,7 +56,9 @@ def agent_with_mcp(mock_llm):
     return Agent(
         llm=mock_llm,
         tools=[],
-        mcp_config={"mcpServers": {"existing-server": {"command": "test"}}},
+        mcp_config=OpenHandsMCPConfig.model_validate(
+            {"mcpServers": {"existing-server": {"command": "test"}}}
+        ),
     )
 
 
@@ -232,8 +235,7 @@ class TestLoadPluginsSinglePlugin:
         plugins = [PluginSource(source=str(plugin_dir))]
         updated_agent, hooks = load_plugins(plugins, basic_agent)
 
-        assert "mcpServers" in updated_agent.mcp_config
-        assert "test-server" in updated_agent.mcp_config["mcpServers"]
+        assert "test-server" in updated_agent.mcp_config.mcpServers
         assert hooks is None
 
     def test_load_single_plugin_with_hooks(self, tmp_path: Path, basic_agent):
@@ -302,7 +304,7 @@ class TestLoadPluginsMultiplePlugins:
         ]
         updated_agent, _ = load_plugins(plugins, basic_agent)
 
-        assert updated_agent.mcp_config["mcpServers"]["server"]["command"] == "second"
+        assert updated_agent.mcp_config.mcpServers["server"].command == "second"
 
     def test_load_multiple_plugins_hooks_concatenate(self, tmp_path: Path, basic_agent):
         """Test that hooks from all plugins are concatenated."""
@@ -404,8 +406,8 @@ class TestLoadPluginsWithExistingContext:
         plugins = [PluginSource(source=str(plugin_dir))]
         updated_agent, _ = load_plugins(plugins, agent_with_mcp)
 
-        assert "existing-server" in updated_agent.mcp_config["mcpServers"]
-        assert "new-server" in updated_agent.mcp_config["mcpServers"]
+        assert "existing-server" in updated_agent.mcp_config.mcpServers
+        assert "new-server" in updated_agent.mcp_config.mcpServers
 
 
 class TestLoadPluginsMaxSkills:

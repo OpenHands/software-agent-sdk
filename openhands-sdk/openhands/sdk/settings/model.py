@@ -53,7 +53,6 @@ from openhands.sdk.mcp.config import (
     dump_mcp_config_secret_values,
     normalize_empty_mcp_config,
     serialize_mcp_config,
-    to_fastmcp_mcp_config,
 )
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.subagent.schema import AgentDefinition
@@ -1417,12 +1416,8 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
         from openhands.sdk.tool.builtins import BUILT_IN_TOOLS, SwitchLLMTool
 
-        # Bypass ``_serialize_mcp_config``: MCP servers need real env/headers.
-        mcp_config = (
-            to_fastmcp_mcp_config(self.mcp_config)
-            if self.mcp_config is not None
-            else {}
-        )
+        # Bypass ``_serialize_mcp_config``: agent runtime needs real MCP secrets.
+        mcp_config = self.mcp_config or MCPConfig()
         include_default_tools = [tool.__name__ for tool in BUILT_IN_TOOLS]
         if self.enable_switch_llm_tool:
             include_default_tools.append(SwitchLLMTool.__name__)
@@ -1933,13 +1928,8 @@ class ACPAgentSettings(AgentSettingsBase):
                 ),
             )
 
-        # Bypass ``_serialize_mcp_config``: the subprocess needs real
-        # env/headers, not the masked/encrypted on-disk form.
-        mcp_config = (
-            to_fastmcp_mcp_config(self.mcp_config)
-            if self.mcp_config is not None
-            else {}
-        )
+        # Bypass ``_serialize_mcp_config``: the subprocess needs real MCP secrets.
+        mcp_config = self.mcp_config or MCPConfig()
 
         return ACPAgent(
             llm=self.llm,

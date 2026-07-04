@@ -1,7 +1,7 @@
 """Test agent JSON serialization with DiscriminatedUnionMixin."""
 
 import json
-from typing import cast
+from typing import Any
 from unittest.mock import Mock
 
 import mcp.types
@@ -12,9 +12,18 @@ from openhands.sdk.agent import Agent
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.llm import LLM
 from openhands.sdk.mcp.client import MCPClient
+from openhands.sdk.mcp.config import OpenHandsMCPConfig
 from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.tool.tool import ToolDefinition
 from openhands.sdk.utils.models import OpenHandsModel
+
+
+def mcp_config_model(config: dict[str, Any]) -> OpenHandsMCPConfig:
+    return OpenHandsMCPConfig.model_validate(config)
+
+
+def dump_mcp_config(agent: AgentBase) -> dict[str, Any]:
+    return agent.mcp_config.to_plain_dict()
 
 
 def create_mock_mcp_tool(name: str) -> MCPToolDefinition:
@@ -80,12 +89,13 @@ def test_agent_serialization_redacts_mcp_config_by_default() -> None:
             },
         }
     }
-    agent = Agent(llm=llm, tools=[], mcp_config=cast(dict[str, object], mcp_config))
+    agent = Agent(llm=llm, tools=[], mcp_config=mcp_config_model(mcp_config))
 
     # mcp_config should be accessible in memory with full secrets
-    assert agent.mcp_config == mcp_config
+    assert dump_mcp_config(agent) == mcp_config
     assert (
-        agent.mcp_config["mcpServers"]["dummy"]["env"]["API_KEY"] == "super-secret-key"
+        dump_mcp_config(agent)["mcpServers"]["dummy"]["env"]["API_KEY"]
+        == "super-secret-key"
     )
 
     # Serialized output should have mcp_config as None (fully redacted)
@@ -106,7 +116,7 @@ def test_agent_serialization_exposes_mcp_config_with_expose_secrets() -> None:
             },
         }
     }
-    agent = Agent(llm=llm, tools=[], mcp_config=cast(dict[str, object], mcp_config))
+    agent = Agent(llm=llm, tools=[], mcp_config=mcp_config_model(mcp_config))
 
     # With expose_secrets=True, mcp_config should be returned as-is
     agent_dump = agent.model_dump(context={"expose_secrets": True})
@@ -117,7 +127,7 @@ def test_agent_serialization_exposes_mcp_config_with_expose_secrets() -> None:
     agent_json = agent.model_dump_json(context={"expose_secrets": True})
     deserialized_agent = AgentBase.model_validate_json(agent_json)
     assert isinstance(deserialized_agent, Agent)
-    assert deserialized_agent.mcp_config == mcp_config
+    assert dump_mcp_config(deserialized_agent) == mcp_config
 
 
 def test_agent_serialization_encrypts_mcp_config_with_cipher() -> None:
@@ -134,7 +144,7 @@ def test_agent_serialization_encrypts_mcp_config_with_cipher() -> None:
             },
         }
     }
-    agent = Agent(llm=llm, tools=[], mcp_config=cast(dict[str, object], mcp_config))
+    agent = Agent(llm=llm, tools=[], mcp_config=mcp_config_model(mcp_config))
     cipher = Cipher(secret_key="test-encryption-key")
 
     # With cipher, mcp_config should be encrypted
@@ -155,7 +165,7 @@ def test_agent_mcp_config_encryption_decryption_roundtrip() -> None:
             "git": {"command": "uvx", "args": ["mcp-git", "--repo", "/tmp/test"]},
         }
     }
-    agent = Agent(llm=llm, tools=[], mcp_config=cast(dict[str, object], mcp_config))
+    agent = Agent(llm=llm, tools=[], mcp_config=mcp_config_model(mcp_config))
     cipher = Cipher(secret_key="test-encryption-key-roundtrip")
 
     # Serialize with cipher
@@ -168,7 +178,7 @@ def test_agent_mcp_config_encryption_decryption_roundtrip() -> None:
 
     # mcp_config should be restored correctly
     assert isinstance(restored_agent, Agent)
-    assert restored_agent.mcp_config == mcp_config
+    assert dump_mcp_config(restored_agent) == mcp_config
 
 
 def test_agent_mcp_config_decryption_without_cipher_logs_warning() -> None:
@@ -177,7 +187,7 @@ def test_agent_mcp_config_decryption_without_cipher_logs_warning() -> None:
 
     llm = LLM(model="test-model", usage_id="test-llm")
     mcp_config = {"mcpServers": {"fetch": {"command": "uvx"}}}
-    agent = Agent(llm=llm, tools=[], mcp_config=cast(dict[str, object], mcp_config))
+    agent = Agent(llm=llm, tools=[], mcp_config=mcp_config_model(mcp_config))
     cipher = Cipher(secret_key="test-key")
 
     # Serialize with cipher
@@ -188,7 +198,7 @@ def test_agent_mcp_config_decryption_without_cipher_logs_warning() -> None:
 
     assert isinstance(restored_agent, Agent)
     # mcp_config should be empty dict (default) since we couldn't decrypt
-    assert restored_agent.mcp_config == {}
+    assert restored_agent.mcp_config.mcpServers == {}
 
 
 def test_agent_mcp_config_backward_compatibility_plaintext() -> None:
@@ -206,7 +216,7 @@ def test_agent_mcp_config_backward_compatibility_plaintext() -> None:
     agent = AgentBase.model_validate(agent_dict)
 
     assert isinstance(agent, Agent)
-    assert agent.mcp_config == mcp_config
+    assert dump_mcp_config(agent) == mcp_config
 
 
 def test_agent_mcp_config_decrypts_nested_env_and_headers_with_cipher() -> None:
@@ -241,7 +251,7 @@ def test_agent_mcp_config_decrypts_nested_env_and_headers_with_cipher() -> None:
     agent = AgentBase.model_validate(agent_dict, context={"cipher": cipher})
 
     assert isinstance(agent, Agent)
-    server = agent.mcp_config["mcpServers"]["github"]
+    server = dump_mcp_config(agent)["mcpServers"]["github"]
     assert server["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"] == "ghp-plaintext-token"
     assert server["env"]["DEBUG"] == "true"
     assert server["env"]["PORT"] == "1234"
@@ -317,7 +327,7 @@ def test_agent_mcp_config_empty_not_encrypted() -> None:
     from openhands.sdk.utils.cipher import Cipher
 
     llm = LLM(model="test-model", usage_id="test-llm")
-    agent = Agent(llm=llm, tools=[], mcp_config={})  # Empty config
+    agent = Agent(llm=llm, tools=[], mcp_config=OpenHandsMCPConfig())
     cipher = Cipher(secret_key="test-key")
 
     # Serialize with cipher - should NOT have encrypted_mcp_config for empty

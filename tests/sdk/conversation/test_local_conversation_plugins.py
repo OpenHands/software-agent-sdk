@@ -657,7 +657,7 @@ class TestLocalConversationPlugins:
             assert conversation.agent.tools_map[name] is tool
         assert conversation.agent.tools_map[runtime_tool.name] is runtime_tool
         assert conversation.agent.mcp_config is not None
-        assert "runtime-server" in conversation.agent.mcp_config["mcpServers"]
+        assert "runtime-server" in conversation.agent.mcp_config.mcpServers
         assert len(mcp_tools_created) == 1
         created_config, state_locked = mcp_tools_created[0]
         assert not state_locked
@@ -949,17 +949,14 @@ class TestLocalConversationPlugins:
         )
 
         # Before loading plugins, no MCP config should exist
-        assert (
-            conversation.agent.mcp_config is None or conversation.agent.mcp_config == {}
-        )
+        assert conversation.agent.mcp_config.mcpServers == {}
 
         # Trigger plugin loading and agent initialization
         conversation._ensure_agent_ready()
 
         # After loading, MCP config should be merged
         assert conversation.agent.mcp_config is not None
-        assert "mcpServers" in conversation.agent.mcp_config
-        assert "test-server" in conversation.agent.mcp_config["mcpServers"]
+        assert "test-server" in conversation.agent.mcp_config.mcpServers
 
         # The agent should have been initialized with the complete MCP config
         # This verifies that create_mcp_tools was called with the plugin's MCP config
@@ -1103,9 +1100,9 @@ class TestPluginMcpSecretsExpansion:
 
         # Verify the secret was expanded in the MCP config
         assert conversation.agent.mcp_config is not None
-        auth_header = conversation.agent.mcp_config["mcpServers"]["test-server"][
-            "headers"
-        ]["Authorization"]
+        auth_header = conversation.agent.mcp_config.to_plain_dict()["mcpServers"][
+            "test-server"
+        ]["headers"]["Authorization"]
         assert auth_header == "Bearer my-actual-secret", (
             f"Expected 'Bearer my-actual-secret', got '{auth_header}'"
         )
@@ -1168,9 +1165,9 @@ class TestPluginMcpSecretsExpansion:
 
         # CRITICAL: Verify the secret was used, NOT the default
         assert conversation.agent.mcp_config is not None
-        auth_header = conversation.agent.mcp_config["mcpServers"]["test-server"][
-            "headers"
-        ]["Authorization"]
+        auth_header = conversation.agent.mcp_config.to_plain_dict()["mcpServers"][
+            "test-server"
+        ]["headers"]["Authorization"]
 
         # This assertion will FAIL with double-expansion bug
         assert auth_header == "Bearer my-actual-secret", (
@@ -1232,10 +1229,9 @@ class TestPluginMcpSecretsExpansion:
 
         # Verify defaults were used
         assert conversation.agent.mcp_config is not None
-        url = conversation.agent.mcp_config["mcpServers"]["test-server"]["url"]
-        header = conversation.agent.mcp_config["mcpServers"]["test-server"]["headers"][
-            "X-Custom-Header"
-        ]
+        mcp_config = conversation.agent.mcp_config.to_plain_dict()
+        url = mcp_config["mcpServers"]["test-server"]["url"]
+        header = mcp_config["mcpServers"]["test-server"]["headers"]["X-Custom-Header"]
 
         assert url == "https://default.example.com/mcp"
         assert header == "default-header-value"

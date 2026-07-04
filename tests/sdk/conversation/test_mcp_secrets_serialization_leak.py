@@ -16,6 +16,7 @@ from openhands.sdk.agent.agent import Agent
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.llm import LLM
+from openhands.sdk.mcp.config import OpenHandsMCPConfig
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -44,7 +45,7 @@ def agent_with_secret_in_mcp_config():
             }
         }
     }
-    return Agent(llm=llm, mcp_config=mcp_config)
+    return Agent(llm=llm, mcp_config=OpenHandsMCPConfig.model_validate(mcp_config))
 
 
 class TestMcpSecretsDoNotLeakToPersistence:
@@ -247,9 +248,9 @@ class TestMcpConfigPreservation:
         should retain the secrets for actual MCP server initialization.
         """
         # The secret should be accessible in memory for actual use
-        env_config = agent_with_secret_in_mcp_config.mcp_config["mcpServers"]["github"][
-            "env"
-        ]
+        env_config = agent_with_secret_in_mcp_config.mcp_config.to_plain_dict()[
+            "mcpServers"
+        ]["github"]["env"]
         assert env_config["GITHUB_TOKEN"] == SECRET_VALUE, (
             "mcp_config should retain secrets in memory for runtime use"
         )
@@ -274,7 +275,10 @@ class TestMcpConfigPreservation:
                 }
             }
         }
-        agent = Agent(llm=llm, mcp_config=mcp_config)
+        agent = Agent(
+            llm=llm,
+            mcp_config=OpenHandsMCPConfig.model_validate(mcp_config),
+        )
         cipher = Cipher(secret_key="test-encryption-key")
 
         workspace = LocalWorkspace(working_dir=str(tmp_path / "workspace"))
@@ -310,4 +314,4 @@ class TestMcpConfigPreservation:
             cipher=cipher,
         )
         # The runtime agent is used, but the decryption should work
-        assert restored_state.agent.mcp_config == mcp_config
+        assert restored_state.agent.mcp_config.to_plain_dict() == mcp_config

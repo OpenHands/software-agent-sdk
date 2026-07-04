@@ -69,6 +69,7 @@ from openhands.sdk.llm.exceptions import (
 )
 from openhands.sdk.llm.router.base import RouterLLM
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.runtime import DefaultMCPToolProvider, MCPToolProvider
 from openhands.sdk.observability.laminar import (
     maybe_init_laminar,
     observe,
@@ -420,6 +421,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         self,
         state: ConversationState,
         on_event: ConversationCallbackType,
+        *,
+        mcp_tool_provider: MCPToolProvider | None = None,
     ) -> None:
         """Initialize conversation state.
 
@@ -433,7 +436,15 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         (condenser, UI, etc.) and also prevent accidentally materializing the full
         event history during initialization.
         """
-        super().init_state(state, on_event=on_event)
+        mcp_tools: list[ToolDefinition] = []
+        if not self._initialized and self.mcp_config.mcpServers:
+            provider = mcp_tool_provider or DefaultMCPToolProvider()
+            mcp_tools = list(provider.create_tools(self.mcp_config, 30))
+
+        self._initialize(
+            state,
+            extra_tools=mcp_tools,
+        )
 
         # Defensive check: Analyze state to detect unexpected initialization scenarios
         # These checks help diagnose issues related to lazy loading and event ordering

@@ -57,6 +57,7 @@ from openhands.sdk.event import (
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import ImageContent, Message, TextContent
+from openhands.sdk.mcp.config import OpenHandsMCPConfig
 from openhands.sdk.secret import SecretSource
 from openhands.sdk.skills import KeywordTrigger, Skill
 from openhands.sdk.tool.builtins.finish import FinishAction
@@ -88,6 +89,8 @@ class _FakeLookupSecret(SecretSource):
 
 
 def _make_agent(**kwargs) -> ACPAgent:
+    if isinstance(kwargs.get("mcp_config"), dict):
+        kwargs["mcp_config"] = OpenHandsMCPConfig.model_validate(kwargs["mcp_config"])
     return ACPAgent(acp_command=["echo", "test"], **kwargs)
 
 
@@ -254,7 +257,9 @@ class TestACPAgentValidation:
         """
         agent = ACPAgent(
             acp_command=["echo"],
-            mcp_config={"mcpServers": {"test": {"command": "echo"}}},
+            mcp_config=OpenHandsMCPConfig.model_validate(
+                {"mcpServers": {"test": {"command": "echo"}}}
+            ),
         )
         # Should not raise; supports_openhands_mcp stays False (no in-process
         # tools — the ACP server owns the connection).

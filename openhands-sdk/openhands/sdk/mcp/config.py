@@ -431,6 +431,15 @@ class OpenHandsMCPConfig(BaseModel):
         FastMCPConfig.model_validate(to_fastmcp_mcp_config(self))
         return self
 
+    def to_plain_dict(self) -> dict[str, Any]:
+        """Dump the config with SecretStr values exposed for local runtime use."""
+        return self.model_dump(
+            mode="json",
+            context={"expose_secrets": "plaintext"},
+            exclude_none=True,
+            exclude_defaults=True,
+        )
+
 
 def _basic_auth_header(username: str, password: str) -> str:
     token = base64.b64encode(f"{username}:{password}".encode()).decode("ascii")

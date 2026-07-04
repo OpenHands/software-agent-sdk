@@ -238,7 +238,7 @@ async def test_start_conversation_decrypts_encrypted_agent_settings_mcp_env(
         secrets_encrypted=True,
     )
     assert (
-        request.agent.mcp_config["mcpServers"]["github"]["env"][
+        request.agent.mcp_config.to_plain_dict()["mcpServers"]["github"]["env"][
             "GITHUB_PERSONAL_ACCESS_TOKEN"
         ]
         == encrypted_mcp_token
@@ -270,7 +270,7 @@ async def test_start_conversation_decrypts_encrypted_agent_settings_mcp_env(
     assert isinstance(stored.agent.llm.api_key, SecretStr)
     assert stored.agent.llm.api_key.get_secret_value() == "sk-plaintext"
     assert (
-        stored.agent.mcp_config["mcpServers"]["github"]["env"][
+        stored.agent.mcp_config.to_plain_dict()["mcpServers"]["github"]["env"][
             "GITHUB_PERSONAL_ACCESS_TOKEN"
         ]
         == "ghp-plaintext"
