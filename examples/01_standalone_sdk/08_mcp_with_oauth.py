@@ -41,13 +41,13 @@ tools = [
     Tool(name=FileEditorTool.name),
 ]
 
-mcp_servers = {
+mcp_config = {
     "Notion": MCPServer(
         url="https://mcp.notion.com/mcp",
         auth=MCPOAuthAuthCredential(strategy="oauth2"),
     )
 }
-agent = Agent(llm=llm, tools=tools, mcp_servers=mcp_servers)
+agent = Agent(llm=llm, tools=tools, mcp_config=mcp_config)
 
 llm_messages = []  # collect raw LLM messages
 

@@ -6,7 +6,7 @@ import threading
 import time
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Annotated, ClassVar, Literal, Union
+from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, Union
 from xml.sax.saxutils import escape as xml_escape
 
 import frontmatter
@@ -48,10 +48,14 @@ from openhands.sdk.utils.path import to_posix_path
 logger = get_logger(__name__)
 
 
-def _validate_openhands_mcp_config(value: dict):
-    from openhands.sdk.mcp.config import validate_mcp_config_dict
+if TYPE_CHECKING:
+    from openhands.sdk.utils.cipher import Cipher
 
-    return validate_mcp_config_dict(value)
+
+def _validate_openhands_mcp_config(value: dict):
+    from openhands.sdk.mcp.config import validate_fastmcp_config_dict
+
+    return validate_fastmcp_config_dict(value)
 
 
 class SkillInfo(BaseModel):
@@ -296,9 +300,26 @@ class Skill(BaseModel):
         """
         if not value:
             return value
-        from openhands.sdk.mcp.config import serialize_mcp_config_dict
+        from openhands.sdk.mcp.config import serialize_fastmcp_config_dict
 
-        return serialize_mcp_config_dict(_validate_openhands_mcp_config(value), info)
+        return serialize_fastmcp_config_dict(
+            _validate_openhands_mcp_config(value), info
+        )
+
+    def with_decrypted_mcp_tools(self, cipher: "Cipher | None") -> "Skill":
+        if cipher is None or not self.mcp_tools:
+            return self
+
+        from openhands.sdk.mcp.config import dump_fastmcp_config_secret_values
+
+        decrypted = dump_fastmcp_config_secret_values(
+            self.mcp_tools,
+            cipher=cipher,
+            expose_secrets="plaintext",
+        )
+        if not isinstance(decrypted, dict):
+            return self
+        return self.model_copy(update={"mcp_tools": decrypted})
 
     PATH_TO_THIRD_PARTY_SKILL_NAME: ClassVar[dict[str, str]] = {
         ".cursorrules": "cursorrules",

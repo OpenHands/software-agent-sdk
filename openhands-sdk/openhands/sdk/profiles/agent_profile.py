@@ -3,7 +3,7 @@
 A separate ``Discriminator("agent_kind")`` + ``Tag`` union from
 :data:`~openhands.sdk.settings.model.AgentSettingsConfig`: the profile carries
 *references* (``llm_profile_ref`` / ``mcp_server_refs``) and is secret-free at
-rest, whereas the settings union embeds the resolved ``llm`` / ``mcp_servers``.
+rest, whereas the settings union embeds the resolved ``llm`` / ``mcp_config``.
 See epic #3713 for the resolution model.
 """
 
@@ -123,7 +123,7 @@ class AgentProfileBase(BaseModel):
         description=(
             "Which of the server-discovered skills to expose in the agent's "
             "prompt, selected by name (mirrors ``mcp_server_refs`` over "
-            "``mcp_servers``). null = all discovered; [] = none (the default); a "
+            "``mcp_config``). null = all discovered; [] = none (the default); a "
             "non-null list = filter to the named skills. For OpenHands profiles, "
             "any explicitly embedded ``skills`` are always included on top of "
             "the filtered set."
@@ -137,7 +137,7 @@ class OpenHandsAgentProfile(AgentProfileBase):
     Mirrors the configurable surface of
     :class:`~openhands.sdk.settings.model.OpenHandsAgentSettings`, except the
     concrete ``llm`` is replaced by :attr:`llm_profile_ref` (resolved against
-    the LLM profile store) and ``mcp_servers`` by the inherited
+    the LLM profile store) and ``mcp_config`` by the inherited
     :attr:`~AgentProfileBase.mcp_server_refs`.
     """
 

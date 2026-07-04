@@ -3,9 +3,9 @@
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import (
     MCPAuthCredential,
+    MCPConfig,
     MCPOAuthAuthCredential,
     MCPServer,
-    MCPServers,
     to_fastmcp_mcp_config,
 )
 from openhands.sdk.mcp.definition import MCPToolAction, MCPToolObservation
@@ -24,7 +24,7 @@ __all__ = [
     "MCPClient",
     "MCPAuthCredential",
     "MCPOAuthAuthCredential",
-    "MCPServers",
+    "MCPConfig",
     "MCPServer",
     "MCPToolDefinition",
     "MCPToolAction",

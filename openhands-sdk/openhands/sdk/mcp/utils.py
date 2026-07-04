@@ -12,7 +12,7 @@ from key_value.aio.protocols import AsyncKeyValue
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient
-from openhands.sdk.mcp.config import MCPServer, MCPServers, to_fastmcp_mcp_config
+from openhands.sdk.mcp.config import MCPConfig, MCPServer, to_fastmcp_mcp_config
 from openhands.sdk.mcp.exceptions import MCPTimeoutError
 from openhands.sdk.mcp.tool import MCPToolDefinition
 
@@ -66,12 +66,12 @@ def _oauth_auth_from_authentication_config(
 
 
 def _prepare_mcp_config(
-    mcp_servers: MCPServers,
+    mcp_config: MCPConfig,
     *,
     mcp_oauth_token_storage: AsyncKeyValue | None = None,
 ) -> FastMCPConfig:
     """Validate MCP config and apply explicit OpenHands runtime auth metadata."""
-    prepared = FastMCPConfig.model_validate(to_fastmcp_mcp_config(mcp_servers))
+    prepared = FastMCPConfig.model_validate(to_fastmcp_mcp_config(mcp_config))
 
     for server in prepared.mcpServers.values():
         if not isinstance(server, RemoteMCPServer) or server.auth != "oauth":
@@ -88,24 +88,24 @@ def _prepare_mcp_config(
     return prepared
 
 
-def _require_native_mcp_servers(mcp_servers: Mapping[str, MCPServer]) -> MCPServers:
-    if not isinstance(mcp_servers, Mapping):
+def _require_native_mcp_config(mcp_config: Mapping[str, MCPServer]) -> MCPConfig:
+    if not isinstance(mcp_config, Mapping):
         raise TypeError(
             "create_mcp_tools expects native MCP servers: dict[str, MCPServer]. "
-            "Use coerce_mcp_servers() at external config boundaries."
+            "Use coerce_mcp_config() at external config boundaries."
         )
 
     invalid = [
         name
-        for name, server in mcp_servers.items()
+        for name, server in mcp_config.items()
         if not isinstance(name, str) or not isinstance(server, MCPServer)
     ]
     if invalid:
         raise TypeError(
             "create_mcp_tools expects native MCP servers: dict[str, MCPServer]. "
-            "Use coerce_mcp_servers() at external config boundaries."
+            "Use coerce_mcp_config() at external config boundaries."
         )
-    return dict(mcp_servers)
+    return dict(mcp_config)
 
 
 async def log_handler(message: LogMessage):
@@ -133,7 +133,7 @@ async def _connect_and_list_tools(client: MCPClient) -> None:
 
 
 def create_mcp_tools(
-    mcp_servers: MCPServers,
+    mcp_config: MCPConfig,
     timeout: float = 30.0,
     *,
     mcp_oauth_token_storage: AsyncKeyValue | None = None,
@@ -142,14 +142,14 @@ def create_mcp_tools(
 
     Returns an MCPClient with tools populated. Use as a context manager:
 
-        with create_mcp_tools(mcp_servers) as client:
+        with create_mcp_tools(mcp_config) as client:
             for tool in client.tools:
                 # use tool
         # Connection automatically closed
     """
-    mcp_servers = _require_native_mcp_servers(mcp_servers)
+    mcp_config = _require_native_mcp_config(mcp_config)
     config = _prepare_mcp_config(
-        mcp_servers,
+        mcp_config,
         mcp_oauth_token_storage=mcp_oauth_token_storage,
     )
     client = MCPClient(config, log_handler=log_handler)

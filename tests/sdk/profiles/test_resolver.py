@@ -13,7 +13,7 @@ from pydantic import SecretStr
 from openhands.sdk.agent import ACPAgent, Agent
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
-from openhands.sdk.mcp.config import MCPServers, coerce_mcp_servers
+from openhands.sdk.mcp.config import MCPConfig, coerce_mcp_config
 from openhands.sdk.profiles import (
     ACPAgentProfile,
     AgentProfileStore,
@@ -45,8 +45,8 @@ def llm_store(tmp_path: Path) -> LLMProfileStore:
 
 
 @pytest.fixture
-def mcp_servers() -> MCPServers:
-    return coerce_mcp_servers(
+def mcp_config() -> MCPConfig:
+    return coerce_mcp_config(
         {
             "mcpServers": {
                 "fetch": {
@@ -65,7 +65,7 @@ def mcp_servers() -> MCPServers:
 
 
 def test_openhands_resolves_to_settings_with_injected_llm(
-    llm_store: LLMProfileStore, mcp_servers: MCPServers
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
 ) -> None:
     profile = OpenHandsAgentProfile(
         name="oh",
@@ -79,7 +79,7 @@ def test_openhands_resolves_to_settings_with_injected_llm(
     settings = resolve_agent_profile(
         profile,
         llm_store=llm_store,
-        mcp_servers=mcp_servers,
+        mcp_config=mcp_config,
         available_skills=None,
         cipher=None,
     )
@@ -94,14 +94,14 @@ def test_openhands_resolves_to_settings_with_injected_llm(
     assert isinstance(settings.llm.api_key, SecretStr)
     assert settings.llm.api_key.get_secret_value() == _LLM_SECRET
     # MCP filtered to the referenced key.
-    assert settings.mcp_servers != {}
-    assert list(settings.mcp_servers.keys()) == ["fetch"]
+    assert settings.mcp_config != {}
+    assert list(settings.mcp_config.keys()) == ["fetch"]
     # Output feeds the unchanged create_agent path.
     assert isinstance(settings.create_agent(), Agent)
 
 
 def test_openhands_copies_skills_and_verification(
-    llm_store: LLMProfileStore, mcp_servers: MCPServers
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
 ) -> None:
     profile = OpenHandsAgentProfile(
         name="oh",
@@ -114,7 +114,7 @@ def test_openhands_copies_skills_and_verification(
     settings = resolve_agent_profile(
         profile,
         llm_store=llm_store,
-        mcp_servers=mcp_servers,
+        mcp_config=mcp_config,
         available_skills=None,
         cipher=None,
     )
@@ -127,14 +127,14 @@ def test_openhands_copies_skills_and_verification(
 
 
 def test_missing_llm_ref_raises_profile_not_found(
-    llm_store: LLMProfileStore, mcp_servers: MCPServers
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
 ) -> None:
     profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="does-not-exist")
     with pytest.raises(ProfileNotFound):
         resolve_agent_profile(
             profile,
             llm_store=llm_store,
-            mcp_servers=mcp_servers,
+            mcp_config=mcp_config,
             available_skills=None,
             cipher=None,
         )
@@ -146,13 +146,13 @@ def test_missing_llm_ref_raises_profile_not_found(
 
 
 def test_enable_switch_llm_tool_defaults_true_threads_through(
-    llm_store: LLMProfileStore, mcp_servers: MCPServers
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
 ) -> None:
     profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default")
     settings = resolve_agent_profile(
         profile,
         llm_store=llm_store,
-        mcp_servers=mcp_servers,
+        mcp_config=mcp_config,
         available_skills=None,
         cipher=None,
     )
@@ -162,7 +162,7 @@ def test_enable_switch_llm_tool_defaults_true_threads_through(
 
 
 def test_enable_switch_llm_tool_false_threads_through(
-    llm_store: LLMProfileStore, mcp_servers: MCPServers
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
 ) -> None:
     profile = OpenHandsAgentProfile(
         name="oh", llm_profile_ref="default", enable_switch_llm_tool=False
@@ -170,7 +170,7 @@ def test_enable_switch_llm_tool_false_threads_through(
     settings = resolve_agent_profile(
         profile,
         llm_store=llm_store,
-        mcp_servers=mcp_servers,
+        mcp_config=mcp_config,
         available_skills=None,
         cipher=None,
     )
@@ -192,7 +192,7 @@ def _discovered_skills() -> list[Skill]:
 
 
 def test_skill_refs_none_includes_all_discovered(
-    llm_store: LLMProfileStore, mcp_servers: MCPServers
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
 ) -> None:
     profile = OpenHandsAgentProfile(
         name="oh", llm_profile_ref="default", skill_refs=None
@@ -200,7 +200,7 @@ def test_skill_refs_none_includes_all_discovered(
     settings = resolve_agent_profile(
         profile,
         llm_store=llm_store,
-        mcp_servers=mcp_servers,
+        mcp_config=mcp_config,
         available_skills=_discovered_skills(),
         cipher=None,
     )
@@ -213,13 +213,13 @@ def test_skill_refs_none_includes_all_discovered(
 
 
 def test_skill_refs_empty_includes_none(
-    llm_store: LLMProfileStore, mcp_servers: MCPServers
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
 ) -> None:
     profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default", skill_refs=[])
     settings = resolve_agent_profile(
         profile,
         llm_store=llm_store,
-        mcp_servers=mcp_servers,
+        mcp_config=mcp_config,
         available_skills=_discovered_skills(),
         cipher=None,
     )
@@ -228,7 +228,7 @@ def test_skill_refs_empty_includes_none(
 
 
 def test_skill_refs_filters_to_named_subset_in_ref_order(
-    llm_store: LLMProfileStore, mcp_servers: MCPServers
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
 ) -> None:
     profile = OpenHandsAgentProfile(
         name="oh", llm_profile_ref="default", skill_refs=["gamma", "alpha"]
@@ -236,7 +236,7 @@ def test_skill_refs_filters_to_named_subset_in_ref_order(
     settings = resolve_agent_profile(
         profile,
         llm_store=llm_store,
-        mcp_servers=mcp_servers,
+        mcp_config=mcp_config,
         available_skills=_discovered_skills(),
         cipher=None,
     )
@@ -245,7 +245,7 @@ def test_skill_refs_filters_to_named_subset_in_ref_order(
 
 
 def test_skill_refs_dangling_raises(
-    llm_store: LLMProfileStore, mcp_servers: MCPServers
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
 ) -> None:
     # Mirroring mcp_server_refs, a skill ref absent from the discovered catalog
     # hard-fails (DanglingSkillRef) rather than being silently dropped.
@@ -256,7 +256,7 @@ def test_skill_refs_dangling_raises(
         resolve_agent_profile(
             profile,
             llm_store=llm_store,
-            mcp_servers=mcp_servers,
+            mcp_config=mcp_config,
             available_skills=_discovered_skills(),
             cipher=None,
         )
@@ -264,7 +264,7 @@ def test_skill_refs_dangling_raises(
 
 
 def test_skill_refs_duplicate_is_deduped(
-    llm_store: LLMProfileStore, mcp_servers: MCPServers
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
 ) -> None:
     # A repeated skill ref collapses to one entry (shared _partition_refs), so
     # the ACP path — which feeds AgentContext, where duplicate names are
@@ -275,7 +275,7 @@ def test_skill_refs_duplicate_is_deduped(
     oh_settings = resolve_agent_profile(
         oh,
         llm_store=llm_store,
-        mcp_servers=mcp_servers,
+        mcp_config=mcp_config,
         available_skills=_discovered_skills(),
         cipher=None,
     )
@@ -288,7 +288,7 @@ def test_skill_refs_duplicate_is_deduped(
     acp_settings = resolve_agent_profile(
         acp,
         llm_store=llm_store,
-        mcp_servers={},
+        mcp_config={},
         available_skills=_discovered_skills(),
         cipher=None,
     )
@@ -298,7 +298,7 @@ def test_skill_refs_duplicate_is_deduped(
 
 
 def test_embedded_skills_compose_with_filtered_discovered(
-    llm_store: LLMProfileStore, mcp_servers: MCPServers
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
 ) -> None:
     profile = OpenHandsAgentProfile(
         name="oh",
@@ -309,7 +309,7 @@ def test_embedded_skills_compose_with_filtered_discovered(
     settings = resolve_agent_profile(
         profile,
         llm_store=llm_store,
-        mcp_servers=mcp_servers,
+        mcp_config=mcp_config,
         available_skills=_discovered_skills(),
         cipher=None,
     )
@@ -318,7 +318,7 @@ def test_embedded_skills_compose_with_filtered_discovered(
 
 
 def test_embedded_skill_wins_name_conflict_over_discovered(
-    llm_store: LLMProfileStore, mcp_servers: MCPServers
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
 ) -> None:
     profile = OpenHandsAgentProfile(
         name="oh",
@@ -329,7 +329,7 @@ def test_embedded_skill_wins_name_conflict_over_discovered(
     settings = resolve_agent_profile(
         profile,
         llm_store=llm_store,
-        mcp_servers=mcp_servers,
+        mcp_config=mcp_config,
         available_skills=_discovered_skills(),
         cipher=None,
     )
@@ -341,7 +341,7 @@ def test_embedded_skill_wins_name_conflict_over_discovered(
 
 
 def test_no_available_skills_yields_embedded_only(
-    llm_store: LLMProfileStore, mcp_servers: MCPServers
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
 ) -> None:
     # available_skills=None (no discovery run) → only embedded skills reach the
     # agent, regardless of skill_refs.
@@ -354,7 +354,7 @@ def test_no_available_skills_yields_embedded_only(
     settings = resolve_agent_profile(
         profile,
         llm_store=llm_store,
-        mcp_servers=mcp_servers,
+        mcp_config=mcp_config,
         available_skills=None,
         cipher=None,
     )
@@ -368,7 +368,7 @@ def test_no_available_skills_yields_embedded_only(
 
 
 def test_mcp_null_refs_passes_config_through(
-    llm_store: LLMProfileStore, mcp_servers: MCPServers
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
 ) -> None:
     profile = OpenHandsAgentProfile(
         name="oh", llm_profile_ref="default", mcp_server_refs=None
@@ -376,16 +376,16 @@ def test_mcp_null_refs_passes_config_through(
     settings = resolve_agent_profile(
         profile,
         llm_store=llm_store,
-        mcp_servers=mcp_servers,
+        mcp_config=mcp_config,
         available_skills=None,
         cipher=None,
     )
-    assert settings.mcp_servers != {}
-    assert set(settings.mcp_servers.keys()) == {"fetch", "other"}
+    assert settings.mcp_config != {}
+    assert set(settings.mcp_config.keys()) == {"fetch", "other"}
 
 
 def test_mcp_empty_refs_means_none(
-    llm_store: LLMProfileStore, mcp_servers: MCPServers
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
 ) -> None:
     profile = OpenHandsAgentProfile(
         name="oh", llm_profile_ref="default", mcp_server_refs=[]
@@ -393,15 +393,15 @@ def test_mcp_empty_refs_means_none(
     settings = resolve_agent_profile(
         profile,
         llm_store=llm_store,
-        mcp_servers=mcp_servers,
+        mcp_config=mcp_config,
         available_skills=None,
         cipher=None,
     )
-    assert settings.mcp_servers == {}
+    assert settings.mcp_config == {}
 
 
 def test_mcp_filter_selects_named_keys(
-    llm_store: LLMProfileStore, mcp_servers: MCPServers
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
 ) -> None:
     profile = OpenHandsAgentProfile(
         name="oh", llm_profile_ref="default", mcp_server_refs=["other"]
@@ -409,16 +409,16 @@ def test_mcp_filter_selects_named_keys(
     settings = resolve_agent_profile(
         profile,
         llm_store=llm_store,
-        mcp_servers=mcp_servers,
+        mcp_config=mcp_config,
         available_skills=None,
         cipher=None,
     )
-    assert settings.mcp_servers != {}
-    assert list(settings.mcp_servers.keys()) == ["other"]
+    assert settings.mcp_config != {}
+    assert list(settings.mcp_config.keys()) == ["other"]
 
 
 def test_mcp_dangling_ref_raises(
-    llm_store: LLMProfileStore, mcp_servers: MCPServers
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
 ) -> None:
     profile = OpenHandsAgentProfile(
         name="oh", llm_profile_ref="default", mcp_server_refs=["fetch", "missing"]
@@ -427,7 +427,7 @@ def test_mcp_dangling_ref_raises(
         resolve_agent_profile(
             profile,
             llm_store=llm_store,
-            mcp_servers=mcp_servers,
+            mcp_config=mcp_config,
             available_skills=None,
             cipher=None,
         )
@@ -444,7 +444,7 @@ def test_mcp_dangling_when_config_is_none(
         resolve_agent_profile(
             profile,
             llm_store=llm_store,
-            mcp_servers={},
+            mcp_config={},
             available_skills=None,
             cipher=None,
         )
@@ -496,7 +496,7 @@ def test_resolver_decrypts_skill_mcp_tools(tmp_path: Path) -> None:
 
     # The resolver holds the cipher and decrypts them for execution.
     settings = resolve_agent_profile(
-        loaded, llm_store=lstore, mcp_servers={}, available_skills=None, cipher=cipher
+        loaded, llm_store=lstore, mcp_config={}, available_skills=None, cipher=cipher
     )
     assert isinstance(settings, OpenHandsAgentSettings)
     resolved_tools = settings.agent_context.skills[0].mcp_tools
@@ -512,7 +512,7 @@ def test_resolver_decrypts_skill_mcp_tools(tmp_path: Path) -> None:
 
 
 def test_acp_resolves_to_settings_without_credentials(
-    llm_store: LLMProfileStore, mcp_servers: MCPServers
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
 ) -> None:
     profile = ACPAgentProfile(
         name="acp",
@@ -526,7 +526,7 @@ def test_acp_resolves_to_settings_without_credentials(
     settings = resolve_agent_profile(
         profile,
         llm_store=llm_store,
-        mcp_servers=mcp_servers,
+        mcp_config=mcp_config,
         available_skills=None,
         cipher=None,
     )
@@ -537,8 +537,8 @@ def test_acp_resolves_to_settings_without_credentials(
     # str command is tokenized into the settings' list[str] field.
     assert settings.acp_command == ["codex-acp", "--foo"]
     assert settings.acp_args == ["--flag"]
-    assert settings.mcp_servers != {}
-    assert list(settings.mcp_servers.keys()) == ["fetch"]
+    assert settings.mcp_config != {}
+    assert list(settings.mcp_config.keys()) == ["fetch"]
     # No credential is injected; the deprecated llm channel stays empty.
     assert settings.llm.api_key is None
     assert isinstance(settings.create_agent(), ACPAgent)
@@ -551,7 +551,7 @@ def test_acp_blank_command_resolves_empty_list(
     settings = resolve_agent_profile(
         profile,
         llm_store=llm_store,
-        mcp_servers={},
+        mcp_config={},
         available_skills=None,
         cipher=None,
     )
@@ -571,7 +571,7 @@ def test_acp_skill_refs_filter_into_agent_context_prompt(
     settings = resolve_agent_profile(
         profile,
         llm_store=llm_store,
-        mcp_servers={},
+        mcp_config={},
         available_skills=_discovered_skills(),
         cipher=None,
     )
@@ -590,7 +590,7 @@ def test_acp_skill_refs_none_includes_all_discovered(
     settings = resolve_agent_profile(
         profile,
         llm_store=llm_store,
-        mcp_servers={},
+        mcp_config={},
         available_skills=_discovered_skills(),
         cipher=None,
     )
@@ -612,7 +612,7 @@ def test_acp_skill_refs_empty_leaves_agent_context_none(
     settings = resolve_agent_profile(
         profile,
         llm_store=llm_store,
-        mcp_servers={},
+        mcp_config={},
         available_skills=_discovered_skills(),
         cipher=None,
     )
@@ -626,7 +626,7 @@ def test_acp_skill_refs_empty_leaves_agent_context_none(
 
 
 def test_dry_run_openhands_valid_and_redacted(
-    llm_store: LLMProfileStore, mcp_servers: MCPServers
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
 ) -> None:
     profile = OpenHandsAgentProfile(
         name="oh", llm_profile_ref="default", mcp_server_refs=["fetch"]
@@ -634,7 +634,7 @@ def test_dry_run_openhands_valid_and_redacted(
     diag = resolve_agent_profile_dry_run(
         profile,
         llm_store=llm_store,
-        mcp_servers=mcp_servers,
+        mcp_config=mcp_config,
         available_skills=None,
         cipher=None,
     )
@@ -644,7 +644,7 @@ def test_dry_run_openhands_valid_and_redacted(
     assert diag.llm_profile_ref == "default"
     assert diag.llm_profile_resolved is True
     assert diag.llm_api_key_set is True
-    assert diag.resolved_mcp_servers == ["fetch"]
+    assert diag.resolved_mcp_config_keys == ["fetch"]
     assert diag.dangling_mcp_server_refs == []
     assert diag.resolved_settings is not None
     # No secret survives into the redacted resolved settings.
@@ -654,7 +654,7 @@ def test_dry_run_openhands_valid_and_redacted(
 
 
 def test_dry_run_reports_dangling_llm_and_mcp(
-    llm_store: LLMProfileStore, mcp_servers: MCPServers
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
 ) -> None:
     profile = OpenHandsAgentProfile(
         name="oh", llm_profile_ref="nope", mcp_server_refs=["missing"]
@@ -662,7 +662,7 @@ def test_dry_run_reports_dangling_llm_and_mcp(
     diag = resolve_agent_profile_dry_run(
         profile,
         llm_store=llm_store,
-        mcp_servers=mcp_servers,
+        mcp_config=mcp_config,
         available_skills=None,
         cipher=None,
     )
@@ -675,7 +675,7 @@ def test_dry_run_reports_dangling_llm_and_mcp(
 
 
 def test_dry_run_reports_resolved_and_dangling_skill_refs(
-    llm_store: LLMProfileStore, mcp_servers: MCPServers
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
 ) -> None:
     profile = OpenHandsAgentProfile(
         name="oh", llm_profile_ref="default", skill_refs=["alpha", "missing"]
@@ -683,7 +683,7 @@ def test_dry_run_reports_resolved_and_dangling_skill_refs(
     diag = resolve_agent_profile_dry_run(
         profile,
         llm_store=llm_store,
-        mcp_servers=mcp_servers,
+        mcp_config=mcp_config,
         available_skills=_discovered_skills(),
         cipher=None,
     )
@@ -697,7 +697,7 @@ def test_dry_run_reports_resolved_and_dangling_skill_refs(
 
 
 def test_dry_run_skill_refs_null_resolves_all_discovered(
-    llm_store: LLMProfileStore, mcp_servers: MCPServers
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
 ) -> None:
     # Explicit null (all discovered) — NOT the default, which is [] (none).
     profile = OpenHandsAgentProfile(
@@ -706,7 +706,7 @@ def test_dry_run_skill_refs_null_resolves_all_discovered(
     diag = resolve_agent_profile_dry_run(
         profile,
         llm_store=llm_store,
-        mcp_servers=mcp_servers,
+        mcp_config=mcp_config,
         available_skills=_discovered_skills(),
         cipher=None,
     )
@@ -716,7 +716,7 @@ def test_dry_run_skill_refs_null_resolves_all_discovered(
 
 
 def test_dry_run_total_on_llm_store_transient_error(
-    llm_store: LLMProfileStore, mcp_servers: MCPServers
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
 ) -> None:
     # The store can raise filelock.TimeoutError (lock contention) before its
     # own handler runs; the dry-run must surface that as a diagnostic, not
@@ -731,7 +731,7 @@ def test_dry_run_total_on_llm_store_transient_error(
     diag = resolve_agent_profile_dry_run(
         profile,
         llm_store=llm_store,
-        mcp_servers=mcp_servers,
+        mcp_config=mcp_config,
         available_skills=None,
         cipher=None,
     )
@@ -743,7 +743,7 @@ def test_dry_run_total_on_llm_store_transient_error(
 
 
 def test_dry_run_verdict_matches_real_resolve(
-    llm_store: LLMProfileStore, mcp_servers: MCPServers
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
 ) -> None:
     # A dangling MCP ref: dry-run says invalid, real resolve raises.
     profile = OpenHandsAgentProfile(
@@ -752,7 +752,7 @@ def test_dry_run_verdict_matches_real_resolve(
     diag = resolve_agent_profile_dry_run(
         profile,
         llm_store=llm_store,
-        mcp_servers=mcp_servers,
+        mcp_config=mcp_config,
         available_skills=None,
         cipher=None,
     )
@@ -761,7 +761,7 @@ def test_dry_run_verdict_matches_real_resolve(
         resolve_agent_profile(
             profile,
             llm_store=llm_store,
-            mcp_servers=mcp_servers,
+            mcp_config=mcp_config,
             available_skills=None,
             cipher=None,
         )
@@ -774,7 +774,7 @@ def test_dry_run_acp_reports_credential_channels_by_role(
     diag = resolve_agent_profile_dry_run(
         profile,
         llm_store=llm_store,
-        mcp_servers={},
+        mcp_config={},
         available_skills=None,
         cipher=None,
     )
@@ -799,7 +799,7 @@ def test_dry_run_acp_reports_skill_refs(
     diag = resolve_agent_profile_dry_run(
         profile,
         llm_store=llm_store,
-        mcp_servers={},
+        mcp_config={},
         available_skills=_discovered_skills(),
         cipher=None,
     )
@@ -811,7 +811,7 @@ def test_dry_run_acp_reports_skill_refs(
 
 
 def test_dry_run_skill_verdict_matches_real_resolve(
-    llm_store: LLMProfileStore, mcp_servers: MCPServers
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
 ) -> None:
     # A dangling skill ref: dry-run says invalid, real resolve raises — the same
     # dry-run/resolve agreement the MCP path has.
@@ -821,7 +821,7 @@ def test_dry_run_skill_verdict_matches_real_resolve(
     diag = resolve_agent_profile_dry_run(
         profile,
         llm_store=llm_store,
-        mcp_servers=mcp_servers,
+        mcp_config=mcp_config,
         available_skills=_discovered_skills(),
         cipher=None,
     )
@@ -830,14 +830,14 @@ def test_dry_run_skill_verdict_matches_real_resolve(
         resolve_agent_profile(
             profile,
             llm_store=llm_store,
-            mcp_servers=mcp_servers,
+            mcp_config=mcp_config,
             available_skills=_discovered_skills(),
             cipher=None,
         )
 
 
 def test_dry_run_skill_refs_unknown_catalog_reports_nothing_dangling(
-    llm_store: LLMProfileStore, mcp_servers: MCPServers
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
 ) -> None:
     # available_skills=None (discovery skipped/failed) → catalog unknown, so a
     # named ref is NOT reported dangling (the materialize path relies on this so
@@ -848,7 +848,7 @@ def test_dry_run_skill_refs_unknown_catalog_reports_nothing_dangling(
     diag = resolve_agent_profile_dry_run(
         profile,
         llm_store=llm_store,
-        mcp_servers=mcp_servers,
+        mcp_config=mcp_config,
         available_skills=None,
         cipher=None,
     )
@@ -866,7 +866,7 @@ def test_dry_run_acp_custom_server_has_no_credential_channels(
     diag = resolve_agent_profile_dry_run(
         profile,
         llm_store=llm_store,
-        mcp_servers={},
+        mcp_config={},
         available_skills=None,
         cipher=None,
     )
@@ -885,7 +885,7 @@ def test_custom_acp_without_command_is_invalid(
     diag = resolve_agent_profile_dry_run(
         profile,
         llm_store=llm_store,
-        mcp_servers={},
+        mcp_config={},
         available_skills=None,
         cipher=None,
     )
@@ -896,7 +896,7 @@ def test_custom_acp_without_command_is_invalid(
         resolve_agent_profile(
             profile,
             llm_store=llm_store,
-            mcp_servers={},
+            mcp_config={},
             available_skills=None,
             cipher=None,
         )
@@ -914,7 +914,7 @@ def test_dry_run_normalizes_settings_build_failure(
     diag = resolve_agent_profile_dry_run(
         profile,
         llm_store=llm_store,
-        mcp_servers={},
+        mcp_config={},
         available_skills=None,
         cipher=None,
     )

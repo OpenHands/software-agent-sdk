@@ -204,7 +204,7 @@ class MCPTestRequest(BaseModel):
             return None
         return auth.state.to_plain_dict(cipher=cipher)
 
-    def to_mcp_servers(self, *, cipher: Cipher | None = None) -> dict[str, MCPServer]:
+    def to_mcp_config(self, *, cipher: Cipher | None = None) -> dict[str, MCPServer]:
         return {self.name: self.server.to_mcp_server(cipher=cipher)}
 
 
@@ -319,7 +319,7 @@ def _probe_mcp_server(
     threadpool first.
     """
 
-    mcp_servers = request.to_mcp_servers(cipher=cipher)
+    mcp_config = request.to_mcp_config(cipher=cipher)
 
     try:
         oauth_auth = request.oauth_auth
@@ -332,7 +332,7 @@ def _probe_mcp_server(
         # and a (possibly long-lived) subprocess. Use the context-manager
         # form so we always tear it down, even when listing succeeded.
         with create_mcp_tools(
-            mcp_servers,
+            mcp_config,
             timeout=request.timeout,
             mcp_oauth_token_storage=oauth_token_storage,
         ) as client:

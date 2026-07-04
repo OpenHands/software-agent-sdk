@@ -656,8 +656,8 @@ def test_get_secrets_raises_on_undefined_host():
         workspace.get_secrets()
 
 
-def test_get_mcp_servers_returns_config():
-    """Test get_mcp_servers returns MCP servers."""
+def test_get_mcp_config_returns_config():
+    """Test get_mcp_config returns MCP servers."""
     workspace = RemoteWorkspace(
         host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
     )
@@ -666,7 +666,7 @@ def test_get_mcp_servers_returns_config():
     mock_response = Mock()
     mock_response.json.return_value = {
         "agent_settings": {
-            "mcp_servers": {
+            "mcp_config": {
                 "shttp_0": {
                     "url": "https://mcp.example.com/api",
                     "transport": "streamable-http",
@@ -680,7 +680,7 @@ def test_get_mcp_servers_returns_config():
     mock_client.get.return_value = mock_response
     workspace._client = mock_client
 
-    config = workspace.get_mcp_servers()
+    config = workspace.get_mcp_config()
 
     assert "shttp_0" in config
     assert config["shttp_0"]["url"] == "https://mcp.example.com/api"
@@ -690,8 +690,8 @@ def test_get_mcp_servers_returns_config():
     assert call_args[1]["headers"]["X-Expose-Secrets"] == "plaintext"
 
 
-def test_get_mcp_servers_returns_empty_dict_when_no_config(monkeypatch):
-    """Test get_mcp_servers returns empty dict when no MCP servers exists."""
+def test_get_mcp_config_returns_empty_dict_when_no_config(monkeypatch):
+    """Test get_mcp_config returns empty dict when no MCP servers exists."""
     monkeypatch.setenv("ALLOW_SHORT_CONTEXT_WINDOWS", "true")
     workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/tmp")
 
@@ -706,20 +706,20 @@ def test_get_mcp_servers_returns_empty_dict_when_no_config(monkeypatch):
     mock_client.get.return_value = mock_response
     workspace._client = mock_client
 
-    config = workspace.get_mcp_servers()
+    config = workspace.get_mcp_config()
 
     assert config == {}
 
 
-def test_get_mcp_servers_returns_empty_dict_when_mcp_servers_is_none(monkeypatch):
-    """Test get_mcp_servers returns empty dict when mcp_servers is None."""
+def test_get_mcp_config_returns_empty_dict_when_mcp_config_is_none(monkeypatch):
+    """Test get_mcp_config returns empty dict when mcp_config is None."""
     monkeypatch.setenv("ALLOW_SHORT_CONTEXT_WINDOWS", "true")
     workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/tmp")
 
     mock_client = MagicMock()
     mock_response = Mock()
     mock_response.json.return_value = {
-        "agent_settings": {"llm": {"model": "gpt-4"}, "mcp_servers": None},
+        "agent_settings": {"llm": {"model": "gpt-4"}, "mcp_config": None},
         "conversation_settings": {},
         "llm_api_key_is_set": True,
     }
@@ -727,17 +727,17 @@ def test_get_mcp_servers_returns_empty_dict_when_mcp_servers_is_none(monkeypatch
     mock_client.get.return_value = mock_response
     workspace._client = mock_client
 
-    config = workspace.get_mcp_servers()
+    config = workspace.get_mcp_config()
 
     assert config == {}
 
 
-def test_get_mcp_servers_raises_on_undefined_host():
-    """Test get_mcp_servers raises RuntimeError when host is undefined."""
+def test_get_mcp_config_raises_on_undefined_host():
+    """Test get_mcp_config raises RuntimeError when host is undefined."""
     workspace = RemoteWorkspace(host="undefined", working_dir="/tmp")
 
     with pytest.raises(RuntimeError, match="Workspace host is not set"):
-        workspace.get_mcp_servers()
+        workspace.get_mcp_config()
 
 
 # ── Tests for Repository Cloning Methods ─────────────────────────────

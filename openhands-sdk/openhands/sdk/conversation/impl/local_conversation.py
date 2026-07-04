@@ -56,7 +56,7 @@ from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
 from openhands.sdk.marketplace.registry import MarketplaceRegistry
-from openhands.sdk.mcp.config import MCPServer, coerce_mcp_servers, dump_mcp_servers
+from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config, dump_mcp_config
 from openhands.sdk.mcp.runtime import DefaultMCPToolProvider, MCPToolProvider
 from openhands.sdk.observability.laminar import observe
 from openhands.sdk.plugin import (
@@ -764,10 +764,10 @@ class LocalConversation(BaseConversation):
         explicit_plugin_names: set[str] = set()
 
         merged_context = self.agent.agent_context
-        merged_mcp_servers = self.agent.mcp_servers
+        merged_mcp_config = self.agent.mcp_config
 
         # Track whether we have plugins or MCP config to process
-        has_mcp_servers = bool(merged_mcp_servers)
+        has_mcp_config = bool(merged_mcp_config)
 
         plugins_to_load: list[tuple[PluginSource, bool]] = []
         if merged_context is not None and merged_context.registered_marketplaces:
@@ -849,8 +849,8 @@ class LocalConversation(BaseConversation):
 
                 # Merge plugin contents
                 merged_context = plugin.add_skills_to(merged_context)
-                merged_mcp_servers = plugin.add_mcp_servers_to(merged_mcp_servers)
-                has_mcp_servers = has_mcp_servers or bool(merged_mcp_servers)
+                merged_mcp_config = plugin.add_mcp_config_to(merged_mcp_config)
+                has_mcp_config = has_mcp_config or bool(merged_mcp_config)
 
                 # Collect hooks
                 if plugin.hooks and not plugin.hooks.is_empty():
@@ -899,8 +899,8 @@ class LocalConversation(BaseConversation):
                 continue
 
             merged_context = plugin.add_skills_to(merged_context)
-            merged_mcp_servers = plugin.add_mcp_servers_to(merged_mcp_servers)
-            has_mcp_servers = has_mcp_servers or bool(merged_mcp_servers)
+            merged_mcp_config = plugin.add_mcp_config_to(merged_mcp_config)
+            has_mcp_config = has_mcp_config or bool(merged_mcp_config)
 
             if plugin.hooks and not plugin.hooks.is_empty():
                 all_plugin_hooks.append(plugin.hooks)
@@ -948,30 +948,30 @@ class LocalConversation(BaseConversation):
         # - Variables with defaults that don't have secrets fall back to their defaults
         # - This is the ONLY place where defaults are applied (plugin loading preserves
         #   placeholders with expand_defaults=False to avoid double-expansion)
-        if merged_mcp_servers:
+        if merged_mcp_config:
             # Pass the registry's lookup method as a callback - secrets are retrieved
             # lazily, one at a time, only when actually referenced in the config
             expanded_mcp = expand_mcp_variables(
-                {"mcpServers": dump_mcp_servers(merged_mcp_servers)},
+                {"mcpServers": dump_mcp_config(merged_mcp_config)},
                 {},
                 get_secret=self._state.secret_registry.get_secret_value,
                 expand_defaults=True,
             )
-            merged_mcp_servers = coerce_mcp_servers(expanded_mcp)
+            merged_mcp_config = coerce_mcp_config(expanded_mcp)
             logger.debug("Expanded MCP config variables")
 
         # Update agent with merged content only if something changed.
         # Skip update otherwise to avoid unnecessary agent state mutations.
         if (
             plugins_to_load
-            or has_mcp_servers
+            or has_mcp_config
             or project_skills_loaded
             or ambient_plugins_loaded
         ):
             self.agent = self.agent.model_copy(
                 update={
                     "agent_context": merged_context,
-                    "mcp_servers": merged_mcp_servers,
+                    "mcp_config": merged_mcp_config,
                 }
             )
 
@@ -1099,13 +1099,13 @@ class LocalConversation(BaseConversation):
         self._hook_processor.run_session_start()
 
     def _runtime_mcp_tools_for_plugin(
-        self, plugin_mcp_servers: dict[str, MCPServer]
+        self, plugin_mcp_config: dict[str, MCPServer]
     ) -> list[ToolDefinition]:
-        if not plugin_mcp_servers:
+        if not plugin_mcp_config:
             return []
         return list(
             self._mcp_tool_provider.create_tools(
-                plugin_mcp_servers, _RUNTIME_MCP_TIMEOUT_SECS
+                plugin_mcp_config, _RUNTIME_MCP_TIMEOUT_SECS
             ).tools
         )
 
@@ -1154,27 +1154,27 @@ class LocalConversation(BaseConversation):
         )
 
         get_secret = self._state.secret_registry.get_secret_value
-        runtime_plugin_mcp_servers: dict[str, MCPServer] = {}
-        if plugin.mcp_servers:
+        runtime_plugin_mcp_config: dict[str, MCPServer] = {}
+        if plugin.mcp_config:
             expanded_plugin_mcp = expand_mcp_variables(
-                {"mcpServers": dump_mcp_servers(plugin.mcp_servers)},
+                {"mcpServers": dump_mcp_config(plugin.mcp_config)},
                 {},
                 get_secret=get_secret,
                 expand_defaults=True,
             )
-            runtime_plugin_mcp_servers = coerce_mcp_servers(expanded_plugin_mcp)
+            runtime_plugin_mcp_config = coerce_mcp_config(expanded_plugin_mcp)
         merged_context = plugin.add_skills_to(self.agent.agent_context)
-        merged_mcp_servers = plugin.add_mcp_servers_to(self.agent.mcp_servers)
-        if merged_mcp_servers:
+        merged_mcp_config = plugin.add_mcp_config_to(self.agent.mcp_config)
+        if merged_mcp_config:
             expanded_mcp = expand_mcp_variables(
-                {"mcpServers": dump_mcp_servers(merged_mcp_servers)},
+                {"mcpServers": dump_mcp_config(merged_mcp_config)},
                 {},
                 get_secret=get_secret,
                 expand_defaults=True,
             )
-            merged_mcp_servers = coerce_mcp_servers(expanded_mcp)
+            merged_mcp_config = coerce_mcp_config(expanded_mcp)
         runtime_mcp_tools = (
-            self._runtime_mcp_tools_for_plugin(runtime_plugin_mcp_servers)
+            self._runtime_mcp_tools_for_plugin(runtime_plugin_mcp_config)
             if self._agent_ready
             else []
         )
@@ -1183,7 +1183,7 @@ class LocalConversation(BaseConversation):
             self.agent = self.agent.model_copy(
                 update={
                     "agent_context": merged_context,
-                    "mcp_servers": merged_mcp_servers,
+                    "mcp_config": merged_mcp_config,
                 }
             )
 

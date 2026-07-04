@@ -64,7 +64,7 @@ class SubAgentInfo(BaseModel):
     permission_mode: str | None = None
     max_iteration_per_run: int | None = None
     max_budget_per_run: float | None = None
-    mcp_servers: dict[str, Any] | None = None
+    mcp_config: dict[str, Any] | None = None
     profile_store_dir: str | None = None
     hooks: HookConfig | None = None
     condenser: CondenserBase | None = None
@@ -87,7 +87,7 @@ class SubAgentInfo(BaseModel):
             permission_mode=agent_def.permission_mode,
             max_iteration_per_run=agent_def.max_iteration_per_run,
             max_budget_per_run=agent_def.max_budget_per_run,
-            mcp_servers=agent_def.mcp_servers,
+            mcp_config=agent_def.mcp_config,
             profile_store_dir=agent_def.profile_store_dir,
             hooks=agent_def.hooks,
             condenser=agent_def.condenser,

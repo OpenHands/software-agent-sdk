@@ -53,7 +53,6 @@ from openhands.sdk.profiles import (
     validate_agent_profile,
 )
 from openhands.sdk.profiles.agent_profile_store import PROFILE_NAME_PATTERN
-from openhands.sdk.settings import decrypt_agent_settings_secret_values
 from openhands.sdk.utils.cipher import Cipher
 
 
@@ -133,14 +132,6 @@ def _store_errors() -> Iterator[None]:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
-def _decrypt_mcp_tools(tools: dict[str, Any], cipher: Cipher) -> dict[str, Any]:
-    """Return a copy of an ``mcp_tools`` dict with MCP Fernet tokens
-    decrypted. Non-Fernet (plaintext) values pass through unchanged."""
-    payload = decrypt_agent_settings_secret_values({"mcp_config": tools}, cipher=cipher)
-    decrypted = payload.get("mcp_config")
-    return decrypted if isinstance(decrypted, dict) else tools
-
-
 def _decrypt_profile_mcp_tools(
     profile: OpenHandsAgentProfile | ACPAgentProfile, cipher: Cipher | None
 ) -> OpenHandsAgentProfile | ACPAgentProfile:
@@ -156,14 +147,7 @@ def _decrypt_profile_mcp_tools(
     skills = getattr(profile, "skills", None)
     if not skills:
         return profile
-    new_skills = [
-        skill.model_copy(
-            update={"mcp_tools": _decrypt_mcp_tools(skill.mcp_tools, cipher)}
-        )
-        if skill.mcp_tools
-        else skill
-        for skill in skills
-    ]
+    new_skills = [skill.with_decrypted_mcp_tools(cipher) for skill in skills]
     return profile.model_copy(update={"skills": new_skills})
 
 
@@ -556,7 +540,7 @@ async def materialize_agent_profile(
 
     config = get_config(request)
     settings = get_settings_store(config).load() or PersistedSettings()
-    mcp_servers = settings.agent_settings.mcp_servers
+    mcp_config = settings.agent_settings.mcp_config
 
     # Discover skills off the event loop so the dry-run can report which
     # ``skill_refs`` resolve vs. dangle. A discovery failure must not 500 the
@@ -577,7 +561,7 @@ async def materialize_agent_profile(
     diagnostics = resolve_agent_profile_dry_run(
         profile,
         llm_store=llm_store,
-        mcp_servers=mcp_servers,
+        mcp_config=mcp_config,
         available_skills=available_skills,
         cipher=cipher,
     )

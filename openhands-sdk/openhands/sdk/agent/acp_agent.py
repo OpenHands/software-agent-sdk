@@ -560,8 +560,8 @@ def _remote_mcp_headers(spec: dict[str, Any], name: str) -> list[HttpHeader]:
     return headers
 
 
-def _mcp_servers_to_acp_servers(
-    mcp_servers: dict[str, MCPServer],
+def _mcp_config_to_acp_servers(
+    mcp_config: dict[str, MCPServer],
     mcp_capabilities: Any,
 ) -> list[_ACPMcpServer]:
     """Translate OpenHands MCP servers into ACP MCP server objects.
@@ -592,7 +592,7 @@ def _mcp_servers_to_acp_servers(
     models are normalized through the same FastMCP boundary used by the
     built-in Agent before ACP translation.
     """
-    fastmcp_config = to_fastmcp_mcp_config(mcp_servers)
+    fastmcp_config = to_fastmcp_mcp_config(mcp_config)
     servers = fastmcp_config.get("mcpServers")
     if not isinstance(servers, dict):
         return []
@@ -1790,9 +1790,9 @@ class ACPAgent(AgentBase):
     def supports_openhands_mcp(self) -> bool:
         """``False`` — OpenHands does not create in-process MCP *tools* here.
 
-        This stays ``False`` even though ``mcp_servers`` is honored: any
+        This stays ``False`` even though ``mcp_config`` is honored: any
         configured MCP servers are forwarded to the ACP subprocess at session
-        creation (see :func:`_mcp_servers_to_acp_servers`) rather than connected
+        creation (see :func:`_mcp_config_to_acp_servers`) rather than connected
         in-process. The ACP server owns the MCP connection and surfaces the
         tools through its own turn.
         """
@@ -1922,8 +1922,8 @@ class ACPAgent(AgentBase):
         # Validate unsupported execution features. agent_context is allowed
         # because it contributes prompt-only extensions to user messages; ACP
         # server tools and context-window management remain owned by the server.
-        # mcp_servers IS supported: its servers are forwarded to the subprocess at
-        # session creation (see _mcp_servers_to_acp_servers) rather than turned
+        # mcp_config IS supported: its servers are forwarded to the subprocess at
+        # session creation (see _mcp_config_to_acp_servers) rather than turned
         # into in-process SDK MCP tools.
         if self.tools:
             raise NotImplementedError(
@@ -2491,7 +2491,7 @@ class ACPAgent(AgentBase):
                 if init_response.agent_capabilities is not None
                 else None
             )
-            acp_mcp_servers = _mcp_servers_to_acp_servers(self.mcp_servers, mcp_caps)
+            acp_mcp_servers = _mcp_config_to_acp_servers(self.mcp_config, mcp_caps)
             if acp_mcp_servers:
                 logger.info(
                     "Forwarding %d MCP server(s) to ACP session: %s",

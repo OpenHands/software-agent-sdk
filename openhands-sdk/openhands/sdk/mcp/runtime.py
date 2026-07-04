@@ -19,13 +19,13 @@ class MCPToolProvider(Protocol):
     """
 
     def create_tools(
-        self, mcp_servers: dict[str, MCPServer], timeout: float = 30.0
+        self, mcp_config: dict[str, MCPServer], timeout: float = 30.0
     ) -> MCPClient: ...
 
 
 @dataclass(frozen=True)
 class DefaultMCPToolProvider:
     def create_tools(
-        self, mcp_servers: dict[str, MCPServer], timeout: float = 30.0
+        self, mcp_config: dict[str, MCPServer], timeout: float = 30.0
     ) -> MCPClient:
-        return create_mcp_tools(mcp_servers, timeout)
+        return create_mcp_tools(mcp_config, timeout)

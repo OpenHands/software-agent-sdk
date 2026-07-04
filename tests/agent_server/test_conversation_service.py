@@ -45,7 +45,7 @@ from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.llm import MessageToolCall, TextContent
-from openhands.sdk.mcp.config import dump_mcp_servers
+from openhands.sdk.mcp.config import dump_mcp_config
 from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.security.risk import SecurityRisk
@@ -239,7 +239,7 @@ async def test_start_conversation_decrypts_encrypted_agent_settings_mcp_env(
         secrets_encrypted=True,
     )
     assert (
-        dump_mcp_servers(request.agent.mcp_servers)["github"]["env"][
+        dump_mcp_config(request.agent.mcp_config)["github"]["env"][
             "GITHUB_PERSONAL_ACCESS_TOKEN"
         ]
         == encrypted_mcp_token
@@ -271,7 +271,7 @@ async def test_start_conversation_decrypts_encrypted_agent_settings_mcp_env(
     assert isinstance(stored.agent.llm.api_key, SecretStr)
     assert stored.agent.llm.api_key.get_secret_value() == "sk-plaintext"
     assert (
-        dump_mcp_servers(stored.agent.mcp_servers)["github"]["env"][
+        dump_mcp_config(stored.agent.mcp_config)["github"]["env"][
             "GITHUB_PERSONAL_ACCESS_TOKEN"
         ]
         == "ghp-plaintext"

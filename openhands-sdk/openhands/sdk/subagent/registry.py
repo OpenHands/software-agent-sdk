@@ -278,7 +278,7 @@ def agent_definition_to_factory(
             llm=llm,
             tools=tools,
             agent_context=agent_context,
-            mcp_servers=agent_def.mcp_servers or {},
+            mcp_config=agent_def.mcp_config or {},
             condenser=condenser,
         )
 

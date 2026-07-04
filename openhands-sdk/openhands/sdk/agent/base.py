@@ -32,8 +32,8 @@ from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import (
     MCPServer,
-    serialize_mcp_servers,
-    validate_mcp_servers,
+    serialize_mcp_config,
+    validate_mcp_config,
 )
 from openhands.sdk.tool import (
     BUILT_IN_TOOL_CLASSES,
@@ -136,7 +136,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             },
         ],
     )
-    mcp_servers: dict[str, MCPServer] = Field(
+    mcp_config: dict[str, MCPServer] = Field(
         default_factory=dict,
         description="Optional MCP servers to expose as tools.",
         examples=[{"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}],
@@ -292,16 +292,16 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         ),
     )
 
-    @field_validator("mcp_servers", mode="before")
+    @field_validator("mcp_config", mode="before")
     @classmethod
-    def _validate_mcp_servers(cls, value: Any) -> Any:
-        return validate_mcp_servers(value)
+    def _validate_mcp_config(cls, value: Any) -> Any:
+        return validate_mcp_config(value)
 
-    @field_serializer("mcp_servers")
-    def _serialize_mcp_servers(
+    @field_serializer("mcp_config")
+    def _serialize_mcp_config(
         self, value: dict[str, MCPServer], info: SerializationInfo
     ) -> dict[str, Any]:
-        return serialize_mcp_servers(value, info)
+        return serialize_mcp_config(value, info)
 
     # Runtime materialized tools; private and non-serializable
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)

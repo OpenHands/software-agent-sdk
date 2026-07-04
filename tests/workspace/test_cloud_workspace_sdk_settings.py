@@ -1,11 +1,11 @@
 """Tests for OpenHandsCloudWorkspace settings methods.
 
-Tests for get_llm(), get_secrets(), and get_mcp_servers().
+Tests for get_llm(), get_secrets(), and get_mcp_config().
 
 get_llm() returns a real LLM with the raw api_key from SaaS.
 get_secrets() returns LookupSecret references — raw values only flow
 SaaS→sandbox, never to the SDK client.
-get_mcp_servers() returns MCP server configuration in SDK Agent format.
+get_mcp_config() returns MCP server configuration in SDK Agent format.
 """
 
 from unittest.mock import MagicMock, patch
@@ -14,7 +14,7 @@ import httpx
 import pytest
 from pydantic import SecretStr
 
-from openhands.sdk.mcp.config import coerce_mcp_servers
+from openhands.sdk.mcp.config import coerce_mcp_config
 from openhands.sdk.secret import LookupSecret
 from openhands.workspace.cloud.workspace import OpenHandsCloudWorkspace
 
@@ -256,10 +256,10 @@ class TestGetSecrets:
 
 
 class TestGetMcpServers:
-    """Tests for OpenHandsCloudWorkspace.get_mcp_servers()."""
+    """Tests for OpenHandsCloudWorkspace.get_mcp_config()."""
 
-    def test_get_mcp_servers_returns_empty_when_no_config(self, mock_workspace):
-        """get_mcp_servers returns empty dict when no MCP servers is set."""
+    def test_get_mcp_config_returns_empty_when_no_config(self, mock_workspace):
+        """get_mcp_config returns empty dict when no MCP servers is set."""
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "llm_model": "gpt-4o",
@@ -270,12 +270,12 @@ class TestGetMcpServers:
         with patch.object(
             mock_workspace, "_send_api_request", return_value=mock_response
         ):
-            mcp_servers = mock_workspace.get_mcp_servers()
+            mcp_config = mock_workspace.get_mcp_config()
 
-        assert mcp_servers == {}
+        assert mcp_config == {}
 
-    def test_get_mcp_servers_transforms_sse_servers(self, mock_workspace):
-        """get_mcp_servers correctly transforms SSE servers."""
+    def test_get_mcp_config_transforms_sse_servers(self, mock_workspace):
+        """get_mcp_config correctly transforms SSE servers."""
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "mcp_config": {
@@ -292,7 +292,7 @@ class TestGetMcpServers:
         with patch.object(
             mock_workspace, "_send_api_request", return_value=mock_response
         ) as mock_req:
-            mcp_servers = mock_workspace.get_mcp_servers()
+            mcp_config = mock_workspace.get_mcp_config()
 
         mock_req.assert_called_once_with(
             "GET",
@@ -300,7 +300,7 @@ class TestGetMcpServers:
             headers={"X-Session-API-Key": SESSION_KEY},
         )
 
-        servers = mcp_servers
+        servers = mcp_config
         assert len(servers) == 2
 
         # First SSE server with API key
@@ -313,8 +313,8 @@ class TestGetMcpServers:
         assert servers["sse_1"]["transport"] == "sse"
         assert "headers" not in servers["sse_1"]
 
-    def test_get_mcp_servers_transforms_shttp_servers(self, mock_workspace):
-        """get_mcp_servers correctly transforms SHTTP servers."""
+    def test_get_mcp_config_transforms_shttp_servers(self, mock_workspace):
+        """get_mcp_config correctly transforms SHTTP servers."""
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "mcp_config": {
@@ -334,9 +334,9 @@ class TestGetMcpServers:
         with patch.object(
             mock_workspace, "_send_api_request", return_value=mock_response
         ):
-            mcp_servers = mock_workspace.get_mcp_servers()
+            mcp_config = mock_workspace.get_mcp_config()
 
-        servers = mcp_servers
+        servers = mcp_config
         assert len(servers) == 1
 
         assert servers["shttp_0"]["url"] == "https://shttp.example.com/mcp"
@@ -344,8 +344,8 @@ class TestGetMcpServers:
         assert servers["shttp_0"]["headers"]["Authorization"] == "Bearer shttp-key"
         assert servers["shttp_0"]["timeout"] == 120
 
-    def test_get_mcp_servers_transforms_stdio_servers(self, mock_workspace):
-        """get_mcp_servers correctly transforms STDIO servers."""
+    def test_get_mcp_config_transforms_stdio_servers(self, mock_workspace):
+        """get_mcp_config correctly transforms STDIO servers."""
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "mcp_config": {
@@ -366,9 +366,9 @@ class TestGetMcpServers:
         with patch.object(
             mock_workspace, "_send_api_request", return_value=mock_response
         ):
-            mcp_servers = mock_workspace.get_mcp_servers()
+            mcp_config = mock_workspace.get_mcp_config()
 
-        servers = mcp_servers
+        servers = mcp_config
         assert len(servers) == 1
 
         # STDIO servers use their explicit name
@@ -377,8 +377,8 @@ class TestGetMcpServers:
         assert servers["my-stdio-server"]["args"] == ["-y", "mcp-server-fetch"]
         assert servers["my-stdio-server"]["env"] == {"MY_VAR": "value"}
 
-    def test_get_mcp_servers_mixed_server_types(self, mock_workspace):
-        """get_mcp_servers correctly handles mixed server types."""
+    def test_get_mcp_config_mixed_server_types(self, mock_workspace):
+        """get_mcp_config correctly handles mixed server types."""
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "mcp_config": {
@@ -398,22 +398,22 @@ class TestGetMcpServers:
         with patch.object(
             mock_workspace, "_send_api_request", return_value=mock_response
         ):
-            mcp_servers = mock_workspace.get_mcp_servers()
+            mcp_config = mock_workspace.get_mcp_config()
 
-        servers = mcp_servers
+        servers = mcp_config
         assert len(servers) == 3
         assert "sse_0" in servers
         assert "shttp_0" in servers
         assert "fetch" in servers
 
-    def test_get_mcp_servers_raises_when_no_sandbox(self, mock_workspace):
-        """get_mcp_servers raises RuntimeError when sandbox is not running."""
+    def test_get_mcp_config_raises_when_no_sandbox(self, mock_workspace):
+        """get_mcp_config raises RuntimeError when sandbox is not running."""
         mock_workspace._sandbox_id = None
         with pytest.raises(RuntimeError, match="Sandbox is not running"):
-            mock_workspace.get_mcp_servers()
+            mock_workspace.get_mcp_config()
 
-    def test_get_mcp_servers_returns_empty_when_all_lists_empty(self, mock_workspace):
-        """get_mcp_servers returns empty dict when all server lists are empty."""
+    def test_get_mcp_config_returns_empty_when_all_lists_empty(self, mock_workspace):
+        """get_mcp_config returns empty dict when all server lists are empty."""
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "mcp_config": {
@@ -427,12 +427,12 @@ class TestGetMcpServers:
         with patch.object(
             mock_workspace, "_send_api_request", return_value=mock_response
         ):
-            mcp_servers = mock_workspace.get_mcp_servers()
+            mcp_config = mock_workspace.get_mcp_config()
 
-        assert mcp_servers == {}
+        assert mcp_config == {}
 
-    def test_get_mcp_servers_is_native_settings_compatible(self, mock_workspace):
-        """get_mcp_servers returns a native SDK MCP server map."""
+    def test_get_mcp_config_is_native_settings_compatible(self, mock_workspace):
+        """get_mcp_config returns a native SDK MCP server map."""
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "mcp_config": {
@@ -452,9 +452,9 @@ class TestGetMcpServers:
         with patch.object(
             mock_workspace, "_send_api_request", return_value=mock_response
         ):
-            mcp_servers_dict = mock_workspace.get_mcp_servers()
+            mcp_config_dict = mock_workspace.get_mcp_config()
 
-        config = coerce_mcp_servers(mcp_servers_dict)
+        config = coerce_mcp_config(mcp_config_dict)
         assert len(config) == 3
         assert "sse_0" in config
         assert "shttp_0" in config

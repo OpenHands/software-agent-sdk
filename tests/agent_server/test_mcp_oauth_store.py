@@ -27,7 +27,7 @@ from openhands.agent_server.persistence import (
     get_settings_store,
     reset_stores,
 )
-from openhands.sdk.mcp.config import coerce_mcp_servers, dump_mcp_servers
+from openhands.sdk.mcp.config import coerce_mcp_config, dump_mcp_config
 
 
 def _find_free_port() -> int:
@@ -133,7 +133,7 @@ async def test_mcp_oauth_token_store_persists_values_in_settings(
         settings = PersistedSettings()
         settings.agent_settings = settings.agent_settings.model_copy(
             update={
-                "mcp_servers": coerce_mcp_servers(
+                "mcp_config": coerce_mcp_config(
                     {
                         "superhuman": {
                             "url": "https://mcp.example.com/mcp",
@@ -203,7 +203,7 @@ async def test_mcp_oauth_token_store_persists_values_in_settings(
         assert "superhuman-client-secret" not in on_disk_text
 
         on_disk = json.loads(on_disk_text)
-        stored_state = on_disk["agent_settings"]["mcp_servers"]["superhuman"]["auth"][
+        stored_state = on_disk["agent_settings"]["mcp_config"]["superhuman"]["auth"][
             "state"
         ]
         stored_value = stored_state["tokens"]
@@ -214,7 +214,7 @@ async def test_mcp_oauth_token_store_persists_values_in_settings(
 
         loaded = settings_store.load()
         assert loaded is not None
-        server = dump_mcp_servers(loaded.agent_settings.mcp_servers)["superhuman"]
+        server = dump_mcp_config(loaded.agent_settings.mcp_config)["superhuman"]
         assert server["auth"]["state"] == {
             "tokens": value,
             "client_info": client_info,
@@ -246,7 +246,7 @@ def test_oauth_mcp_connection_persists_and_reuses_settings_state(
             conversations_path=tmp_path / "conversations",
             secret_key=SecretStr("mcp-oauth-e2e-test-key"),
         )
-        mcp_servers = coerce_mcp_servers(
+        mcp_config = coerce_mcp_config(
             {
                 "mail": {
                     "url": protected_oauth_mcp_server,
@@ -264,14 +264,14 @@ def test_oauth_mcp_connection_persists_and_reuses_settings_state(
         )
         settings = PersistedSettings()
         settings.agent_settings = settings.agent_settings.model_copy(
-            update={"mcp_servers": mcp_servers}
+            update={"mcp_config": mcp_config}
         )
         settings_store = get_settings_store(config)
         settings_store.save(settings)
         tool_provider = create_settings_backed_mcp_tool_provider(config)
 
         with tool_provider.create_tools(
-            mcp_servers,
+            mcp_config,
             timeout=10.0,
         ) as client:
             tool = next(tool for tool in client.tools if tool.name == "read_subject")
@@ -288,8 +288,8 @@ def test_oauth_mcp_connection_persists_and_reuses_settings_state(
 
         reloaded = settings_store.load()
         assert reloaded is not None
-        persisted_mcp_servers = reloaded.agent_settings.mcp_servers
-        server = dump_mcp_servers(persisted_mcp_servers)["mail"]
+        persisted_mcp_config = reloaded.agent_settings.mcp_config
+        server = dump_mcp_config(persisted_mcp_config)["mail"]
         state = server["auth"]["state"]
         assert state["tokens"]["access_token"].startswith("test_access_token_")
         assert state["tokens"]["refresh_token"].startswith("test_refresh_token_")
@@ -297,7 +297,7 @@ def test_oauth_mcp_connection_persists_and_reuses_settings_state(
 
         _HeadlessOAuth.reject_redirects = True
         with tool_provider.create_tools(
-            persisted_mcp_servers,
+            persisted_mcp_config,
             timeout=10.0,
         ) as client:
             tool = next(tool for tool in client.tools if tool.name == "read_subject")
@@ -326,7 +326,7 @@ async def test_mcp_oauth_token_storage_does_not_attach_to_non_oauth_server(
         settings = PersistedSettings()
         settings.agent_settings = settings.agent_settings.model_copy(
             update={
-                "mcp_servers": coerce_mcp_servers(
+                "mcp_config": coerce_mcp_config(
                     {"plain": {"url": "https://mcp.example.com/mcp"}}
                 )
             }
@@ -345,7 +345,7 @@ async def test_mcp_oauth_token_storage_does_not_attach_to_non_oauth_server(
 
         loaded = settings_store.load()
         assert loaded is not None
-        server = dump_mcp_servers(loaded.agent_settings.mcp_servers)["plain"]
+        server = dump_mcp_config(loaded.agent_settings.mcp_config)["plain"]
         assert "auth" not in server
     finally:
         reset_stores()

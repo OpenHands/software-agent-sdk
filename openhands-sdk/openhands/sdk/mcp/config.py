@@ -352,18 +352,18 @@ def drop_unknown_mcp_server_fields(server: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-MCPServers = dict[str, MCPServer]
-_MCP_SERVERS_ADAPTER = TypeAdapter(MCPServers)
+MCPConfig = dict[str, MCPServer]
+_MCP_CONFIG_ADAPTER = TypeAdapter(MCPConfig)
 
 
-def validate_mcp_servers(value: Any) -> Any:
+def validate_mcp_config(value: Any) -> Any:
     """Validate the SDK-native MCP server map."""
     if value in (None, {}):
         return {}
     return value
 
 
-def _extract_mcp_servers(value: Any) -> Any:
+def _extract_mcp_config(value: Any) -> Any:
     """Extract a server map from SDK-native or external FastMCP-shaped input."""
     if value in (None, {}):
         return {}
@@ -377,16 +377,16 @@ def _extract_mcp_servers(value: Any) -> Any:
     return value
 
 
-def coerce_mcp_servers(
+def coerce_mcp_config(
     value: Any, *, context: dict[str, Any] | None = None
-) -> MCPServers:
-    return _MCP_SERVERS_ADAPTER.validate_python(
-        _extract_mcp_servers(value),
+) -> MCPConfig:
+    return _MCP_CONFIG_ADAPTER.validate_python(
+        _extract_mcp_config(value),
         context=context,
     )
 
 
-def serialize_mcp_servers(value: MCPServers, info: SerializationInfo) -> dict[str, Any]:
+def serialize_mcp_config(value: MCPConfig, info: SerializationInfo) -> dict[str, Any]:
     """Serialize MCP servers, masking/encrypting secrets per expose mode."""
     ctx = info.context or {}
     mode = resolve_expose_mode(ctx)
@@ -397,17 +397,17 @@ def serialize_mcp_servers(value: MCPServers, info: SerializationInfo) -> dict[st
             "Set OH_SECRET_KEY environment variable."
         )
 
-    return dump_mcp_servers(value, context=ctx)
+    return dump_mcp_config(value, context=ctx)
 
 
-def validate_mcp_config_dict(value: Any) -> Any:
+def validate_fastmcp_config_dict(value: Any) -> Any:
     """Validate an external FastMCP-shaped config dict."""
     if isinstance(value, Mapping):
         FastMCPConfig.model_validate(to_fastmcp_mcp_config(value))
     return value
 
 
-def serialize_mcp_config_dict(
+def serialize_fastmcp_config_dict(
     value: Mapping[str, Any] | None, info: SerializationInfo
 ) -> dict[str, Any] | None:
     """Serialize an external FastMCP-shaped config dict with SDK secret handling."""
@@ -422,13 +422,13 @@ def serialize_mcp_config_dict(
             "Set OH_SECRET_KEY environment variable."
         )
 
-    dumped = dump_mcp_config(value, context=ctx)
+    dumped = dump_fastmcp_config(value, context=ctx)
     if mode == "redact":
         return _sanitize_mcp_extra_fields(dumped)
     return dumped
 
 
-def dump_mcp_servers_secret_values(
+def dump_mcp_config_secret_values(
     value: Any,
     *,
     cipher: Any,
@@ -455,7 +455,7 @@ def dump_mcp_servers_secret_values(
     }
 
 
-def dump_mcp_config_secret_values(
+def dump_fastmcp_config_secret_values(
     value: Any,
     *,
     cipher: Any,
@@ -468,7 +468,7 @@ def dump_mcp_config_secret_values(
         return value
 
     updated = copy.deepcopy(dict(value))
-    updated["mcpServers"] = dump_mcp_servers_secret_values(
+    updated["mcpServers"] = dump_mcp_config_secret_values(
         servers,
         cipher=cipher,
         expose_secrets=expose_secrets,
@@ -525,8 +525,8 @@ def _normalize_server_for_fastmcp(server: dict[str, Any]) -> dict[str, Any]:
     return server
 
 
-def dump_mcp_servers(
-    mcp_servers: Mapping[str, MCPServer | Mapping[str, Any]],
+def dump_mcp_config(
+    mcp_config: Mapping[str, MCPServer | Mapping[str, Any]],
     *,
     context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -545,11 +545,11 @@ def dump_mcp_servers(
             exclude_none=True,
             exclude_defaults=True,
         )
-        for name, server in mcp_servers.items()
+        for name, server in mcp_config.items()
     }
 
 
-def dump_mcp_config(
+def dump_fastmcp_config(
     config: FastMCPConfig | Mapping[str, Any],
     *,
     context: dict[str, Any] | None = None,
@@ -561,9 +561,9 @@ def dump_mcp_config(
         if isinstance(servers, Mapping):
             return {
                 **copy.deepcopy(dict(config)),
-                "mcpServers": dump_mcp_servers(servers, context=context),
+                "mcpServers": dump_mcp_config(servers, context=context),
             }
-    return {"mcpServers": dump_mcp_servers(config, context=context)}
+    return {"mcpServers": dump_mcp_config(config, context=context)}
 
 
 def to_fastmcp_mcp_config(
@@ -572,7 +572,7 @@ def to_fastmcp_mcp_config(
     cipher: Any | None = None,
 ) -> dict:
     context = {"cipher": cipher, "expose_secrets": "plaintext"} if cipher else None
-    dumped = dump_mcp_config(config, context=context)
+    dumped = dump_fastmcp_config(config, context=context)
     servers = dumped.get("mcpServers")
     if not isinstance(servers, dict):
         return dumped

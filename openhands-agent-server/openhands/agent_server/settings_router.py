@@ -182,7 +182,7 @@ async def update_settings(
 
         PATCH /api/settings
         {"agent_settings_diff":
-            {"mcp_servers": {"svc": {"headers": {"X-Old": null}}}}}
+            {"mcp_config": {"svc": {"headers": {"X-Old": null}}}}}
 
     A ``null`` on a top-level *field* (e.g. ``{"confirmation_mode": null}``)
     is **not** an unset — it flows to model validation as before, so it still

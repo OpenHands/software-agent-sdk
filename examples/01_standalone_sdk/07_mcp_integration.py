@@ -38,7 +38,7 @@ tools = [
 ]
 
 # Add MCP Tools
-mcp_servers = {
+mcp_config = {
     "fetch": MCPServer(command="uvx", args=["mcp-server-fetch"]),
     "repomix": MCPServer(command="npx", args=["-y", "repomix@1.4.2", "--mcp"]),
 }
@@ -46,7 +46,7 @@ mcp_servers = {
 agent = Agent(
     llm=llm,
     tools=tools,
-    mcp_servers=mcp_servers,
+    mcp_config=mcp_config,
     # This regex filters out all repomix tools except pack_codebase
     filter_tools_regex="^(?!repomix)(.*)|^repomix.*pack_codebase.*$",
 )

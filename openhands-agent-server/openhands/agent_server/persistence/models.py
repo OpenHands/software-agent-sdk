@@ -74,7 +74,7 @@ def _deep_merge(
       ``env`` / ``headers`` key) without round-tripping the whole map::
 
           {"agent_settings_diff":
-              {"mcp_servers": {"svc": {"env": {"STALE_KEY": null}}}}}
+              {"mcp_config": {"svc": {"env": {"STALE_KEY": null}}}}}
 
     - **At the top level** (a settings *field* like ``confirmation_mode``)
       a ``None`` is left as-is and flows to model

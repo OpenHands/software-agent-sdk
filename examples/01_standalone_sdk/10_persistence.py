@@ -39,11 +39,11 @@ tools = [
 ]
 
 # Add MCP Tools
-mcp_servers = {
+mcp_config = {
     "fetch": MCPServer(command="uvx", args=["mcp-server-fetch"]),
 }
 # Agent
-agent = Agent(llm=llm, tools=tools, mcp_servers=mcp_servers)
+agent = Agent(llm=llm, tools=tools, mcp_config=mcp_config)
 
 llm_messages = []  # collect raw LLM messages
 

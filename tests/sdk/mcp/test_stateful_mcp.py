@@ -26,7 +26,7 @@ from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_context
 
 from openhands.sdk.mcp import create_mcp_tools
-from openhands.sdk.mcp.config import coerce_mcp_servers
+from openhands.sdk.mcp.config import coerce_mcp_config
 from openhands.sdk.mcp.tool import MCPToolExecutor
 
 
@@ -133,7 +133,7 @@ class TestStatefulMCPSessionPersistence:
             }
         }
 
-        with create_mcp_tools(coerce_mcp_servers(config), timeout=10.0) as client:
+        with create_mcp_tools(coerce_mcp_config(config), timeout=10.0) as client:
             increment_tool = next(t for t in client if t.name == "increment_counter")
             get_tool = next(t for t in client if t.name == "get_counter")
 
@@ -172,7 +172,7 @@ class TestStatefulMCPSessionPersistence:
             }
         }
 
-        with create_mcp_tools(coerce_mcp_servers(config), timeout=10.0) as client:
+        with create_mcp_tools(coerce_mcp_config(config), timeout=10.0) as client:
             set_auth_tool = next(t for t in client if t.name == "set_auth_token")
             get_auth_tool = next(t for t in client if t.name == "get_auth_token")
 
@@ -210,7 +210,7 @@ class TestStatefulMCPSessionPersistence:
             }
         }
 
-        with create_mcp_tools(coerce_mcp_servers(config), timeout=10.0) as client:
+        with create_mcp_tools(coerce_mcp_config(config), timeout=10.0) as client:
             # Get all tools
             set_auth = next(t for t in client if t.name == "set_auth_token")
             get_auth = next(t for t in client if t.name == "get_auth_token")

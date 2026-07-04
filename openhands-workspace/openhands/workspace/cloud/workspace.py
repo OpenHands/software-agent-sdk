@@ -696,7 +696,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         retry=tenacity.retry_if_exception(_is_retryable_error),
         reraise=True,
     )
-    def get_mcp_servers(self) -> dict[str, Any]:
+    def get_mcp_config(self) -> dict[str, Any]:
         """Fetch MCP servers from the user's SaaS account.
 
         Calls ``GET /api/v1/users/me`` to retrieve the user's MCP configuration
@@ -713,8 +713,8 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         Example:
             >>> with OpenHandsCloudWorkspace(...) as workspace:
             ...     llm = workspace.get_llm()
-            ...     mcp_servers = workspace.get_mcp_servers()
-            ...     agent = Agent(llm=llm, mcp_servers=mcp_servers, tools=...)
+            ...     mcp_config = workspace.get_mcp_config()
+            ...     agent = Agent(llm=llm, mcp_config=mcp_config, tools=...)
         """
         if not self._sandbox_id:
             raise RuntimeError("Sandbox is not running")
@@ -730,7 +730,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         if not mcp_config_data:
             return {}
 
-        mcp_servers: dict[str, dict[str, Any]] = {}
+        mcp_config: dict[str, dict[str, Any]] = {}
 
         # Transform SSE servers → RemoteMCPServer format
         for i, sse_server in enumerate(mcp_config_data.get("sse_servers") or []):
@@ -743,7 +743,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
                     "Authorization": f"Bearer {sse_server['api_key']}"
                 }
             server_name = f"sse_{i}"
-            mcp_servers[server_name] = server_config
+            mcp_config[server_name] = server_config
 
         # Transform SHTTP servers → RemoteMCPServer format
         for i, shttp_server in enumerate(mcp_config_data.get("shttp_servers") or []):
@@ -758,7 +758,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             if shttp_server.get("timeout"):
                 server_config["timeout"] = shttp_server["timeout"]
             server_name = f"shttp_{i}"
-            mcp_servers[server_name] = server_config
+            mcp_config[server_name] = server_config
 
         # Transform STDIO servers → StdioMCPServer format
         for stdio_server in mcp_config_data.get("stdio_servers") or []:
@@ -769,12 +769,12 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             if stdio_server.get("env"):
                 server_config["env"] = stdio_server["env"]
             # STDIO servers have an explicit name field
-            mcp_servers[stdio_server["name"]] = server_config
+            mcp_config[stdio_server["name"]] = server_config
 
-        if not mcp_servers:
+        if not mcp_config:
             return {}
 
-        return mcp_servers
+        return mcp_config
 
     @tenacity.retry(
         stop=tenacity.stop_after_attempt(_MAX_RETRIES),

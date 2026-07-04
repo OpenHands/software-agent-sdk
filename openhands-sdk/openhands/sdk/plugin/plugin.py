@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp.config import MCPServer, coerce_mcp_servers, validate_mcp_servers
+from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config, validate_mcp_config
 from openhands.sdk.plugin.fetch import fetch_plugin
 from openhands.sdk.plugin.types import (
     CommandDefinition,
@@ -64,7 +64,7 @@ class Plugin(BaseModel):
     hooks: HookConfig | None = Field(
         default=None, description="Hook configuration from hooks/hooks.json"
     )
-    mcp_servers: dict[str, MCPServer] = Field(
+    mcp_config: dict[str, MCPServer] = Field(
         default_factory=dict, description="MCP servers from .mcp.json"
     )
     agents: list[AgentDefinition] = Field(
@@ -174,16 +174,16 @@ class Plugin(BaseModel):
             return agent_context.model_copy(update={"skills": merged_skills})
         return AgentContext(skills=merged_skills)
 
-    @field_validator("mcp_servers", mode="before")
+    @field_validator("mcp_config", mode="before")
     @classmethod
-    def _validate_mcp_servers(cls, value: object) -> object:
-        return validate_mcp_servers(value)
+    def _validate_mcp_config(cls, value: object) -> object:
+        return validate_mcp_config(value)
 
-    def add_mcp_servers_to(
+    def add_mcp_config_to(
         self,
-        mcp_servers: dict[str, MCPServer] | None = None,
+        mcp_config: dict[str, MCPServer] | None = None,
     ) -> dict[str, MCPServer]:
-        """Add this plugin's MCP servers to an MCP server map.
+        """Add this plugin's MCP config to an MCP config map.
 
         Plugin MCP servers override existing servers with the same name.
 
@@ -191,18 +191,18 @@ class Plugin(BaseModel):
         plugin wins when the same server is present in both configs.
 
         Args:
-            mcp_servers: Existing MCP servers (or None to create a new map)
+            mcp_config: Existing MCP servers (or None to create a new map)
 
         Returns:
             New MCP server map with this plugin's servers added
 
         Example:
             >>> plugin = Plugin.load(Plugin.fetch("github:owner/plugin"))
-            >>> new_mcp = plugin.add_mcp_servers_to(agent.mcp_servers)
-            >>> agent = agent.model_copy(update={"mcp_servers": new_mcp})
+            >>> new_mcp = plugin.add_mcp_config_to(agent.mcp_config)
+            >>> agent = agent.model_copy(update={"mcp_config": new_mcp})
         """
-        existing_servers = mcp_servers or {}
-        plugin_servers = self.mcp_servers
+        existing_servers = mcp_config or {}
+        plugin_servers = self.mcp_config
         for server_name in plugin_servers:
             if server_name in existing_servers:
                 logger.warning(
@@ -292,8 +292,8 @@ class Plugin(BaseModel):
         # Load hooks
         hooks = _load_hooks(plugin_dir)
 
-        # Load MCP servers
-        mcp_servers = _load_mcp_servers(plugin_dir)
+        # Load MCP config
+        mcp_config = _load_plugin_mcp_config(plugin_dir)
 
         # Load agents
         agents = _load_agents(plugin_dir)
@@ -306,7 +306,7 @@ class Plugin(BaseModel):
             path=to_posix_path(plugin_dir),
             skills=skills,
             hooks=hooks,
-            mcp_servers=mcp_servers,
+            mcp_config=mcp_config,
             agents=agents,
             commands=commands,
         )
@@ -434,8 +434,8 @@ def _load_hooks(plugin_dir: Path) -> HookConfig | None:
         return None
 
 
-def _load_mcp_servers(plugin_dir: Path) -> dict[str, MCPServer]:
-    """Load MCP servers from .mcp.json.
+def _load_plugin_mcp_config(plugin_dir: Path) -> dict[str, MCPServer]:
+    """Load MCP config from .mcp.json.
 
     Note: Variables are NOT fully expanded during plugin loading. Only SKILL_ROOT
     is expanded (since plugin_dir is known). Other variables like ${VAR:-default}
@@ -459,7 +459,7 @@ def _load_mcp_servers(plugin_dir: Path) -> dict[str, MCPServer]:
                 mcp_json,
                 len(config["mcpServers"]),
             )
-        return coerce_mcp_servers(config)
+        return coerce_mcp_config(config)
     except Exception as e:
         logger.warning(f"Failed to load MCP config from {mcp_json}: {e}")
         return {}

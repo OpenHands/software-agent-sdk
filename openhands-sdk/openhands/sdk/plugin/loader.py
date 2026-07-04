@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp.config import coerce_mcp_servers, dump_mcp_servers
+from openhands.sdk.mcp.config import coerce_mcp_config, dump_mcp_config
 from openhands.sdk.plugin.plugin import Plugin
 from openhands.sdk.plugin.types import PluginSource
 from openhands.sdk.skills.utils import SecretLookup, expand_mcp_variables
@@ -54,7 +54,7 @@ def load_plugins(
 
     Returns:
         Tuple of (updated_agent, merged_hook_config).
-        The agent has updated agent_context (with merged skills) and mcp_servers.
+        The agent has updated agent_context (with merged skills) and mcp_config.
         The hook_config contains all hooks from all plugins concatenated.
 
     Raises:
@@ -73,9 +73,9 @@ def load_plugins(
     if not plugin_specs:
         return agent, None
 
-    # Start with agent's existing context and MCP servers
+    # Start with agent's existing context and MCP config
     merged_context: AgentContext | None = agent.agent_context
-    merged_mcp_servers = agent.mcp_servers
+    merged_mcp_config = agent.mcp_config
     all_hooks: list[HookConfig] = []
 
     for spec in plugin_specs:
@@ -93,12 +93,12 @@ def load_plugins(
             f"Loaded plugin '{plugin.name}': "
             f"{len(plugin.skills)} skills, "
             f"hooks={'yes' if plugin.hooks else 'no'}, "
-            f"mcp_servers={'yes' if plugin.mcp_servers else 'no'}"
+            f"mcp_config={'yes' if plugin.mcp_config else 'no'}"
         )
 
-        # Merge skills and MCP servers separately
+        # Merge skills and MCP config separately
         merged_context = plugin.add_skills_to(merged_context, max_skills=max_skills)
-        merged_mcp_servers = plugin.add_mcp_servers_to(merged_mcp_servers)
+        merged_mcp_config = plugin.add_mcp_config_to(merged_mcp_config)
 
         # Collect hooks for later combination
         if plugin.hooks and not plugin.hooks.is_empty():
@@ -106,14 +106,14 @@ def load_plugins(
 
     # Expand MCP server variables with per-conversation secrets
     # This handles ${VAR} placeholders that reference secrets injected via API
-    if merged_mcp_servers and get_secret:
+    if merged_mcp_config and get_secret:
         expanded_mcp = expand_mcp_variables(
-            {"mcpServers": dump_mcp_servers(merged_mcp_servers)},
+            {"mcpServers": dump_mcp_config(merged_mcp_config)},
             {},
             get_secret=get_secret,
             expand_defaults=True,
         )
-        merged_mcp_servers = coerce_mcp_servers(expanded_mcp)
+        merged_mcp_config = coerce_mcp_config(expanded_mcp)
         logger.debug("Expanded MCP config variables")
 
     # Combine all hook configs (concatenation semantics)
@@ -123,7 +123,7 @@ def load_plugins(
     updated_agent = agent.model_copy(
         update={
             "agent_context": merged_context,
-            "mcp_servers": merged_mcp_servers,
+            "mcp_config": merged_mcp_config,
         }
     )
 

@@ -56,10 +56,10 @@ def _server_url_matches_key(server_url: str, key: str) -> bool:
 
 
 def _find_matching_oauth_server(
-    mcp_servers: dict[str, MCPServer],
+    mcp_config: dict[str, MCPServer],
     key: str,
 ) -> tuple[str, MCPServer, MCPOAuthAuthCredential] | None:
-    for server_name, server in mcp_servers.items():
+    for server_name, server in mcp_config.items():
         if server.url is None or not _server_url_matches_key(server.url, key):
             continue
         auth = server.auth
@@ -100,8 +100,8 @@ class MCPSettingsOAuthTokenStore:
         if settings is None:
             return None, None
 
-        mcp_servers = settings.agent_settings.mcp_servers
-        match = _find_matching_oauth_server(mcp_servers, key)
+        mcp_config = settings.agent_settings.mcp_config
+        match = _find_matching_oauth_server(mcp_config, key)
         if match is None:
             return None, None
         _, _, auth = match
@@ -133,8 +133,8 @@ class MCPSettingsOAuthTokenStore:
         stored_value = copy.deepcopy(dict(value))
 
         def apply_update(settings: PersistedSettings) -> PersistedSettings:
-            mcp_servers = settings.agent_settings.mcp_servers
-            match = _find_matching_oauth_server(mcp_servers, key)
+            mcp_config = settings.agent_settings.mcp_config
+            match = _find_matching_oauth_server(mcp_config, key)
             if match is None:
                 logger.warning(
                     "Could not persist MCP OAuth state: no configured MCP "
@@ -148,7 +148,7 @@ class MCPSettingsOAuthTokenStore:
             state = (auth.state or MCPOAuthState()).with_token_storage_value(
                 field, stored_value
             )
-            updated_servers = dict(mcp_servers)
+            updated_servers = dict(mcp_config)
             updated_servers[server_name] = server.model_copy(
                 update={
                     "auth": auth.model_copy(
@@ -157,7 +157,7 @@ class MCPSettingsOAuthTokenStore:
                 }
             )
             settings.agent_settings = settings.agent_settings.model_copy(
-                update={"mcp_servers": updated_servers}
+                update={"mcp_config": updated_servers}
             )
             return settings
 
@@ -188,8 +188,8 @@ class MCPSettingsOAuthTokenStore:
 
         def apply_update(settings: PersistedSettings) -> PersistedSettings:
             nonlocal deleted
-            mcp_servers = settings.agent_settings.mcp_servers
-            match = _find_matching_oauth_server(mcp_servers, key)
+            mcp_config = settings.agent_settings.mcp_config
+            match = _find_matching_oauth_server(mcp_config, key)
             if match is None:
                 return settings
             server_name, server, auth = match
@@ -198,7 +198,7 @@ class MCPSettingsOAuthTokenStore:
             ).without_token_storage_value(field)
             if not deleted:
                 return settings
-            updated_servers = dict(mcp_servers)
+            updated_servers = dict(mcp_config)
             updated_servers[server_name] = server.model_copy(
                 update={
                     "auth": auth.model_copy(
@@ -207,7 +207,7 @@ class MCPSettingsOAuthTokenStore:
                 }
             )
             settings.agent_settings = settings.agent_settings.model_copy(
-                update={"mcp_servers": updated_servers}
+                update={"mcp_config": updated_servers}
             )
             return settings
 
@@ -340,10 +340,10 @@ class SettingsBackedMCPToolProvider:
     """Create MCP tools with FastMCP OAuth state persisted in settings."""
 
     def create_tools(
-        self, mcp_servers: dict[str, MCPServer], timeout: float = 30.0
+        self, mcp_config: dict[str, MCPServer], timeout: float = 30.0
     ) -> MCPClient:
         return create_mcp_tools(
-            mcp_servers,
+            mcp_config,
             timeout,
             mcp_oauth_token_storage=MCPSettingsOAuthTokenStore(),
         )

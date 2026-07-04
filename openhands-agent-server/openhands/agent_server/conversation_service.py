@@ -251,14 +251,14 @@ logger = logging.getLogger(__name__)
 def _resolve_agent_from_profile(
     profile_id: "UUID",
     cipher: "Cipher | None",
-    mcp_servers: "dict[str, MCPServer]",
+    mcp_config: "dict[str, MCPServer]",
 ) -> "tuple[AgentBase, LaunchedAgentProfile]":
     """Load and resolve an agent profile by id, returning the built agent + provenance.
 
     Runs synchronously (call via ``asyncio.to_thread`` from async context).
 
     Args:
-        mcp_servers: Global MCP servers already loaded by the caller using the
+        mcp_config: Global MCP servers already loaded by the caller using the
             server's cipher.  Passed explicitly so this free function never
             touches the settings-store singleton (which may not have been
             initialised with the correct cipher yet).
@@ -306,7 +306,7 @@ def _resolve_agent_from_profile(
         settings_config = resolve_agent_profile(
             profile,
             llm_store=llm_store,
-            mcp_servers=mcp_servers,
+            mcp_config=mcp_config,
             available_skills=available_skills,
             cipher=cipher,
         )
@@ -711,12 +711,12 @@ class ConversationService:
             )
 
             settings = get_settings_store().load() or PersistedSettings()
-            mcp_servers = settings.agent_settings.mcp_servers
+            mcp_config = settings.agent_settings.mcp_config
             resolved_agent, launched_agent_profile = await asyncio.to_thread(
                 _resolve_agent_from_profile,
                 request.agent_profile_id,
                 self.cipher,
-                mcp_servers,
+                mcp_config,
             )
             request = request.model_copy(update={"agent": resolved_agent})
 
