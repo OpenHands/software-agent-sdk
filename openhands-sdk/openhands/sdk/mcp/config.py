@@ -174,6 +174,41 @@ class MCPOAuthState(BaseModel):
     client_info: MCPOAuthClientInfoState | None = None
     token_expires_at: float | None = None
 
+    def to_plain_dict(self, *, cipher: Any | None = None) -> dict[str, Any]:
+        """Dump OAuth state with secret values in plaintext.
+
+        When ``cipher`` is provided, encrypted Fernet token strings are first
+        validated back through the DataModel so stored/API ciphertext becomes
+        usable FastMCP token-storage state.
+        """
+        dumped = self.model_dump(
+            mode="json",
+            context={"expose_secrets": "plaintext"},
+            exclude_none=True,
+            exclude_defaults=True,
+        )
+        if cipher is None:
+            return dumped
+        return (
+            type(self)
+            .model_validate(dumped, context={"cipher": cipher})
+            .model_dump(
+                mode="json",
+                context={"expose_secrets": "plaintext"},
+                exclude_none=True,
+                exclude_defaults=True,
+            )
+        )
+
+    def to_api_dict(self, *, cipher: Any | None = None) -> dict[str, Any]:
+        """Dump OAuth state for API responses: plaintext locally, encrypted remotely."""
+        context = (
+            {"expose_secrets": "plaintext"}
+            if cipher is None
+            else {"cipher": cipher, "expose_secrets": "encrypted"}
+        )
+        return self.model_dump(mode="json", context=context, exclude_none=True)
+
 
 class MCPOAuthAuthCredential(BaseModel):
     strategy: Literal["oauth2"]

@@ -95,15 +95,6 @@ def _find_matching_server(
     return None
 
 
-def _state_model_to_dict(state: MCPOAuthState) -> dict[str, Any]:
-    return state.model_dump(
-        mode="json",
-        context={"expose_secrets": "plaintext"},
-        exclude_none=True,
-        exclude_defaults=True,
-    )
-
-
 def _state_from_auth(auth: Mapping[str, Any]) -> MCPOAuthState:
     state = auth.get("state")
     if not isinstance(state, Mapping):
@@ -266,7 +257,7 @@ class MCPSettingsOAuthTokenStore:
             if not isinstance(auth, dict):
                 return settings
 
-            state = _state_model_to_dict(_state_from_auth(auth))
+            state = _state_from_auth(auth).to_plain_dict()
             if not _put_state_value(state, key, stored_value, collection):
                 return settings
             if _state_has_values(state):
@@ -307,7 +298,7 @@ class MCPSettingsOAuthTokenStore:
             auth = server.get("auth")
             if not isinstance(auth, dict):
                 return settings
-            state = _state_model_to_dict(_state_from_auth(auth))
+            state = _state_from_auth(auth).to_plain_dict()
             deleted = _delete_state_value(state, key, collection)
             if not deleted:
                 return settings
@@ -372,7 +363,7 @@ class InMemoryMCPOAuthTokenStore:
         )
 
     def export_state(self) -> dict[str, Any]:
-        return _state_model_to_dict(self._state)
+        return self._state.to_plain_dict()
 
     async def get(
         self, key: str, *, collection: str | None = None
@@ -393,12 +384,12 @@ class InMemoryMCPOAuthTokenStore:
         ttl: SupportsFloat | None = None,
     ) -> None:
         del ttl
-        state = _state_model_to_dict(self._state)
+        state = self._state.to_plain_dict()
         if _put_state_value(state, key, value, collection):
             self._state = MCPOAuthState.model_validate(state)
 
     async def delete(self, key: str, *, collection: str | None = None) -> bool:
-        state = _state_model_to_dict(self._state)
+        state = self._state.to_plain_dict()
         deleted = _delete_state_value(state, key, collection)
         if deleted:
             self._state = MCPOAuthState.model_validate(state)

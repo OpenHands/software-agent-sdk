@@ -226,12 +226,6 @@ def _mcp_validation_context(cipher: Cipher | None) -> dict[str, Any] | None:
     return {"cipher": cipher} if cipher is not None else None
 
 
-def _mcp_response_context(cipher: Cipher | None) -> dict[str, Any]:
-    if cipher is None:
-        return {"expose_secrets": "plaintext"}
-    return {"cipher": cipher, "expose_secrets": "encrypted"}
-
-
 def _server_to_openhands_server(
     spec: _StdioMCPServerSpec | _RemoteMCPServerSpec,
     cipher: Cipher | None,
@@ -258,42 +252,6 @@ def _server_to_openhands_server(
     return OpenHandsMCPServer.model_validate(
         out,
         context=_mcp_validation_context(cipher),
-    )
-
-
-def _oauth_state_to_plain_dict(
-    state: MCPOAuthState | None,
-    cipher: Cipher | None,
-) -> dict[str, Any] | None:
-    if state is None:
-        return None
-    dumped = state.model_dump(
-        mode="json",
-        context={"expose_secrets": "plaintext"},
-        exclude_none=True,
-        exclude_defaults=True,
-    )
-    validated = MCPOAuthState.model_validate(
-        dumped,
-        context=_mcp_validation_context(cipher),
-    )
-    plaintext = validated.model_dump(
-        mode="json",
-        context={"expose_secrets": "plaintext"},
-        exclude_none=True,
-        exclude_defaults=True,
-    )
-    return plaintext or None
-
-
-def _oauth_state_to_response(
-    state: MCPOAuthState,
-    cipher: Cipher | None,
-) -> dict[str, Any]:
-    return state.model_dump(
-        mode="json",
-        context=_mcp_response_context(cipher),
-        exclude_none=True,
     )
 
 
@@ -369,7 +327,9 @@ def _probe_mcp_server(
         oauth_token_storage: InMemoryMCPOAuthTokenStore | None = None
         if oauth_auth is not None:
             oauth_token_storage = InMemoryMCPOAuthTokenStore(
-                state=_oauth_state_to_plain_dict(oauth_auth.state, cipher)
+                state=oauth_auth.state.to_plain_dict(cipher=cipher)
+                if oauth_auth.state is not None
+                else None
             )
         # ``create_mcp_tools`` returns a client that owns a background loop
         # and a (possibly long-lived) subprocess. Use the context-manager
@@ -389,8 +349,8 @@ def _probe_mcp_server(
             if oauth_token_storage is not None:
                 state = oauth_token_storage.export_state()
                 if state:
-                    oauth_state = _oauth_state_to_response(
-                        MCPOAuthState.model_validate(state), cipher
+                    oauth_state = MCPOAuthState.model_validate(state).to_api_dict(
+                        cipher=cipher
                     )
             return MCPTestSuccess(
                 tools=tool_names,
