@@ -6,7 +6,7 @@ import threading
 import time
 from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Annotated, ClassVar, Literal, Union
+from typing import Annotated, Any, ClassVar, Literal, Union
 from xml.sax.saxutils import escape as xml_escape
 
 import frontmatter
@@ -14,7 +14,6 @@ import yaml
 from pydantic import (
     BaseModel,
     Field,
-    JsonValue,
     SerializationInfo,
     ValidationInfo,
     field_serializer,
@@ -279,7 +278,7 @@ class Skill(BaseModel):
     @field_serializer("mcp_tools")
     def _serialize_mcp_tools(
         self, value: dict[str, MCPServer] | None, info: SerializationInfo
-    ) -> dict[str, dict[str, JsonValue]] | None:
+    ) -> dict[str, dict[str, Any]] | None:
         if value is None:
             return None
         if not value:

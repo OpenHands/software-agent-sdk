@@ -34,8 +34,6 @@ class SendMessageDummyAgent(AgentBase):
         self,
         state: ConversationState,
         on_event: ConversationCallbackType,
-        *,
-        extra_tools=(),
     ) -> None:
         event = SystemPromptEvent(
             source="agent", system_prompt=TextContent(text="dummy"), tools=[]

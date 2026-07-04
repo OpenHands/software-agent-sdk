@@ -14,10 +14,10 @@ MCP references and returns :class:`~openhands.sdk.profiles.AgentProfileDiagnosti
 import asyncio
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Path, Request, status
-from pydantic import BaseModel, Field, JsonValue, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from openhands.agent_server._secrets_exposure import (
     build_expose_context,
@@ -85,7 +85,7 @@ class AgentProfileListResponse(BaseModel):
 
 class AgentProfileDetailResponse(BaseModel):
     name: str
-    profile: dict[str, JsonValue]
+    profile: dict[str, Any]
 
 
 class AgentProfileMutationResponse(BaseModel):
@@ -300,7 +300,7 @@ async def get_agent_profile(
     status_code=status.HTTP_201_CREATED,
 )
 async def save_agent_profile(
-    request: Request, name: ProfileName, body: dict[str, JsonValue]
+    request: Request, name: ProfileName, body: dict[str, Any]
 ) -> AgentProfileMutationResponse:
     """Save an ``AgentProfile`` under ``name`` (overwriting a namesake).
 

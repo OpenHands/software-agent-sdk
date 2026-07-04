@@ -7770,13 +7770,15 @@ class TestMcpConfigToAcpServers:
             ("Authorization", "Bearer token-y")
         ]
 
-    def test_http_auth_does_not_override_authorization_header(self):
+    def test_http_header_auth_forwards_authorization_header(self):
         cfg = {
             "mcpServers": {
                 "remote": {
                     "url": "https://h/mcp",
-                    "headers": {"authorization": "Bearer explicit"},
-                    "auth": {"strategy": "bearer", "value": "token-y"},
+                    "auth": {
+                        "strategy": "header",
+                        "headers": {"authorization": "Bearer explicit"},
+                    },
                 }
             }
         }

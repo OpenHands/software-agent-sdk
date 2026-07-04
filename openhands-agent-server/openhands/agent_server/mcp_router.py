@@ -20,11 +20,11 @@ persist it through the settings API under the tested server's ``auth.state``.
 from __future__ import annotations
 
 import asyncio
-from typing import Literal
+from typing import Any, Literal
 
 import mcp.types
 from fastapi import APIRouter, Request
-from pydantic import BaseModel, Field, JsonValue, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from openhands.agent_server._secrets_exposure import get_cipher
 from openhands.agent_server.mcp_oauth_store import (
@@ -67,7 +67,7 @@ class MCPToolCallSpec(BaseModel):
     """
 
     name: str = Field(..., min_length=1, description="Name of the tool to invoke")
-    arguments: dict[str, JsonValue] = Field(
+    arguments: dict[str, Any] = Field(
         default_factory=dict,
         description="Arguments passed to the tool unchanged.",
     )

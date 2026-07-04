@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -420,8 +420,6 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         self,
         state: ConversationState,
         on_event: ConversationCallbackType,
-        *,
-        extra_tools: Sequence[ToolDefinition] = (),
     ) -> None:
         """Initialize conversation state.
 
@@ -435,10 +433,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         (condenser, UI, etc.) and also prevent accidentally materializing the full
         event history during initialization.
         """
-        self._initialize(
-            state,
-            extra_tools=extra_tools,
-        )
+        self._initialize(state)
 
         # Defensive check: Analyze state to detect unexpected initialization scenarios
         # These checks help diagnose issues related to lazy loading and event ordering

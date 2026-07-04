@@ -2,11 +2,12 @@
 
 import json
 from collections.abc import Mapping
+from typing import Any
 from unittest.mock import Mock
 
 import mcp.types
 import pytest
-from pydantic import BaseModel, JsonValue
+from pydantic import BaseModel
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.agent.base import AgentBase
@@ -22,7 +23,7 @@ def mcp_config_model(config: Mapping[str, object]):
     return coerce_mcp_config(config)
 
 
-def dump_agent_mcp_config(agent: AgentBase) -> dict[str, dict[str, JsonValue]]:
+def dump_agent_mcp_config(agent: AgentBase) -> dict[str, dict[str, Any]]:
     return dump_mcp_config(agent.mcp_config)
 
 

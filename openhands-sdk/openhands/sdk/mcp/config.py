@@ -5,14 +5,13 @@ from __future__ import annotations
 import base64
 import copy
 from collections.abc import Mapping
-from typing import Annotated, Literal, cast
+from typing import Annotated, Any, Literal, cast
 
 from fastmcp.mcp_config import MCPConfig as FastMCPConfig
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    JsonValue,
     SecretStr,
     SerializationInfo,
     TypeAdapter,
@@ -75,9 +74,9 @@ def _serialize_secret_map(
 
 def _dump_model_nonempty(
     model: BaseModel, *, context: dict[str, object]
-) -> dict[str, JsonValue] | None:
+) -> dict[str, Any] | None:
     dumped = cast(
-        dict[str, JsonValue],
+        dict[str, Any],
         model.model_dump(
             mode="json",
             context=context,
@@ -225,12 +224,12 @@ class MCPOAuthAuthentication(_MCPBaseModel):
     scopes: str | list[str] | None = None
     client_name: str | None = None
     client_metadata_url: str | None = None
-    additional_client_metadata: dict[str, JsonValue] | None = None
+    additional_client_metadata: dict[str, Any] | None = None
 
 
 class MCPOAuthStateResponse(_MCPBaseModel):
-    tokens: dict[str, JsonValue] | None = None
-    client_info: dict[str, JsonValue] | None = None
+    tokens: dict[str, Any] | None = None
+    client_info: dict[str, Any] | None = None
     token_expires_at: float | None = None
 
 
@@ -246,8 +245,8 @@ class MCPOAuthState(_MCPBaseModel):
     def has_values(self) -> bool:
         return bool(self.to_plain_dict())
 
-    def _to_storage_dict(self, *, context: dict[str, object]) -> dict[str, JsonValue]:
-        data: dict[str, JsonValue] = {}
+    def _to_storage_dict(self, *, context: dict[str, object]) -> dict[str, Any]:
+        data: dict[str, Any] = {}
         if self.tokens is not None and self.tokens.access_token is not None:
             tokens = _dump_model_nonempty(self.tokens, context=context)
             if tokens is not None:
@@ -262,7 +261,7 @@ class MCPOAuthState(_MCPBaseModel):
 
     def get_token_storage_value(
         self, field: MCPOAuthTokenStorageField
-    ) -> dict[str, JsonValue] | None:
+    ) -> dict[str, Any] | None:
         if field == "tokens":
             if self.tokens is None or self.tokens.access_token is None:
                 return None
@@ -280,7 +279,7 @@ class MCPOAuthState(_MCPBaseModel):
         if self.token_expires_at is None:
             return None
         return cast(
-            dict[str, JsonValue],
+            dict[str, Any],
             MCPOAuthTokenExpiryState(expires_at=self.token_expires_at).model_dump(
                 mode="json",
                 exclude_none=True,
@@ -288,7 +287,7 @@ class MCPOAuthState(_MCPBaseModel):
         )
 
     def with_token_storage_value(
-        self, field: MCPOAuthTokenStorageField, value: Mapping[str, JsonValue]
+        self, field: MCPOAuthTokenStorageField, value: Mapping[str, Any]
     ) -> MCPOAuthState:
         if field == "tokens":
             return self.model_copy(
@@ -317,7 +316,7 @@ class MCPOAuthState(_MCPBaseModel):
             self.token_expires_at is not None,
         )
 
-    def to_plain_dict(self, *, cipher: Cipher | None = None) -> dict[str, JsonValue]:
+    def to_plain_dict(self, *, cipher: Cipher | None = None) -> dict[str, Any]:
         """Dump OAuth state with secret values in plaintext.
 
         When ``cipher`` is provided, encrypted Fernet token strings are first
@@ -511,8 +510,8 @@ def _basic_auth_header(username: str, password: str) -> str:
 
 
 def _normalize_server_for_fastmcp(
-    server: Mapping[str, JsonValue],
-) -> dict[str, JsonValue]:
+    server: Mapping[str, Any],
+) -> dict[str, Any]:
     server = copy.deepcopy(dict(server))
     auth = server.pop("auth", None)
     raw_headers = server.get("headers")
@@ -561,11 +560,11 @@ def dump_mcp_config(
     mcp_config: Mapping[str, MCPServer],
     *,
     context: dict[str, object] | None = None,
-) -> dict[str, dict[str, JsonValue]]:
+) -> dict[str, dict[str, Any]]:
     dump_context = {"expose_secrets": "plaintext"} if context is None else context
     return {
         name: cast(
-            dict[str, JsonValue],
+            dict[str, Any],
             server.model_dump(
                 mode="json",
                 context=dump_context,
@@ -581,7 +580,7 @@ def to_fastmcp_mcp_config(
     mcp_config: Mapping[str, MCPServer],
     *,
     cipher: Cipher | None = None,
-) -> dict[str, JsonValue]:
+) -> dict[str, Any]:
     context = {"cipher": cipher, "expose_secrets": "plaintext"} if cipher else None
     return {
         "mcpServers": {

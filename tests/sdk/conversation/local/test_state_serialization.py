@@ -44,7 +44,7 @@ class _DifferentAgentForVerifyTest(AgentBase):
         )
         super().__init__(llm=llm, tools=[])
 
-    def init_state(self, state, on_event, *, extra_tools=()):
+    def init_state(self, state, on_event):
         pass
 
     def step(

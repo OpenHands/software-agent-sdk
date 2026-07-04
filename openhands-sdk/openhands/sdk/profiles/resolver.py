@@ -26,9 +26,9 @@ from __future__ import annotations
 
 import shlex
 from collections.abc import Container
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, Field, JsonValue, SecretStr
+from pydantic import BaseModel, Field, SecretStr
 
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.mcp.config import MCPServer
@@ -128,7 +128,7 @@ class AgentProfileDiagnostics(BaseModel):
     acp_file_secret_names: list[str] = Field(default_factory=list)
 
     # Redacted resolved settings, present iff ``valid``.
-    resolved_settings: dict[str, JsonValue] | None = None
+    resolved_settings: dict[str, Any] | None = None
 
 
 def _server_names(mcp_config: dict[str, MCPServer]) -> list[str]:

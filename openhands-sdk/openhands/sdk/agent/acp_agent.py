@@ -17,6 +17,7 @@ See https://agentclientprotocol.com/protocol/overview
 from __future__ import annotations
 
 import asyncio
+import base64
 import inspect
 import json
 import os
@@ -24,7 +25,7 @@ import re
 import threading
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Generator, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Generator, Iterable
 from concurrent.futures import Future
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
@@ -52,7 +53,6 @@ from acp.schema import (
 from acp.transports import default_environment
 from pydantic import (
     Field,
-    JsonValue,
     PrivateAttr,
     SecretStr,
     ValidationInfo,
@@ -74,7 +74,14 @@ from openhands.sdk.event import (
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import LLM, ImageContent, Message, MessageToolCall, TextContent
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp.config import MCPServer, to_fastmcp_mcp_config
+from openhands.sdk.mcp.config import (
+    MCPApiKeyAuthCredential,
+    MCPBasicAuthCredential,
+    MCPBearerAuthCredential,
+    MCPHeaderAuthCredential,
+    MCPOAuthAuthCredential,
+    MCPServer,
+)
 from openhands.sdk.observability.laminar import maybe_init_laminar, observe
 from openhands.sdk.settings.acp_providers import (
     ACPFileSecretSpec,
@@ -105,7 +112,6 @@ if TYPE_CHECKING:
         LocalConversation,
     )
     from openhands.sdk.conversation.secret_registry import SecretRegistry
-    from openhands.sdk.tool import ToolDefinition
 
 
 # Maximum seconds to wait for a UsageUpdate notification after prompt()
@@ -542,27 +548,50 @@ def _extract_session_models(
 _ACPMcpServer = HttpMcpServer | SseMcpServer | McpServerStdio
 
 
-def _remote_mcp_headers(spec: Mapping[str, JsonValue], name: str) -> list[HttpHeader]:
+def _remote_mcp_headers(server: MCPServer, name: str) -> list[HttpHeader]:
     """Convert remote MCP headers/auth into ACP's header-only representation."""
-    raw_headers = spec.get("headers")
-    headers = (
-        [HttpHeader(name=str(k), value=str(v)) for k, v in raw_headers.items()]
-        if isinstance(raw_headers, Mapping)
-        else []
-    )
+    headers = [
+        HttpHeader(name=name, value=value.get_secret_value())
+        for name, value in (server.headers or {}).items()
+    ]
 
-    auth = spec.get("auth")
-    has_authorization = any(h.name.lower() == "authorization" for h in headers)
-    if auth and not has_authorization:
-        if isinstance(auth, str) and auth != "oauth":
-            headers.append(HttpHeader(name="Authorization", value=f"Bearer {auth}"))
-        else:
-            logger.warning(
-                "ACP MCP server %r uses unsupported remote MCP auth type %r; "
-                "only explicit headers or string bearer tokens can be forwarded",
-                name,
-                type(auth).__name__,
+    auth = server.auth
+    if isinstance(auth, MCPBearerAuthCredential):
+        if auth.value is not None:
+            headers.append(
+                HttpHeader(
+                    name="Authorization",
+                    value=f"Bearer {auth.value.get_secret_value()}",
+                )
             )
+    elif isinstance(auth, MCPApiKeyAuthCredential):
+        if auth.value is not None:
+            headers.append(
+                HttpHeader(
+                    name=auth.header_name or "Authorization",
+                    value=auth.value.get_secret_value()
+                    if auth.header_name
+                    else f"Bearer {auth.value.get_secret_value()}",
+                )
+            )
+    elif isinstance(auth, MCPBasicAuthCredential):
+        if auth.password is not None:
+            token = base64.b64encode(
+                f"{auth.username}:{auth.password.get_secret_value()}".encode()
+            ).decode("ascii")
+            headers.append(HttpHeader(name="Authorization", value=f"Basic {token}"))
+    elif isinstance(auth, MCPHeaderAuthCredential):
+        headers.extend(
+            HttpHeader(name=name, value=value.get_secret_value())
+            for name, value in auth.headers.items()
+        )
+    elif isinstance(auth, MCPOAuthAuthCredential):
+        logger.warning(
+            "ACP MCP server %r uses unsupported remote MCP auth type %r; "
+            "only header-compatible auth can be forwarded",
+            name,
+            type(auth).__name__,
+        )
     return headers
 
 
@@ -591,66 +620,48 @@ def _mcp_config_to_acp_servers(
     A remote server whose transport the ACP server does not advertise is dropped
     with a warning rather than failing init — one misconfigured server should
     not sink the whole conversation.  ``env`` / ``headers`` maps are converted
-    to the protocol's ``[{name, value}]`` list form; string ``auth`` values are
-    forwarded as bearer ``Authorization`` headers when no explicit
-    ``Authorization`` header is already present.  OpenHands auth credential
-    models are normalized through the same FastMCP boundary used by the
-    built-in Agent before ACP translation.
+    to the protocol's ``[{name, value}]`` list form; header-compatible auth
+    credentials are also converted to headers.
     """
-    fastmcp_config = to_fastmcp_mcp_config(mcp_config)
-    servers = fastmcp_config.get("mcpServers")
-    if not isinstance(servers, dict):
-        return []
     http_ok = bool(getattr(mcp_capabilities, "http", False))
     sse_ok = bool(getattr(mcp_capabilities, "sse", False))
     result: list[_ACPMcpServer] = []
-    for name, spec in servers.items():
-        if not isinstance(spec, dict):
-            logger.warning("Skipping malformed ACP MCP server %r", name)
-            continue
-        command = spec.get("command")
-        url = spec.get("url")
-        if command:
-            raw_env = spec.get("env")
-            raw_args = spec.get("args")
-            env = (
-                [EnvVariable(name=str(k), value=str(v)) for k, v in raw_env.items()]
-                if isinstance(raw_env, Mapping)
-                else []
-            )
-            args = [str(arg) for arg in raw_args] if isinstance(raw_args, list) else []
+    for name, server in mcp_config.items():
+        if server.command:
+            env = [
+                EnvVariable(name=name, value=value.get_secret_value())
+                for name, value in (server.env or {}).items()
+            ]
             result.append(
                 McpServerStdio(
-                    name=str(name),
-                    command=str(command),
-                    args=args,
+                    name=name,
+                    command=server.command,
+                    args=list(server.args or []),
                     env=env,
                 )
             )
-        elif url:
-            headers = _remote_mcp_headers(spec, str(name))
-            is_sse = str(spec.get("transport") or "http").lower() == "sse"
+        elif server.url:
+            headers = _remote_mcp_headers(server, name)
+            is_sse = server.effective_transport == "sse"
             if not (sse_ok if is_sse else http_ok):
                 logger.warning(
                     "ACP server does not advertise %s MCP support; "
                     "dropping MCP server %r (%s)",
                     "SSE" if is_sse else "HTTP",
                     name,
-                    url,
+                    server.url,
                 )
                 continue
             # Construct each transport explicitly so the ``type`` literal stays
             # narrow (the union's two arms require distinct ``Literal``s).
             if is_sse:
                 result.append(
-                    SseMcpServer(
-                        type="sse", name=str(name), url=str(url), headers=headers
-                    )
+                    SseMcpServer(type="sse", name=name, url=server.url, headers=headers)
                 )
             else:
                 result.append(
                     HttpMcpServer(
-                        type="http", name=str(name), url=str(url), headers=headers
+                        type="http", name=name, url=server.url, headers=headers
                     )
                 )
         else:
@@ -1914,15 +1925,8 @@ class ACPAgent(AgentBase):
         self,
         state: ConversationState,
         on_event: ConversationCallbackType,
-        *,
-        extra_tools: Sequence[ToolDefinition] = (),
     ) -> None:
         """Spawn the ACP server and initialize a session."""
-        if extra_tools:
-            raise NotImplementedError(
-                "ACPAgent does not support OpenHands-managed runtime tools; "
-                "the ACP server manages its own tools"
-            )
         # Validate unsupported execution features. agent_context is allowed
         # because it contributes prompt-only extensions to user messages; ACP
         # server tools and context-window management remain owned by the server.

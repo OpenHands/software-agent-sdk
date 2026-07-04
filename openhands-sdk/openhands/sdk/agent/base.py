@@ -502,8 +502,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         self,
         state: ConversationState,
         on_event: ConversationCallbackType,  # noqa: ARG002
-        *,
-        extra_tools: Sequence[ToolDefinition] = (),
     ) -> None:
         """Initialize the empty conversation state to prepare the agent for user
         messages.
@@ -512,18 +510,15 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         NOTE: state will be mutated in-place.
         """
-        self._initialize(state, extra_tools=extra_tools)
+        self._initialize(state)
 
     def _initialize(
         self,
         state: ConversationState,
-        *,
-        extra_tools: Sequence[ToolDefinition] = (),
     ):
         """Create an AgentBase instance from an AgentSpec."""
 
         if self._initialized:
-            logger.warning("Agent already initialized; skipping re-initialization.")
             return
 
         tools: list[ToolDefinition] = []
@@ -541,8 +536,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             for future in futures:
                 result = future.result()
                 tools.extend(result)
-
-        tools.extend(extra_tools)
 
         logger.info("Loaded %d tools from spec", len(tools))
         if self.filter_tools_regex:
@@ -828,11 +821,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 name for name, count in Counter(tool_names).items() if count > 1
             }
             raise ValueError(f"Duplicate runtime tool names found: {duplicates}")
+        existing = set(self._tools) & set(tool_names)
+        if existing:
+            raise ValueError(f"Duplicate tool names found: {existing}")
 
         for tool in tools:
-            previous_tool = self._tools.get(tool.name)
-            if previous_tool is not None:
-                self._close_tool_executor(previous_tool)
             self._tools[tool.name] = tool
 
     @property

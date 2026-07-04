@@ -103,11 +103,9 @@ class ExecuteToolDummyAgent(AgentBase):
         self,
         state: ConversationState,
         on_event: ConversationCallbackType,
-        *,
-        extra_tools=(),
     ) -> None:
         # Call parent init_state to properly initialize tools
-        super().init_state(state, on_event, extra_tools=extra_tools)
+        super().init_state(state, on_event)
         # Then emit the system prompt event
         event = SystemPromptEvent(
             source="agent", system_prompt=TextContent(text="dummy"), tools=[]

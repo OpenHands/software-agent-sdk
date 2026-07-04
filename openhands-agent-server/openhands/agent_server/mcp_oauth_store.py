@@ -12,9 +12,7 @@ import asyncio
 import copy
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import SupportsFloat
-
-from pydantic import JsonValue
+from typing import Any, SupportsFloat
 
 from openhands.agent_server.config import Config
 from openhands.agent_server.persistence import PersistedSettings, get_settings_store
@@ -92,7 +90,7 @@ class MCPSettingsOAuthTokenStore:
 
     def _get_entry_sync(
         self, key: str, collection: str | None
-    ) -> tuple[dict[str, JsonValue] | None, float | None]:
+    ) -> tuple[dict[str, Any] | None, float | None]:
         field = _state_field_for_fastmcp_key(key, collection)
         if field is None:
             return None, None
@@ -111,19 +109,19 @@ class MCPSettingsOAuthTokenStore:
 
     async def get(
         self, key: str, *, collection: str | None = None
-    ) -> dict[str, JsonValue] | None:
+    ) -> dict[str, Any] | None:
         value, _ = await asyncio.to_thread(self._get_entry_sync, key, collection)
         return value
 
     async def ttl(
         self, key: str, *, collection: str | None = None
-    ) -> tuple[dict[str, JsonValue] | None, float | None]:
+    ) -> tuple[dict[str, Any] | None, float | None]:
         return await asyncio.to_thread(self._get_entry_sync, key, collection)
 
     def _put_sync(
         self,
         key: str,
-        value: Mapping[str, JsonValue],
+        value: Mapping[str, Any],
         *,
         collection: str | None = None,
         ttl: SupportsFloat | None = None,
@@ -168,7 +166,7 @@ class MCPSettingsOAuthTokenStore:
     async def put(
         self,
         key: str,
-        value: Mapping[str, JsonValue],
+        value: Mapping[str, Any],
         *,
         collection: str | None = None,
         ttl: SupportsFloat | None = None,
@@ -221,18 +219,18 @@ class MCPSettingsOAuthTokenStore:
 
     async def get_many(
         self, keys: Sequence[str], *, collection: str | None = None
-    ) -> list[dict[str, JsonValue] | None]:
+    ) -> list[dict[str, Any] | None]:
         return [await self.get(key, collection=collection) for key in keys]
 
     async def ttl_many(
         self, keys: Sequence[str], *, collection: str | None = None
-    ) -> list[tuple[dict[str, JsonValue] | None, float | None]]:
+    ) -> list[tuple[dict[str, Any] | None, float | None]]:
         return [await self.ttl(key, collection=collection) for key in keys]
 
     async def put_many(
         self,
         keys: Sequence[str],
-        values: Sequence[Mapping[str, JsonValue]],
+        values: Sequence[Mapping[str, Any]],
         *,
         collection: str | None = None,
         ttl: SupportsFloat | None = None,
@@ -267,7 +265,7 @@ class InMemoryMCPOAuthTokenStore:
 
     async def get(
         self, key: str, *, collection: str | None = None
-    ) -> dict[str, JsonValue] | None:
+    ) -> dict[str, Any] | None:
         field = _state_field_for_fastmcp_key(key, collection)
         if field is None:
             return None
@@ -275,13 +273,13 @@ class InMemoryMCPOAuthTokenStore:
 
     async def ttl(
         self, key: str, *, collection: str | None = None
-    ) -> tuple[dict[str, JsonValue] | None, float | None]:
+    ) -> tuple[dict[str, Any] | None, float | None]:
         return await self.get(key, collection=collection), None
 
     async def put(
         self,
         key: str,
-        value: Mapping[str, JsonValue],
+        value: Mapping[str, Any],
         *,
         collection: str | None = None,
         ttl: SupportsFloat | None = None,
@@ -302,18 +300,18 @@ class InMemoryMCPOAuthTokenStore:
 
     async def get_many(
         self, keys: Sequence[str], *, collection: str | None = None
-    ) -> list[dict[str, JsonValue] | None]:
+    ) -> list[dict[str, Any] | None]:
         return [await self.get(key, collection=collection) for key in keys]
 
     async def ttl_many(
         self, keys: Sequence[str], *, collection: str | None = None
-    ) -> list[tuple[dict[str, JsonValue] | None, float | None]]:
+    ) -> list[tuple[dict[str, Any] | None, float | None]]:
         return [await self.ttl(key, collection=collection) for key in keys]
 
     async def put_many(
         self,
         keys: Sequence[str],
-        values: Sequence[Mapping[str, JsonValue]],
+        values: Sequence[Mapping[str, Any]],
         *,
         collection: str | None = None,
         ttl: SupportsFloat | None = None,

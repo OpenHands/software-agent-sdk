@@ -1275,11 +1275,20 @@ class LocalConversation(BaseConversation):
             # register file-based agents
             self._register_file_based_agents()
 
-            self.agent.init_state(
-                self._state,
-                on_event=self._on_event,
-                extra_tools=self._runtime_mcp_tools_for_agent(),
-            )
+            runtime_mcp_tools: list[ToolDefinition] = []
+            try:
+                if self.agent.supports_openhands_tools:
+                    self.agent._initialize(self._state)
+                    runtime_mcp_tools = self._runtime_mcp_tools_for_agent()
+                    self.agent.add_runtime_tools(runtime_mcp_tools)
+
+                self.agent.init_state(
+                    self._state,
+                    on_event=self._on_event,
+                )
+            except Exception:
+                self._close_runtime_tools(runtime_mcp_tools)
+                raise
 
             # Register LLMs in the registry (still holding lock).
             # `registered` is updated after each add so that duplicate usage_ids
