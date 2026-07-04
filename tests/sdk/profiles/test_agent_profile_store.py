@@ -13,7 +13,9 @@ import threading
 from pathlib import Path
 
 import pytest
+from pydantic import SecretStr
 
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles import (
     ACPAgentProfile,
     AgentProfileStore,
@@ -54,13 +56,11 @@ def _skill_with_secret() -> Skill:
         name="leaky",
         content="do stuff",
         mcp_tools={
-            "mcpServers": {
-                "svc": {
-                    "url": "https://x.test",
-                    "headers": {"Authorization": f"Bearer {_MCP_SECRET}"},
-                    "env": {"API_KEY": _MCP_SECRET},
-                }
-            }
+            "svc": MCPServer(
+                url="https://x.test",
+                headers={"Authorization": SecretStr(f"Bearer {_MCP_SECRET}")},
+                env={"API_KEY": SecretStr(_MCP_SECRET)},
+            )
         },
     )
 
@@ -238,7 +238,7 @@ def test_save_with_cipher_encrypts_skill_secret(
     assert FERNET_TOKEN_PREFIX in content
 
     data = json.loads(content)
-    env = data["skills"][0]["mcp_tools"]["mcpServers"]["svc"]["env"]
+    env = data["skills"][0]["mcp_tools"]["svc"]["env"]
     token = env["API_KEY"]
     assert token != _MCP_SECRET
     decrypted = cipher.decrypt(token)
@@ -285,12 +285,9 @@ def test_roundtrip_with_cipher_preserves_non_secret_fields(
     assert loaded.skills[0].name == "leaky"
 
 
-def test_load_with_cipher_leaves_skill_secret_encrypted(
+def test_load_with_cipher_decrypts_skill_secret(
     agent_store: AgentProfileStore,
 ) -> None:
-    """Skill.mcp_tools has a masking serializer but no symmetric decrypt
-    validator, so encrypted env/headers load as ciphertext. The resolver
-    (#3717) decrypts; the store only guarantees no-cleartext-at-rest."""
     cipher = Cipher(secret_key="test-key")
     agent_store.save(_profile_with_secret_skill(), cipher=cipher)
     loaded = agent_store.load("secretful", cipher=cipher)
@@ -298,11 +295,10 @@ def test_load_with_cipher_leaves_skill_secret_encrypted(
     assert isinstance(loaded, OpenHandsAgentProfile)
     mcp_tools = loaded.skills[0].mcp_tools
     assert mcp_tools is not None
-    token = mcp_tools["mcpServers"]["svc"]["env"]["API_KEY"]
-    assert token != _MCP_SECRET
-    decrypted = cipher.decrypt(token)
-    assert decrypted is not None
-    assert decrypted.get_secret_value() == _MCP_SECRET
+    env = mcp_tools["svc"].env
+    assert env is not None
+    token = env["API_KEY"]
+    assert token.get_secret_value() == _MCP_SECRET
 
 
 # ── Load ────────────────────────────────────────────────────────────────────

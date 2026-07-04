@@ -100,10 +100,14 @@ class ExecuteToolDummyAgent(AgentBase):
         super().__init__(llm=llm, tools=tools or [])
 
     def init_state(
-        self, state: ConversationState, on_event: ConversationCallbackType
+        self,
+        state: ConversationState,
+        on_event: ConversationCallbackType,
+        *,
+        extra_tools=(),
     ) -> None:
         # Call parent init_state to properly initialize tools
-        super().init_state(state, on_event)
+        super().init_state(state, on_event, extra_tools=extra_tools)
         # Then emit the system prompt event
         event = SystemPromptEvent(
             source="agent", system_prompt=TextContent(text="dummy"), tools=[]

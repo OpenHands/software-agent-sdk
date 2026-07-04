@@ -1,12 +1,12 @@
 """Test agent JSON serialization with DiscriminatedUnionMixin."""
 
 import json
-from typing import Any
+from collections.abc import Mapping
 from unittest.mock import Mock
 
 import mcp.types
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, JsonValue
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.agent.base import AgentBase
@@ -18,11 +18,11 @@ from openhands.sdk.tool.tool import ToolDefinition
 from openhands.sdk.utils.models import OpenHandsModel
 
 
-def mcp_config_model(config: dict[str, Any]):
+def mcp_config_model(config: Mapping[str, object]):
     return coerce_mcp_config(config)
 
 
-def dump_agent_mcp_config(agent: AgentBase) -> dict[str, Any]:
+def dump_agent_mcp_config(agent: AgentBase) -> dict[str, dict[str, JsonValue]]:
     return dump_mcp_config(agent.mcp_config)
 
 
@@ -85,13 +85,17 @@ def test_agent_serialization_redacts_mcp_config_by_default() -> None:
 
     # mcp_config should be accessible in memory with full secrets
     assert dump_agent_mcp_config(agent) == config["mcpServers"]
-    assert dump_agent_mcp_config(agent)["dummy"]["env"]["API_KEY"] == "super-secret-key"
+    dumped_env = dump_agent_mcp_config(agent)["dummy"]["env"]
+    assert isinstance(dumped_env, dict)
+    assert dumped_env["API_KEY"] == "super-secret-key"
 
     agent_dump = agent.model_dump(mode="json")
     serialized = json.dumps(agent_dump)
     assert "super-secret-key" not in serialized
     assert "secret-token" not in serialized
     server = agent_dump["mcp_config"]["dummy"]
+    assert isinstance(server["env"], dict)
+    assert isinstance(server["headers"], dict)
     assert server["env"]["API_KEY"] == "**********"
     assert server["headers"]["Authorization"] == "**********"
 
@@ -113,6 +117,7 @@ def test_agent_serialization_exposes_mcp_config_with_expose_secrets() -> None:
     # With expose_secrets=True, mcp_config should be returned as-is
     agent_dump = agent.model_dump(mode="json", context={"expose_secrets": True})
     server = agent_dump["mcp_config"]["dummy"]
+    assert isinstance(server["env"], dict)
     assert server["command"] == "echo"
     assert server["args"] == ["dummy-mcp"]
     assert server["env"]["API_KEY"] == "super-secret-key"
@@ -142,7 +147,10 @@ def test_agent_serialization_encrypts_mcp_config_with_cipher() -> None:
     cipher = Cipher(secret_key="test-encryption-key")
 
     agent_dump = agent.model_dump(mode="json", context={"cipher": cipher})
-    encrypted = agent_dump["mcp_config"]["dummy"]["env"]["API_KEY"]
+    env = agent_dump["mcp_config"]["dummy"]["env"]
+    assert isinstance(env, dict)
+    encrypted = env["API_KEY"]
+    assert isinstance(encrypted, str)
     assert encrypted != "super-secret-key"
     decrypted = cipher.decrypt(encrypted)
     assert decrypted is not None
@@ -227,10 +235,14 @@ def test_agent_mcp_config_decrypts_nested_env_and_headers_with_cipher() -> None:
 
     assert isinstance(agent, Agent)
     server = dump_agent_mcp_config(agent)["github"]
-    assert server["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"] == "ghp-plaintext-token"
-    assert server["env"]["DEBUG"] == "true"
-    assert server["env"]["PORT"] == "1234"
-    assert server["headers"]["Authorization"] == "Bearer plaintext-token"
+    env = server["env"]
+    headers = server["headers"]
+    assert isinstance(env, dict)
+    assert isinstance(headers, dict)
+    assert env["GITHUB_PERSONAL_ACCESS_TOKEN"] == "ghp-plaintext-token"
+    assert env["DEBUG"] == "true"
+    assert env["PORT"] == "1234"
+    assert headers["Authorization"] == "Bearer plaintext-token"
     assert (
         agent_dict["mcp_config"]["github"]["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"]
         == encrypted_env

@@ -132,7 +132,7 @@ def test_get_settings_returns_default_settings(client_with_settings):
     assert "agent_settings" in body
     assert "conversation_settings" in body
     assert "llm_api_key_is_set" in body
-    assert body["agent_settings"]["schema_version"] == 4
+    assert body["agent_settings"]["schema_version"] == AGENT_SETTINGS_SCHEMA_VERSION
     assert body["llm_api_key_is_set"] is False
     assert body["active_profile"] is None
 
@@ -334,7 +334,7 @@ def test_get_settings_migrates_acp_settings_and_resaves_encrypted_credentials(
     )
     assert response.status_code == 200
     agent_settings = response.json()["agent_settings"]
-    assert agent_settings["schema_version"] == 4
+    assert agent_settings["schema_version"] == AGENT_SETTINGS_SCHEMA_VERSION
     assert agent_settings["agent_kind"] == "acp"
     assert agent_settings["llm"]["api_key"] == "sk-acp-llm"
 
@@ -606,7 +606,7 @@ def test_patch_settings_updates_llm_config(client_with_settings):
 
     assert response.status_code == 200
     body = response.json()
-    assert body["agent_settings"]["schema_version"] == 4
+    assert body["agent_settings"]["schema_version"] == AGENT_SETTINGS_SCHEMA_VERSION
     assert body["agent_settings"]["llm"]["model"] == "gpt-4o"
     # Response should NOT expose secrets (no header)
     assert body["agent_settings"]["llm"]["api_key"] == "**********"

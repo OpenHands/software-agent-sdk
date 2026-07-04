@@ -177,7 +177,7 @@ class PersistedSettings(BaseModel):
         self,
         payload: SettingsUpdatePayload,
         *,
-        context: Mapping[str, Any] | None = None,
+        context: Mapping[str, object] | None = None,
     ) -> None:
         """Apply a batch of changes from a nested dict.
 

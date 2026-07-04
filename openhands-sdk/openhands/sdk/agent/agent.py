@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -69,7 +69,6 @@ from openhands.sdk.llm.exceptions import (
 )
 from openhands.sdk.llm.router.base import RouterLLM
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp.runtime import DefaultMCPToolProvider, MCPToolProvider
 from openhands.sdk.observability.laminar import (
     maybe_init_laminar,
     observe,
@@ -422,7 +421,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         state: ConversationState,
         on_event: ConversationCallbackType,
         *,
-        mcp_tool_provider: MCPToolProvider | None = None,
+        extra_tools: Sequence[ToolDefinition] = (),
     ) -> None:
         """Initialize conversation state.
 
@@ -436,14 +435,9 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         (condenser, UI, etc.) and also prevent accidentally materializing the full
         event history during initialization.
         """
-        mcp_tools: list[ToolDefinition] = []
-        if not self._initialized and self.mcp_config:
-            provider = mcp_tool_provider or DefaultMCPToolProvider()
-            mcp_tools = list(provider.create_tools(self.mcp_config, 30))
-
         self._initialize(
             state,
-            extra_tools=mcp_tools,
+            extra_tools=extra_tools,
         )
 
         # Defensive check: Analyze state to detect unexpected initialization scenarios

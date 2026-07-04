@@ -135,9 +135,13 @@ class RerunDummyAgent(AgentBase):
         super().__init__(llm=llm, tools=tools or [])
 
     def init_state(
-        self, state: ConversationState, on_event: ConversationCallbackType
+        self,
+        state: ConversationState,
+        on_event: ConversationCallbackType,
+        *,
+        extra_tools=(),
     ) -> None:
-        super().init_state(state, on_event)
+        super().init_state(state, on_event, extra_tools=extra_tools)
         event = SystemPromptEvent(
             source="agent", system_prompt=TextContent(text="dummy"), tools=[]
         )

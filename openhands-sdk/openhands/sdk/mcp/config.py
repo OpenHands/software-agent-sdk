@@ -5,44 +5,47 @@ from __future__ import annotations
 import base64
 import copy
 from collections.abc import Mapping
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal, cast
 
 from fastmcp.mcp_config import MCPConfig as FastMCPConfig
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    JsonValue,
     SecretStr,
     SerializationInfo,
     TypeAdapter,
     ValidationInfo,
     field_serializer,
     field_validator,
+    model_serializer,
 )
 
+from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import (
     REDACTED_SECRET_VALUE,
-    MissingCipherError,
     resolve_expose_mode,
     serialize_secret,
     validate_secret,
 )
-from openhands.sdk.utils.redact import sanitize_dict
 
 
-def _validate_optional_secret(value: Any, info: ValidationInfo) -> Any:
+def _validate_optional_secret(value: object, info: ValidationInfo) -> object:
     if isinstance(value, str | SecretStr):
         return validate_secret(value, info)
     return value
 
 
-def _serialize_optional_secret(value: SecretStr | None, info: SerializationInfo) -> Any:
+def _serialize_optional_secret(
+    value: SecretStr | None, info: SerializationInfo
+) -> str | None:
     if value is not None and resolve_expose_mode(info.context) == "redact":
         return REDACTED_SECRET_VALUE
-    return serialize_secret(value, info)
+    return cast(str | None, serialize_secret(value, info))
 
 
-def _validate_secret_map(value: Any, info: ValidationInfo) -> Any:
+def _validate_secret_map(value: object, info: ValidationInfo) -> object:
     if not isinstance(value, dict):
         return value
     validated = {}
@@ -58,24 +61,56 @@ def _validate_secret_map(value: Any, info: ValidationInfo) -> Any:
 
 def _serialize_secret_map(
     value: dict[str, SecretStr] | None, info: SerializationInfo
-) -> dict[str, Any] | None:
+) -> dict[str, str | None] | None:
     if value is None:
         return None
-    return {key: serialize_secret(secret, info) for key, secret in value.items()}
+    if resolve_expose_mode(info.context) == "redact":
+        return {key: REDACTED_SECRET_VALUE for key in value}
+    return {
+        key: cast(str | None, serialize_secret(secret, info))
+        for key, secret in value.items()
+    }
 
 
-class MCPNoneAuthCredential(BaseModel):
+def _dump_model_nonempty(
+    model: BaseModel, *, context: dict[str, object]
+) -> dict[str, JsonValue] | None:
+    dumped = cast(
+        dict[str, JsonValue],
+        model.model_dump(
+            mode="json",
+            context=context,
+            exclude_none=True,
+            exclude_defaults=True,
+        ),
+    )
+    return dumped or None
+
+
+def _drop_empty_fields(value: object) -> object:
+    if not isinstance(value, dict):
+        return value
+    return {key: item for key, item in value.items() if item is not None and item != {}}
+
+
+class _MCPBaseModel(BaseModel):
+    @model_serializer(mode="wrap")
+    def _serialize_compact(self, handler, _info: SerializationInfo) -> object:
+        return _drop_empty_fields(handler(self))
+
+
+class MCPNoneAuthCredential(_MCPBaseModel):
     strategy: Literal["none"]
 
 
-class MCPApiKeyAuthCredential(BaseModel):
+class MCPApiKeyAuthCredential(_MCPBaseModel):
     strategy: Literal["api_key"]
     value: SecretStr | None = None
     header_name: str | None = None
 
     @field_validator("value", mode="before")
     @classmethod
-    def _validate_value(cls, value: Any, info: ValidationInfo) -> Any:
+    def _validate_value(cls, value: object, info: ValidationInfo) -> object:
         return _validate_optional_secret(value, info)
 
     @field_serializer("value", when_used="always")
@@ -85,13 +120,13 @@ class MCPApiKeyAuthCredential(BaseModel):
         return _serialize_optional_secret(value, info)
 
 
-class MCPBearerAuthCredential(BaseModel):
+class MCPBearerAuthCredential(_MCPBaseModel):
     strategy: Literal["bearer"]
     value: SecretStr | None = None
 
     @field_validator("value", mode="before")
     @classmethod
-    def _validate_value(cls, value: Any, info: ValidationInfo) -> Any:
+    def _validate_value(cls, value: object, info: ValidationInfo) -> object:
         return _validate_optional_secret(value, info)
 
     @field_serializer("value", when_used="always")
@@ -101,14 +136,14 @@ class MCPBearerAuthCredential(BaseModel):
         return _serialize_optional_secret(value, info)
 
 
-class MCPBasicAuthCredential(BaseModel):
+class MCPBasicAuthCredential(_MCPBaseModel):
     strategy: Literal["basic"]
     username: str
     password: SecretStr | None = None
 
     @field_validator("password", mode="before")
     @classmethod
-    def _validate_password(cls, value: Any, info: ValidationInfo) -> Any:
+    def _validate_password(cls, value: object, info: ValidationInfo) -> object:
         return _validate_optional_secret(value, info)
 
     @field_serializer("password", when_used="always")
@@ -118,23 +153,23 @@ class MCPBasicAuthCredential(BaseModel):
         return _serialize_optional_secret(value, info)
 
 
-class MCPHeaderAuthCredential(BaseModel):
+class MCPHeaderAuthCredential(_MCPBaseModel):
     strategy: Literal["header"]
     headers: dict[str, SecretStr] = Field(default_factory=dict)
 
     @field_validator("headers", mode="before")
     @classmethod
-    def _validate_headers(cls, value: Any, info: ValidationInfo) -> Any:
+    def _validate_headers(cls, value: object, info: ValidationInfo) -> object:
         return _validate_secret_map(value, info)
 
     @field_serializer("headers", when_used="always")
     def _serialize_headers(
         self, value: dict[str, SecretStr], info: SerializationInfo
-    ) -> dict[str, Any]:
+    ) -> dict[str, str | None]:
         return _serialize_secret_map(value, info) or {}
 
 
-class MCPOAuthTokenState(BaseModel):
+class MCPOAuthTokenState(_MCPBaseModel):
     model_config = ConfigDict(extra="allow")
 
     access_token: SecretStr | None = None
@@ -142,7 +177,7 @@ class MCPOAuthTokenState(BaseModel):
 
     @field_validator("access_token", "refresh_token", mode="before")
     @classmethod
-    def _validate_secret(cls, value: Any, info: ValidationInfo) -> Any:
+    def _validate_secret(cls, value: object, info: ValidationInfo) -> object:
         return _validate_optional_secret(value, info)
 
     @field_serializer("access_token", "refresh_token", when_used="always")
@@ -152,14 +187,14 @@ class MCPOAuthTokenState(BaseModel):
         return _serialize_optional_secret(value, info)
 
 
-class MCPOAuthClientInfoState(BaseModel):
+class MCPOAuthClientInfoState(_MCPBaseModel):
     model_config = ConfigDict(extra="allow")
 
     client_secret: SecretStr | None = None
 
     @field_validator("client_secret", mode="before")
     @classmethod
-    def _validate_client_secret(cls, value: Any, info: ValidationInfo) -> Any:
+    def _validate_client_secret(cls, value: object, info: ValidationInfo) -> object:
         return _validate_optional_secret(value, info)
 
     @field_serializer("client_secret", when_used="always")
@@ -169,10 +204,39 @@ class MCPOAuthClientInfoState(BaseModel):
         return _serialize_optional_secret(value, info)
 
 
+class MCPOAuthTokenExpiryState(_MCPBaseModel):
+    expires_at: float | None = None
+
+
+MCPOAuthClientAuthMethod = Literal[
+    "none",
+    "client_secret_post",
+    "client_secret_basic",
+    "private_key_jwt",
+]
+
+
+class MCPOAuthAuthentication(_MCPBaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["oauth"]
+    client_auth_method: MCPOAuthClientAuthMethod | None = None
+    scopes: str | list[str] | None = None
+    client_name: str | None = None
+    client_metadata_url: str | None = None
+    additional_client_metadata: dict[str, JsonValue] | None = None
+
+
+class MCPOAuthStateResponse(_MCPBaseModel):
+    tokens: dict[str, JsonValue] | None = None
+    client_info: dict[str, JsonValue] | None = None
+    token_expires_at: float | None = None
+
+
 MCPOAuthTokenStorageField = Literal["tokens", "client_info", "token_expires_at"]
 
 
-class MCPOAuthState(BaseModel):
+class MCPOAuthState(_MCPBaseModel):
     tokens: MCPOAuthTokenState | None = None
     client_info: MCPOAuthClientInfoState | None = None
     token_expires_at: float | None = None
@@ -181,33 +245,49 @@ class MCPOAuthState(BaseModel):
     def has_values(self) -> bool:
         return bool(self.to_plain_dict())
 
+    def _to_storage_dict(self, *, context: dict[str, object]) -> dict[str, JsonValue]:
+        data: dict[str, JsonValue] = {}
+        if self.tokens is not None and self.tokens.access_token is not None:
+            tokens = _dump_model_nonempty(self.tokens, context=context)
+            if tokens is not None:
+                data["tokens"] = tokens
+        if self.client_info is not None:
+            client_info = _dump_model_nonempty(self.client_info, context=context)
+            if client_info is not None:
+                data["client_info"] = client_info
+        if self.token_expires_at is not None:
+            data["token_expires_at"] = self.token_expires_at
+        return data
+
     def get_token_storage_value(
         self, field: MCPOAuthTokenStorageField
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, JsonValue] | None:
         if field == "tokens":
             if self.tokens is None or self.tokens.access_token is None:
                 return None
-            return self.tokens.model_dump(
-                mode="json",
+            return _dump_model_nonempty(
+                self.tokens,
                 context={"expose_secrets": "plaintext"},
-                exclude_none=True,
-                exclude_defaults=True,
             )
         if field == "client_info":
             if self.client_info is None:
                 return None
-            return self.client_info.model_dump(
-                mode="json",
+            return _dump_model_nonempty(
+                self.client_info,
                 context={"expose_secrets": "plaintext"},
-                exclude_none=True,
-                exclude_defaults=True,
             )
         if self.token_expires_at is None:
             return None
-        return {"expires_at": self.token_expires_at}
+        return cast(
+            dict[str, JsonValue],
+            MCPOAuthTokenExpiryState(expires_at=self.token_expires_at).model_dump(
+                mode="json",
+                exclude_none=True,
+            ),
+        )
 
     def with_token_storage_value(
-        self, field: MCPOAuthTokenStorageField, value: Mapping[str, Any]
+        self, field: MCPOAuthTokenStorageField, value: Mapping[str, JsonValue]
     ) -> MCPOAuthState:
         if field == "tokens":
             return self.model_copy(
@@ -218,14 +298,8 @@ class MCPOAuthState(BaseModel):
                 update={"client_info": MCPOAuthClientInfoState.model_validate(value)}
             )
 
-        expires_at = value.get("expires_at")
-        return self.model_copy(
-            update={
-                "token_expires_at": (
-                    float(expires_at) if isinstance(expires_at, int | float) else None
-                )
-            }
-        )
+        expires_at = MCPOAuthTokenExpiryState.model_validate(value).expires_at
+        return self.model_copy(update={"token_expires_at": expires_at})
 
     def without_token_storage_value(
         self, field: MCPOAuthTokenStorageField
@@ -242,46 +316,42 @@ class MCPOAuthState(BaseModel):
             self.token_expires_at is not None,
         )
 
-    def to_plain_dict(self, *, cipher: Any | None = None) -> dict[str, Any]:
+    def to_plain_dict(self, *, cipher: Cipher | None = None) -> dict[str, JsonValue]:
         """Dump OAuth state with secret values in plaintext.
 
         When ``cipher`` is provided, encrypted Fernet token strings are first
         validated back through the DataModel so stored/API ciphertext becomes
         usable FastMCP token-storage state.
         """
-        dumped = self.model_dump(
-            mode="json",
-            context={"expose_secrets": "plaintext"},
-            exclude_none=True,
-            exclude_defaults=True,
-        )
         if cipher is None:
-            return dumped
-        return (
-            type(self)
-            .model_validate(dumped, context={"cipher": cipher})
-            .model_dump(
-                mode="json",
-                context={"expose_secrets": "plaintext"},
-                exclude_none=True,
-                exclude_defaults=True,
-            )
+            return self._to_storage_dict(context={"expose_secrets": "plaintext"})
+        decrypted = type(self).model_validate(
+            self._to_storage_dict(context={"expose_secrets": "plaintext"}),
+            context={"cipher": cipher},
         )
+        return decrypted._to_storage_dict(context={"expose_secrets": "plaintext"})
 
-    def to_api_dict(self, *, cipher: Any | None = None) -> dict[str, Any]:
+    def to_response(self, *, cipher: Cipher | None = None) -> MCPOAuthStateResponse:
         """Dump OAuth state for API responses: plaintext locally, encrypted remotely."""
-        context = (
+        context: dict[str, object] = (
             {"expose_secrets": "plaintext"}
             if cipher is None
             else {"cipher": cipher, "expose_secrets": "encrypted"}
         )
-        return self.model_dump(mode="json", context=context, exclude_none=True)
+        return MCPOAuthStateResponse.model_validate(
+            self._to_storage_dict(context=context)
+        )
 
 
-class MCPOAuthAuthCredential(BaseModel):
+class MCPOAuthAuthCredential(_MCPBaseModel):
     strategy: Literal["oauth2"]
-    authentication: dict[str, Any] | None = None
+    authentication: MCPOAuthAuthentication | None = None
     state: MCPOAuthState | None = None
+
+    @field_validator("state", mode="after")
+    @classmethod
+    def _drop_empty_state(cls, value: MCPOAuthState | None) -> MCPOAuthState | None:
+        return value if value is not None and value.has_values else None
 
 
 MCPAuthCredential = Annotated[
@@ -295,7 +365,7 @@ MCPAuthCredential = Annotated[
 ]
 
 
-class MCPServer(BaseModel):
+class MCPServer(_MCPBaseModel):
     """One MCP server in the settings DataModel."""
 
     model_config = ConfigDict(extra="forbid")
@@ -317,53 +387,29 @@ class MCPServer(BaseModel):
 
     @field_validator("env", "headers", mode="before")
     @classmethod
-    def _validate_secret_mapping(cls, value: Any, info: ValidationInfo) -> Any:
+    def _validate_secret_mapping(cls, value: object, info: ValidationInfo) -> object:
         return _validate_secret_map(value, info)
 
     @field_serializer("env", "headers", when_used="always")
     def _serialize_secret_mapping(
         self, value: dict[str, SecretStr] | None, info: SerializationInfo
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, str | None] | None:
         return _serialize_secret_map(value, info)
 
 
 _MCP_SERVER_KNOWN_FIELDS = frozenset(MCPServer.model_fields)
+_MCP_CONFIG_ADAPTER: TypeAdapter[dict[str, MCPServer]] = TypeAdapter(
+    dict[str, MCPServer]
+)
 
 
-def _sanitize_mcp_extra_fields(config: dict[str, Any]) -> dict[str, Any]:
-    """Sanitize unknown MCP server fields without collapsing known auth shape."""
-    config = copy.deepcopy(config)
-    servers = config.get("mcpServers")
-    if not isinstance(servers, dict):
-        return sanitize_dict(config)
-    for server in servers.values():
-        if not isinstance(server, dict):
-            continue
-        for key, value in list(server.items()):
-            if key in _MCP_SERVER_KNOWN_FIELDS:
-                continue
-            server[key] = sanitize_dict({key: value})[key]
-    return config
-
-
-def drop_unknown_mcp_server_fields(server: Mapping[str, Any]) -> dict[str, Any]:
+def drop_unknown_mcp_server_fields(server: Mapping[str, object]) -> dict[str, object]:
     return {
         key: value for key, value in server.items() if key in _MCP_SERVER_KNOWN_FIELDS
     }
 
 
-MCPConfig = dict[str, MCPServer]
-_MCP_CONFIG_ADAPTER = TypeAdapter(MCPConfig)
-
-
-def validate_mcp_config(value: Any) -> Any:
-    """Validate the SDK-native MCP server map."""
-    if value in (None, {}):
-        return {}
-    return value
-
-
-def _extract_mcp_config(value: Any) -> Any:
+def _extract_mcp_config(value: object) -> object:
     """Extract a server map from SDK-native or external FastMCP-shaped input."""
     if value in (None, {}):
         return {}
@@ -378,102 +424,12 @@ def _extract_mcp_config(value: Any) -> Any:
 
 
 def coerce_mcp_config(
-    value: Any, *, context: dict[str, Any] | None = None
-) -> MCPConfig:
+    value: object, *, context: dict[str, object] | None = None
+) -> dict[str, MCPServer]:
     return _MCP_CONFIG_ADAPTER.validate_python(
         _extract_mcp_config(value),
         context=context,
     )
-
-
-def serialize_mcp_config(value: MCPConfig, info: SerializationInfo) -> dict[str, Any]:
-    """Serialize MCP servers, masking/encrypting secrets per expose mode."""
-    ctx = info.context or {}
-    mode = resolve_expose_mode(ctx)
-
-    if mode == "encrypted" and ctx.get("cipher") is None:
-        raise MissingCipherError(
-            "Cannot encrypt MCP secrets: no cipher configured. "
-            "Set OH_SECRET_KEY environment variable."
-        )
-
-    return dump_mcp_config(value, context=ctx)
-
-
-def validate_fastmcp_config_dict(value: Any) -> Any:
-    """Validate an external FastMCP-shaped config dict."""
-    if isinstance(value, Mapping):
-        FastMCPConfig.model_validate(to_fastmcp_mcp_config(value))
-    return value
-
-
-def serialize_fastmcp_config_dict(
-    value: Mapping[str, Any] | None, info: SerializationInfo
-) -> dict[str, Any] | None:
-    """Serialize an external FastMCP-shaped config dict with SDK secret handling."""
-    if not value:
-        return dict(value) if isinstance(value, Mapping) else value
-    ctx = info.context or {}
-    mode = resolve_expose_mode(ctx)
-
-    if mode == "encrypted" and ctx.get("cipher") is None:
-        raise MissingCipherError(
-            "Cannot encrypt MCP secrets: no cipher configured. "
-            "Set OH_SECRET_KEY environment variable."
-        )
-
-    dumped = dump_fastmcp_config(value, context=ctx)
-    if mode == "redact":
-        return _sanitize_mcp_extra_fields(dumped)
-    return dumped
-
-
-def dump_mcp_config_secret_values(
-    value: Any,
-    *,
-    cipher: Any,
-    expose_secrets: Literal["encrypted", "plaintext"],
-) -> Any:
-    if not isinstance(value, Mapping):
-        return value
-
-    validate_context = {"cipher": cipher} if expose_secrets == "plaintext" else None
-    dump_context = {"cipher": cipher, "expose_secrets": expose_secrets}
-    return {
-        name: MCPServer.model_validate(
-            server,
-            context=validate_context,
-        ).model_dump(
-            mode="json",
-            context=dump_context,
-            exclude_none=True,
-            exclude_defaults=True,
-        )
-        if isinstance(server, Mapping)
-        else copy.deepcopy(server)
-        for name, server in value.items()
-    }
-
-
-def dump_fastmcp_config_secret_values(
-    value: Any,
-    *,
-    cipher: Any,
-    expose_secrets: Literal["encrypted", "plaintext"],
-) -> Any:
-    if not isinstance(value, Mapping):
-        return value
-    servers = value.get("mcpServers")
-    if not isinstance(servers, Mapping):
-        return value
-
-    updated = copy.deepcopy(dict(value))
-    updated["mcpServers"] = dump_mcp_config_secret_values(
-        servers,
-        cipher=cipher,
-        expose_secrets=expose_secrets,
-    )
-    return updated
 
 
 def _basic_auth_header(username: str, password: str) -> str:
@@ -481,10 +437,13 @@ def _basic_auth_header(username: str, password: str) -> str:
     return f"Basic {token}"
 
 
-def _normalize_server_for_fastmcp(server: dict[str, Any]) -> dict[str, Any]:
-    server = copy.deepcopy(server)
+def _normalize_server_for_fastmcp(
+    server: Mapping[str, JsonValue],
+) -> dict[str, JsonValue]:
+    server = copy.deepcopy(dict(server))
     auth = server.pop("auth", None)
-    headers = dict(server.get("headers") or {})
+    raw_headers = server.get("headers")
+    headers = dict(raw_headers) if isinstance(raw_headers, Mapping) else {}
 
     if isinstance(auth, dict):
         strategy = auth.get("strategy")
@@ -512,8 +471,8 @@ def _normalize_server_for_fastmcp(server: dict[str, Any]) -> dict[str, Any]:
         elif strategy == "oauth2":
             server["auth"] = "oauth"
             authentication = auth.get("authentication")
-            if isinstance(authentication, dict):
-                server["authentication"] = authentication
+            if isinstance(authentication, Mapping):
+                server["authentication"] = dict(authentication)
     elif isinstance(auth, str):
         server["auth"] = auth
 
@@ -526,62 +485,37 @@ def _normalize_server_for_fastmcp(server: dict[str, Any]) -> dict[str, Any]:
 
 
 def dump_mcp_config(
-    mcp_config: Mapping[str, MCPServer | Mapping[str, Any]],
+    mcp_config: Mapping[str, MCPServer],
     *,
-    context: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+    context: dict[str, object] | None = None,
+) -> dict[str, dict[str, JsonValue]]:
     dump_context = {"expose_secrets": "plaintext"} if context is None else context
     return {
-        name: server.model_dump(
-            mode="json",
-            context=dump_context,
-            exclude_none=True,
-            exclude_defaults=True,
-        )
-        if isinstance(server, MCPServer)
-        else MCPServer.model_validate(server, context=dump_context).model_dump(
-            mode="json",
-            context=dump_context,
-            exclude_none=True,
-            exclude_defaults=True,
+        name: cast(
+            dict[str, JsonValue],
+            server.model_dump(
+                mode="json",
+                context=dump_context,
+                exclude_none=True,
+                exclude_defaults=True,
+            ),
         )
         for name, server in mcp_config.items()
     }
 
 
-def dump_fastmcp_config(
-    config: FastMCPConfig | Mapping[str, Any],
-    *,
-    context: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    if isinstance(config, FastMCPConfig):
-        return config.model_dump(exclude_none=True, exclude_defaults=True)
-    if "mcpServers" in config:
-        servers = config.get("mcpServers")
-        if isinstance(servers, Mapping):
-            return {
-                **copy.deepcopy(dict(config)),
-                "mcpServers": dump_mcp_config(servers, context=context),
-            }
-    return {"mcpServers": dump_mcp_config(config, context=context)}
-
-
 def to_fastmcp_mcp_config(
-    config: FastMCPConfig | Mapping[str, Any],
+    mcp_config: Mapping[str, MCPServer],
     *,
-    cipher: Any | None = None,
-) -> dict:
+    cipher: Cipher | None = None,
+) -> dict[str, JsonValue]:
     context = {"cipher": cipher, "expose_secrets": "plaintext"} if cipher else None
-    dumped = dump_fastmcp_config(config, context=context)
-    servers = dumped.get("mcpServers")
-    if not isinstance(servers, dict):
-        return dumped
     return {
-        **dumped,
         "mcpServers": {
             name: _normalize_server_for_fastmcp(server)
-            if isinstance(server, dict)
-            else server
-            for name, server in servers.items()
+            for name, server in dump_mcp_config(
+                mcp_config,
+                context=context,
+            ).items()
         },
     }

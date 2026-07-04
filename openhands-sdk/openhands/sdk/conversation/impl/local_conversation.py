@@ -56,8 +56,9 @@ from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
 from openhands.sdk.marketplace.registry import MarketplaceRegistry
+from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config, dump_mcp_config
-from openhands.sdk.mcp.runtime import DefaultMCPToolProvider, MCPToolProvider
+from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.observability.laminar import observe
 from openhands.sdk.plugin import (
     Plugin,
@@ -168,7 +169,7 @@ class LocalConversation(BaseConversation):
     _plugins_loaded: bool
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
     _subscription_disabled_condenser: Any | None
-    _mcp_tool_provider: MCPToolProvider
+    _mcp_tool_provider: MCPToolProvider | None
 
     def __init__(
         self,
@@ -279,7 +280,7 @@ class LocalConversation(BaseConversation):
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
         self._subscription_disabled_condenser = None
-        self._mcp_tool_provider = mcp_tool_provider or DefaultMCPToolProvider()
+        self._mcp_tool_provider = mcp_tool_provider
 
         # Create-or-resume.
         desired_id = conversation_id or uuid.uuid4()
@@ -1098,16 +1099,23 @@ class LocalConversation(BaseConversation):
         self._hook_processor.set_conversation_state(self._state)
         self._hook_processor.run_session_start()
 
-    def _runtime_mcp_tools_for_plugin(
-        self, plugin_mcp_config: dict[str, MCPServer]
+    def _runtime_mcp_tools(
+        self, mcp_config: dict[str, MCPServer]
     ) -> list[ToolDefinition]:
-        if not plugin_mcp_config:
+        if not mcp_config:
             return []
-        return list(
-            self._mcp_tool_provider.create_tools(
-                plugin_mcp_config, _RUNTIME_MCP_TIMEOUT_SECS
-            ).tools
-        )
+        if self._mcp_tool_provider is not None:
+            client = self._mcp_tool_provider.create_tools(
+                mcp_config, _RUNTIME_MCP_TIMEOUT_SECS
+            )
+        else:
+            client = create_mcp_tools(mcp_config, _RUNTIME_MCP_TIMEOUT_SECS)
+        return list(client.tools)
+
+    def _runtime_mcp_tools_for_agent(self) -> list[ToolDefinition]:
+        if not self.agent.supports_openhands_tools or not self.agent.mcp_config:
+            return []
+        return self._runtime_mcp_tools(self.agent.mcp_config)
 
     def _runtime_skill_tools_for_agent(self) -> list[ToolDefinition]:
         agent_context = self.agent.agent_context
@@ -1174,7 +1182,7 @@ class LocalConversation(BaseConversation):
             )
             merged_mcp_config = coerce_mcp_config(expanded_mcp)
         runtime_mcp_tools = (
-            self._runtime_mcp_tools_for_plugin(runtime_plugin_mcp_config)
+            self._runtime_mcp_tools(runtime_plugin_mcp_config)
             if self._agent_ready
             else []
         )
@@ -1267,17 +1275,11 @@ class LocalConversation(BaseConversation):
             # register file-based agents
             self._register_file_based_agents()
 
-            # Initialize agent with complete configuration
-            from openhands.sdk.agent.agent import Agent
-
-            if isinstance(self.agent, Agent):
-                self.agent.init_state(
-                    self._state,
-                    on_event=self._on_event,
-                    mcp_tool_provider=self._mcp_tool_provider,
-                )
-            else:
-                self.agent.init_state(self._state, on_event=self._on_event)
+            self.agent.init_state(
+                self._state,
+                on_event=self._on_event,
+                extra_tools=self._runtime_mcp_tools_for_agent(),
+            )
 
             # Register LLMs in the registry (still holding lock).
             # `registered` is updated after each add so that duplicate usage_ids

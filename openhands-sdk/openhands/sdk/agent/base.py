@@ -15,9 +15,6 @@ from pydantic import (
     ConfigDict,
     Field,
     PrivateAttr,
-    SerializationInfo,
-    field_serializer,
-    field_validator,
     model_validator,
 )
 
@@ -30,11 +27,7 @@ from openhands.sdk.critic.base import CriticBase
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp.config import (
-    MCPServer,
-    serialize_mcp_config,
-    validate_mcp_config,
-)
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.tool import (
     BUILT_IN_TOOL_CLASSES,
     BUILT_IN_TOOLS,
@@ -292,17 +285,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         ),
     )
 
-    @field_validator("mcp_config", mode="before")
-    @classmethod
-    def _validate_mcp_config(cls, value: Any) -> Any:
-        return validate_mcp_config(value)
-
-    @field_serializer("mcp_config")
-    def _serialize_mcp_config(
-        self, value: dict[str, MCPServer], info: SerializationInfo
-    ) -> dict[str, Any]:
-        return serialize_mcp_config(value, info)
-
     # Runtime materialized tools; private and non-serializable
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)
     _initialized: bool = PrivateAttr(default=False)
@@ -520,6 +502,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         self,
         state: ConversationState,
         on_event: ConversationCallbackType,  # noqa: ARG002
+        *,
+        extra_tools: Sequence[ToolDefinition] = (),
     ) -> None:
         """Initialize the empty conversation state to prepare the agent for user
         messages.
@@ -528,7 +512,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         NOTE: state will be mutated in-place.
         """
-        self._initialize(state)
+        self._initialize(state, extra_tools=extra_tools)
 
     def _initialize(
         self,
@@ -872,15 +856,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         ``False`` for :class:`~openhands.sdk.agent.acp_agent.ACPAgent` — the
         ACP server manages its own toolset.
-        """
-        return True
-
-    @property
-    def supports_openhands_mcp(self) -> bool:
-        """``True`` if OpenHands can inject MCP servers into this agent.
-
-        ``False`` for :class:`~openhands.sdk.agent.acp_agent.ACPAgent` — MCP
-        configuration is owned by the ACP subprocess.
         """
         return True
 

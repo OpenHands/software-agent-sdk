@@ -20,11 +20,11 @@ persist it through the settings API under the tested server's ``auth.state``.
 from __future__ import annotations
 
 import asyncio
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 
 import mcp.types
 from fastapi import APIRouter, Request
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from openhands.agent_server._secrets_exposure import get_cipher
 from openhands.agent_server.mcp_oauth_store import (
@@ -32,10 +32,12 @@ from openhands.agent_server.mcp_oauth_store import (
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
+from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import (
     MCPAuthCredential,
     MCPOAuthAuthCredential,
     MCPOAuthState,
+    MCPOAuthStateResponse,
     MCPServer,
 )
 from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
@@ -73,7 +75,7 @@ class _StdioMCPServerSpec(BaseModel):
     cwd: str | None = None
 
     def to_mcp_server(self, *, cipher: Cipher | None = None) -> MCPServer:
-        out: dict[str, Any] = {"command": self.command, "args": list(self.args)}
+        out: dict[str, object] = {"command": self.command, "args": list(self.args)}
         if self.env:
             out["env"] = dict(self.env)
         if self.cwd:
@@ -144,7 +146,7 @@ class MCPToolCallSpec(BaseModel):
     """
 
     name: str = Field(..., min_length=1, description="Name of the tool to invoke")
-    arguments: dict[str, Any] = Field(
+    arguments: dict[str, JsonValue] = Field(
         default_factory=dict,
         description="Arguments passed to the tool unchanged.",
     )
@@ -198,11 +200,14 @@ class MCPTestRequest(BaseModel):
 
     def initial_oauth_state(
         self, *, cipher: Cipher | None = None
-    ) -> dict[str, Any] | None:
+    ) -> MCPOAuthState | None:
         auth = self.oauth_auth
         if auth is None or auth.state is None:
             return None
-        return auth.state.to_plain_dict(cipher=cipher)
+        return MCPOAuthState.model_validate(
+            auth.state.to_plain_dict(cipher=cipher),
+            context=_mcp_validation_context(cipher),
+        )
 
     def to_mcp_config(self, *, cipher: Cipher | None = None) -> dict[str, MCPServer]:
         return {self.name: self.server.to_mcp_server(cipher=cipher)}
@@ -233,7 +238,7 @@ class MCPTestSuccess(BaseModel):
         default=None,
         description=("Outcome of the requested `tool_call`, when one was supplied."),
     )
-    oauth_state: dict[str, Any] | None = Field(
+    oauth_state: MCPOAuthStateResponse | None = Field(
         default=None,
         description=(
             "Serialized OAuth state acquired or refreshed by the probe. "
@@ -266,12 +271,12 @@ MCPTestResponse = MCPTestSuccess | MCPTestFailure
 # ---------------------------------------------------------------------------
 
 
-def _mcp_validation_context(cipher: Cipher | None) -> dict[str, Any] | None:
+def _mcp_validation_context(cipher: Cipher | None) -> dict[str, object] | None:
     return {"cipher": cipher} if cipher is not None else None
 
 
 def _run_tool_call(
-    client: Any, spec: MCPToolCallSpec, tool_names: list[str], timeout: float
+    client: MCPClient, spec: MCPToolCallSpec, tool_names: list[str], timeout: float
 ) -> MCPToolCallResult:
     """Invoke the requested tool on the connected client.
 
@@ -345,13 +350,11 @@ def _probe_mcp_server(
                     tool_names,
                     request.timeout,
                 )
-            oauth_state: dict[str, Any] | None = None
+            oauth_state: MCPOAuthStateResponse | None = None
             if oauth_token_storage is not None:
                 state = oauth_token_storage.export_state()
-                if state:
-                    oauth_state = MCPOAuthState.model_validate(state).to_api_dict(
-                        cipher=cipher
-                    )
+                if state.has_values:
+                    oauth_state = state.to_response(cipher=cipher)
             return MCPTestSuccess(
                 tools=tool_names,
                 tool_result=tool_result,

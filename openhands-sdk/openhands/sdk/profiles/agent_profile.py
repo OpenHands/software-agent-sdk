@@ -18,6 +18,7 @@ from pydantic import (
     ConfigDict,
     Discriminator,
     Field,
+    JsonValue,
     Tag,
     TypeAdapter,
     ValidationError,
@@ -392,7 +393,7 @@ def validate_agent_profile(
     return _AGENT_PROFILE_ADAPTER.validate_python(payload, context=context)
 
 
-def safe_validation_error_detail(exc: ValidationError) -> list[dict[str, Any]]:
+def safe_validation_error_detail(exc: ValidationError) -> list[dict[str, JsonValue]]:
     """Secret-safe ``detail`` for a 422 from a failed profile validation.
 
     Surfaces only ``loc``/``type`` per error and **drops ``msg``/``input``** — a
@@ -402,4 +403,4 @@ def safe_validation_error_detail(exc: ValidationError) -> list[dict[str, Any]]:
     Hoisted from the agent-server router so the local and cloud routers redact
     identically.
     """
-    return [{"loc": err["loc"], "type": err["type"]} for err in exc.errors()]
+    return [{"loc": list(err["loc"]), "type": str(err["type"])} for err in exc.errors()]

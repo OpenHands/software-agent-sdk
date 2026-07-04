@@ -11,6 +11,7 @@ from pydantic import PrivateAttr, ValidationError
 
 from openhands.sdk.git.models import GitChange, GitDiff
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.settings import SecretsListResponse, SettingsResponse
 from openhands.sdk.workspace.base import BaseWorkspace
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
@@ -489,7 +490,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         retry=tenacity.retry_if_exception(_is_retryable_error),
         reraise=True,
     )
-    def get_mcp_config(self) -> dict[str, Any]:
+    def get_mcp_config(self) -> dict[str, MCPServer]:
         """Fetch MCP servers from the agent-server's persisted settings.
 
         Calls ``GET /api/settings`` with ``X-Expose-Secrets: plaintext`` header
@@ -521,10 +522,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         if not isinstance(settings, OpenHandsAgentSettings):
             return {}
 
-        return settings.model_dump(
-            mode="json",
-            context={"expose_secrets": "plaintext"},
-        )["mcp_config"]
+        return settings.mcp_config
 
     # ── Repository Cloning Methods ─────────────────────────────────────────
 

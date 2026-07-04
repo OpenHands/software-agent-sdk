@@ -6,6 +6,7 @@ import asyncio
 import json
 import threading
 import uuid
+from collections.abc import Mapping
 from concurrent.futures import Future
 from pathlib import Path
 from types import SimpleNamespace
@@ -259,10 +260,10 @@ class TestACPAgentValidation:
             acp_command=["echo"],
             mcp_config=coerce_mcp_config({"test": {"command": "echo"}}),
         )
-        # Should not raise; supports_openhands_mcp stays False (no in-process
-        # tools — the ACP server owns the connection).
+        # Should not raise; ACP receives MCP servers at session creation instead
+        # of OpenHands creating in-process runtime MCP tools.
         self._init_with_patches(agent, tmp_path)
-        assert agent.supports_openhands_mcp is False
+        assert agent.supports_openhands_tools is False
 
     def test_allows_agent_context_for_prompt_extensions(self, tmp_path):
         agent = ACPAgent(
@@ -7692,7 +7693,7 @@ class TestMcpConfigToAcpServers:
         return McpCapabilities(http=http, sse=sse)
 
     @staticmethod
-    def _config(config: dict[str, Any]):
+    def _config(config: Mapping[str, object]):
         return coerce_mcp_config(config)
 
     def test_stdio_always_forwarded(self):

@@ -192,11 +192,9 @@ class AgentProfileStore:
         """Load and validate the profile stored under ``name``.
 
         A ``cipher`` is threaded through the validation context for parity with
-        ``save``. Note: ``Skill.mcp_tools`` has a masking *serializer* but no
-        symmetric *validator*, so encrypted env/headers come back as ciphertext
-        — decryption is deferred to the resolver (#3717), which holds the
-        cipher. Reference fields (``llm_profile_ref`` etc.) carry no secret and
-        load unchanged.
+        ``save``, so encrypted ``skills[].mcp_tools`` secrets are restored as
+        ``SecretStr`` values. Reference fields (``llm_profile_ref`` etc.) carry
+        no secret and load unchanged.
 
         Raises:
             FileNotFoundError: If ``name`` does not exist.

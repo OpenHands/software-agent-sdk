@@ -26,9 +26,9 @@ from __future__ import annotations
 
 import shlex
 from collections.abc import Container
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, JsonValue, SecretStr
 
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.mcp.config import MCPServer
@@ -128,7 +128,7 @@ class AgentProfileDiagnostics(BaseModel):
     acp_file_secret_names: list[str] = Field(default_factory=list)
 
     # Redacted resolved settings, present iff ``valid``.
-    resolved_settings: dict[str, Any] | None = None
+    resolved_settings: dict[str, JsonValue] | None = None
 
 
 def _server_names(mcp_config: dict[str, MCPServer]) -> list[str]:
@@ -196,18 +196,6 @@ def _compute_skill_filter(
     return [by_name[r] for r in resolved], resolved, dangling
 
 
-def _decrypt_skill_mcp_tools(skills: list[Skill], cipher: Cipher | None) -> list[Skill]:
-    """Decrypt ``skills[].mcp_tools`` env/headers ciphertext using ``cipher``.
-
-    ``Skill.mcp_tools`` has a masking serializer but no symmetric validator, so
-    a profile loaded with a cipher returns these values as ciphertext. The
-    resolver holds the cipher and asks each skill to decrypt its own MCP config.
-    """
-    if cipher is None:
-        return skills
-    return [skill.with_decrypted_mcp_tools(cipher) for skill in skills]
-
-
 def _api_key_set(llm: LLM) -> bool:
     """``True`` when the resolved LLM carries a non-empty, non-redacted key."""
     api_key = llm.api_key
@@ -239,17 +227,15 @@ def _build_openhands_settings(
     profile: OpenHandsAgentProfile,
     llm: LLM,
     mcp_config: dict[str, MCPServer],
-    cipher: Cipher | None,
     filtered_skills: list[Skill],
 ) -> AgentSettingsConfig:
     """Compose the resolved ``OpenHandsAgentSettings`` from a profile + LLM.
 
-    Skills are the profile's embedded ``skills`` (decrypted) composed with
-    ``filtered_skills`` (the ``skill_refs`` selection); embedded skills win on a
+    Skills are the profile's embedded ``skills`` composed with ``filtered_skills``
+    (the ``skill_refs`` selection); embedded skills win on a
     name conflict, so the catalog selector composes with hand-authored skills.
     """
-    embedded = _decrypt_skill_mcp_tools(profile.skills, cipher)
-    skills = merge_skills_by_name(embedded, filtered_skills)
+    skills = merge_skills_by_name(profile.skills, filtered_skills)
     payload = {
         "schema_version": AGENT_SETTINGS_SCHEMA_VERSION,
         "agent_kind": "openhands",
@@ -334,7 +320,7 @@ def resolve_agent_profile(
     dropped. ``None`` means discovery was not run (e.g. an empty ``skill_refs``
     skips it): no catalog is consulted, so only an OpenHands profile's embedded
     ``skills`` reach the agent (an ACP profile gets none). ``cipher`` decrypts
-    the referenced LLM profile and any ``skills[].mcp_tools`` ciphertext.
+    the referenced LLM profile.
 
     Raises:
         ProfileNotFound: ``llm_profile_ref`` does not exist (OpenHands path).
@@ -358,9 +344,7 @@ def resolve_agent_profile(
             raise ProfileNotFound(
                 f"LLM profile {profile.llm_profile_ref!r} not found"
             ) from e
-        return _build_openhands_settings(
-            profile, llm, filtered_mcp, cipher, filtered_skills
-        )
+        return _build_openhands_settings(profile, llm, filtered_mcp, filtered_skills)
 
     return _build_acp_settings(profile, filtered_mcp, filtered_skills)
 
@@ -449,7 +433,7 @@ def resolve_agent_profile_dry_run(
                         "OpenHands profile marked valid without a resolved LLM"
                     )
                 settings = _build_openhands_settings(
-                    profile, llm, filtered_mcp, cipher, filtered_skills
+                    profile, llm, filtered_mcp, filtered_skills
                 )
             else:
                 settings = _build_acp_settings(profile, filtered_mcp, filtered_skills)

@@ -13,7 +13,6 @@ from typing import (
     ClassVar,
     Literal,
     TypeVar,
-    cast,
     get_args,
     get_origin,
 )
@@ -50,17 +49,12 @@ from openhands.sdk.mcp.config import (
     MCPOAuthState,
     MCPServer,
     drop_unknown_mcp_server_fields,
-    dump_mcp_config_secret_values,
-    serialize_mcp_config,
-    validate_mcp_config,
 )
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.tool import Tool
-from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import (
-    decrypt_str_with_cipher_or_keep,
     serialize_secret,
     validate_secret,
 )
@@ -89,150 +83,6 @@ if TYPE_CHECKING:
 
 
 logger = get_logger(__name__)
-
-
-# The per-class ``mcp_config`` field stubs below are intentionally one-liners:
-# MCP owns serialization, and settings only decides where settings secrets are
-# transformed for storage/migration.
-
-
-def _encrypt_secret_str_or_keep(cipher: Cipher, value: Any) -> Any:
-    if not isinstance(value, str):
-        return value
-    if (
-        value.startswith(FERNET_TOKEN_PREFIX)
-        and cipher.try_decrypt_str(value) is not None
-    ):
-        return value
-    return cast(str, cipher.encrypt(SecretStr(value)))
-
-
-def _decrypt_secret_str_or_keep(cipher: Cipher, value: Any) -> Any:
-    if not isinstance(value, str):
-        return value
-    return decrypt_str_with_cipher_or_keep(cipher, value)
-
-
-def _transform_mapping_secret_values(
-    mapping: Any, transform: Callable[[Any], Any]
-) -> None:
-    if not isinstance(mapping, dict):
-        return
-    for key, value in list(mapping.items()):
-        mapping[key] = transform(value)
-
-
-def _transform_agent_settings_secret_values(
-    payload: Mapping[str, Any],
-    transform: Callable[[Any], Any],
-    *,
-    cipher: Cipher,
-    mcp_expose_secrets: Literal["encrypted", "plaintext"],
-) -> dict[str, Any]:
-    from openhands.sdk.llm.llm import LLM_SECRET_FIELDS
-
-    updated = copy.deepcopy(dict(payload))
-
-    llm = updated.get("llm")
-    if isinstance(llm, dict):
-        for key in LLM_SECRET_FIELDS:
-            if key in llm:
-                llm[key] = transform(llm[key])
-
-    verification = updated.get("verification")
-    if isinstance(verification, dict) and "critic_api_key" in verification:
-        verification["critic_api_key"] = transform(verification["critic_api_key"])
-
-    agent_context = updated.get("agent_context")
-    if isinstance(agent_context, dict):
-        _transform_mapping_secret_values(agent_context.get("secrets"), transform)
-
-    mcp_config = updated.get("mcp_config")
-    if isinstance(mcp_config, dict):
-        updated["mcp_config"] = dump_mcp_config_secret_values(
-            mcp_config,
-            cipher=cipher,
-            expose_secrets=mcp_expose_secrets,
-        )
-
-    return updated
-
-
-def encrypt_agent_settings_secret_values(
-    payload: Mapping[str, Any], *, cipher: Cipher
-) -> dict[str, Any]:
-    """Encrypt secret leaves in a full or sparse agent-settings payload.
-
-    This is for storage adapters and database migrations that need to rewrite
-    persisted payloads without expanding sparse settings diffs into full settings.
-    """
-    return _transform_agent_settings_secret_values(
-        payload,
-        lambda value: _encrypt_secret_str_or_keep(cipher, value),
-        cipher=cipher,
-        mcp_expose_secrets="encrypted",
-    )
-
-
-def decrypt_agent_settings_secret_values(
-    payload: Mapping[str, Any], *, cipher: Cipher
-) -> dict[str, Any]:
-    """Decrypt secret leaves in a full or sparse agent-settings payload."""
-    return _transform_agent_settings_secret_values(
-        payload,
-        lambda value: _decrypt_secret_str_or_keep(cipher, value),
-        cipher=cipher,
-        mcp_expose_secrets="plaintext",
-    )
-
-
-def load_agent_settings_from_storage(
-    payload: Any, *, cipher: Cipher
-) -> OpenHandsAgentSettings | ACPAgentSettings:
-    """Validate a persisted agent-settings payload with secret decryption."""
-    return validate_agent_settings(payload, context={"cipher": cipher})
-
-
-def dump_agent_settings_for_storage(
-    settings: OpenHandsAgentSettings | ACPAgentSettings,
-    *,
-    cipher: Cipher,
-    exclude: Any = None,
-    exclude_unset: bool = False,
-) -> dict[str, Any]:
-    """Serialize agent settings with SDK-owned encrypted secret handling."""
-    return settings.model_dump(
-        mode="json",
-        context={"cipher": cipher, "expose_secrets": "encrypted"},
-        exclude=exclude,
-        exclude_unset=exclude_unset,
-    )
-
-
-def _agent_settings_payload_requires_current_schema_version(
-    payload: Mapping[str, Any],
-) -> bool:
-    """Return whether a serialized settings payload contains current-only fields."""
-    servers = payload.get("mcp_config")
-    return isinstance(servers, Mapping) and bool(servers)
-
-
-def dump_agent_settings_for_api(
-    settings: OpenHandsAgentSettings | ACPAgentSettings,
-    *,
-    context: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Serialize agent settings for the HTTP settings API.
-
-    The current persisted settings schema is required whenever MCP servers are
-    present, because the SDK-owned settings shape is ``mcp_config``. Payloads
-    without MCP servers are still valid v4 settings, so emit them as v4 for API
-    clients that read ordinary settings through an older SDK.
-    """
-    payload = settings.model_dump(mode="json", context=context)
-    if not _agent_settings_payload_requires_current_schema_version(payload):
-        payload["schema_version"] = AGENT_SETTINGS_API_COMPAT_SCHEMA_VERSION
-    return payload
 
 
 SettingsValueType = Literal[
@@ -613,7 +463,6 @@ def _default_llm_settings() -> LLM:
 _RequestT = TypeVar("_RequestT")
 
 AGENT_SETTINGS_SCHEMA_VERSION = 6
-AGENT_SETTINGS_API_COMPAT_SCHEMA_VERSION = 4
 CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 
 
@@ -883,6 +732,14 @@ def _migrate_authorization_header(headers: dict[str, Any]) -> dict[str, Any] | N
     return None
 
 
+def _migrate_oauth_authentication(authentication: Any) -> Any:
+    if not isinstance(authentication, Mapping):
+        return authentication
+    migrated = copy.deepcopy(dict(authentication))
+    migrated.setdefault("type", "oauth")
+    return migrated
+
+
 def _migrate_mcp_server_auth(server: Any) -> Any:
     if not isinstance(server, Mapping):
         return server
@@ -897,7 +754,11 @@ def _migrate_mcp_server_auth(server: Any) -> Any:
         auth = copy.deepcopy(dict(auth))
         if auth.get("strategy") == "oauth2":
             if authentication is not None and "authentication" not in auth:
-                auth["authentication"] = authentication
+                auth["authentication"] = _migrate_oauth_authentication(authentication)
+            elif "authentication" in auth:
+                auth["authentication"] = _migrate_oauth_authentication(
+                    auth["authentication"]
+                )
             state = _merge_oauth_state(
                 auth.get("state"),
                 auth.pop("credentials", None) or oauth_credentials,
@@ -910,7 +771,7 @@ def _migrate_mcp_server_auth(server: Any) -> Any:
     if auth == "oauth":
         oauth_auth: dict[str, Any] = {"strategy": "oauth2"}
         if authentication is not None:
-            oauth_auth["authentication"] = authentication
+            oauth_auth["authentication"] = _migrate_oauth_authentication(authentication)
         state = _merge_oauth_state(None, oauth_credentials)
         if state is not None:
             oauth_auth["state"] = state
@@ -1386,25 +1247,12 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         },
     )
 
-    # ``mcp_config`` (de)serialization is shared with ACPAgentSettings via the
-    # module-level helpers — these stubs just bind them to the field.
     @field_validator("condenser", mode="before")
     @classmethod
     def _upgrade_base_condenser_settings(cls, value: Any) -> Any:
         if type(value) is CondenserSettings:
             return LLMSummarizingCondenserSettings.model_validate(value.model_dump())
         return value
-
-    @field_validator("mcp_config", mode="before")
-    @classmethod
-    def _validate_mcp_config(cls, value: Any) -> Any:
-        return validate_mcp_config(value)
-
-    @field_serializer("mcp_config")
-    def _serialize_mcp_config(
-        self, value: dict[str, MCPServer], info: SerializationInfo
-    ) -> dict[str, Any]:
-        return serialize_mcp_config(value, info)
 
     def create_agent(self) -> Agent:
         """Build an :class:`Agent` purely from these settings.
@@ -1650,18 +1498,6 @@ class ACPAgentSettings(AgentSettingsBase):
             ).model_dump(),
         },
     )
-
-    # Same shared ``mcp_config`` (de)serialization as OpenHandsAgentSettings.
-    @field_validator("mcp_config", mode="before")
-    @classmethod
-    def _validate_mcp_config(cls, value: Any) -> Any:
-        return validate_mcp_config(value)
-
-    @field_serializer("mcp_config")
-    def _serialize_mcp_config(
-        self, value: dict[str, MCPServer], info: SerializationInfo
-    ) -> dict[str, Any]:
-        return serialize_mcp_config(value, info)
 
     # Programmatic / downstream-facing knob, deliberately NOT surfaced in the
     # settings-form UI (no SETTINGS_METADATA_KEY): the deploying application sets
@@ -2023,7 +1859,7 @@ _AGENT_SETTINGS_ADAPTER: TypeAdapter[
 def validate_agent_settings(
     data: Any,
     *,
-    context: Mapping[str, Any] | None = None,
+    context: Mapping[str, object] | None = None,
 ) -> OpenHandsAgentSettings | LLMAgentSettings | ACPAgentSettings:
     """Load and validate an agent-settings payload.
 
@@ -2071,7 +1907,7 @@ def apply_agent_settings_diff(
     base: Any,
     diff: Mapping[str, Any] | None,
     *,
-    context: Mapping[str, Any] | None = None,
+    context: Mapping[str, object] | None = None,
 ) -> OpenHandsAgentSettings | ACPAgentSettings:
     """Apply a sparse agent-settings diff to a base, narrowing on ``agent_kind``.
 

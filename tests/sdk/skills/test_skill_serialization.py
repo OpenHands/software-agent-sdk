@@ -2,8 +2,9 @@
 
 import json
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.skills import (
     KeywordTrigger,
     Skill,
@@ -306,13 +307,11 @@ def _skill_with_mcp_secret() -> Skill:
         name="leaky",
         content="do stuff",
         mcp_tools={
-            "mcpServers": {
-                "svc": {
-                    "url": "https://x.test",
-                    "headers": {"Authorization": f"Bearer {_MCP_SECRET}"},
-                    "env": {"API_KEY": _MCP_SECRET},
-                }
-            }
+            "svc": MCPServer(
+                url="https://x.test",
+                headers={"Authorization": SecretStr(f"Bearer {_MCP_SECRET}")},
+                env={"API_KEY": SecretStr(_MCP_SECRET)},
+            )
         },
     )
 
@@ -366,8 +365,9 @@ def test_mcp_tools_real_values_remain_accessible_in_memory():
     skill = _skill_with_mcp_secret()
 
     assert skill.mcp_tools is not None
-    env = skill.mcp_tools["mcpServers"]["svc"]["env"]
-    assert env["API_KEY"] == _MCP_SECRET
+    env = skill.mcp_tools["svc"].env
+    assert env is not None
+    assert env["API_KEY"].get_secret_value() == _MCP_SECRET
 
 
 def test_mcp_tools_none_round_trips_unchanged():

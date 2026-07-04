@@ -81,7 +81,7 @@ def _extract_skills(fm: dict[str, object]) -> list[str]:
     return skills
 
 
-def _extract_mcp_config(fm: dict[str, Any]) -> dict[str, MCPServer] | None:
+def _extract_mcp_config(fm: dict[str, object]) -> dict[str, MCPServer] | None:
     """Extract MCP servers from frontmatter.
 
     Variable placeholders (``${VAR}`` and ``${VAR:-default}``) are preserved

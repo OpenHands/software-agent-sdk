@@ -10,9 +10,10 @@ from urllib.request import urlopen
 
 import httpx
 import tenacity
-from pydantic import Field, PrivateAttr
+from pydantic import Field, PrivateAttr, SecretStr
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.workspace.remote.base import RemoteWorkspace
 from openhands.sdk.workspace.repo import CloneResult, RepoMapping, RepoSource
 
@@ -696,7 +697,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         retry=tenacity.retry_if_exception(_is_retryable_error),
         reraise=True,
     )
-    def get_mcp_config(self) -> dict[str, Any]:
+    def get_mcp_config(self) -> dict[str, MCPServer]:
         """Fetch MCP servers from the user's SaaS account.
 
         Calls ``GET /api/v1/users/me`` to retrieve the user's MCP configuration
@@ -730,46 +731,45 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         if not mcp_config_data:
             return {}
 
-        mcp_config: dict[str, dict[str, Any]] = {}
+        mcp_config: dict[str, MCPServer] = {}
 
         # Transform SSE servers → RemoteMCPServer format
         for i, sse_server in enumerate(mcp_config_data.get("sse_servers") or []):
-            server_config: dict[str, Any] = {
-                "url": sse_server["url"],
-                "transport": "sse",
-            }
+            headers = None
             if sse_server.get("api_key"):
-                server_config["headers"] = {
-                    "Authorization": f"Bearer {sse_server['api_key']}"
+                headers = {
+                    "Authorization": SecretStr(f"Bearer {sse_server['api_key']}")
                 }
             server_name = f"sse_{i}"
-            mcp_config[server_name] = server_config
+            mcp_config[server_name] = MCPServer(
+                url=sse_server["url"],
+                transport="sse",
+                headers=headers,
+            )
 
         # Transform SHTTP servers → RemoteMCPServer format
         for i, shttp_server in enumerate(mcp_config_data.get("shttp_servers") or []):
-            server_config = {
-                "url": shttp_server["url"],
-                "transport": "streamable-http",
-            }
+            headers = None
             if shttp_server.get("api_key"):
-                server_config["headers"] = {
-                    "Authorization": f"Bearer {shttp_server['api_key']}"
+                headers = {
+                    "Authorization": SecretStr(f"Bearer {shttp_server['api_key']}")
                 }
-            if shttp_server.get("timeout"):
-                server_config["timeout"] = shttp_server["timeout"]
             server_name = f"shttp_{i}"
-            mcp_config[server_name] = server_config
+            mcp_config[server_name] = MCPServer(
+                url=shttp_server["url"],
+                transport="streamable-http",
+                headers=headers,
+                timeout=shttp_server.get("timeout"),
+            )
 
         # Transform STDIO servers → StdioMCPServer format
         for stdio_server in mcp_config_data.get("stdio_servers") or []:
-            server_config = {
-                "command": stdio_server["command"],
-                "args": stdio_server.get("args", []),
-            }
-            if stdio_server.get("env"):
-                server_config["env"] = stdio_server["env"]
             # STDIO servers have an explicit name field
-            mcp_config[stdio_server["name"]] = server_config
+            mcp_config[stdio_server["name"]] = MCPServer(
+                command=stdio_server["command"],
+                args=stdio_server.get("args", []),
+                env=stdio_server.get("env"),
+            )
 
         if not mcp_config:
             return {}

@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import SecretStr
 
-import openhands.sdk.mcp.runtime as mcp_runtime
+import openhands.sdk.conversation.impl.local_conversation as local_conversation_module
 from openhands.sdk import LLM, Agent, AgentContext, Conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.hooks import HookConfig
@@ -22,6 +22,11 @@ from openhands.sdk.plugin import (
     installed,
 )
 from openhands.sdk.tool.builtins import ThinkTool
+
+
+class EmptyMCPClient:
+    def __init__(self):
+        self.tools = []
 
 
 @pytest.fixture
@@ -650,7 +655,9 @@ class TestLocalConversationPlugins:
             mcp_tools_created.append((config, conversation.state.locked()))
             return RuntimeMCPClient()
 
-        monkeypatch.setattr(mcp_runtime, "create_mcp_tools", mock_create_mcp_tools)
+        monkeypatch.setattr(
+            local_conversation_module, "create_mcp_tools", mock_create_mcp_tools
+        )
 
         conversation.load_plugin("mcp-plugin")
 
@@ -929,9 +936,11 @@ class TestLocalConversationPlugins:
 
         def mock_create_mcp_tools(config, timeout, *, mcp_oauth_token_storage=None):
             mcp_tools_created.append(config)
-            return []  # Return empty list for testing
+            return EmptyMCPClient()
 
-        monkeypatch.setattr(mcp_runtime, "create_mcp_tools", mock_create_mcp_tools)
+        monkeypatch.setattr(
+            local_conversation_module, "create_mcp_tools", mock_create_mcp_tools
+        )
 
         plugin_dir = create_test_plugin(
             tmp_path / "plugin",
@@ -1064,9 +1073,11 @@ class TestPluginMcpSecretsExpansion:
 
         def mock_create_mcp_tools(config, timeout, *, mcp_oauth_token_storage=None):
             mcp_tools_created.append(config)
-            return []
+            return EmptyMCPClient()
 
-        monkeypatch.setattr(mcp_runtime, "create_mcp_tools", mock_create_mcp_tools)
+        monkeypatch.setattr(
+            local_conversation_module, "create_mcp_tools", mock_create_mcp_tools
+        )
 
         # Create plugin with MCP config using ${VAR} WITHOUT default
         plugin_dir = create_test_plugin(
@@ -1098,9 +1109,11 @@ class TestPluginMcpSecretsExpansion:
         conversation._ensure_agent_ready()
 
         # Verify the secret was expanded in the MCP servers
-        auth_header = dump_mcp_config(conversation.agent.mcp_config)["test-server"][
+        headers = dump_mcp_config(conversation.agent.mcp_config)["test-server"][
             "headers"
-        ]["Authorization"]
+        ]
+        assert isinstance(headers, dict)
+        auth_header = headers["Authorization"]
         assert auth_header == "Bearer my-actual-secret", (
             f"Expected 'Bearer my-actual-secret', got '{auth_header}'"
         )
@@ -1126,9 +1139,11 @@ class TestPluginMcpSecretsExpansion:
 
         def mock_create_mcp_tools(config, timeout, *, mcp_oauth_token_storage=None):
             mcp_tools_created.append(config)
-            return []
+            return EmptyMCPClient()
 
-        monkeypatch.setattr(mcp_runtime, "create_mcp_tools", mock_create_mcp_tools)
+        monkeypatch.setattr(
+            local_conversation_module, "create_mcp_tools", mock_create_mcp_tools
+        )
 
         # Create plugin with MCP config using ${VAR:-default} WITH default
         plugin_dir = create_test_plugin(
@@ -1162,9 +1177,11 @@ class TestPluginMcpSecretsExpansion:
         conversation._ensure_agent_ready()
 
         # CRITICAL: Verify the secret was used, NOT the default
-        auth_header = dump_mcp_config(conversation.agent.mcp_config)["test-server"][
+        headers = dump_mcp_config(conversation.agent.mcp_config)["test-server"][
             "headers"
-        ]["Authorization"]
+        ]
+        assert isinstance(headers, dict)
+        auth_header = headers["Authorization"]
 
         # This assertion will FAIL with double-expansion bug
         assert auth_header == "Bearer my-actual-secret", (
@@ -1188,9 +1205,11 @@ class TestPluginMcpSecretsExpansion:
 
         def mock_create_mcp_tools(config, timeout, *, mcp_oauth_token_storage=None):
             mcp_tools_created.append(config)
-            return []
+            return EmptyMCPClient()
 
-        monkeypatch.setattr(mcp_runtime, "create_mcp_tools", mock_create_mcp_tools)
+        monkeypatch.setattr(
+            local_conversation_module, "create_mcp_tools", mock_create_mcp_tools
+        )
 
         # Create plugin with MCP config using ${VAR:-default}
         # Note: MCP config structure requires valid fields, so we use 'headers'
@@ -1227,7 +1246,9 @@ class TestPluginMcpSecretsExpansion:
         # Verify defaults were used
         mcp_config = dump_mcp_config(conversation.agent.mcp_config)
         url = mcp_config["test-server"]["url"]
-        header = mcp_config["test-server"]["headers"]["X-Custom-Header"]
+        headers = mcp_config["test-server"]["headers"]
+        assert isinstance(headers, dict)
+        header = headers["X-Custom-Header"]
 
         assert url == "https://default.example.com/mcp"
         assert header == "default-header-value"

@@ -4,9 +4,9 @@ import os
 import re
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, Union
+from typing import Annotated, ClassVar, Literal, Union
 from xml.sax.saxutils import escape as xml_escape
 
 import frontmatter
@@ -14,13 +14,16 @@ import yaml
 from pydantic import (
     BaseModel,
     Field,
+    JsonValue,
     SerializationInfo,
+    ValidationInfo,
     field_serializer,
     field_validator,
     model_validator,
 )
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config, dump_mcp_config
 from openhands.sdk.skills.exceptions import SkillError, SkillValidationError
 from openhands.sdk.skills.execute import render_content_with_commands
 from openhands.sdk.skills.trigger import (
@@ -46,16 +49,6 @@ from openhands.sdk.utils.path import to_posix_path
 
 
 logger = get_logger(__name__)
-
-
-if TYPE_CHECKING:
-    from openhands.sdk.utils.cipher import Cipher
-
-
-def _validate_openhands_mcp_config(value: dict):
-    from openhands.sdk.mcp.config import validate_fastmcp_config_dict
-
-    return validate_fastmcp_config_dict(value)
 
 
 class SkillInfo(BaseModel):
@@ -162,13 +155,9 @@ class Skill(BaseModel):
             "When it is None, it is treated as a programmatically defined skill."
         ),
     )
-    mcp_tools: dict | None = Field(
+    mcp_tools: dict[str, MCPServer] | None = Field(
         default=None,
-        description=(
-            "MCP tools configuration for the skill (repo skills only). "
-            "It should conform to FastMCP's configuration format: "
-            "https://gofastmcp.com/clients/client#configuration-format"
-        ),
+        description=("MCP servers for the skill (repo skills only)."),
     )
     inputs: list[InputMetadata] = Field(
         default_factory=list,
@@ -272,54 +261,30 @@ class Skill(BaseModel):
             return {str(k): str(val) for k, val in v.items()}
         raise SkillValidationError("metadata must be a dictionary")
 
-    @field_validator("mcp_tools")
+    @field_validator("mcp_tools", mode="before")
     @classmethod
-    def _validate_mcp_tools(cls, v: dict | None, _info):
-        """Validate mcp_tools conforms to FastMCP's config schema."""
+    def _validate_mcp_tools(
+        cls, v: object, info: ValidationInfo
+    ) -> dict[str, MCPServer] | None:
+        """Accept external FastMCP shape and store native MCP server models."""
         if v is None:
-            return v
-        if isinstance(v, dict):
-            try:
-                _validate_openhands_mcp_config(v)
-            except Exception as e:
-                raise SkillValidationError(
-                    f"Invalid FastMCP config dictionary: {e}"
-                ) from e
-        return v
+            return None
+        if not isinstance(v, Mapping):
+            raise SkillValidationError("mcp_tools must be a dictionary or None")
+        try:
+            return coerce_mcp_config(v, context=info.context)
+        except Exception as e:
+            raise SkillValidationError(f"Invalid MCP config dictionary: {e}") from e
 
     @field_serializer("mcp_tools")
     def _serialize_mcp_tools(
-        self, value: dict | None, info: SerializationInfo
-    ) -> dict | None:
-        """Mask credentials in ``mcp_tools`` (``mcpServers.*.env``/``headers``).
-
-        ``mcp_tools`` is an unmodeled ``dict``, so it would otherwise dump its
-        MCP server secrets in plaintext wherever a ``Skill`` is serialized.
-        Route it through the SDK MCP secret serializer: redacted by default,
-        plaintext under ``expose_secrets``, encrypted under a cipher.
-        """
+        self, value: dict[str, MCPServer] | None, info: SerializationInfo
+    ) -> dict[str, dict[str, JsonValue]] | None:
+        if value is None:
+            return None
         if not value:
-            return value
-        from openhands.sdk.mcp.config import serialize_fastmcp_config_dict
-
-        return serialize_fastmcp_config_dict(
-            _validate_openhands_mcp_config(value), info
-        )
-
-    def with_decrypted_mcp_tools(self, cipher: "Cipher | None") -> "Skill":
-        if cipher is None or not self.mcp_tools:
-            return self
-
-        from openhands.sdk.mcp.config import dump_fastmcp_config_secret_values
-
-        decrypted = dump_fastmcp_config_secret_values(
-            self.mcp_tools,
-            cipher=cipher,
-            expose_secrets="plaintext",
-        )
-        if not isinstance(decrypted, dict):
-            return self
-        return self.model_copy(update={"mcp_tools": decrypted})
+            return {}
+        return dump_mcp_config(value, context=info.context or {})
 
     PATH_TO_THIRD_PARTY_SKILL_NAME: ClassVar[dict[str, str]] = {
         ".cursorrules": "cursorrules",
@@ -392,10 +357,10 @@ class Skill(BaseModel):
                 )
 
         # Load MCP configuration from .mcp.json (agent_skills ONLY use .mcp.json)
-        mcp_tools: dict | None = None
+        mcp_tools: dict[str, MCPServer] | None = None
         mcp_json_path = find_mcp_config(skill_root)
         if mcp_json_path:
-            mcp_tools = load_mcp_config(mcp_json_path, skill_root)
+            mcp_tools = coerce_mcp_config(load_mcp_config(mcp_json_path, skill_root))
 
         # Discover resource directories
         resources: SkillResources | None = None
@@ -449,6 +414,7 @@ class Skill(BaseModel):
         mcp_tools = metadata_dict.get("mcp_tools")
         if mcp_tools is not None and not isinstance(mcp_tools, dict):
             raise SkillValidationError("mcp_tools must be a dictionary or None")
+        mcp_tools = coerce_mcp_config(mcp_tools) if mcp_tools is not None else None
 
         return cls._create_skill_from_metadata(
             agent_name, content, path, metadata_dict, mcp_tools
@@ -460,8 +426,8 @@ class Skill(BaseModel):
         agent_name: str,
         content: str,
         path: Path,
-        metadata_dict: dict,
-        mcp_tools: dict | None = None,
+        metadata_dict: dict[str, object],
+        mcp_tools: dict[str, MCPServer] | None = None,
         resources: SkillResources | None = None,
         is_agentskills_format: bool = False,
     ) -> "Skill":

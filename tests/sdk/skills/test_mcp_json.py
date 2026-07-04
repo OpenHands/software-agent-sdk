@@ -39,9 +39,9 @@ def test_agentskills_loads_mcp_json(tmp_path: Path) -> None:
 
     assert skill.mcp_tools is not None
     # ${SKILL_ROOT} should be expanded
-    assert skill.mcp_tools["mcpServers"]["server"]["command"] == f"{skill_dir}/run.py"
+    assert skill.mcp_tools["server"].command == f"{skill_dir}/run.py"
     # ${PORT:-8080} should use default
-    assert skill.mcp_tools["mcpServers"]["server"]["args"] == ["--port", "8080"]
+    assert skill.mcp_tools["server"].args == ["--port", "8080"]
 
 
 def test_agentskills_ignores_frontmatter_mcp_tools(tmp_path: Path) -> None:
@@ -68,7 +68,7 @@ def test_legacy_skill_loads_frontmatter_mcp_tools(tmp_path: Path) -> None:
     skill = Skill.load(skills_dir / "legacy.md", skills_dir)
 
     assert skill.mcp_tools is not None
-    assert "server" in skill.mcp_tools["mcpServers"]
+    assert "server" in skill.mcp_tools
 
 
 def test_legacy_skill_ignores_mcp_json_in_directory(tmp_path: Path) -> None:

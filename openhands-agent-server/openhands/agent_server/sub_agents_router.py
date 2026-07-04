@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from openhands.sdk.context.condenser import CondenserBase
 from openhands.sdk.hooks.config import HookConfig
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.subagent import (
     AgentDefinition,
     AgentDefinitionLevel,
@@ -64,7 +65,7 @@ class SubAgentInfo(BaseModel):
     permission_mode: str | None = None
     max_iteration_per_run: int | None = None
     max_budget_per_run: float | None = None
-    mcp_config: dict[str, Any] | None = None
+    mcp_config: dict[str, MCPServer] | None = None
     profile_store_dir: str | None = None
     hooks: HookConfig | None = None
     condenser: CondenserBase | None = None

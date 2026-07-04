@@ -6,11 +6,11 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config, validate_mcp_config
+from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config
 from openhands.sdk.plugin.fetch import fetch_plugin
 from openhands.sdk.plugin.types import (
     CommandDefinition,
@@ -173,11 +173,6 @@ class Plugin(BaseModel):
         if agent_context:
             return agent_context.model_copy(update={"skills": merged_skills})
         return AgentContext(skills=merged_skills)
-
-    @field_validator("mcp_config", mode="before")
-    @classmethod
-    def _validate_mcp_config(cls, value: object) -> object:
-        return validate_mcp_config(value)
 
     def add_mcp_config_to(
         self,

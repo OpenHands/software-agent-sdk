@@ -14,10 +14,10 @@ MCP references and returns :class:`~openhands.sdk.profiles.AgentProfileDiagnosti
 import asyncio
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Path, Request, status
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, JsonValue, ValidationError
 
 from openhands.agent_server._secrets_exposure import (
     build_expose_context,
@@ -41,10 +41,8 @@ from openhands.sdk.llm.llm_profile_store import (
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles import (
     SEED_PROFILE_NAME,
-    ACPAgentProfile,
     AgentProfileDiagnostics,
     AgentProfileStore,
-    OpenHandsAgentProfile,
     ProfileLimitExceeded,
     build_seed_profile,
     resolve_agent_profile_dry_run,
@@ -87,7 +85,7 @@ class AgentProfileListResponse(BaseModel):
 
 class AgentProfileDetailResponse(BaseModel):
     name: str
-    profile: dict[str, Any]
+    profile: dict[str, JsonValue]
 
 
 class AgentProfileMutationResponse(BaseModel):
@@ -130,25 +128,6 @@ def _store_errors() -> Iterator[None]:
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-
-
-def _decrypt_profile_mcp_tools(
-    profile: OpenHandsAgentProfile | ACPAgentProfile, cipher: Cipher | None
-) -> OpenHandsAgentProfile | ACPAgentProfile:
-    """Decrypt Fernet ``skills[].mcp_tools`` env/headers (no-op without a cipher).
-
-    The store masks/encrypts these on save but has no symmetric load-time
-    validator, so values arrive as ciphertext on both GET (at-rest) and save
-    (client round-trip). Decrypting here lets GET re-mask from plaintext and
-    stops save from double-encrypting an already-encrypted value.
-    """
-    if cipher is None:
-        return profile
-    skills = getattr(profile, "skills", None)
-    if not skills:
-        return profile
-    new_skills = [skill.with_decrypted_mcp_tools(cipher) for skill in skills]
-    return profile.model_copy(update={"skills": new_skills})
 
 
 def _seed_default_llm_profile(llm: LLM, cipher: Cipher | None) -> str:
@@ -234,9 +213,6 @@ def _seed_default_profile(
                 settings.agent_settings.llm, cipher
             )
         profile = build_seed_profile(settings.agent_settings, active_llm_profile)
-        # Settings persist skills[].mcp_tools encrypted (and never decrypt on
-        # load), so decrypt before re-encrypting at save to avoid double-encrypt.
-        profile = _decrypt_profile_mcp_tools(profile, cipher)
         store.save(profile, cipher=cipher, max_profiles=MAX_AGENT_PROFILES)
 
         profile_id = str(profile.id)
@@ -311,10 +287,6 @@ async def get_agent_profile(
             detail=f"Agent profile '{name}' not found",
         )
 
-    # The store leaves skills[].mcp_tools encrypted on load; decrypt to plaintext
-    # so the expose serializer can correctly redact / re-encrypt / reveal them.
-    profile = _decrypt_profile_mcp_tools(profile, cipher)
-
     context = build_expose_context(expose_mode, cipher)
     with translate_missing_cipher():
         payload = profile.model_dump(mode="json", context=context)
@@ -328,7 +300,7 @@ async def get_agent_profile(
     status_code=status.HTTP_201_CREATED,
 )
 async def save_agent_profile(
-    request: Request, name: ProfileName, body: dict[str, Any]
+    request: Request, name: ProfileName, body: dict[str, JsonValue]
 ) -> AgentProfileMutationResponse:
     """Save an ``AgentProfile`` under ``name`` (overwriting a namesake).
 
@@ -357,11 +329,6 @@ async def save_agent_profile(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Invalid agent profile",
         )
-
-    # A client editing a profile fetched with X-Expose-Secrets: encrypted posts
-    # back Fernet tokens; decrypt them so the save re-encrypts the original
-    # secret once rather than double-encrypting the token.
-    profile = _decrypt_profile_mcp_tools(profile, cipher)
 
     store = get_agent_profile_store()
     # The id is server-managed (the active pointer is keyed on it): overwrite
@@ -533,10 +500,6 @@ async def materialize_agent_profile(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Agent profile '{name}' not found",
         )
-
-    # The store leaves skills[].mcp_tools encrypted on load; decrypt so the
-    # resolver builds settings from plaintext (not ciphertext) values.
-    profile = _decrypt_profile_mcp_tools(profile, cipher)
 
     config = get_config(request)
     settings = get_settings_store(config).load() or PersistedSettings()

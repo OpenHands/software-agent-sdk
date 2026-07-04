@@ -2,7 +2,7 @@
 
 import logging
 from collections.abc import Mapping
-from typing import Any
+from typing import Protocol
 
 import mcp.types
 from fastmcp.client.auth import OAuth
@@ -12,7 +12,12 @@ from key_value.aio.protocols import AsyncKeyValue
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient
-from openhands.sdk.mcp.config import MCPConfig, MCPServer, to_fastmcp_mcp_config
+from openhands.sdk.mcp.config import (
+    MCPOAuthAuthCredential,
+    MCPOAuthAuthentication,
+    MCPServer,
+    to_fastmcp_mcp_config,
+)
 from openhands.sdk.mcp.exceptions import MCPTimeoutError
 from openhands.sdk.mcp.tool import MCPToolDefinition
 
@@ -21,63 +26,54 @@ logger = get_logger(__name__)
 LOGGING_LEVEL_MAP = logging.getLevelNamesMapping()
 
 
+class MCPToolProvider(Protocol):
+    """Runtime-only MCP tool materializer."""
+
+    def create_tools(
+        self, mcp_config: dict[str, MCPServer], timeout: float = 30.0
+    ) -> MCPClient: ...
+
+
 def _oauth_auth_from_authentication_config(
-    authentication: dict[str, Any] | None,
+    authentication: MCPOAuthAuthentication | None,
     *,
     mcp_oauth_token_storage: AsyncKeyValue | None = None,
 ) -> OAuth | None:
     """Build FastMCP OAuth auth from explicit SDK MCP auth metadata."""
-    if not authentication or authentication.get("type") != "oauth":
+    if authentication is None:
         return None
 
-    additional_client_metadata = dict(
-        authentication.get("additional_client_metadata") or {}
-    )
-    client_auth_method = authentication.get("client_auth_method")
+    additional_client_metadata = dict(authentication.additional_client_metadata or {})
+    client_auth_method = authentication.client_auth_method
     if client_auth_method is not None:
-        if client_auth_method not in {
-            "none",
-            "client_secret_post",
-            "client_secret_basic",
-            "private_key_jwt",
-        }:
-            raise ValueError(
-                "MCP OAuth authentication.client_auth_method must be one of "
-                "'none', 'client_secret_post', 'client_secret_basic', or "
-                "'private_key_jwt'"
-            )
         additional_client_metadata["token_endpoint_auth_method"] = client_auth_method
 
-    kwargs: dict[str, Any] = {}
-    if additional_client_metadata:
-        kwargs["additional_client_metadata"] = additional_client_metadata
-    for source_key, target_key in (
-        ("scopes", "scopes"),
-        ("client_name", "client_name"),
-        ("client_metadata_url", "client_metadata_url"),
-    ):
-        value = authentication.get(source_key)
-        if value is not None:
-            kwargs[target_key] = value
-    if mcp_oauth_token_storage is not None:
-        kwargs["token_storage"] = mcp_oauth_token_storage
-
-    return OAuth(**kwargs)
+    return OAuth(
+        scopes=authentication.scopes,
+        client_name=authentication.client_name or "FastMCP Client",
+        token_storage=mcp_oauth_token_storage,
+        additional_client_metadata=additional_client_metadata or None,
+        client_metadata_url=authentication.client_metadata_url,
+    )
 
 
 def _prepare_mcp_config(
-    mcp_config: MCPConfig,
+    mcp_config: dict[str, MCPServer],
     *,
     mcp_oauth_token_storage: AsyncKeyValue | None = None,
 ) -> FastMCPConfig:
     """Validate MCP config and apply explicit OpenHands runtime auth metadata."""
     prepared = FastMCPConfig.model_validate(to_fastmcp_mcp_config(mcp_config))
 
-    for server in prepared.mcpServers.values():
+    for server_name, server_spec in mcp_config.items():
+        auth = server_spec.auth
+        if not isinstance(auth, MCPOAuthAuthCredential):
+            continue
+        server = prepared.mcpServers.get(server_name)
         if not isinstance(server, RemoteMCPServer) or server.auth != "oauth":
             continue
         oauth_auth = _oauth_auth_from_authentication_config(
-            server.authentication,
+            auth.authentication,
             mcp_oauth_token_storage=mcp_oauth_token_storage,
         )
         if oauth_auth is not None:
@@ -88,7 +84,9 @@ def _prepare_mcp_config(
     return prepared
 
 
-def _require_native_mcp_config(mcp_config: Mapping[str, MCPServer]) -> MCPConfig:
+def _require_native_mcp_config(
+    mcp_config: Mapping[str, MCPServer],
+) -> dict[str, MCPServer]:
     if not isinstance(mcp_config, Mapping):
         raise TypeError(
             "create_mcp_tools expects native MCP servers: dict[str, MCPServer]. "
@@ -133,7 +131,7 @@ async def _connect_and_list_tools(client: MCPClient) -> None:
 
 
 def create_mcp_tools(
-    mcp_config: MCPConfig,
+    mcp_config: dict[str, MCPServer],
     timeout: float = 30.0,
     *,
     mcp_oauth_token_storage: AsyncKeyValue | None = None,

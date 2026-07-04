@@ -757,7 +757,7 @@ def _profile_with_mcp_secret(token_value: str) -> dict:
 
 
 def _mcp_auth_value(profile_payload: dict) -> str:
-    servers = profile_payload["skills"][0]["mcp_tools"]["mcpServers"]
+    servers = profile_payload["skills"][0]["mcp_tools"]
     return servers["svc"]["auth"]["value"]
 
 
@@ -805,7 +805,7 @@ def test_mcp_tools_secret_encrypted_at_rest(
     )
 
     raw = json.loads((temp_agent_profiles_dir / "p.json").read_text())
-    stored = raw["skills"][0]["mcp_tools"]["mcpServers"]["svc"]["auth"]["value"]
+    stored = raw["skills"][0]["mcp_tools"]["svc"]["auth"]["value"]
     assert stored != secret
     assert cipher.decrypt(stored).get_secret_value() == secret
 

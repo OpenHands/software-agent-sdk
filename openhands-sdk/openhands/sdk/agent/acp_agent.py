@@ -24,7 +24,7 @@ import re
 import threading
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Generator, Iterable
+from collections.abc import Awaitable, Callable, Generator, Iterable, Mapping, Sequence
 from concurrent.futures import Future
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
@@ -52,6 +52,7 @@ from acp.schema import (
 from acp.transports import default_environment
 from pydantic import (
     Field,
+    JsonValue,
     PrivateAttr,
     SecretStr,
     ValidationInfo,
@@ -104,6 +105,7 @@ if TYPE_CHECKING:
         LocalConversation,
     )
     from openhands.sdk.conversation.secret_registry import SecretRegistry
+    from openhands.sdk.tool import ToolDefinition
 
 
 # Maximum seconds to wait for a UsageUpdate notification after prompt()
@@ -540,10 +542,14 @@ def _extract_session_models(
 _ACPMcpServer = HttpMcpServer | SseMcpServer | McpServerStdio
 
 
-def _remote_mcp_headers(spec: dict[str, Any], name: str) -> list[HttpHeader]:
+def _remote_mcp_headers(spec: Mapping[str, JsonValue], name: str) -> list[HttpHeader]:
     """Convert remote MCP headers/auth into ACP's header-only representation."""
-    raw_headers = spec.get("headers") or {}
-    headers = [HttpHeader(name=str(k), value=str(v)) for k, v in raw_headers.items()]
+    raw_headers = spec.get("headers")
+    headers = (
+        [HttpHeader(name=str(k), value=str(v)) for k, v in raw_headers.items()]
+        if isinstance(raw_headers, Mapping)
+        else []
+    )
 
     auth = spec.get("auth")
     has_authorization = any(h.name.lower() == "authorization" for h in headers)
@@ -569,9 +575,8 @@ def _mcp_config_to_acp_servers(
     Converts the native server map to the ACP protocol objects passed to
     ``new_session()`` / ``load_session()`` so the ACP
     subprocess connects to those servers itself.  Unlike the built-in Agent
-    these are *not* turned into in-process SDK MCP tools
-    (:attr:`ACPAgent.supports_openhands_mcp` stays ``False``) — the ACP server
-    owns the MCP connection and exposes the tools through its own turn.
+    these are *not* turned into in-process SDK MCP tools — the ACP server owns
+    the MCP connection and exposes the tools through its own turn.
 
     Each entry maps by transport:
 
@@ -606,15 +611,19 @@ def _mcp_config_to_acp_servers(
         command = spec.get("command")
         url = spec.get("url")
         if command:
-            env = [
-                EnvVariable(name=str(k), value=str(v))
-                for k, v in (spec.get("env") or {}).items()
-            ]
+            raw_env = spec.get("env")
+            raw_args = spec.get("args")
+            env = (
+                [EnvVariable(name=str(k), value=str(v)) for k, v in raw_env.items()]
+                if isinstance(raw_env, Mapping)
+                else []
+            )
+            args = [str(arg) for arg in raw_args] if isinstance(raw_args, list) else []
             result.append(
                 McpServerStdio(
                     name=str(name),
                     command=str(command),
-                    args=[str(a) for a in (spec.get("args") or [])],
+                    args=args,
                     env=env,
                 )
             )
@@ -1787,18 +1796,6 @@ class ACPAgent(AgentBase):
         return False
 
     @property
-    def supports_openhands_mcp(self) -> bool:
-        """``False`` — OpenHands does not create in-process MCP *tools* here.
-
-        This stays ``False`` even though ``mcp_config`` is honored: any
-        configured MCP servers are forwarded to the ACP subprocess at session
-        creation (see :func:`_mcp_config_to_acp_servers`) rather than connected
-        in-process. The ACP server owns the MCP connection and surfaces the
-        tools through its own turn.
-        """
-        return False
-
-    @property
     def supports_condenser(self) -> bool:
         """``False`` — the ACP server manages its own context window."""
         return False
@@ -1917,8 +1914,15 @@ class ACPAgent(AgentBase):
         self,
         state: ConversationState,
         on_event: ConversationCallbackType,
+        *,
+        extra_tools: Sequence[ToolDefinition] = (),
     ) -> None:
         """Spawn the ACP server and initialize a session."""
+        if extra_tools:
+            raise NotImplementedError(
+                "ACPAgent does not support OpenHands-managed runtime tools; "
+                "the ACP server manages its own tools"
+            )
         # Validate unsupported execution features. agent_context is allowed
         # because it contributes prompt-only extensions to user messages; ACP
         # server tools and context-window management remain owned by the server.
