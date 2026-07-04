@@ -320,8 +320,7 @@ def _run_tool_call(
 
 
 def _probe_mcp_server(
-    request: MCPTestRequest,
-    cipher: Cipher | None,
+    request: MCPTestRequest, cipher: Cipher | None
 ) -> MCPTestResponse:
     """Synchronous probe -- safe to run inside ``run_in_executor``.
 
@@ -425,10 +424,4 @@ async def test_mcp_server(
     # reach back into ``http_request.app.state``.
     cipher = get_cipher(http_request)
     loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(
-        None,
-        _probe_mcp_server,
-        request,
-        cipher,
-    )
-    return result
+    return await loop.run_in_executor(None, _probe_mcp_server, request, cipher)
