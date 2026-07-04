@@ -2072,9 +2072,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         chunks.append(chunk)
                 else:
                     loop = asyncio.get_running_loop()
-                    chunks = await loop.run_in_executor(None, list, ret)
-                    for chunk in chunks:
+                    synced_chunks: list[
+                        ModelResponseStream
+                    ] = await loop.run_in_executor(
+                        None, list, cast(Iterable[ModelResponseStream], ret)
+                    )
+                    for chunk in synced_chunks:
                         await _invoke_token_callback(on_token, chunk)
+                        chunks.append(chunk)
                 ret = litellm.stream_chunk_builder(chunks, messages=messages)
 
             assert isinstance(ret, ModelResponse), (
