@@ -275,9 +275,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         encrypted = data.pop("encrypted_mcp_config", None)
         if not has_encrypted_mcp_config:
             mcp_config = data.get("mcp_config")
-            if mcp_config is None:
-                data.pop("mcp_config", None)
-            elif not isinstance(mcp_config, dict | OpenHandsMCPConfig):
+            if mcp_config is not None and not isinstance(
+                mcp_config, dict | OpenHandsMCPConfig
+            ):
                 raise ValueError("mcp_config must be a dictionary when provided")
             return data
 
