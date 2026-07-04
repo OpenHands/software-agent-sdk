@@ -154,37 +154,6 @@ class MCPToolCallSpec(BaseModel):
         description="Arguments passed to the tool unchanged.",
     )
 
-    def run(
-        self, client: Any, tool_names: list[str], timeout: float
-    ) -> MCPToolCallResult:
-        """Invoke this tool call and return the raw MCP outcome."""
-        if self.name not in tool_names:
-            return MCPToolCallResult(
-                is_error=True,
-                text=(
-                    f"Tool {self.name!r} not advertised by server "
-                    f"(available: {', '.join(tool_names) or 'none'})"
-                ),
-            )
-        try:
-            result: mcp.types.CallToolResult = client.call_async_from_sync(
-                client.call_tool_mcp,
-                name=self.name,
-                arguments=self.arguments,
-                timeout=timeout,
-            )
-        except TimeoutError:
-            return MCPToolCallResult(
-                is_error=True,
-                text=f"Tool {self.name!r} call timed out after {timeout} seconds",
-            )
-        text = "\n".join(
-            block.text
-            for block in result.content
-            if isinstance(block, mcp.types.TextContent)
-        )
-        return MCPToolCallResult(is_error=bool(result.isError), text=text)
-
 
 class MCPTestRequest(BaseModel):
     """Body for ``POST /api/mcp/test``."""
@@ -312,6 +281,44 @@ def _mcp_validation_context(cipher: Cipher | None) -> dict[str, Any] | None:
     return {"cipher": cipher} if cipher is not None else None
 
 
+def _run_tool_call(
+    client: Any, spec: MCPToolCallSpec, tool_names: list[str], timeout: float
+) -> MCPToolCallResult:
+    """Invoke the requested tool on the connected client.
+
+    Uses ``call_tool_mcp`` (not ``call_tool``, which raises on ``isError``)
+    so in-band failures come back as data -- mirrors ``MCPToolExecutor``.
+    A timeout is reported as an errored result rather than failing the
+    whole test: the server did connect and list, which is still useful.
+    """
+    if spec.name not in tool_names:
+        return MCPToolCallResult(
+            is_error=True,
+            text=(
+                f"Tool {spec.name!r} not advertised by server "
+                f"(available: {', '.join(tool_names) or 'none'})"
+            ),
+        )
+    try:
+        result: mcp.types.CallToolResult = client.call_async_from_sync(
+            client.call_tool_mcp,
+            name=spec.name,
+            arguments=spec.arguments,
+            timeout=timeout,
+        )
+    except TimeoutError:
+        return MCPToolCallResult(
+            is_error=True,
+            text=f"Tool {spec.name!r} call timed out after {timeout} seconds",
+        )
+    text = "\n".join(
+        block.text
+        for block in result.content
+        if isinstance(block, mcp.types.TextContent)
+    )
+    return MCPToolCallResult(is_error=bool(result.isError), text=text)
+
+
 def _probe_mcp_server(
     request: MCPTestRequest,
     cipher: Cipher | None,
@@ -344,7 +351,12 @@ def _probe_mcp_server(
             tool_names = [tool.name for tool in client.tools]
             tool_result: MCPToolCallResult | None = None
             if request.tool_call is not None:
-                tool_result = request.tool_call.run(client, tool_names, request.timeout)
+                tool_result = _run_tool_call(
+                    client,
+                    request.tool_call,
+                    tool_names,
+                    request.timeout,
+                )
             oauth_state: dict[str, Any] | None = None
             if oauth_token_storage is not None:
                 state = oauth_token_storage.export_state()
