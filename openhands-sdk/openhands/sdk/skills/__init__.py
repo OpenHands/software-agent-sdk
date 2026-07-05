@@ -13,7 +13,7 @@ This module provides the unified API for working with skills:
 - `merge_skills_by_name` - Merge two skill collections by name (primary wins)
 
 **Triggers:**
-- `BaseTrigger`, `KeywordTrigger`, `TaskTrigger` - Skill activation triggers
+- `BaseTrigger`, `KeywordTrigger`, `TaskTrigger`, `PathTrigger` - activation triggers
 
 **Installed Skills Management:**
 - `install_skill` - Install a skill from a source
@@ -72,6 +72,7 @@ from openhands.sdk.skills.skill import (
 from openhands.sdk.skills.trigger import (
     BaseTrigger,
     KeywordTrigger,
+    PathTrigger,
     TaskTrigger,
 )
 
@@ -124,6 +125,7 @@ __all__ = [
     # Triggers
     "BaseTrigger",
     "KeywordTrigger",
+    "PathTrigger",
     "TaskTrigger",
     # Types
     "SkillKnowledge",

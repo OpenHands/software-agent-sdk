@@ -296,6 +296,8 @@ class AgentContext(BaseModel):
         available_skills: list[Skill] = []
         for s in self.skills:
             if s.is_agentskills_format or s.trigger is not None:
+                # Path rules force disable_model_invocation (Skill validator), so
+                # they fall out here — injected only on file-touch, never listed.
                 if not s.disable_model_invocation:
                     available_skills.append(s)
             else:
@@ -516,3 +518,48 @@ class AgentContext(BaseModel):
         if user_message_suffix:
             return TextContent(text=user_message_suffix), []
         return None
+
+    def get_tool_use_suffix(
+        self, file_path: str, skip_skill_names: list[str]
+    ) -> tuple[TextContent, list[str]] | None:
+        """Match ``PathTrigger`` skills ("rules") against a touched file path.
+
+        The path-based counterpart of :meth:`get_user_message_suffix`. Returns
+        the rendered rule content and the rules that fired, or None.
+        ``skip_skill_names`` suppresses rules already injected (dedup).
+        """
+        if not file_path:
+            return None
+
+        recalled_knowledge: list[SkillKnowledge] = []
+        for skill in self.skills:
+            if not isinstance(skill, Skill) or skill.name in skip_skill_names:
+                continue
+            if pattern := skill.match_path_trigger(file_path):
+                logger.info(
+                    "Rule '%s' triggered by path match '%s' for '%s'",
+                    skill.name,
+                    pattern,
+                    file_path,
+                )
+                recalled_knowledge.append(
+                    SkillKnowledge(
+                        name=skill.name,
+                        trigger=pattern,
+                        content=skill.content,
+                        location=skill.source,
+                    )
+                )
+
+        if not recalled_knowledge:
+            return None
+
+        blocks = [
+            "<EXTRA_INFO>\n"
+            "The following rule applies because a file you touched matches "
+            f'"{k.trigger}". Follow it when working with matching files.\n'
+            + (f"Rule location: {k.location}\n" if k.location else "")
+            + f"\n{k.content}\n</EXTRA_INFO>"
+            for k in recalled_knowledge
+        ]
+        return TextContent(text="\n".join(blocks)), [k.name for k in recalled_knowledge]

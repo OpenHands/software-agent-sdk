@@ -1,3 +1,4 @@
+import functools
 import io
 import json
 import os
@@ -26,6 +27,7 @@ from openhands.sdk.skills.exceptions import SkillError, SkillValidationError
 from openhands.sdk.skills.execute import render_content_with_commands
 from openhands.sdk.skills.trigger import (
     KeywordTrigger,
+    PathTrigger,
     TaskTrigger,
 )
 from openhands.sdk.skills.types import InputMetadata
@@ -47,6 +49,59 @@ from openhands.sdk.utils.path import to_posix_path
 
 
 logger = get_logger(__name__)
+
+
+@functools.lru_cache(maxsize=512)
+def _compile_path_glob(pattern: str) -> re.Pattern[str]:
+    """Compile a gitignore-style path glob into an anchored regex.
+
+    Supported syntax (matched against a POSIX path):
+    - ``**`` matches any number of path segments (including zero).
+    - ``*`` matches any run of characters within a single segment.
+    - ``?`` matches a single non-separator character.
+    - A pattern without a ``/`` matches the basename at any depth, e.g.
+      ``*.py`` behaves like ``**/*.py`` (gitignore semantics).
+
+    Matching is case-sensitive. Results are cached per pattern string.
+    """
+    # A slash-less pattern matches at any depth.
+    if "/" not in pattern:
+        pattern = "**/" + pattern
+
+    i, n = 0, len(pattern)
+    out: list[str] = []
+    while i < n:
+        c = pattern[i]
+        if c == "*":
+            if pattern[i : i + 2] == "**":
+                # Collapse '**/' to "any number of leading segments" and a bare
+                # '**' to "anything", so both cross the '/' separator.
+                if pattern[i + 2 : i + 3] == "/":
+                    out.append("(?:.*/)?")
+                    i += 3
+                else:
+                    out.append(".*")
+                    i += 2
+            else:
+                out.append("[^/]*")
+                i += 1
+        elif c == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(c))
+            i += 1
+    return re.compile(f"(?s:{''.join(out)})\\Z")
+
+
+def path_matches_glob(file_path: str, pattern: str) -> bool:
+    """Return True if ``file_path`` matches the gitignore-style glob ``pattern``.
+
+    ``file_path`` is expected to be a POSIX path (typically workspace-relative).
+    """
+    if not pattern:
+        return False
+    return _compile_path_glob(pattern).fullmatch(file_path) is not None
 
 
 class SkillInfo(BaseModel):
@@ -111,7 +166,7 @@ class SkillResources(BaseModel):
 
 # Union type for all trigger types
 TriggerType = Annotated[
-    KeywordTrigger | TaskTrigger,
+    KeywordTrigger | TaskTrigger | PathTrigger,
     Field(discriminator="type"),
 ]
 
@@ -428,6 +483,18 @@ class Skill(BaseModel):
             agent_name, content, path, metadata_dict, mcp_tools
         )
 
+    @staticmethod
+    def _parse_paths(v: str | list | None) -> list[str] | None:
+        """Parse ``paths`` frontmatter (comma-separated string or list) into a
+        non-empty list of globs, or None. Mirrors Claude Code / AgentSkills."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v = v.split(",")
+        elif not isinstance(v, list):
+            raise SkillValidationError("paths must be a string or list")
+        return [s for p in v if (s := str(p).strip())] or None
+
     @classmethod
     def _create_skill_from_metadata(
         cls,
@@ -477,11 +544,26 @@ class Skill(BaseModel):
         if not isinstance(keywords, list):
             raise SkillValidationError("Triggers must be a list of strings")
 
+        # Parse path globs ("rules"): a comma-separated string or a YAML list.
+        paths = cls._parse_paths(metadata_dict.get("paths"))
+
         # Infer the trigger type:
-        # 1. If inputs exist -> TaskTrigger
-        # 2. If keywords exist -> KeywordTrigger
-        # 3. Else (no keywords) -> None (always active)
-        if "inputs" in metadata_dict:
+        # 1. If paths exist -> PathTrigger (deterministic file-touch injection)
+        # 2. If inputs exist -> TaskTrigger
+        # 3. If keywords exist -> KeywordTrigger
+        # 4. Else (no keywords) -> None (always active)
+        if paths:
+            return Skill(
+                name=agent_name,
+                content=content,
+                source=to_posix_path(path),
+                trigger=PathTrigger(paths=paths),
+                mcp_tools=mcp_tools,
+                resources=resources,
+                is_agentskills_format=is_agentskills_format,
+                **agentskills_fields,
+            )
+        elif "inputs" in metadata_dict:
             # Add a trigger for the agent name if not already present
             trigger_keyword = f"/{agent_name}"
             if trigger_keyword not in keywords:
@@ -597,6 +679,18 @@ class Skill(BaseModel):
 
         return self
 
+    @model_validator(mode="after")
+    def _path_rules_are_trigger_only(self):
+        """Path rules inject deterministically on file-touch, so they must never
+        be advertised in ``<available_skills>`` nor invoked directly via
+        ``invoke_skill``. Force ``disable_model_invocation`` (the existing
+        "trigger-only" flag) so every consumer that already honors it — the
+        catalog partition, the invoke_skill executor, and the tool-attach gate —
+        excludes them, regardless of how the skill was constructed."""
+        if isinstance(self.trigger, PathTrigger):
+            self.disable_model_invocation = True
+        return self
+
     def match_trigger(self, message: str) -> str | None:
         """Match a trigger in the message.
 
@@ -613,6 +707,19 @@ class Skill(BaseModel):
             for trigger_str in self.trigger.triggers:
                 if trigger_str.lower() in message_lower:
                     return trigger_str
+        return None
+
+    def match_path_trigger(self, file_path: str) -> str | None:
+        """Match a PathTrigger against a file path.
+
+        ``file_path`` should be a POSIX path (typically workspace-relative).
+        Returns the first glob pattern that matches, or None. Only applies to
+        PathTrigger skills; other trigger types never match here.
+        """
+        if isinstance(self.trigger, PathTrigger):
+            for pattern in self.trigger.paths:
+                if path_matches_glob(file_path, pattern):
+                    return pattern
         return None
 
     def extract_variables(self, content: str) -> list[str]:

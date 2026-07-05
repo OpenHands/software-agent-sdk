@@ -5,7 +5,7 @@ import copy
 import json
 import uuid
 from collections.abc import Mapping, Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Final, TypeGuard, cast
 
 from openhands.sdk.agent.acp_agent import ACPAgent
@@ -376,7 +376,7 @@ class LocalConversation(BaseConversation):
         # This runs on first run()/send_message() call and handles both
         # explicit hooks and plugin hooks in one place
         self._hook_processor = None
-        self._on_event = self._tree_stamping(base_callback)
+        self._on_event = self._tree_stamping(self._rules_injecting(base_callback))
         self._on_token = (
             BaseConversation.compose_callbacks(token_callbacks)
             if token_callbacks
@@ -464,6 +464,84 @@ class LocalConversation(BaseConversation):
             inner(self._state._stamp_parent_id(event))
 
         return cast(ConversationCallbackType, wrapped)
+
+    def _rules_injecting(
+        self, inner: ConversationCallbackType
+    ) -> ConversationCallbackType:
+        """Wrap a callback so path-scoped rules are injected on file-touch.
+
+        Symmetric to the skill injection in :meth:`send_message`: when a tool
+        observation touches a file matching a ``PathTrigger`` skill ("rule"),
+        the rule content is appended to the observation before it is persisted,
+        so it deterministically enters LLM context on the next step. Runs under
+        the conversation state lock (see the run loop), so mutating the dedup
+        set is safe.
+        """
+
+        def wrapped(event: Event) -> None:
+            inner(self._maybe_inject_path_rules(event))
+
+        return cast(ConversationCallbackType, wrapped)
+
+    def _maybe_inject_path_rules(self, event: Event) -> Event:
+        """Return ``event`` with matching path-rule content, or unchanged.
+
+        Only ``ObservationEvent``s carrying a file path are considered. Matching
+        rules already injected in this conversation are skipped via
+        ``state.activated_path_rules``.
+        """
+        if not isinstance(event, ObservationEvent):
+            return event
+        agent_context = getattr(self.agent, "agent_context", None)
+        if agent_context is None:
+            return event
+
+        file_path = self._touched_rule_path(event)
+        if file_path is None:
+            return event
+
+        result = agent_context.get_tool_use_suffix(
+            file_path=file_path,
+            skip_skill_names=self._state.activated_path_rules,
+        )
+        if result is None:
+            return event
+
+        content, activated_rule_names = result
+        self._state.activated_path_rules.extend(activated_rule_names)
+        return event.model_copy(
+            update={"extended_content": list(event.extended_content) + [content]}
+        )
+
+    def _touched_rule_path(self, event: ObservationEvent) -> str | None:
+        """Return the workspace-relative POSIX path a tool observation touched.
+
+        Correlates the observation to its ``ActionEvent`` and reads the action's
+        ``path`` field generically (no dependency on the tools package). Returns
+        None when the action has no file ``path`` or the path is outside the
+        workspace.
+        """
+        try:
+            idx = self._state.events.get_index(event.action_id)
+            action_event = self._state.events[idx]
+        except KeyError:
+            return None
+        if not isinstance(action_event, ActionEvent) or action_event.action is None:
+            return None
+        # Read the field directly rather than model_dump(): avoids copying large
+        # edit payloads (file_text/old_str/new_str) just to read the path.
+        raw_path = getattr(action_event.action, "path", None)
+        if not isinstance(raw_path, str) or not raw_path:
+            return None
+
+        raw = PurePosixPath(raw_path.replace("\\", "/"))
+        if not raw.is_absolute():
+            return str(raw)
+        root = PurePosixPath(str(self.workspace.working_dir).replace("\\", "/"))
+        try:
+            return str(raw.relative_to(root))
+        except ValueError:
+            return None  # touched a file outside the workspace; rules are repo-scoped
 
     def _recover_persisted_client_tools(
         self,
@@ -685,6 +763,9 @@ class LocalConversation(BaseConversation):
             # agent_state can hold arbitrary mutable values, so deep-copy it.
             fork_conv._state.activated_knowledge_skills = list(
                 self._state.activated_knowledge_skills
+            )
+            fork_conv._state.activated_path_rules = list(
+                self._state.activated_path_rules
             )
             fork_conv._state.agent_state = copy.deepcopy(self._state.agent_state)
 
@@ -1016,7 +1097,7 @@ class LocalConversation(BaseConversation):
                 visualizer=self._visualizer,
                 conversation_stats=self._state.stats,
             )
-            self._on_event = self._tree_stamping(raw_on_event)
+            self._on_event = self._tree_stamping(self._rules_injecting(raw_on_event))
             self._hook_processor.set_conversation_state(self._state)
             self._hook_processor.run_session_start()
 
@@ -1089,7 +1170,7 @@ class LocalConversation(BaseConversation):
             visualizer=self._visualizer,
             conversation_stats=self._state.stats,
         )
-        self._on_event = self._tree_stamping(raw_on_event)
+        self._on_event = self._tree_stamping(self._rules_injecting(raw_on_event))
         self._hook_processor.set_conversation_state(self._state)
         self._hook_processor.run_session_start()
 
