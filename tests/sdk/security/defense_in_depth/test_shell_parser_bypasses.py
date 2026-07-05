@@ -209,6 +209,9 @@ _LONG = "--" + "recursive " + "--" + "force"
 _RM = "r" + "m"
 _DEL_SHORT = _RM + " " + _RF + " /"
 _DEL_LONG = _RM + " " + _LONG + " /"
+# Quote-split verb: invisible to the flattened-text regex, so cases built
+# on it exercise the AST path specifically.
+_DEL_QUOTED = "r" + '"m" ' + _RF + " /"
 
 
 class TestPathQualifiedCommand:
@@ -288,3 +291,101 @@ class TestNestedCommandString:
         analyzer = PatternSecurityAnalyzer()
         risk = analyzer.security_risk(make_action(command))
         assert risk == SecurityRisk.HIGH
+
+
+class TestRunnerArgvOptionParsing:
+    """Runner script-flag detection follows POSIX argv option semantics.
+
+    Review finding on the Phase 2b PR: an exact-word scan for the script
+    flag both misses combined short-option groups (``-xc``, ``-cx`` -- the
+    flag counts at any position in the group) and over-descends when the
+    flag word is not actually a runner option: after ``--`` every word is
+    an operand, and after the first operand (a script file) later flag
+    words belong to that script, not to the runner.
+
+    AST resolution: runner argv is parsed with POSIX option semantics --
+    short flags combine, an argument-taking option consumes the next word,
+    ``--`` terminates option parsing, and the first operand ends the
+    option list.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "bash -xc '" + _DEL_QUOTED + "'",
+            "bash -cx '" + _DEL_QUOTED + "'",
+            "bash -o pipefail -c '" + _DEL_QUOTED + "'",
+            "bash " + "\\" + "-c '" + _DEL_QUOTED + "'",
+        ],
+        ids=[
+            "combined_group_flag_last",
+            "combined_group_flag_first",
+            "option_with_argument_before_flag",
+            "escaped_flag_word",
+        ],
+    )
+    def test_script_flag_in_option_group_is_high(self, command: str):
+        # The quoted inner verb keeps the payload invisible to the
+        # flattened-text regex; only correct argv parsing can descend.
+        analyzer = PatternSecurityAnalyzer()
+        risk = analyzer.security_risk(make_action(command))
+        assert risk == SecurityRisk.HIGH
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "bash -- -c '" + _DEL_QUOTED + "'",
+            "bash script.sh -c '" + _DEL_QUOTED + "'",
+        ],
+        ids=["flag_after_end_of_options", "flag_after_script_operand"],
+    )
+    def test_non_option_flag_word_does_not_descend(self, command: str):
+        # ``--`` makes the flag word an operand (a script *file* name);
+        # a first operand makes later flag words the script's argv. In
+        # both shapes the payload never runs as the runner's script, so
+        # descending would be a false HIGH.
+        analyzer = PatternSecurityAnalyzer()
+        risk = analyzer.security_risk(make_action(command))
+        assert risk == SecurityRisk.LOW
+
+
+class TestEscapedVerb:
+    """Backslash-escaped verb characters evade the word-boundary regex.
+
+    Review finding on the Phase 2b PR: ``r\\m`` is ``rm`` after POSIX
+    quote removal (2.2.1 -- outside quotes a backslash makes the next
+    character literal), but the raw word text was compared unnormalized,
+    so the escaped verb resolved to ``r\\m`` and fell through to LOW.
+
+    AST resolution: bare-word and double-quoted fragments are normalized
+    with POSIX escape-removal semantics before basename comparison, the
+    same de-quoting step that already handles ``r"m"`` concatenations.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "r" + "\\" + "m " + _RF + " /",
+            "r" + "\\" + "m " + _LONG + " /",
+            "/bin/r" + "\\" + "m " + _RF + " /",
+        ],
+        ids=[
+            "escaped_verb_short_flags",
+            "escaped_verb_long_flags",
+            "escaped_verb_path_qualified",
+        ],
+    )
+    def test_escaped_verb_is_high(self, command: str):
+        analyzer = PatternSecurityAnalyzer()
+        risk = analyzer.security_risk(make_action(command))
+        assert risk == SecurityRisk.HIGH
+
+    def test_double_quoted_backslash_is_retained(self):
+        # Inside double quotes a backslash only escapes $, `, ", \\ and
+        # newline (POSIX 2.2.3); before other characters it is literal.
+        # ``"r\\m"`` therefore names the verb ``r\\m``, not the destructive
+        # one -- normalization must not over-strip and fabricate a match.
+        analyzer = PatternSecurityAnalyzer()
+        command = '"r' + "\\" + 'm" ' + _RF + " /"
+        risk = analyzer.security_risk(make_action(command))
+        assert risk == SecurityRisk.LOW

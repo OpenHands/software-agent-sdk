@@ -6,18 +6,29 @@ and nested command names become visible to the recursive force-delete
 detector. Only that family is scanned here; injection and Python-code
 patterns stay as regex in ``pattern.py`` because they are not shell syntax.
 
-When the destructive flag shape appears on a command whose verb cannot be
-resolved (an opaque or dynamic name, which the parser often also marks with
-an ERROR node), the scanner reports ``uncertain`` so the analyzer can emit
-``UNKNOWN`` rather than a false ``LOW`` -- the ensemble convention agreed in
-#2721 (UNKNOWN fails safe under ``ConfirmRisky``). Benign text that merely
-fails to parse as shell is not treated as uncertain. Detector IDs are owned
-by ``pattern.py`` and passed in unchanged.
+The scanner reports ``uncertain`` -- so the analyzer can emit ``UNKNOWN``
+rather than a false ``LOW``, the ensemble convention agreed in #2721
+(UNKNOWN fails safe under ``ConfirmRisky``) -- whenever it cannot vouch for
+what it saw:
+
+- the destructive flag shape appears on a command whose verb cannot be
+  resolved (an opaque or dynamic name);
+- an ERROR/MISSING parse node intersects a span the detection relies on (a
+  command carrying the destructive flag shape, or a shell runner's argv);
+- the nested-runner depth bound is hit with a script operand still
+  unscanned.
+
+Benign text that merely fails to parse as shell is not treated as
+uncertain: parse errors outside the spans above stay LOW, because arbitrary
+non-shell text routinely fails to parse and surfacing every such error
+would flood the ensemble with UNKNOWNs. Detector IDs are owned by
+``pattern.py`` and passed in unchanged.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Final
 
 from tree_sitter import Node
 
@@ -32,25 +43,45 @@ from openhands.sdk.security._shell_ast import (
 # Command basenames whose script operand is a nested shell program.
 # Resolving and re-parsing that operand closes the nested-runner bypass
 # class without hardcoding payloads.
-_SHELL_RUNNERS = frozenset({"sh", "bash", "dash", "zsh", "ksh", "ash"})
+_SHELL_RUNNERS: Final[frozenset[str]] = frozenset(
+    {"sh", "bash", "dash", "zsh", "ksh", "ash"}
+)
 
 # Basename of the recursive force-delete command resolved structurally.
-_RM_BASENAME = "rm"
+_RM_BASENAME: Final[str] = "rm"
 
-# The runner script-operand flag.
-_SCRIPT_FLAG = "-" + "c"
+# The short-option character that makes a runner's first operand a script.
+_SCRIPT_FLAG_CHAR: Final[str] = "c"
 
-# End-of-options marker that terminates flag parsing (POSIX).
-_END_OF_OPTIONS = "--"
+# End-of-options marker that terminates option parsing (POSIX).
+_END_OF_OPTIONS: Final[str] = "--"
+
+# A lone dash: the historical end-of-options synonym POSIX sh still accepts.
+_BARE_DASH: Final[str] = "-"
+
+# Leading characters that mark a runner argv word as an option group. POSIX
+# sh accepts both ``-x``-style and ``+x``-style groups.
+_OPTION_PREFIXES: Final[frozenset[str]] = frozenset({"-", "+"})
+
+# Runner short options that consume the next word as their argument (set -o /
+# shopt -O names). Without this, ``bash -o errexit -c ...`` would misread the
+# option argument as the first operand and stop looking for the script flag.
+_SHORT_OPTS_WITH_ARG: Final[frozenset[str]] = frozenset({"o", "O"})
+
+# Runner long options that consume the next word as their argument. Exotic
+# long options beyond these are out of scope: an unrecognized long option is
+# treated as argumentless, which at worst misreads its argument as the first
+# operand and stops descending -- it never over-descends.
+_LONG_OPTS_WITH_ARG: Final[frozenset[str]] = frozenset({"--rcfile", "--init-file"})
 
 # Long-flag names mapped onto their short-flag characters below.
-_LONG_RECURSIVE = "recursive"
-_LONG_FORCE = "force"
+_LONG_RECURSIVE: Final[str] = "recursive"
+_LONG_FORCE: Final[str] = "force"
 
 # Node types that make a command name dynamic (value known only at runtime).
 # Any such child makes the name unresolvable at analysis time, so resolution
 # fails and the caller falls back.
-_DYNAMIC_NAME_NODE_TYPES = frozenset(
+_DYNAMIC_NAME_NODE_TYPES: Final[frozenset[str]] = frozenset(
     {
         "command_substitution",
         "process_substitution",
@@ -62,8 +93,13 @@ _DYNAMIC_NAME_NODE_TYPES = frozenset(
 )
 
 # How deep nested script operands are followed. Bounds work on adversarial
-# deeply-nested runner arguments.
-_MAX_NESTING_DEPTH = 8
+# deeply-nested runner arguments; hitting the bound with an operand still
+# unscanned is surfaced as uncertain, never a silent LOW.
+_MAX_NESTING_DEPTH: Final[int] = 8
+
+# Characters a backslash escapes inside double quotes (POSIX 2.2.3). Before
+# any other character the backslash is literal and must be retained.
+_DOUBLE_QUOTE_ESCAPABLE: Final[frozenset[str]] = frozenset('$`"\\')
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,9 +107,10 @@ class ShellScanResult:
     """Outcome of an AST-backed shell scan.
 
     ``detector_id`` is the matched pattern stable ID when ``matched`` is
-    True, else None. ``uncertain`` is True when the destructive flag shape
-    was found on a command whose verb could not be resolved, signalling the
-    caller to emit ``UNKNOWN`` instead of ``LOW``.
+    True, else None. ``uncertain`` is True when the scan saw something it
+    could not vouch for (destructive flag shape on an unresolvable verb, a
+    parse error on a relied-on span, or the nesting depth bound hit),
+    signalling the caller to emit ``UNKNOWN`` instead of ``LOW``.
     """
 
     matched: bool
@@ -88,12 +125,14 @@ def scan_shell_command(command: str, rm_detector_id: str) -> ShellScanResult:
     descends into shell-runner script operands, and reports a match for the
     recursive force-delete family.
 
-    Uncertainty is reported narrowly: only when a command carries the
-    recursive-and-force flag shape but its verb is unresolvable (opaque or
-    dynamic name) -- the analyzer can see the dangerous shape but cannot
-    confirm the verb, so the caller emits UNKNOWN rather than a false LOW.
-    A benign string that merely fails to parse as shell is not treated as
-    uncertain; it stays LOW.
+    Uncertainty is reported narrowly, only when the scan cannot vouch for
+    what it saw: a command carries the recursive-and-force flag shape but
+    its verb cannot be trusted (opaque or dynamic name, or an ERROR/MISSING
+    parse node intersecting the command), a shell runner's argv is touched
+    by a parse error, or the nesting depth bound was hit with a script
+    operand still unscanned. In each case the caller emits UNKNOWN rather
+    than a false LOW. A benign string that merely fails to parse as shell
+    is not treated as uncertain; it stays LOW.
     """
     program = _safe_parse(command)
     if program is None:
@@ -127,9 +166,12 @@ def _program_signal(program: ShellProgram, depth: int) -> tuple[bool, bool]:
         if _has_recursive_force_flags(command):
             if resolved == _RM_BASENAME:
                 return True, False
-            if resolved is None:
-                # Dangerous flag shape on an unresolvable verb: we cannot
-                # vouch for it. Keep scanning for a concrete match first.
+            if resolved is None or command.has_error:
+                # Dangerous flag shape on a verb we cannot vouch for:
+                # either the name is unresolvable, or an ERROR/MISSING
+                # parse node intersects this command, so the resolved verb
+                # may not be the verb the shell would run. Keep scanning
+                # for a concrete match first.
                 uncertain = True
         nested_matched, nested_uncertain = _nested_signal(command, resolved, depth)
         if nested_matched:
@@ -174,20 +216,45 @@ def _nested_signal(
     Closes the nested-runner bypass class, including quoted verbs inside the
     script that no outer pattern can see. Returns ``(matched, uncertain)``.
 
-    A dynamic (unresolvable) script operand is deliberately NOT treated as
-    uncertain: passing a shell variable as the script is ordinary benign
-    usage, and flagging it would flood the caller with UNKNOWNs. Uncertainty
-    is reserved for the direct destructive-flags-on-unresolvable-verb shape
-    in ``_program_signal``.
+    Fail-safe ordering: the operand scan runs first so a concrete match
+    always wins; only when no match is found does a parse error on the
+    runner's own node force uncertainty -- an ERROR/MISSING there (e.g. an
+    unclosed quote truncating the script operand) means the argv spans the
+    scan just read cannot be trusted, so a silent LOW would vouch for
+    something never actually seen.
     """
-    if depth >= _MAX_NESTING_DEPTH:
-        return False, False
     if resolved_name not in _SHELL_RUNNERS:
         return False, False
 
+    matched, uncertain = _scan_script_operand(command, depth)
+    if matched:
+        return True, False
+    if command.has_error:
+        return False, True
+    return False, uncertain
+
+
+def _scan_script_operand(command: ShellCommand, depth: int) -> tuple[bool, bool]:
+    """Extract, bound-check, and recursively scan a runner script operand.
+
+    Returns ``(matched, uncertain)``.
+
+    A dynamic (unresolvable) script operand is deliberately NOT treated as
+    uncertain: passing a shell variable as the script is ordinary benign
+    usage, and flagging it would flood the caller with UNKNOWNs. Uncertainty
+    is reserved for the direct destructive-flags-on-unvouchable-verb shape
+    in ``_program_signal`` and the depth bound below.
+    """
     has_flag, inner = _extract_script_operand(command)
     if not has_flag or inner is None:
         return False, False
+
+    if depth >= _MAX_NESTING_DEPTH:
+        # Depth bound hit with a real script operand still unscanned: we
+        # refused to look, so we cannot vouch. Surface uncertainty (the
+        # analyzer emits UNKNOWN) rather than a silent LOW that would hand
+        # attackers a constructive bypass one nesting level past the bound.
+        return False, True
 
     inner_program = _safe_parse(inner)
     if inner_program is None:
@@ -198,21 +265,83 @@ def _nested_signal(
 def _extract_script_operand(
     command: ShellCommand,
 ) -> tuple[bool, str | None]:
-    """Locate the script flag operand and resolve it to literal text.
+    """Locate the runner script operand using POSIX argv option semantics.
+
+    Short options combine, so the script flag counts at any position in a
+    group (``-xc``, ``-cx``); an argument-taking option consumes the next
+    word; ``--`` (or the historical lone ``-``) terminates option parsing;
+    and the first operand ends the option list. With the script flag set,
+    that first operand IS the script. Without it, the first operand is a
+    script *file*, and any flag word after it -- or after ``--`` -- belongs
+    to that script rather than to the runner, so it must not trigger a
+    descent.
 
     Returns ``(has_flag, operand)``. ``has_flag`` is True when the script
-    flag is present. ``operand`` is the de-quoted literal text of the word
-    after the flag, or None when the flag has no operand or the operand is
-    dynamic (unresolvable at analysis time).
+    flag is present in the option list. ``operand`` is the de-quoted,
+    escape-normalized literal text of the script operand, or None when the
+    flag has no operand or the operand is dynamic (unresolvable at analysis
+    time).
     """
+    has_script_flag = False
+    options_ended = False
     words = command.words
-    for index, word in enumerate(words):
-        if word.opaque or word.text != _SCRIPT_FLAG:
-            continue
-        if index + 1 >= len(words):
-            return True, None
-        return True, _resolve_word_literal(words[index + 1])
-    return False, None
+    index = 0
+    while index < len(words):
+        literal = _resolve_word_literal(words[index])
+        if literal is None:
+            # A dynamic argv word cannot be classified as option or operand
+            # at analysis time. Treat it as the first operand: a dynamic
+            # script operand is deliberately not uncertain (see
+            # _scan_script_operand), and assuming an option here could
+            # over-descend into text the runner would never execute.
+            return has_script_flag, None
+        if not options_ended:
+            if literal == _END_OF_OPTIONS or literal == _BARE_DASH:
+                options_ended = True
+                index += 1
+                continue
+            if _is_option_word(literal):
+                if _sets_script_flag(literal):
+                    has_script_flag = True
+                index += 2 if _consumes_next_word(literal) else 1
+                continue
+        # First operand reached.
+        if has_script_flag:
+            return True, literal
+        return False, None
+    return has_script_flag, None
+
+
+def _is_option_word(literal: str) -> bool:
+    """Return whether a resolved argv word is an option group."""
+    return len(literal) > 1 and literal[0] in _OPTION_PREFIXES
+
+
+def _sets_script_flag(literal: str) -> bool:
+    """Return whether a short-option group contains the script flag.
+
+    Only ``-`` groups can set it: ``--long`` words are not short groups,
+    and ``+`` groups unset options rather than set them.
+    """
+    return (
+        literal.startswith(_BARE_DASH)
+        and not literal.startswith(_END_OF_OPTIONS)
+        and _SCRIPT_FLAG_CHAR in literal[1:]
+    )
+
+
+def _consumes_next_word(literal: str) -> bool:
+    """Return whether an option word takes the next word as its argument.
+
+    For short groups the argument-taking option must be the last character
+    (``-o errexit``); anywhere else the group is malformed and the runner
+    would reject it, so nothing is consumed.
+    """
+    if literal in _LONG_OPTS_WITH_ARG:
+        return True
+    if literal.startswith(_END_OF_OPTIONS):
+        return False
+    return literal[-1] in _SHORT_OPTS_WITH_ARG
 
 
 def _resolve_command_basename(command: ShellCommand) -> str | None:
@@ -253,7 +382,11 @@ def _resolve_node_literal(node: Node) -> str | None:
 def _collect_literal_parts(node: Node, parts: list[str]) -> bool:
     """Append literal fragments from ``node``; return False if dynamic.
 
-    Returns True when the whole subtree is statically resolvable.
+    Returns True when the whole subtree is statically resolvable. Fragments
+    are escape-normalized to the effective literal the shell would produce
+    after quote removal: tree-sitter keeps backslash escapes inline in
+    ``word`` and ``string_content`` text, so comparing raw text would let
+    ``r\\m`` (which the shell runs as ``rm``) slip past the basename check.
     """
     node_type = node.type
 
@@ -261,17 +394,18 @@ def _collect_literal_parts(node: Node, parts: list[str]) -> bool:
         return False
 
     if node_type == "word":
-        parts.append(_decode(node.text))
+        parts.append(_unescape_unquoted(_decode(node.text)))
         return True
 
     if node_type == "raw_string":
-        # Single-quoted operand: strip the quotes; contents are literal.
+        # Single-quoted operand: strip the quotes; contents are literal
+        # and backslash has no special meaning inside single quotes.
         text = _decode(node.text)
         parts.append(text[1:-1] if len(text) >= 2 else "")
         return True
 
     if node_type == "string_content":
-        parts.append(_decode(node.text))
+        parts.append(_unescape_double_quoted(_decode(node.text)))
         return True
 
     if node_type == "string":
@@ -291,6 +425,52 @@ def _collect_literal_parts(node: Node, parts: list[str]) -> bool:
     # Unknown / unhandled node type in a name position: treat as dynamic so
     # we never fabricate a resolved name we are not sure about.
     return False
+
+
+def _unescape_unquoted(text: str) -> str:
+    """Strip backslash escapes from an unquoted word (POSIX 2.2.1).
+
+    Outside quotes a backslash makes the next character literal, so the
+    effective value drops the backslash (``r\\m`` -> ``rm``); a
+    backslash-newline pair is a line continuation and disappears entirely.
+    """
+    return _strip_backslash_escapes(text, escapable=None)
+
+
+def _unescape_double_quoted(text: str) -> str:
+    """Strip the escapes double quotes honour (POSIX 2.2.3).
+
+    Inside double quotes a backslash only escapes ``$``, `````, ``"``,
+    ``\\`` and newline; before any other character the backslash itself is
+    literal and must be retained (``"r\\m"`` stays ``r\\m``).
+    """
+    return _strip_backslash_escapes(text, escapable=_DOUBLE_QUOTE_ESCAPABLE)
+
+
+def _strip_backslash_escapes(text: str, escapable: frozenset[str] | None) -> str:
+    """Return ``text`` with backslash escapes reduced to their literals.
+
+    ``escapable`` is the set of characters whose escapes are honoured, or
+    None to honour every character. Backslash-newline is always a line
+    continuation and yields nothing. A trailing lone backslash is kept.
+    """
+    parts: list[str] = []
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char == "\\" and index + 1 < length:
+            follower = text[index + 1]
+            if follower == "\n":
+                index += 2
+                continue
+            if escapable is None or follower in escapable:
+                parts.append(follower)
+                index += 2
+                continue
+        parts.append(char)
+        index += 1
+    return "".join(parts)
 
 
 def _posix_basename(path: str) -> str:
