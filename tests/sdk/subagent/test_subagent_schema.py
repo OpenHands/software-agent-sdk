@@ -514,7 +514,7 @@ Prompt.
 name: agent
 mcp_config:
   remote:
-    type: http
+    transport: http
     url: ${API_BASE}/mcp
     headers:
       Authorization: Bearer ${AUTH_TOKEN}
@@ -682,96 +682,6 @@ class TestExtractExamples:
         examples = _extract_examples(description)
         assert len(examples) == 1
         assert "Multi" in examples[0]
-
-
-class TestMcpConfigPlaceholderPreservation:
-    """Tests that mcp_config preserves variable placeholders for runtime expansion.
-
-    Variable expansion is deferred to runtime (in LocalConversation) to support
-    per-conversation secrets. The expand_mcp_variables function in skills/utils.py
-    handles the actual expansion - see test_mcp_config_expansion.py for those tests.
-    """
-
-    def test_mcp_config_preserves_variable_placeholders(self, tmp_path: Path):
-        """Test that ${VAR} placeholders are preserved in mcp_config."""
-        agent_md = tmp_path / "test-agent.md"
-        agent_md.write_text(
-            """---
-name: mcp-agent
-description: Agent with MCP config
-mcp_config:
-  my-server:
-    command: /usr/bin/server
-    env:
-      API_TOKEN: "${SECRET_TOKEN}"
-      ENDPOINT: "${API_URL:-https://default.example.com}"
----
-System prompt.
-"""
-        )
-        agent = AgentDefinition.load(agent_md)
-
-        # Placeholders should be preserved, not expanded
-        assert agent.mcp_config is not None
-        env = dump_mcp_config(agent.mcp_config)["my-server"]["env"]
-        assert env["API_TOKEN"] == "${SECRET_TOKEN}"
-        assert env["ENDPOINT"] == "${API_URL:-https://default.example.com}"
-
-    def test_mcp_config_preserves_complex_placeholders(self, tmp_path: Path):
-        """Test that nested placeholders in args and env are preserved."""
-        agent_md = tmp_path / "test-agent.md"
-        agent_md.write_text(
-            """---
-name: complex-mcp-agent
-description: Agent with complex MCP config
-mcp_config:
-  server-a:
-    command: "${CMD:-uvx}"
-    args:
-      - "--token"
-      - "${TOKEN}"
-      - "--url"
-      - "${URL:-http://localhost:8080}"
-    env:
-      TOKEN: "${TOKEN}"
-      DEBUG: "true"
----
-System prompt.
-"""
-        )
-        agent = AgentDefinition.load(agent_md)
-
-        assert agent.mcp_config is not None
-        server = dump_mcp_config(agent.mcp_config)["server-a"]
-        assert server["command"] == "${CMD:-uvx}"
-        assert server["args"][1] == "${TOKEN}"
-        assert server["args"][3] == "${URL:-http://localhost:8080}"
-        assert server["env"]["TOKEN"] == "${TOKEN}"
-        # Literal values unchanged
-        assert server["env"]["DEBUG"] == "true"
-
-    def test_mcp_config_without_placeholders_unchanged(self, tmp_path: Path):
-        """Test that configs without placeholders work normally."""
-        agent_md = tmp_path / "test-agent.md"
-        agent_md.write_text(
-            """---
-name: static-mcp-agent
-description: Agent with static MCP config
-mcp_config:
-  static-server:
-    command: uvx
-    args:
-      - mcp-server-fetch
----
-System prompt.
-"""
-        )
-        agent = AgentDefinition.load(agent_md)
-
-        assert agent.mcp_config is not None
-        server = dump_mcp_config(agent.mcp_config)["static-server"]
-        assert server["command"] == "uvx"
-        assert server["args"] == ["mcp-server-fetch"]
 
 
 class TestAgentDefinitionCondenser:

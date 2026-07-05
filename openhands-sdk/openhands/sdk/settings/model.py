@@ -1877,7 +1877,7 @@ _AGENT_SETTINGS_ADAPTER: TypeAdapter[
 def validate_agent_settings(
     data: Any,
     *,
-    context: Mapping[str, object] | None = None,
+    context: Mapping[str, Any] | None = None,
 ) -> OpenHandsAgentSettings | LLMAgentSettings | ACPAgentSettings:
     """Load and validate an agent-settings payload.
 
@@ -1925,7 +1925,7 @@ def apply_agent_settings_diff(
     base: Any,
     diff: Mapping[str, Any] | None,
     *,
-    context: Mapping[str, object] | None = None,
+    context: Mapping[str, Any] | None = None,
 ) -> OpenHandsAgentSettings | ACPAgentSettings:
     """Apply a sparse agent-settings diff to a base, narrowing on ``agent_kind``.
 

@@ -149,7 +149,7 @@ class TestPluginAddSkillsTo:
         assert new_context.system_message_suffix == context.system_message_suffix
 
 
-class TestPluginAddMcpServersTo:
+class TestPluginAddMcpConfigTo:
     """Tests for Plugin.add_mcp_config_to() method."""
 
     def test_add_mcp_config_to_empty_plugin(self, empty_plugin):
@@ -225,7 +225,7 @@ class TestPluginAddMcpServersTo:
         assert plugin_mcp == original_plugin
 
     def test_add_mcp_config_to_merges_mcp_config(self):
-        """Test add_mcp_config_to merges mcpServers by server name."""
+        """Test add_mcp_config_to merges native server maps by server name."""
         base_mcp = mcp_config({"server1": MCPServer(command="base")})
         plugin_mcp = mcp_config({"server2": MCPServer(command="plugin")})
 
@@ -241,7 +241,7 @@ class TestPluginAddMcpServersTo:
         assert "server2" in new_mcp
 
     def test_add_mcp_config_to_mcp_config_plugin_overrides(self):
-        """Test plugin mcpServers override base mcpServers for same server name."""
+        """Test plugin MCP config overrides base config for the same server name."""
         base_mcp = mcp_config({"server1": MCPServer(command="base")})
         plugin_mcp = mcp_config({"server1": MCPServer(command="plugin")})
 
