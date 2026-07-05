@@ -1,6 +1,7 @@
 # state.py
 import operator
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, nullcontext
 from typing import SupportsIndex, overload
 
 from openhands.sdk.conversation.events_list_base import EventsListBase
@@ -10,14 +11,20 @@ from openhands.sdk.conversation.persistence_const import (
     EVENTS_DIR,
 )
 from openhands.sdk.event import Event, EventID
+from openhands.sdk.event.types import ROOT_PARENT_ID
 from openhands.sdk.io import FileStore
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.path import posix_path_name
 
 
 logger = get_logger(__name__)
 
 LOCK_FILE_NAME = ".eventlog.lock"
 LOCK_TIMEOUT_SECONDS = 30
+
+# ROOT_PARENT_ID now lives in event.types (single source of truth); it is used
+# below in _effective_parent_id and re-exported here so existing
+# ``from event_store import ROOT_PARENT_ID`` importers keep working.
 
 
 class EventLog(EventsListBase):
@@ -37,14 +44,23 @@ class EventLog(EventsListBase):
     _dir: str
     _length: int
     _lock_path: str
+    _write_guard: Callable[[], AbstractContextManager[None]] | None
 
     def __init__(self, fs: FileStore, dir_path: str = EVENTS_DIR) -> None:
         self._fs = fs
         self._dir = dir_path
         self._id_to_idx: dict[EventID, int] = {}
         self._idx_to_id: dict[int, EventID] = {}
+        self._event_cache: dict[int, Event] = {}
         self._lock_path = f"{dir_path}/{LOCK_FILE_NAME}"
+        self._write_guard = None
         self._length = self._scan_and_build_index()
+
+    def set_write_guard(
+        self,
+        write_guard: Callable[[], AbstractContextManager[None]] | None,
+    ) -> None:
+        self._write_guard = write_guard
 
     def get_index(self, event_id: EventID) -> int:
         """Return the integer index for a given event_id."""
@@ -60,6 +76,54 @@ class EventLog(EventsListBase):
         if idx < 0 or idx >= self._length:
             raise IndexError("Event index out of range")
         return self._idx_to_id[idx]
+
+    def __contains__(self, item: object) -> bool:
+        """Whether the log contains a given event id or ``Event`` (by id).
+
+        Checking by id (not the ``Sequence`` default of value-equality) keeps
+        ``event in events`` true after the event is stamped with a ``parent_id``
+        on append, and avoids hashing unhashable event payloads.
+        """
+        if isinstance(item, Event):
+            return item.id in self._id_to_idx
+        return item in self._id_to_idx
+
+    def _effective_parent_id(self, idx: int, event: Event) -> EventID | None:
+        """Resolve the parent of ``event`` (at ``idx``) for tree traversal.
+
+        Legacy events predating the tree have no ``parent_id``; they fall back to
+        the linear chain (event ``idx - 1``) so old conversations load unbranched
+        with no disk rewrite.
+        """
+        if event.parent_id == ROOT_PARENT_ID:
+            return None  # explicit root (feature-created root at idx > 0)
+        if event.parent_id is not None:
+            return event.parent_id  # explicit (new events)
+        if idx == 0:
+            return None  # genuine root
+        return self.get_id(idx - 1)  # legacy linear chain (back-compat)
+
+    def path_to_root(
+        self, leaf_id: EventID | None, limit: int | None = None
+    ) -> list[Event]:
+        """The active branch ``leaf -> ... -> root``, returned root-first.
+
+        ``leaf_id=None`` yields ``[]``. ``limit`` keeps only the last ``limit``
+        events (walking back from the leaf), so callers wanting a recent window
+        stay O(limit) instead of O(branch). Raises ValueError on a cycle, KeyError
+        if ``leaf_id`` or an ancestor is missing.
+        """
+        chain: list[Event] = []
+        seen: set[EventID] = set()
+        cur_id: EventID | None = leaf_id
+        while cur_id is not None and (limit is None or len(chain) < limit):
+            if cur_id in seen:
+                raise ValueError(f"Cycle in event tree at {cur_id}")
+            seen.add(cur_id)
+            idx = self.get_index(cur_id)
+            chain.append(evt := self[idx])
+            cur_id = self._effective_parent_id(idx, evt)
+        return chain[::-1]
 
     @overload
     def __getitem__(self, idx: int) -> Event: ...
@@ -79,6 +143,10 @@ class EventLog(EventsListBase):
             i += self._length
         if i < 0 or i >= self._length:
             raise IndexError("Event index out of range")
+
+        if (cached := self._event_cache.get(i)) is not None:
+            return cached
+
         try:
             path = self._path(i)
         except KeyError:
@@ -92,10 +160,16 @@ class EventLog(EventsListBase):
         txt = self._fs.read(path)
         if not txt:
             raise FileNotFoundError(f"Missing event file: {path}")
-        return Event.model_validate_json(txt)
+        evt = Event.model_validate_json(txt)
+        self._event_cache[i] = evt
+        return evt
 
     def __iter__(self) -> Iterator[Event]:
         for i in range(self._length):
+            cached = self._event_cache.get(i)
+            if cached is not None:
+                yield cached
+                continue
             txt = self._fs.read(self._path(i))
             if not txt:
                 continue
@@ -104,6 +178,7 @@ class EventLog(EventsListBase):
             if i not in self._idx_to_id:
                 self._idx_to_id[i] = evt_id
                 self._id_to_idx.setdefault(evt_id, i)
+            self._event_cache[i] = evt
             yield evt
 
     def append(self, event: Event) -> None:
@@ -129,10 +204,16 @@ class EventLog(EventsListBase):
                         f"{existing_idx}"
                     )
 
-                target_path = self._path(self._length, event_id=evt_id)
-                self._fs.write(target_path, event.model_dump_json(exclude_none=True))
+                payload = event.model_dump_json(exclude_none=True)
+                write_guard = (
+                    nullcontext() if self._write_guard is None else self._write_guard()
+                )
+                with write_guard:
+                    target_path = self._path(self._length, event_id=evt_id)
+                    self._fs.write(target_path, payload)
                 self._idx_to_id[self._length] = evt_id
                 self._id_to_idx[evt_id] = self._length
+                self._event_cache[self._length] = event
                 self._length += 1
         except TimeoutError:
             logger.error(
@@ -154,7 +235,7 @@ class EventLog(EventsListBase):
         return sum(
             1
             for p in paths
-            if p.rsplit("/", 1)[-1].startswith("event-") and p.endswith(".json")
+            if posix_path_name(p).startswith("event-") and p.endswith(".json")
         )
 
     def _sync_from_disk(self, disk_length: int) -> None:
@@ -194,11 +275,12 @@ class EventLog(EventsListBase):
         except Exception:
             self._id_to_idx.clear()
             self._idx_to_id.clear()
+            self._event_cache.clear()
             return 0
 
         by_idx: dict[int, EventID] = {}
         for p in paths:
-            name = p.rsplit("/", 1)[-1]
+            name = posix_path_name(p)
             m = EVENT_NAME_RE.match(name)
             if m:
                 idx = int(m.group("idx"))
@@ -210,6 +292,7 @@ class EventLog(EventsListBase):
         if not by_idx:
             self._id_to_idx.clear()
             self._idx_to_id.clear()
+            self._event_cache.clear()
             return 0
 
         n = 0
@@ -225,6 +308,7 @@ class EventLog(EventsListBase):
 
         self._id_to_idx.clear()
         self._idx_to_id.clear()
+        self._event_cache.clear()
         for i in range(n):
             evt_id = by_idx[i]
             self._idx_to_id[i] = evt_id

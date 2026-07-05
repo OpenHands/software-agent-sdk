@@ -7,6 +7,7 @@ from filelock import FileLock, Timeout
 
 from openhands.sdk.io.cache import MemoryLRUCache
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.path import to_posix_path
 
 from .base import FileStore
 
@@ -47,7 +48,7 @@ class LocalFileStore(FileStore):
         if path.startswith("/"):
             path = path[1:]
         # normalize path separators to handle both Unix (/) and Windows (\) styles
-        normalized_path = path.replace("\\", "/")
+        normalized_path = to_posix_path(path)
         full = os.path.abspath(
             os.path.normpath(os.path.join(self.root, normalized_path))
         )

@@ -1,10 +1,13 @@
 """Tests for WebSocketCallbackClient."""
 
+import asyncio
 import time
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
+import websockets
+import websockets.frames
 
 from openhands.sdk.conversation.impl.remote_conversation import WebSocketCallbackClient
 from openhands.sdk.event.llm_convertible import MessageEvent
@@ -124,3 +127,43 @@ def test_websocket_client_callback_invocation(mock_event):
 
     assert len(callback_events) == 1
     assert callback_events[0].id == mock_event.id
+
+
+def test_websocket_client_url_encodes_api_key():
+    """Test that API key special characters are URL-encoded in the WebSocket URL."""
+    captured_urls = []
+
+    class _MockAsyncContextManager:
+        def __init__(self, url):
+            self.url = url
+
+        async def __aenter__(self):
+            captured_urls.append(self.url)
+            raise websockets.exceptions.ConnectionClosed(
+                rcvd=websockets.frames.Close(1000, "test"),
+                sent=websockets.frames.Close(1000, "test"),
+                rcvd_then_sent=False,
+            )
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _MockConnect:
+        def __call__(self, url, *args, **kwargs):
+            return _MockAsyncContextManager(url)
+
+    client = WebSocketCallbackClient(
+        host="http://localhost:8000",
+        conversation_id="test-conv-id",
+        callback=lambda event: None,
+        api_key="1+FYh/SRE=ds 8Q",
+    )
+
+    with patch(
+        "openhands.sdk.conversation.impl.remote_conversation.websockets.connect",
+        _MockConnect(),
+    ):
+        asyncio.run(client._client_loop())
+
+    assert len(captured_urls) == 1
+    assert "session_api_key=1%2BFYh%2FSRE%3Dds%208Q" in captured_urls[0]

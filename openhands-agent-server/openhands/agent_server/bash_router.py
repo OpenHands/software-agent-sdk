@@ -7,12 +7,14 @@ from uuid import UUID
 
 from fastapi import (
     APIRouter,
+    Depends,
     HTTPException,
     Query,
     status,
 )
 
-from openhands.agent_server.bash_service import get_default_bash_event_service
+from openhands.agent_server.bash_service import BashEventService
+from openhands.agent_server.dependencies import get_bash_event_service
 from openhands.agent_server.models import (
     BashCommand,
     BashEventBase,
@@ -25,7 +27,6 @@ from openhands.agent_server.server_details_router import update_last_execution_t
 
 
 bash_router = APIRouter(prefix="/bash", tags=["Bash"])
-bash_event_service = get_default_bash_event_service()
 logger = logging.getLogger(__name__)
 
 
@@ -53,6 +54,7 @@ async def search_bash_events(
         int,
         Query(title="The max number of results in the page", gt=0, lte=100),
     ] = 100,
+    bash_event_service: BashEventService = Depends(get_bash_event_service),
 ) -> BashEventPage:
     """Search / List bash event events"""
     assert limit > 0
@@ -73,7 +75,10 @@ async def search_bash_events(
 @bash_router.get(
     "/bash_events/{event_id}", responses={404: {"description": "Item not found"}}
 )
-async def get_bash_event(event_id: str) -> BashEventBase:
+async def get_bash_event(
+    event_id: str,
+    bash_event_service: BashEventService = Depends(get_bash_event_service),
+) -> BashEventBase:
     """Get a bash event event given an id"""
     event = await bash_event_service.get_bash_event(event_id)
     if event is None:
@@ -84,6 +89,7 @@ async def get_bash_event(event_id: str) -> BashEventBase:
 @bash_router.get("/bash_events/")
 async def batch_get_bash_events(
     event_ids: list[str],
+    bash_event_service: BashEventService = Depends(get_bash_event_service),
 ) -> list[BashEventBase | None]:
     """Get a batch of bash event events given their ids, returning null for any
     missing item."""
@@ -92,7 +98,10 @@ async def batch_get_bash_events(
 
 
 @bash_router.post("/start_bash_command")
-async def start_bash_command(request: ExecuteBashRequest) -> BashCommand:
+async def start_bash_command(
+    request: ExecuteBashRequest,
+    bash_event_service: BashEventService = Depends(get_bash_event_service),
+) -> BashCommand:
     """Execute a bash command in the background"""
     update_last_execution_time()
     command, _ = await bash_event_service.start_bash_command(request)
@@ -100,7 +109,10 @@ async def start_bash_command(request: ExecuteBashRequest) -> BashCommand:
 
 
 @bash_router.post("/execute_bash_command")
-async def execute_bash_command(request: ExecuteBashRequest) -> BashOutput:
+async def execute_bash_command(
+    request: ExecuteBashRequest,
+    bash_event_service: BashEventService = Depends(get_bash_event_service),
+) -> BashOutput:
     """Execute a bash command and wait for a result"""
     update_last_execution_time()
     command, task = await bash_event_service.start_bash_command(request)
@@ -111,7 +123,9 @@ async def execute_bash_command(request: ExecuteBashRequest) -> BashOutput:
 
 
 @bash_router.delete("/bash_events")
-async def clear_all_bash_events() -> dict[str, int]:
+async def clear_all_bash_events(
+    bash_event_service: BashEventService = Depends(get_bash_event_service),
+) -> dict[str, int]:
     """Clear all bash events from storage"""
     count = await bash_event_service.clear_all_events()
     return {"cleared_count": count}

@@ -60,7 +60,7 @@ def test_batch_atomicity_when_observation_forgotten() -> None:
         obs1,
         obs2,
         Condensation(
-            forgotten_event_ids=[obs1.id],
+            forgotten_event_ids={obs1.id},
             llm_response_id="condensation_response_1",
         ),
     ]
@@ -112,7 +112,7 @@ def test_batch_atomicity_when_multiple_observations_forgotten() -> None:
         obs2,
         obs3,
         Condensation(
-            forgotten_event_ids=[obs1.id, obs2.id],
+            forgotten_event_ids={obs1.id, obs2.id},
             llm_response_id="condensation_response_1",
         ),
     ]
@@ -162,7 +162,7 @@ def test_batch_atomicity_different_batches_independent() -> None:
         obs2_1,
         obs2_2,
         Condensation(
-            forgotten_event_ids=[obs1_1.id],
+            forgotten_event_ids={obs1_1.id},
             llm_response_id="condensation_response_1",
         ),
     ]
@@ -194,7 +194,7 @@ def test_single_action_batch_observation_forgotten() -> None:
         action,
         obs,
         Condensation(
-            forgotten_event_ids=[obs.id],
+            forgotten_event_ids={obs.id},
             llm_response_id="condensation_response_1",
         ),
     ]

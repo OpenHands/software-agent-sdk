@@ -1,6 +1,8 @@
 # state.py
 import json
-from collections.abc import Sequence
+import threading
+from collections.abc import Callable, Sequence
+from contextlib import AbstractContextManager
 from enum import Enum
 from pathlib import Path
 from typing import Any, Self
@@ -8,8 +10,9 @@ from typing import Any, Self
 from pydantic import Field, PrivateAttr
 
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.context.view import View
 from openhands.sdk.conversation.conversation_stats import ConversationStats
-from openhands.sdk.conversation.event_store import EventLog
+from openhands.sdk.conversation.event_store import ROOT_PARENT_ID, EventLog
 from openhands.sdk.conversation.fifo_lock import FIFOLock
 from openhands.sdk.conversation.persistence_const import BASE_STATE, EVENTS_DIR
 from openhands.sdk.conversation.secret_registry import SecretRegistry
@@ -160,6 +163,22 @@ class ConversationState(OpenHandsModel):
         ),
     )
 
+    # Movable HEAD of the conversation tree.
+    leaf_event_id: EventID | None = Field(
+        default=None,
+        description=(
+            "HEAD of the conversation tree: the parent of the next appended "
+            "event. None means an empty tree (or, pre-feature, the linear tail; "
+            "see _resolve_active_leaf). Moving it re-roots the active branch."
+        ),
+    )
+
+    # Distinguishes a deliberate empty HEAD (navigate_to(None)) from an unset
+    # ``leaf_event_id``, which triggers legacy back-compat. Without it, emptying a
+    # single-root tree is indistinguishable from a pre-tree conversation. Persisted
+    # so the empty HEAD survives a save/reload. See _resolve_active_leaf.
+    head_is_empty: bool = Field(default=False)
+
     # Conversation statistics for LLM usage tracking
     stats: ConversationStats = Field(
         default_factory=ConversationStats,
@@ -204,6 +223,14 @@ class ConversationState(OpenHandsModel):
     # ===== Private attrs (NOT Fields) =====
     _fs: FileStore = PrivateAttr()  # filestore for persistence
     _events: EventLog = PrivateAttr()  # now the storage for events
+    # Cached projection of `_events` for the *active branch*, lazily updated on
+    # read. Derived state — never persisted. `_view_branch_leaf` is the resolved
+    # leaf the cache reflects: equal to the active leaf -> reuse; an ancestor ->
+    # extend with the tail; otherwise -> rebuild (branch switch).
+    # See https://github.com/OpenHands/software-agent-sdk/issues/3053.
+    _view: View = PrivateAttr(default_factory=View)
+    _view_branch_leaf: EventID | None = PrivateAttr(default=None)
+    _view_lock: threading.RLock = PrivateAttr(default_factory=threading.RLock)
     _cipher: Cipher | None = PrivateAttr(default=None)  # cipher for secret encryption
     _autosave_enabled: bool = PrivateAttr(
         default=False
@@ -211,13 +238,138 @@ class ConversationState(OpenHandsModel):
     _on_state_change: ConversationCallbackType | None = PrivateAttr(
         default=None
     )  # callback for state changes
+    _write_guard: Callable[[], AbstractContextManager[None]] | None = PrivateAttr(
+        default=None
+    )
     _lock: FIFOLock = PrivateAttr(
         default_factory=FIFOLock
     )  # FIFO lock for thread safety
+    _save_depth: int = PrivateAttr(default=0)  # context-manager nesting depth
+    _dirty: bool = PrivateAttr(default=False)  # pending unsaved field changes
 
     @property
     def events(self) -> EventLog:
         return self._events
+
+    def _resolve_active_leaf(self) -> EventID | None:
+        """The effective HEAD, resolving a ``None`` ``leaf_event_id`` by lineage.
+
+        A set leaf is returned as-is. ``head_is_empty`` marks a deliberate empty
+        HEAD (``navigate_to(None)``) -> no active branch. Otherwise a ``None`` leaf
+        falls back to the last event only for pre-feature conversations (last
+        event has no ``parent_id``), so legacy history loads unbranched.
+        """
+        if self.leaf_event_id is not None:
+            return self.leaf_event_id
+        if self.head_is_empty:
+            return None
+        if (n := len(self._events)) == 0:
+            return None
+        if self._events[n - 1].parent_id is not None:
+            return None
+        return self._events.get_id(n - 1)
+
+    def active_branch(self, limit: int | None = None) -> list[Event]:
+        """Raw events on the active branch (``path_to_root(leaf)``), root-first.
+
+        Excludes abandoned branches, so consumers reasoning about the *current*
+        conversation (stuck detection, pending actions) see only the live path.
+        ``limit`` returns just the last ``limit`` events, kept O(limit).
+        """
+        return self._events.path_to_root(self._resolve_active_leaf(), limit=limit)
+
+    def _stamp_parent_id(self, event: Event) -> Event:
+        """Return ``event`` with ``parent_id`` set to the active leaf if unset."""
+        if event.parent_id is not None:
+            return event
+        parent = self._resolve_active_leaf()
+        # Empty HEAD over a non-empty log = deliberate new root (navigate_to(None));
+        # mark it so it is not misread as a legacy event chained to its neighbour.
+        if parent is None and len(self._events) > 0:
+            parent = ROOT_PARENT_ID
+        return event.model_copy(update={"parent_id": parent})
+
+    def append_event(self, event: Event) -> Event:
+        """Single storage chokepoint: stamp parent_id, append, advance HEAD.
+
+        Stamping here (not only at the emit callback) ensures no event enters the
+        log unstamped, even one a hook swaps in downstream. ``fork`` copies
+        pre-stamped events and sets HEAD itself, so it bypasses this.
+        """
+        event = self._stamp_parent_id(event)
+        self._events.append(event)
+        # ConversationStateUpdateEvent is a state-sync artifact, not a tree node;
+        # advancing HEAD for it would recurse (moving HEAD re-emits one).
+        from openhands.sdk.event.conversation_state import (
+            ConversationStateUpdateEvent,
+        )
+
+        if not isinstance(event, ConversationStateUpdateEvent):
+            self.leaf_event_id = event.id
+            if self.head_is_empty:  # HEAD now points at a real event again
+                self.head_is_empty = False
+        return event
+
+    @property
+    def view(self) -> View:
+        """Lazily-maintained ``View`` of the active branch (``path_to_root(leaf)``).
+
+        Abandoned branches (from navigation/forking) are excluded. A linear
+        append replays only the new tail — O(k), preserving the incremental
+        optimization (#3053); a branch switch rebuilds once, O(n).
+        ``enforce_properties`` runs only on rebuild (``rebuild_view()``).
+
+        The returned view is read-only and is invalidated by ``rebuild_view()``;
+        re-read ``state.view`` after any rebuild.
+        """
+        with self._view_lock:
+            leaf = self._resolve_active_leaf()
+            if leaf == self._view_branch_leaf:
+                return self._view
+
+            # Fast path: cached leaf is an ancestor of the new leaf (linear
+            # append) → replay only the tail. Also covers first populate (cached
+            # leaf None, cached view empty), avoiding the enforce_properties pass.
+            try:
+                tail: list[Event] = []
+                cur_id: EventID | None = leaf
+                while cur_id is not None and cur_id != self._view_branch_leaf:
+                    idx = self._events.get_index(cur_id)
+                    evt = self._events[idx]
+                    tail.append(evt)
+                    cur_id = self._events._effective_parent_id(idx, evt)
+                if cur_id == self._view_branch_leaf:
+                    for evt in reversed(tail):
+                        self._view.append_event(evt)
+                    self._view_branch_leaf = leaf
+                    return self._view
+            except Exception:
+                logger.warning(
+                    "Incremental view append failed for leaf %s; "
+                    "rebuilding from the active branch.",
+                    leaf,
+                    exc_info=True,
+                )
+
+            # Diverged branch (navigation/fork), first populate, or recovery
+            # from the failure above → full rebuild from the active branch.
+            self._view = View.from_events(self._events.path_to_root(leaf))
+            self._view_branch_leaf = leaf
+            return self._view
+
+    def rebuild_view(self) -> None:
+        """Re-derive the cached view from the active branch, with full enforcement.
+
+        Runs ``View.from_events`` over ``path_to_root(leaf)``. Called on cold
+        load, fork, navigation, and error recovery. Invalidates any prior
+        ``state.view`` reference. If ``View.from_events`` raises, the cache is
+        left unchanged and the exception propagates.
+        """
+        with self._view_lock:
+            leaf = self._resolve_active_leaf()
+            branch = self._events.path_to_root(leaf)
+            self._view = View.from_events(branch)
+            self._view_branch_leaf = leaf
 
     @property
     def env_observation_persistence_dir(self) -> str | None:
@@ -234,6 +386,13 @@ class ConversationState(OpenHandsModel):
                      or None to remove the callback
         """
         self._on_state_change = callback
+
+    def set_write_guard(
+        self,
+        write_guard: Callable[[], AbstractContextManager[None]] | None,
+    ) -> None:
+        self._write_guard = write_guard
+        self._events.set_write_guard(write_guard)
 
     # ===== Base snapshot helpers (same FileStore usage you had) =====
     def _save_base_state(self, fs: FileStore) -> None:
@@ -253,7 +412,11 @@ class ConversationState(OpenHandsModel):
                 "preserve secrets."
             )
         payload = self.model_dump_json(exclude_none=True, context=context)
-        fs.write(BASE_STATE, payload)
+        if self._write_guard is None:
+            fs.write(BASE_STATE, payload)
+        else:
+            with self._write_guard():
+                fs.write(BASE_STATE, payload)
 
     # ===== Factory: open-or-create (no load/save methods needed) =====
     @classmethod
@@ -288,7 +451,8 @@ class ConversationState(OpenHandsModel):
             id: Unique conversation identifier
             agent: The Agent to use (tools must match persisted on restore)
             workspace: Working directory for agent operations
-            persistence_dir: Directory for persisting state and events
+            persistence_dir: Directory for persisting state and events.
+                Mutually exclusive with file_store.
             max_iterations: Maximum iterations per run
             stuck_detection: Whether to enable stuck detection
             cipher: Optional cipher for encrypting/decrypting secrets in
@@ -347,6 +511,11 @@ class ConversationState(OpenHandsModel):
             state._events = EventLog(file_store, dir_path=EVENTS_DIR)
             state._cipher = cipher
 
+            # Cold-load: rebuild the cached view with full property
+            # enforcement — persisted events may come from an older code
+            # version or be corrupted.
+            state.rebuild_view()
+
             # Verify compatibility (agent class + tools)
             agent.verify(state.agent, events=state._events)
 
@@ -359,11 +528,7 @@ class ConversationState(OpenHandsModel):
             # Note: stats are already deserialized from base_state.json above.
             # Do NOT reset stats here - this would lose accumulated metrics.
 
-            logger.info(
-                f"Resumed conversation {state.id} from persistent storage.\n"
-                f"State: {state.model_dump(exclude={'agent'})}\n"
-                f"Agent: {state.agent.model_dump_succint()}"
-            )
+            logger.info("Resumed conversation %s from persistent storage", state.id)
             return state
 
         # ---- Fresh path ----
@@ -388,11 +553,7 @@ class ConversationState(OpenHandsModel):
 
         state._save_base_state(file_store)  # initial snapshot
         state._autosave_enabled = True
-        logger.info(
-            f"Created new conversation {state.id}\n"
-            f"State: {state.model_dump(exclude={'agent'})}\n"
-            f"Agent: {state.agent.model_dump_succint()}"
-        )
+        logger.info("Created new conversation %s", state.id)
         return state
 
     # ===== Auto-persist base on public field changes =====
@@ -413,15 +574,27 @@ class ConversationState(OpenHandsModel):
             return
 
         if old is _sentinel or old != value:
-            try:
-                self._save_base_state(fs)
-            except Exception as e:
-                logger.exception("Auto-persist base_state failed", exc_info=True)
-                raise e
+            # Inside a context-manager block, defer the save until __exit__
+            # so that multiple field mutations produce a single I/O write.
+            if getattr(self, "_save_depth", 0) > 0:
+                self._dirty = True
+            else:
+                try:
+                    self._save_base_state(fs)
+                except Exception as e:
+                    logger.exception("Auto-persist base_state failed", exc_info=True)
+                    raise e
 
-            # Call state change callback if set
+            # Call state change callback if set. leaf_event_id/head_is_empty are
+            # skipped: they are internal HEAD bookkeeping (leaf_event_id changes
+            # every event, so broadcasting it would ~double the persisted log) and
+            # the HEAD is recoverable from the just-appended event.
             callback = getattr(self, "_on_state_change", None)
-            if callback is not None and old is not _sentinel:
+            if (
+                callback is not None
+                and old is not _sentinel
+                and name not in ("leaf_event_id", "head_is_empty")
+            ):
                 try:
                     # Import here to avoid circular imports
                     from openhands.sdk.event.conversation_state import (
@@ -532,13 +705,27 @@ class ConversationState(OpenHandsModel):
         self._lock.release()
 
     def __enter__(self: Self) -> Self:
-        """Context manager entry."""
+        """Context manager entry.
+
+        Field mutations inside the ``with`` block are batched: the state
+        is persisted at most once, on exit, instead of on every assignment.
+        """
         self._lock.acquire()
+        self._save_depth += 1
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        """Context manager exit."""
-        self._lock.release()
+        """Context manager exit — flushes any deferred save."""
+        try:
+            self._save_depth -= 1
+            if self._save_depth == 0 and self._dirty:
+                fs = getattr(self, "_fs", None)
+                autosave_enabled = getattr(self, "_autosave_enabled", False)
+                if autosave_enabled and fs is not None:
+                    self._save_base_state(fs)
+                self._dirty = False
+        finally:
+            self._lock.release()
 
     def locked(self) -> bool:
         """

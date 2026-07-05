@@ -26,10 +26,15 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
+from starlette.websockets import WebSocketState
 
-from openhands.agent_server.bash_service import get_default_bash_event_service
+from openhands.agent_server.bash_service import (
+    BashEventService,
+    get_default_bash_event_service,
+)
 from openhands.agent_server.config import Config, get_default_config
 from openhands.agent_server.conversation_service import (
+    ConversationService,
     get_default_conversation_service,
 )
 from openhands.agent_server.event_router import normalize_datetime_to_server_timezone
@@ -39,7 +44,7 @@ from openhands.agent_server.models import (
     ExecuteBashRequest,
     ServerErrorEvent,
 )
-from openhands.agent_server.pub_sub import Subscriber
+from openhands.agent_server.pub_sub import MaxSubscribersError, Subscriber
 from openhands.sdk import Event, Message
 from openhands.sdk.utils.paging import page_iterator
 
@@ -61,6 +66,38 @@ def _get_config(websocket: WebSocket) -> Config:
     if isinstance(config, Config):
         return config
     return get_default_config()
+
+
+def _get_conversation_service(websocket: WebSocket) -> ConversationService:
+    """Return the ConversationService for this FastAPI app instance.
+
+    Looks up ``app.state.conversation_service`` at request time so that the
+    service delivered via ``POST /api/init`` (deferred-init / dormant mode)
+    is used instead of the module-level default captured at import. When
+    ``app.state`` is not configured (e.g. when sockets.py is imported as a
+    library without a lifespan), falls back to the module-level singleton,
+    which keeps the behaviour of existing tests that patch the module-level
+    variable.
+    """
+    service = getattr(websocket.app.state, "conversation_service", None)
+    if isinstance(service, ConversationService):
+        return service
+    return conversation_service
+
+
+def _get_bash_event_service(websocket: WebSocket) -> BashEventService:
+    """Return the BashEventService for this FastAPI app instance.
+
+    Looks up ``app.state.bash_event_service`` at request time so that the
+    service delivered via ``POST /api/init`` (deferred-init / dormant mode)
+    is used instead of the module-level default captured at import. When
+    ``app.state`` is not configured (e.g. when sockets.py is imported as a
+    library without a lifespan), falls back to the module-level singleton.
+    """
+    service = getattr(websocket.app.state, "bash_event_service", None)
+    if isinstance(service, BashEventService):
+        return service
+    return bash_event_service
 
 
 def _resolve_websocket_session_api_key(
@@ -241,15 +278,23 @@ async def events_socket(
         return
 
     logger.info(f"Event Websocket Connected: {conversation_id}")
-    event_service = await conversation_service.get_event_service(conversation_id)
+    conv_service = _get_conversation_service(websocket)
+    event_service = await conv_service.get_event_service(conversation_id)
     if event_service is None:
         logger.warning(f"Converation not found: {conversation_id}")
         await websocket.close(code=4004, reason="Conversation not found")
         return
 
-    subscriber_id = await event_service.subscribe_to_events(
-        _WebSocketSubscriber(websocket)
-    )
+    try:
+        subscriber_id = await event_service.subscribe_to_events(
+            _WebSocketSubscriber(websocket)
+        )
+    except MaxSubscribersError:
+        logger.warning(f"Subscriber limit reached for conversation {conversation_id}")
+        await websocket.close(
+            code=1013, reason="Too many connections for this conversation"
+        )
+        return
 
     # Determine effective resend mode (handle deprecated resend_all)
     effective_mode = resend_mode
@@ -294,6 +339,12 @@ async def events_socket(
         while True:
             try:
                 data = await websocket.receive_json()
+                if _is_auth_control_message(data):
+                    logger.debug(
+                        "ignoring redundant auth control frame: %s",
+                        conversation_id,
+                    )
+                    continue
                 logger.info(f"Received message: {conversation_id}")
                 message = Message.model_validate(data)
                 await event_service.send_message(message, True)
@@ -358,10 +409,16 @@ async def bash_events_socket(
     if not await _accept_authenticated_websocket(websocket, session_api_key):
         return
 
+    bash_service = _get_bash_event_service(websocket)
     logger.info("Bash Websocket Connected")
-    subscriber_id = await bash_event_service.subscribe_to_events(
-        _BashWebSocketSubscriber(websocket)
-    )
+    try:
+        subscriber_id = await bash_service.subscribe_to_events(
+            _BashWebSocketSubscriber(websocket)
+        )
+    except MaxSubscribersError:
+        logger.warning("Subscriber limit reached for bash events")
+        await websocket.close(code=1013, reason="Too many bash event connections")
+        return
 
     # Determine effective resend mode (handle deprecated resend_all)
     effective_mode = resend_mode
@@ -373,7 +430,7 @@ async def bash_events_socket(
         # Resend all existing events if requested
         if effective_mode == "all":
             logger.info("Resending bash events")
-            async for event in page_iterator(bash_event_service.search_bash_events):
+            async for event in page_iterator(bash_service.search_bash_events):
                 await _send_bash_event(event, websocket)
 
         while True:
@@ -382,7 +439,7 @@ async def bash_events_socket(
                 data = await websocket.receive_json()
                 logger.info("Received bash request")
                 request = ExecuteBashRequest.model_validate(data)
-                await bash_event_service.start_bash_command(request)
+                await bash_service.start_bash_command(request)
             except WebSocketDisconnect:
                 logger.info("Bash websocket disconnected")
                 return
@@ -409,15 +466,34 @@ async def bash_events_socket(
                     await _safe_close_websocket(websocket)
                     return
     finally:
-        await bash_event_service.unsubscribe_from_events(subscriber_id)
+        await bash_service.unsubscribe_from_events(subscriber_id)
 
 
 async def _send_event(event: Event, websocket: WebSocket):
+    if not _is_websocket_connected(websocket):
+        # Client already disconnected; the pub/sub callback was racing with
+        # cleanup. Avoid noisy tracebacks from starlette refusing to send.
+        logger.debug("skip_sending_event_socket_disconnected: %r", event)
+        return
     try:
         dumped = event.model_dump(mode="json")
         await websocket.send_json(dumped)
+    except (RuntimeError, WebSocketDisconnect) as e:
+        # Expected race: client disconnected between our state check and send.
+        logger.debug("error_sending_event_disconnected: %r (%s)", event, e)
     except Exception:
         logger.exception("error_sending_event: %r", event, stack_info=True)
+
+
+def _is_auth_control_message(data: object) -> bool:
+    """Return True for ``{"type": "auth", ...}`` first-message-auth frames.
+
+    Clients that handle both legacy and first-message auth may send this
+    frame even after legacy (query/header) auth has already succeeded.
+    The post-auth receive loops must ignore it instead of validating it
+    as a regular message payload.
+    """
+    return isinstance(data, dict) and data.get("type") == "auth"
 
 
 async def _safe_close_websocket(
@@ -432,6 +508,26 @@ async def _safe_close_websocket(
         logger.debug("WebSocket close failed (may already be closed)")
 
 
+def _is_websocket_connected(websocket: WebSocket) -> bool:
+    """Best-effort check that the websocket is still in the CONNECTED state.
+
+    Starlette raises ``RuntimeError('Cannot call "send" once a close message
+    has been sent.')`` if we try to send on a socket whose ``application_state``
+    is ``DISCONNECTED``. Pre-checking avoids noisy tracebacks when a pub/sub
+    callback fires after the peer has gone away.
+
+    Returns ``True`` when the state is unknown (e.g. tests using ``MagicMock``)
+    so callers still attempt the send and get the original behaviour.
+    """
+    app_state = getattr(websocket, "application_state", None)
+    client_state = getattr(websocket, "client_state", None)
+    if app_state is WebSocketState.DISCONNECTED:
+        return False
+    if client_state is WebSocketState.DISCONNECTED:
+        return False
+    return True
+
+
 @dataclass
 class _WebSocketSubscriber(Subscriber):
     """WebSocket subscriber for conversation events."""
@@ -443,9 +539,14 @@ class _WebSocketSubscriber(Subscriber):
 
 
 async def _send_bash_event(event: BashEventBase, websocket: WebSocket):
+    if not _is_websocket_connected(websocket):
+        logger.debug("skip_sending_bash_event_socket_disconnected: %r", event)
+        return
     try:
         dumped = event.model_dump(mode="json")
         await websocket.send_json(dumped)
+    except (RuntimeError, WebSocketDisconnect) as e:
+        logger.debug("error_sending_bash_event_disconnected: %r (%s)", event, e)
     except Exception:
         logger.exception("error_sending_bash_event: %r", event, stack_info=True)
 

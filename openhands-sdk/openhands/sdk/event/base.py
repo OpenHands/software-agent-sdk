@@ -3,10 +3,10 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import TYPE_CHECKING, ClassVar
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, field_validator
 from rich.text import Text
 
-from openhands.sdk.event.types import EventID, SourceType
+from openhands.sdk.event.types import ROOT_PARENT_ID, EventID, SourceType
 from openhands.sdk.llm import ImageContent, Message, TextContent
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
@@ -30,6 +30,23 @@ class Event(DiscriminatedUnionMixin, ABC):
         description="Event timestamp",
     )  # consistent with V1
     source: SourceType = Field(..., description="The source of this event")
+    parent_id: EventID | None = Field(
+        default=None,
+        description=(
+            "Parent event id in the conversation tree. None for the root, or for "
+            "legacy events predating the tree (see EventLog's effective-parent "
+            "rule). Events sharing a parent_id are sibling branches."
+        ),
+    )
+
+    @field_validator("id")
+    @classmethod
+    def _reject_reserved_id(cls, v: EventID) -> EventID:
+        # ROOT_PARENT_ID is a reserved parent_id sentinel; an event whose id
+        # equalled it would make its children look parentless in the tree.
+        if v == ROOT_PARENT_ID:
+            raise ValueError(f"Event id may not equal reserved sentinel {v!r}")
+        return v
 
     @property
     def visualize(self) -> Text:
@@ -116,14 +133,41 @@ class LLMConvertibleEvent(Event, ABC):
                     j += 1
 
                 # Create combined message for the response
-                messages.append(_combine_action_events(batch_events))
+                msg = _combine_action_events(batch_events)
+                if messages and _can_merge_user_messages(messages[-1], msg):
+                    messages[-1].content = list(messages[-1].content) + list(
+                        msg.content
+                    )
+                else:
+                    messages.append(msg)
                 i = j
             else:
                 # Regular event - direct conversion
-                messages.append(event.to_llm_message())
+                msg = event.to_llm_message()
+                if messages and _can_merge_user_messages(messages[-1], msg):
+                    messages[-1].content = list(messages[-1].content) + list(
+                        msg.content
+                    )
+                else:
+                    messages.append(msg)
                 i += 1
 
         return messages
+
+
+def _is_plain_user_message(message: Message) -> bool:
+    """A plain user turn with no tool-call metadata — safe to coalesce."""
+    return (
+        message.role == "user"
+        and message.tool_calls is None
+        and message.tool_call_id is None
+        and message.name is None
+    )
+
+
+def _can_merge_user_messages(previous: Message, current: Message) -> bool:
+    """Return whether two user messages can be safely sent as one LLM turn."""
+    return _is_plain_user_message(previous) and _is_plain_user_message(current)
 
 
 def _combine_action_events(events: list["ActionEvent"]) -> Message:

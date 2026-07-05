@@ -10,11 +10,12 @@ from openai.types.responses.response_output_text import ResponseOutputText
 from pydantic import SecretStr
 
 from openhands.sdk import ConversationStats, RegistryEvent
-from openhands.sdk.llm import LLM, LLMResponse, Message, TextContent
+from openhands.sdk.llm import LLM, LLMResponse, Message, MessageToolCall, TextContent
 from openhands.sdk.llm.exceptions import LLMNoResponseError
 from openhands.sdk.llm.options.responses_options import select_responses_options
 from openhands.sdk.llm.utils.metrics import Metrics, TokenUsage
 from openhands.sdk.llm.utils.telemetry import Telemetry
+from openhands.sdk.tool.builtins.finish import FinishTool
 
 # Import common test utilities
 from tests.conftest import create_mock_litellm_response
@@ -45,7 +46,7 @@ def test_llm_init_with_default_config(default_llm):
 
 @patch("openhands.sdk.llm.utils.model_info.httpx.get")
 def test_base_url_for_openhands_provider(mock_get):
-    """Test that openhands/ prefix automatically sets base_url to production proxy."""
+    """Test that openhands/ remains public while transport uses the proxy."""
     # Mock the model info fetch to avoid actual HTTP calls to production
     mock_get.return_value = Mock(json=lambda: {"data": []})
 
@@ -54,17 +55,17 @@ def test_base_url_for_openhands_provider(mock_get):
         api_key=SecretStr("test-key"),
         usage_id="test-openhands-llm",
     )
-    assert llm.base_url == "https://llm-proxy.app.all-hands.dev/"
-    mock_get.assert_called_once()
+    assert llm.model == "openhands/claude-sonnet-4-20250514"
+    assert llm.base_url is None
+    mock_get.assert_called_once_with(
+        "https://llm-proxy.app.all-hands.dev/v1/model/info",
+        headers={"Authorization": "Bearer test-key"},
+    )
 
 
 @patch("openhands.sdk.llm.utils.model_info.httpx.get")
 def test_base_url_for_openhands_provider_with_explicit_none(mock_get):
-    """Test that openhands/ provider defaults base_url when explicitly set to None.
-
-    This simulates the CLI behavior where settings are saved to JSON with
-    base_url=null and then reloaded, ensuring the default proxy URL is used.
-    """
+    """Test that explicit None remains public config, not persisted transport config."""
     # Mock the model info fetch to avoid actual HTTP calls to production
     mock_get.return_value = Mock(json=lambda: {"data": []})
 
@@ -72,11 +73,36 @@ def test_base_url_for_openhands_provider_with_explicit_none(mock_get):
         model="openhands/claude-sonnet-4-20250514",
         api_key=SecretStr("test-key"),
         usage_id="test-openhands-llm",
-        base_url=None,  # Explicitly set to None (like CLI saves to JSON)
+        base_url=None,
     )
-    assert llm.base_url == "https://llm-proxy.app.all-hands.dev/"
-    # Note: mock_get may be cached from previous test due to @lru_cache
-    # The important assertion is that base_url is set correctly
+    assert llm.model == "openhands/claude-sonnet-4-20250514"
+    assert llm.base_url is None
+
+
+@patch("openhands.sdk.llm.utils.model_info.httpx.get")
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_openhands_provider_translates_only_for_litellm(mock_completion, mock_get):
+    mock_get.return_value = Mock(json=lambda: {"data": []})
+    mock_completion.return_value = create_mock_litellm_response("ok")
+
+    llm = LLM(
+        model="openhands/claude-haiku-4-5-20251001",
+        api_key=SecretStr("test-key"),
+        usage_id="test-openhands-transport",
+        num_retries=0,
+    )
+
+    messages = [Message(role="user", content=[TextContent(text="Hello")])]
+    llm.completion(messages=messages)
+
+    assert llm.model == "openhands/claude-haiku-4-5-20251001"
+    assert llm.base_url is None
+    _, kwargs = mock_completion.call_args
+    assert kwargs["model"] == "litellm_proxy/claude-haiku-4-5-20251001"
+    assert kwargs["api_base"] == "https://llm-proxy.app.all-hands.dev"
+    persisted = llm.to_persisted()
+    assert persisted["model"] == "openhands/claude-haiku-4-5-20251001"
+    assert "base_url" not in persisted
 
 
 @patch("openhands.sdk.llm.utils.model_info.httpx.get")
@@ -319,6 +345,322 @@ def test_llm_token_counting(default_llm):
     assert token_count >= 0
 
 
+@patch("openhands.sdk.llm.llm.token_counter")
+def test_llm_token_counting_includes_tools(mock_token_counter, default_llm):
+    """Test LLM token counting forwards tool schemas to LiteLLM."""
+    mock_token_counter.return_value = 123
+    messages = [Message(role="user", content=[TextContent(text="Hello")])]
+    tools = list(FinishTool.create())
+
+    token_count = default_llm.get_token_count(
+        messages,
+        tools=tools,
+        add_security_risk_prediction=True,
+    )
+
+    assert token_count == 123
+    _, kwargs = mock_token_counter.call_args
+    assert len(kwargs["tools"]) == 1
+    assert kwargs["tools"][0]["function"]["name"] == "finish"
+    assert "message" in kwargs["tools"][0]["function"]["parameters"]["properties"]
+
+
+def test_llm_load_chat_template_tokenizer_prefers_transformers(monkeypatch):
+    """The chat-template tokenizer uses Transformers when available."""
+
+    class FakeTokenizer:
+        chat_template = "template"
+
+        def apply_chat_template(self, messages, **kwargs):
+            return []
+
+    class FakeAutoTokenizer:
+        loaded_identifier = None
+
+        @classmethod
+        def from_pretrained(cls, identifier):
+            cls.loaded_identifier = identifier
+            return FakeTokenizer()
+
+    class FakeTransformers:
+        AutoTokenizer = FakeAutoTokenizer
+
+    def fake_import_module(name):
+        if name == "transformers":
+            return FakeTransformers
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(
+        "openhands.sdk.llm.llm.importlib.import_module", fake_import_module
+    )
+
+    tokenizer = LLM._load_chat_template_tokenizer("model-with-template")
+
+    assert isinstance(tokenizer, FakeTokenizer)
+    assert FakeAutoTokenizer.loaded_identifier == "model-with-template"
+
+
+@patch("openhands.sdk.llm.llm.create_pretrained_tokenizer")
+def test_llm_custom_tokenizer_falls_back_without_transformers(
+    mock_create_pretrained_tokenizer, monkeypatch
+):
+    fallback_tokenizer = {
+        "type": "huggingface_tokenizer",
+        "tokenizer": object(),
+    }
+    mock_create_pretrained_tokenizer.return_value = fallback_tokenizer
+
+    def fake_import_module(name):
+        if name == "transformers":
+            raise ModuleNotFoundError(name)
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(
+        "openhands.sdk.llm.llm.importlib.import_module", fake_import_module
+    )
+
+    llm = LLM(
+        model="openai/qwen-test",
+        api_key=SecretStr("test_key"),
+        custom_tokenizer="Qwen/Qwen3-test",
+    )
+
+    assert llm._chat_template_tokenizer is None
+    assert llm._tokenizer == fallback_tokenizer
+
+
+@patch("openhands.sdk.llm.llm.create_pretrained_tokenizer")
+def test_llm_custom_tokenizer_falls_back_without_apply_chat_template(
+    mock_create_pretrained_tokenizer, monkeypatch
+):
+    fallback_tokenizer = {
+        "type": "huggingface_tokenizer",
+        "tokenizer": object(),
+    }
+    mock_create_pretrained_tokenizer.return_value = fallback_tokenizer
+
+    class FakeAutoTokenizer:
+        @classmethod
+        def from_pretrained(cls, identifier):
+            return object()
+
+    class FakeTransformers:
+        AutoTokenizer = FakeAutoTokenizer
+
+    def fake_import_module(name):
+        if name == "transformers":
+            return FakeTransformers
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(
+        "openhands.sdk.llm.llm.importlib.import_module", fake_import_module
+    )
+
+    llm = LLM(
+        model="openai/qwen-test",
+        api_key=SecretStr("test_key"),
+        custom_tokenizer="Qwen/Qwen3-test",
+    )
+
+    assert llm._chat_template_tokenizer is None
+    assert llm._tokenizer == fallback_tokenizer
+
+
+@patch("openhands.sdk.llm.llm.create_pretrained_tokenizer")
+def test_llm_custom_tokenizer_allows_apply_chat_template_without_declared_template(
+    mock_create_pretrained_tokenizer, monkeypatch
+):
+    mock_create_pretrained_tokenizer.return_value = {
+        "type": "huggingface_tokenizer",
+        "tokenizer": object(),
+    }
+
+    class FakeTokenizer:
+        chat_template = None
+
+        def apply_chat_template(self, messages, **kwargs):
+            return []
+
+    class FakeAutoTokenizer:
+        @classmethod
+        def from_pretrained(cls, identifier):
+            return FakeTokenizer()
+
+    class FakeTransformers:
+        AutoTokenizer = FakeAutoTokenizer
+
+    def fake_import_module(name):
+        if name == "transformers":
+            return FakeTransformers
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(
+        "openhands.sdk.llm.llm.importlib.import_module", fake_import_module
+    )
+
+    llm = LLM(
+        model="openai/qwen-test",
+        api_key=SecretStr("test_key"),
+        custom_tokenizer="gpt2",
+    )
+
+    assert isinstance(llm._chat_template_tokenizer, FakeTokenizer)
+    mock_create_pretrained_tokenizer.assert_not_called()
+
+
+@patch("openhands.sdk.llm.llm.token_counter")
+def test_llm_token_counting_prefers_chat_template_tokenizer(
+    mock_token_counter, default_llm
+):
+    """Token counting uses apply_chat_template when the tokenizer supports it."""
+
+    class FakeChatTemplateTokenizer:
+        def __init__(self):
+            self.calls = []
+
+        def apply_chat_template(self, messages, **kwargs):
+            self.calls.append((messages, kwargs))
+            return list(range(321))
+
+    tokenizer = FakeChatTemplateTokenizer()
+    default_llm._chat_template_tokenizer = tokenizer
+    messages = [Message(role="user", content=[TextContent(text="Hello")])]
+    tools = list(FinishTool.create())
+
+    token_count = default_llm.get_token_count(
+        messages,
+        tools=tools,
+        add_security_risk_prediction=True,
+    )
+
+    assert token_count == 321
+    mock_token_counter.assert_not_called()
+    applied_messages, kwargs = tokenizer.calls[0]
+    assert applied_messages[0]["role"] == "user"
+    assert applied_messages[0]["content"] == "Hello"
+    assert kwargs["tokenize"] is True
+    assert kwargs["add_generation_prompt"] is True
+    assert kwargs["tools"][0]["function"]["name"] == "finish"
+    assert "message" in kwargs["tools"][0]["function"]["parameters"]["properties"]
+
+
+@patch("openhands.sdk.llm.llm.token_counter")
+def test_llm_chat_template_token_counting_parses_tool_call_arguments(
+    mock_token_counter, default_llm
+):
+    """HF chat templates may expect assistant tool-call arguments as objects."""
+
+    class FakeChatTemplateTokenizer:
+        def __init__(self):
+            self.messages = None
+
+        def apply_chat_template(self, messages, **_kwargs):
+            self.messages = messages
+            return list(range(12))
+
+    tokenizer = FakeChatTemplateTokenizer()
+    default_llm._chat_template_tokenizer = tokenizer
+    messages = [
+        Message(
+            role="assistant",
+            tool_calls=[
+                MessageToolCall(
+                    id="call_1",
+                    name="finish",
+                    arguments='{"message": "done"}',
+                    origin="completion",
+                )
+            ],
+        )
+    ]
+
+    token_count = default_llm.get_token_count(messages)
+
+    assert token_count == 12
+    mock_token_counter.assert_not_called()
+    assert tokenizer.messages is not None
+    function = tokenizer.messages[0]["tool_calls"][0]["function"]
+    assert function["arguments"] == {"message": "done"}
+
+
+def test_llm_count_tokenized_output_handles_encoding_objects(default_llm):
+    """Token counting handles Hugging Face BatchEncoding/Encoding shapes."""
+
+    class FakeEncoding:
+        def __init__(self):
+            self.ids = list(range(321))
+
+    class FakeBatchEncoding:
+        def __init__(self):
+            self.encodings = [FakeEncoding()]
+
+        def get(self, key):
+            if key == "input_ids":
+                return list(range(321))
+            return None
+
+    class FakeChatTemplateTokenizer:
+        def apply_chat_template(self, messages, **kwargs):
+            return FakeBatchEncoding()
+
+    default_llm._chat_template_tokenizer = FakeChatTemplateTokenizer()
+    messages = [Message(role="user", content=[TextContent(text="Hello")])]
+
+    assert default_llm.get_token_count(messages) == 321
+
+
+@patch("openhands.sdk.llm.llm.token_counter")
+def test_llm_token_counting_falls_back_when_chat_template_fails(
+    mock_token_counter, default_llm
+):
+    """A broken tokenizer chat template should fall back to LiteLLM counting."""
+
+    class BrokenChatTemplateTokenizer:
+        def apply_chat_template(self, messages, **kwargs):
+            raise RuntimeError("template unavailable")
+
+    default_llm._chat_template_tokenizer = BrokenChatTemplateTokenizer()
+    mock_token_counter.return_value = 123
+    messages = [Message(role="user", content=[TextContent(text="Hello")])]
+
+    token_count = default_llm.get_token_count(messages)
+
+    assert token_count == 123
+    mock_token_counter.assert_called_once()
+
+
+@patch("openhands.sdk.llm.llm.token_counter")
+def test_llm_token_counting_mocks_tools_for_non_native_models(mock_token_counter):
+    """Test token counting prompt-mocks tools when native tool calling is disabled."""
+    mock_token_counter.return_value = 456
+    llm = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        usage_id="non-native-token-count-llm",
+        native_tool_calling=False,
+        caching_prompt=False,
+    )
+    messages = [
+        Message(role="system", content=[TextContent(text="System prompt")]),
+        Message(role="user", content=[TextContent(text="Hello")]),
+    ]
+
+    token_count = llm.get_token_count(
+        messages,
+        tools=list(FinishTool.create()),
+        add_security_risk_prediction=True,
+    )
+
+    assert token_count == 456
+    _, kwargs = mock_token_counter.call_args
+    assert kwargs["tools"] is None
+    formatted_messages = kwargs["messages"]
+    system_text = formatted_messages[0]["content"][0]["text"]
+    assert "You have access to the following functions" in system_text
+    assert "---- BEGIN FUNCTION #1: finish ----" in system_text
+    assert "<parameter=security_risk>LOW</parameter>" in system_text
+
+
 @patch("openhands.sdk.llm.llm.litellm_completion")
 def test_llm_forwards_extra_headers_to_litellm(mock_completion):
     mock_response = create_mock_litellm_response("ok")
@@ -338,8 +680,11 @@ def test_llm_forwards_extra_headers_to_litellm(mock_completion):
 
     assert mock_completion.call_count == 1
     _, kwargs = mock_completion.call_args
-    # extra_headers forwarded either directly or inside **kwargs
-    assert kwargs.get("extra_headers") == headers
+    # User-supplied extra_headers must reach litellm. The LLM may also inject
+    # OpenRouter HTTP-Referer / X-Title defaults (issue #3138), so only assert
+    # the user's headers are a subset of the forwarded dict.
+    forwarded = kwargs.get("extra_headers") or {}
+    assert headers.items() <= forwarded.items()
 
 
 @patch("openhands.sdk.llm.llm.litellm_responses")
@@ -386,7 +731,9 @@ def test_llm_responses_forwards_extra_headers_to_litellm(mock_responses):
 
     assert mock_responses.call_count == 1
     _, kwargs = mock_responses.call_args
-    assert kwargs.get("extra_headers") == headers
+    # See test_llm_forwards_extra_headers_to_litellm for the same rationale.
+    forwarded = kwargs.get("extra_headers") or {}
+    assert headers.items() <= forwarded.items()
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
@@ -1017,7 +1364,8 @@ def test_llm_respects_allow_short_context_windows_env_var(mock_get_model_info):
             api_key=SecretStr("test-key"),
             usage_id="test-llm",
         )
-        assert llm.max_input_tokens == 2048
+        assert llm.max_input_tokens is None
+        assert llm.effective_max_input_tokens == 2048
 
 
 # LLM model_copy Tests
@@ -1066,6 +1414,8 @@ def test_llm_reset_metrics():
     llm.reset_metrics()
 
     # Verify new metrics are created
+    assert llm._metrics is not None
+    assert llm._telemetry is not None
     assert llm.metrics is not original_metrics
     assert llm.telemetry is not original_telemetry
     assert llm.metrics.accumulated_cost == 0.0
@@ -1174,6 +1524,33 @@ def test_conversation_stats_restore_then_track():
         assert stats.get_combined_metrics().accumulated_cost == 10.25
 
 
+def test_telemetry_callback_preserved_across_revalidation():
+    """Telemetry callbacks must survive validators re-running on the LLM.
+
+    Wrapping an LLM in another Pydantic model (e.g. RegistryEvent) re-runs the
+    LLM's `mode="after"` validators. Before this fix, _set_env_side_effects
+    rebuilt _telemetry unconditionally, silently dropping any callback wired
+    via telemetry.set_*_callback() — which broke real-time stats streaming
+    from the agent server (no `key="stats"` events were ever emitted after
+    the first agent step).
+    """
+    llm = LLM(
+        model="openai/gpt-4o",
+        api_key=SecretStr("test-key"),
+        usage_id="agent",
+    )
+    fired: list[bool] = []
+    llm.telemetry.set_stats_update_callback(lambda: fired.append(True))
+    telemetry_before = llm._telemetry
+
+    RegistryEvent(llm=llm)
+
+    assert llm._telemetry is telemetry_before
+    assert llm.telemetry._stats_update_callback is not None
+    llm.telemetry._stats_update_callback()
+    assert fired == [True]
+
+
 # max_output_tokens Capping Tests
 
 
@@ -1203,10 +1580,12 @@ def test_max_output_tokens_capped_when_using_max_tokens_fallback(mock_get_model_
         usage_id="test-llm",
     )
 
-    # max_output_tokens should be capped, not set to 200000
-    assert llm.max_output_tokens is not None
-    assert llm.max_output_tokens == DEFAULT_MAX_OUTPUT_TOKENS_CAP
-    assert llm.max_output_tokens < 200000
+    # Config remains unset; the effective runtime value is capped.
+    assert llm.max_output_tokens is None
+    effective_max_output_tokens = llm.effective_max_output_tokens
+    assert effective_max_output_tokens is not None
+    assert effective_max_output_tokens == DEFAULT_MAX_OUTPUT_TOKENS_CAP
+    assert effective_max_output_tokens < 200000
 
 
 @patch("openhands.sdk.llm.llm.get_litellm_model_info")
@@ -1225,8 +1604,49 @@ def test_max_output_tokens_uses_actual_value_when_available(mock_get_model_info)
         usage_id="test-llm",
     )
 
-    # Should use the actual max_output_tokens, not capped
-    assert llm.max_output_tokens == 8192
+    # Should use the actual effective max_output_tokens, not capped
+    assert llm.max_output_tokens is None
+    assert llm.effective_max_output_tokens == 8192
+
+
+@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+def test_max_output_tokens_capped_when_model_info_exceeds_default_cap(
+    mock_get_model_info,
+):
+    """High LiteLLM max_output_tokens metadata is capped for custom gateways."""
+    from openhands.sdk.llm.llm import DEFAULT_MAX_OUTPUT_TOKENS_CAP
+
+    mock_get_model_info.return_value = {
+        "max_tokens": 262144,
+        "max_output_tokens": 131072,
+        "max_input_tokens": 262144,
+    }
+
+    llm = LLM(
+        model="moonshot/kimi-k2.5",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+        base_url="https://qianfan.example.com/v1",
+    )
+
+    assert llm.max_output_tokens is None
+    assert llm.effective_max_output_tokens == DEFAULT_MAX_OUTPUT_TOKENS_CAP
+
+
+@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+def test_max_output_tokens_not_capped_without_custom_base_url(mock_get_model_info):
+    """Direct API (no base_url) keeps litellm's real max_output_tokens."""
+    mock_get_model_info.return_value = {
+        "max_output_tokens": 64000,
+        "max_tokens": 64000,
+        "max_input_tokens": 200000,
+    }
+    llm = LLM(
+        model="claude-opus-4-5",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+    )
+    assert llm.effective_max_output_tokens == 64000
 
 
 @patch("openhands.sdk.llm.llm.get_litellm_model_info")
@@ -1247,13 +1667,21 @@ def test_max_output_tokens_small_max_tokens_not_capped(mock_get_model_info):
         usage_id="test-llm",
     )
 
-    # Should use the actual value since it's below the cap
-    assert llm.max_output_tokens == 4096
-    assert llm.max_output_tokens < DEFAULT_MAX_OUTPUT_TOKENS_CAP
+    # Should use the actual effective value since it's below the cap
+    assert llm.max_output_tokens is None
+    assert llm.effective_max_output_tokens == 4096
+    assert llm.effective_max_output_tokens < DEFAULT_MAX_OUTPUT_TOKENS_CAP
 
 
-def test_explicit_max_output_tokens_not_overridden():
+@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+def test_explicit_max_output_tokens_not_overridden(mock_get_model_info):
     """Test that explicitly set max_output_tokens is respected."""
+    mock_get_model_info.return_value = {
+        "max_tokens": 262144,
+        "max_output_tokens": 131072,
+        "max_input_tokens": 262144,
+    }
+
     llm = LLM(
         model="gpt-4o",
         api_key=SecretStr("test-key"),
@@ -1263,6 +1691,7 @@ def test_explicit_max_output_tokens_not_overridden():
 
     # Should respect the explicit value
     assert llm.max_output_tokens == 32768
+    assert llm.effective_max_output_tokens == 32768
 
 
 @patch("openhands.sdk.llm.llm.get_litellm_model_info")
@@ -1285,8 +1714,10 @@ def test_max_output_tokens_capped_when_equal_to_context_window(
         usage_id="test-llm",
     )
 
-    assert llm.max_output_tokens == 262144 // 2
-    assert llm.max_input_tokens == 262144
+    assert llm.max_output_tokens is None
+    assert llm.effective_max_output_tokens == 131072
+    assert llm.max_input_tokens is None
+    assert llm.effective_max_input_tokens == 262144
 
 
 @patch("openhands.sdk.llm.llm.get_litellm_model_info")
@@ -1310,7 +1741,8 @@ def test_max_output_tokens_capped_when_equal_to_max_tokens(
         usage_id="test-llm",
     )
 
-    assert llm.max_output_tokens == 131072 // 2
+    assert llm.max_output_tokens is None
+    assert llm.effective_max_output_tokens == 131072 // 2
 
 
 @patch("openhands.sdk.llm.llm.get_litellm_model_info")
@@ -1329,7 +1761,8 @@ def test_max_output_tokens_not_capped_when_below_context_window(
         usage_id="test-llm",
     )
 
-    assert llm.max_output_tokens == 8192
+    assert llm.max_output_tokens is None
+    assert llm.effective_max_output_tokens == 8192
 
 
 # LLM Registry Tests

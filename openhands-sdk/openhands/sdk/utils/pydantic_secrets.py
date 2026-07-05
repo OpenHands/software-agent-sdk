@@ -1,30 +1,81 @@
-from pydantic import SecretStr
+import logging
+from collections.abc import Mapping
+from typing import Any, Literal, overload
 
-from openhands.sdk.utils.cipher import Cipher
+from pydantic import SecretStr, ValidationInfo
+
+from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
+
+
+REDACTED_SECRET_VALUE = "**********"
+
+# Type for expose_secrets context value
+ExposeSecretsMode = Literal["encrypted", "plaintext"] | bool
+
+ResolvedExposeMode = Literal["plaintext", "encrypted", "redact"]
+
+_logger = logging.getLogger(__name__)
+
+
+class MissingCipherError(ValueError):
+    """Raised by ``serialize_secret`` when encryption is requested without a cipher."""
+
+
+def resolve_expose_mode(context: Mapping[str, Any] | None) -> ResolvedExposeMode:
+    """Resolve a Pydantic context to plaintext / encrypted / redact.
+
+    Cipher presence implies ``"encrypted"`` (storage-path opt-in) unless
+    ``expose_secrets`` overrides.
+    """
+    if not context:
+        return "redact"
+    expose_mode = context.get("expose_secrets")
+    if expose_mode == "plaintext" or expose_mode is True:
+        return "plaintext"
+    if expose_mode == "encrypted" or context.get("cipher") is not None:
+        return "encrypted"
+    return "redact"
+
+
+def is_redacted_secret(v: str | SecretStr | None) -> bool:
+    if v is None:
+        return False
+    if isinstance(v, SecretStr):
+        return v.get_secret_value() == REDACTED_SECRET_VALUE
+    return v == REDACTED_SECRET_VALUE
 
 
 def serialize_secret(v: SecretStr | None, info):
     """
-    Serialize secret fields with encryption or redaction.
+    Serialize secret fields with encryption, plaintext exposure, or redaction.
 
-    - If a cipher is provided in context, encrypts the secret value
-    - If expose_secrets flag is True in context, exposes the actual value
-    - Otherwise, lets Pydantic handle default masking (redaction)
-    - This prevents accidental secret disclosure
-    """  # noqa: E501
+    Context options:
+    - ``cipher``: If provided, encrypts the secret value (takes precedence)
+    - ``expose_secrets``: Controls how secrets are exposed:
+      - ``"encrypted"``: Encrypt using cipher from context (requires cipher)
+      - ``"plaintext"`` or ``True``: Expose the actual value (backend use only)
+      - ``False`` or absent: Let Pydantic handle default masking (redaction)
+
+    The ``"encrypted"`` mode is safe for frontend clients as they cannot decrypt.
+    The ``"plaintext"`` mode should only be used by trusted backend clients.
+    """
     if v is None:
         return None
 
-    # check if a cipher is supplied
-    if info.context and info.context.get("cipher"):
-        cipher: Cipher = info.context.get("cipher")
-        return cipher.encrypt(v)
+    mode = resolve_expose_mode(info.context)
 
-    # Check if the 'expose_secrets' flag is in the serialization context
-    if info.context and info.context.get("expose_secrets"):
+    if mode == "plaintext":
         return v.get_secret_value()
 
-    # Let Pydantic handle the default masking
+    if mode == "encrypted":
+        cipher: Cipher | None = info.context.get("cipher") if info.context else None
+        if cipher is None:
+            raise MissingCipherError(
+                "Cannot encrypt secret: no cipher configured. "
+                "Set OH_SECRET_KEY environment variable."
+            )
+        return cipher.encrypt(v)
+
     return v
 
 
@@ -49,7 +100,7 @@ def validate_secret(v: str | SecretStr | None, info) -> SecretStr | None:
         secret_value = v
 
     # If the secret is empty, whitespace-only or redacted - return None
-    if not secret_value or not secret_value.strip() or secret_value == "**********":
+    if not secret_value or not secret_value.strip() or is_redacted_secret(secret_value):
         return None
 
     # check if a cipher is supplied
@@ -62,3 +113,85 @@ def validate_secret(v: str | SecretStr | None, info) -> SecretStr | None:
         return v
     else:
         return SecretStr(secret_value)
+
+
+@overload
+def decrypt_str_with_cipher_or_keep(
+    cipher: Cipher, value: str, *, description: str = ...
+) -> str: ...
+
+
+@overload
+def decrypt_str_with_cipher_or_keep(
+    cipher: Cipher, value: Any, *, description: str = ...
+) -> Any: ...
+
+
+def decrypt_str_with_cipher_or_keep(
+    cipher: Cipher,
+    value: Any,
+    *,
+    description: str = "secret",
+) -> Any:
+    """Decrypt a single Fernet-encrypted string in place.
+
+    Returned unchanged when the value isn't a string, doesn't look like a
+    Fernet token (legacy plaintext from clients that pre-date the
+    encryption pipeline), or fails to decrypt (cipher mismatch / token
+    corruption — logged so the operator can repair rather than the
+    object dying at construction).
+
+    Building block for the dict-of-string secret-bearing fields
+    (`agent_context.secrets`, MCP server `env`/`headers`)
+    where each value is a per-key plaintext that's separately
+    encrypted at rest — they can't be typed as :class:`SecretStr`
+    because their keys are user-supplied.
+    """
+    if not isinstance(value, str):
+        return value
+    if not value.startswith(FERNET_TOKEN_PREFIX):
+        return value
+    decrypted = cipher.try_decrypt_str(value)
+    if decrypted is None:
+        _logger.warning(
+            "%s value looks encrypted but could not be decrypted "
+            "(cipher mismatch or corruption); leaving the ciphertext in place.",
+            description,
+        )
+        return value
+    return decrypted
+
+
+def validate_secret_dict(
+    value: Any,
+    info: ValidationInfo,
+    *,
+    description: str = "secret",
+) -> Any:
+    """Decrypt every Fernet-encrypted entry in a ``dict[str, str]`` field.
+
+    Mirrors :func:`validate_secret` for fields whose secret values live
+    in a per-key dict (env-var maps, header maps, agent-context
+    secrets). Use as a ``field_validator(mode="before")`` hook:
+
+    .. code-block:: python
+
+        @field_validator("env", mode="before")
+        @classmethod
+        def _decrypt_env(cls, value, info):
+            return validate_secret_dict(value, info, description="MCP env")
+
+    No-ops when the field isn't a dict (lets downstream validation
+    raise the canonical type error), and when no cipher is in context
+    (legacy plaintext callers, or contexts that have already done the
+    decryption).
+    """
+    if not isinstance(value, dict):
+        return value
+    cipher: Cipher | None = info.context.get("cipher") if info.context else None
+    if cipher is None:
+        return value
+    return {
+        k: decrypt_str_with_cipher_or_keep(cipher, v, description=description)
+        for k, v in value.items()
+    }

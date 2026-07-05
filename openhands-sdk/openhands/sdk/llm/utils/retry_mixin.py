@@ -22,6 +22,57 @@ RetryListener = Callable[[int, int, BaseException | None], None]
 class RetryMixin:
     """Mixin class for retry logic."""
 
+    def _build_before_sleep(
+        self,
+        num_retries: int,
+        retry_listener: RetryListener | None,
+    ) -> Callable[[RetryCallState], None]:
+        """Build a ``before_sleep`` callback shared by sync and async decorators."""
+
+        def before_sleep(retry_state: RetryCallState) -> None:
+            self.log_retry_attempt(retry_state)
+
+            if retry_listener is not None:
+                exc = (
+                    retry_state.outcome.exception()
+                    if retry_state.outcome is not None
+                    else None
+                )
+                retry_listener(retry_state.attempt_number, num_retries, exc)
+
+            if retry_state.outcome is None:
+                return
+            exc = retry_state.outcome.exception()
+            if exc is None:
+                return
+
+            # Only adjust temperature for LLMNoResponseError
+            if isinstance(exc, LLMNoResponseError):
+                kwargs = getattr(retry_state, "kwargs", None)
+                if isinstance(kwargs, dict):
+                    current_temp = kwargs.get(
+                        "temperature", getattr(self, "temperature", None)
+                    )
+                    if current_temp is None:
+                        logger.warning(
+                            "LLMNoResponseError with no configured temperature, "
+                            "leaving temperature unset for next attempt."
+                        )
+                        return
+                    if current_temp == 0:
+                        kwargs["temperature"] = 1.0
+                        logger.warning(
+                            "LLMNoResponseError with temperature=0, "
+                            "setting temperature to 1.0 for next attempt."
+                        )
+                    else:
+                        logger.warning(
+                            f"LLMNoResponseError with temperature={current_temp}, "
+                            "keeping original temperature"
+                        )
+
+        return before_sleep
+
     def retry_decorator(
         self,
         num_retries: int = 5,
@@ -35,42 +86,7 @@ class RetryMixin:
         Create a LLM retry decorator with customizable parameters.
         This is used for 429 errors, and a few other exceptions in LLM classes.
         """
-
-        def before_sleep(retry_state: RetryCallState) -> None:
-            # Log first (also validates outcome as part of logging)
-            self.log_retry_attempt(retry_state)
-
-            if retry_listener is not None:
-                exc = (
-                    retry_state.outcome.exception()
-                    if retry_state.outcome is not None
-                    else None
-                )
-                retry_listener(retry_state.attempt_number, num_retries, exc)
-
-            # If there is no outcome or no exception, nothing to tweak.
-            if retry_state.outcome is None:
-                return
-            exc = retry_state.outcome.exception()
-            if exc is None:
-                return
-
-            # Only adjust temperature for LLMNoResponseError
-            if isinstance(exc, LLMNoResponseError):
-                kwargs = getattr(retry_state, "kwargs", None)
-                if isinstance(kwargs, dict):
-                    current_temp = kwargs.get("temperature", 0)
-                    if current_temp == 0:
-                        kwargs["temperature"] = 1.0
-                        logger.warning(
-                            "LLMNoResponseError with temperature=0, "
-                            "setting temperature to 1.0 for next attempt."
-                        )
-                    else:
-                        logger.warning(
-                            f"LLMNoResponseError with temperature={current_temp}, "
-                            "keeping original temperature"
-                        )
+        before_sleep = self._build_before_sleep(num_retries, retry_listener)
 
         retry_decorator: Callable[[Callable[..., Any]], Callable[..., Any]] = retry(
             before_sleep=before_sleep,

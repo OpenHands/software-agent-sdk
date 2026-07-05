@@ -115,11 +115,12 @@ def test_read_file_offset_beyond_length(tmp_path):
 def test_declared_resources_locks_on_file_path(fake_conv_state):
     """declared_resources returns a file-path key for per-file locking."""
     tool = ReadFileTool.create(conv_state=fake_conv_state)[0]
-    action = ReadFileAction(file_path="/a/b.py")
+    absolute_path = Path(fake_conv_state.workspace.working_dir) / "a" / "b.py"
+    action = ReadFileAction(file_path=str(absolute_path))
     resources = tool.declared_resources(action)
     assert resources.declared is True
     assert len(resources.keys) == 1
-    assert resources.keys[0] == f"file:{Path('/a/b.py').resolve()}"
+    assert resources.keys[0] == f"file:{absolute_path.resolve()}"
 
 
 def test_declared_resources_different_files_different_keys(fake_conv_state):

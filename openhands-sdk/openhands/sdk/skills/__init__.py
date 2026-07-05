@@ -10,6 +10,7 @@ This module provides the unified API for working with skills:
 - `load_user_skills` - Load skills from ~/.openhands/skills/
 - `load_public_skills` - Load skills from the public OpenHands extensions repo
 - `load_available_skills` - Load and merge skills from multiple sources
+- `merge_skills_by_name` - Merge two skill collections by name (primary wins)
 
 **Triggers:**
 - `BaseTrigger`, `KeywordTrigger`, `TaskTrigger` - Skill activation triggers
@@ -41,7 +42,6 @@ from openhands.sdk.skills.fetch import SkillFetchError, fetch_skill_with_resolut
 # Installed skills management
 from openhands.sdk.skills.installed import (
     InstalledSkillInfo,
-    InstalledSkillsMetadata,
     disable_skill,
     enable_skill,
     get_installed_skill,
@@ -64,6 +64,7 @@ from openhands.sdk.skills.skill import (
     load_public_skills,
     load_skills_from_dir,
     load_user_skills,
+    merge_skills_by_name,
     to_prompt,
 )
 
@@ -99,7 +100,6 @@ __all__ = [
     "fetch_skill_with_resolution",
     # Installed skills management
     "InstalledSkillInfo",
-    "InstalledSkillsMetadata",
     "install_skill",
     "install_skills_from_marketplace",
     "uninstall_skill",
@@ -119,6 +119,7 @@ __all__ = [
     "load_user_skills",
     "load_public_skills",
     "load_available_skills",
+    "merge_skills_by_name",
     "to_prompt",
     # Triggers
     "BaseTrigger",

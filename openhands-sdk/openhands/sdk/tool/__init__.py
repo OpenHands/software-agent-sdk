@@ -4,6 +4,13 @@ from openhands.sdk.tool.builtins import (
     FinishTool,
     ThinkTool,
 )
+from openhands.sdk.tool.client_tool import (
+    ClientTool,
+    ClientToolRegistrationError,
+    ClientToolSchemaConflictError,
+    ClientToolSpec,
+    register_client_tools,
+)
 from openhands.sdk.tool.registry import (
     list_registered_tools,
     register_tool,
@@ -24,6 +31,11 @@ from openhands.sdk.tool.tool import (
 
 
 __all__ = [
+    "ClientTool",
+    "ClientToolRegistrationError",
+    "ClientToolSchemaConflictError",
+    "ClientToolSpec",
+    "register_client_tools",
     "DeclaredResources",
     "Tool",
     "ToolDefinition",

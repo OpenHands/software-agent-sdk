@@ -1,11 +1,19 @@
 """Tests for shell path configuration."""
 
 import os
+import platform
 import shutil
 import tempfile
 from unittest.mock import patch
 
 import pytest
+
+
+if platform.system() == "Windows":
+    pytest.skip(
+        "SubprocessTerminal shell path handling depends on Unix PTY support",
+        allow_module_level=True,
+    )
 
 from openhands.tools.terminal.terminal import SubprocessTerminal
 from openhands.tools.terminal.terminal.factory import create_terminal_session

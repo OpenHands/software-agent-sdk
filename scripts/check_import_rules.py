@@ -9,20 +9,20 @@ Rules:
    - openhands.agent_server
 
 2. openhands.tools can import from:
-   - openhands.sdk ✓
+   - openhands.sdk
    BUT NOT from:
    - openhands.workspace
    - openhands.agent_server
 
 3. openhands.workspace can import from:
-   - openhands.sdk ✓
-   - openhands.tools ✓
+   - openhands.sdk
+   - openhands.tools
    BUT NOT from:
    - openhands.agent_server
 
 4. openhands.agent_server can import from:
-   - openhands.sdk ✓
-   - openhands.tools ✓
+   - openhands.sdk
+   - openhands.tools
    BUT NOT from:
    - openhands.workspace
 """
@@ -146,7 +146,7 @@ def main(files: list[str] | None = None) -> int:
     if check_sdk and sdk_path.exists():
         violations = check_sdk_imports(sdk_path)
         if violations:
-            print("❌ Violations in openhands.sdk:")
+            print("[ERROR] Violations in openhands.sdk:")
             for file, imp in violations:
                 rel_path = file.relative_to(repo_root)
                 print(
@@ -159,7 +159,7 @@ def main(files: list[str] | None = None) -> int:
     if check_tools and tools_path.exists():
         violations = check_tools_imports(tools_path)
         if violations:
-            print("❌ Violations in openhands.tools:")
+            print("[ERROR] Violations in openhands.tools:")
             for file, imp in violations:
                 rel_path = file.relative_to(repo_root)
                 print(
@@ -172,7 +172,7 @@ def main(files: list[str] | None = None) -> int:
     if check_agent_server and agent_server_path.exists():
         violations = check_agent_server_imports(agent_server_path)
         if violations:
-            print("❌ Violations in openhands.agent_server:")
+            print("[ERROR] Violations in openhands.agent_server:")
             for file, imp in violations:
                 rel_path = file.relative_to(repo_root)
                 print(
@@ -183,7 +183,7 @@ def main(files: list[str] | None = None) -> int:
 
     if all_violations:
         print(
-            "\n💡 Import dependency rules:\n"
+            "\nImport dependency rules:\n"
             "  - openhands.sdk: Cannot import tools/workspace/agent_server\n"
             "  - openhands.tools: Cannot import workspace/agent_server "
             "(can import sdk)\n"
@@ -193,7 +193,7 @@ def main(files: list[str] | None = None) -> int:
         )
         return 1
 
-    print("✅ All import dependency rules satisfied!")
+    print("All import dependency rules satisfied!")
     return 0
 
 

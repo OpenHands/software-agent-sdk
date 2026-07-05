@@ -71,7 +71,8 @@ jobs:
                 # Need Reviewer Action
 
                 Find all open PRs where:
-                1. The PR is waiting for review (there are no open review comments or change requests)
+                1. The PR is waiting for review (there are no open review comments or change requests, and no human reviewer's latest submitted review is
+                APPROVED; ignore approvals from automation/bot accounts for this check)
                 2. The PR is in a "clean" state (CI passing, no merge conflicts)
                 3. The PR is not marked as draft (draft: false)
                 4. The PR has had no activity (comments, commits, reviews) for more than 3 days.

@@ -1,5 +1,7 @@
 """Tests for AgentContext template rendering functionality."""
 
+import re
+
 import pytest
 from pydantic import SecretStr
 
@@ -153,6 +155,61 @@ class TestAgentContext:
         # Legacy skill should be in REPO_CONTEXT with full content
         assert "<REPO_CONTEXT>" in result
         assert "Legacy repo rules content" in result
+
+    def test_disable_model_invocation_hides_skill_but_preserves_triggers(self):
+        """Disabled skills should not be advertised for invoke_skill, but their
+        trigger-based activation still works."""
+        visible = Skill(
+            name="visible",
+            content="Visible full content",
+            description="Visible skill",
+            source="/path/to/visible/SKILL.md",
+            trigger=None,
+            is_agentskills_format=True,
+        )
+        hidden_triggered = Skill(
+            name="hidden-triggered",
+            content="Hidden triggered content",
+            description="Hidden triggered skill",
+            source="/path/to/hidden-triggered/SKILL.md",
+            trigger=KeywordTrigger(keywords=["hidden-keyword"]),
+            is_agentskills_format=True,
+            disable_model_invocation=True,
+        )
+        hidden_without_trigger = Skill(
+            name="hidden-without-trigger",
+            content="Hidden no-trigger content",
+            description="Hidden no-trigger skill",
+            source="/path/to/hidden-without-trigger/SKILL.md",
+            trigger=None,
+            is_agentskills_format=True,
+            disable_model_invocation=True,
+        )
+        context = AgentContext(
+            skills=[visible, hidden_triggered, hidden_without_trigger]
+        )
+
+        result = context.get_system_message_suffix()
+
+        assert result is not None
+        assert "<name>visible</name>" in result
+        assert "<name>hidden-triggered</name>" not in result
+        assert "<name>hidden-without-trigger</name>" not in result
+        assert "Hidden triggered skill" not in result
+        assert "Hidden no-trigger content" not in result
+
+        trigger_result = context.get_user_message_suffix(
+            Message(
+                role="user",
+                content=[TextContent(text="please use hidden-keyword")],
+            ),
+            skip_skill_names=[],
+        )
+
+        assert trigger_result is not None
+        content, activated_skill_names = trigger_result
+        assert "Hidden triggered content" in content.text
+        assert activated_skill_names == ["hidden-triggered"]
 
     def test_get_system_message_suffix_with_repo_skills(self):
         """Test system message suffix rendering with repo skills."""
@@ -904,13 +961,13 @@ templates.",
         assert result == "2024-03-15T14:30:00+00:00"
 
     def test_get_formatted_datetime_with_datetime_object(self):
-        """Test get_formatted_datetime formats datetime as ISO 8601."""
+        """Datetime objects render to the minute: no seconds or offset."""
         from datetime import datetime
 
-        dt = datetime(2024, 3, 15, 14, 30, 0)
+        dt = datetime(2024, 3, 15, 14, 30, 45)
         context = AgentContext(current_datetime=dt)
         result = context.get_formatted_datetime()
-        assert result == "2024-03-15T14:30:00"
+        assert result == "2024-03-15T14:30"
 
     def test_get_formatted_datetime_with_none(self):
         """Test get_formatted_datetime returns None when current_datetime is None."""
@@ -919,16 +976,24 @@ templates.",
         assert result is None
 
     def test_agent_context_default_datetime(self):
-        """Test that AgentContext defaults to current datetime."""
+        """Test that AgentContext defaults to the current timezone-aware datetime."""
         from datetime import datetime, timedelta
 
-        before = datetime.now()
+        before = datetime.now().astimezone()
         context = AgentContext()
-        after = datetime.now()
+        after = datetime.now().astimezone()
 
         # Verify current_datetime is set and is a datetime object
         assert context.current_datetime is not None
         assert isinstance(context.current_datetime, datetime)
+        # The default field value is timezone-aware (the rendered string trims it).
+        assert context.current_datetime.tzinfo is not None
+        # Rendered value is "YYYY-MM-DDTHH:MM": no seconds, no UTC offset.
+        formatted = context.get_formatted_datetime()
+        assert formatted is not None
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", formatted), (
+            f"formatted datetime should be YYYY-MM-DDTHH:MM, got {formatted!r}"
+        )
         # Verify it's approximately the current time (within 1 second)
         assert before <= context.current_datetime <= after + timedelta(seconds=1)
 
@@ -1024,10 +1089,36 @@ templates.",
         """Test system message suffix with a datetime object."""
         from datetime import datetime
 
-        dt = datetime(2024, 3, 15, 14, 30, 0)
+        dt = datetime(2024, 3, 15, 14, 30, 45)
         context = AgentContext(current_datetime=dt)
         result = context.get_system_message_suffix()
 
         assert result is not None
         assert "<CURRENT_DATETIME>" in result
-        assert "The current date and time is: 2024-03-15T14:30:00" in result
+        assert "The current date and time is: 2024-03-15T14:30\n" in result
+
+
+def test_agent_context_secrets_raw_strings_redacted_by_default():
+    context = AgentContext(secrets={"GITHUB_TOKEN": "ghp_real_secret"})
+
+    # In-memory shape is preserved — runtime consumers read raw strings directly.
+    assert context.secrets is not None
+    assert context.secrets["GITHUB_TOKEN"] == "ghp_real_secret"
+
+    assert "ghp_real_secret" not in context.model_dump_json()
+    assert context.model_dump(mode="json")["secrets"] == {"GITHUB_TOKEN": "**********"}
+
+    exposed = context.model_dump(mode="json", context={"expose_secrets": True})
+    assert exposed["secrets"] == {"GITHUB_TOKEN": "ghp_real_secret"}
+
+
+def test_agent_context_secrets_static_secret_still_masked():
+    from openhands.sdk.secret import StaticSecret
+
+    context = AgentContext(
+        secrets={"TOKEN": StaticSecret(value=SecretStr("static-secret"))},
+    )
+
+    assert "static-secret" not in context.model_dump_json()
+    exposed = context.model_dump(context={"expose_secrets": True})
+    assert exposed["secrets"]["TOKEN"]["value"] == "static-secret"

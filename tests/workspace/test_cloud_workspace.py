@@ -579,3 +579,79 @@ def test_callback_failure_does_not_raise(monkeypatch):
 
         # Should not raise
         ws.__exit__(None, None, None)
+
+
+# --- conversation_id registration tests ---
+
+
+def test_register_conversation_sets_conversation_id():
+    """register_conversation sets the _conversation_id attribute."""
+    ws = _make_local_workspace()
+
+    ws.register_conversation("conv-123")
+
+    assert ws._conversation_id == "conv-123"
+    assert ws.conversation_id == "conv-123"
+
+
+def test_conversation_id_property_returns_none_initially():
+    """conversation_id property returns None when no conversation registered."""
+    ws = _make_local_workspace()
+
+    assert ws.conversation_id is None
+
+
+def test_callback_includes_conversation_id_when_registered(monkeypatch):
+    """Callback payload includes conversation_id when registered."""
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+    monkeypatch.setenv("AUTOMATION_RUN_ID", "run-42")
+    ws = _make_local_workspace()
+
+    # Register a conversation
+    ws.register_conversation("conv-xyz")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        ws.__exit__(None, None, None)
+
+        # Check the POST payload includes conversation_id
+        mock_client.post.assert_called_once()
+        payload = mock_client.post.call_args.kwargs["json"]
+        assert payload["status"] == "COMPLETED"
+        assert payload["run_id"] == "run-42"
+        assert payload["conversation_id"] == "conv-xyz"
+
+
+def test_callback_omits_conversation_id_when_not_registered(monkeypatch):
+    """Callback payload omits conversation_id when not registered."""
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+    monkeypatch.setenv("AUTOMATION_RUN_ID", "run-42")
+    ws = _make_local_workspace()
+
+    # Do not register a conversation
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        ws.__exit__(None, None, None)
+
+        # Check the POST payload does NOT include conversation_id
+        mock_client.post.assert_called_once()
+        payload = mock_client.post.call_args.kwargs["json"]
+        assert payload["status"] == "COMPLETED"
+        assert "conversation_id" not in payload

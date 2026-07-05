@@ -1,6 +1,5 @@
 """Tests for the skill system."""
 
-import os
 import tempfile
 from pathlib import Path
 
@@ -13,7 +12,14 @@ from openhands.sdk.context import (
     load_project_skills,
     load_skills_from_dir,
 )
-from openhands.sdk.skills.utils import find_third_party_files
+from openhands.sdk.skills.utils import (
+    find_regular_md_files,
+    find_skill_md,
+    find_skill_md_directories,
+    find_third_party_files,
+)
+from openhands.sdk.utils.path import to_posix_path
+from tests.platform_utils import require_case_sensitive_fs, symlink_or_skip
 
 
 CONTENT = "# dummy header\ndummy content\n## dummy subheader\ndummy subcontent\n"
@@ -224,7 +230,7 @@ Add proper error handling."""
     assert agent.name == "cursorrules"
     assert agent.content == cursorrules_content
     assert agent.trigger is None
-    assert agent.source == str(cursorrules_path)
+    assert agent.source == to_posix_path(cursorrules_path)
 
 
 def test_skill_version_as_integer(tmp_path):
@@ -749,7 +755,7 @@ def test_find_third_party_files_skips_symlink_duplicates(tmp_path):
     agents_md = tmp_path / "AGENTS.md"
     agents_md.write_text("# My repo guide")
     claude_md = tmp_path / "CLAUDE.md"
-    os.symlink(agents_md, claude_md)
+    symlink_or_skip(agents_md, claude_md)
 
     files = find_third_party_files(tmp_path, Skill.PATH_TO_THIRD_PARTY_SKILL_NAME)
 
@@ -762,7 +768,7 @@ def test_load_project_skills_symlinked_claude_to_agents(tmp_path):
     agents_md = tmp_path / "AGENTS.md"
     agents_md.write_text("# My repo guide\nShared instructions.")
     claude_md = tmp_path / "CLAUDE.md"
-    os.symlink(agents_md, claude_md)
+    symlink_or_skip(agents_md, claude_md)
 
     skills = load_project_skills(tmp_path)
 
@@ -782,3 +788,53 @@ def test_find_third_party_files_keeps_distinct_files(tmp_path):
 
     # Both files should be returned since they are distinct
     assert len(files) == 2
+
+
+# Deterministic discovery ordering (issue #3607). Monkeypatches force reverse
+# order so each test fails if the sorted() wrapper is dropped.
+
+
+def test_find_skill_md_directories_sorted(tmp_path, monkeypatch):
+    """SKILL.md dirs are discovered in sorted order."""
+    for n in ["zebra", "alpha", "mango", "beta"]:
+        (tmp_path / n).mkdir()
+        (tmp_path / n / "SKILL.md").write_text(f"# {n}")
+    real = Path.iterdir
+    monkeypatch.setattr(Path, "iterdir", lambda self: reversed(sorted(real(self))))
+    results = find_skill_md_directories(tmp_path)
+    assert [p.parent.name for p in results] == ["alpha", "beta", "mango", "zebra"]
+
+
+def test_find_regular_md_files_sorted(tmp_path, monkeypatch):
+    """Regular .md files are discovered in sorted order."""
+    (tmp_path / "b.md").write_text("b")
+    (tmp_path / "a.md").write_text("a")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "c.md").write_text("c")
+    real = Path.rglob
+    monkeypatch.setattr(Path, "rglob", lambda self, p: reversed(sorted(real(self, p))))
+    results = find_regular_md_files(tmp_path, set())
+    assert [p.name for p in results] == ["a.md", "b.md", "c.md"]
+
+
+def test_find_skill_md_collision_winner_deterministic(tmp_path, monkeypatch):
+    """SKILL.md/skill.md collision deterministically picks 'SKILL.md' (S < s)."""
+    require_case_sensitive_fs(tmp_path)
+    (tmp_path / "skill.md").write_text("lower")
+    (tmp_path / "SKILL.md").write_text("upper")
+    # iterdir presented lowercase-first; sorted() must still pick SKILL.md.
+    entries = [tmp_path / "skill.md", tmp_path / "SKILL.md"]
+    monkeypatch.setattr(Path, "iterdir", lambda self: iter(entries))
+    found = find_skill_md(tmp_path)
+    assert found is not None and found.read_text() == "upper"
+
+
+def test_find_third_party_files_collision_winner_deterministic(tmp_path, monkeypatch):
+    """AGENTS.md/agents.md collision deterministically picks 'AGENTS.md'."""
+    require_case_sensitive_fs(tmp_path)
+    (tmp_path / "agents.md").write_text("lower")
+    (tmp_path / "AGENTS.md").write_text("upper")
+    entries = [tmp_path / "agents.md", tmp_path / "AGENTS.md"]
+    monkeypatch.setattr(Path, "iterdir", lambda self: iter(entries))
+    files = find_third_party_files(tmp_path, {"agents.md": "agents"})
+    assert [f.name for f in files] == ["AGENTS.md"]

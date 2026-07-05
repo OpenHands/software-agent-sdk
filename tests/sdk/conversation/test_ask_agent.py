@@ -154,6 +154,43 @@ def test_local_conversation_ask_agent(mock_completion, tmp_path, agent):
 
 
 @patch("openhands.sdk.llm.llm.LLM.completion")
+def test_ask_agent_llm_refreshes_after_switch_llm(mock_completion, tmp_path, agent):
+    """switch_llm() invalidates the cached ask-agent-llm so /btw follows the switch.
+
+    Regression test for #3943: after switching profiles, a second ask_agent()
+    must clone a fresh ask-agent-llm from the new agent LLM rather than reuse
+    the one cached from the previous profile.
+    """
+    mock_completion.return_value = create_mock_llm_response("answer")
+
+    conv = Conversation(
+        agent=agent,
+        persistence_dir=str(tmp_path),
+        workspace=str(tmp_path),
+    )
+
+    # First /btw caches an ask-agent-llm cloned from profile A.
+    conv.ask_agent("profile A?")
+    assert conv.llm_registry.get("ask-agent-llm").model == agent.llm.model
+
+    # Switch the conversation to a distinguishable profile B.
+    profile_b = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test-key"),
+        usage_id="profile-b",
+    )
+    conv.switch_llm(profile_b)
+
+    # The stale ask-agent-llm must be gone, not silently reused.
+    with pytest.raises(KeyError):
+        conv.llm_registry.get("ask-agent-llm")
+
+    # Second /btw re-clones from profile B.
+    conv.ask_agent("profile B?")
+    assert conv.llm_registry.get("ask-agent-llm").model == "gpt-4o"
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
 def test_local_conversation_ask_agent_copies_llm_config(mock_completion, tmp_path):
     """ask_agent creates LLM with parameters copied from original agent's LLM."""
     mock_completion.return_value = create_mock_llm_response("Test response")
@@ -185,6 +222,57 @@ def test_local_conversation_ask_agent_copies_llm_config(mock_completion, tmp_pat
     # Verify the specific custom values are copied
     assert ask_agent_llm.native_tool_calling is False
     assert ask_agent_llm.caching_prompt is False
+
+
+def create_mock_model_response(content: str) -> ModelResponse:
+    """A raw litellm ModelResponse, as returned by ``LLM._transport_call``."""
+    return ModelResponse(
+        id="test-id",
+        choices=[
+            Choices(
+                finish_reason="stop",
+                index=0,
+                message=LiteLLMMessage(content=content, role="assistant"),
+            )
+        ],
+        created=1234567890,
+        model="gpt-4o-mini",
+        object="chat.completion",
+        usage=Usage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+    )
+
+
+@patch("openhands.sdk.llm.llm.LLM._transport_call", autospec=True)
+def test_ask_agent_disables_streaming_when_llm_streams(mock_transport, tmp_path):
+    """Regression test (sibling of PR #3901): a ``stream=True`` agent LLM must
+    still answer ask_agent even though the path passes no ``on_token`` callback.
+    Patching ``_transport_call`` keeps the real streaming guard in
+    ``completion()`` live, so the bug reproduces without the fix.
+    """
+    mock_transport.return_value = create_mock_model_response("4")
+
+    streaming_llm = LLM(
+        model="gpt-4o-mini",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+        stream=True,
+    )
+    agent = Agent(llm=streaming_llm, tools=[])
+    conv = Conversation(
+        agent=agent,
+        persistence_dir=str(tmp_path),
+        workspace=str(tmp_path),
+    )
+
+    result = conv.ask_agent("What is 2+2?")
+
+    assert result == "4"
+    mock_transport.assert_called_once()
+    # Streaming was disabled on the dedicated ask-agent LLM; agent LLM untouched.
+    assert mock_transport.call_args.kwargs["enable_streaming"] is False
+    assert mock_transport.call_args.kwargs["on_token"] is None
+    assert streaming_llm.stream is True
+    assert conv.llm_registry.get("ask-agent-llm").stream is False
 
 
 @patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")

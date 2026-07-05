@@ -1,12 +1,14 @@
 """Tests for repository cloning and skill loading in OpenHandsCloudWorkspace."""
 
+import logging
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from openhands.workspace.cloud.repo import (
+# Import from SDK repo module (cloud workspace re-exports these)
+from openhands.sdk.workspace.repo import (
     CloneResult,
     GitProvider,
     RepoMapping,
@@ -124,6 +126,18 @@ class TestRepoSource:
         repo = RepoSource(url="my-org/my-repo", provider="github")
         assert repo.url == "my-org/my-repo"
 
+    def test_http_url_credentials_redacted_in_warning(self, caplog):
+        """The http->https normalization warning must not leak embedded creds."""
+        with caplog.at_level(logging.WARNING):
+            repo = RepoSource(url="http://oauth2:SUPERSECRET@github.com/owner/repo.git")
+        # The credential never reaches the logs...
+        assert "SUPERSECRET" not in caplog.text
+        assert "oauth2" not in caplog.text
+        assert "Converting HTTP URL to HTTPS" in caplog.text
+        assert "http://****@github.com/owner/repo.git" in caplog.text
+        # ...but normalization still happens on the stored value.
+        assert repo.url == "https://oauth2:SUPERSECRET@github.com/owner/repo.git"
+
 
 class TestProviderDetection:
     """Tests for provider detection from URLs."""
@@ -175,6 +189,10 @@ class TestHelperFunctions:
         assert _extract_repo_name("https://github.com/owner/repo") == "repo"
         assert _extract_repo_name("https://github.com/owner/repo.git") == "repo"
         assert _extract_repo_name("https://gitlab.com/owner/repo") == "repo"
+
+    def test_extract_repo_name_windows_file_url(self):
+        """Test extracting repo names from Windows file URLs."""
+        assert _extract_repo_name(r"file://C:\Users\user\work\repo") == "repo"
 
     def test_extract_repo_name_ssh_url(self):
         """Test extracting repo name from SSH URLs."""
@@ -363,6 +381,30 @@ class TestCloneRepos:
             assert result.repo_mappings == {}
 
     @patch("subprocess.run")
+    def test_clone_failure_redacts_credentials_in_stderr(self, mock_run, caplog):
+        """A failing clone must not leak the auth token echoed back in stderr."""
+        token = "ghp_supersecrettoken"
+        # git often echoes the authenticated remote URL back in stderr on failure.
+        leaky_stderr = (
+            f"fatal: Authentication failed for "
+            f"'https://{token}@github.com/owner/repo.git/'"
+        )
+        mock_run.return_value = MagicMock(returncode=1, stderr=leaky_stderr)
+
+        def token_fetcher(name: str) -> str | None:
+            return token if name == "github_token" else None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos = [RepoSource(url="owner/repo", provider="github")]
+            with caplog.at_level(logging.WARNING):
+                result = clone_repos(repos, Path(tmpdir), token_fetcher=token_fetcher)
+
+        assert result.success_count == 0
+        assert token not in caplog.text
+        assert "[clone] Failed:" in caplog.text
+        assert "https://****@github.com/owner/repo.git" in caplog.text
+
+    @patch("subprocess.run")
     def test_clone_with_token_fetcher(self, mock_run):
         """Test clone with token fetcher callback."""
         mock_run.return_value = MagicMock(returncode=0, stderr="")
@@ -427,7 +469,7 @@ class TestCloneRepos:
 class TestCloudWorkspaceRepoMethods:
     """Tests for OpenHandsCloudWorkspace repo methods."""
 
-    @patch("openhands.workspace.cloud.workspace.clone_repos")
+    @patch("openhands.sdk.workspace.remote.base._clone_repos_helper")
     @patch.object(
         __import__(
             "openhands.workspace.cloud.workspace", fromlist=["OpenHandsCloudWorkspace"]
@@ -467,7 +509,7 @@ class TestCloudWorkspaceRepoMethods:
             assert len(repos) == 2
             assert all(isinstance(r, RepoSource) for r in repos)
 
-    @patch("openhands.workspace.cloud.workspace.clone_repos")
+    @patch("openhands.sdk.workspace.remote.base._clone_repos_helper")
     @patch.object(
         __import__(
             "openhands.workspace.cloud.workspace", fromlist=["OpenHandsCloudWorkspace"]

@@ -17,6 +17,7 @@ metadata:
   author: example-org
   version: "1.0"
 allowed-tools: Bash(pdftotext:*) Read Write
+disable-model-invocation: true
 triggers:
   - pdf
 ---
@@ -32,6 +33,7 @@ triggers:
     assert skill.compatibility == "Requires poppler-utils"
     assert skill.metadata == {"author": "example-org", "version": "1.0"}
     assert skill.allowed_tools == ["Bash(pdftotext:*)", "Read", "Write"]
+    assert skill.disable_model_invocation is True
     assert skill.match_trigger("process pdf") == "pdf"
 
 
@@ -85,4 +87,5 @@ def test_skill_backward_compatibility(tmp_path) -> None:
     assert skill.name == "legacy"
     assert skill.description is None
     assert skill.license is None
+    assert skill.disable_model_invocation is False
     assert skill.match_trigger("test") == "test"

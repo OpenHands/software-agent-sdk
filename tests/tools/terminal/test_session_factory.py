@@ -1,10 +1,18 @@
 """Tests for session factory and auto-detection logic."""
 
+import platform
 import tempfile
 import warnings
 from unittest.mock import patch
 
 import pytest
+
+
+if platform.system() == "Windows":
+    pytest.skip(
+        "Terminal session factory currently has only Unix terminal backends",
+        allow_module_level=True,
+    )
 
 from openhands.tools.terminal.terminal import (
     SubprocessTerminal,

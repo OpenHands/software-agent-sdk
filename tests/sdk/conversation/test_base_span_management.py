@@ -5,8 +5,11 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 from uuid import UUID
 
+import pytest
+
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.conversation_stats import ConversationStats
+from openhands.sdk.conversation.types import TraceMetadataValue
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.tool.schema import Action, Observation
 
@@ -72,6 +75,17 @@ class MockConversation(BaseConversation):
         """Mock implementation of fork method."""
         raise NotImplementedError("Mock fork not implemented")
 
+    def navigate_to(self, event_id: Any) -> None:
+        """Mock implementation of navigate_to method."""
+        raise NotImplementedError("Mock navigate_to not implemented")
+
+
+def test_base_conversation_load_plugin_default_not_supported():
+    conversation = MockConversation()
+
+    with pytest.raises(NotImplementedError, match="does not support loading plugins"):
+        conversation.load_plugin("plugin@marketplace")
+
 
 def test_base_conversation_span_management():
     """Test that BaseConversation properly manages span state to prevent double-ending."""  # noqa: E501
@@ -83,28 +97,112 @@ def test_base_conversation_span_management():
         patch(
             "openhands.sdk.conversation.base.should_enable_observability"
         ) as mock_should_enable,
-        patch("openhands.sdk.conversation.base.start_active_span") as mock_start_span,
-        patch("openhands.sdk.conversation.base.end_active_span") as mock_end_span,
+        patch("openhands.sdk.conversation.base.start_root_span") as mock_start_span,
+        patch("openhands.sdk.conversation.base.end_root_span") as mock_end_span,
     ):
         # Test when observability is enabled
         mock_should_enable.return_value = True
+        fake_root = MagicMock(name="root-span")
+        mock_start_span.return_value = fake_root
 
         # Start span
         conversation._start_observability_span("test-session-id")
         mock_start_span.assert_called_once_with(
-            "conversation", session_id="test-session-id"
+            "conversation",
+            session_id="test-session-id",
+            user_id=None,
+            metadata=None,
+            tags=None,
+            attributes=None,
         )
         assert conversation._span_ended is False
+        assert conversation._observability_root_span is fake_root
+
+        # Calling start again is idempotent (already-started conversations
+        # must not produce a second root span).
+        conversation._start_observability_span("test-session-id")
+        assert mock_start_span.call_count == 1
 
         # End span first time
         conversation._end_observability_span()
-        mock_end_span.assert_called_once()
+        mock_end_span.assert_called_once_with(fake_root)
         assert conversation._span_ended is True
+        assert conversation._observability_root_span is None
 
-        # Try to end span again - should not call end_active_span again
+        # Try to end span again - should not call end_root_span again
         conversation._end_observability_span()
         assert mock_end_span.call_count == 1  # Still only called once
         assert conversation._span_ended is True
+
+
+def test_base_conversation_passes_observability_metadata_and_tag_attributes():
+    """Conversation metadata, span tags, and conversation tags reach the root span."""
+    conversation = MockConversation()
+
+    with (
+        patch(
+            "openhands.sdk.conversation.base.should_enable_observability",
+            return_value=True,
+        ),
+        patch("openhands.sdk.conversation.base.start_root_span") as mock_start_span,
+    ):
+        metadata: dict[str, TraceMetadataValue] = {
+            "repo_name": "OpenHands/software-agent-sdk"
+        }
+        span_tags = ["repo:OpenHands/software-agent-sdk"]
+        conversation_tags = {"automationid": "auto-1", "automationrunid": "run-1"}
+
+        conversation._start_observability_span(
+            "test-session-id",
+            user_id="user-42",
+            metadata=metadata,
+            tags=span_tags,
+            conversation_tags=conversation_tags,
+        )
+
+        mock_start_span.assert_called_once_with(
+            "conversation",
+            session_id="test-session-id",
+            user_id="user-42",
+            metadata=metadata,
+            tags=span_tags,
+            attributes={
+                "conversation.tags.automationid": "auto-1",
+                "conversation.tags.automationrunid": "run-1",
+            },
+        )
+
+
+def test_base_conversation_uses_custom_observability_span_name_as_child_span():
+    """Custom span names are emitted as child spans under the conversation root."""
+    conversation = MockConversation()
+
+    with (
+        patch(
+            "openhands.sdk.conversation.base.should_enable_observability",
+            return_value=True,
+        ),
+        patch("openhands.sdk.conversation.base.start_root_span") as mock_start_span,
+        patch("openhands.sdk.conversation.base.start_child_span") as mock_child_span,
+    ):
+        conversation._start_observability_span(
+            "test-session-id",
+            span_name="pr_review_evaluation",
+        )
+
+        mock_start_span.assert_called_once_with(
+            "conversation",
+            session_id="test-session-id",
+            user_id=None,
+            metadata=None,
+            tags=None,
+            attributes=None,
+        )
+        mock_child_span.assert_called_once_with(
+            mock_start_span.return_value,
+            "pr_review_evaluation",
+            tags=None,
+        )
 
 
 def test_base_conversation_span_management_disabled():
@@ -117,21 +215,22 @@ def test_base_conversation_span_management_disabled():
         patch(
             "openhands.sdk.conversation.base.should_enable_observability"
         ) as mock_should_enable,
-        patch("openhands.sdk.conversation.base.start_active_span") as mock_start_span,
-        patch("openhands.sdk.conversation.base.end_active_span") as mock_end_span,
+        patch("openhands.sdk.conversation.base.start_root_span") as mock_start_span,
+        patch("openhands.sdk.conversation.base.end_root_span") as mock_end_span,
     ):
         # Test when observability is disabled
         mock_should_enable.return_value = False
 
-        # Try to start span - should not call start_active_span
+        # Try to start span - should not call start_root_span
         conversation._start_observability_span("test-session-id")
         mock_start_span.assert_not_called()
         assert conversation._span_ended is False
+        assert conversation._observability_root_span is None
 
-        # Try to end span - should not call end_active_span
+        # Ending without a started root span is a no-op and marks ended.
         conversation._end_observability_span()
         mock_end_span.assert_not_called()
-        assert conversation._span_ended is False
+        assert conversation._span_ended is True
 
 
 def test_base_conversation_no_span_warnings(caplog):
@@ -145,8 +244,8 @@ def test_base_conversation_no_span_warnings(caplog):
             "openhands.sdk.conversation.base.should_enable_observability",
             return_value=True,
         ),
-        patch("openhands.sdk.conversation.base.start_active_span"),
-        patch("openhands.sdk.conversation.base.end_active_span"),
+        patch("openhands.sdk.conversation.base.start_root_span"),
+        patch("openhands.sdk.conversation.base.end_root_span"),
     ):
         # Capture logs at WARNING level
         with caplog.at_level(logging.WARNING):

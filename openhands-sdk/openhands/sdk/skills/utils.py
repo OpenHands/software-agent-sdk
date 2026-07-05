@@ -7,13 +7,14 @@ import os
 import re
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastmcp.mcp_config import MCPConfig
 
-from openhands.sdk.git.cached_repo import try_cached_clone_or_update
+from openhands.sdk.git.cached_repo import GitHelper, try_cached_clone_or_update
 from openhands.sdk.logger import get_logger
 from openhands.sdk.skills.exceptions import SkillValidationError
+from openhands.sdk.utils.path import to_posix_path
 
 
 if TYPE_CHECKING:
@@ -23,6 +24,101 @@ if TYPE_CHECKING:
 SecretLookup = Callable[[str], str | None]
 
 logger = get_logger(__name__)
+
+# Regex patterns for variable expansion
+# Braced only: ${VAR} or ${VAR:-default}
+_BRACED_VAR_PATTERN = re.compile(r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)(?::-([^}]*))?\}")
+# Braced and unbraced: $VAR, ${VAR}, or ${VAR:-default}
+_ALL_VAR_PATTERN = re.compile(
+    r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)(?::-([^}]*))?\}|\$([a-zA-Z_][a-zA-Z0-9_]*)"
+)
+
+
+def expand_variable_references(
+    data: Any,
+    *,
+    variables: dict[str, str] | None = None,
+    get_secret: SecretLookup | None = None,
+    check_env: bool = False,
+    expand_defaults: bool = True,
+    support_unbraced: bool = False,
+) -> Any:
+    """Expand variable references in data structures.
+
+    This is the core expansion function used by both MCP config expansion
+    and runtime tool parameter expansion.
+
+    Supports variable expansion patterns:
+    - ${VAR} - Braced variable reference (always supported)
+    - ${VAR:-default} - With default value (always supported)
+    - $VAR - Unbraced variable reference (only if support_unbraced=True)
+
+    Resolution order (each source is checked only if provided/enabled):
+    1. Provided variables dict
+    2. Secrets (via get_secret callback)
+    3. Environment variables (only if check_env=True)
+    4. Default value (only if expand_defaults=True)
+
+    Args:
+        data: Data to expand (string, dict, list, or other).
+        variables: Dictionary of variable names to values.
+        get_secret: Callback to look up a secret by name.
+        check_env: If True, check os.environ for unresolved variables.
+        expand_defaults: If True, apply default values for unresolved variables.
+        support_unbraced: If True, support $VAR syntax in addition to ${VAR}.
+
+    Returns:
+        Data with variable references expanded.
+    """
+    pattern = _ALL_VAR_PATTERN if support_unbraced else _BRACED_VAR_PATTERN
+
+    def replace_var(match: re.Match) -> str:
+        # For braced pattern: group(1) = var_name, group(2) = default
+        # For all pattern: group(1)=braced, group(2)=default, group(3)=unbraced
+        if support_unbraced:
+            braced_var = match.group(1)
+            default_value = match.group(2)
+            unbraced_var = match.group(3)
+            var_name = braced_var or unbraced_var
+        else:
+            var_name = match.group(1)
+            default_value = match.group(2)
+
+        # Resolution order: variables -> secrets -> env -> default
+        if variables is not None and var_name in variables:
+            return variables[var_name]
+
+        if get_secret is not None:
+            secret_value = get_secret(var_name)
+            if secret_value is not None:
+                return secret_value
+
+        if check_env and var_name in os.environ:
+            return os.environ[var_name]
+
+        # Apply default only if expand_defaults is True and we have a default
+        if expand_defaults and default_value is not None:
+            return default_value
+
+        # Return original if not found (preserves placeholder)
+        return match.group(0)
+
+    def expand_value(value: Any) -> Any:
+        match value:
+            case str():
+                return pattern.sub(replace_var, value)
+            case dict():
+                return {
+                    expand_value(k) if isinstance(k, str) else k: expand_value(v)
+                    for k, v in value.items()
+                }
+            case list():
+                return [expand_value(item) for item in value]
+            case _:
+                return value
+
+    return expand_value(data)
+
 
 # Standard resource directory names per AgentSkills spec
 RESOURCE_DIRECTORIES = ("scripts", "references", "assets")
@@ -46,7 +142,8 @@ def find_skill_md(skill_dir: Path) -> Path | None:
     """
     if not skill_dir.is_dir():
         return None
-    for item in skill_dir.iterdir():
+    # sorted() ensures deterministic case-collision winner (SKILL.md < skill.md).
+    for item in sorted(skill_dir.iterdir()):
         if item.is_file() and item.name.lower() == "skill.md":
             return item
     return None
@@ -120,35 +217,24 @@ def expand_mcp_variables(
     Returns:
         Configuration with variables expanded.
     """
-    # Convert Pydantic models to dicts before JSON serialization
+    # Convert Pydantic models to plain containers before variable expansion.
     serializable_config = _serialize_for_json(config)
-    # Convert to JSON string for easy replacement
-    config_str = json.dumps(serializable_config)
 
-    # Pattern for ${VAR} or ${VAR:-default}
-    var_pattern = re.compile(r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)(?::-([^}]*))?\}")
+    # Use the shared expansion function with MCP config settings:
+    # - check_env=True (check environment variables)
+    # - support_unbraced=False (only ${VAR} syntax for config files)
+    expanded_config = expand_variable_references(
+        serializable_config,
+        variables=variables,
+        get_secret=get_secret,
+        check_env=True,
+        expand_defaults=expand_defaults,
+        support_unbraced=False,
+    )
 
-    def replace_var(match: re.Match) -> str:
-        var_name = match.group(1)
-        default_value = match.group(2)
-
-        # Check provided variables first, then secrets, then environment
-        if var_name in variables:
-            return variables[var_name]
-        if get_secret is not None:
-            secret_value = get_secret(var_name)
-            if secret_value is not None:
-                return secret_value
-        if var_name in os.environ:
-            return os.environ[var_name]
-        # Apply default only if expand_defaults is True
-        if expand_defaults and default_value is not None:
-            return default_value
-        # Return original if not found (preserves placeholder for later expansion)
-        return match.group(0)
-
-    config_str = var_pattern.sub(replace_var, config_str)
-    return json.loads(config_str)
+    if not isinstance(expanded_config, dict):
+        raise TypeError("expanded MCP config must be a dictionary")
+    return expanded_config
 
 
 def load_mcp_config(
@@ -176,7 +262,7 @@ def load_mcp_config(
         SkillValidationError: If the file cannot be parsed or is invalid.
     """
     try:
-        with open(mcp_json_path) as f:
+        with open(mcp_json_path, encoding="utf-8") as f:
             config = json.load(f)
     except json.JSONDecodeError as e:
         raise SkillValidationError(f"Invalid JSON in {mcp_json_path}: {e}") from e
@@ -265,7 +351,8 @@ def find_third_party_files(
     files: list[Path] = []
     seen_names: set[str] = set()
     seen_real_paths: set[Path] = set()
-    for item in repo_root.iterdir():
+    # sorted() so an AGENTS.md/agents.md collision and the order are deterministic.
+    for item in sorted(repo_root.iterdir()):
         if item.is_file() and item.name.lower() in target_names:
             # Avoid duplicates (e.g., AGENTS.md and agents.md in same dir)
             name_lower = item.name.lower()
@@ -303,7 +390,7 @@ def find_skill_md_directories(skill_dir: Path) -> list[Path]:
     results: list[Path] = []
     if not skill_dir.exists():
         return results
-    for subdir in skill_dir.iterdir():
+    for subdir in sorted(skill_dir.iterdir()):
         if subdir.is_dir():
             skill_md = find_skill_md(subdir)
             if skill_md:
@@ -324,7 +411,7 @@ def find_regular_md_files(skill_dir: Path, exclude_dirs: set[Path]) -> list[Path
     files: list[Path] = []
     if not skill_dir.exists():
         return files
-    for f in skill_dir.rglob("*.md"):
+    for f in sorted(skill_dir.rglob("*.md")):
         is_readme = f.name == "README.md"
         is_skill_md = f.name.lower() == "skill.md"
         is_in_excluded_dir = any(f.is_relative_to(d) for d in exclude_dirs)
@@ -380,7 +467,7 @@ def get_skills_cache_dir() -> Path:
 
 def update_skills_repository(
     repo_url: str,
-    branch: str,
+    ref: str,
     cache_dir: Path,
 ) -> Path | None:
     """Clone or update the local skills repository.
@@ -390,14 +477,30 @@ def update_skills_repository(
 
     Args:
         repo_url: URL of the skills repository.
-        branch: Branch name to checkout and track.
+        ref: Branch name, tag, or full commit SHA to checkout.
         cache_dir: Directory where the repository should be cached.
 
     Returns:
         Path to the local repository if successful, None otherwise.
     """
     repo_path = cache_dir / "public-skills"
-    return try_cached_clone_or_update(repo_url, repo_path, ref=branch, update=True)
+    return try_cached_clone_or_update(repo_url, repo_path, ref=ref, update=True)
+
+
+def is_skills_repo_pinned(repo_path: Path) -> bool:
+    """Return True if the local skills repo is pinned to a fixed ref.
+
+    A pinned ref is one that cannot change over time — a tag or a specific
+    commit SHA. After checking out such a ref the repository is left in
+    detached HEAD state, which is the signal used here.
+
+    Returns False on any git error so callers can safely treat the result
+    as ``False`` (i.e., keep polling) when the state cannot be determined.
+    """
+    try:
+        return GitHelper().get_current_branch(repo_path) is None
+    except Exception:
+        return False
 
 
 def discover_skill_resources(skill_dir: Path) -> SkillResources:
@@ -417,7 +520,7 @@ def discover_skill_resources(skill_dir: Path) -> SkillResources:
     # Import here to avoid circular dependency
     from openhands.sdk.skills.skill import SkillResources
 
-    resources = SkillResources(skill_root=str(skill_dir.resolve()))
+    resources = SkillResources(skill_root=to_posix_path(skill_dir.resolve()))
 
     for resource_type in RESOURCE_DIRECTORIES:
         resource_dir = skill_dir / resource_type
@@ -447,7 +550,7 @@ def _list_resource_files(
             if item.is_file():
                 # Store relative path from resource directory
                 rel_path = item.relative_to(resource_dir)
-                files.append(str(rel_path))
+                files.append(to_posix_path(rel_path))
     except OSError as e:
         logger.warning(f"Error listing {resource_type} directory: {e}")
     return sorted(files)

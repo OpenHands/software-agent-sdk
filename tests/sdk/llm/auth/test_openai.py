@@ -10,6 +10,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from joserfc import jwt as joserfc_jwt
+from joserfc.jwk import KeySet, RSAKey
 
 from openhands.sdk.llm.auth.credentials import CredentialStore, OAuthCredentials
 from openhands.sdk.llm.auth.openai import (
@@ -21,6 +23,7 @@ from openhands.sdk.llm.auth.openai import (
     OpenAISubscriptionAuth,
     _build_authorize_url,
     _display_consent_and_confirm,
+    _extract_chatgpt_account_id,
     _generate_pkce,
     _get_consent_marker_path,
     _has_acknowledged_consent,
@@ -31,7 +34,7 @@ from openhands.sdk.llm.auth.openai import (
 
 
 def test_generate_pkce():
-    """Test PKCE code generation using authlib."""
+    """Test PKCE code generation."""
     verifier, challenge = _generate_pkce()
     assert verifier is not None
     assert challenge is not None
@@ -69,6 +72,16 @@ def test_build_authorize_url():
 
 def test_openai_codex_models():
     """Test that OPENAI_CODEX_MODELS contains expected models."""
+    from openhands.sdk.settings.acp_providers import get_acp_provider
+
+    codex_provider = get_acp_provider("codex")
+    assert codex_provider is not None
+    assert OPENAI_CODEX_MODELS.issuperset(
+        model.id for model in codex_provider.available_models
+    )
+    assert "gpt-5.5" in OPENAI_CODEX_MODELS
+    assert "gpt-5.4" in OPENAI_CODEX_MODELS
+    assert "gpt-5.4-mini" in OPENAI_CODEX_MODELS
     assert "gpt-5.3-codex" in OPENAI_CODEX_MODELS
     assert "gpt-5.2-codex" in OPENAI_CODEX_MODELS
     assert "gpt-5.2" in OPENAI_CODEX_MODELS
@@ -201,7 +214,10 @@ def test_openai_subscription_auth_create_llm_success(tmp_path):
     llm = auth.create_llm(model="gpt-5.2-codex")
 
     assert llm.model == "openai/gpt-5.2-codex"
-    assert llm.api_key is not None
+    assert llm.api_key is None
+    assert llm._get_litellm_api_key_value() == "test_access_token"
+    assert llm.auth_type == "subscription"
+    assert llm.subscription_vendor == "openai"
     assert llm.extra_headers is not None
     # Uses codex_cli_rs to match official Codex CLI for compatibility
     assert llm.extra_headers.get("originator") == "codex_cli_rs"
@@ -553,3 +569,141 @@ class TestConsentBannerSystem:
         ):
             result = _display_consent_and_confirm()
             assert result is False
+
+
+# =========================================================================
+# Tests for joserfc migration (no authlib.jose deprecation warning)
+# =========================================================================
+
+
+def test_no_authlib_jose_import():
+    """Verify that the openai auth module does not import from authlib.jose.
+
+    The authlib.jose module is deprecated and should be replaced by joserfc.
+    """
+    import importlib
+    import sys
+
+    # Remove cached module to force re-import
+    mod_name = "openhands.sdk.llm.auth.openai"
+    if mod_name in sys.modules:
+        importlib.reload(sys.modules[mod_name])
+
+    import inspect
+
+    from openhands.sdk.llm.auth import openai as openai_auth_mod
+
+    source = inspect.getsource(openai_auth_mod)
+    assert "from authlib.jose" not in source, (
+        "Module still imports from the deprecated authlib.jose; use joserfc instead"
+    )
+
+
+def test_joserfc_keyset_import():
+    """Test that joserfc KeySet can import a JWKS structure."""
+    from joserfc.jwk import KeySetSerialization
+
+    # Minimal valid RSA JWK for testing (RFC 7517 example modulus)
+    rsa_n = (
+        "0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx4"
+        "cbbfAAtVT86zwu1RK7aPFFxuhDR1L6tSoc_BJECPebWKRXjBZCiF"
+        "V4n3oknjhMstn64tZ_2W-5JsGY4Hc5n9yBXArwl93lqt7_RN5w6C"
+        "f0h4QyQ5v-65YGjQR0_FDW2QvzqY368QQMicAtaSqzs8KJZgnYb9"
+        "c7d0zgdAZHzu6qMQvRL5hajrn1n91CbOpbISD08qNLyrdkt-bFTWh"
+        "AI4vMQFh6WeZu0fM4lFd2NcRwr3XPksINHaQ-G_xBniIqbw0Ls1j"
+        "F44-csFCur-kEgU8awapJzKnqDKgw"
+    )
+    test_jwks: KeySetSerialization = {
+        "keys": [
+            {"kty": "RSA", "kid": "test-key-1", "use": "sig", "n": rsa_n, "e": "AQAB"}
+        ]
+    }
+
+    key_set = KeySet.import_key_set(test_jwks)
+    assert key_set is not None
+    # Should have imported one key
+    keys = list(key_set)
+    assert len(keys) == 1
+
+
+# =========================================================================
+# End-to-end tests for _extract_chatgpt_account_id with joserfc
+# =========================================================================
+
+
+@pytest.fixture
+def rsa_signing_key():
+    """Generate an RSA key pair for JWT signing in tests."""
+    return RSAKey.generate_key(2048, parameters={"kid": "test-key-1"})
+
+
+@pytest.fixture
+def mock_jwks_cache(rsa_signing_key):
+    """Mock _jwks_cache to return a KeySet with the test public key."""
+    pub_dict = rsa_signing_key.as_dict(private=False)
+    key_set = KeySet.import_key_set({"keys": [pub_dict]})
+    with patch(
+        "openhands.sdk.llm.auth.openai._jwks_cache.get_key_set",
+        return_value=key_set,
+    ):
+        yield
+
+
+def _sign_jwt(key: RSAKey, claims: dict) -> str:
+    """Sign a JWT with the given RSA key and claims."""
+    header = {"alg": "RS256", "kid": key.kid}
+    return joserfc_jwt.encode(header, claims, key)
+
+
+def test_extract_chatgpt_account_id_success(rsa_signing_key, mock_jwks_cache):
+    """End-to-end: sign a JWT with joserfc, extract chatgpt_account_id."""
+    token = _sign_jwt(
+        rsa_signing_key,
+        {
+            "sub": "user-123",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acct-abc-456",
+            },
+        },
+    )
+    account_id = _extract_chatgpt_account_id(token)
+    assert account_id == "acct-abc-456"
+
+
+def test_extract_chatgpt_account_id_missing_claim(rsa_signing_key, mock_jwks_cache):
+    """Returns None when the JWT has no chatgpt_account_id claim."""
+    token = _sign_jwt(rsa_signing_key, {"sub": "user-123"})
+    assert _extract_chatgpt_account_id(token) is None
+
+
+def test_extract_chatgpt_account_id_wrong_key(rsa_signing_key):
+    """Returns None when JWT signature cannot be verified (wrong key)."""
+    # Sign with the test key but verify against a different key
+    different_key = RSAKey.generate_key(2048, parameters={"kid": "other-key"})
+    different_pub = different_key.as_dict(private=False)
+    wrong_key_set = KeySet.import_key_set({"keys": [different_pub]})
+
+    token = _sign_jwt(
+        rsa_signing_key,
+        {
+            "sub": "user-123",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acct-should-not-appear",
+            },
+        },
+    )
+
+    with patch(
+        "openhands.sdk.llm.auth.openai._jwks_cache.get_key_set",
+        return_value=wrong_key_set,
+    ):
+        assert _extract_chatgpt_account_id(token) is None
+
+
+def test_extract_chatgpt_account_id_jwks_fetch_failure():
+    """Returns None when JWKS cache raises RuntimeError."""
+    with patch(
+        "openhands.sdk.llm.auth.openai._jwks_cache.get_key_set",
+        side_effect=RuntimeError("network error"),
+    ):
+        assert _extract_chatgpt_account_id("dummy.jwt.token") is None

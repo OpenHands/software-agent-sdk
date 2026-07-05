@@ -56,7 +56,7 @@ from openhands.tools.terminal import TerminalTool
 
 
 llm = LLM(
-    model="anthropic/claude-sonnet-4-5-20250929",
+    model="gpt-5.5",
     api_key=os.getenv("LLM_API_KEY"),
 )
 
@@ -96,9 +96,10 @@ The documentation includes:
 
 The `examples/` directory contains comprehensive usage examples:
 
-- **Standalone SDK** (`examples/01_standalone_sdk/`) - Basic agent usage, custom tools, and skills
+- **Standalone SDK** (`examples/01_standalone_sdk/`) - Basic agent usage, custom tools, and core workflows
 - **Remote Agent Server** (`examples/02_remote_agent_server/`) - Client-server architecture and WebSocket connections
 - **GitHub Workflows** (`examples/03_github_workflows/`) - CI/CD integration and automated workflows
+- **Skills and Plugins** (`examples/05_skills_and_plugins/`) - AgentSkills, plugins, and marketplace examples
 
 ## Skills for modern package tooling
 
@@ -194,4 +195,3 @@ For development setup, testing, and contribution guidelines, see [DEVELOPMENT.md
   <img src="https://assets.openhands.dev/logos/external/black/google.svg" alt="Google" height="17" hspace="5">
 </picture>
 </div>
-

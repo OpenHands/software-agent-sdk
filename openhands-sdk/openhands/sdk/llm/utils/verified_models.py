@@ -1,4 +1,5 @@
 VERIFIED_OPENAI_MODELS = [
+    "gpt-5.5",
     "gpt-5.4",
     "gpt-5.2",
     "gpt-5.2-codex",
@@ -24,8 +25,12 @@ VERIFIED_ANTHROPIC_MODELS = [
     "claude-sonnet-4-5-20250929",
     "claude-haiku-4-5-20251001",
     "claude-opus-4-5-20251101",
+    "claude-opus-4-5",
     "claude-opus-4-6",
     "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-fable-5",
+    "claude-sonnet-4-5",
     "claude-sonnet-4-6",
     "claude-sonnet-4-20250514",
     "claude-opus-4-20250514",
@@ -49,41 +54,89 @@ VERIFIED_MISTRAL_MODELS = [
 
 VERIFIED_GEMINI_MODELS = [
     "gemini-3.1-pro-preview",
+    "gemini-3.1-pro",
+    "gemini-3-flash",
+    "gemini-3-pro",
 ]
 
 VERIFIED_DEEPSEEK_MODELS = [
     "deepseek-chat",
+    "deepseek-v3.2-reasoner",
+    "deepseek-v4-pro",
 ]
 
 VERIFIED_MOONSHOT_MODELS = [
     "kimi-k2-thinking",
     "kimi-k2.5",
+    "kimi-k2.6",
 ]
 
 VERIFIED_MINIMAX_MODELS = [
+    "minimax-m2.1",
     "minimax-m2.5",
     "minimax-m2.7",
+    "minimax-m3",
+]
+
+VERIFIED_GLM_MODELS = [
+    "glm-4.7",
+    "glm-5",
+    "glm-5.1",
+]
+
+VERIFIED_NVIDIA_MODELS = [
+    "nemotron-3-nano",
+    "nemotron-3-super-120b-a12b",
+]
+
+VERIFIED_QWEN_MODELS = [
+    "qwen3-6-plus",
+    "qwen3.6-plus",
+    "qwen3-coder-480b",
+    "qwen3-coder-next",
 ]
 
 VERIFIED_OPENHANDS_MODELS = [
+    "claude-opus-4-5-20251101",
     "claude-opus-4-6",
     "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-fable-5",
+    "claude-sonnet-4-5",
     "claude-sonnet-4-6",
+    "gpt-5.5",
     "gpt-5.4",
     "gpt-5.2",
     "gpt-5.2-codex",
+    "minimax-m2.1",
     "minimax-m2.5",
     "minimax-m2.7",
+    "minimax-m3",
+    "gemini-3.1-pro",
     "gemini-3.1-pro-preview",
+    "gemini-3-flash",
+    "gemini-3-pro",
     "deepseek-chat",
+    "deepseek-v3.2-reasoner",
+    "deepseek-v4-pro",
     "kimi-k2-thinking",
+    "kimi-k2.6",
     "kimi-k2.5",
     "devstral-medium-2512",
     "devstral-2512",
-    "claude-opus-4-5-20251101",
     "gpt-5.1-codex-max",
     "gpt-5.1-codex",
     "gpt-5.1",
+    "glm-4.7",
+    "glm-5",
+    "glm-5.1",
+    "nemotron-3-nano",
+    "nemotron-3-super-120b-a12b",
+    "qwen3-6-plus",
+    "qwen3.6-plus",
+    "qwen3-coder-480b",
+    "qwen3-coder-next",
+    "trinity-large-thinking",
 ]
 
 
@@ -96,4 +149,7 @@ VERIFIED_MODELS = {
     "deepseek": VERIFIED_DEEPSEEK_MODELS,
     "moonshot": VERIFIED_MOONSHOT_MODELS,
     "minimax": VERIFIED_MINIMAX_MODELS,
+    "glm": VERIFIED_GLM_MODELS,
+    "nvidia": VERIFIED_NVIDIA_MODELS,
+    "qwen": VERIFIED_QWEN_MODELS,
 }

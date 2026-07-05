@@ -1,21 +1,21 @@
-"""Fork a conversation to branch off for follow-up exploration.
+"""Branch a conversation. The conversation is a tree (every event has a
+``parent_id``; the HEAD is ``leaf_event_id``), exposing three primitives:
 
-``Conversation.fork()`` deep-copies a conversation — events, agent config,
-workspace metadata — into a new conversation with its own ID.  The fork
-starts in ``idle`` status and retains full event memory of the source, so
-calling ``run()`` picks up right where the original left off.
+  - ``fork()`` — deep-copy the whole conversation into a new one; ``run()``
+    resumes with full event memory.
+  - ``fork(from_event_id=...)`` — fork only the branch up to a chosen event;
+    the fork's HEAD is that event.
+  - ``navigate_to(event_id)`` — move HEAD within one conversation; appending
+    after navigating creates a sibling branch, abandoned events stay on disk.
 
-Use cases:
-  - CI agents that produced a wrong patch — engineer forks to debug
-    without losing the original run's audit trail
-  - A/B-testing prompts — fork at a given turn, change one variable,
-    compare downstream
-  - Swapping tools mid-conversation (fork-on-tool-change)
+Use cases: debugging a wrong CI patch off the original's audit trail,
+A/B-testing prompts, fork-on-tool-change, edit-a-past-turn-and-re-run.
 """
 
 import os
 
 from openhands.sdk import LLM, Agent, Conversation, Tool
+from openhands.sdk.event import MessageEvent
 from openhands.tools.terminal import TerminalTool
 
 
@@ -23,7 +23,7 @@ from openhands.tools.terminal import TerminalTool
 # Setup
 # -----------------------------------------------------------------
 llm = LLM(
-    model=os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929"),
+    model=os.getenv("LLM_MODEL", "gpt-5.5"),
     api_key=os.getenv("LLM_API_KEY"),
     base_url=os.getenv("LLM_BASE_URL", None),
 )
@@ -71,7 +71,7 @@ print(f"Fork events (grew)       : {len(fork.state.events)}")
 # 3. Fork with a different agent (tool-change / A/B testing)
 # =================================================================
 alt_llm = LLM(
-    model=os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929"),
+    model=os.getenv("LLM_MODEL", "gpt-5.5"),
     api_key=os.getenv("LLM_API_KEY"),
     base_url=os.getenv("LLM_BASE_URL", None),
     usage_id="alt",
@@ -92,6 +92,51 @@ fork_alt.send_message("What command did you run earlier? Just tell me, no tools.
 fork_alt.run()
 
 print(f"Fork events : {len(fork_alt.state.events)}")
+
+# =================================================================
+# 4. Branch-slice fork: fork from a chosen past event
+# =================================================================
+# Fork from the first user message: copies only path_to_root(event) and sets
+# the fork's HEAD there.
+cut_event_id = next(
+    e.id
+    for e in source.state.events
+    if isinstance(e, MessageEvent) and e.source == "user"
+)
+
+fork_slice = source.fork(from_event_id=cut_event_id, title="Branch from first turn")
+
+print("\n--- Branch-slice fork (from_event_id) ---")
+print(f"Cut event id          : {cut_event_id}")
+print(f"Source events (full)  : {len(source.state.events)}")
+print(f"Fork events (sliced)  : {len(fork_slice.state.events)}")
+print(f"Fork HEAD             : {fork_slice.state.leaf_event_id}")
+
+# The slice contains only the branch up to the cut point.
+assert len(fork_slice.state.events) <= len(source.state.events)
+assert fork_slice.state.leaf_event_id == cut_event_id
+
+fork_slice.send_message("Run `echo sliced-branch` in the terminal.")
+fork_slice.run()
+print(f"Fork events after run : {len(fork_slice.state.events)}")
+assert any("sliced-branch" in str(e) for e in fork_slice.state.events)
+
+# =================================================================
+# 5. In-conversation navigation: move HEAD and create a sibling branch
+# =================================================================
+# Move HEAD back to the cut point and send a new message: a sibling branch.
+# The abandoned branch stays on disk but leaves the agent's active context.
+events_before_nav = len(source.state.events)
+
+source.navigate_to(cut_event_id)
+print("\n--- navigate_to (in-conversation branching) ---")
+print(f"HEAD moved to         : {source.state.leaf_event_id}")
+print(f"Active branch length  : {len(source.state.view.events)} events in context")
+print(f"Events still on disk  : {events_before_nav}")
+
+source.send_message("Actually, instead run `echo sibling-branch`.")
+source.run()
+print(f"Events on disk now     : {len(source.state.events)} (old branch retained)")
 
 # =================================================================
 # Summary

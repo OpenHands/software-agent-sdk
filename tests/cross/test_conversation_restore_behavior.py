@@ -10,6 +10,7 @@ These tests aim to be a behavioral spec for conversation restore:
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -35,12 +36,23 @@ from openhands.sdk.context.condenser.llm_summarizing_condenser import (
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.event import ActionEvent, MessageEvent
 from openhands.sdk.llm import LLM
+from openhands.sdk.llm.utils.openhands_provider import (
+    LITELLM_PROXY_PREFIX,
+    OPENHANDS_LLM_PROXY_BASE_URL,
+    OPENHANDS_PROVIDER_PREFIX,
+)
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.security.risk import SecurityRisk
 from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.terminal import TerminalTool
 from tests.conftest import create_mock_litellm_response
+
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="TerminalTool restore tests require the Unix terminal backend.",
+)
 
 
 register_tool("TerminalTool", TerminalTool)
@@ -85,6 +97,16 @@ class RestoreLifecycle:
             }
         finally:
             conversation.close()
+
+    def base_state_path(self) -> Path:
+        assert self.conversation_id is not None, "Call run_initial_session() first"
+        return self.persistence_base_dir / self.conversation_id.hex / "base_state.json"
+
+    def read_base_state(self) -> dict[str, Any]:
+        return json.loads(self.base_state_path().read_text())
+
+    def write_base_state(self, payload: dict[str, Any]) -> None:
+        self.base_state_path().write_text(json.dumps(payload))
 
     def restore(self, agent: Agent) -> LocalConversation:
         assert self.conversation_id is not None, "Call run_initial_session() first"
@@ -176,6 +198,22 @@ def _tool_call_response(
         model=model,
         object="chat.completion",
     )
+
+
+def _rewrite_openhands_llms_to_legacy_proxy(value: Any) -> None:
+    if isinstance(value, dict):
+        model = value.get("model")
+        if isinstance(model, str) and model.startswith(OPENHANDS_PROVIDER_PREFIX):
+            model_name = model.removeprefix(OPENHANDS_PROVIDER_PREFIX)
+            value["model"] = f"{LITELLM_PROXY_PREFIX}{model_name}"
+            value["base_url"] = OPENHANDS_LLM_PROXY_BASE_URL
+        for child in value.values():
+            _rewrite_openhands_llms_to_legacy_proxy(child)
+        return
+
+    if isinstance(value, list):
+        for child in value:
+            _rewrite_openhands_llms_to_legacy_proxy(child)
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
@@ -618,6 +656,119 @@ def test_conversation_restore_succeeds_when_llm_condenser_and_skills_change(
 
             restored.run()
             assert len(restored.state.events) > initial["event_count"]
+        finally:
+            restored.close()
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_openhands_provider_restore_writes_public_model_shape(mock_completion):
+    captured_completion_kwargs: list[dict[str, Any]] = []
+
+    def capture_completion(*_args: Any, **kwargs: Any):
+        captured_completion_kwargs.append(kwargs)
+        return create_mock_litellm_response(
+            content="Acknowledged.", finish_reason="stop"
+        )
+
+    mock_completion.side_effect = capture_completion
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        base = Path(temp_dir)
+        lifecycle = RestoreLifecycle(
+            workspace_dir=base / "workspace",
+            persistence_base_dir=base / "persist",
+        )
+        lifecycle.workspace_dir.mkdir(parents=True, exist_ok=True)
+        lifecycle.persistence_base_dir.mkdir(parents=True, exist_ok=True)
+
+        tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
+        agent = _agent(
+            llm_model="openhands/claude-opus-4-8",
+            tools=tools,
+            condenser_max_size=80,
+            skill_name="skill-v1",
+            skill_keyword="alpha",
+        )
+
+        lifecycle.run_initial_session(agent)
+
+        base_state = lifecycle.read_base_state()
+        llm_payload = base_state["agent"]["llm"]
+        assert llm_payload["model"] == "openhands/claude-opus-4-8"
+        assert "base_url" not in llm_payload
+
+        assert captured_completion_kwargs[-1]["model"] == (
+            "litellm_proxy/claude-opus-4-8"
+        )
+        assert (
+            captured_completion_kwargs[-1]["api_base"] == OPENHANDS_LLM_PROXY_BASE_URL
+        )
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_conversation_restore_rewrites_legacy_openhands_proxy_snapshot(
+    mock_completion,
+):
+    captured_completion_kwargs: list[dict[str, Any]] = []
+
+    def capture_completion(*_args: Any, **kwargs: Any):
+        captured_completion_kwargs.append(kwargs)
+        return create_mock_litellm_response(
+            content="Acknowledged.", finish_reason="stop"
+        )
+
+    mock_completion.side_effect = capture_completion
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        base = Path(temp_dir)
+        lifecycle = RestoreLifecycle(
+            workspace_dir=base / "workspace",
+            persistence_base_dir=base / "persist",
+        )
+        lifecycle.workspace_dir.mkdir(parents=True, exist_ok=True)
+        lifecycle.persistence_base_dir.mkdir(parents=True, exist_ok=True)
+
+        tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
+        persisted_agent = _agent(
+            llm_model="openhands/claude-opus-4-8",
+            tools=tools,
+            condenser_max_size=80,
+            skill_name="skill-v1",
+            skill_keyword="alpha",
+        )
+        initial = lifecycle.run_initial_session(persisted_agent)
+
+        legacy_base_state = lifecycle.read_base_state()
+        _rewrite_openhands_llms_to_legacy_proxy(legacy_base_state["agent"])
+        lifecycle.write_base_state(legacy_base_state)
+
+        runtime_agent = _agent(
+            llm_model="openhands/claude-opus-4-8",
+            tools=tools,
+            condenser_max_size=80,
+            skill_name="skill-v1",
+            skill_keyword="alpha",
+        )
+
+        restored = lifecycle.restore(runtime_agent)
+        try:
+            assert restored.id == initial["conversation_id"]
+            assert len(restored.state.events) == initial["event_count"]
+            assert restored.agent.llm.model == "openhands/claude-opus-4-8"
+
+            restored_base_state = lifecycle.read_base_state()
+            restored_llm_payload = restored_base_state["agent"]["llm"]
+            assert restored_llm_payload["model"] == "openhands/claude-opus-4-8"
+            assert "base_url" not in restored_llm_payload
+
+            lifecycle.send_and_run(restored, "Third message")
+            assert captured_completion_kwargs[-1]["model"] == (
+                "litellm_proxy/claude-opus-4-8"
+            )
+            assert (
+                captured_completion_kwargs[-1]["api_base"]
+                == OPENHANDS_LLM_PROXY_BASE_URL
+            )
         finally:
             restored.close()
 

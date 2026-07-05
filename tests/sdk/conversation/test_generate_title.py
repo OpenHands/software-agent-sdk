@@ -220,3 +220,53 @@ def test_generate_title_empty_llm_response_fallback(mock_completion):
 
     # Verify fallback title was generated
     assert title == "Help with testing"
+
+
+def create_mock_model_response(content: str) -> ModelResponse:
+    """A raw litellm ModelResponse, as returned by ``LLM._transport_call``."""
+    return ModelResponse(
+        id="test-id",
+        choices=[
+            Choices(
+                finish_reason="stop",
+                index=0,
+                message=LiteLLMMessage(content=content, role="assistant"),
+            )
+        ],
+        created=1234567890,
+        model="gpt-4o-mini",
+        object="chat.completion",
+        usage=Usage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+    )
+
+
+@patch("openhands.sdk.llm.llm.LLM._transport_call", autospec=True)
+def test_generate_title_disables_streaming_when_llm_streams(mock_transport):
+    """Regression test (sibling of PR #3901): a ``stream=True`` agent LLM must
+    still generate a title even though title generation passes no ``on_token``
+    callback. Patching ``_transport_call`` keeps the real streaming guard in
+    ``completion()`` live, so the bug reproduces without the fix.
+    """
+    streaming_llm = LLM(
+        model="gpt-4o-mini",
+        api_key=SecretStr("test-key"),
+        usage_id="title-stream-test",
+        stream=True,
+    )
+    agent = Agent(llm=streaming_llm, tools=[])
+    conv = Conversation(agent=agent, visualizer=None)
+
+    user_message = create_user_message_event("Help me create a Python script")
+    conv.state.events.append(user_message)
+
+    mock_transport.return_value = create_mock_model_response("Create Python Script")
+
+    title = conv.generate_title()
+
+    # The title came from the LLM, not the truncation fallback.
+    assert title == "Create Python Script"
+    mock_transport.assert_called_once()
+    # Streaming was disabled on a copy; the agent's own LLM is untouched.
+    assert mock_transport.call_args.kwargs["enable_streaming"] is False
+    assert mock_transport.call_args.kwargs["on_token"] is None
+    assert streaming_llm.stream is True

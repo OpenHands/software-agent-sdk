@@ -63,6 +63,7 @@ def test_conversation_factory_creates_local_by_default(agent):
     conversation = Conversation(agent=agent)
 
     assert isinstance(conversation, LocalConversation)
+    conversation.close()
 
 
 @patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")
@@ -86,6 +87,33 @@ def test_conversation_factory_forwards_local_parameters(agent):
 
     assert isinstance(conversation, LocalConversation)
     assert conversation.max_iteration_per_run == 100
+    conversation.close()
+
+
+def test_conversation_factory_forwards_local_observability_span_name(agent):
+    with (
+        patch(
+            "openhands.sdk.conversation.base.should_enable_observability",
+            return_value=True,
+        ),
+        patch("openhands.sdk.conversation.base.start_root_span") as mock_start_span,
+        patch("openhands.sdk.conversation.base.start_child_span") as mock_child_span,
+        patch("openhands.sdk.conversation.base.end_root_span"),
+    ):
+        conversation = Conversation(
+            agent=agent,
+            visualizer=None,
+            observability_span_name="pr_review_evaluation",
+        )
+        assert isinstance(conversation, LocalConversation)
+        mock_start_span.assert_called_once()
+        assert mock_start_span.call_args.args[0] == "conversation"
+        mock_child_span.assert_called_once_with(
+            mock_start_span.return_value,
+            "pr_review_evaluation",
+            tags=None,
+        )
+        conversation.close()
 
 
 @patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")
@@ -104,11 +132,34 @@ def test_conversation_factory_forwards_remote_parameters(
     assert conversation.max_iteration_per_run == 200
 
 
+@patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")
+def test_conversation_factory_forwards_remote_user_id_to_create_payload(
+    mock_ws_client, agent, remote_workspace
+):
+    """RemoteConversation must send user_id to the agent-server create request."""
+    conversation = Conversation(
+        agent=agent,
+        workspace=remote_workspace,
+        tags={"automationid": "auto-1"},
+        user_id="user-42",
+        observability_span_name="pr_review_evaluation",
+    )
+
+    assert isinstance(conversation, RemoteConversation)
+    create_call = remote_workspace._client.request.call_args_list[0]
+    assert create_call.args[:2] == ("POST", "/api/conversations")
+    payload = create_call.kwargs["json"]
+    assert payload["user_id"] == "user-42"
+    assert payload["tags"] == {"automationid": "auto-1"}
+    assert payload["observability_span_name"] == "pr_review_evaluation"
+
+
 def test_conversation_factory_string_workspace_creates_local(agent):
     """Test that string workspace creates LocalConversation."""
     conversation = Conversation(agent=agent, workspace="")
 
     assert isinstance(conversation, LocalConversation)
+    conversation.close()
 
 
 @patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")
@@ -119,6 +170,7 @@ def test_conversation_factory_type_inference(mock_ws_client, agent, remote_works
 
     assert isinstance(local_conv, LocalConversation)
     assert isinstance(remote_conv, RemoteConversation)
+    local_conv.close()
 
 
 def test_conversation_state_create_with_injected_file_store(agent):
@@ -145,12 +197,13 @@ def test_conversation_factory_file_store_forwarded_to_state(agent):
 
     assert isinstance(conv, LocalConversation)
     assert conv._state._fs is custom_store
+    conv.close()
 
 
 def test_conversation_state_create_raises_when_both_file_store_and_persistence_dir(
     agent,
 ):
-    """Passing File_store and persistence_dir raises ValueError"""
+    """Passing file_store and persistence_dir raises ValueError."""
     custom_store = InMemoryFileStore()
     workspace = LocalWorkspace(working_dir="/tmp/test")
 

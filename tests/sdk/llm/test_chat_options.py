@@ -1,7 +1,8 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from openhands.sdk.llm import LLM
+from openhands.sdk.llm.llm import LLMCallContext
 from openhands.sdk.llm.options.chat_options import select_chat_options
 
 
@@ -18,7 +19,21 @@ class DummyLLM:
     litellm_extra_body: dict[str, Any] | None = None
     # Align with LLM default; only emitted for models that support it
     prompt_cache_retention: str | None = "24h"
-    _prompt_cache_key: str | None = None
+    _call_context: LLMCallContext = field(default_factory=LLMCallContext)
+    openrouter_site_url: str = ""
+    openrouter_app_name: str = ""
+
+    def _openrouter_headers(self) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        if self.openrouter_site_url:
+            headers["HTTP-Referer"] = self.openrouter_site_url
+        if self.openrouter_app_name:
+            headers["X-Title"] = self.openrouter_app_name
+        return headers
+
+    @property
+    def effective_max_output_tokens(self) -> int:
+        return self.max_output_tokens
 
 
 def test_opus_4_5_uses_reasoning_effort_and_strips_temp_top_p():
@@ -133,6 +148,32 @@ def test_claude_sonnet_4_6_strips_temp_and_top_p():
     assert "top_p" not in out
 
 
+def test_bedrock_opus_4_8_strips_temp_top_p_without_thinking_block():
+    """Bedrock cross-region claude-opus-4-8 routes through the reasoning path.
+
+    LiteLLM does not (yet) recognize the Bedrock cross-region inference id as a
+    reasoning model, so the SDK-side override must mark it as one. It must take
+    the reasoning_effort path (which strips temperature/top_p) and NOT the
+    extended-thinking path, which would inject the legacy
+    ``thinking.type=enabled`` block + ``interleaved-thinking`` header that
+    Anthropic now rejects for this model (see reverted #3427 / revert #3441).
+    """
+    llm = DummyLLM(
+        model="bedrock/us.anthropic.claude-opus-4-8-v1:0",
+        top_p=1.0,  # SDK default
+        temperature=0.0,  # Often overridden by benchmarks (e.g. SWE-bench)
+        reasoning_effort="high",
+    )
+    out = select_chat_options(llm, user_kwargs={}, has_tools=True)
+
+    assert "temperature" not in out
+    assert "top_p" not in out
+    assert out.get("reasoning_effort") == "high"
+    # Must NOT take the legacy extended-thinking path.
+    assert "thinking" not in out
+    assert "anthropic-beta" not in out.get("extra_headers", {})
+
+
 def test_extended_thinking_budget_clamped_below_max_tokens():
     """Test that thinking.budget_tokens is clamped to max_output_tokens - 1."""
     # Case 1: extended_thinking_budget exceeds max_output_tokens
@@ -184,7 +225,7 @@ def test_extended_thinking_budget_clamped_below_max_tokens():
 def test_chat_options_forwards_prompt_cache_key_when_set():
     """Regression test for #2904."""
     llm = LLM(model="gpt-4o")
-    llm._prompt_cache_key = "conv-abc123"
+    llm._call_context = LLMCallContext(prompt_cache_key="conv-abc123")
     assert (
         select_chat_options(llm, user_kwargs={}, has_tools=True).get("prompt_cache_key")
         == "conv-abc123"
@@ -196,3 +237,36 @@ def test_chat_options_omits_prompt_cache_key_when_unset():
     assert "prompt_cache_key" not in select_chat_options(
         llm, user_kwargs={}, has_tools=True
     )
+
+
+def test_chat_options_injects_openrouter_headers_via_extra_headers():
+    """OpenRouter site/app must flow per-call (issue #3138), not via env."""
+    llm = DummyLLM(
+        model="openrouter/anthropic/claude-3-5-sonnet",
+        openrouter_site_url="https://app.example.com/",
+        openrouter_app_name="ExampleApp",
+    )
+    out = select_chat_options(llm, user_kwargs={}, has_tools=False)
+    assert out["extra_headers"]["HTTP-Referer"] == "https://app.example.com/"
+    assert out["extra_headers"]["X-Title"] == "ExampleApp"
+
+
+def test_chat_options_user_extra_headers_win_over_openrouter_defaults():
+    """User-supplied extra_headers must override per-call OpenRouter values."""
+    llm = DummyLLM(
+        model="openrouter/anthropic/claude-3-5-sonnet",
+        openrouter_site_url="https://app.example.com/",
+        openrouter_app_name="ExampleApp",
+        extra_headers={"X-Title": "UserOverride"},
+    )
+    out = select_chat_options(llm, user_kwargs={}, has_tools=False)
+    assert out["extra_headers"]["X-Title"] == "UserOverride"
+    # Site URL still injected since user didn't override it
+    assert out["extra_headers"]["HTTP-Referer"] == "https://app.example.com/"
+
+
+def test_chat_options_omits_openrouter_headers_when_unset():
+    """Empty site/app must not add extra_headers."""
+    llm = DummyLLM(model="gpt-4o")
+    out = select_chat_options(llm, user_kwargs={}, has_tools=False)
+    assert "extra_headers" not in out

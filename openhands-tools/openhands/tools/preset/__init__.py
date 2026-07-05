@@ -18,13 +18,18 @@ Notes:
   setups.
 """
 
-from .default import get_default_agent, register_builtins_agents
+from .default import (
+    discover_builtin_agents,
+    get_default_agent,
+    register_builtins_agents,
+)
 from .gemini import get_gemini_agent, get_gemini_tools
 from .gpt5 import get_gpt5_agent
 from .planning import get_planning_agent
 
 
 __all__ = [
+    "discover_builtin_agents",
     "get_default_agent",
     "get_gemini_agent",
     "get_gemini_tools",

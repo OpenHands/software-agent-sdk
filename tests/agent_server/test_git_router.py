@@ -1,5 +1,6 @@
 """Tests for git_router.py endpoints."""
 
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -8,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
+from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.models import GitChange, GitChangeStatus, GitDiff
 
 
@@ -49,7 +51,7 @@ async def test_git_changes_query_param_success(client):
         assert response_data[2]["status"] == "DELETED"
         assert response_data[2]["path"] == "old_file.py"
 
-        mock_git_changes.assert_called_once_with(Path(test_path))
+        mock_git_changes.assert_called_once_with(Path(test_path), ref=None)
 
 
 @pytest.mark.asyncio
@@ -67,14 +69,159 @@ async def test_git_changes_query_param_empty_result(client):
 
 @pytest.mark.asyncio
 async def test_git_changes_query_param_with_exception(client):
-    """Test git changes endpoint with query parameter when git operation fails."""
+    """Test that unexpected git failures still surface as 500."""
     with patch("openhands.agent_server.git_router.get_git_changes") as mock_git_changes:
-        mock_git_changes.side_effect = Exception("Git repository not found")
+        mock_git_changes.side_effect = RuntimeError("unexpected failure")
 
-        test_path = "nonexistent/repo"
-        response = client.get("/api/git/changes", params={"path": test_path})
+        response = client.get("/api/git/changes", params={"path": "nonexistent/repo"})
 
         assert response.status_code == 500
+
+
+@pytest.mark.asyncio
+async def test_git_changes_query_param_with_command_error(client):
+    """Test git changes returns 400 for GitCommandError."""
+    with patch("openhands.agent_server.git_router.get_git_changes") as mock_git_changes:
+        mock_git_changes.side_effect = GitCommandError(
+            message="git diff failed",
+            command=["git", "diff"],
+            exit_code=128,
+            stderr="fatal: bad revision",
+        )
+
+        response = client.get("/api/git/changes", params={"path": "broken/repo"})
+
+        assert response.status_code == 400
+        assert "git diff failed" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_git_changes_returns_empty_list_when_path_is_not_git_repo(client):
+    """Non-repo workspaces should yield 200 + [] instead of 500.
+
+    Reproduces the v1-conversation bug where the workspace dir exists but
+    has never been `git init`-ed: the endpoint must not crash the
+    Changes tab.
+    """
+    # Arrange
+    with patch("openhands.agent_server.git_router.get_git_changes") as mock_git_changes:
+        mock_git_changes.side_effect = GitRepositoryError(
+            "Not a git repository: /Users/hieple/.openhands/agent-server-gui"
+        )
+
+        # Act
+        response = client.get(
+            "/api/git/changes",
+            params={"path": "/Users/hieple/.openhands/agent-server-gui"},
+        )
+
+        # Assert
+        assert response.status_code == 200
+        assert response.json() == []
+
+
+@pytest.mark.asyncio
+async def test_git_diff_returns_empty_diff_when_path_is_not_git_repo(client):
+    """Non-repo paths to /api/git/diff should yield 200 with null fields."""
+    # Arrange
+    with patch("openhands.agent_server.git_router.get_git_diff") as mock_git_diff:
+        mock_git_diff.side_effect = GitRepositoryError(
+            "Not a git repository: /tmp/not-a-repo"
+        )
+
+        # Act
+        response = client.get(
+            "/api/git/diff", params={"path": "/tmp/not-a-repo/file.py"}
+        )
+
+        # Assert
+        assert response.status_code == 200
+        body = response.json()
+        assert body["modified"] is None
+        assert body["original"] is None
+
+
+@pytest.mark.asyncio
+async def test_git_changes_query_param_ref_head_on_empty_repo_returns_200(
+    client, tmp_path
+):
+    """End-to-end: ``?ref=HEAD`` on a freshly init'd repo must return 200.
+
+    Real git repo (no mock) so the SDK fix is exercised through the router.
+    Reproduces the bug: before the fix this returned 400 with
+    ``Git command failed: git --no-pager rev-parse --verify 'HEAD^{commit}'``.
+    """
+    # Arrange: real empty git repo with a single untracked file.
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    (tmp_path / "untracked.txt").write_text("new")
+
+    # Act
+    response = client.get(
+        "/api/git/changes",
+        params={"path": str(tmp_path), "ref": "HEAD"},
+    )
+
+    # Assert
+    assert response.status_code == 200
+    assert response.json() == [{"status": "ADDED", "path": "untracked.txt"}]
+
+
+@pytest.mark.asyncio
+async def test_git_changes_query_param_ref_head_on_orphan_branch_returns_200(
+    client, tmp_path
+):
+    """End-to-end: ``?ref=HEAD`` on an orphan branch must return 200.
+
+    Real git repo (no mock) so the SDK fix is exercised through the router.
+    The repo has a commit on ``main``, but HEAD is currently pointing at an
+    unborn orphan branch — exactly the user-reported state that surfaced as
+    ``400 Bad Request: Git command failed: git --no-pager rev-parse --verify
+    'HEAD^{commit}'`` in the Changes tab. The earlier ``_repo_has_commits``
+    short-circuit doesn't catch this case (commits exist on main), so the
+    fix has to come from the ``rev-parse`` failure handler instead.
+    """
+
+    # Arrange: repo with one commit on main, then switch to an orphan branch.
+    def run_git(*args: str) -> None:
+        subprocess.run(
+            ["git", *args],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+        )
+
+    run_git("init")
+    run_git("config", "user.email", "test@example.com")
+    run_git("config", "user.name", "Test")
+    (tmp_path / "committed.txt").write_text("on main")
+    run_git("add", ".")
+    run_git("commit", "-m", "on main")
+    run_git("checkout", "--orphan", "orphan")
+    run_git("rm", "-rf", "--cached", ".")
+    (tmp_path / "untracked.txt").write_text("new")
+
+    # Act
+    response = client.get(
+        "/api/git/changes",
+        params={"path": str(tmp_path), "ref": "HEAD"},
+    )
+
+    # Assert
+    assert response.status_code == 200
+    paths = {entry["path"] for entry in response.json()}
+    assert "untracked.txt" in paths
 
 
 @pytest.mark.asyncio
@@ -101,7 +248,7 @@ async def test_git_changes_query_param_absolute_path(client):
 
         assert response.status_code == 200
         assert len(response.json()) == 1
-        mock_git_changes.assert_called_once_with(Path(test_path))
+        mock_git_changes.assert_called_once_with(Path(test_path), ref=None)
 
 
 @pytest.mark.asyncio
@@ -123,7 +270,7 @@ async def test_git_diff_query_param_success(client):
 
         assert response_data["modified"] == expected_diff.modified
         assert response_data["original"] == expected_diff.original
-        mock_git_diff.assert_called_once_with(Path(test_path))
+        mock_git_diff.assert_called_once_with(Path(test_path), ref=None)
 
 
 @pytest.mark.asyncio
@@ -145,15 +292,20 @@ async def test_git_diff_query_param_with_none_values(client):
 
 
 @pytest.mark.asyncio
-async def test_git_diff_query_param_with_exception(client):
-    """Test git diff endpoint with query parameter when git operation fails."""
+async def test_git_diff_query_param_with_command_error(client):
+    """Test git diff returns 400 for GitCommandError."""
     with patch("openhands.agent_server.git_router.get_git_diff") as mock_git_diff:
-        mock_git_diff.side_effect = Exception("Git diff failed")
+        mock_git_diff.side_effect = GitCommandError(
+            message="git diff failed",
+            command=["git", "diff"],
+            exit_code=128,
+            stderr="fatal: bad revision",
+        )
 
-        test_path = "nonexistent/file.py"
-        response = client.get("/api/git/diff", params={"path": test_path})
+        response = client.get("/api/git/diff", params={"path": "broken/file.py"})
 
-        assert response.status_code == 500
+        assert response.status_code == 400
+        assert "git diff failed" in response.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -162,85 +314,6 @@ async def test_git_diff_missing_path_param(client):
     response = client.get("/api/git/diff")
 
     assert response.status_code == 422
-
-
-# =============================================================================
-# Path Parameter Tests (Legacy/Backwards Compatibility)
-# =============================================================================
-
-
-@pytest.mark.asyncio
-async def test_git_changes_path_param_success(client):
-    """Test git changes endpoint with path parameter (legacy)."""
-    expected_changes = [
-        GitChange(status=GitChangeStatus.ADDED, path=Path("new_file.py")),
-        GitChange(status=GitChangeStatus.UPDATED, path=Path("existing_file.py")),
-    ]
-
-    with patch("openhands.agent_server.git_router.get_git_changes") as mock_git_changes:
-        mock_git_changes.return_value = expected_changes
-
-        test_path = "src/test_repo"
-        response = client.get(f"/api/git/changes/{test_path}")
-
-        assert response.status_code == 200
-        response_data = response.json()
-
-        assert len(response_data) == 2
-        assert response_data[0]["status"] == "ADDED"
-        assert response_data[1]["status"] == "UPDATED"
-        mock_git_changes.assert_called_once_with(Path(test_path))
-
-
-@pytest.mark.asyncio
-async def test_git_changes_path_param_nested(client):
-    """Test git changes endpoint with nested path parameter."""
-    expected_changes = [
-        GitChange(status=GitChangeStatus.ADDED, path=Path("file.py")),
-    ]
-
-    with patch("openhands.agent_server.git_router.get_git_changes") as mock_git_changes:
-        mock_git_changes.return_value = expected_changes
-
-        test_path = "src/deep/nested/repo"
-        response = client.get(f"/api/git/changes/{test_path}")
-
-        assert response.status_code == 200
-        mock_git_changes.assert_called_once_with(Path(test_path))
-
-
-@pytest.mark.asyncio
-async def test_git_diff_path_param_success(client):
-    """Test git diff endpoint with path parameter (legacy)."""
-    expected_diff = GitDiff(modified="new content", original="old content")
-
-    with patch("openhands.agent_server.git_router.get_git_diff") as mock_git_diff:
-        mock_git_diff.return_value = expected_diff
-
-        test_path = "src/test_file.py"
-        response = client.get(f"/api/git/diff/{test_path}")
-
-        assert response.status_code == 200
-        response_data = response.json()
-
-        assert response_data["modified"] == "new content"
-        assert response_data["original"] == "old content"
-        mock_git_diff.assert_called_once_with(Path(test_path))
-
-
-@pytest.mark.asyncio
-async def test_git_diff_path_param_nested(client):
-    """Test git diff endpoint with nested path parameter."""
-    expected_diff = GitDiff(modified="updated", original="original")
-
-    with patch("openhands.agent_server.git_router.get_git_diff") as mock_git_diff:
-        mock_git_diff.return_value = expected_diff
-
-        test_path = "src/utils/helper.py"
-        response = client.get(f"/api/git/diff/{test_path}")
-
-        assert response.status_code == 200
-        mock_git_diff.assert_called_once_with(Path(test_path))
 
 
 # =============================================================================
@@ -307,16 +380,55 @@ async def test_git_changes_with_complex_paths(client):
         assert response_data[2]["path"] == "special-chars_file@123.py"
 
 
-def test_git_legacy_routes_are_deprecated_in_openapi(client):
+@pytest.mark.asyncio
+async def test_git_changes_forwards_ref_query_param(client):
+    """The ``ref`` query param should be plumbed through to ``get_git_changes``."""
+    with patch("openhands.agent_server.git_router.get_git_changes") as mock_git_changes:
+        mock_git_changes.return_value = []
+
+        test_path = "src/test_repo"
+        response = client.get(
+            "/api/git/changes", params={"path": test_path, "ref": "HEAD"}
+        )
+
+        assert response.status_code == 200
+        mock_git_changes.assert_called_once_with(Path(test_path), ref="HEAD")
+
+
+@pytest.mark.asyncio
+async def test_git_diff_forwards_ref_query_param(client):
+    """The ``ref`` query param should be plumbed through to ``get_git_diff``."""
+    with patch("openhands.agent_server.git_router.get_git_diff") as mock_git_diff:
+        mock_git_diff.return_value = GitDiff(modified="m", original="o")
+
+        test_path = "src/test_file.py"
+        response = client.get(
+            "/api/git/diff",
+            params={"path": test_path, "ref": "abc1234"},
+        )
+
+        assert response.status_code == 200
+        mock_git_diff.assert_called_once_with(Path(test_path), ref="abc1234")
+
+
+def test_git_endpoints_expose_ref_query_param(client):
+    """OpenAPI schema should advertise the new optional ``ref`` query param."""
     response = client.get("/openapi.json")
     assert response.status_code == 200
 
-    openapi_schema = response.json()
+    paths = response.json()["paths"]
+    for endpoint in ("/api/git/changes", "/api/git/diff"):
+        params = paths[endpoint]["get"]["parameters"]
+        ref_param = next((p for p in params if p["name"] == "ref"), None)
+        assert ref_param is not None, f"ref param missing on {endpoint}"
+        assert ref_param["in"] == "query"
+        assert ref_param.get("required", False) is False
 
-    changes_operation = openapi_schema["paths"]["/api/git/changes/{path}"]["get"]
-    assert changes_operation.get("deprecated") is True
-    assert "Deprecated since v1.15.0" in changes_operation["description"]
 
-    diff_operation = openapi_schema["paths"]["/api/git/diff/{path}"]["get"]
-    assert diff_operation.get("deprecated") is True
-    assert "Deprecated since v1.15.0" in diff_operation["description"]
+def test_git_legacy_routes_are_removed_from_openapi(client):
+    response = client.get("/openapi.json")
+    assert response.status_code == 200
+
+    openapi_paths = response.json()["paths"]
+    assert "/api/git/changes/{path}" not in openapi_paths
+    assert "/api/git/diff/{path}" not in openapi_paths

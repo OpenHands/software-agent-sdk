@@ -4,10 +4,18 @@ This tests that long multi-line commands (like heredocs) are sent line-by-line
 to avoid overwhelming the PTY input buffer on macOS.
 """
 
+import platform
 import tempfile
 import time
 
 import pytest
+
+
+if platform.system() == "Windows":
+    pytest.skip(
+        "SubprocessTerminal uses Unix PTY APIs and is not available on Windows",
+        allow_module_level=True,
+    )
 
 from openhands.tools.terminal.terminal.subprocess_terminal import SubprocessTerminal
 
