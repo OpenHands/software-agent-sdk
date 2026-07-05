@@ -16,6 +16,7 @@ from pydantic import SecretStr
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.mcp_router import (
+    MCPTestRequest,
     _BrowserCoordinatedOAuth,
     _MCPOAuthProbeJob,
 )
@@ -778,7 +779,12 @@ def test_mcp_oauth_start_returns_authorization_url_and_final_state(
 def test_browser_coordinated_oauth_callback_handler_uses_fastmcp_callback_api(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    job = _MCPOAuthProbeJob(request=SimpleNamespace(), cipher=None)
+    job = _MCPOAuthProbeJob(
+        request=MCPTestRequest.model_validate(
+            {"server": {"type": "shttp", "url": "https://mcp.example.com/mcp"}}
+        ),
+        cipher=None,
+    )
     oauth = _BrowserCoordinatedOAuth(
         job=job,
         mcp_url="https://mcp.example.com/mcp",

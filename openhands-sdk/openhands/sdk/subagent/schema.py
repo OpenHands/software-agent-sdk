@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal
 
 import frontmatter
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from openhands.sdk.context.condenser import CondenserBase, NoOpCondenser
 from openhands.sdk.hooks.config import HookConfig
@@ -35,6 +35,7 @@ KNOWN_FIELDS: Final[set[str]] = {
     "hooks",
     "profile_store_dir",
     "mcp_config",
+    "mcp_servers",
     "permission_mode",
     "condenser",
 }
@@ -92,7 +93,7 @@ def _extract_mcp_config(fm: dict[str, object]) -> dict[str, MCPServer] | None:
     Note: The older ``$VAR`` syntax (without braces) is NOT supported.
     Use ``${VAR}`` for environment variables and secrets.
     """
-    mcp_config_raw = fm.get("mcp_config")
+    mcp_config_raw = fm.get("mcp_config", fm.get("mcp_servers"))
     if mcp_config_raw is None:
         return None
     if not isinstance(mcp_config_raw, dict):
@@ -255,6 +256,12 @@ class AgentDefinition(BaseModel):
         description="MCP servers for this agent.",
         examples=[{"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}],
     )
+    mcp_servers: dict[str, Any] | None = Field(
+        default=None,
+        description="MCP server configurations for this agent. "
+        "Keys are server names, values are server configs with 'command', 'args', etc.",
+        examples=[{"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}],
+    )
     profile_store_dir: str | None = Field(
         default=None,
         description="Path to the directory where LLM profiles are stored. "
@@ -268,6 +275,28 @@ class AgentDefinition(BaseModel):
     metadata: dict[str, Any] = Field(
         default_factory=dict, description="Additional metadata from frontmatter"
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_mcp_servers(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        if value.get("mcp_config") is not None or value.get("mcp_servers") is None:
+            return value
+        return {**value, "mcp_config": value["mcp_servers"]}
+
+    @model_validator(mode="after")
+    def _mirror_mcp_config_to_legacy_field(self) -> AgentDefinition:
+        if self.mcp_servers is None and self.mcp_config is not None:
+            self.mcp_servers = {
+                name: server.model_dump(
+                    mode="json",
+                    exclude_none=True,
+                    exclude_defaults=True,
+                )
+                for name, server in self.mcp_config.items()
+            }
+        return self
 
     def get_confirmation_policy(self) -> ConfirmationPolicyBase | None:
         """Convert permission_mode to a ConfirmationPolicyBase instance.

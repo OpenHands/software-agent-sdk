@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import uuid
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 
 import anyio
@@ -44,6 +44,7 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import (
+    MCPAuthCredential,
     MCPOAuthAuthCredential,
     MCPOAuthAuthentication,
     MCPOAuthStateResponse,
@@ -67,6 +68,85 @@ mcp_router = APIRouter(prefix="/mcp", tags=["MCP"])
 # wraps it in a temporary map only at the runtime boundary.
 
 _DEFAULT_SERVER_NAME = "test-server"
+
+
+class _StdioMCPServerSpec(BaseModel):
+    """Stdio (subprocess) MCP server spec.
+
+    Mirrors the public REST request shape released before the SDK-native
+    MCPServer model. The route normalizes this to MCPServer internally.
+    """
+
+    type: Literal["stdio"] = "stdio"
+    command: str = Field(..., min_length=1, description="Executable to invoke")
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    cwd: str | None = None
+
+    def to_mcp_server(self) -> MCPServer:
+        return MCPServer.model_validate(
+            {
+                "transport": "stdio",
+                "command": self.command,
+                "args": self.args,
+                "env": self.env,
+                "cwd": self.cwd,
+            }
+        )
+
+
+class _RemoteMCPServerSpec(BaseModel):
+    """Remote (HTTP / SSE) MCP server spec."""
+
+    # ``shttp`` is the alias the OpenHands settings layer uses for
+    # streamable-http; keep accepting it so older clients can forward their
+    # stored value unchanged.
+    type: Literal["http", "shttp", "streamable-http", "sse"]
+    url: str = Field(..., min_length=1)
+    headers: dict[str, str] = Field(default_factory=dict)
+    api_key: str | None = Field(
+        default=None,
+        description=(
+            "Bearer token. If provided, sent as 'Authorization: Bearer <token>'."
+        ),
+    )
+    auth: MCPAuthCredential | None = None
+    timeout: float | None = None
+    sse_read_timeout: float | None = None
+    keep_alive: bool | None = None
+
+    @model_validator(mode="after")
+    def _reject_legacy_auth_fields(self) -> _RemoteMCPServerSpec:
+        if self.api_key is not None:
+            raise ValueError("Use auth.strategy='bearer' instead of api_key.")
+        if self.auth is not None and any(
+            name.lower() == "authorization" for name in self.headers
+        ):
+            raise ValueError(
+                "'auth' cannot be combined with an explicit top-level "
+                "'Authorization' header; use auth.strategy='header' instead."
+            )
+        return self
+
+    def to_mcp_server(self) -> MCPServer:
+        transport = "http" if self.type == "shttp" else self.type
+        data: dict[str, Any] = {
+            "url": self.url,
+            "transport": transport,
+            "headers": self.headers,
+            "timeout": self.timeout,
+            "sse_read_timeout": self.sse_read_timeout,
+            "keep_alive": self.keep_alive,
+        }
+        if self.auth is not None:
+            data["auth"] = self.auth
+        return MCPServer.model_validate(data)
+
+
+MCPTestServerSpec = Annotated[
+    _StdioMCPServerSpec | _RemoteMCPServerSpec,
+    Field(discriminator="type"),
+]
 
 
 class MCPToolCallSpec(BaseModel):
@@ -98,7 +178,7 @@ class MCPTestRequest(BaseModel):
             "persisted setting."
         ),
     )
-    server: MCPServer
+    server: MCPTestServerSpec
     timeout: float = Field(
         default=15.0,
         gt=0,
@@ -115,15 +195,40 @@ class MCPTestRequest(BaseModel):
         ),
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_native_server_transport(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        server = value.get("server")
+        if not isinstance(server, dict):
+            return value
+        if "authentication" in server:
+            raise ValueError(
+                "OAuth authentication metadata belongs under auth.authentication."
+            )
+        if "type" in server or "transport" not in server:
+            return value
+        normalized = dict(value)
+        normalized_server = dict(server)
+        normalized_server["type"] = normalized_server.pop("transport")
+        normalized["server"] = normalized_server
+        return normalized
+
     @model_validator(mode="after")
     def _strip_name(self) -> MCPTestRequest:
         # Mirror the validation the MCP server map itself applies to server keys --
         # whitespace-only names would silently bypass min_length=1 above.
         self.name = self.name.strip() or _DEFAULT_SERVER_NAME
+        self.resolved_server
         return self
 
+    @property
+    def resolved_server(self) -> MCPServer:
+        return self.server.to_mcp_server()
+
     def to_mcp_config(self, *, cipher: Cipher | None = None) -> dict[str, MCPServer]:
-        return {self.name: self.server.with_decrypted_secrets(cipher=cipher)}
+        return {self.name: self.resolved_server.with_decrypted_secrets(cipher=cipher)}
 
 
 class MCPToolCallResult(BaseModel):
@@ -150,6 +255,13 @@ class MCPTestSuccess(BaseModel):
     tool_result: MCPToolCallResult | None = Field(
         default=None,
         description=("Outcome of the requested `tool_call`, when one was supplied."),
+    )
+    resolved_mcp_servers: list[dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "Deprecated compatibility field for older clients that expected "
+            "resolved MCP server metadata in test responses."
+        ),
     )
     oauth_state: MCPOAuthStateResponse | None = Field(
         default=None,
@@ -444,11 +556,12 @@ def _probe_mcp_server(
     mcp_config = request.to_mcp_config(cipher=cipher)
 
     try:
-        oauth_auth = request.server.oauth_auth
+        server = request.resolved_server
+        oauth_auth = server.oauth_auth
         oauth_token_storage: InMemoryMCPOAuthTokenStore | None = None
         if oauth_auth is not None:
             oauth_token_storage = InMemoryMCPOAuthTokenStore(
-                state=request.server.initial_oauth_state(cipher=cipher)
+                state=server.initial_oauth_state(cipher=cipher)
             )
         # ``create_mcp_tools`` returns a client that owns a background loop
         # and a (possibly long-lived) subprocess. Use the context-manager
@@ -585,7 +698,7 @@ async def start_mcp_oauth(
     request: MCPTestRequest, http_request: Request
 ) -> MCPOAuthStartResponse:
     """Start OAuth for a candidate MCP server and return the authorization URL."""
-    if request.server.oauth_auth is None:
+    if request.resolved_server.oauth_auth is None:
         raise HTTPException(
             status_code=400,
             detail="MCP OAuth start requires auth.strategy='oauth2'",
