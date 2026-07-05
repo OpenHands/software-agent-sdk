@@ -97,8 +97,12 @@ jobs:
 
                   echo "✅ All packages are resolvable on PyPI!"
 
-            # OpenHands-CLI step runs first since it's simpler and less error-prone
+            # continue-on-error: a CLI bump failure (e.g. the agent-client-protocol
+            # pin conflict, OpenHands-CLI#786) must not block the OpenHands PR below.
+            # The failure is surfaced in the Summary step via steps.cli_pr.outcome.
             - name: Create PR for OpenHands-CLI repo
+              id: cli_pr
+              continue-on-error: true
               env:
                   VERSION: ${{ steps.get_version.outputs.version }}
               run: |
@@ -385,7 +389,11 @@ jobs:
                   echo "PRs have been created to bump SDK packages to version **$VERSION**:" >> $GITHUB_STEP_SUMMARY
                   echo "" >> $GITHUB_STEP_SUMMARY
                   echo "- [OpenHands](https://github.com/OpenHands/OpenHands/pulls?q=is%3Apr+bump-sdk-$VERSION)" >> $GITHUB_STEP_SUMMARY
-                  echo "- [OpenHands-CLI](https://github.com/OpenHands/openhands-cli/pulls?q=is%3Apr+bump-sdk-$VERSION)" >> $GITHUB_STEP_SUMMARY
+                  if [ "${{ steps.cli_pr.outcome }}" = "failure" ]; then
+                    echo "- ⚠️ **OpenHands-CLI PR creation FAILED** — see the \"Create PR for OpenHands-CLI repo\" step logs" >> $GITHUB_STEP_SUMMARY
+                  else
+                    echo "- [OpenHands-CLI](https://github.com/OpenHands/openhands-cli/pulls?q=is%3Apr+bump-sdk-$VERSION)" >> $GITHUB_STEP_SUMMARY
+                  fi
 
             - name: Notify Slack
               if: env.SLACK_BOT_TOKEN != ''
