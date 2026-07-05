@@ -85,6 +85,7 @@ from openhands.sdk.skills import (
 )
 from openhands.sdk.subagent import (
     agent_definition_to_factory,
+    discover_agents,
     load_agents_from_dir,
     load_project_agents,
     load_user_agents,
@@ -197,6 +198,7 @@ __all__ = [
     "load_project_agents",
     "load_user_agents",
     "load_agents_from_dir",
+    "discover_agents",
     "agent_definition_to_factory",
     "load_project_skills",
     "load_skills_from_dir",

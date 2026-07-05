@@ -60,10 +60,13 @@ def test_windows_ctrl_c_interrupt_kills_child_process_tree(tmp_path) -> None:
     """
     pid_path = tmp_path / "child.pid"
     script_path = tmp_path / "wait_on_child.ps1"
+    # Use native path for PowerShell (str() gives Windows-style on Windows)
+    pid_path_str = str(pid_path)
+    script_path_str = str(script_path)
     script_path.write_text(
         "\n".join(
             [
-                f"$pidPath = '{pid_path.as_posix()}'",
+                f"$pidPath = '{pid_path_str}'",
                 "$child = Start-Process -FilePath powershell.exe "
                 "-ArgumentList '-NoLogo','-NoProfile','-Command',"
                 "'Start-Sleep -Seconds 120' -PassThru",
@@ -84,7 +87,7 @@ def test_windows_ctrl_c_interrupt_kills_child_process_tree(tmp_path) -> None:
     try:
         session.initialize()
 
-        obs = session.execute(TerminalAction(command=f"& '{script_path.as_posix()}'"))
+        obs = session.execute(TerminalAction(command=f"& '{script_path_str}'"))
 
         assert obs.metadata.exit_code == -1
         assert session.prev_status == TerminalCommandStatus.NO_CHANGE_TIMEOUT

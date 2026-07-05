@@ -2604,7 +2604,9 @@ class TestAutoTitle:
         mock_llm = LLM(model="gpt-3.5-turbo", usage_id="title-llm")
 
         with (
-            patch("openhands.sdk.llm.llm_profile_store.LLMProfileStore") as MockStore,
+            patch(
+                "openhands.agent_server.persistence.store.get_llm_profile_store"
+            ) as MockStore,
             patch(
                 self._GENERATE_TITLE_PATH, return_value="✨ Profile LLM Title"
             ) as mock_generate_title,
@@ -2634,7 +2636,9 @@ class TestAutoTitle:
         agent_llm = service._conversation.agent.llm
 
         with (
-            patch("openhands.sdk.llm.llm_profile_store.LLMProfileStore") as MockStore,
+            patch(
+                "openhands.agent_server.persistence.store.get_llm_profile_store"
+            ) as MockStore,
             patch(
                 self._GENERATE_TITLE_PATH, return_value="✨ Agent LLM Title"
             ) as mock_generate_title,
@@ -2682,7 +2686,9 @@ class TestAutoTitle:
         agent_llm = service._conversation.agent.llm
 
         with (
-            patch("openhands.sdk.llm.llm_profile_store.LLMProfileStore") as MockStore,
+            patch(
+                "openhands.agent_server.persistence.store.get_llm_profile_store"
+            ) as MockStore,
             patch(
                 self._GENERATE_TITLE_PATH, return_value="✨ Agent LLM Title"
             ) as mock_generate_title,
@@ -2713,7 +2719,9 @@ class TestAutoTitle:
         service.save_meta.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_autotitle_integration_routes_through_profile_store(self, tmp_path):
+    async def test_autotitle_integration_routes_through_profile_store(
+        self, tmp_path, monkeypatch, request
+    ):
         """End-to-end: profile on disk → LLMProfileStore.load → title LLM call.
 
         Exercises the real wiring from AutoTitleSubscriber through LLMProfileStore
@@ -2771,17 +2779,21 @@ class TestAutoTitle:
                 raw_response=raw,
             )
 
-        # Point LLMProfileStore() (no args) at our tmp dir so the real
-        # _load_title_llm code path finds our on-disk profile.
-        with (
-            patch(
-                "openhands.sdk.llm.llm_profile_store._DEFAULT_PROFILE_DIR", profile_dir
-            ),
-            patch(
-                "openhands.sdk.llm.llm.LLM.completion",
-                autospec=True,
-                side_effect=fake_completion,
-            ),
+        # Point the agent-server profile store singleton at our tmp dir via
+        # OH_PERSISTENCE_DIR so the real _load_title_llm code path finds our
+        # on-disk profile under `{tmp_path}/profiles`.
+        from openhands.agent_server.persistence import reset_stores
+
+        monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path))
+        reset_stores()
+        # Clear the singleton at teardown even if an assertion raises, so the
+        # stale store (pointing at the soon-deleted tmp_path) can't leak.
+        request.addfinalizer(reset_stores)
+
+        with patch(
+            "openhands.sdk.llm.llm.LLM.completion",
+            autospec=True,
+            side_effect=fake_completion,
         ):
             subscriber = AutoTitleSubscriber(service=service)
             await subscriber(self._user_message_event("Fix the login bug"))
@@ -2801,7 +2813,9 @@ class TestAutoTitle:
         service.save_meta.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_autotitle_decrypts_cipher_encrypted_title_profile(self, tmp_path):
+    async def test_autotitle_decrypts_cipher_encrypted_title_profile(
+        self, tmp_path, monkeypatch, request
+    ):
         """Regression for #3164: a cipher-encrypted title-LLM profile must be
         decrypted on load so the title LLM sees the plaintext API key, not
         Fernet ciphertext.
@@ -2862,15 +2876,18 @@ class TestAutoTitle:
                 raw_response=raw,
             )
 
-        with (
-            patch(
-                "openhands.sdk.llm.llm_profile_store._DEFAULT_PROFILE_DIR", profile_dir
-            ),
-            patch(
-                "openhands.sdk.llm.llm.LLM.completion",
-                autospec=True,
-                side_effect=fake_completion,
-            ),
+        from openhands.agent_server.persistence import reset_stores
+
+        monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path))
+        reset_stores()
+        # Clear the singleton at teardown even if an assertion raises, so the
+        # stale store (pointing at the soon-deleted tmp_path) can't leak.
+        request.addfinalizer(reset_stores)
+
+        with patch(
+            "openhands.sdk.llm.llm.LLM.completion",
+            autospec=True,
+            side_effect=fake_completion,
         ):
             subscriber = AutoTitleSubscriber(service=service)
             await subscriber(self._user_message_event("Fix the login bug"))
@@ -2913,3 +2930,188 @@ class TestACPActivityHeartbeatWiring:
         # Should not raise and should not set any attribute
         EventService._setup_acp_activity_heartbeat(service, agent)
         assert not hasattr(agent, "_on_activity")
+
+
+class TestConversationTreeForkAndNavigate:
+    """Service-level coverage for fork-from-event lineage and navigation."""
+
+    async def _start_with_events(self, svc, workspace_dir, texts):
+        """Start a conversation and append ``texts`` as user messages (no run)."""
+        from openhands.sdk.testing import TestLLM
+        from tests.agent_server.stress.scripts import (
+            start_conversation_with_test_llm,
+        )
+
+        parent_llm = TestLLM(
+            usage_id="test-llm",
+            model="openai/gpt-4o",
+            api_key=SecretStr("unused"),
+        )
+        info = await start_conversation_with_test_llm(
+            svc,
+            parent_llm=parent_llm,
+            workspace_dir=str(workspace_dir),
+            usage_id="test-llm",
+            initial_text=texts[0],
+        )
+        event_service = await svc.get_event_service(info.id)
+        assert event_service is not None
+        for text in texts[1:]:
+            await event_service.send_message(
+                Message(role="user", content=[TextContent(text=text)]),
+                run=False,
+            )
+        events = list(event_service.get_conversation()._state.events)
+        return info, event_service, events
+
+    @pytest.mark.asyncio
+    async def test_fork_from_event_slices_branch_and_records_lineage(self, tmp_path):
+        """fork(from_event_id) copies only the branch and stamps lineage."""
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        async with ConversationService(
+            conversations_dir=tmp_path / "conversations"
+        ) as svc:
+            info, source_service, events = await self._start_with_events(
+                svc, workspace_dir, ["first", "second", "third"]
+            )
+            branch_point = events[1]
+
+            fork_info = await svc.fork_conversation(
+                info.id, from_event_id=branch_point.id
+            )
+
+            assert fork_info is not None
+            assert fork_info.forked_from_conversation_id == info.id
+            assert fork_info.forked_from_event_id == branch_point.id
+            assert fork_info.leaf_event_id == branch_point.id
+            # forked_from_conversation_id must JSON-serialize in the same (dashed)
+            # shape as ``id`` so clients can correlate the two over the wire.
+            dumped = fork_info.model_dump(mode="json")
+            assert dumped["forked_from_conversation_id"] == str(info.id)
+
+            fork_service = await svc.get_event_service(fork_info.id)
+            assert fork_service is not None
+            fork_events = list(fork_service.get_conversation()._state.events)
+            # Only path_to_root(branch_point) was copied — the active branch up
+            # to and including the branch point, not the whole log.
+            assert [e.id for e in fork_events] == [events[0].id, events[1].id]
+            assert len(fork_events) < len(events)
+
+            # Source is untouched by the fork.
+            src_events = list(source_service.get_conversation()._state.events)
+            assert len(src_events) == len(events)
+
+    @pytest.mark.asyncio
+    async def test_whole_conversation_fork_has_no_branch_point(self, tmp_path):
+        """fork() without from_event_id copies everything; lineage event is None."""
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        async with ConversationService(
+            conversations_dir=tmp_path / "conversations"
+        ) as svc:
+            info, _, events = await self._start_with_events(
+                svc, workspace_dir, ["first", "second"]
+            )
+
+            fork_info = await svc.fork_conversation(info.id)
+
+            assert fork_info is not None
+            assert fork_info.forked_from_conversation_id == info.id
+            assert fork_info.forked_from_event_id is None
+            fork_service = await svc.get_event_service(fork_info.id)
+            assert fork_service is not None
+            fork_events = list(fork_service.get_conversation()._state.events)
+            assert len(fork_events) == len(events)
+
+    @pytest.mark.asyncio
+    async def test_fork_unknown_event_raises_without_leaking_dir(self, tmp_path):
+        """fork(from_event_id) with an unknown id raises and leaves no orphan dir."""
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        conversations_dir = tmp_path / "conversations"
+        async with ConversationService(conversations_dir=conversations_dir) as svc:
+            info, _, _ = await self._start_with_events(svc, workspace_dir, ["first"])
+            before = {p.name for p in conversations_dir.iterdir()}
+            with pytest.raises(ValueError, match="from_event_id"):
+                await svc.fork_conversation(info.id, from_event_id="evt-missing")
+            # Validation must fail-fast before any fork dir is written to disk.
+            assert {p.name for p in conversations_dir.iterdir()} == before
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "navigate_to_none", [False, True], ids=["to_event", "to_empty_tree"]
+    )
+    async def test_navigate_moves_head_in_place(self, tmp_path, navigate_to_none):
+        """navigate moves HEAD (to an event or empty tree), pruning no events."""
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        async with ConversationService(
+            conversations_dir=tmp_path / "conversations"
+        ) as svc:
+            info, event_service, events = await self._start_with_events(
+                svc, workspace_dir, ["first", "second", "third"]
+            )
+            target = None if navigate_to_none else events[0].id
+
+            nav_info = await svc.navigate_conversation(info.id, event_id=target)
+
+            assert nav_info is not None
+            assert nav_info.leaf_event_id == target
+            # All branches stay on disk — nothing is pruned.
+            assert len(list(event_service.get_conversation()._state.events)) == len(
+                events
+            )
+
+    @pytest.mark.asyncio
+    async def test_navigate_unknown_event_raises(self, tmp_path):
+        """navigate to an unknown event raises ValueError."""
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        async with ConversationService(
+            conversations_dir=tmp_path / "conversations"
+        ) as svc:
+            info, _, _ = await self._start_with_events(svc, workspace_dir, ["first"])
+            with pytest.raises(ValueError, match="event_id"):
+                await svc.navigate_conversation(info.id, event_id="evt-missing")
+
+    @pytest.mark.asyncio
+    async def test_navigate_missing_conversation_returns_none(self, tmp_path):
+        """navigate on an unknown conversation returns None (router maps to 404)."""
+        async with ConversationService(
+            conversations_dir=tmp_path / "conversations"
+        ) as svc:
+            assert await svc.navigate_conversation(uuid4(), event_id=None) is None
+
+    @pytest.mark.asyncio
+    async def test_lineage_and_navigated_head_persist_across_restart(self, tmp_path):
+        """Fork lineage (meta.json) and a navigated HEAD (base_state.json) survive
+        a server restart — navigate deliberately skips save_meta and relies on the
+        conversation state's own autosave."""
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        conversations_dir = tmp_path / "conversations"
+
+        async with ConversationService(conversations_dir=conversations_dir) as svc:
+            info, _, events = await self._start_with_events(
+                svc, workspace_dir, ["first", "second", "third"]
+            )
+            src_id = info.id
+            branch_point = events[1].id
+            target_leaf = events[0].id
+
+            fork_info = await svc.fork_conversation(src_id, from_event_id=branch_point)
+            assert fork_info is not None
+            fork_id = fork_info.id
+            await svc.navigate_conversation(src_id, event_id=target_leaf)
+
+        # Fresh service over the same dir = a process restart.
+        async with ConversationService(conversations_dir=conversations_dir) as svc2:
+            reloaded_src = await svc2.get_conversation(src_id)
+            reloaded_fork = await svc2.get_conversation(fork_id)
+
+            assert reloaded_src is not None
+            assert reloaded_src.leaf_event_id == target_leaf
+            assert reloaded_fork is not None
+            assert reloaded_fork.forked_from_conversation_id == src_id
+            assert reloaded_fork.forked_from_event_id == branch_point

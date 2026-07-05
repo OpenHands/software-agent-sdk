@@ -1,5 +1,6 @@
 """Tests for URL credential redaction utilities."""
 
+import logging
 import subprocess
 from unittest.mock import patch
 
@@ -114,6 +115,20 @@ class TestRedactUrlCredentials:
         assert result == "https://****@github.com/repo.git"
         assert "user%40domain" not in result
 
+    def test_preserve_placeholders_keeps_var_reference(self):
+        """A ${VAR} userinfo is not a secret and must survive when asked."""
+        url = "https://x-token-auth:${MY_TOKEN}@host/repo.git"
+        assert redact_url_credentials(url, preserve_placeholders=True) == url
+        # Without the flag it is masked like any other userinfo.
+        assert redact_url_credentials(url) == "https://****@host/repo.git"
+
+    def test_preserve_placeholders_still_masks_inline_credentials(self):
+        """preserve_placeholders only spares ${VAR}; real inline creds are masked."""
+        url = "https://oauth2:SECRET@github.com/org/repo.git"
+        result = redact_url_credentials(url, preserve_placeholders=True)
+        assert result == "https://****@github.com/org/repo.git"
+        assert "SECRET" not in result
+
 
 class TestResolvedPluginSourceCredentialRedaction:
     """Tests for credential redaction in ResolvedPluginSource."""
@@ -193,6 +208,50 @@ class TestResolvedPluginSourceCredentialRedaction:
         assert "****" in json_str
 
 
+class TestPluginSourceCredentialRedaction:
+    """PluginSource.source masks inline credentials at serialization time while
+    keeping the raw value in memory for fetch/clone and preserving ${VAR} refs."""
+
+    CRED = "https://oauth2:SUPER_SECRET@gitlab.com/org/repo.git"
+    REDACTED = "https://****@gitlab.com/org/repo.git"
+    PLACEHOLDER = "https://x-token-auth:${MY_TOKEN}@host/repo.git"
+
+    def test_default_dump_masks_only_the_credential(self):
+        ps = PluginSource(source=self.CRED)
+        # URL shape is kept (not a full ********** mask).
+        assert ps.model_dump()["source"] == self.REDACTED
+        assert "SUPER_SECRET" not in ps.model_dump_json()
+
+    def test_in_memory_value_is_raw_for_fetch(self):
+        # The attribute keeps the real URL so the plugin can still be cloned.
+        assert PluginSource(source=self.CRED).source == self.CRED
+
+    def test_placeholder_survives_dump(self):
+        # ${VAR} is not a secret; it is expanded from the secret registry at
+        # fetch time (incl. server-side), so it must survive every dump.
+        ps = PluginSource(source=self.PLACEHOLDER)
+        assert ps.model_dump()["source"] == self.PLACEHOLDER
+        assert ps.model_dump_json().count("${MY_TOKEN}") == 1
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "github:owner/repo",
+            "/path/to/local/plugin",
+            "git@github.com:owner/repo.git",
+            "https://github.com/owner/repo.git",
+        ],
+    )
+    def test_non_credential_sources_unchanged(self, source):
+        assert PluginSource(source=source).model_dump()["source"] == source
+
+    def test_redacted_dump_round_trips(self):
+        # Reloading a redacted dump does not raise; the source stays redacted
+        # (resume of an inline-credentialed plugin relies on the resolved SHA).
+        dumped = PluginSource(source=self.CRED).model_dump()
+        assert PluginSource.model_validate(dumped).source == self.REDACTED
+
+
 class TestRedactUrlCredentialsCentralModule:
     """Verify redact_url_credentials is accessible from the central redact module."""
 
@@ -242,3 +301,28 @@ class TestRunGitCommandCredentialRedaction:
                 run_git_command(["git-not-on-path", "clone", CREDENTIAL_URL, "/tmp/x"])
         assert CREDENTIAL_URL not in exc_info.value.command
         assert REDACTED_URL in exc_info.value.command
+
+    def test_stderr_credentials_redacted_on_exception(self):
+        """Credentials echoed in stderr must not leak onto GitCommandError.stderr."""
+        leaky_stderr = f"fatal: Authentication failed for '{CREDENTIAL_URL}/'"
+        completed = subprocess.CompletedProcess(
+            args=self._args(), returncode=128, stdout="", stderr=leaky_stderr
+        )
+        with patch("subprocess.run", return_value=completed):
+            with pytest.raises(GitCommandError) as exc_info:
+                run_git_command(self._args())
+        assert "SUPERSECRET" not in exc_info.value.stderr
+        assert REDACTED_URL in exc_info.value.stderr
+
+    def test_stderr_credentials_redacted_in_log(self, caplog):
+        """Credentials echoed in stderr must not leak into the error log line."""
+        leaky_stderr = f"fatal: Authentication failed for '{CREDENTIAL_URL}/'"
+        completed = subprocess.CompletedProcess(
+            args=self._args(), returncode=128, stdout="", stderr=leaky_stderr
+        )
+        with patch("subprocess.run", return_value=completed):
+            with caplog.at_level(logging.ERROR):
+                with pytest.raises(GitCommandError):
+                    run_git_command(self._args())
+        assert "SUPERSECRET" not in caplog.text
+        assert REDACTED_URL in caplog.text

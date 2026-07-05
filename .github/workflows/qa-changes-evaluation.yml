@@ -50,7 +50,7 @@ jobs:
 
             - name: Checkout extensions repository
               if: steps.check-trace.outputs.trace_exists == 'true'
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
               with:
                   repository: OpenHands/extensions
                   path: extensions

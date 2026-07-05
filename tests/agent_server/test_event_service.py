@@ -13,6 +13,7 @@ from uuid import uuid4
 import pytest
 import pytest_asyncio
 
+from openhands.agent_server.conversation_lease import LEASE_FILE_NAME
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
@@ -24,6 +25,7 @@ from openhands.agent_server.models import (
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.sdk import LLM, Agent, AgentBase, Conversation, Message
 from openhands.sdk.agent import ACPAgent
+from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.fifo_lock import FIFOLock
 from openhands.sdk.conversation.impl.local_conversation import (
     ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID,
@@ -41,6 +43,8 @@ from openhands.sdk.event.llm_convertible import (
     MessageEvent,
     ObservationEvent,
 )
+from openhands.sdk.io.local import LocalFileStore
+from openhands.sdk.io.memory import InMemoryFileStore
 from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.workspace import LocalWorkspace
@@ -131,6 +135,50 @@ def mock_conversation_with_timestamped_events():
     conversation._state = state
 
     return conversation
+
+
+def _message_event(event_id: str, text: str, timestamp: str) -> MessageEvent:
+    return MessageEvent(
+        id=event_id,
+        source="user",
+        llm_message=Message(role="user", content=[TextContent(text=text)]),
+        timestamp=timestamp,
+    )
+
+
+def _event_log_with_unreadable_middle(
+    fs, unreadable_payload: str | bytes
+) -> tuple[EventLog, MessageEvent, MessageEvent, str]:
+    event0 = _message_event(
+        "00000000-0000-0000-0000-000000000001",
+        "first",
+        "2026-06-16T09:00:00",
+    )
+    unreadable_event_id = "00000000-0000-0000-0000-000000000002"
+    event2 = _message_event(
+        "00000000-0000-0000-0000-000000000003",
+        "third",
+        "2026-06-16T09:00:02",
+    )
+    unreadable_path = f"events/event-00001-{unreadable_event_id}.json"
+    fs.write(
+        f"events/event-00000-{event0.id}.json",
+        event0.model_dump_json(exclude_none=True),
+    )
+    fs.write(unreadable_path, unreadable_payload)
+    fs.write(
+        f"events/event-00002-{event2.id}.json",
+        event2.model_dump_json(exclude_none=True),
+    )
+    return EventLog(fs), event0, event2, unreadable_path
+
+
+def _attach_event_log(event_service, event_log: EventLog) -> None:
+    conversation = MagicMock(spec=Conversation)
+    state = MagicMock(spec=ConversationState)
+    state.events = event_log
+    conversation._state = state
+    event_service._conversation = conversation
 
 
 class TestEventServiceSearchEvents:
@@ -312,6 +360,49 @@ class TestEventServiceSearchEvents:
         result = await event_service.search_events(limit=100)
 
         assert len(result.items) == 5  # All available events
+        assert result.next_page_id is None
+
+    @pytest.mark.parametrize("unreadable_payload", ["", "{not-json", "{}"])
+    @pytest.mark.asyncio
+    async def test_search_events_skips_unreadable_event_files(
+        self, event_service, unreadable_payload
+    ):
+        fs = InMemoryFileStore()
+        event_log, event0, event2, _ = _event_log_with_unreadable_middle(
+            fs, unreadable_payload
+        )
+        _attach_event_log(event_service, event_log)
+
+        result = await event_service.search_events(limit=10)
+
+        assert [event.id for event in result.items] == [event0.id, event2.id]
+        assert result.next_page_id is None
+
+    @pytest.mark.asyncio
+    async def test_search_events_skips_missing_event_files(self, event_service):
+        fs = InMemoryFileStore()
+        event_log, event0, event2, unreadable_path = _event_log_with_unreadable_middle(
+            fs, "will be deleted"
+        )
+        fs.delete(unreadable_path)
+        _attach_event_log(event_service, event_log)
+
+        result = await event_service.search_events(limit=10)
+
+        assert [event.id for event in result.items] == [event0.id, event2.id]
+        assert result.next_page_id is None
+
+    @pytest.mark.asyncio
+    async def test_search_events_skips_non_utf8_event_files(
+        self, event_service, tmp_path
+    ):
+        fs = LocalFileStore(str(tmp_path))
+        event_log, event0, event2, _ = _event_log_with_unreadable_middle(fs, b"\xff")
+        _attach_event_log(event_service, event_log)
+
+        result = await event_service.search_events(limit=10)
+
+        assert [event.id for event in result.items] == [event0.id, event2.id]
         assert result.next_page_id is None
 
     @pytest.mark.asyncio
@@ -604,6 +695,17 @@ class TestEventServiceCountEvents:
         # Count non-existent event type (should be 0)
         result = await event_service.count_events(kind="NonExistentEvent")
         assert result == 0
+
+    @pytest.mark.asyncio
+    async def test_count_events_skips_unreadable_event_files_when_filtering(
+        self, event_service
+    ):
+        fs = InMemoryFileStore()
+        event_log, _, _, _ = _event_log_with_unreadable_middle(fs, "")
+        _attach_event_log(event_service, event_log)
+
+        assert await event_service.count_events() == 3
+        assert await event_service.count_events(source="user") == 2
 
     @pytest.mark.asyncio
     async def test_count_events_timestamp_gte_filter(
@@ -1241,6 +1343,32 @@ class TestEventServiceSendMessage:
             mock_loop.run_in_executor.assert_any_call(
                 None, conversation.send_message, system_message
             )
+
+    @pytest.mark.asyncio
+    async def test_load_plugin_delegates_to_conversation(self, event_service):
+        """Runtime plugin loads are delegated through the executor."""
+        conversation = MagicMock()
+        conversation.load_plugin = MagicMock()
+        event_service._conversation = conversation
+
+        with patch("asyncio.get_running_loop") as mock_get_loop:
+            mock_loop = MagicMock()
+            mock_get_loop.return_value = mock_loop
+            mock_loop.run_in_executor.side_effect = lambda *args: self._mock_executor()
+
+            await event_service.load_plugin("plugin@team")
+
+        mock_loop.run_in_executor.assert_called_once_with(
+            None, conversation.load_plugin, "plugin@team"
+        )
+
+    @pytest.mark.asyncio
+    async def test_load_plugin_inactive_service(self, event_service):
+        """Runtime plugin loads require an active conversation."""
+        event_service._conversation = None
+
+        with pytest.raises(ValueError, match="inactive_service"):
+            await event_service.load_plugin("plugin@team")
 
 
 class TestEventServiceRespondToConfirmation:
@@ -2601,6 +2729,9 @@ class TestEventServiceClose:
             def fork(self, **kwargs):
                 return mock.fork(**kwargs)
 
+            def navigate_to(self, event_id):
+                return mock.navigate_to(event_id)
+
         conv = SyncOnlyConversation()
         event_service._conversation = conv  # type: ignore[assignment]
 
@@ -3097,3 +3228,116 @@ async def test_run_false_message_in_cleanup_tail_is_not_run(
         f"(call_count={parent_llm._call_count})"
     )
     assert es._run_task is None
+
+
+def test_emit_event_from_thread_uses_captured_loop(event_service: EventService) -> None:
+    """_emit_event_from_thread must use the captured main_loop, not self._main_loop.
+
+    Before this fix, the method captured _main_loop into a local variable for
+    the if-check but then called self._main_loop.run_in_executor(...) in the
+    body. A concurrent close() setting self._main_loop = None between the
+    check and the call would cause AttributeError. The fix uses main_loop.
+    """
+    captured_calls: list = []
+
+    mock_loop = MagicMock()
+    mock_loop.is_running.return_value = True
+
+    def record_and_null(*args, **kwargs):
+        # Simulate concurrent close() nulling self._main_loop mid-call
+        object.__setattr__(event_service, "_main_loop", None)
+        captured_calls.append(args)
+
+    mock_loop.run_in_executor.side_effect = record_and_null
+
+    event_service._main_loop = mock_loop  # type: ignore[assignment]
+    event_service._conversation = MagicMock()  # type: ignore[assignment]
+
+    event = MagicMock()
+
+    # Should not raise AttributeError even though self._main_loop is cleared
+    event_service._emit_event_from_thread(event)
+    assert len(captured_calls) == 1, "run_in_executor should have been called once"
+
+
+def test_llm_log_callback_swallows_emit_failures(
+    event_service: EventService, caplog
+) -> None:
+    callbacks = []
+    llm = MagicMock(log_completions=True, usage_id="test-usage", model="gpt-4o")
+    llm.telemetry.set_log_completions_callback.side_effect = callbacks.append
+
+    object.__setattr__(
+        event_service,
+        "_emit_event_from_thread",
+        MagicMock(side_effect=RuntimeError("emit failed")),
+    )
+
+    with caplog.at_level("ERROR"):
+        event_service._setup_llm_log_streaming(MagicMock(get_all_llms=lambda: [llm]))
+        callbacks[0]("completion.json", "{}")
+
+    emit_mock = cast(MagicMock, event_service._emit_event_from_thread)
+    emit_mock.assert_called_once()
+    assert "Failed to emit LLM completion log event" in caplog.text
+
+
+def _make_stored(tmp_path: Path) -> StoredConversation:
+    return StoredConversation(
+        id=uuid4(),
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(tmp_path)),
+        confirmation_policy=NeverConfirm(),
+        initial_message=None,
+        metrics=None,
+    )
+
+
+def _make_mock_conv() -> MagicMock:
+    mock_conv = MagicMock()
+    mock_state = MagicMock()
+    mock_state.execution_status = ConversationExecutionStatus.IDLE
+    mock_state.events = []
+    mock_state.stats = MagicMock()
+    mock_conv.agent.get_all_llms.return_value = []
+    mock_conv._state = mock_state
+    mock_conv.state = mock_state
+    mock_conv._on_event = MagicMock()
+    return mock_conv
+
+
+@pytest.mark.asyncio
+async def test_event_service_skips_lease_when_ttl_is_zero(tmp_path: Path) -> None:
+    stored = _make_stored(tmp_path)
+    service = EventService(
+        stored=stored,
+        conversations_dir=tmp_path,
+        lease_ttl_seconds=0,
+    )
+    with patch(
+        "openhands.agent_server.event_service.LocalConversation",
+        return_value=_make_mock_conv(),
+    ):
+        await service.start()
+
+    assert service._lease is None
+    assert not (tmp_path / stored.id.hex / LEASE_FILE_NAME).exists()
+
+
+@pytest.mark.asyncio
+async def test_event_service_creates_lease_with_custom_ttl(tmp_path: Path) -> None:
+    stored = _make_stored(tmp_path)
+    service = EventService(
+        stored=stored,
+        conversations_dir=tmp_path,
+        lease_ttl_seconds=10.0,
+    )
+    with patch(
+        "openhands.agent_server.event_service.LocalConversation",
+        return_value=_make_mock_conv(),
+    ):
+        await service.start()
+
+    assert service._lease is not None
+    assert service._lease._ttl_seconds == 10.0
+    assert (tmp_path / stored.id.hex / LEASE_FILE_NAME).exists()

@@ -15,6 +15,7 @@ from openai.types.responses.response_reasoning_item import (
 from pydantic import SecretStr
 
 from openhands.sdk.llm import LLM
+from openhands.sdk.llm.llm import LLMCallContext
 from openhands.sdk.llm.message import Message, ReasoningItemModel, TextContent
 from openhands.sdk.llm.options.chat_options import select_chat_options
 from openhands.sdk.llm.options.responses_options import select_responses_options
@@ -279,7 +280,7 @@ def test_chat_and_responses_options_prompt_cache_retention_gpt_5_plus_and_non_gp
 def test_responses_options_forwards_prompt_cache_key_when_set():
     """Regression test for #2904."""
     llm = LLM(model="openai/gpt-5.1")
-    llm._prompt_cache_key = "conv-abc123"
+    llm._call_context = LLMCallContext(prompt_cache_key="conv-abc123")
     assert (
         select_responses_options(llm, {}, include=None, store=None).get(
             "prompt_cache_key"

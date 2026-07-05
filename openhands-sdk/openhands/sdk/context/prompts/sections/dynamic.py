@@ -1,5 +1,4 @@
-"""Dynamic-tier prompt sections ported verbatim from
-``context/prompts/templates/system_message_suffix.j2``.
+"""Dynamic-tier prompt sections.
 
 These render per-conversation content (datetime, repo context, available skills,
 custom suffix, secrets) into the ``DYNAMIC`` block. All inputs are resolved into the

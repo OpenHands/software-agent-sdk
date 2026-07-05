@@ -10,13 +10,17 @@ import subprocess
 import threading
 import time
 from collections import deque
+from collections.abc import Mapping
 
 from openhands.sdk.logger import get_logger
-from openhands.sdk.utils import sanitized_env
 from openhands.tools.terminal.constants import (
     CMD_OUTPUT_PS1_BEGIN,
     CMD_OUTPUT_PS1_END,
     HISTORY_LIMIT,
+)
+from openhands.tools.terminal.env import (
+    build_terminal_env,
+    normalize_terminal_env,
 )
 from openhands.tools.terminal.terminal.interface import (
     TerminalInterface,
@@ -70,6 +74,7 @@ class WindowsTerminal(TerminalInterface):
         work_dir: str,
         username: str | None = None,
         shell_path: str = "powershell.exe",
+        env: Mapping[str, str] | None = None,
     ):
         super().__init__(work_dir, username)
         self.process = None
@@ -77,6 +82,7 @@ class WindowsTerminal(TerminalInterface):
         self.output_lock = threading.Lock()
         self.reader_thread = None
         self.shell_path = shell_path
+        self._env = normalize_terminal_env(env)
         self._command_running_event = threading.Event()
         self._stop_reader = threading.Event()
         self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
@@ -96,7 +102,7 @@ class WindowsTerminal(TerminalInterface):
             creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             creationflags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-        env = sanitized_env()
+        env = build_terminal_env(self._env)
         env.setdefault("PYTHONIOENCODING", "utf-8")
         env.setdefault("PYTHONUTF8", "1")
 
@@ -390,6 +396,12 @@ if ($toStop.Count -gt 0) {{ exit 0 }} else {{ exit 1 }}
         if self.process is None or self.process.poll() is not None:
             return False
 
+        # Kill descendants while they are still attached to the persistent
+        # PowerShell process. CTRL_BREAK can interrupt the waiting script first,
+        # leaving launched child processes alive but no longer discoverable as
+        # descendants of the shell.
+        terminated_children = self._terminate_child_processes()
+
         sent_ctrl_break = False
         ctrl_break_event = getattr(signal, "CTRL_BREAK_EVENT", None)
         if platform.system() == "Windows" and ctrl_break_event is not None:
@@ -402,7 +414,7 @@ if ($toStop.Count -gt 0) {{ exit 0 }} else {{ exit 1 }}
         if sent_ctrl_break:
             time.sleep(_INTERRUPT_GRACE_SECONDS)
 
-        terminated_children = self._terminate_child_processes()
+        terminated_children = self._terminate_child_processes() or terminated_children
         sent_ctrl_c_input = False
         if not sent_ctrl_break and not terminated_children:
             try:

@@ -89,7 +89,8 @@ def test_agent_context_secrets_round_trip_through_cipher_context():
     """``AgentContext.secrets`` raw-string values must round-trip cleanly
     when re-validated with a cipher.
 
-    Regression for the same bug class as ``ACPAgent.acp_env``: the
+    Regression for the same bug class as any secret-bearing dict field
+    (e.g. MCP ``env``/``headers``): the
     field has a ``field_serializer`` that encrypts under cipher
     context (via :func:`serialize_secret`) but until now had no
     matching ``field_validator``. So ciphertext survived

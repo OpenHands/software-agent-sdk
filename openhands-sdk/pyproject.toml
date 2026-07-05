@@ -1,11 +1,11 @@
 [project]
 name = "openhands-sdk"
-version = "1.28.0"
+version = "1.31.0"
 description = "OpenHands SDK - Core functionality for building AI agents"
 
 requires-python = ">=3.12"
 dependencies = [
-    "agent-client-protocol>=0.8.1",
+    "agent-client-protocol>=0.10.1",
     "deprecation>=2.1.0",
     "fakeredis[lua]>=2.32.1",  # Explicit dependency for docket/fastmcp background tasks
     "fastmcp>=3.0.0",
@@ -32,6 +32,7 @@ Documentation = "https://docs.openhands.dev/sdk"
 
 [project.optional-dependencies]
 boto3 = ["boto3>=1.35.0"]
+vertex = ["google-cloud-aiplatform>=1.38"]
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

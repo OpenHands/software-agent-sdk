@@ -9,7 +9,7 @@ import pytest
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.agent.base import AgentBase
-from openhands.sdk.context.prompts.presets import create_registry
+from openhands.sdk.context.prompts.presets import PromptPreset, create_registry
 from openhands.sdk.llm import LLM
 
 
@@ -106,12 +106,63 @@ def test_builtin_default_prompt_uses_registry() -> None:
     assert agent.static_system_message == expected
 
 
-def test_custom_security_policy_filename_renders_through_jinja(tmp_path: Path) -> None:
-    """A custom security_policy_filename must be honored. The registry hardcodes the
-    default policy, so a non-default policy file falls back to the Jinja include path
-    rather than being silently replaced by the default policy."""
+# --- planning preset (sentinel-filename routing) ---
+
+
+def test_prompt_preset_resolves_from_builtin_filename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Built-in sentinel filenames map to a preset; anything else escapes to Jinja."""
+    assert Agent(llm=_make_llm(), tools=[])._prompt_preset is PromptPreset.DEFAULT
+    planning = Agent(
+        llm=_make_llm(),
+        tools=[],
+        system_prompt_filename="system_prompt_planning.j2",
+        system_prompt_kwargs={"plan_structure": "X"},
+    )
+    assert planning._prompt_preset is PromptPreset.PLANNING
+    # A non-sentinel filename takes the Jinja escape hatch (preset None).
+    assert (
+        Agent(
+            llm=_make_llm(), tools=[], system_prompt_filename="custom.j2"
+        )._prompt_preset
+        is None
+    )
+    # So does a subclass with its own prompt_dir, even with a sentinel filename.
+    prompts = tmp_path / "prompts"
+    prompts.mkdir()
+    monkeypatch.setattr(_CustomPromptDirAgent, "custom_prompt_dir", str(prompts))
+    sub = _CustomPromptDirAgent(
+        llm=_make_llm(), tools=[], system_prompt_filename="system_prompt_planning.j2"
+    )
+    assert sub._prompt_preset is None
+
+
+def test_planning_filename_routes_through_registry() -> None:
+    """The planning sentinel renders the planning registry preset, not the default."""
+    agent = Agent(
+        llm=_make_llm(),
+        tools=[],
+        system_prompt_filename="system_prompt_planning.j2",
+        system_prompt_kwargs={"plan_structure": "1. OBJECTIVE"},
+    )
+    static = agent.static_system_message
+    expected = (
+        create_registry(PromptPreset.PLANNING)
+        .build(agent._build_prompt_context())
+        .static
+    )
+    assert static == expected
+    assert static.startswith("You are a Planning Agent")
+    # Standalone composition: the default OpenHands identity must not leak in.
+    assert "<SOUL>" not in static
+
+
+def test_custom_security_policy_is_resolved_by_registry(tmp_path: Path) -> None:
+    """A custom security_policy_filename is honored via the registry (no Jinja escape
+    hatch), and the built-in default policy does not leak in alongside it."""
     policy = tmp_path / "custom_policy.j2"
-    policy.write_text("<SECURITY>\nCUSTOM POLICY\n</SECURITY>", encoding="utf-8")
+    policy.write_text("CUSTOM POLICY", encoding="utf-8")
 
     agent = Agent(llm=_make_llm(), tools=[], security_policy_filename=str(policy))
     static = agent.static_system_message

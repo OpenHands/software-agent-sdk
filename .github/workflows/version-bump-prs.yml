@@ -19,7 +19,7 @@ jobs:
             SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
         steps:
             - name: Checkout
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
 
             - name: Get version from release or input
               id: get_version
@@ -396,3 +396,139 @@ jobs:
                   payload: |
                       channel: C08E1SYKEM9
                       text: "🚀 *SDK v${{ steps.get_version.outputs.version }} published to PyPI!*\n\nVersion bump PRs created:\n• <https://github.com/OpenHands/OpenHands/pulls?q=is%3Apr+bump-sdk-${{ steps.get_version.outputs.version }}|OpenHands>\n• <https://github.com/OpenHands/openhands-cli/pulls?q=is%3Apr+bump-sdk-${{ steps.get_version.outputs.version }}|OpenHands-CLI>\n\n<https://github.com/OpenHands/software-agent-sdk/releases/tag/v${{ steps.get_version.outputs.version }}|View Release>"
+
+    bump-typescript-client:
+        # Open a PR in OpenHands/typescript-client bumping the pinned
+        # agent-server image (package.json -> config.agentServerImage) to this
+        # release. The agent-server image tag <version>-python corresponds 1:1
+        # to the SDK release vX.Y.Z. Runs independently of the package bumps
+        # above so it can't affect the OpenHands / openhands-cli PRs.
+        runs-on: ubuntu-24.04
+        timeout-minutes: 60
+        env:
+            GH_TOKEN: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
+        steps:
+            - name: Get version
+              id: get_version
+              env:
+                  VERSION_INPUT: ${{ github.event.inputs.version }}
+              run: |
+                  VERSION="$VERSION_INPUT"
+                  if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                    echo "❌ Invalid version format. Expected: X.Y.Z (e.g., 1.30.0)"
+                    exit 1
+                  fi
+                  echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+                  echo "📦 Version: $VERSION"
+
+            - name: Wait for agent-server image in GHCR
+              env:
+                  VERSION: ${{ steps.get_version.outputs.version }}
+              run: |
+                  set -euo pipefail
+                  IMAGE="ghcr.io/openhands/agent-server:${VERSION}-python"
+                  MAX_ATTEMPTS=90
+                  SLEEP_SECONDS=30
+                  echo "⏳ Waiting for ${IMAGE} to be published..."
+                  ATTEMPT=1
+                  while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+                    if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
+                      echo "✅ ${IMAGE} is published"
+                      break
+                    fi
+                    echo "  Attempt $ATTEMPT/$MAX_ATTEMPTS: not ready, waiting ${SLEEP_SECONDS}s..."
+                    sleep $SLEEP_SECONDS
+                    ATTEMPT=$((ATTEMPT + 1))
+                  done
+                  if [ $ATTEMPT -gt $MAX_ATTEMPTS ]; then
+                    echo "❌ Timeout waiting for ${IMAGE} (server.yml may still be building or failed)"
+                    exit 1
+                  fi
+
+            - name: Open bump PR in typescript-client
+              env:
+                  VERSION: ${{ steps.get_version.outputs.version }}
+              run: |
+                  set -euo pipefail
+                  REPO="OpenHands/typescript-client"
+                  BRANCH="bump-agent-server-$VERSION"
+
+                  git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" ts-client
+                  cd ts-client
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
+
+                  if git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
+                    echo "⚠️ Branch $BRANCH exists, checking it out"
+                    git fetch origin "$BRANCH"
+                    git checkout "$BRANCH"
+                  else
+                    git checkout -b "$BRANCH"
+                  fi
+
+                  # Source of truth for the currently-pinned version.
+                  CURRENT=$(grep -oE 'agent-server:[0-9]+\.[0-9]+\.[0-9]+-python' package.json | head -1 | sed -E 's/.*:([0-9.]+)-python/\1/')
+                  if [ -z "$CURRENT" ]; then
+                    echo "❌ Could not determine current agent-server version from package.json"
+                    exit 1
+                  fi
+                  if [ "$CURRENT" = "$VERSION" ]; then
+                    echo "✅ typescript-client already pinned to $VERSION — nothing to do"
+                    exit 0
+                  fi
+
+                  for f in package.json .github/workflows/integration-tests.yml AGENTS.md README.md; do
+                    sed -i \
+                      -e "s#agent-server:${CURRENT}-python#agent-server:${VERSION}-python#g" \
+                      -e "s#software-agent-sdk v${CURRENT}#software-agent-sdk v${VERSION}#g" \
+                      -e "s#\`v${CURRENT}\`#\`v${VERSION}\`#g" \
+                      "$f"
+                  done
+
+                  if git diff --quiet; then
+                    echo "⚠️ No changes produced — versions may already match"
+                    exit 0
+                  fi
+
+                  git add package.json .github/workflows/integration-tests.yml AGENTS.md README.md
+                  git commit -m "Bump agent-server (software-agent-sdk) to v$VERSION"
+                  git push -u origin "$BRANCH"
+
+                  EXISTING_PR=$(gh pr list --repo "$REPO" --head "$BRANCH" --json number --jq '.[0].number')
+                  if [ -n "$EXISTING_PR" ]; then
+                    echo "✅ PR #$EXISTING_PR already exists for $REPO"
+                    exit 0
+                  fi
+
+                  cat > pr_body.md <<EOF
+                  ## Bump tracked agent-server / SDK version
+
+                  Updates the pinned OpenHands software-agent-sdk / agent-server image from v${CURRENT} to v${VERSION} (package.json config.agentServerImage, plus the integration-tests.yml, AGENTS.md, and README.md mirrors).
+
+                  CI + integration tests on this PR run against ghcr.io/openhands/agent-server:${VERSION}-python, validating the client against the new server before merge. This does not release the npm package.
+
+                  Triggered by: software-agent-sdk v${VERSION} — https://github.com/OpenHands/software-agent-sdk/releases/tag/v${VERSION}
+
+                  ---
+                  Automatically created by the version-bump-prs workflow.
+                  EOF
+
+                  gh pr create \
+                    --repo "$REPO" \
+                    --base main \
+                    --head "$BRANCH" \
+                    --title "chore: agent-server (software-agent-sdk) to v$VERSION" \
+                    --body-file pr_body.md
+                  echo "✅ PR created for $REPO"
+
+            - name: Summary
+              env:
+                  VERSION: ${{ steps.get_version.outputs.version }}
+              run: |
+                  {
+                    echo "## ✅ typescript-client agent-server bump"
+                    echo ""
+                    echo "Bumped the tracked agent-server image to **v$VERSION**:"
+                    echo ""
+                    echo "- [typescript-client](https://github.com/OpenHands/typescript-client/pulls?q=is%3Apr+bump-agent-server-$VERSION)"
+                  } >> "$GITHUB_STEP_SUMMARY"

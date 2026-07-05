@@ -16,9 +16,12 @@ from pydantic import (
 )
 
 from openhands.sdk.context.prompts import render_template
+from openhands.sdk.context.prompts.presets import create_registry
+from openhands.sdk.context.prompts.section import PromptContext
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
+from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.secret import SecretSource, SecretValue
 from openhands.sdk.skills import (
     Skill,
@@ -40,8 +43,8 @@ PROMPT_DIR = pathlib.Path(__file__).parent / "prompts" / "templates"
 
 
 class ResolvedDynamicData(NamedTuple):
-    """Dynamic-tier inputs resolved once, shared by the legacy ``.j2`` renderer and
-    the section registry (skills gated by model family, secrets merged)."""
+    """Dynamic-tier inputs resolved once, fed into the section registry
+    (skills gated by model family, secrets merged)."""
 
     repo_skills: list[Skill]
     available_skills_prompt: str
@@ -111,6 +114,15 @@ class AgentContext(BaseModel):
         ),
         json_schema_extra={"acp_compatible": True},
     )
+    registered_marketplaces: list[MarketplaceRegistration] = Field(
+        default_factory=list,
+        description=(
+            "Marketplace registrations for plugin resolution. Registrations with "
+            "auto_load=True or a list of plugin names are resolved by "
+            "LocalConversation at startup."
+        ),
+        json_schema_extra={"acp_compatible": True},
+    )
     load_project_skills: bool = Field(
         default=False,
         description=(
@@ -138,8 +150,8 @@ class AgentContext(BaseModel):
         json_schema_extra={"acp_compatible": True},
     )
     current_datetime: datetime | str | None = Field(
-        # Timezone-aware local "now" so the value injected into the system prompt
-        # carries a UTC offset instead of an ambiguous naive local time (#3438).
+        # Timezone-aware local "now"; get_formatted_datetime renders it to the
+        # minute for the prompt.
         default_factory=lambda: datetime.now().astimezone(),
         description=(
             "Current date and time information to provide to the agent. "
@@ -165,7 +177,9 @@ class AgentContext(BaseModel):
         :class:`StartConversationRequest` (whose
         ``_populate_agent_from_settings`` validator runs *without*
         cipher context) and get injected into the agent's system prompt
-        as-is — same bug class that affected ``ACPAgent.acp_env``.
+        as-is — same bug class as any secret-bearing dict field that
+        round-trips without a matching decryption validator (e.g. MCP
+        ``env`` / ``headers``).
 
         ``SecretSource`` entries are dict-shaped on the wire (Pydantic
         models), so they're skipped by :func:`validate_secret_dict`'s
@@ -204,15 +218,18 @@ class AgentContext(BaseModel):
 
     @model_validator(mode="after")
     def _load_auto_skills(self):
-        """Load user and/or public skills if enabled."""
-        if not self.load_user_skills and not self.load_public_skills:
+        """Load user and/or legacy public skills if enabled."""
+        # Any marketplace registration opts the context out of the legacy
+        # public-skills path, even when the registration is resolution-only.
+        include_public = self.load_public_skills and not self.registered_marketplaces
+        if not self.load_user_skills and not include_public:
             return self
 
         auto_skills = load_available_skills(
             work_dir=None,
             include_user=self.load_user_skills,
             include_project=False,
-            include_public=self.load_public_skills,
+            include_public=include_public,
             marketplace_path=self.marketplace_path,
         )
 
@@ -249,13 +266,17 @@ class AgentContext(BaseModel):
 
         Returns:
             Formatted datetime string, or None if current_datetime is not set.
-            If current_datetime is a datetime object, it's formatted as ISO 8601.
+            If current_datetime is a datetime object, it's formatted as
+            "YYYY-MM-DDTHH:MM" (no seconds, microseconds, or UTC offset).
             If current_datetime is already a string, it's returned as-is.
         """
         if self.current_datetime is None:
             return None
         if isinstance(self.current_datetime, datetime):
-            return self.current_datetime.isoformat()
+            # Local wall-clock to the minute: drop seconds, microseconds, offset.
+            return self.current_datetime.replace(tzinfo=None).isoformat(
+                timespec="minutes"
+            )
         return self.current_datetime
 
     def _partition_skills(self) -> tuple[list[Skill], list[Skill]]:
@@ -313,27 +334,16 @@ class AgentContext(BaseModel):
         data = self._resolve_dynamic_data(
             llm_model, llm_model_canonical, additional_secret_infos
         )
-        has_content = (
-            data.repo_skills
-            or self.system_message_suffix
-            or data.secret_infos
-            or data.available_skills_prompt
-            or data.formatted_datetime
+        ctx = PromptContext(
+            now=data.formatted_datetime,
+            repo_skills=tuple((s.name, s.content) for s in data.repo_skills),
+            available_skills_prompt=data.available_skills_prompt or None,
+            custom_suffix=self.system_message_suffix or None,
+            secret_infos=tuple(
+                (info["name"] or "", info["description"]) for info in data.secret_infos
+            ),
         )
-        if has_content:
-            formatted_text = render_template(
-                prompt_dir=str(PROMPT_DIR),
-                template_name="system_message_suffix.j2",
-                repo_skills=data.repo_skills,
-                system_message_suffix=self.system_message_suffix or "",
-                secret_infos=data.secret_infos,
-                available_skills_prompt=data.available_skills_prompt,
-                current_datetime=data.formatted_datetime,
-            ).strip()
-            return formatted_text
-        elif self.system_message_suffix and self.system_message_suffix.strip():
-            return self.system_message_suffix.strip()
-        return None
+        return create_registry().build(ctx).dynamic
 
     def _resolve_dynamic_data(
         self,
@@ -419,9 +429,10 @@ class AgentContext(BaseModel):
         this adapter only emits prompt-only context.  Unsupported AgentContext
         fields are rejected by :meth:`validate_acp_compatibility`.
 
-        The rendering reuses :meth:`get_system_message_suffix` with the same
-        ``system_message_suffix.j2`` template so that ACP agents receive the
-        identical prompt layout as the regular agent.  This includes the
+        The rendering reuses :meth:`get_system_message_suffix`, which assembles
+        the dynamic-tier sections via the shared prompt registry, so that ACP
+        agents receive the identical prompt layout as the regular agent.  This
+        includes the
         ``<CUSTOM_SECRETS>`` block when secrets are present, informing the ACP
         subprocess which environment variables are available.  The actual secret
         values are injected into the subprocess environment by
@@ -441,7 +452,8 @@ class AgentContext(BaseModel):
         """
         self.validate_acp_compatibility()
         # No model-specific skill filtering for ACP — delegate to the shared
-        # renderer which also renders the <CUSTOM_SECRETS> block from secrets.
+        # builder, whose dynamic-tier sections also emit the <CUSTOM_SECRETS>
+        # block from secrets.
         return self.get_system_message_suffix(
             additional_secret_infos=additional_secret_infos
         )

@@ -12,12 +12,14 @@ from openhands.sdk.conversation.types import (
     ConversationTokenCallbackType,
     TraceMetadataValue,
 )
+from openhands.sdk.event.types import EventID
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.message import Message
 from openhands.sdk.observability.laminar import (
     RootSpan,
     end_root_span,
     should_enable_observability,
+    start_child_span,
     start_root_span,
 )
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
@@ -139,6 +141,7 @@ class BaseConversation(ABC):
     def _start_observability_span(
         self,
         session_id: str,
+        span_name: str = "conversation",
         user_id: str | None = None,
         metadata: dict[str, TraceMetadataValue] | None = None,
         tags: list[str] | None = None,
@@ -148,6 +151,7 @@ class BaseConversation(ABC):
 
         Args:
             session_id: The session ID to associate with the trace
+            span_name: Optional child span name to emit under the conversation root.
             user_id: Optional user ID to associate with the trace
             metadata: Optional trace-level metadata to attach to observability backends
             tags: Optional span tags to attach to the conversation root span
@@ -166,12 +170,15 @@ class BaseConversation(ABC):
             tags=tags,
             attributes=_conversation_tag_attributes(conversation_tags),
         )
+        if span_name != "conversation":
+            start_child_span(self._observability_root_span, span_name, tags=tags)
 
     def _end_observability_span(self) -> None:
         """End the observability span if it hasn't been ended already."""
         if self._span_ended:
             return
-        end_root_span(self._observability_root_span)
+        if self._observability_root_span is not None:
+            end_root_span(self._observability_root_span)
         self._observability_root_span = None
         self._span_ended = True
 
@@ -378,6 +385,19 @@ class BaseConversation(ABC):
         """
         ...
 
+    def load_plugin(self, plugin_ref: str) -> None:
+        """Load a plugin from a registered marketplace.
+
+        Implementations that support marketplace-registered plugins resolve the
+        reference against the conversation agent's registered marketplaces and
+        merge the plugin's skills, hooks, and MCP configuration into the agent.
+
+        Args:
+            plugin_ref: Plugin reference, either ``plugin-name`` or
+                ``plugin-name@marketplace-name``.
+        """
+        raise NotImplementedError("This conversation does not support loading plugins")
+
     @abstractmethod
     def fork(
         self,
@@ -387,6 +407,7 @@ class BaseConversation(ABC):
         title: str | None = None,
         tags: dict[str, str] | None = None,
         reset_metrics: bool = True,
+        from_event_id: EventID | None = None,
     ) -> "BaseConversation":
         """Deep-copy this conversation with a new ID.
 
@@ -403,10 +424,29 @@ class BaseConversation(ABC):
             tags: Optional tags for the forked conversation.
             reset_metrics: If ``True`` (default), cost/token stats start
                 fresh on the fork.
+            from_event_id: If set, copy only the branch up to this event and set
+                the fork's HEAD there. If ``None`` (default), full copy.
 
         Returns:
             A new conversation that shares the same event history but has
             its own identity and independent state going forward.
+        """
+        ...
+
+    @abstractmethod
+    def navigate_to(self, event_id: EventID | None) -> None:
+        """Move the conversation HEAD to an existing event within this conversation.
+
+        Re-roots the active branch in place: the agent's next context becomes
+        ``path_to_root(event_id)``. All branches stay on disk; unlike
+        :meth:`fork`, no new conversation is created.
+
+        Args:
+            event_id: Event to make the new HEAD, or ``None`` for the empty tree.
+
+        Raises:
+            ValueError: If ``event_id`` is not ``None`` and not in this
+                conversation.
         """
         ...
 
