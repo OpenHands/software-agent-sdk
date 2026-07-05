@@ -1639,7 +1639,7 @@ class ACPAgent(AgentBase):
 
     # Private runtime state
     _executor: Any = PrivateAttr(default=None)
-    _conn: Any = PrivateAttr(default=None)  # ClientSideConnection
+    _conn: ClientSideConnection | None = PrivateAttr(default=None)
     _session_id: str | None = PrivateAttr(default=None)
     _process: Any = PrivateAttr(default=None)  # asyncio subprocess
     _client: Any = PrivateAttr(default=None)  # _OpenHandsACPBridge
@@ -2770,10 +2770,11 @@ class ACPAgent(AgentBase):
         """Async variant of _request_session_cancel that waits for cancel send."""
         if self._conn is None or self._executor is None or self._session_id is None:
             return
+        conn = self._conn
         session_id = self._session_id
 
         async def _cancel() -> None:
-            result = self._conn.cancel(session_id)
+            result = conn.cancel(session_id)
             if inspect.isawaitable(result):
                 await result
 
@@ -2878,10 +2879,11 @@ class ACPAgent(AgentBase):
         """Ask the ACP server to cancel the active session prompt."""
         if self._conn is None or self._executor is None or self._session_id is None:
             return
+        conn = self._conn
         session_id = self._session_id
 
         async def _cancel() -> None:
-            result = self._conn.cancel(session_id)
+            result = conn.cancel(session_id)
             if inspect.isawaitable(result):
                 await result
 
@@ -2956,16 +2958,22 @@ class ACPAgent(AgentBase):
         to return an empty body (and test mocks do); downstream
         ``_finalize_successful_turn`` already accepts ``PromptResponse | None``.
         """
-        usage_sync = self._client.prepare_usage_sync(self._session_id or "")
-        response = await self._conn.prompt(prompt_blocks, self._session_id)
-        if self._client.get_turn_usage_update(self._session_id or "") is None:
+        if self._conn is None or self._session_id is None:
+            msg = "ACPAgent has no live ACP session; call init_state() first"
+            raise RuntimeError(msg)
+        conn = self._conn
+        session_id = self._session_id
+
+        usage_sync = self._client.prepare_usage_sync(session_id)
+        response = await conn.prompt(session_id=session_id, prompt=prompt_blocks)
+        if self._client.get_turn_usage_update(session_id) is None:
             try:
                 await asyncio.wait_for(usage_sync.wait(), timeout=_USAGE_UPDATE_TIMEOUT)
             except TimeoutError:
                 logger.warning(
                     "UsageUpdate not received within %.1fs for session %s",
                     _USAGE_UPDATE_TIMEOUT,
-                    _fingerprint_session_id(self._session_id),
+                    _fingerprint_session_id(session_id),
                 )
         return response
 
@@ -3563,12 +3571,14 @@ class ACPAgent(AgentBase):
             msg = "ACPAgent has no session ID; call init_state() first"
             raise RuntimeError(msg)
 
+        conn = self._conn
+        session_id = self._session_id
         client = self._client
 
         async def _fork_and_prompt() -> str:
-            fork_response = await self._conn.fork_session(
+            fork_response = await conn.fork_session(
                 cwd=self._working_dir,
-                session_id=self._session_id,
+                session_id=session_id,
             )
             fork_session_id = fork_response.session_id
 
@@ -3577,9 +3587,9 @@ class ACPAgent(AgentBase):
             try:
                 fork_t0 = time.monotonic()
                 usage_sync = client.prepare_usage_sync(fork_session_id)
-                response = await self._conn.prompt(
-                    [text_block(question)],
-                    fork_session_id,
+                response = await conn.prompt(
+                    session_id=fork_session_id,
+                    prompt=[text_block(question)],
                 )
                 if client.get_turn_usage_update(fork_session_id) is None:
                     try:
@@ -3680,7 +3690,10 @@ class ACPAgent(AgentBase):
             )
         # ``has_live_acp_session`` above guarantees a session id; narrow for the
         # type checker.
+        assert self._conn is not None
         assert self._session_id is not None
+        conn = self._conn
+        session_id = self._session_id
         # Bounded round-trip: this runs while LocalConversation.switch_acp_model
         # holds the state lock, so a server that accepts the call but never
         # answers must not wedge the lock indefinitely. On timeout / protocol
@@ -3689,8 +3702,8 @@ class ACPAgent(AgentBase):
         try:
             self._executor.run_async(
                 _apply_acp_model(
-                    self._conn,
-                    self._session_id,
+                    conn,
+                    session_id,
                     model,
                     agent_name=self._agent_name,
                     via_config_option=self._model_via_config_option,
@@ -3752,8 +3765,9 @@ class ACPAgent(AgentBase):
         """Internal cleanup of ACP resources."""
         # Close the connection first
         if self._conn is not None and self._executor is not None:
+            conn = self._conn
             try:
-                self._executor.run_async(self._conn.close())
+                self._executor.run_async(conn.close())
             except Exception as e:
                 logger.debug("Error closing ACP connection: %s", e)
             self._conn = None
