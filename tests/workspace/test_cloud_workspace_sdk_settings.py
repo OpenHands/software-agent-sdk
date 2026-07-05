@@ -14,7 +14,7 @@ import httpx
 import pytest
 from pydantic import SecretStr
 
-from openhands.sdk.mcp.config import coerce_mcp_config, dump_mcp_config
+from openhands.sdk.mcp.config import dump_mcp_config
 from openhands.sdk.secret import LookupSecret
 from openhands.workspace.cloud.workspace import OpenHandsCloudWorkspace
 
@@ -458,7 +458,7 @@ class TestGetMcpServers:
         ):
             mcp_config_dict = mock_workspace.get_mcp_config()
 
-        config = coerce_mcp_config(mcp_config_dict)
+        config = mcp_config_dict
         assert len(config) == 3
         assert "sse_0" in config
         assert "shttp_0" in config

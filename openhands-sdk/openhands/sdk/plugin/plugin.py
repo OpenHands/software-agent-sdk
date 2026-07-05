@@ -454,7 +454,8 @@ def _load_plugin_mcp_config(plugin_dir: Path) -> dict[str, MCPServer]:
                 mcp_json,
                 len(config["mcpServers"]),
             )
-        return coerce_mcp_config(config)
+        servers = config.get("mcpServers", {}) if isinstance(config, dict) else {}
+        return coerce_mcp_config(servers)
     except Exception as e:
         logger.warning(f"Failed to load MCP config from {mcp_json}: {e}")
         return {}

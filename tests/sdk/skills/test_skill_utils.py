@@ -551,10 +551,9 @@ type: repo
 version: 1.0.0
 agent: CodeActAgent
 mcp_tools:
-  mcpServers:
-    fetch:
-      command: uvx
-      args: ["mcp-server-fetch"]
+  fetch:
+    command: uvx
+    args: ["mcp-server-fetch"]
 ---
 
 # Default Tools
@@ -588,11 +587,9 @@ type: repo
 version: 1.0.0
 agent: CodeActAgent
 mcp_tools: {
-  "mcpServers": {
-    "fetch": {
-      "command": "uvx",
-      "args": ["mcp-server-fetch"]
-    }
+  "fetch": {
+    "command": "uvx",
+    "args": ["mcp-server-fetch"]
   }
 }
 ---

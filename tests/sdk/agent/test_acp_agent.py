@@ -91,7 +91,9 @@ class _FakeLookupSecret(SecretSource):
 
 def _make_agent(**kwargs) -> ACPAgent:
     if isinstance(kwargs.get("mcp_config"), dict):
-        kwargs["mcp_config"] = coerce_mcp_config(kwargs["mcp_config"])
+        mcp_config = kwargs["mcp_config"]
+        servers = mcp_config.get("mcpServers", mcp_config)
+        kwargs["mcp_config"] = coerce_mcp_config(servers)
     return ACPAgent(acp_command=["echo", "test"], **kwargs)
 
 
@@ -7694,7 +7696,8 @@ class TestMcpConfigToAcpServers:
 
     @staticmethod
     def _config(config: Mapping[str, object]):
-        return coerce_mcp_config(config)
+        servers = config.get("mcpServers", config)
+        return coerce_mcp_config(servers)
 
     def test_stdio_always_forwarded(self):
         from acp.schema import McpServerStdio

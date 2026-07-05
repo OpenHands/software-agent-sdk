@@ -36,6 +36,10 @@ logger = logging.getLogger(__name__)
 MCPTransport = Literal["http", "streamable-http", "sse"]
 
 
+def native_mcp_config(config: dict) -> dict:
+    return coerce_mcp_config(config["mcpServers"])
+
+
 @pytest.mark.parametrize(
     ("credential", "expected"),
     [
@@ -239,7 +243,7 @@ def test_prepare_mcp_config_converts_bare_oauth_credential():
         }
     }
 
-    prepared = _prepare_mcp_config(coerce_mcp_config(config))
+    prepared = _prepare_mcp_config(native_mcp_config(config))
 
     server = prepared.mcpServers["remote"]
     assert isinstance(server, RemoteMCPServer)
@@ -269,7 +273,7 @@ def test_prepare_mcp_config_applies_explicit_oauth_authentication():
         }
     }
 
-    prepared = _prepare_mcp_config(coerce_mcp_config(config))
+    prepared = _prepare_mcp_config(native_mcp_config(config))
     server = prepared.mcpServers["remote"]
     assert isinstance(server, RemoteMCPServer)
     auth = server.auth
@@ -303,7 +307,7 @@ def test_prepare_mcp_config_applies_oauth_token_storage_to_explicit_auth():
     }
 
     prepared = _prepare_mcp_config(
-        coerce_mcp_config(config),
+        native_mcp_config(config),
         mcp_oauth_token_storage=token_storage,
     )
 
@@ -337,7 +341,7 @@ def test_prepare_mcp_config_uses_custom_oauth_factory():
         return OAuth(client_name="Factory OAuth")
 
     prepared = _prepare_mcp_config(
-        coerce_mcp_config(config),
+        native_mcp_config(config),
         mcp_oauth_token_storage=token_storage,
         mcp_oauth_factory=factory,
     )
@@ -364,7 +368,7 @@ def test_prepare_mcp_config_applies_oauth_token_storage_to_bare_oauth_credential
     }
 
     prepared = _prepare_mcp_config(
-        coerce_mcp_config(config),
+        native_mcp_config(config),
         mcp_oauth_token_storage=token_storage,
     )
 
@@ -386,7 +390,7 @@ def test_create_mcp_tools_http_server(http_mcp_server: MCPTestServer):
         }
     }
 
-    tools = create_mcp_tools(coerce_mcp_config(config), timeout=10.0)
+    tools = create_mcp_tools(native_mcp_config(config), timeout=10.0)
 
     assert len(tools) == 2
     tool_names = {t.name for t in tools}
@@ -412,7 +416,7 @@ def test_create_mcp_tools_sse_server(sse_mcp_server: MCPTestServer):
         }
     }
 
-    tools = create_mcp_tools(coerce_mcp_config(config), timeout=10.0)
+    tools = create_mcp_tools(native_mcp_config(config), timeout=10.0)
 
     assert len(tools) == 2
     tool_names = {t.name for t in tools}
@@ -437,7 +441,7 @@ def test_create_mcp_tools_mixed_servers(
         }
     }
 
-    tools = create_mcp_tools(coerce_mcp_config(config), timeout=10.0)
+    tools = create_mcp_tools(native_mcp_config(config), timeout=10.0)
 
     # Should have tools from both servers (prefixed with server name)
     assert len(tools) == 4
@@ -459,7 +463,7 @@ def test_create_mcp_tools_http_schema_validation(http_mcp_server: MCPTestServer)
         }
     }
 
-    tools = create_mcp_tools(coerce_mcp_config(config), timeout=10.0)
+    tools = create_mcp_tools(native_mcp_config(config), timeout=10.0)
     add_tool = next(t for t in tools if t.name == "add_numbers")
 
     openai_schema = add_tool.to_openai_tool()
@@ -494,7 +498,7 @@ def test_create_mcp_tools_transport_inferred_from_url(http_mcp_server: MCPTestSe
         }
     }
 
-    tools = create_mcp_tools(coerce_mcp_config(config), timeout=10.0)
+    tools = create_mcp_tools(native_mcp_config(config), timeout=10.0)
     assert len(tools) == 2
 
 
@@ -509,7 +513,7 @@ def test_create_mcp_tools_sse_inferred_from_url(sse_mcp_server: MCPTestServer):
         }
     }
 
-    tools = create_mcp_tools(coerce_mcp_config(config), timeout=10.0)
+    tools = create_mcp_tools(native_mcp_config(config), timeout=10.0)
     assert len(tools) == 2
 
 
@@ -524,7 +528,7 @@ def test_execute_http_tool(http_mcp_server: MCPTestServer):
         }
     }
 
-    tools = create_mcp_tools(coerce_mcp_config(config), timeout=10.0)
+    tools = create_mcp_tools(native_mcp_config(config), timeout=10.0)
     greet_tool = next(t for t in tools if t.name == "greet")
 
     action = greet_tool.action_from_arguments({"name": "World"})
@@ -546,7 +550,7 @@ def test_execute_sse_tool(sse_mcp_server: MCPTestServer):
         }
     }
 
-    tools = create_mcp_tools(coerce_mcp_config(config), timeout=10.0)
+    tools = create_mcp_tools(native_mcp_config(config), timeout=10.0)
     multiply_tool = next(t for t in tools if t.name == "multiply")
 
     action = multiply_tool.action_from_arguments({"x": 6, "y": 7})
@@ -571,7 +575,7 @@ def test_create_mcp_tools_connection_to_nonexistent_server():
     # Should either return empty tools or raise connection-related errors
     # Key is it shouldn't hang
     try:
-        tools = create_mcp_tools(coerce_mcp_config(config), timeout=5.0)
+        tools = create_mcp_tools(native_mcp_config(config), timeout=5.0)
         assert len(tools) == 0  # No tools from failed connection
     except (ConnectionError, TimeoutError, MCPTimeoutError, OSError, MCPError):
         pass  # Expected connection errors are acceptable
@@ -584,7 +588,7 @@ def test_create_mcp_tools_stdio_server():
     }
 
     # Use longer timeout for CI environments where uvx may need to download packages
-    tools = create_mcp_tools(coerce_mcp_config(mcp_config), timeout=120.0)
+    tools = create_mcp_tools(native_mcp_config(mcp_config), timeout=120.0)
     assert len(tools) == 1
     assert tools[0].name == "fetch"
 
@@ -661,7 +665,7 @@ def test_create_mcp_tools_timeout_error_message():
         mock_client.call_async_from_sync.side_effect = TimeoutError()
 
         with pytest.raises(MCPTimeoutError) as exc_info:
-            create_mcp_tools(coerce_mcp_config(config), timeout=30.0)
+            create_mcp_tools(native_mcp_config(config), timeout=30.0)
 
         error_message = str(exc_info.value)
         assert "30" in error_message

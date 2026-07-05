@@ -113,7 +113,7 @@ def load_plugins(
             get_secret=get_secret,
             expand_defaults=True,
         )
-        merged_mcp_config = coerce_mcp_config(expanded_mcp)
+        merged_mcp_config = coerce_mcp_config(expanded_mcp["mcpServers"])
         logger.debug("Expanded MCP config variables")
 
     # Combine all hook configs (concatenation semantics)

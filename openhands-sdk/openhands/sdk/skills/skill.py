@@ -265,7 +265,7 @@ class Skill(BaseModel):
     def _validate_mcp_tools(
         cls, v: object, info: ValidationInfo
     ) -> dict[str, MCPServer] | None:
-        """Accept external FastMCP shape and store native MCP server models."""
+        """Validate skill MCP tools as native MCP server models."""
         if v is None:
             return None
         if not isinstance(v, Mapping):
@@ -359,7 +359,8 @@ class Skill(BaseModel):
         mcp_tools: dict[str, MCPServer] | None = None
         mcp_json_path = find_mcp_config(skill_root)
         if mcp_json_path:
-            mcp_tools = coerce_mcp_config(load_mcp_config(mcp_json_path, skill_root))
+            mcp_config = load_mcp_config(mcp_json_path, skill_root)
+            mcp_tools = coerce_mcp_config(mcp_config.get("mcpServers", {}))
 
         # Discover resource directories
         resources: SkillResources | None = None

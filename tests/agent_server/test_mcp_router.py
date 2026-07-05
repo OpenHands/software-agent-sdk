@@ -781,7 +781,7 @@ def test_browser_coordinated_oauth_callback_handler_uses_fastmcp_callback_api(
 ):
     job = _MCPOAuthProbeJob(
         request=MCPTestRequest.model_validate(
-            {"server": {"type": "shttp", "url": "https://mcp.example.com/mcp"}}
+            {"server": {"transport": "http", "url": "https://mcp.example.com/mcp"}}
         ),
         cipher=None,
     )

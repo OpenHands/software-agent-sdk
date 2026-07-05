@@ -1552,13 +1552,11 @@ def test_conversation_settings_agent_settings_field_accepts_both_variants() -> N
 def test_openhands_agent_settings_mcp_config_redacts_env_and_headers() -> None:
     mcp_config = coerce_mcp_config(
         {
-            "mcpServers": {
-                "leaky": {
-                    "command": "echo",
-                    "args": ["mcp"],
-                    "env": {"API_KEY": "sk-mcp-secret"},
-                    "headers": {"X-API-Token": "tok-mcp-secret"},
-                }
+            "leaky": {
+                "command": "echo",
+                "args": ["mcp"],
+                "env": {"API_KEY": "sk-mcp-secret"},
+                "headers": {"X-API-Token": "tok-mcp-secret"},
             }
         }
     )
@@ -1586,17 +1584,15 @@ def test_mcp_config_encrypts_env_and_headers_with_cipher() -> None:
 
     mcp_config = coerce_mcp_config(
         {
-            "mcpServers": {
-                "github": {
-                    "command": "uvx",
-                    "args": ["mcp-server-github"],
-                    "env": {"GITHUB_TOKEN": "ghp-mcp-secret"},
-                },
-                "fetch": {
-                    "url": "https://example.com/mcp",
-                    "headers": {"X-API-Token": "tok-mcp-secret"},
-                },
-            }
+            "github": {
+                "command": "uvx",
+                "args": ["mcp-server-github"],
+                "env": {"GITHUB_TOKEN": "ghp-mcp-secret"},
+            },
+            "fetch": {
+                "url": "https://example.com/mcp",
+                "headers": {"X-API-Token": "tok-mcp-secret"},
+            },
         }
     )
     settings = OpenHandsAgentSettings(mcp_config=mcp_config)
@@ -1649,16 +1645,14 @@ def test_mcp_config_encrypts_bearer_auth_with_cipher() -> None:
 
     mcp_config = coerce_mcp_config(
         {
-            "mcpServers": {
-                "linear": {
-                    "url": "https://mcp.linear.app/mcp",
-                    "auth": {"strategy": "bearer", "value": "lin-api-secret"},
-                },
-                "superhuman": {
-                    "url": "https://mcp.mail.superhuman.com/mcp",
-                    "auth": {"strategy": "oauth2"},
-                },
-            }
+            "linear": {
+                "url": "https://mcp.linear.app/mcp",
+                "auth": {"strategy": "bearer", "value": "lin-api-secret"},
+            },
+            "superhuman": {
+                "url": "https://mcp.mail.superhuman.com/mcp",
+                "auth": {"strategy": "oauth2"},
+            },
         }
     )
     settings = OpenHandsAgentSettings(mcp_config=mcp_config)
@@ -1693,22 +1687,20 @@ def test_mcp_config_encrypts_bearer_auth_with_cipher() -> None:
 def test_openhands_agent_settings_create_agent_preserves_mcp_auth_model() -> None:
     mcp_config = coerce_mcp_config(
         {
-            "mcpServers": {
-                "linear": {
-                    "url": "https://mcp.linear.app/mcp",
-                    "auth": {"strategy": "bearer", "value": "lin-api-secret"},
-                },
-                "superhuman": {
-                    "url": "https://mcp.mail.superhuman.com/mcp",
-                    "auth": {
-                        "strategy": "oauth2",
-                        "authentication": {
-                            "type": "oauth",
-                            "client_auth_method": "none",
-                        },
+            "linear": {
+                "url": "https://mcp.linear.app/mcp",
+                "auth": {"strategy": "bearer", "value": "lin-api-secret"},
+            },
+            "superhuman": {
+                "url": "https://mcp.mail.superhuman.com/mcp",
+                "auth": {
+                    "strategy": "oauth2",
+                    "authentication": {
+                        "type": "oauth",
+                        "client_auth_method": "none",
                     },
                 },
-            }
+            },
         }
     )
 
@@ -1771,12 +1763,10 @@ def test_openhands_agent_settings_mcp_config_expose_encrypted_requires_cipher() 
     settings = OpenHandsAgentSettings(
         mcp_config=coerce_mcp_config(
             {
-                "mcpServers": {
-                    "github": {
-                        "command": "uvx",
-                        "args": ["mcp-server-github"],
-                        "env": {"GITHUB_TOKEN": "ghp-secret"},
-                    }
+                "github": {
+                    "command": "uvx",
+                    "args": ["mcp-server-github"],
+                    "env": {"GITHUB_TOKEN": "ghp-secret"},
                 }
             }
         )
@@ -1796,12 +1786,10 @@ def test_openhands_agent_settings_mcp_config_expose_plaintext_passes_through() -
     settings = OpenHandsAgentSettings(
         mcp_config=coerce_mcp_config(
             {
-                "mcpServers": {
-                    "github": {
-                        "command": "uvx",
-                        "args": ["mcp-server-github"],
-                        "env": {"GITHUB_TOKEN": "ghp-secret"},
-                    }
+                "github": {
+                    "command": "uvx",
+                    "args": ["mcp-server-github"],
+                    "env": {"GITHUB_TOKEN": "ghp-secret"},
                 }
             }
         )
@@ -1820,12 +1808,10 @@ def test_openhands_agent_settings_create_agent_keeps_real_mcp_secrets() -> None:
     # redacts mcp_config for transit only).
     mcp_config = coerce_mcp_config(
         {
-            "mcpServers": {
-                "leaky": {
-                    "command": "echo",
-                    "args": ["mcp"],
-                    "env": {"API_KEY": "sk-mcp-secret"},
-                }
+            "leaky": {
+                "command": "echo",
+                "args": ["mcp"],
+                "env": {"API_KEY": "sk-mcp-secret"},
             }
         }
     )
@@ -1839,13 +1825,11 @@ def test_openhands_agent_settings_create_agent_keeps_real_mcp_secrets() -> None:
 def test_acp_agent_settings_mcp_config_redacts_env_and_headers() -> None:
     mcp_config = coerce_mcp_config(
         {
-            "mcpServers": {
-                "leaky": {
-                    "command": "echo",
-                    "args": ["mcp"],
-                    "env": {"API_KEY": "sk-mcp-secret"},
-                    "headers": {"X-API-Token": "tok-mcp-secret"},
-                }
+            "leaky": {
+                "command": "echo",
+                "args": ["mcp"],
+                "env": {"API_KEY": "sk-mcp-secret"},
+                "headers": {"X-API-Token": "tok-mcp-secret"},
             }
         }
     )
@@ -1870,13 +1854,11 @@ def test_acp_agent_settings_create_agent_keeps_real_mcp_secrets() -> None:
     # redacts mcp_config for transit/storage only).
     mcp_config = coerce_mcp_config(
         {
-            "mcpServers": {
-                "leaky": {
-                    "command": "echo",
-                    "args": ["mcp"],
-                    "env": {"API_KEY": "sk-mcp-secret"},
-                    "headers": {"X-API-Token": "tok-mcp-secret"},
-                }
+            "leaky": {
+                "command": "echo",
+                "args": ["mcp"],
+                "env": {"API_KEY": "sk-mcp-secret"},
+                "headers": {"X-API-Token": "tok-mcp-secret"},
             }
         }
     )

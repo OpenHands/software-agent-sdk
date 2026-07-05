@@ -48,7 +48,6 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import (
     MCPOAuthState,
     MCPServer,
-    drop_unknown_mcp_server_fields,
 )
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.subagent.schema import AgentDefinition
@@ -623,6 +622,24 @@ _MCP_OAUTH_CLIENT_INFO_COLLECTION = "mcp-oauth-client-info"
 _MCP_OAUTH_TOKEN_EXPIRY_COLLECTION = "mcp-oauth-token-expiry"
 _LINEAR_DEPRECATED_SSE_URL = "https://mcp.linear.app/sse"
 _LINEAR_SHTTP_URL = "https://mcp.linear.app/mcp"
+_MCP_SERVER_KNOWN_FIELDS = frozenset(MCPServer.model_fields)
+
+
+def _migrate_legacy_transport_field(server: Mapping[str, Any]) -> dict[str, Any]:
+    migrated = copy.deepcopy(dict(server))
+    typed_transport = migrated.pop("type", None)
+    if "transport" not in migrated and typed_transport is not None:
+        migrated["transport"] = (
+            "http" if typed_transport == "shttp" else typed_transport
+        )
+    return migrated
+
+
+def _drop_unknown_mcp_server_fields(server: Mapping[str, Any]) -> dict[str, Any]:
+    server = _migrate_legacy_transport_field(server)
+    return {
+        key: value for key, value in server.items() if key in _MCP_SERVER_KNOWN_FIELDS
+    }
 
 
 def _is_deprecated_linear_sse(url: Any, transport: Any) -> bool:
@@ -766,7 +783,7 @@ def _migrate_mcp_server_auth(server: Any) -> Any:
             if state is not None:
                 auth["state"] = state
         migrated["auth"] = auth
-        return drop_unknown_mcp_server_fields(migrated)
+        return _drop_unknown_mcp_server_fields(migrated)
 
     if auth == "oauth":
         oauth_auth: dict[str, Any] = {"strategy": "oauth2"}
@@ -776,15 +793,15 @@ def _migrate_mcp_server_auth(server: Any) -> Any:
         if state is not None:
             oauth_auth["state"] = state
         migrated["auth"] = oauth_auth
-        return drop_unknown_mcp_server_fields(migrated)
+        return _drop_unknown_mcp_server_fields(migrated)
 
     if isinstance(auth, str) and auth:
         migrated["auth"] = {"strategy": "bearer", "value": auth}
-        return drop_unknown_mcp_server_fields(migrated)
+        return _drop_unknown_mcp_server_fields(migrated)
 
     if isinstance(api_key, str) and api_key:
         migrated["auth"] = {"strategy": "api_key", "value": api_key}
-        return drop_unknown_mcp_server_fields(migrated)
+        return _drop_unknown_mcp_server_fields(migrated)
 
     headers = migrated.get("headers")
     if isinstance(headers, Mapping):
@@ -797,7 +814,7 @@ def _migrate_mcp_server_auth(server: Any) -> Any:
             else:
                 migrated.pop("headers", None)
 
-    return drop_unknown_mcp_server_fields(migrated)
+    return _drop_unknown_mcp_server_fields(migrated)
 
 
 def _migrate_mcp_auth_shape(mcp_config: Any) -> Any:

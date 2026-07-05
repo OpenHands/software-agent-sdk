@@ -20,7 +20,12 @@ from openhands.sdk.utils.models import OpenHandsModel
 
 
 def mcp_config_model(config: Mapping[str, object]):
-    return coerce_mcp_config(config)
+    servers = (
+        config.get("mcpServers")
+        if isinstance(config.get("mcpServers"), dict)
+        else config
+    )
+    return coerce_mcp_config(servers)
 
 
 def dump_agent_mcp_config(agent: AgentBase) -> dict[str, dict[str, Any]]:

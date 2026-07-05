@@ -957,7 +957,7 @@ class LocalConversation(BaseConversation):
                 get_secret=self._state.secret_registry.get_secret_value,
                 expand_defaults=True,
             )
-            merged_mcp = coerce_mcp_config(expanded_mcp)
+            merged_mcp = coerce_mcp_config(expanded_mcp["mcpServers"])
             logger.debug("Expanded MCP config variables")
 
         # Update agent with merged content only if something changed.
@@ -1166,7 +1166,7 @@ class LocalConversation(BaseConversation):
                 get_secret=get_secret,
                 expand_defaults=True,
             )
-            runtime_plugin_mcp = coerce_mcp_config(expanded_plugin_mcp)
+            runtime_plugin_mcp = coerce_mcp_config(expanded_plugin_mcp["mcpServers"])
         merged_context = plugin.add_skills_to(self.agent.agent_context)
         merged_mcp = plugin.add_mcp_config_to(
             dict(self.agent.mcp_config) if self.agent.mcp_config else {}
@@ -1178,7 +1178,7 @@ class LocalConversation(BaseConversation):
                 get_secret=get_secret,
                 expand_defaults=True,
             )
-            merged_mcp = coerce_mcp_config(expanded_mcp)
+            merged_mcp = coerce_mcp_config(expanded_mcp["mcpServers"])
         runtime_mcp_tools = (
             self._runtime_mcp_tools(runtime_plugin_mcp) if self._agent_ready else []
         )

@@ -273,7 +273,7 @@ class TestMcpConfigPreservation:
         }
         agent = Agent(
             llm=llm,
-            mcp_config=coerce_mcp_config(mcp_config),
+            mcp_config=coerce_mcp_config(mcp_config["mcpServers"]),
         )
         cipher = Cipher(secret_key="test-encryption-key")
 

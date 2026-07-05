@@ -76,7 +76,9 @@ class TestSessionPersistence:
             }
         }
 
-        with create_mcp_tools(coerce_mcp_config(config), timeout=10.0) as client:
+        with create_mcp_tools(
+            coerce_mcp_config(config["mcpServers"]), timeout=10.0
+        ) as client:
             assert len(client) == 2
 
             echo_tool = next(t for t in client if t.name == "echo")
@@ -111,7 +113,9 @@ class TestSessionPersistence:
             }
         }
 
-        with create_mcp_tools(coerce_mcp_config(config), timeout=10.0) as client:
+        with create_mcp_tools(
+            coerce_mcp_config(config["mcpServers"]), timeout=10.0
+        ) as client:
             tool = next(t for t in client if t.name == "echo")
             executor = tool.executor
             assert isinstance(executor, MCPToolExecutor)
