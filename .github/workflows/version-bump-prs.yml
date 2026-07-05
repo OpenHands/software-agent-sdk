@@ -273,7 +273,7 @@ jobs:
                     # Create PR
                     gh pr create \
                       --repo "$REPO" \
-                      --title "Bump SDK packages to v$VERSION" \
+                      --title "chore: bump SDK packages to v$VERSION" \
                       --body "## Automated Version Bump
 
                   This PR updates the following packages to version **$VERSION**:
