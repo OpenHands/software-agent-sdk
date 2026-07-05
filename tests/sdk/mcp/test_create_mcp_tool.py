@@ -261,6 +261,8 @@ def test_prepare_mcp_config_applies_explicit_oauth_authentication():
                         },
                         "scopes": ["email", "offline_access"],
                         "client_name": "OpenHands",
+                        "client_id": "openhands-client",
+                        "client_secret": "openhands-secret",
                     },
                 },
             }
@@ -279,6 +281,8 @@ def test_prepare_mcp_config_applies_explicit_oauth_authentication():
     }
     assert auth._scopes == ["email", "offline_access"]
     assert auth._client_name == "OpenHands"
+    assert auth._client_id == "openhands-client"
+    assert auth._client_secret == "openhands-secret"
 
 
 def test_prepare_mcp_config_applies_oauth_token_storage_to_explicit_auth():
@@ -308,6 +312,44 @@ def test_prepare_mcp_config_applies_oauth_token_storage_to_explicit_auth():
     auth = server.auth
     assert isinstance(auth, OAuth)
     assert auth._token_storage is token_storage
+
+
+def test_prepare_mcp_config_uses_custom_oauth_factory():
+    token_storage = MemoryStore()
+    calls = []
+    config = {
+        "mcpServers": {
+            "remote": {
+                "url": "https://mcp.example.com/mcp",
+                "auth": {
+                    "strategy": "oauth2",
+                    "authentication": {
+                        "type": "oauth",
+                        "client_auth_method": "none",
+                    },
+                },
+            }
+        }
+    }
+
+    def factory(server_name, server, auth, storage):
+        calls.append((server_name, server, auth, storage))
+        return OAuth(client_name="Factory OAuth")
+
+    prepared = _prepare_mcp_config(
+        coerce_mcp_config(config),
+        mcp_oauth_token_storage=token_storage,
+        mcp_oauth_factory=factory,
+    )
+
+    server = prepared.mcpServers["remote"]
+    assert isinstance(server, RemoteMCPServer)
+    auth = server.auth
+    assert isinstance(auth, OAuth)
+    assert auth._client_name == "Factory OAuth"
+    assert len(calls) == 1
+    assert calls[0][0] == "remote"
+    assert calls[0][3] is token_storage
 
 
 def test_prepare_mcp_config_applies_oauth_token_storage_to_bare_oauth_credential():

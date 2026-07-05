@@ -1,7 +1,7 @@
 """Utility functions for MCP integration."""
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Protocol
 
 import mcp.types
@@ -24,6 +24,11 @@ from openhands.sdk.mcp.tool import MCPToolDefinition
 
 logger = get_logger(__name__)
 LOGGING_LEVEL_MAP = logging.getLevelNamesMapping()
+
+MCPOAuthFactory = Callable[
+    [str, MCPServer, MCPOAuthAuthCredential, AsyncKeyValue | None],
+    OAuth | None,
+]
 
 
 class MCPToolProvider(Protocol):
@@ -63,6 +68,10 @@ def _oauth_auth_from_authentication_config(
         token_storage=mcp_oauth_token_storage,
         additional_client_metadata=additional_client_metadata or None,
         client_metadata_url=authentication.client_metadata_url,
+        client_id=authentication.client_id,
+        client_secret=authentication.client_secret.get_secret_value()
+        if authentication.client_secret is not None
+        else None,
     )
 
 
@@ -70,6 +79,7 @@ def _prepare_mcp_config(
     mcp_config: dict[str, MCPServer],
     *,
     mcp_oauth_token_storage: AsyncKeyValue | None = None,
+    mcp_oauth_factory: MCPOAuthFactory | None = None,
 ) -> FastMCPConfig:
     """Validate MCP config and apply explicit OpenHands runtime auth metadata."""
     prepared = FastMCPConfig.model_validate(to_fastmcp_mcp_config(mcp_config))
@@ -81,9 +91,18 @@ def _prepare_mcp_config(
         server = prepared.mcpServers.get(server_name)
         if not isinstance(server, RemoteMCPServer) or server.auth != "oauth":
             continue
-        oauth_auth = _oauth_auth_from_authentication_config(
-            auth.authentication,
-            mcp_oauth_token_storage=mcp_oauth_token_storage,
+        oauth_auth = (
+            mcp_oauth_factory(
+                server_name,
+                server_spec,
+                auth,
+                mcp_oauth_token_storage,
+            )
+            if mcp_oauth_factory is not None
+            else _oauth_auth_from_authentication_config(
+                auth.authentication,
+                mcp_oauth_token_storage=mcp_oauth_token_storage,
+            )
         )
         if oauth_auth is not None:
             server.auth = oauth_auth
@@ -144,6 +163,7 @@ def create_mcp_tools(
     timeout: float = 30.0,
     *,
     mcp_oauth_token_storage: AsyncKeyValue | None = None,
+    mcp_oauth_factory: MCPOAuthFactory | None = None,
 ) -> MCPClient:
     """Create MCP tools from OpenHands-native MCP server settings.
 
@@ -158,6 +178,7 @@ def create_mcp_tools(
     config = _prepare_mcp_config(
         mcp_config,
         mcp_oauth_token_storage=mcp_oauth_token_storage,
+        mcp_oauth_factory=mcp_oauth_factory,
     )
     client = MCPClient(config, log_handler=log_handler)
 

@@ -253,7 +253,20 @@ class MCPOAuthAuthentication(_MCPBaseModel):
     scopes: str | list[str] | None = None
     client_name: str | None = None
     client_metadata_url: str | None = None
+    client_id: str | None = None
+    client_secret: SecretStr | None = None
     additional_client_metadata: dict[str, Any] | None = None
+
+    @field_validator("client_secret", mode="before")
+    @classmethod
+    def _validate_client_secret(cls, value: object, info: ValidationInfo) -> object:
+        return _validate_optional_secret(value, info)
+
+    @field_serializer("client_secret", when_used="always")
+    def _serialize_client_secret(
+        self, value: SecretStr | None, info: SerializationInfo
+    ) -> str | None:
+        return _serialize_optional_secret(value, info)
 
 
 class MCPOAuthStateResponse(_MCPBaseModel):
