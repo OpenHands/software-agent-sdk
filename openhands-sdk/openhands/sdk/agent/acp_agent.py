@@ -1774,6 +1774,15 @@ class ACPAgent(AgentBase):
         return False
 
     @property
+    def supports_openhands_mcp(self) -> bool:
+        """``False`` — OpenHands does not create in-process MCP tools here.
+
+        ACP agents still honor ``mcp_config`` by forwarding configured servers
+        to the ACP subprocess at session creation time.
+        """
+        return False
+
+    @property
     def supports_condenser(self) -> bool:
         """``False`` — the ACP server manages its own context window."""
         return False

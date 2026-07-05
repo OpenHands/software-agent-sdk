@@ -853,6 +853,15 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         return True
 
     @property
+    def supports_openhands_mcp(self) -> bool:
+        """``True`` if OpenHands can create in-process MCP tools for this agent.
+
+        ``False`` for :class:`~openhands.sdk.agent.acp_agent.ACPAgent` — ACP
+        agents pass configured MCP servers through to the ACP subprocess.
+        """
+        return True
+
+    @property
     def supports_condenser(self) -> bool:
         """``True`` if OpenHands context condensing is supported for this agent.
 
