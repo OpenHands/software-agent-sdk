@@ -186,8 +186,13 @@ def _make_llm_response(message: Message) -> LLMResponse:
 
 def _run_single_step(
     llm_response: LLMResponse,
+    **agent_kwargs,
 ) -> tuple[list[Event], LocalConversation]:
-    """Run one agent step with a canned LLM response."""
+    """Run one agent step with a canned LLM response.
+
+    Extra ``agent_kwargs`` are forwarded to the ``Agent`` constructor
+    (e.g. ``content_response_policy="nudge"``).
+    """
     from pydantic import PrivateAttr
 
     class SingleShotLLM(LLM):
@@ -203,7 +208,7 @@ def _run_single_step(
             return self._response
 
     llm = SingleShotLLM(llm_response)
-    agent = Agent(llm=llm, tools=[])
+    agent = Agent(llm=llm, tools=[], **agent_kwargs)
     conversation = Conversation(agent=agent)
     conversation._ensure_agent_ready()
 
@@ -272,4 +277,56 @@ def test_tool_calls_response_executes_actions():
 
     assert len(action_events) == 1
     assert action_events[0].tool_call_id == "tc-finish"
+    assert convo.state.execution_status == ConversationExecutionStatus.FINISHED
+
+
+def test_content_response_nudge_policy_continues_loop():
+    """content_response_policy="nudge": prose without a tool call does not finish.
+
+    The agent message is preserved in history, a corrective nudge follows, and
+    the conversation stays runnable (regression for #3992: weaker/local models
+    narrating a step in prose were silently treated as finished mid-task).
+    """
+    msg = Message(
+        role="assistant",
+        content=[TextContent(text="Let me now check the config before I proceed.")],
+    )
+    events, convo = _run_single_step(
+        _make_llm_response(msg), content_response_policy="nudge"
+    )
+    msg_events = [e for e in events if isinstance(e, MessageEvent)]
+
+    assert convo.state.execution_status != ConversationExecutionStatus.FINISHED
+    assert len(msg_events) == 2
+    assert msg_events[0].source == "agent"  # the prose is not dropped
+    assert msg_events[1].source == "user"
+    nudge_content = msg_events[1].llm_message.content[0]
+    assert isinstance(nudge_content, TextContent)
+    assert "finish" in nudge_content.text  # points at the explicit completion path
+
+
+def test_content_response_default_policy_is_finish():
+    """The default policy is unchanged: content still finishes the conversation."""
+    assert Agent(llm=LLM(model="test-model"), tools=[]).content_response_policy == (
+        "finish"
+    )
+
+
+def test_finish_tool_still_finishes_under_nudge_policy():
+    """Explicit completion via the finish tool works under the nudge policy."""
+    tool_call = MessageToolCall(
+        id="tc-finish",
+        name="finish",
+        arguments='{"message": "All done"}',
+        origin="completion",
+    )
+    msg = Message(
+        role="assistant",
+        tool_calls=[tool_call],
+        content=[TextContent(text="Finishing up")],
+    )
+    events, convo = _run_single_step(
+        _make_llm_response(msg), content_response_policy="nudge"
+    )
+
     assert convo.state.execution_status == ConversationExecutionStatus.FINISHED

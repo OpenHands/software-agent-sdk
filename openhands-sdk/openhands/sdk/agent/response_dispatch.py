@@ -9,7 +9,7 @@ Contains:
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import MessageEvent
@@ -34,6 +34,17 @@ if TYPE_CHECKING:
     from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 
 logger = get_logger(__name__)
+
+
+# Corrective feedback for a content-without-tool-call turn under the "nudge"
+# policy. Unlike the empty-response nudge, the model DID produce a message
+# (which is preserved in history), so the feedback points at the missing tool
+# call and at the explicit way to signal completion.
+_CONTENT_NUDGE_TEXT = (
+    "Your last message did not include a function call. If the task is "
+    "complete, call the `finish` tool; otherwise continue with the next "
+    "tool call."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +147,7 @@ class ResponseDispatchMixin:
     # Declared for pyright — the actual implementations live on Agent.
     if TYPE_CHECKING:
         critic: CriticBase | None
+        content_response_policy: Literal["finish", "nudge"]
 
         def _get_action_event(
             self,
@@ -287,9 +299,25 @@ class ResponseDispatchMixin:
         state: ConversationState,
         on_event: ConversationCallbackType,
     ) -> None:
-        """Handle LLM response with text content — finishes conversation."""
+        """Handle LLM response with text content.
+
+        Under the default ``content_response_policy="finish"`` the message is
+        treated as the final answer and the conversation is marked FINISHED.
+        Under ``"nudge"`` the message is emitted (preserved in history), then
+        corrective feedback is sent and the loop continues — completion is
+        reserved for an explicit signal such as the ``finish`` tool. This
+        keeps weaker/local models that narrate a step in prose before its
+        tool call from being silently treated as done mid-task.
+        """
         self._emit_message_event(message, llm_response, conversation, on_event)
         self._maybe_emit_vllm_tokens(llm_response, on_event)
+        if self.content_response_policy == "nudge":
+            logger.debug(
+                "LLM produced a message response without a tool call - "
+                "content_response_policy='nudge', continuing agent loop"
+            )
+            self._send_corrective_nudge(on_event, text=_CONTENT_NUDGE_TEXT)
+            return
         logger.debug("LLM produced a message response - awaits user input")
         state.execution_status = ConversationExecutionStatus.FINISHED
 
@@ -337,15 +365,22 @@ class ResponseDispatchMixin:
         on_event(msg_event)
         return msg_event
 
-    def _send_corrective_nudge(self, on_event: ConversationCallbackType) -> None:
-        """Inject corrective feedback when no tool call and no content.
+    def _send_corrective_nudge(
+        self,
+        on_event: ConversationCallbackType,
+        *,
+        text: str | None = None,
+    ) -> None:
+        """Inject corrective feedback so the model produces a tool call.
 
-        Prevents the monologue stuck-detector from firing when the model
-        simply forgot to emit a function call.
+        Used when the response had no tool call and no content (default
+        ``text``), and for content-without-tool-call turns under
+        ``content_response_policy="nudge"``. Prevents the monologue
+        stuck-detector from firing when the model simply forgot to emit a
+        function call.
         """
         logger.warning(
-            "LLM response contained no tool call and no content"
-            " - sending corrective feedback"
+            "LLM response contained no tool call - sending corrective feedback"
         )
         nudge = MessageEvent(
             source="user",
@@ -353,7 +388,8 @@ class ResponseDispatchMixin:
                 role="user",
                 content=[
                     TextContent(
-                        text=(
+                        text=text
+                        or (
                             "Your last response did not include a "
                             "function call or a message. Please "
                             "use a tool to proceed with the task."
