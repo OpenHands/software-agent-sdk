@@ -23,6 +23,7 @@ logger = get_logger(__name__)
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
 model = os.getenv("LLM_MODEL", "gpt-5.5")
+secondary_model = os.getenv("LLM_ROUTING_SECONDARY_MODEL", model)
 base_url = os.getenv("LLM_BASE_URL")
 
 primary_llm = LLM(
@@ -33,7 +34,7 @@ primary_llm = LLM(
 )
 secondary_llm = LLM(
     usage_id="agent-secondary",
-    model="openhands/gemini-3-flash",
+    model=secondary_model,
     base_url=base_url,
     api_key=SecretStr(api_key),
 )
