@@ -468,15 +468,9 @@ class LocalConversation(BaseConversation):
     def _rules_injecting(
         self, inner: ConversationCallbackType
     ) -> ConversationCallbackType:
-        """Wrap a callback so path-scoped rules are injected on file-touch.
-
-        Symmetric to the skill injection in :meth:`send_message`: when a tool
-        observation touches a file matching a ``PathTrigger`` skill ("rule"),
-        the rule content is appended to the observation before it is persisted,
-        so it deterministically enters LLM context on the next step. Runs under
-        the conversation state lock (see the run loop), so mutating the dedup
-        set is safe.
-        """
+        """Wrap a callback so path rules are injected on file-touch, mirroring
+        the skill injection in :meth:`send_message`. Runs under the state lock
+        (see the run loop), so mutating the dedup set is safe."""
 
         def wrapped(event: Event) -> None:
             inner(self._maybe_inject_path_rules(event))
