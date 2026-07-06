@@ -5,8 +5,6 @@ the rule content is appended to the resulting ObservationEvent's
 ``extended_content`` and deduped via ``state.activated_path_rules``.
 """
 
-from __future__ import annotations
-
 from pathlib import Path
 
 from openhands.sdk.agent import Agent
@@ -273,5 +271,48 @@ def test_path_rule_not_invocable_via_invoke_skill(tmp_path: Path) -> None:
         obs = InvokeSkillExecutor()(InvokeSkillAction(name="api"), conv)
         assert obs.is_error
         assert "cannot be invoked directly" in obs.text
+    finally:
+        conv.close()
+
+
+def test_no_injection_when_agent_has_no_context(tmp_path: Path) -> None:
+    """The seam is a safe no-op when the agent has no agent_context."""
+    agent = Agent(
+        llm=TestLLM.from_messages(
+            [Message(role="assistant", content=[TextContent(text="ok")])],
+            model="test-model",
+        ),
+        tools=[],
+        include_default_tools=[],
+        agent_context=None,
+    )
+    conv = LocalConversation(
+        agent=agent,
+        workspace=tmp_path,
+        persistence_dir=tmp_path / "conversation",
+        delete_on_close=True,
+    )
+    try:
+        action_event = _append_file_action(conv, str(tmp_path / "src" / "api" / "u.ts"))
+        injected = _inject(conv, _observation_for(action_event))
+        assert injected.extended_content == []
+    finally:
+        conv.close()
+
+
+def test_no_injection_when_action_not_correlated(tmp_path: Path) -> None:
+    """An observation whose action_id isn't in the event log yields no path."""
+    rule = Skill(name="any", content="rule", trigger=PathTrigger(paths=["**/*"]))
+    conv = _conversation(tmp_path, rule)
+    try:
+        orphan = ObservationEvent(
+            observation=FinishObservation(content=[TextContent(text="x")]),
+            action_id="nonexistent-action-id",
+            tool_name="file_editor",
+            tool_call_id="tc9",
+        )
+        injected = _inject(conv, orphan)
+        assert injected.extended_content == []
+        assert conv._state.activated_path_rules == []
     finally:
         conv.close()

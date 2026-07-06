@@ -6,8 +6,6 @@ The injection seam reads the touched path from the action's ``path`` field
 rename of that field (which would silently no-op the whole feature) is caught.
 """
 
-from __future__ import annotations
-
 from pathlib import Path
 
 from openhands.sdk.agent import Agent

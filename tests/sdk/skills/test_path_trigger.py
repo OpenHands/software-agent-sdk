@@ -1,8 +1,6 @@
 """Tests for path-scoped skills ("rules"): PathTrigger, glob matching, loading,
 partition exclusion, and the AgentContext tool-use injection matcher."""
 
-from __future__ import annotations
-
 from pathlib import Path
 
 import pytest
