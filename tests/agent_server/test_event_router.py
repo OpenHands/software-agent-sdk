@@ -16,10 +16,12 @@ from openhands.agent_server.event_router import (
     normalize_datetime_to_server_timezone,
 )
 from openhands.agent_server.event_service import EventService
-from openhands.agent_server.models import SendMessageRequest
+from openhands.agent_server.models import EventPage, SendMessageRequest
 from openhands.sdk import Message
 from openhands.sdk.event.llm_convertible.message import MessageEvent
+from openhands.sdk.event.llm_convertible.system import SystemPromptEvent
 from openhands.sdk.llm.message import ImageContent, TextContent
+from openhands.sdk.tool.builtins import FinishTool, VisionInspectTool
 
 
 def test_normalize_datetime_naive_passthrough():
@@ -391,6 +393,37 @@ class TestSearchEventsEndpoint:
             assert call_args[0][7] is None  # timestamp__lt should be None
         finally:
             # Clean up the dependency override
+            client.app.dependency_overrides.clear()
+
+    @pytest.mark.asyncio
+    async def test_search_events_uses_compat_transport_payload(
+        self, client, sample_conversation_id, mock_event_service
+    ):
+        """Event search should be parseable by older RemoteConversation clients."""
+        client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
+
+        try:
+            event = SystemPromptEvent(
+                id="system_event",
+                parent_id="parent_event",
+                system_prompt=TextContent(text="system"),
+                tools=[FinishTool.create()[0], VisionInspectTool.create()[0]],
+            )
+            mock_event_service.search_events = AsyncMock(
+                return_value=EventPage(items=[event], next_page_id=None)
+            )
+
+            response = client.get(
+                f"/api/conversations/{sample_conversation_id}/events/search"
+            )
+
+            assert response.status_code == 200
+            data = response.json()
+            assert "parent_id" not in data["items"][0]
+            assert [tool["kind"] for tool in data["items"][0]["tools"]] == [
+                "FinishTool"
+            ]
+        finally:
             client.app.dependency_overrides.clear()
 
     @pytest.mark.asyncio

@@ -15,8 +15,9 @@ from openhands.sdk import Message
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import Event
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
-from openhands.sdk.event.llm_convertible import MessageEvent
+from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
 from openhands.sdk.llm.message import TextContent
+from openhands.sdk.tool.builtins import FinishTool, VisionInspectTool
 
 
 @pytest.fixture
@@ -81,6 +82,25 @@ async def test_websocket_subscriber_omits_none_fields_for_compat(mock_websocket)
     assert call_args["kind"] == "ConversationStateUpdateEvent"
     assert call_args["value"] == "idle"
     assert "parent_id" not in call_args
+
+
+@pytest.mark.asyncio
+async def test_websocket_subscriber_filters_new_tool_kinds_for_compat(mock_websocket):
+    """Older SDK clients reject tool definitions added after their release."""
+    subscriber = _WebSocketSubscriber(websocket=mock_websocket)
+    event = SystemPromptEvent(
+        id="system_event",
+        parent_id="parent_event",
+        system_prompt=TextContent(text="system"),
+        tools=[FinishTool.create()[0], VisionInspectTool.create()[0]],
+    )
+
+    await subscriber(event)
+
+    mock_websocket.send_json.assert_called_once()
+    call_args = mock_websocket.send_json.call_args[0][0]
+    assert "parent_id" not in call_args
+    assert [tool["kind"] for tool in call_args["tools"]] == ["FinishTool"]
 
 
 @pytest.mark.asyncio
