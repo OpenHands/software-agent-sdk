@@ -48,7 +48,23 @@ class MCPClient(AsyncMCPClient):
         return list(self._tools)
 
     async def connect(self) -> None:
-        """Establish connection to the MCP server."""
+        """Establish connection to the MCP server.
+
+        Automatically recovers from the fastmcp nesting-counter stuck state that
+        occurs when a background session task dies while the counter is non-zero
+        (e.g. after a server-side HTTP 500 or abrupt connection drop). Without
+        this recovery, fastmcp raises an internal ``RuntimeError`` ("nesting
+        counter should be 0 when starting new session, got N") and the client
+        becomes permanently unusable until the process restarts.
+        """
+        # fastmcp bug workaround: if the background session task has exited while
+        # the nesting counter is still non-zero, the client is in a stuck state
+        # where reconnection is impossible.  Force-closing via close() resets the
+        # counter through _disconnect(force=True) so a fresh session can start.
+        task = self._session_state.session_task
+        if task is not None and task.done() and self._session_state.nesting_counter != 0:
+            await self.close()
+
         try:
             await self.__aenter__()
         except RuntimeError as exc:
