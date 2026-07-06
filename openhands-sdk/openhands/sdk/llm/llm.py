@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 import importlib
 import json
 import os
 import threading
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import AsyncIterable, Callable, Iterable, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
@@ -46,7 +47,6 @@ from typing import Final, cast
 
 from litellm import (
     ChatCompletionToolParam,
-    CustomStreamWrapper,
     ResponseInputParam,
     acompletion as litellm_acompletion,
     completion as litellm_completion,
@@ -2030,9 +2030,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 )
             )
             if enable_streaming and on_token is not None:
-                assert isinstance(ret, CustomStreamWrapper)
                 chunks: list[ModelResponseStream] = []
-                for chunk in ret:
+                stream = cast(Iterable[ModelResponseStream], ret)
+                for chunk in stream:
                     on_token(chunk)
                     chunks.append(chunk)
                 ret = litellm.stream_chunk_builder(chunks, messages=messages)
@@ -2062,11 +2062,24 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 )
             )
             if enable_streaming and on_token is not None:
-                assert isinstance(ret, CustomStreamWrapper)
                 chunks: list[ModelResponseStream] = []
-                async for chunk in ret:
-                    await _invoke_token_callback(on_token, chunk)
-                    chunks.append(chunk)
+                # Some litellm wrappers (lmnr 0.7.47's instrumentor) hand
+                # back a plain sync generator from ``litellm_acompletion``
+                if hasattr(ret, "__aiter__"):
+                    stream = cast(AsyncIterable[ModelResponseStream], ret)
+                    async for chunk in stream:
+                        await _invoke_token_callback(on_token, chunk)
+                        chunks.append(chunk)
+                else:
+                    loop = asyncio.get_running_loop()
+                    synced_chunks: list[
+                        ModelResponseStream
+                    ] = await loop.run_in_executor(
+                        None, list, cast(Iterable[ModelResponseStream], ret)
+                    )
+                    for chunk in synced_chunks:
+                        await _invoke_token_callback(on_token, chunk)
+                        chunks.append(chunk)
                 ret = litellm.stream_chunk_builder(chunks, messages=messages)
 
             assert isinstance(ret, ModelResponse), (
