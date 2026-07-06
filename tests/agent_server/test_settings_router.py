@@ -784,7 +784,7 @@ def test_patch_settings_encrypts_mcp_env_and_headers_on_disk(
                     },
                     "remote": {
                         "url": "https://example.com/mcp",
-                        "headers": {"Authorization": "Bearer tok-router-secret"},
+                        "headers": {"X-Api-Key": "tok-router-secret"},
                     },
                 }
             }
@@ -804,7 +804,7 @@ def test_patch_settings_encrypts_mcp_env_and_headers_on_disk(
     on_disk = json.loads(on_disk_text)
     servers_on_disk = on_disk["agent_settings"]["mcp_config"]
     assert servers_on_disk["github"]["env"]["GITHUB_TOKEN"].startswith("gAAAA")
-    assert servers_on_disk["remote"]["headers"]["Authorization"].startswith("gAAAA")
+    assert servers_on_disk["remote"]["headers"]["X-Api-Key"].startswith("gAAAA")
     # Non-secret structure must remain readable.
     assert servers_on_disk["github"]["command"] == "uvx"
     assert servers_on_disk["remote"]["url"] == "https://example.com/mcp"
@@ -818,9 +818,7 @@ def test_patch_settings_encrypts_mcp_env_and_headers_on_disk(
     assert agent_settings["schema_version"] == AGENT_SETTINGS_SCHEMA_VERSION
     servers = agent_settings["mcp_config"]
     assert servers["github"]["env"]["GITHUB_TOKEN"] == "ghp-router-secret"
-    assert servers["remote"]["headers"] == {
-        "Authorization": "Bearer tok-router-secret",
-    }
+    assert servers["remote"]["headers"] == {"X-Api-Key": "tok-router-secret"}
 
 
 def test_patch_settings_empty_payload_returns_400(client_with_settings):

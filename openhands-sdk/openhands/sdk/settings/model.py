@@ -461,7 +461,7 @@ def _default_llm_settings() -> LLM:
 
 _RequestT = TypeVar("_RequestT")
 
-AGENT_SETTINGS_SCHEMA_VERSION = 5
+AGENT_SETTINGS_SCHEMA_VERSION = 4
 CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 
 
@@ -635,13 +635,6 @@ def _migrate_legacy_transport_field(server: Mapping[str, Any]) -> dict[str, Any]
     return migrated
 
 
-def _drop_unknown_mcp_server_fields(server: Mapping[str, Any]) -> dict[str, Any]:
-    server = _migrate_legacy_transport_field(server)
-    return {
-        key: value for key, value in server.items() if key in _MCP_SERVER_KNOWN_FIELDS
-    }
-
-
 def _is_deprecated_linear_sse(url: Any, transport: Any) -> bool:
     if not isinstance(url, str) or transport != "sse":
         return False
@@ -757,7 +750,22 @@ def _migrate_oauth_authentication(authentication: Any) -> Any:
     return migrated
 
 
-def _migrate_mcp_server_auth(server: Any) -> Any:
+def _finish_mcp_server_auth_migration(
+    server: dict[str, Any], *, drop_unknown_fields: bool
+) -> dict[str, Any]:
+    server = _migrate_legacy_transport_field(server)
+    if drop_unknown_fields:
+        return {
+            key: value
+            for key, value in server.items()
+            if key in _MCP_SERVER_KNOWN_FIELDS
+        }
+    return server
+
+
+def _migrate_mcp_server_auth(
+    server: Any, *, drop_unknown_fields: bool = True
+) -> Any:
     if not isinstance(server, Mapping):
         return server
 
@@ -783,7 +791,9 @@ def _migrate_mcp_server_auth(server: Any) -> Any:
             if state is not None:
                 auth["state"] = state
         migrated["auth"] = auth
-        return _drop_unknown_mcp_server_fields(migrated)
+        return _finish_mcp_server_auth_migration(
+            migrated, drop_unknown_fields=drop_unknown_fields
+        )
 
     if auth == "oauth":
         oauth_auth: dict[str, Any] = {"strategy": "oauth2"}
@@ -793,15 +803,21 @@ def _migrate_mcp_server_auth(server: Any) -> Any:
         if state is not None:
             oauth_auth["state"] = state
         migrated["auth"] = oauth_auth
-        return _drop_unknown_mcp_server_fields(migrated)
+        return _finish_mcp_server_auth_migration(
+            migrated, drop_unknown_fields=drop_unknown_fields
+        )
 
     if isinstance(auth, str) and auth:
         migrated["auth"] = {"strategy": "bearer", "value": auth}
-        return _drop_unknown_mcp_server_fields(migrated)
+        return _finish_mcp_server_auth_migration(
+            migrated, drop_unknown_fields=drop_unknown_fields
+        )
 
     if isinstance(api_key, str) and api_key:
         migrated["auth"] = {"strategy": "api_key", "value": api_key}
-        return _drop_unknown_mcp_server_fields(migrated)
+        return _finish_mcp_server_auth_migration(
+            migrated, drop_unknown_fields=drop_unknown_fields
+        )
 
     headers = migrated.get("headers")
     if isinstance(headers, Mapping):
@@ -814,7 +830,9 @@ def _migrate_mcp_server_auth(server: Any) -> Any:
             else:
                 migrated.pop("headers", None)
 
-    return _drop_unknown_mcp_server_fields(migrated)
+    return _finish_mcp_server_auth_migration(
+        migrated, drop_unknown_fields=drop_unknown_fields
+    )
 
 
 def _migrate_mcp_auth_shape(mcp_config: Any) -> Any:
@@ -868,26 +886,28 @@ def _migrate_mcp_config_to_server_map(
     if not isinstance(migrated, Mapping):
         return copy.deepcopy(dict(mcp_config))
     server_map = migrated.get("mcpServers")
-    if not isinstance(server_map, Mapping):
+    drop_unknown_fields = isinstance(server_map, Mapping)
+    if not drop_unknown_fields:
         server_map = migrated
 
     return {
-        str(name): _migrate_mcp_server_auth(server)
+        str(name): _migrate_mcp_server_auth(
+            server, drop_unknown_fields=drop_unknown_fields
+        )
         if isinstance(server, Mapping)
         else server
         for name, server in server_map.items()
     }
 
 
-def _migrate_agent_settings_v4_to_v5(payload: dict[str, Any]) -> dict[str, Any]:
-    """Move persisted MCP settings to the native server map shape."""
+def _normalize_mcp_config_field(mcp_config: Any) -> Any:
+    """Accept legacy ``mcpServers`` wrappers without a settings schema bump."""
 
-    migrated = dict(payload)
-    mcp_config = migrated.get("mcp_config")
+    if mcp_config in (None, {}):
+        return {}
     if isinstance(mcp_config, Mapping):
-        migrated["mcp_config"] = _migrate_mcp_config_to_server_map(mcp_config)
-    migrated["schema_version"] = 5
-    return migrated
+        return _migrate_mcp_config_to_server_map(mcp_config)
+    return mcp_config
 
 
 def _migrate_conversation_settings_v0_to_v1(
@@ -903,7 +923,6 @@ _AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     1: _migrate_agent_settings_v1_to_v2,
     2: _migrate_agent_settings_v2_to_v3,
     3: _migrate_agent_settings_v3_to_v4,
-    4: _migrate_agent_settings_v4_to_v5,
 }
 _CONVERSATION_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     0: _migrate_conversation_settings_v0_to_v1,
@@ -1272,6 +1291,11 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             return LLMSummarizingCondenserSettings.model_validate(value.model_dump())
         return value
 
+    @field_validator("mcp_config", mode="before")
+    @classmethod
+    def _normalize_mcp_config(cls, value: Any) -> Any:
+        return _normalize_mcp_config_field(value)
+
     def create_agent(self) -> Agent:
         """Build an :class:`Agent` purely from these settings.
 
@@ -1516,6 +1540,11 @@ class ACPAgentSettings(AgentSettingsBase):
             ).model_dump(),
         },
     )
+
+    @field_validator("mcp_config", mode="before")
+    @classmethod
+    def _normalize_mcp_config(cls, value: Any) -> Any:
+        return _normalize_mcp_config_field(value)
 
     # Programmatic / downstream-facing knob, deliberately NOT surfaced in the
     # settings-form UI (no SETTINGS_METADATA_KEY): the deploying application sets
