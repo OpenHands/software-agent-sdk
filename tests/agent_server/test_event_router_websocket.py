@@ -12,7 +12,9 @@ from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import EventPage
 from openhands.agent_server.sockets import _WebSocketSubscriber
 from openhands.sdk import Message
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import Event
+from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm.message import TextContent
 
@@ -61,6 +63,24 @@ async def test_websocket_subscriber_call_success(mock_websocket):
     mock_websocket.send_json.assert_called_once()
     call_args = mock_websocket.send_json.call_args[0][0]
     assert call_args["id"] == "test_event"
+
+
+@pytest.mark.asyncio
+async def test_websocket_subscriber_omits_none_fields_for_compat(mock_websocket):
+    """Older SDK clients reject newer optional Event fields such as parent_id."""
+    subscriber = _WebSocketSubscriber(websocket=mock_websocket)
+    event = ConversationStateUpdateEvent(
+        key="execution_status",
+        value=ConversationExecutionStatus.IDLE,
+    )
+
+    await subscriber(event)
+
+    mock_websocket.send_json.assert_called_once()
+    call_args = mock_websocket.send_json.call_args[0][0]
+    assert call_args["kind"] == "ConversationStateUpdateEvent"
+    assert call_args["value"] == "idle"
+    assert "parent_id" not in call_args
 
 
 @pytest.mark.asyncio
