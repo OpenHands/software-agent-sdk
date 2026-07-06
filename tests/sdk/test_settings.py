@@ -75,7 +75,8 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
     assert general_fields["agent"].default == "CodeActAgent"
     assert general_fields["agent"].prominence is SettingProminence.MAJOR
     assert general_fields["tools"].value_type == "array"
-    assert general_fields["tools"].default == []
+    # None = "server default toolset" (materialized by create_agent, #3978).
+    assert general_fields["tools"].default is None
     assert general_fields["tools"].prominence is SettingProminence.MAJOR
     assert general_fields["enable_sub_agents"].value_type == "boolean"
     assert general_fields["enable_sub_agents"].default is False
@@ -766,6 +767,37 @@ def test_llm_create_agent_uses_settings_llm_and_tools() -> None:
 def test_llm_create_agent_defaults_tool_concurrency_limit_to_one() -> None:
     agent = OpenHandsAgentSettings(llm=LLM(model="test-model")).create_agent()
     assert agent.tool_concurrency_limit == 1
+
+
+def test_create_agent_defaults_tools_when_none() -> None:
+    """tools=None (the default) materializes the canonical exec set at
+    create_agent — the single defaulting point (#3967 / #3978). Deterministic:
+    browser is a serving-layer injection, never part of the default."""
+    settings = OpenHandsAgentSettings(llm=LLM(model="test-model"))
+    assert settings.tools is None
+    agent = settings.create_agent()
+    assert [t.name for t in agent.tools] == ["terminal", "file_editor", "task_tracker"]
+
+
+def test_create_agent_default_tools_honor_enable_sub_agents() -> None:
+    settings = OpenHandsAgentSettings(
+        llm=LLM(model="test-model"), enable_sub_agents=True
+    )
+    agent = settings.create_agent()
+    assert [t.name for t in agent.tools] == [
+        "terminal",
+        "file_editor",
+        "task_tracker",
+        "task_tool_set",
+    ]
+
+
+def test_create_agent_empty_tools_stays_bare() -> None:
+    """tools=[] is an explicit choice: no default injection (persisted-payload
+    compatibility — [] predates the None default and keeps its old meaning)."""
+    settings = OpenHandsAgentSettings(llm=LLM(model="test-model"), tools=[])
+    agent = settings.create_agent()
+    assert agent.tools == []
 
 
 def test_tool_concurrency_limit_defaults_to_one_when_omitted_from_payload() -> None:

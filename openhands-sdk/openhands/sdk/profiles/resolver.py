@@ -246,6 +246,8 @@ def _build_openhands_settings(
         "agent": profile.agent,
         "llm": llm,
         "mcp_config": mcp_config,
+        # Tri-state passthrough; create_agent materializes None.
+        "tools": profile.tools,
         "agent_context": AgentContext(
             skills=skills,
             system_message_suffix=profile.system_message_suffix,

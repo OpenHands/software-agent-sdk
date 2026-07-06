@@ -188,6 +188,13 @@ class TestResolveAgentFromProfile:
             patch(_LLM_STORE_PATH),
             patch(_RESOLVE_PATH) as MockResolve,
             patch(_DISCOVER_PATH, return_value=[]) as MockDiscover,
+            # Pin the environment probe: tools=None profiles get browser
+            # injected iff the host has chromium (covered by the dedicated
+            # injection tests below); this test is about resolution plumbing.
+            patch(
+                "openhands.agent_server.conversation_service.is_tool_usable",
+                return_value=False,
+            ),
         ):
             store_inst = MockStore.return_value
             store_inst.name_for_id.return_value = profile.name
@@ -207,6 +214,136 @@ class TestResolveAgentFromProfile:
         # skill_refs=None (all discovered) triggers discovery, threaded through.
         MockDiscover.assert_called_once()
         assert MockResolve.call_args.kwargs["available_skills"] == []
+
+    def test_openhands_default_tools_get_browser_when_usable(self):
+        """A default-toolset (tools=None) OpenHands profile launch injects the
+        browser tool set when this server's runtime can run it — the
+        serving-layer counterpart of the SDK's deterministic default (#3978)."""
+        from openhands.agent_server.conversation_service import (
+            _resolve_agent_from_profile,
+        )
+
+        profile = _make_openhands_profile()
+        assert profile.tools is None
+        agent = _make_agent()
+
+        with (
+            patch(_STORE_PATH) as MockStore,
+            patch(_LLM_STORE_PATH),
+            patch(_RESOLVE_PATH) as MockResolve,
+            patch(
+                "openhands.agent_server.conversation_service.is_tool_usable",
+                return_value=True,
+            ) as MockUsable,
+        ):
+            store_inst = MockStore.return_value
+            store_inst.name_for_id.return_value = profile.name
+            store_inst.load.return_value = profile
+            mock_config = MagicMock()
+            mock_config.create_agent.return_value = agent
+            MockResolve.return_value = mock_config
+
+            result_agent, _ = _resolve_agent_from_profile(
+                profile.id, cipher=None, mcp_config=None
+            )
+
+        MockUsable.assert_called_once_with("browser_tool_set")
+        assert [tool.name for tool in result_agent.tools] == ["browser_tool_set"]
+
+    def test_openhands_default_tools_skip_browser_when_unusable(self):
+        from openhands.agent_server.conversation_service import (
+            _resolve_agent_from_profile,
+        )
+
+        profile = _make_openhands_profile()
+        agent = _make_agent()
+
+        with (
+            patch(_STORE_PATH) as MockStore,
+            patch(_LLM_STORE_PATH),
+            patch(_RESOLVE_PATH) as MockResolve,
+            patch(
+                "openhands.agent_server.conversation_service.is_tool_usable",
+                return_value=False,
+            ),
+        ):
+            store_inst = MockStore.return_value
+            store_inst.name_for_id.return_value = profile.name
+            store_inst.load.return_value = profile
+            mock_config = MagicMock()
+            mock_config.create_agent.return_value = agent
+            MockResolve.return_value = mock_config
+
+            result_agent, _ = _resolve_agent_from_profile(
+                profile.id, cipher=None, mcp_config=None
+            )
+
+        assert result_agent is agent
+
+    def test_openhands_explicit_tools_never_amended(self):
+        """An explicit profile tools list ([] included) is authoritative: the
+        serving layer must not inject browser on top of it."""
+        from openhands.agent_server.conversation_service import (
+            _resolve_agent_from_profile,
+        )
+
+        profile = _make_openhands_profile().model_copy(update={"tools": []})
+        agent = _make_agent()
+
+        with (
+            patch(_STORE_PATH) as MockStore,
+            patch(_LLM_STORE_PATH),
+            patch(_RESOLVE_PATH) as MockResolve,
+            patch(
+                "openhands.agent_server.conversation_service.is_tool_usable",
+                return_value=True,
+            ) as MockUsable,
+        ):
+            store_inst = MockStore.return_value
+            store_inst.name_for_id.return_value = profile.name
+            store_inst.load.return_value = profile
+            mock_config = MagicMock()
+            mock_config.create_agent.return_value = agent
+            MockResolve.return_value = mock_config
+
+            result_agent, _ = _resolve_agent_from_profile(
+                profile.id, cipher=None, mcp_config=None
+            )
+
+        MockUsable.assert_not_called()
+        assert result_agent is agent
+
+    def test_acp_profile_never_gets_browser_injection(self):
+        """ACP agents own their tooling — the injection is OpenHands-only."""
+        from openhands.agent_server.conversation_service import (
+            _resolve_agent_from_profile,
+        )
+
+        profile = _make_acp_profile()
+        agent = _make_agent()
+
+        with (
+            patch(_STORE_PATH) as MockStore,
+            patch(_LLM_STORE_PATH),
+            patch(_RESOLVE_PATH) as MockResolve,
+            patch(
+                "openhands.agent_server.conversation_service.is_tool_usable",
+                return_value=True,
+            ) as MockUsable,
+        ):
+            store_inst = MockStore.return_value
+            store_inst.name_for_id.return_value = profile.name
+            store_inst.load.return_value = profile
+            mock_config = MagicMock()
+            mock_config.create_agent.return_value = agent
+            MockResolve.return_value = mock_config
+
+            result_agent, _ = _resolve_agent_from_profile(
+                profile.id, cipher=None, mcp_config=None
+            )
+
+        MockUsable.assert_not_called()
+        assert result_agent is agent
 
     def test_openhands_default_profile_skips_discovery(self):
         """A profile with the default ``skill_refs`` (== [], incl. any persisted

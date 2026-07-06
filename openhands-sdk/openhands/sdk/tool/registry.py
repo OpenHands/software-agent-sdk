@@ -163,6 +163,19 @@ def list_registered_tools() -> list[str]:
         return list(_REG.keys())
 
 
+def is_tool_usable(name: str) -> bool:
+    """Whether ``name`` is registered AND its usability check passes.
+
+    False for unregistered names; a checker that raises counts as unusable
+    (mirrors :func:`list_usable_tools`).
+    """
+    with _LOCK:
+        if name not in _REG:
+            return False
+        checker = _USABILITY_REG.get(name, lambda: True)
+    return _check_tool_usable(name, checker)
+
+
 def list_usable_tools() -> list[str]:
     with _LOCK:
         tool_names = list(_REG.keys())

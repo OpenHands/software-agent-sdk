@@ -1190,9 +1190,16 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             ).model_dump()
         },
     )
-    tools: list[Tool] = Field(
-        default_factory=list,
-        description="Tools available to the agent.",
+    tools: list[Tool] | None = Field(
+        default=None,
+        description=(
+            "Tools available to the agent. None (the default) resolves to the "
+            "standard exec set (see openhands.sdk.tool.defaults), plus the "
+            "sub-agent tool set when enable_sub_agents is set; [] is an "
+            "explicitly bare agent; a non-empty list is used exactly as given. "
+            "Environment-dependent tools (browser) are injected by the serving "
+            "layer, not the default."
+        ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Tools",
@@ -1308,6 +1315,15 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         from openhands.sdk.agent import Agent
         from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
         from openhands.sdk.tool.builtins import BUILT_IN_TOOLS, SwitchLLMTool
+        from openhands.sdk.tool.defaults import default_tool_specs
+
+        # Single defaulting point: None = the canonical default set (honoring
+        # enable_sub_agents); [] stays an explicitly bare agent.
+        tools = (
+            self.tools
+            if self.tools is not None
+            else default_tool_specs(enable_sub_agents=self.enable_sub_agents)
+        )
 
         include_default_tools = [tool.__name__ for tool in BUILT_IN_TOOLS]
         if self.enable_switch_llm_tool:
@@ -1317,7 +1333,7 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         condenser = None if llm.is_subscription else self.build_condenser(llm)
         return Agent(
             llm=llm,
-            tools=self.tools,
+            tools=tools,
             mcp_config=self.mcp_config,
             include_default_tools=include_default_tools,
             agent_context=self.agent_context,

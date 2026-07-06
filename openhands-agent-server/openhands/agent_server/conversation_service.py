@@ -49,6 +49,7 @@ from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.mcp.utils import MCPToolProvider
+from openhands.sdk.tool import BROWSER_TOOL_NAME, Tool, is_tool_usable
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
@@ -314,6 +315,17 @@ def _resolve_agent_from_profile(
         raise ValueError(f"Profile '{profile_name}' failed to resolve: {exc}") from exc
 
     agent = settings_config.create_agent()
+    # Browser is deliberately absent from the deterministic SDK default
+    # (environment-dependent); this server knows its runtime, so it injects
+    # browser when usable. An explicit profile.tools list is authoritative.
+    if (
+        profile.agent_kind == "openhands"
+        and profile.tools is None
+        and is_tool_usable(BROWSER_TOOL_NAME)
+    ):
+        agent = agent.model_copy(
+            update={"tools": [*agent.tools, Tool(name=BROWSER_TOOL_NAME)]}
+        )
     launched = LaunchedAgentProfile(
         agent_profile_id=profile.id,
         revision=profile.revision,
