@@ -486,12 +486,11 @@ class LocalConversation(BaseConversation):
         """
         if not isinstance(event, ObservationEvent):
             return event
-        agent_context = getattr(self.agent, "agent_context", None)
-        if agent_context is None:
+
+        if (agent_context := getattr(self.agent, "agent_context", None)) is None:
             return event
 
-        file_path = self._touched_rule_path(event)
-        if file_path is None:
+        if (file_path := self._touched_rule_path(event)) is None:
             return event
 
         result = agent_context.get_tool_use_suffix(
@@ -515,11 +514,10 @@ class LocalConversation(BaseConversation):
         None when the action has no file ``path`` or the path is outside the
         workspace.
         """
-        try:
+        action_event: Event | None = None
+        with contextlib.suppress(KeyError):
             idx = self._state.events.get_index(event.action_id)
             action_event = self._state.events[idx]
-        except KeyError:
-            return None
         if not isinstance(action_event, ActionEvent) or action_event.action is None:
             return None
         # Read the field directly rather than model_dump(): avoids copying large
@@ -532,10 +530,9 @@ class LocalConversation(BaseConversation):
         if not raw.is_absolute():
             return str(raw)
         root = PurePosixPath(str(self.workspace.working_dir).replace("\\", "/"))
-        try:
+        with contextlib.suppress(ValueError):
             return str(raw.relative_to(root))
-        except ValueError:
-            return None  # touched a file outside the workspace; rules are repo-scoped
+        return None  # touched a file outside the workspace; rules are repo-scoped
 
     def _recover_persisted_client_tools(
         self,
