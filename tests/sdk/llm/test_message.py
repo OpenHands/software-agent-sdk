@@ -157,7 +157,10 @@ def test_message_with_tool_calls():
 
 
 def test_message_tool_calls_drop_empty_string_content():
-    """Assistant tool calls with no text should not include empty content strings."""
+    """Assistant tool calls with no text should normalize content to "".
+
+    Some LLMs reject content=null alongside tool_calls, so we normalize to "".
+    """
     from openhands.sdk.llm.message import Message, MessageToolCall
 
     tool_call = MessageToolCall(
@@ -174,11 +177,11 @@ def test_message_tool_calls_drop_empty_string_content():
     )
 
     result = message.to_chat_dict(**DEFAULT_SERIALIZATION_OPTS)
-    assert "content" not in result
+    assert result["content"] == ""
 
 
 def test_message_tool_calls_strip_blank_list_content():
-    """List-serialized tool call messages should drop blank text content blocks."""
+    """List-serialized tool call messages should normalize blank content to ""."""
     from openhands.sdk.llm.message import Message, MessageToolCall, TextContent
 
     tool_call = MessageToolCall(
@@ -197,7 +200,7 @@ def test_message_tool_calls_strip_blank_list_content():
     result = message.to_chat_dict(
         **{**DEFAULT_SERIALIZATION_OPTS, "function_calling_enabled": True}
     )
-    assert "content" not in result
+    assert result["content"] == ""
 
 
 def test_empty_assistant_message_uses_string_content_in_list_serializer():
