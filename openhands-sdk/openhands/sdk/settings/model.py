@@ -1000,10 +1000,11 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         default=None,
         description=(
             "Tools available to the agent. None (the default) resolves to the "
-            "standard exec set (see openhands.sdk.tool.defaults), plus browser "
-            "tools when the runtime has them registered and usable, plus the "
+            "standard exec set (see openhands.sdk.tool.defaults), plus the "
             "sub-agent tool set when enable_sub_agents is set; [] is an "
-            "explicitly bare agent; a non-empty list is used exactly as given."
+            "explicitly bare agent; a non-empty list is used exactly as given. "
+            "Environment-dependent tools (browser) are injected by the serving "
+            "layer, not the default."
         ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(

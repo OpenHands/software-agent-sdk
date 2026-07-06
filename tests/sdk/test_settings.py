@@ -548,30 +548,17 @@ def test_llm_create_agent_defaults_tool_concurrency_limit_to_one() -> None:
     assert agent.tool_concurrency_limit == 1
 
 
-def test_create_agent_defaults_tools_when_none(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_create_agent_defaults_tools_when_none() -> None:
     """tools=None (the default) materializes the canonical exec set at
-    create_agent — the single defaulting point (#3967 / #3978). Browser is
-    pinned unregistered here so the expectation is deterministic; the
-    registered/usable cases live in tests/sdk/tool/test_defaults.py."""
-    from openhands.sdk.tool import registry
-    from openhands.sdk.tool.defaults import BROWSER_TOOL_NAME
-
-    monkeypatch.delitem(registry._REG, BROWSER_TOOL_NAME, raising=False)
+    create_agent — the single defaulting point (#3967 / #3978). Deterministic:
+    browser is a serving-layer injection, never part of the default."""
     settings = OpenHandsAgentSettings(llm=LLM(model="test-model"))
     assert settings.tools is None
     agent = settings.create_agent()
     assert [t.name for t in agent.tools] == ["terminal", "file_editor", "task_tracker"]
 
 
-def test_create_agent_default_tools_honor_enable_sub_agents(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from openhands.sdk.tool import registry
-    from openhands.sdk.tool.defaults import BROWSER_TOOL_NAME
-
-    monkeypatch.delitem(registry._REG, BROWSER_TOOL_NAME, raising=False)
+def test_create_agent_default_tools_honor_enable_sub_agents() -> None:
     settings = OpenHandsAgentSettings(
         llm=LLM(model="test-model"), enable_sub_agents=True
     )

@@ -110,18 +110,13 @@ def test_openhands_resolves_to_settings_with_injected_llm(
 
 def test_openhands_resolves_default_exec_tools(
     llm_store: LLMProfileStore,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A profile with no explicit ``tools`` resolves to ``tools=None``, and
     ``create_agent`` attaches the standard exec set (#3967) — otherwise the
     agent has only the Finish/Think built-ins and no way to run shell commands
     or edit files. The sub-agent tool set stays out when ``enable_sub_agents``
-    is False (default); browser is pinned unregistered here for determinism
-    (adaptive default, see tests/sdk/tool/test_defaults.py)."""
-    from openhands.sdk.tool import registry
-    from openhands.sdk.tool.defaults import BROWSER_TOOL_NAME
-
-    monkeypatch.delitem(registry._REG, BROWSER_TOOL_NAME, raising=False)
+    is False (default); browser is a serving-layer injection, never part of
+    the deterministic default (see tests/sdk/tool/test_defaults.py)."""
     profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default")
     assert profile.enable_sub_agents is False
     assert profile.tools is None

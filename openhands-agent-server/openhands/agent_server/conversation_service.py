@@ -48,6 +48,7 @@ from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
+from openhands.sdk.tool import BROWSER_TOOL_NAME, Tool, is_tool_usable
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
@@ -312,6 +313,20 @@ def _resolve_agent_from_profile(
         raise ValueError(f"Profile '{profile_name}' failed to resolve: {exc}") from exc
 
     agent = settings_config.create_agent()
+    # Browser is an environment-dependent capability, deliberately absent from
+    # the SDK's deterministic default (#3978): this server knows its own
+    # runtime, so it injects browser onto a default-toolset OpenHands profile
+    # when the chromium stack is actually present. An explicit profile.tools
+    # list is authoritative and never amended; the cloud conversation-builder
+    # does its own equivalent injection.
+    if (
+        getattr(profile, "tools", None) is None
+        and profile.agent_kind == "openhands"
+        and is_tool_usable(BROWSER_TOOL_NAME)
+    ):
+        agent = agent.model_copy(
+            update={"tools": [*agent.tools, Tool(name=BROWSER_TOOL_NAME)]}
+        )
     launched = LaunchedAgentProfile(
         agent_profile_id=profile.id,
         revision=profile.revision,

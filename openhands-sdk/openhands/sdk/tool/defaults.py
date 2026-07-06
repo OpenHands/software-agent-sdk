@@ -22,8 +22,14 @@ DEFAULT_EXEC_TOOL_NAMES: tuple[str, ...] = (
 """Names of the standard exec tools every default OpenHands agent gets."""
 
 BROWSER_TOOL_NAME = "browser_tool_set"
-"""Name of the browser tool set, included in the default when the runtime
-has it registered and usable (chromium available)."""
+"""Name of the browser tool set.
+
+Not part of the deterministic default: browser is an environment-dependent
+capability, so the serving layer that knows its runtime injects it — the
+agent-server appends it on profile launches when ``is_tool_usable`` says the
+chromium stack is present, and the cloud conversation-builder does its own
+injection. Clients (canvas) add it themselves on the settings launch path.
+"""
 
 SUB_AGENT_TOOL_NAME = "task_tool_set"
 """Name of the sub-agent delegation tool set, gated on ``enable_sub_agents``."""
@@ -32,25 +38,16 @@ SUB_AGENT_TOOL_NAME = "task_tool_set"
 def default_tool_specs(
     *,
     enable_sub_agents: bool = False,
-    enable_browser: bool | None = None,
+    enable_browser: bool = False,
 ) -> list[Tool]:
     """Default tool specs for an OpenHands agent whose settings carry no tools.
 
-    ``enable_browser=None`` (the default) is adaptive: browser tools are
-    included exactly when the current runtime has them registered and usable
-    (chromium present) — the same bar canvas applies via ``GET /tools`` on the
-    settings launch path — so a default-toolset agent gets browser wherever it
-    can actually run, and resolving the spec never raises on a runtime without
-    it. Pass True/False to force.
+    Deterministic: the same inputs yield the same specs on every runtime.
+    Browser is off by default (see :data:`BROWSER_TOOL_NAME` — the serving
+    layer injects it where it can actually run); pass ``enable_browser=True``
+    to include it explicitly.
     """
     names = list(DEFAULT_EXEC_TOOL_NAMES)
-    if enable_browser is None:
-        # Local import: the registry is populated by openhands-tools at import
-        # time in the serving process; consulted lazily so this module stays
-        # import-light and cycle-free.
-        from openhands.sdk.tool.registry import is_tool_usable
-
-        enable_browser = is_tool_usable(BROWSER_TOOL_NAME)
     if enable_browser:
         names.append(BROWSER_TOOL_NAME)
     if enable_sub_agents:
