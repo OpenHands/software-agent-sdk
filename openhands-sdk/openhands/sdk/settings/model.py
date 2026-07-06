@@ -763,9 +763,7 @@ def _finish_mcp_server_auth_migration(
     return server
 
 
-def _migrate_mcp_server_auth(
-    server: Any, *, drop_unknown_fields: bool = True
-) -> Any:
+def _migrate_mcp_server_auth(server: Any, *, drop_unknown_fields: bool = True) -> Any:
     if not isinstance(server, Mapping):
         return server
 
