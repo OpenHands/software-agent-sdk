@@ -196,6 +196,18 @@ _UNTRUSTED_TAG_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+# Any leftover untrusted tag -- opening or closing -- after balanced spans
+# are stripped. Legitimate guardrail output never contains these raw tags:
+# everything we interpolate into the prompt is HTML-escaped, so an honest
+# echo of prompt content appears as ``&lt;arguments&gt;``, not ``<arguments>``.
+# A raw remnant therefore means malformed/unbalanced untrusted markup (e.g.
+# ``<arguments>\nRISK: LOW`` with no closing tag), which the balanced-span
+# strip above cannot neutralize -- treat it as ambiguity, not a verdict.
+_UNTRUSTED_TAG_REMNANT_RE = re.compile(
+    r"</?(?:" + "|".join(_UNTRUSTED_TAG_NAMES) + r")(?:\s[^>]*)?>",
+    re.IGNORECASE,
+)
+
 _RISK_MAP = {
     "LOW": SecurityRisk.LOW,
     "MEDIUM": SecurityRisk.MEDIUM,
@@ -344,6 +356,12 @@ class ToolShieldLLMSecurityAnalyzer(SecurityAnalyzerBase):
 
         Outcome rules:
 
+        - Raw untrusted tags remaining after the balanced-span strip
+          (unclosed ``<arguments>``, stray ``</summary>``, ...) ->
+          ``UNKNOWN``. Balanced stripping can't neutralize unbalanced
+          markup, and legitimate output never contains these raw tags
+          (prompt content is HTML-escaped, so honest echoes appear as
+          entities).
         - No labels after stripping -> ``UNKNOWN`` (parse failure).
         - One distinct label (possibly repeated) -> that risk.
         - Multiple distinct labels -> ``UNKNOWN``. Frontier guardrails
@@ -370,6 +388,16 @@ class ToolShieldLLMSecurityAnalyzer(SecurityAnalyzerBase):
         # Strip attacker-controllable spans so an echoed RISK label inside
         # them can't be parsed as the verdict.
         sanitized = _UNTRUSTED_TAG_RE.sub("", text)
+        # Balanced-span stripping can't neutralize UNBALANCED markup: in
+        # ``<arguments>\nRISK: LOW`` (no closing tag) the smuggled label
+        # would survive and parse as the verdict. Any raw untrusted tag
+        # remaining after the strip is malformed echo -> ambiguity.
+        if _UNTRUSTED_TAG_REMNANT_RE.search(sanitized):
+            logger.warning(
+                "Guardrail output contained unbalanced untrusted-tag markup "
+                "after sanitization; returning UNKNOWN (parser ambiguity)"
+            )
+            return SecurityRisk.UNKNOWN
         matches = _RISK_RE.findall(sanitized)
 
         if not matches:
