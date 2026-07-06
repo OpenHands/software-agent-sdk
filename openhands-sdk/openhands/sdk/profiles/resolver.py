@@ -294,9 +294,7 @@ def _build_openhands_settings(
         "agent": profile.agent,
         "llm": llm,
         "mcp_config": mcp_config,
-        # Tri-state passthrough: None lets ``create_agent`` attach the server
-        # default set (which honors ``enable_sub_agents``) — the resolver does
-        # not re-derive the default toolset (#3967, #3978).
+        # Tri-state passthrough; create_agent materializes None.
         "tools": profile.tools,
         "agent_context": AgentContext(
             skills=skills,

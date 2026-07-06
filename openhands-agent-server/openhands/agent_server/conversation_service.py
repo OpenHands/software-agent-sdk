@@ -313,15 +313,12 @@ def _resolve_agent_from_profile(
         raise ValueError(f"Profile '{profile_name}' failed to resolve: {exc}") from exc
 
     agent = settings_config.create_agent()
-    # Browser is an environment-dependent capability, deliberately absent from
-    # the SDK's deterministic default (#3978): this server knows its own
-    # runtime, so it injects browser onto a default-toolset OpenHands profile
-    # when the chromium stack is actually present. An explicit profile.tools
-    # list is authoritative and never amended; the cloud conversation-builder
-    # does its own equivalent injection.
+    # Browser is deliberately absent from the deterministic SDK default
+    # (environment-dependent); this server knows its runtime, so it injects
+    # browser when usable. An explicit profile.tools list is authoritative.
     if (
-        getattr(profile, "tools", None) is None
-        and profile.agent_kind == "openhands"
+        profile.agent_kind == "openhands"
+        and profile.tools is None
         and is_tool_usable(BROWSER_TOOL_NAME)
     ):
         agent = agent.model_copy(

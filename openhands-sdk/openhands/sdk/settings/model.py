@@ -1136,10 +1136,8 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         from openhands.sdk.tool.builtins import BUILT_IN_TOOLS, SwitchLLMTool
         from openhands.sdk.tool.defaults import default_tool_specs
 
-        # tools=None means "server default": the canonical exec set, with the
-        # sub-agent tool set gated on enable_sub_agents. [] stays an explicitly
-        # bare agent. This is the single defaulting point — callers and the
-        # profile resolver do not re-derive the default toolset (#3978).
+        # Single defaulting point: None = the canonical default set (honoring
+        # enable_sub_agents); [] stays an explicitly bare agent.
         tools = (
             self.tools
             if self.tools is not None
