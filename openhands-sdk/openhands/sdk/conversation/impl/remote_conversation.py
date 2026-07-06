@@ -952,18 +952,32 @@ class RemoteConversation(BaseConversation):
         # Wait for WebSocket subscription to complete before allowing operations.
         # This ensures events emitted during send_message() are not missed.
         # The server sends a ConversationStateUpdateEvent after subscription.
-        ws_timeout = 30.0
+        ws_timeout = float(os.getenv("OPENHANDS_REMOTE_WS_READY_TIMEOUT", "30"))
         if not self._ws_client.wait_until_ready(timeout=ws_timeout):
-            try:
-                self._ws_client.stop()
-            except Exception:
-                pass
-            finally:
-                self._ws_client = None
-            raise WebSocketConnectionError(
-                conversation_id=self._id,
-                timeout=ws_timeout,
-            )
+            if os.getenv("OPENHANDS_REMOTE_WS_READY_REQUIRED", "true").lower() in (
+                "0",
+                "false",
+                "no",
+            ):
+                logger.warning(
+                    "WebSocket subscription did not become ready within %.1f "
+                    "seconds for conversation %s; continuing after REST "
+                    "reconciliation because OPENHANDS_REMOTE_WS_READY_REQUIRED "
+                    "is false.",
+                    ws_timeout,
+                    self._id,
+                )
+            else:
+                try:
+                    self._ws_client.stop()
+                except Exception:
+                    pass
+                finally:
+                    self._ws_client = None
+                raise WebSocketConnectionError(
+                    conversation_id=self._id,
+                    timeout=ws_timeout,
+                )
 
         # Reconcile events after WebSocket is ready to catch any events that
         # were emitted between the initial REST sync and WebSocket subscription.
