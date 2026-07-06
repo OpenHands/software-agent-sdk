@@ -47,6 +47,7 @@ from openhands.sdk.tool.builtins.vision_inspect import (
     has_vision_profile_available,
 )
 from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.models import DiscriminatedUnionMixin, get_handler_class_name
 
 
@@ -256,7 +257,14 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             "System prompt template filename. Can be either:\n"
             "- A relative filename (e.g., 'system_prompt.j2') loaded from the "
             "agent's prompts directory\n"
-            "- An absolute path (e.g., '/path/to/custom_prompt.j2')"
+            "- An absolute path (e.g., '/path/to/custom_prompt.j2')\n\n"
+            "**Deprecated (since 1.30.0, removed in 1.35.0)**: Pointing this at a "
+            "*custom* '.j2' template renders it through the legacy Jinja fallback, "
+            "which is deprecated. Migrate to the typed prompt registry (custom "
+            "sections/presets via `create_registry`) or the inline `system_prompt` "
+            "field. The built-in sentinel filenames 'system_prompt.j2' and "
+            "'system_prompt_planning.j2' route through the registry and are "
+            "unaffected."
         ),
     )
     security_policy_filename: str = Field(
@@ -510,6 +518,20 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         # own Jinja template; everything else (incl. custom policies) uses the registry.
         preset = self._prompt_preset
         if preset is None:
+            warn_deprecated(
+                "AgentBase custom Jinja system prompt",
+                deprecated_in="1.30.0",
+                removed_in="1.35.0",
+                details=(
+                    "Rendering a system prompt from a custom '.j2' template "
+                    "(a custom 'system_prompt_filename' or a subclass with its own "
+                    "'prompt_dir') is deprecated. Migrate to the typed prompt "
+                    "registry (custom sections/presets via 'create_registry') or "
+                    "pass the prompt text directly with the inline 'system_prompt' "
+                    "field. Built-in sentinel filenames such as 'system_prompt.j2' "
+                    "and 'system_prompt_planning.j2' are unaffected."
+                ),
+            )
             return render_template(
                 prompt_dir=self.prompt_dir,
                 template_name=self.system_prompt_filename,

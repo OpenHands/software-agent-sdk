@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import ClassVar
 
 import pytest
+from deprecation import DeprecatedWarning
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.agent.base import AgentBase
@@ -104,6 +105,25 @@ def test_builtin_default_prompt_uses_registry() -> None:
     agent = Agent(llm=_make_llm(), tools=[])
     expected = create_registry().build(agent._build_prompt_context()).static
     assert agent.static_system_message == expected
+
+
+def test_custom_jinja_fallback_warns_deprecated(tmp_path: Path) -> None:
+    """The custom ``.j2`` fallback (custom filename) emits a deprecation warning."""
+    template = tmp_path / "custom.j2"
+    template.write_text("CUSTOM PROMPT", encoding="utf-8")
+    agent = Agent(
+        llm=_make_llm(),
+        tools=[],
+        system_prompt_filename=str(template),
+    )
+    with pytest.warns(DeprecatedWarning, match="custom Jinja system prompt"):
+        assert agent.static_system_message == "CUSTOM PROMPT"
+
+
+def test_registry_prompt_does_not_warn(recwarn: pytest.WarningsRecorder) -> None:
+    """Built-in registry prompts must not emit the Jinja deprecation warning."""
+    Agent(llm=_make_llm(), tools=[]).static_system_message
+    assert not [w for w in recwarn if issubclass(w.category, DeprecatedWarning)]
 
 
 # --- planning preset (sentinel-filename routing) ---
