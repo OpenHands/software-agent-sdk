@@ -278,6 +278,23 @@ def detect_active_mcp_tools(
     from toolshield.mcp_scan import main as _scan_main  # type: ignore[import-not-found]
 
     start_port, end_port = port_range
+    # ``mcp_scan.main`` is async and must run via ``asyncio.run``, which
+    # raises if we're already inside an event loop. Check for a running
+    # loop BEFORE creating the coroutine -- a coroutine created eagerly
+    # and never awaited emits ``RuntimeWarning: coroutine ... was never
+    # awaited`` at GC (a hard failure under ``-W error``). Callers in an
+    # async context can wrap this helper in ``asyncio.to_thread``.
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass  # no running loop; safe to proceed
+    else:
+        logger.warning(
+            "MCP scan skipped (called from within a running event loop); "
+            "returning always-active tools only"
+        )
+        return list(ALWAYS_ACTIVE_TOOLS)
+
     # ``mcp_scan.main`` prints scan progress/results to stdout
     # unconditionally (toolshield<=0.1.3 has no quiet mode). Library code
     # must not write to the host process's stdout, so capture it and
@@ -285,15 +302,14 @@ def detect_active_mcp_tools(
     # ``sys.stdout`` process-wide for the duration; the scan is short and
     # this helper is called from sync setup code, so the window is small.
     scan_stdout = io.StringIO()
+    coro = _scan_main(start_port, end_port, verbose=verbose)
     try:
-        # ``mcp_scan.main`` is async; safe to run here because we're not
-        # already inside an event loop (the analyzer is constructed from
-        # sync code). If a caller IS in an async context, they can wrap
-        # this helper in ``asyncio.to_thread`` themselves.
         with contextlib.redirect_stdout(scan_stdout):
-            found = asyncio.run(_scan_main(start_port, end_port, verbose=verbose))
+            found = asyncio.run(coro)
     except RuntimeError as e:
-        # Typical cause: called from within a running event loop.
+        # Belt-and-braces: close the never-awaited coroutine so no
+        # RuntimeWarning fires at GC, whatever raised.
+        coro.close()
         logger.warning(f"MCP scan failed ({e}); returning always-active tools only")
         return list(ALWAYS_ACTIVE_TOOLS)
     finally:

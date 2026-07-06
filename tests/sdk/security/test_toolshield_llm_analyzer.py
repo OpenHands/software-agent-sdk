@@ -627,6 +627,18 @@ class TestSafetyExperiences:
 # ---------------------------------------------------------------------------
 
 
+def _consume_coro(return_value):
+    """Build an ``asyncio.run`` stand-in that closes the coroutine it is
+    handed (as the real one would consume it) before returning a canned
+    value, so mocked scans never leak 'coroutine was never awaited'."""
+
+    def _run(coro):
+        coro.close()
+        return return_value
+
+    return _run
+
+
 class TestToolShieldHelpers:
     def test_require_toolshield_raises_helpful_error_when_missing(self):
         from openhands.sdk.security.toolshield_helpers import _require_toolshield
@@ -653,7 +665,7 @@ class TestToolShieldHelpers:
         # Stub out the async MCP scanner so we don't actually hit the network.
         with patch.object(th, "_require_toolshield", return_value=None):
             # Patch asyncio.run to return an empty server list
-            with patch.object(th.asyncio, "run", return_value=[]):
+            with patch.object(th.asyncio, "run", side_effect=_consume_coro([])):
                 # Also need the toolshield.mcp_scan import to not fail; since
                 # _require_toolshield is stubbed, provide a fake module.
                 import sys
@@ -699,7 +711,7 @@ class TestToolShieldHelpers:
                 "url": "http://localhost:9090/sse",
             }
         ]
-        with patch.object(th.asyncio, "run", return_value=fake_servers):
+        with patch.object(th.asyncio, "run", side_effect=_consume_coro(fake_servers)):
             result = th.auto_detect_safety_experiences(
                 port_range=(9090, 9090), model="claude-sonnet-4.5"
             )
@@ -716,7 +728,7 @@ class TestToolShieldHelpers:
         """No networked servers + fallback_to_default=True -> default seed."""
         from openhands.sdk.security import toolshield_helpers as th
 
-        with patch.object(th.asyncio, "run", return_value=[]):
+        with patch.object(th.asyncio, "run", side_effect=_consume_coro([])):
             result = th.auto_detect_safety_experiences(
                 port_range=(60000, 60001),
                 fallback_to_default=True,
@@ -726,10 +738,15 @@ class TestToolShieldHelpers:
         assert "terminal" in result.lower()
 
     @requires_toolshield
+    @pytest.mark.filterwarnings("error::RuntimeWarning")
     def test_auto_detect_handles_already_inside_event_loop(self):
-        """If we're called from inside a running event loop, ``asyncio.run``
-        raises RuntimeError. The helper must catch it and return just the
-        always-active tools so the analyzer doesn't crash."""
+        """If ``asyncio.run`` raises RuntimeError, the helper must catch it
+        and return just the always-active tools so the analyzer doesn't
+        crash -- and must close the never-awaited coroutine so no
+        ``RuntimeWarning: coroutine ... was never awaited`` fires at GC
+        (the filterwarnings marker turns that warning into a failure)."""
+        import gc
+
         from openhands.sdk.security import toolshield_helpers as th
 
         with patch.object(
@@ -740,8 +757,27 @@ class TestToolShieldHelpers:
             ),
         ):
             result = th.detect_active_mcp_tools(port_range=(8000, 8001))
+        gc.collect()  # force the warning now if the coroutine leaked
         # Per the helper's contract, falls back to ALWAYS_ACTIVE_TOOLS
         assert result == list(th.ALWAYS_ACTIVE_TOOLS)
+
+    @pytest.mark.filterwarnings("error::RuntimeWarning")
+    async def test_detect_inside_running_loop_returns_early(self):
+        """Called from a genuinely running event loop, the helper must
+        bail out BEFORE creating the scanner coroutine: no RuntimeWarning,
+        no asyncio.run attempt, just the always-active fallback."""
+        import sys
+
+        from openhands.sdk.security import toolshield_helpers as th
+
+        fake_mcp_scan = MagicMock()
+        with patch.object(th, "_require_toolshield", return_value=None):
+            with patch.dict(sys.modules, {"toolshield.mcp_scan": fake_mcp_scan}):
+                with patch.object(th.asyncio, "run") as mock_run:
+                    result = th.detect_active_mcp_tools(port_range=(8000, 8001))
+        assert result == list(th.ALWAYS_ACTIVE_TOOLS)
+        mock_run.assert_not_called()
+        fake_mcp_scan.main.assert_not_called()
 
     # ----------------------------------------------------------------------
     # Library-contract edges (per review on PR #2911): the no-fallback
