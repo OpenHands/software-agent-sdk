@@ -177,8 +177,8 @@ This creates a proper reply attached to the original inline comment thread.
 
 ===== DYNAMIC CONTEXT (second system content block) =====
 
+Follow the repository's coding conventions.
+
 <CURRENT_DATETIME>
 The current date and time is: 2025-01-01T00:00:00+00:00
 </CURRENT_DATETIME>
-
-Follow the repository's coding conventions.

@@ -1028,10 +1028,11 @@ templates.",
         assert "2024-03-15T14:30:00Z" in result
         assert "<REPO_CONTEXT>" in result
         assert "coding_standards" in result
-        # Datetime should appear before repo context
+        # Datetime renders last in the dynamic block (after repo context) so the
+        # stable dynamic content stays a cache-friendly prefix.
         datetime_pos = result.index("<CURRENT_DATETIME>")
         repo_context_pos = result.index("<REPO_CONTEXT>")
-        assert datetime_pos < repo_context_pos
+        assert datetime_pos > repo_context_pos
 
     def test_get_system_message_suffix_with_datetime_and_secrets(self):
         """Test system message suffix with datetime and secrets."""
