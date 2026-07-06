@@ -2330,6 +2330,102 @@ describe('Auxiliary API clients', () => {
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
+  it('MCPClient wraps MCP OAuth probe endpoints', async () => {
+    const responses = [
+      { version: '1.31.0', uptime: 1, idle_time: 0 },
+      {
+        ok: true,
+        job_id: 'job-1',
+        authorization_url: 'https://auth.example/authorize',
+      },
+      {
+        ok: true,
+        status: 'authorizing',
+        job_id: 'job-1',
+        authorization_url: 'https://auth.example/authorize',
+        callback_ready: true,
+      },
+      {
+        ok: true,
+        status: 'succeeded',
+        job_id: 'job-1',
+        tools: ['search_mail'],
+        oauth_state: {
+          tokens: { access_token: 'gAAAAencrypted-access-token' },
+          token_expires_at: 12345,
+        },
+      },
+    ];
+    global.fetch = jest.fn().mockImplementation(() => {
+      const body = responses.shift();
+      return Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      );
+    }) as typeof fetch;
+
+    const client = new MCPClient({ host: 'http://example.com', apiKey: 'secret' });
+    const request = {
+      name: 'superhuman-mail',
+      server: {
+        transport: 'http' as const,
+        url: 'https://mcp.mail.superhuman.com/mcp',
+        auth: {
+          strategy: 'oauth2' as const,
+          authentication: { type: 'oauth' as const, client_auth_method: 'none' as const },
+        },
+      },
+      timeout: 120,
+    };
+
+    await expect(client.startOAuth(request)).resolves.toMatchObject({
+      ok: true,
+      job_id: 'job-1',
+      authorization_url: 'https://auth.example/authorize',
+    });
+    await expect(client.getOAuthStatus('job/1')).resolves.toMatchObject({
+      status: 'authorizing',
+      callback_ready: true,
+    });
+    await expect(
+      client.submitOAuthCallback('job/1', {
+        callback_url: 'http://localhost:1234/callback?code=abc&state=xyz',
+      })
+    ).resolves.toMatchObject({
+      status: 'succeeded',
+      oauth_state: {
+        tokens: { access_token: 'gAAAAencrypted-access-token' },
+      },
+    });
+
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://example.com/api/mcp/oauth/start',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify(request),
+        headers: expect.objectContaining({ 'X-Session-API-Key': 'secret' }),
+      })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      3,
+      'http://example.com/api/mcp/oauth/status/job%2F1',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      4,
+      'http://example.com/api/mcp/oauth/callback/job%2F1',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          callback_url: 'http://localhost:1234/callback?code=abc&state=xyz',
+        }),
+      })
+    );
+  });
+
   it('Shared client wraps app endpoints', async () => {
     const responses = [
       [{ id: 'shared-1', created_by_user_id: null, selected_repository: null }],

@@ -479,19 +479,90 @@ export interface RemoteMCPServerSpec {
   url: string;
   headers?: Record<string, string>;
   api_key?: string | null;
+  auth?: MCPAuthCredential | null;
+  timeout?: number | null;
+  sse_read_timeout?: number | null;
+  keep_alive?: boolean | null;
 }
 
-export type MCPServerSpec = StdioMCPServerSpec | RemoteMCPServerSpec;
+export type MCPTransport = 'stdio' | 'http' | 'sse' | 'streamable-http';
+
+export type MCPOAuthClientAuthMethod =
+  'none' | 'client_secret_post' | 'client_secret_basic' | 'private_key_jwt';
+
+export type MCPJsonValue =
+  boolean | number | string | null | MCPJsonValue[] | { [key: string]: MCPJsonValue };
+
+export interface MCPOAuthAuthentication {
+  type: 'oauth';
+  client_auth_method?: MCPOAuthClientAuthMethod | null;
+  scopes?: string | string[] | null;
+  client_name?: string | null;
+  client_metadata_url?: string | null;
+  client_id?: string | null;
+  client_secret?: string | null;
+  additional_client_metadata?: Record<string, MCPJsonValue> | null;
+}
+
+export interface MCPOAuthState {
+  tokens?: Record<string, MCPJsonValue> | null;
+  client_info?: Record<string, MCPJsonValue> | null;
+  token_expires_at?: number | null;
+}
+
+export type MCPAuthCredential =
+  | { strategy: 'none' }
+  | { strategy: 'api_key'; value?: string | null; header_name?: string | null }
+  | { strategy: 'bearer'; value?: string | null }
+  | { strategy: 'basic'; username: string; password?: string | null }
+  | { strategy: 'header'; headers?: Record<string, string> | null }
+  | {
+      strategy: 'oauth2';
+      authentication?: MCPOAuthAuthentication | null;
+      state?: MCPOAuthState | null;
+    };
+
+export interface MCPServer {
+  url?: string | null;
+  transport?: MCPTransport | null;
+  command?: string | null;
+  args?: string[] | null;
+  env?: Record<string, string> | null;
+  cwd?: string | null;
+  description?: string | null;
+  icon?: string | null;
+  timeout?: number | null;
+  sse_read_timeout?: number | null;
+  keep_alive?: boolean | null;
+  headers?: Record<string, string> | null;
+  auth?: MCPAuthCredential | null;
+}
+
+export type MCPServerSpec = StdioMCPServerSpec | RemoteMCPServerSpec | MCPServer;
+
+export interface MCPToolCallSpec {
+  name: string;
+  arguments?: Record<string, unknown>;
+}
 
 export interface MCPTestRequest {
   server: MCPServerSpec;
   name?: string;
   timeout?: number;
+  tool_call?: MCPToolCallSpec | null;
+}
+
+export interface MCPToolCallResult {
+  is_error: boolean;
+  text: string;
 }
 
 export interface MCPTestSuccess {
   ok: true;
   tools: string[];
+  tool_result?: MCPToolCallResult | null;
+  resolved_mcp_servers?: Record<string, unknown>[] | null;
+  oauth_state?: MCPOAuthState | null;
 }
 
 export type MCPTestFailureKind = 'timeout' | 'connection' | 'unknown';
@@ -503,6 +574,33 @@ export interface MCPTestFailure {
 }
 
 export type MCPTestResponse = MCPTestSuccess | MCPTestFailure;
+
+export interface MCPOAuthStartResponse {
+  ok: boolean;
+  job_id?: string | null;
+  authorization_url?: string | null;
+  error?: string | null;
+  error_kind?: MCPTestFailureKind | null;
+}
+
+export type MCPOAuthProbeStatus = 'pending' | 'authorizing' | 'succeeded' | 'failed';
+
+export interface MCPOAuthStatusResponse {
+  ok: boolean;
+  status: MCPOAuthProbeStatus;
+  job_id: string;
+  authorization_url?: string | null;
+  callback_ready?: boolean;
+  tools?: string[] | null;
+  tool_result?: MCPToolCallResult | null;
+  oauth_state?: MCPOAuthState | null;
+  error?: string | null;
+  error_kind?: MCPTestFailureKind | null;
+}
+
+export interface MCPOAuthCallbackRequest {
+  callback_url: string;
+}
 
 export interface SharedConversation {
   id: string;
