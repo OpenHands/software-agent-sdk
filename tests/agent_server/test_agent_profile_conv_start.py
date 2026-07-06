@@ -244,7 +244,7 @@ class TestResolveAgentFromProfile:
             MockResolve.return_value = mock_config
 
             result_agent, _ = _resolve_agent_from_profile(
-                profile.id, cipher=None, mcp_config=None
+                profile.id, cipher=None, mcp_config={}
             )
 
         MockUsable.assert_called_once_with("browser_tool_set")
@@ -275,7 +275,7 @@ class TestResolveAgentFromProfile:
             MockResolve.return_value = mock_config
 
             result_agent, _ = _resolve_agent_from_profile(
-                profile.id, cipher=None, mcp_config=None
+                profile.id, cipher=None, mcp_config={}
             )
 
         assert result_agent is agent
@@ -307,7 +307,7 @@ class TestResolveAgentFromProfile:
             MockResolve.return_value = mock_config
 
             result_agent, _ = _resolve_agent_from_profile(
-                profile.id, cipher=None, mcp_config=None
+                profile.id, cipher=None, mcp_config={}
             )
 
         MockUsable.assert_not_called()
@@ -339,7 +339,7 @@ class TestResolveAgentFromProfile:
             MockResolve.return_value = mock_config
 
             result_agent, _ = _resolve_agent_from_profile(
-                profile.id, cipher=None, mcp_config=None
+                profile.id, cipher=None, mcp_config={}
             )
 
         MockUsable.assert_not_called()

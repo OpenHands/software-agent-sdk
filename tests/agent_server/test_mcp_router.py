@@ -6,6 +6,7 @@ import asyncio
 import json
 import sys
 import time
+from collections.abc import Generator
 from types import SimpleNamespace
 
 import anyio
@@ -16,8 +17,8 @@ from pydantic import SecretStr
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.mcp_router import (
-    MCPTestRequest,
     _OAUTH_PROBE_JOB_TTL_SECONDS,
+    MCPTestRequest,
     _BrowserCoordinatedOAuth,
     _MCPOAuthProbeJob,
     _oauth_probe_jobs,
@@ -39,7 +40,7 @@ from tests.sdk.mcp.test_create_mcp_tool import (  # noqa: E402
 
 
 @pytest.fixture
-def client() -> TestClient:
+def client() -> Generator[TestClient]:
     reset_stores()
     config = Config(session_api_keys=[])  # Disable authentication.
     with TestClient(create_app(config), raise_server_exceptions=False) as test_client:

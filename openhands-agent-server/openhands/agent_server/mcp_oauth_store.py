@@ -29,6 +29,7 @@ from openhands.sdk.mcp.utils import create_mcp_tools
 
 logger = get_logger(__name__)
 
+
 class _OAuthKeySpec(NamedTuple):
     suffix: str
     collection: str
