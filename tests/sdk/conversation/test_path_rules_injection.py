@@ -178,8 +178,11 @@ def test_file_outside_workspace_is_not_matched(tmp_path: Path) -> None:
     )
     conv = _conversation(tmp_path, rule)
     try:
-        # Absolute path outside the workspace root.
-        action_event = _append_file_action(conv, "/somewhere/else/x.ts")
+        # Absolute path outside the workspace root — a sibling of the workspace,
+        # so it is absolute AND outside on both POSIX and Windows.
+        action_event = _append_file_action(
+            conv, str(tmp_path.parent / "outside" / "x.ts")
+        )
         injected = _inject(conv, _observation_for(action_event))
         assert injected.extended_content == []
         assert conv._state.activated_path_rules == []
