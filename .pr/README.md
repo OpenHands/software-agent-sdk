@@ -10,8 +10,9 @@ Both blockers raised on this PR:
 
 1. **@VascoSch92 — "fix the package at the source first"**
    ([CHATS-lab/ToolShield#4](https://github.com/CHATS-lab/ToolShield/issues/4)).
-   Fixed and published as `toolshield==0.1.3`. Files `01`–`04` below are
-   the evidence that 0.1.3 is correct and reproducible from source.
+   Fixed and published as `toolshield==0.1.3`; the upstream issue is now
+   closed. Files `01`–`04` below are the evidence that 0.1.3 is correct
+   and reproducible from source.
 
 2. **@enyst — "add logs or other artefacts that show it works"**.
    That's this directory.
