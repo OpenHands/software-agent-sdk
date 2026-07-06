@@ -62,10 +62,6 @@ from litellm.responses.main import (
     aresponses as litellm_aresponses,
     responses as litellm_responses,
 )
-from litellm.responses.streaming_iterator import (
-    ResponsesAPIStreamingIterator,
-    SyncResponsesAPIStreamingIterator,
-)
 from litellm.types.llms.openai import (
     OutputTextDeltaEvent,
     ReasoningSummaryTextDeltaEvent,
@@ -1633,12 +1629,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
                     # When stream=True, LiteLLM returns a streaming
                     # iterator rather than a single ResponsesAPIResponse.
-                    # Drain the iterator and use the completed response.
+                    # Third-party wrappers may replace LiteLLM's concrete
+                    # iterator with another iterable, so drain by protocol.
                     if final_kwargs.get("stream", False):
-                        if not isinstance(ret, SyncResponsesAPIStreamingIterator):
-                            raise AssertionError(
-                                f"Expected Responses stream iterator, got {type(ret)}"
-                            )
                         stream_callback = on_token if user_enable_streaming else None
                         # Collect output items from streaming events.
                         # Some endpoints (e.g., Codex subscription) send
@@ -1647,9 +1640,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         # accumulate them here and patch the completed
                         # response if needed.
                         collected_output_items: list[Any] = []
-                        for event in ret:
+                        completed_response = getattr(ret, "completed_response", None)
+                        stream = cast(Iterable[Any], ret)
+                        for event in stream:
                             if event is None:
                                 continue
+                            if isinstance(event, ResponseCompletedEvent):
+                                completed_response = event
                             output_item, delta_chunk = self._process_stream_event(
                                 event, emit_deltas=stream_callback is not None
                             )
@@ -1658,8 +1655,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                             if stream_callback is not None and delta_chunk is not None:
                                 stream_callback(delta_chunk)
 
+                        completed_response = getattr(
+                            ret, "completed_response", completed_response
+                        )
                         return self._finalize_stream_response(
-                            ret.completed_response, collected_output_items
+                            completed_response, collected_output_items
                         )
 
                     raise AssertionError(
@@ -1776,13 +1776,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
                     # When stream=True, LiteLLM returns a streaming
                     # iterator rather than a single ResponsesAPIResponse.
-                    # Drain the iterator and use the completed response.
+                    # Third-party wrappers may replace LiteLLM's concrete
+                    # iterator with another sync or async iterable, so drain
+                    # by protocol.
                     if final_kwargs.get("stream", False):
-                        if not isinstance(ret, ResponsesAPIStreamingIterator):
-                            raise AssertionError(
-                                "Expected Responses async stream "
-                                f"iterator, got {type(ret)}"
-                            )
                         stream_cb = on_token if user_enable_streaming else None
                         # Collect output items from streaming events.
                         # Some endpoints (e.g., Codex subscription) send
@@ -1791,19 +1788,44 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         # accumulate them here and patch the completed
                         # response if needed.
                         collected_output_items: list[Any] = []
-                        async for event in ret:
-                            if event is None:
-                                continue
-                            output_item, delta_chunk = self._process_stream_event(
-                                event, emit_deltas=stream_cb is not None
+                        completed_response = getattr(ret, "completed_response", None)
+                        if hasattr(ret, "__aiter__"):
+                            stream = cast(AsyncIterable[Any], ret)
+                            async for event in stream:
+                                if event is None:
+                                    continue
+                                if isinstance(event, ResponseCompletedEvent):
+                                    completed_response = event
+                                output_item, delta_chunk = self._process_stream_event(
+                                    event, emit_deltas=stream_cb is not None
+                                )
+                                if output_item is not None:
+                                    collected_output_items.append(output_item)
+                                if stream_cb is not None and delta_chunk is not None:
+                                    await _invoke_token_callback(stream_cb, delta_chunk)
+                        else:
+                            loop = asyncio.get_running_loop()
+                            events: list[Any] = await loop.run_in_executor(
+                                None, list, cast(Iterable[Any], ret)
                             )
-                            if output_item is not None:
-                                collected_output_items.append(output_item)
-                            if stream_cb is not None and delta_chunk is not None:
-                                await _invoke_token_callback(stream_cb, delta_chunk)
+                            for event in events:
+                                if event is None:
+                                    continue
+                                if isinstance(event, ResponseCompletedEvent):
+                                    completed_response = event
+                                output_item, delta_chunk = self._process_stream_event(
+                                    event, emit_deltas=stream_cb is not None
+                                )
+                                if output_item is not None:
+                                    collected_output_items.append(output_item)
+                                if stream_cb is not None and delta_chunk is not None:
+                                    await _invoke_token_callback(stream_cb, delta_chunk)
 
+                        completed_response = getattr(
+                            ret, "completed_response", completed_response
+                        )
                         return self._finalize_stream_response(
-                            ret.completed_response, collected_output_items
+                            completed_response, collected_output_items
                         )
 
                     raise AssertionError(
