@@ -62,10 +62,6 @@ from litellm.responses.main import (
     aresponses as litellm_aresponses,
     responses as litellm_responses,
 )
-from litellm.responses.streaming_iterator import (
-    ResponsesAPIStreamingIterator,
-    SyncResponsesAPIStreamingIterator,
-)
 from litellm.types.llms.openai import (
     OutputTextDeltaEvent,
     ReasoningSummaryTextDeltaEvent,
@@ -1631,14 +1627,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         self._telemetry.on_response(ret)
                         return ret
 
-                    # When stream=True, LiteLLM returns a streaming
-                    # iterator rather than a single ResponsesAPIResponse.
-                    # Drain the iterator and use the completed response.
+                    # When stream=True, LiteLLM returns a streaming iterator
+                    # rather than a single ResponsesAPIResponse. Drain it and
+                    # use the completed response; the iterator's class is an
+                    # implementation detail of LiteLLM, so don't restrict it
+                    # (some providers wrap their streams as plain generators).
                     if final_kwargs.get("stream", False):
-                        if not isinstance(ret, SyncResponsesAPIStreamingIterator):
-                            raise AssertionError(
-                                f"Expected Responses stream iterator, got {type(ret)}"
-                            )
                         stream_callback = on_token if user_enable_streaming else None
                         # Collect output items from streaming events.
                         # Some endpoints (e.g., Codex subscription) send
@@ -1647,7 +1641,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         # accumulate them here and patch the completed
                         # response if needed.
                         collected_output_items: list[Any] = []
-                        for event in ret:
+                        # litellm's declared stream response type doesn't
+                        # expose iteration protocols or `completed_response`
+                        # on the base class; bind through Any rather than
+                        # gating on a concrete subclass.
+                        stream: Any = ret
+                        for event in stream:
                             if event is None:
                                 continue
                             output_item, delta_chunk = self._process_stream_event(
@@ -1659,7 +1658,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                                 stream_callback(delta_chunk)
 
                         return self._finalize_stream_response(
-                            ret.completed_response, collected_output_items
+                            stream.completed_response, collected_output_items
                         )
 
                     raise AssertionError(
@@ -1774,15 +1773,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         self._telemetry.on_response(ret)
                         return ret
 
-                    # When stream=True, LiteLLM returns a streaming
-                    # iterator rather than a single ResponsesAPIResponse.
-                    # Drain the iterator and use the completed response.
+                    # When stream=True, LiteLLM returns a streaming iterator
+                    # rather than a single ResponsesAPIResponse. Drain it and
+                    # use the completed response; the iterator's class is an
+                    # implementation detail of LiteLLM, so don't restrict it
+                    # (some providers wrap their streams as plain async
+                    # generators).
                     if final_kwargs.get("stream", False):
-                        if not isinstance(ret, ResponsesAPIStreamingIterator):
-                            raise AssertionError(
-                                "Expected Responses async stream "
-                                f"iterator, got {type(ret)}"
-                            )
                         stream_cb = on_token if user_enable_streaming else None
                         # Collect output items from streaming events.
                         # Some endpoints (e.g., Codex subscription) send
@@ -1791,7 +1788,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         # accumulate them here and patch the completed
                         # response if needed.
                         collected_output_items: list[Any] = []
-                        async for event in ret:
+                        # litellm's declared stream response type doesn't
+                        # expose iteration protocols or `completed_response`
+                        # on the base class; bind through Any rather than
+                        # gating on a concrete subclass.
+                        stream: Any = ret
+                        async for event in stream:
                             if event is None:
                                 continue
                             output_item, delta_chunk = self._process_stream_event(
@@ -1803,7 +1805,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                                 await _invoke_token_callback(stream_cb, delta_chunk)
 
                         return self._finalize_stream_response(
-                            ret.completed_response, collected_output_items
+                            stream.completed_response, collected_output_items
                         )
 
                     raise AssertionError(

@@ -1,10 +1,6 @@
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from litellm.responses.streaming_iterator import (
-    ResponsesAPIStreamingIterator,
-    SyncResponsesAPIStreamingIterator,
-)
 from litellm.types.llms.openai import ResponsesAPIResponse
 from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse, Usage
 from openai.types.responses import ResponseOutputMessage, ResponseOutputText
@@ -331,13 +327,13 @@ def test_responses_retries_then_succeeds(mock_responses, base_llm: LLM) -> None:
 # ------------------------------------------------------------------
 
 
-class _FakeSyncStreamIterator(SyncResponsesAPIStreamingIterator):
+class _FakeSyncStreamIterator:
     """Minimal sync stream iterator for testing stream-path failures.
 
-    Mirrors :class:`_FakeAsyncStreamIterator` for the synchronous
-    ``responses`` path: inherits from ``SyncResponsesAPIStreamingIterator``
-    so it passes the ``isinstance`` check inside ``responses._one_attempt``,
-    but skips the heavyweight parent ``__init__``.
+    Deliberately *not* a subclass of ``SyncResponsesAPIStreamingIterator``:
+    it mirrors the bare async/sync iterators that some LiteLLM provider
+    wrappers (e.g. Codex subscriptions) return when ``stream=True`` and that
+    previously tripped an ``isinstance`` assertion in ``responses._one_attempt``.
     """
 
     def __init__(
@@ -345,8 +341,6 @@ class _FakeSyncStreamIterator(SyncResponsesAPIStreamingIterator):
         events: list,
         completed_response=None,
     ) -> None:
-        # Intentionally skip parent __init__; we only need iteration
-        # and the completed_response attribute.
         self._events = list(events)
         self.completed_response = completed_response
 
@@ -391,12 +385,14 @@ def test_responses_stream_path_retry_bumps_temperature(mock_responses) -> None:
     assert second_kwargs.get("temperature") == 1.0
 
 
-class _FakeAsyncStreamIterator(ResponsesAPIStreamingIterator):
+class _FakeAsyncStreamIterator:
     """Minimal async stream iterator for testing stream-path failures.
 
-    Inherits from ``ResponsesAPIStreamingIterator`` so it passes the
-    ``isinstance`` check inside ``aresponses._one_attempt``, but skips
-    the heavyweight parent ``__init__``.
+    Deliberately *not* a subclass of ``ResponsesAPIStreamingIterator``: it
+    mirrors the bare async iterators that some LiteLLM provider wrappers
+    (e.g. Codex subscriptions) return when ``stream=True`` and that
+    previously tripped an ``isinstance`` assertion in
+    ``aresponses._one_attempt``.
     """
 
     def __init__(
@@ -404,8 +400,6 @@ class _FakeAsyncStreamIterator(ResponsesAPIStreamingIterator):
         events: list,
         completed_response=None,
     ) -> None:
-        # Intentionally skip parent __init__; we only need iteration
-        # and the completed_response attribute.
         self._events = list(events)
         self.completed_response = completed_response
 
