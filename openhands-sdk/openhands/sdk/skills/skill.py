@@ -7,7 +7,7 @@ import threading
 import time
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Annotated, ClassVar, Literal, Union
+from typing import Annotated, ClassVar, Final, Literal, Union
 from xml.sax.saxutils import escape as xml_escape
 
 import frontmatter
@@ -51,6 +51,16 @@ from openhands.sdk.utils.path import to_posix_path
 logger = get_logger(__name__)
 
 
+# One glob token per match; longest operator first so `**/` and `**` beat `*`.
+_GLOB_TOKENS: Final[re.Pattern[str]] = re.compile(r"\*\*/|\*\*|\*|\?|[^*?]+")
+_GLOB_TO_REGEX: Final[dict[str, str]] = {
+    "**/": "(?:.*/)?",  # any number of leading path segments (including zero)
+    "**": ".*",  # anything, crossing `/` separators
+    "*": "[^/]*",  # any run within a single segment
+    "?": "[^/]",  # a single non-separator character
+}
+
+
 @functools.lru_cache(maxsize=512)
 def _compile_path_glob(pattern: str) -> re.Pattern[str]:
     """Compile a gitignore-style path glob into an anchored regex.
@@ -67,31 +77,9 @@ def _compile_path_glob(pattern: str) -> re.Pattern[str]:
     # A slash-less pattern matches at any depth.
     if "/" not in pattern:
         pattern = "**/" + pattern
-
-    i, n = 0, len(pattern)
-    out: list[str] = []
-    while i < n:
-        c = pattern[i]
-        if c == "*":
-            if pattern[i : i + 2] == "**":
-                # Collapse '**/' to "any number of leading segments" and a bare
-                # '**' to "anything", so both cross the '/' separator.
-                if pattern[i + 2 : i + 3] == "/":
-                    out.append("(?:.*/)?")
-                    i += 3
-                else:
-                    out.append(".*")
-                    i += 2
-            else:
-                out.append("[^/]*")
-                i += 1
-        elif c == "?":
-            out.append("[^/]")
-            i += 1
-        else:
-            out.append(re.escape(c))
-            i += 1
-    return re.compile(f"(?s:{''.join(out)})\\Z")
+    tokens: list[str] = _GLOB_TOKENS.findall(pattern)
+    body = "".join(_GLOB_TO_REGEX.get(t, re.escape(t)) for t in tokens)
+    return re.compile(f"(?s:{body})\\Z")
 
 
 def path_matches_glob(file_path: str, pattern: str) -> bool:
@@ -681,12 +669,9 @@ class Skill(BaseModel):
 
     @model_validator(mode="after")
     def _path_rules_are_trigger_only(self):
-        """Path rules inject deterministically on file-touch, so they must never
-        be advertised in ``<available_skills>`` nor invoked directly via
-        ``invoke_skill``. Force ``disable_model_invocation`` (the existing
-        "trigger-only" flag) so every consumer that already honors it — the
-        catalog partition, the invoke_skill executor, and the tool-attach gate —
-        excludes them, regardless of how the skill was constructed."""
+        """Force ``disable_model_invocation`` for path rules: they inject only on
+        file-touch, so every consumer of that flag (catalog, invoke_skill,
+        tool-attach) keeps them unadvertised and non-invocable."""
         if isinstance(self.trigger, PathTrigger):
             self.disable_model_invocation = True
         return self
@@ -710,12 +695,9 @@ class Skill(BaseModel):
         return None
 
     def match_path_trigger(self, file_path: str) -> str | None:
-        """Match a PathTrigger against a file path.
-
-        ``file_path`` should be a POSIX path (typically workspace-relative).
-        Returns the first glob pattern that matches, or None. Only applies to
-        PathTrigger skills; other trigger types never match here.
-        """
+        """Return the first PathTrigger glob matching ``file_path`` (a POSIX,
+        typically workspace-relative, path), or None. Inert for non-PathTrigger
+        skills."""
         if isinstance(self.trigger, PathTrigger):
             for pattern in self.trigger.paths:
                 if path_matches_glob(file_path, pattern):
