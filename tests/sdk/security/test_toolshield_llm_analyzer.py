@@ -874,6 +874,66 @@ class TestToolShieldHelpers:
         result = th.mcp_tools_from_config(config)
         assert result == list(th.ALWAYS_ACTIVE_TOOLS) + ["filesystem-mcp"]
 
+    def test_mcp_tools_from_config_covers_explicit_sdk_tools(self):
+        """Built-in SDK tools never appear in mcp_config; the tool_names
+        parameter maps them (e.g. file_editor -> filesystem-mcp) so the
+        recommended path doesn't silently omit filesystem experiences
+        (red-team finding on PR #2911). Uses the REAL registered names --
+        ``ToolDefinition.name`` is snake_case -- so map-key drift from the
+        actual registry fails here instead of shipping as a silent no-op."""
+        from openhands.sdk.security import toolshield_helpers as th
+        from openhands.tools.file_editor import FileEditorTool
+        from openhands.tools.task_tracker import TaskTrackerTool
+
+        # Contract guard: registered names are snake_case, not class names.
+        assert FileEditorTool.name == "file_editor"
+
+        result = th.mcp_tools_from_config(
+            {}, tool_names=[FileEditorTool.name, TaskTrackerTool.name]
+        )
+        assert "filesystem-mcp" in result
+        # Unmapped SDK tools are ignored, not forwarded.
+        assert all("task_tracker" not in n for n in result)
+
+    def test_mcp_tools_from_config_covers_default_preset_names(self):
+        """The documented pattern ``tool_names=[t.name for t in agent.tools]``
+        must map for the default preset: filesystem and playwright
+        experiences both appear."""
+        from openhands.sdk.security import toolshield_helpers as th
+        from openhands.tools.preset.default import get_default_tools
+
+        names = [t.name for t in get_default_tools()]
+        result = th.mcp_tools_from_config({}, tool_names=names)
+        assert "filesystem-mcp" in result
+        assert "playwright-mcp" in result
+        assert "terminal-mcp" in result
+
+    def test_mcp_tools_from_config_accepts_camelcase_aliases(self):
+        """Hand-authored configs may use class names; aliases still map."""
+        from openhands.sdk.security import toolshield_helpers as th
+
+        result = th.mcp_tools_from_config(
+            {}, tool_names=["FileEditorTool", "BrowserToolSet"]
+        )
+        assert "filesystem-mcp" in result
+        assert "playwright-mcp" in result
+
+    def test_mcp_tools_from_config_dedupes_tool_and_server_surface(self):
+        """A filesystem MCP server plus FileEditorTool must yield a single
+        filesystem-mcp entry."""
+        from openhands.sdk.security import toolshield_helpers as th
+
+        config = {"mcpServers": {"filesystem": {}}}
+        result = th.mcp_tools_from_config(config, tool_names=["file_editor"])
+        assert result.count("filesystem-mcp") == 1
+
+    @requires_toolshield
+    def test_safety_experiences_for_mcp_config_accepts_tool_names(self):
+        from openhands.sdk.security import toolshield_helpers as th
+
+        result = th.safety_experiences_for_mcp_config({}, tool_names=["file_editor"])
+        assert "filesystem" in result.lower()
+
     @requires_toolshield
     def test_safety_experiences_for_mcp_config_loads_bundled(self):
         from openhands.sdk.security import toolshield_helpers as th

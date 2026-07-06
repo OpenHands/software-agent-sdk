@@ -5,7 +5,9 @@ These helpers integrate with the ``toolshield`` PyPI package (install via the
 
 1. :func:`safety_experiences_for_mcp_config` -- **recommended for SDK
    agents**: derive the tool surface from the agent's own
-   ``AgentBase.mcp_config`` (no network probing; works for stdio servers).
+   ``AgentBase.mcp_config`` plus its explicit tool list (no network
+   probing; works for stdio servers and built-in tools like
+   ``FileEditorTool``).
 2. :func:`default_safety_experiences` -- seed with terminal + filesystem
    experiences we ship by default.
 3. :func:`load_safety_experiences` -- load an explicit list of tool
@@ -16,7 +18,7 @@ These helpers integrate with the ``toolshield`` PyPI package (install via the
    at hand; prefer :func:`safety_experiences_for_mcp_config` in server or
    agent processes.
 
-All three return a rendered string ready to plug into
+All four return a rendered string ready to plug into
 ``ToolShieldLLMSecurityAnalyzer(safety_experiences=...)``. Users who want to
 inject their own hand-authored experiences can skip these helpers and pass
 an arbitrary string directly.
@@ -26,6 +28,7 @@ Example:
     >>> from openhands.sdk.security.toolshield_helpers import (
     ...     default_safety_experiences,
     ...     auto_detect_safety_experiences,
+    ...     safety_experiences_for_mcp_config,
     ... )
     >>>
     >>> # Default seed
@@ -40,11 +43,13 @@ Example:
     ...     safety_experiences=auto_detect_safety_experiences(),
     ... )
     >>>
-    >>> # Or, preferred for SDK agents: match the agent's configured servers
+    >>> # Or, preferred for SDK agents: match the agent's configured
+    >>> # servers and explicit tools
     >>> analyzer = ToolShieldLLMSecurityAnalyzer(
     ...     llm=guardrail_llm,
     ...     safety_experiences=safety_experiences_for_mcp_config(
-    ...         agent.mcp_config
+    ...         agent.mcp_config,
+    ...         tool_names=[t.name for t in agent.tools],
     ...     ),
     ... )
 """
@@ -55,6 +60,7 @@ import asyncio
 import contextlib
 import io
 import re
+from collections.abc import Sequence
 from typing import Any
 
 from openhands.sdk.logger import get_logger
@@ -133,6 +139,29 @@ def default_safety_experiences(model: str = "claude-sonnet-4.5") -> str:
 _EXPERIENCE_NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
 
 
+# Registered SDK tool names whose capability surface matches a bundled
+# experience set. Built-in tools don't appear in ``mcp_config``, so without
+# this mapping an agent using e.g. the file editor (and no filesystem MCP
+# server) would get no filesystem experiences from the config-derived path.
+#
+# ``ToolDefinition.__init_subclass__`` derives registered names by
+# snake-casing the class name and dropping the ``_tool`` suffix
+# (``FileEditorTool`` -> ``"file_editor"``); ``Tool.name`` /
+# ``agent.tools[*].name`` carry those snake_case names. The CamelCase
+# class names are accepted as aliases for hand-authored configs.
+SDK_TOOL_EXPERIENCE_MAP: dict[str, str] = {
+    "file_editor": "filesystem-mcp",
+    "planning_file_editor": "filesystem-mcp",
+    "terminal": "terminal-mcp",
+    "browser_tool_set": "playwright-mcp",
+    # CamelCase class-name aliases.
+    "FileEditorTool": "filesystem-mcp",
+    "PlanningFileEditorTool": "filesystem-mcp",
+    "TerminalTool": "terminal-mcp",
+    "BrowserToolSet": "playwright-mcp",
+}
+
+
 def _experience_name_from_server_name(server_name: str) -> str:
     """Derive a bundled-experience filename stem from an MCP server's
     self-reported ``serverInfo.name``.
@@ -148,8 +177,11 @@ def _experience_name_from_server_name(server_name: str) -> str:
     return f"{slug}-mcp"
 
 
-def mcp_tools_from_config(mcp_config: dict[str, Any]) -> list[str]:
-    """Derive experience names from an agent's ``mcp_config`` dict.
+def mcp_tools_from_config(
+    mcp_config: dict[str, Any],
+    tool_names: Sequence[str] = (),
+) -> list[str]:
+    """Derive experience names from an agent's ``mcp_config`` and tools.
 
     This is the preferred SDK integration path: the agent already declares
     its MCP surface in ``AgentBase.mcp_config``
@@ -158,12 +190,21 @@ def mcp_tools_from_config(mcp_config: dict[str, Any]) -> list[str]:
     dependency on servers being up at analyzer-construction time, and it
     works for stdio servers that have no localhost port at all.
 
+    ``mcp_config`` alone does NOT describe built-in SDK tools: an agent
+    using ``FileEditorTool`` touches the filesystem without any
+    filesystem MCP server configured. Pass the agent's explicit tool
+    surface via ``tool_names`` (e.g. ``[t.name for t in agent.tools]``)
+    to cover those; names are mapped through
+    :data:`SDK_TOOL_EXPERIENCE_MAP` and unknown names are ignored.
+
     Tools in :data:`ALWAYS_ACTIVE_TOOLS` (terminal) are included
     unconditionally since agents get local exec regardless of MCP config.
 
     Args:
         mcp_config: The agent's MCP configuration dictionary, in the same
             shape as ``AgentBase.mcp_config``.
+        tool_names: Registered SDK tool names from the agent's explicit
+            tool list (``Tool.name`` values). Optional.
 
     Returns:
         Experience identifiers (e.g. ``"terminal-mcp"``,
@@ -179,18 +220,27 @@ def mcp_tools_from_config(mcp_config: dict[str, Any]) -> list[str]:
             continue
         if exp_name not in names:
             names.append(exp_name)
+    for tool_name in tool_names:
+        exp_name = SDK_TOOL_EXPERIENCE_MAP.get(tool_name)
+        if exp_name is None:
+            logger.debug(f"No experience mapping for SDK tool {tool_name!r}")
+            continue
+        if exp_name not in names:
+            names.append(exp_name)
     return names
 
 
 def safety_experiences_for_mcp_config(
     mcp_config: dict[str, Any],
     model: str = "claude-sonnet-4.5",
+    tool_names: Sequence[str] = (),
 ) -> str:
-    """Load experiences matching an agent's configured MCP servers.
+    """Load experiences matching an agent's configured MCP servers/tools.
 
     Recommended way to seed :class:`ToolShieldLLMSecurityAnalyzer` for an
     SDK agent: derive the tool surface from the agent's own
-    ``mcp_config`` rather than scanning localhost
+    ``mcp_config`` -- plus, via ``tool_names``, its explicit built-in
+    tools -- rather than scanning localhost
     (:func:`auto_detect_safety_experiences` remains available as a
     developer convenience for exploratory setups).
 
@@ -201,7 +251,8 @@ def safety_experiences_for_mcp_config(
         >>> analyzer = ToolShieldLLMSecurityAnalyzer(
         ...     llm=guardrail_llm,
         ...     safety_experiences=safety_experiences_for_mcp_config(
-        ...         agent.mcp_config
+        ...         agent.mcp_config,
+        ...         tool_names=[t.name for t in agent.tools],
         ...     ),
         ... )
 
@@ -210,13 +261,17 @@ def safety_experiences_for_mcp_config(
             shape as ``AgentBase.mcp_config``.
         model: Experience-set subdirectory. Defaults to
             ``"claude-sonnet-4.5"``.
+        tool_names: Registered SDK tool names from the agent's explicit
+            tool list -- covers built-in tools like ``FileEditorTool``
+            that never appear in ``mcp_config``. See
+            :data:`SDK_TOOL_EXPERIENCE_MAP`.
 
     Returns:
         A rendered string ready for ``safety_experiences=``. Empty string
-        if no configured server has a bundled experience file.
+        if no configured server or tool has a bundled experience file.
     """
     ts = _require_toolshield()
-    wanted = mcp_tools_from_config(mcp_config)
+    wanted = mcp_tools_from_config(mcp_config, tool_names=tool_names)
     available = set(ts.ExperienceStore.list_bundled(model))
     runnable = [t for t in wanted if t in available]
     missing = [t for t in wanted if t not in available]
