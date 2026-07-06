@@ -1,4 +1,3 @@
-import functools
 import io
 import json
 import os
@@ -6,6 +5,7 @@ import re
 import threading
 import time
 from collections.abc import Iterable
+from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, ClassVar, Final, Literal, Union
 from xml.sax.saxutils import escape as xml_escape
@@ -61,7 +61,7 @@ _GLOB_TO_REGEX: Final[dict[str, str]] = {
 }
 
 
-@functools.lru_cache(maxsize=512)
+@lru_cache(maxsize=512)
 def _compile_path_glob(pattern: str) -> re.Pattern[str]:
     """Compile a gitignore-style path glob into an anchored regex.
 
