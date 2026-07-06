@@ -1627,11 +1627,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         self._telemetry.on_response(ret)
                         return ret
 
-                    # When stream=True, LiteLLM returns a streaming iterator
-                    # rather than a single ResponsesAPIResponse. Drain it and
-                    # use the completed response; the iterator's class is an
-                    # implementation detail of LiteLLM, so don't restrict it
-                    # (some providers wrap their streams as plain generators).
+                    # When stream=True, LiteLLM returns a streaming
+                    # iterator rather than a single ResponsesAPIResponse.
+                    # Drain the iterator and use the completed response.
                     if final_kwargs.get("stream", False):
                         stream_callback = on_token if user_enable_streaming else None
                         # Collect output items from streaming events.
@@ -1773,12 +1771,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         self._telemetry.on_response(ret)
                         return ret
 
-                    # When stream=True, LiteLLM returns a streaming iterator
-                    # rather than a single ResponsesAPIResponse. Drain it and
-                    # use the completed response; the iterator's class is an
-                    # implementation detail of LiteLLM, so don't restrict it
-                    # (some providers wrap their streams as plain async
-                    # generators).
+                    # When stream=True, LiteLLM returns a streaming
+                    # iterator rather than a single ResponsesAPIResponse.
+                    # Drain the iterator and use the completed response.
                     if final_kwargs.get("stream", False):
                         stream_cb = on_token if user_enable_streaming else None
                         # Collect output items from streaming events.
