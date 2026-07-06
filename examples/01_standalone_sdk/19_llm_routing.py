@@ -33,7 +33,7 @@ primary_llm = LLM(
 )
 secondary_llm = LLM(
     usage_id="agent-secondary",
-    model="openhands/devstral-small-2507",
+    model="openhands/gemini-3-flash",
     base_url=base_url,
     api_key=SecretStr(api_key),
 )
