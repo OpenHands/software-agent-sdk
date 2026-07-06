@@ -35,35 +35,57 @@ def run_agent_server(port, api_key):
     main()
 
 
-@pytest.fixture(scope="session")
-def agent_server():
-    port = find_free_port()
-    api_key = "test-wsproto-key"
-
-    ctx = multiprocessing.get_context("spawn")
-    process = ctx.Process(target=run_agent_server, args=(port, api_key))
-    process.start()
-
-    for _ in range(30):
-        try:
-            response = requests.get(f"http://127.0.0.1:{port}/docs", timeout=1)
-            if response.status_code == 200:
-                break
-        except requests.exceptions.ConnectionError:
-            pass
-        time.sleep(2)
-    else:
-        process.terminate()
-        process.join()
-        pytest.fail(f"Agent server failed to start on port {port}")
-
-    yield {"port": port, "api_key": api_key}
-
+def _terminate(process):
     process.terminate()
     process.join(timeout=5)
     if process.is_alive():
         process.kill()
         process.join()
+
+
+def _wait_until_ready(process, port, timeout=30.0):
+    """Poll the lightweight /alive endpoint until the server responds.
+
+    Returns False (rather than blocking for the whole timeout) as soon as the
+    server process exits, so a failed port bind can be retried on a fresh port.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not process.is_alive():
+            return False
+        try:
+            response = requests.get(f"http://127.0.0.1:{port}/alive", timeout=1)
+            if response.status_code == 200:
+                return True
+        except requests.exceptions.RequestException:
+            pass
+        time.sleep(0.5)
+    return False
+
+
+@pytest.fixture(scope="session")
+def agent_server():
+    api_key = "test-wsproto-key"
+    ctx = multiprocessing.get_context("spawn")
+
+    # find_free_port() closes the socket before the server rebinds it, leaving a
+    # TOCTOU window in which another process on a busy CI host can steal the port
+    # and crash startup. Retry on a fresh port to absorb that race.
+    process = None
+    port = None
+    for _ in range(3):
+        port = find_free_port()
+        process = ctx.Process(target=run_agent_server, args=(port, api_key))
+        process.start()
+        if _wait_until_ready(process, port):
+            break
+        _terminate(process)
+    else:
+        pytest.fail("Agent server failed to start after multiple attempts")
+
+    yield {"port": port, "api_key": api_key}
+
+    _terminate(process)
 
 
 def test_agent_server_starts_with_wsproto(agent_server):
