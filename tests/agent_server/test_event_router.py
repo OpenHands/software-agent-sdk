@@ -16,12 +16,10 @@ from openhands.agent_server.event_router import (
     normalize_datetime_to_server_timezone,
 )
 from openhands.agent_server.event_service import EventService
-from openhands.agent_server.models import EventPage, SendMessageRequest
+from openhands.agent_server.models import SendMessageRequest
 from openhands.sdk import Message
 from openhands.sdk.event.llm_convertible.message import MessageEvent
-from openhands.sdk.event.llm_convertible.system import SystemPromptEvent
 from openhands.sdk.llm.message import ImageContent, TextContent
-from openhands.sdk.tool.builtins import FinishTool, VisionInspectTool
 
 
 def test_normalize_datetime_naive_passthrough():
@@ -403,14 +401,22 @@ class TestSearchEventsEndpoint:
         client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
 
         try:
-            event = SystemPromptEvent(
-                id="system_event",
-                parent_id="parent_event",
-                system_prompt=TextContent(text="system"),
-                tools=[FinishTool.create()[0], VisionInspectTool.create()[0]],
-            )
             mock_event_service.search_events = AsyncMock(
-                return_value=EventPage(items=[event], next_page_id=None)
+                return_value={
+                    "items": [
+                        {
+                            "kind": "SystemPromptEvent",
+                            "id": "system_event",
+                            "parent_id": "parent_event",
+                            "system_prompt": {"type": "text", "text": "system"},
+                            "tools": [
+                                {"kind": "FinishTool"},
+                                {"kind": "VisionInspectTool"},
+                            ],
+                        }
+                    ],
+                    "next_page_id": None,
+                }
             )
 
             response = client.get(
