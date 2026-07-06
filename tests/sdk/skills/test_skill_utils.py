@@ -551,10 +551,9 @@ type: repo
 version: 1.0.0
 agent: CodeActAgent
 mcp_tools:
-  mcpServers:
-    fetch:
-      command: uvx
-      args: ["mcp-server-fetch"]
+  fetch:
+    command: uvx
+    args: ["mcp-server-fetch"]
 ---
 
 # Default Tools
@@ -574,17 +573,9 @@ This is a repo skill that includes MCP tools.
     assert agent.trigger is None
     assert agent.mcp_tools is not None
 
-    # Verify the mcp_tools configuration is correctly loaded
-    from fastmcp.mcp_config import MCPConfig
-
-    assert isinstance(agent.mcp_tools, dict)
-    config = MCPConfig.model_validate(agent.mcp_tools)
-    assert "fetch" in config.mcpServers
-    fetch_server = config.mcpServers["fetch"]
-    assert hasattr(fetch_server, "command")
-    assert hasattr(fetch_server, "args")
-    assert getattr(fetch_server, "command") == "uvx"
-    assert getattr(fetch_server, "args") == ["mcp-server-fetch"]
+    fetch_server = agent.mcp_tools["fetch"]
+    assert fetch_server.command == "uvx"
+    assert fetch_server.args == ["mcp-server-fetch"]
 
 
 def test_repo_skill_with_mcp_tools_dict_format(tmp_path):
@@ -596,11 +587,9 @@ type: repo
 version: 1.0.0
 agent: CodeActAgent
 mcp_tools: {
-  "mcpServers": {
-    "fetch": {
-      "command": "uvx",
-      "args": ["mcp-server-fetch"]
-    }
+  "fetch": {
+    "command": "uvx",
+    "args": ["mcp-server-fetch"]
   }
 }
 ---
@@ -622,17 +611,9 @@ This is a repo skill that includes MCP tools in dict format.
     assert agent.trigger is None
     assert agent.mcp_tools is not None
 
-    # Verify the mcp_tools configuration is correctly loaded
-    from fastmcp.mcp_config import MCPConfig
-
-    assert isinstance(agent.mcp_tools, dict)
-    config = MCPConfig.model_validate(agent.mcp_tools)
-    assert "fetch" in config.mcpServers
-    fetch_server = config.mcpServers["fetch"]
-    assert hasattr(fetch_server, "command")
-    assert hasattr(fetch_server, "args")
-    assert getattr(fetch_server, "command") == "uvx"
-    assert getattr(fetch_server, "args") == ["mcp-server-fetch"]
+    fetch_server = agent.mcp_tools["fetch"]
+    assert fetch_server.command == "uvx"
+    assert fetch_server.args == ["mcp-server-fetch"]
 
 
 def test_repo_skill_without_mcp_tools(tmp_path):
@@ -671,7 +652,7 @@ name: invalid-mcp-tools
 type: repo
 version: 1.0.0
 agent: CodeActAgent
-mcp_tools: "this should be a dict or MCPConfig, not a string"
+mcp_tools: "this should be a FastMCP config mapping, not a string"
 ---
 
 # Invalid MCP Tools

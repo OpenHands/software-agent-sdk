@@ -5,9 +5,11 @@ import json
 from pathlib import Path
 
 import pytest
+from pydantic import SecretStr
 
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles import (
     ACPAgentProfile,
     AgentProfileStore,
@@ -101,7 +103,7 @@ def test_cascade_rename_preserves_id_and_encrypted_secret(
                 name="s",
                 content="x",
                 mcp_tools={
-                    "mcpServers": {"svc": {"command": "run", "env": {"K": secret}}}
+                    "svc": MCPServer(command="run", env={"K": SecretStr(secret)})
                 },
             )
         ],
@@ -115,7 +117,7 @@ def test_cascade_rename_preserves_id_and_encrypted_secret(
     data = json.loads(raw)
     assert data["id"] == str(profile.id)
     assert data["llm_profile_ref"] == "renamed"
-    token = data["skills"][0]["mcp_tools"]["mcpServers"]["svc"]["env"]["K"]
+    token = data["skills"][0]["mcp_tools"]["svc"]["env"]["K"]
     decrypted = cipher.decrypt(token)
     assert decrypted is not None
     assert decrypted.get_secret_value() == secret

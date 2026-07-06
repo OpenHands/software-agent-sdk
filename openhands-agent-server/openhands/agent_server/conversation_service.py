@@ -48,6 +48,7 @@ from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
+from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.tool import BROWSER_TOOL_NAME, Tool, is_tool_usable
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.utils.cipher import Cipher
@@ -55,6 +56,7 @@ from openhands.sdk.workspace import LocalWorkspace
 
 
 if TYPE_CHECKING:
+    from openhands.sdk.mcp.config import MCPServer
     from openhands.sdk.subagent.schema import AgentDefinition
 
 CONVERSATION_WORKTREE_ROOT = Path("/tmp/conversation-worktrees")
@@ -250,14 +252,14 @@ logger = logging.getLogger(__name__)
 def _resolve_agent_from_profile(
     profile_id: "UUID",
     cipher: "Cipher | None",
-    mcp_config: "Any",
+    mcp_config: "dict[str, MCPServer]",
 ) -> "tuple[AgentBase, LaunchedAgentProfile]":
     """Load and resolve an agent profile by id, returning the built agent + provenance.
 
     Runs synchronously (call via ``asyncio.to_thread`` from async context).
 
     Args:
-        mcp_config: Global MCP config already loaded by the caller using the
+        mcp_config: Global MCP servers already loaded by the caller using the
             server's cipher.  Passed explicitly so this free function never
             touches the settings-store singleton (which may not have been
             initialised with the correct cipher yet).
@@ -473,6 +475,7 @@ class ConversationService:
     webhook_specs: list[WebhookSpec] = field(default_factory=list)
     session_api_key: str | None = field(default=None)
     cipher: Cipher | None = None
+    mcp_tool_provider: MCPToolProvider | None = None
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     max_concurrent_runs: int = 10
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
@@ -1268,6 +1271,9 @@ class ConversationService:
     def get_instance(cls, config: Config) -> "ConversationService":
         # Initialise the settings-store singleton with the server cipher before
         # any conversation handler can call get_settings_store() without config.
+        from openhands.agent_server.mcp_oauth_store import (
+            create_settings_backed_mcp_tool_provider,
+        )
         from openhands.agent_server.persistence import get_settings_store
 
         get_settings_store(config)
@@ -1278,6 +1284,7 @@ class ConversationService:
                 config.session_api_keys[0] if config.session_api_keys else None
             ),
             cipher=config.cipher,
+            mcp_tool_provider=create_settings_backed_mcp_tool_provider(config),
             max_concurrent_runs=config.max_concurrent_runs,
             lease_ttl_seconds=config.lease_ttl_seconds,
         )
@@ -1291,6 +1298,7 @@ class ConversationService:
             stored=stored,
             conversations_dir=self.conversations_dir,
             cipher=self.cipher,
+            mcp_tool_provider=self.mcp_tool_provider,
             owner_instance_id=self.owner_instance_id,
             lease_ttl_seconds=self.lease_ttl_seconds,
         )

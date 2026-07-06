@@ -433,7 +433,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         (condenser, UI, etc.) and also prevent accidentally materializing the full
         event history during initialization.
         """
-        super().init_state(state, on_event=on_event)
+        self._initialize(state)
 
         # Defensive check: Analyze state to detect unexpected initialization scenarios
         # These checks help diagnose issues related to lazy loading and event ordering

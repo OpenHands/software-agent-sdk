@@ -171,7 +171,7 @@ class TestResolveAgentFromProfile:
         with patch(_STORE_PATH) as MockStore:
             MockStore.return_value.name_for_id.return_value = None
             with pytest.raises(ProfileNotFound, match="not found"):
-                _resolve_agent_from_profile(uuid4(), cipher=None, mcp_config=None)
+                _resolve_agent_from_profile(uuid4(), cipher=None, mcp_config={})
 
     def test_openhands_profile_resolves_to_agent_and_stamps_launched(self):
         from openhands.agent_server.conversation_service import (
@@ -205,7 +205,7 @@ class TestResolveAgentFromProfile:
             MockResolve.return_value = mock_config
 
             result_agent, launched = _resolve_agent_from_profile(
-                profile.id, cipher=None, mcp_config=None
+                profile.id, cipher=None, mcp_config={}
             )
 
         assert result_agent is agent
@@ -244,7 +244,7 @@ class TestResolveAgentFromProfile:
             MockResolve.return_value = mock_config
 
             result_agent, _ = _resolve_agent_from_profile(
-                profile.id, cipher=None, mcp_config=None
+                profile.id, cipher=None, mcp_config={}
             )
 
         MockUsable.assert_called_once_with("browser_tool_set")
@@ -275,7 +275,7 @@ class TestResolveAgentFromProfile:
             MockResolve.return_value = mock_config
 
             result_agent, _ = _resolve_agent_from_profile(
-                profile.id, cipher=None, mcp_config=None
+                profile.id, cipher=None, mcp_config={}
             )
 
         assert result_agent is agent
@@ -307,7 +307,7 @@ class TestResolveAgentFromProfile:
             MockResolve.return_value = mock_config
 
             result_agent, _ = _resolve_agent_from_profile(
-                profile.id, cipher=None, mcp_config=None
+                profile.id, cipher=None, mcp_config={}
             )
 
         MockUsable.assert_not_called()
@@ -339,7 +339,7 @@ class TestResolveAgentFromProfile:
             MockResolve.return_value = mock_config
 
             result_agent, _ = _resolve_agent_from_profile(
-                profile.id, cipher=None, mcp_config=None
+                profile.id, cipher=None, mcp_config={}
             )
 
         MockUsable.assert_not_called()
@@ -371,7 +371,7 @@ class TestResolveAgentFromProfile:
             mock_config.create_agent.return_value = agent
             MockResolve.return_value = mock_config
 
-            _resolve_agent_from_profile(profile.id, cipher=None, mcp_config=None)
+            _resolve_agent_from_profile(profile.id, cipher=None, mcp_config={})
 
         # Default skill_refs=[] selects no discovered skills, so the
         # (network-bound) discovery is skipped and the resolver gets None.
@@ -396,7 +396,7 @@ class TestResolveAgentFromProfile:
             MockResolve.side_effect = DanglingMcpServerRef(["missing-server"])
 
             with pytest.raises(DanglingMcpServerRef) as exc_info:
-                _resolve_agent_from_profile(profile.id, cipher=None, mcp_config=None)
+                _resolve_agent_from_profile(profile.id, cipher=None, mcp_config={})
         assert "missing-server" in exc_info.value.missing
 
     def test_acp_profile_resolves_to_acp_agent(self):
@@ -424,7 +424,7 @@ class TestResolveAgentFromProfile:
             MockResolve.return_value = mock_config
 
             result_agent, launched = _resolve_agent_from_profile(
-                profile.id, cipher=None, mcp_config=None
+                profile.id, cipher=None, mcp_config={}
             )
 
         assert result_agent is acp_agent
@@ -456,7 +456,7 @@ class TestResolveAgentFromProfile:
             mock_config.create_agent.return_value = acp_agent
             MockResolve.return_value = mock_config
 
-            _resolve_agent_from_profile(profile.id, cipher=None, mcp_config=None)
+            _resolve_agent_from_profile(profile.id, cipher=None, mcp_config={})
 
         # skill_refs == [] selects no discovered skills, so the (network-bound)
         # discovery is skipped and the resolver gets available_skills=None.

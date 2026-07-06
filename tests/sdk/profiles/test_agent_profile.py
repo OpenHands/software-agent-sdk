@@ -10,8 +10,9 @@ import json
 from uuid import UUID, uuid4
 
 import pytest
-from pydantic import TypeAdapter, ValidationError
+from pydantic import SecretStr, TypeAdapter, ValidationError
 
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles import (
     AGENT_PROFILE_SCHEMA_VERSION,
     ACPAgentProfile,
@@ -398,20 +399,18 @@ def _skill_with_mcp_secret() -> Skill:
         name="leaky",
         content="do stuff",
         mcp_tools={
-            "mcpServers": {
-                "svc": {
-                    "url": "https://x.test",
-                    "headers": {"Authorization": "Bearer sk-HEADER-SECRET"},
-                    "env": {"API_KEY": "env-SECRET"},
-                }
-            }
+            "svc": MCPServer(
+                url="https://x.test",
+                headers={"Authorization": SecretStr("Bearer sk-HEADER-SECRET")},
+                env={"API_KEY": SecretStr("env-SECRET")},
+            )
         },
     )
 
 
 def test_skills_mcp_tools_credentials_are_masked_at_rest() -> None:
-    """``Skill.mcp_tools`` (an unmodeled dict) can carry an MCP server credential
-    in ``env`` / ``headers``; the profile must mask it at rest like
+    """``Skill.mcp_tools`` can carry an MCP server credential in ``env`` /
+    ``headers``; the profile must mask it at rest like
     ``OpenHandsAgentSettings.mcp_config`` does — not dump it in plaintext."""
     profile = OpenHandsAgentProfile(
         name="oh", llm_profile_ref="default", skills=[_skill_with_mcp_secret()]
