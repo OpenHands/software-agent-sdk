@@ -540,7 +540,7 @@ def coerce_mcp_config(
     value = _extract_mcp_config(value)
     if isinstance(value, Mapping):
         value = {
-            name: _normalize_server_transport_field(server)
+            name: drop_unknown_mcp_server_fields(server)
             if isinstance(server, Mapping)
             else server
             for name, server in value.items()

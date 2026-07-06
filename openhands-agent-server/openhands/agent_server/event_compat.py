@@ -1,11 +1,11 @@
 """Compatibility helpers for event transport payloads."""
 
-from typing import Any
+from typing import Any, Final
 
 from openhands.sdk.event import Event
 
 
-_LEGACY_TOOL_KINDS = {
+_LEGACY_TOOL_KINDS: Final[set[str]] = {
     "ClientTool",
     "FileEditorTool",
     "FinishTool",

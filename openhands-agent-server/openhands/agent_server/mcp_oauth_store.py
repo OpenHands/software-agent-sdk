@@ -12,7 +12,7 @@ import asyncio
 import copy
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, SupportsFloat
+from typing import Any, NamedTuple, SupportsFloat
 
 from openhands.agent_server.config import Config
 from openhands.agent_server.persistence import PersistedSettings, get_settings_store
@@ -29,25 +29,24 @@ from openhands.sdk.mcp.utils import create_mcp_tools
 
 logger = get_logger(__name__)
 
-_TOKEN_COLLECTION = "mcp-oauth-token"
-_CLIENT_INFO_COLLECTION = "mcp-oauth-client-info"
-_TOKEN_EXPIRY_COLLECTION = "mcp-oauth-token-expiry"
+class _OAuthKeySpec(NamedTuple):
+    suffix: str
+    collection: str
+    field: MCPOAuthTokenStorageField
 
-_TOKEN_KEY_SUFFIX = "/tokens"
-_CLIENT_INFO_KEY_SUFFIX = "/client_info"
-_TOKEN_EXPIRY_KEY_SUFFIX = "/token_expiry"
-_FASTMCP_OAUTH_KEY_SUFFIXES = (
-    _TOKEN_KEY_SUFFIX,
-    _CLIENT_INFO_KEY_SUFFIX,
-    _TOKEN_EXPIRY_KEY_SUFFIX,
+
+_OAUTH_KEY_SPECS: tuple[_OAuthKeySpec, ...] = (
+    _OAuthKeySpec("/tokens", "mcp-oauth-token", "tokens"),
+    _OAuthKeySpec("/client_info", "mcp-oauth-client-info", "client_info"),
+    _OAuthKeySpec("/token_expiry", "mcp-oauth-token-expiry", "token_expires_at"),
 )
 
 
 def _server_url_from_fastmcp_key(key: str) -> str:
     """Extract FastMCP's server-url prefix from its OAuth token-store key."""
-    for suffix in _FASTMCP_OAUTH_KEY_SUFFIXES:
-        if key.endswith(suffix):
-            return key[: -len(suffix)].rstrip("/")
+    for spec in _OAUTH_KEY_SPECS:
+        if key.endswith(spec.suffix):
+            return key[: -len(spec.suffix)].rstrip("/")
     return key.rsplit("/", 1)[0].rstrip("/")
 
 
@@ -72,16 +71,9 @@ def _state_field_for_fastmcp_key(
     key: str,
     collection: str | None,
 ) -> MCPOAuthTokenStorageField | None:
-    if collection == _TOKEN_COLLECTION and key.endswith(_TOKEN_KEY_SUFFIX):
-        return "tokens"
-
-    if collection == _CLIENT_INFO_COLLECTION and key.endswith(_CLIENT_INFO_KEY_SUFFIX):
-        return "client_info"
-
-    if collection == _TOKEN_EXPIRY_COLLECTION and key.endswith(
-        _TOKEN_EXPIRY_KEY_SUFFIX
-    ):
-        return "token_expires_at"
+    for spec in _OAUTH_KEY_SPECS:
+        if collection == spec.collection and key.endswith(spec.suffix):
+            return spec.field
     return None
 
 
@@ -331,7 +323,7 @@ class InMemoryMCPOAuthTokenStore:
         return deleted
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SettingsBackedMCPToolProvider:
     """Create MCP tools with FastMCP OAuth state persisted in settings."""
 

@@ -197,7 +197,7 @@ async def test_mcp_oauth_token_store_persists_values_in_settings(
             )
         ) == token_expiry
 
-        on_disk_text = (tmp_path / ".openhands" / "settings.json").read_text()
+        on_disk_text = (settings_store.persistence_dir / "settings.json").read_text()
         assert "super-secret-token" not in on_disk_text
         assert "refresh-token" not in on_disk_text
         assert "superhuman-client-secret" not in on_disk_text
@@ -284,7 +284,7 @@ def test_oauth_mcp_connection_persists_and_reuses_settings_state(
             assert "OAuth mail subject: Quarterly Plan" in observation.text
 
         assert _HeadlessOAuth.redirect_count == 1
-        on_disk_text = (tmp_path / ".openhands" / "settings.json").read_text()
+        on_disk_text = (settings_store.persistence_dir / "settings.json").read_text()
         assert "test_access_token_" not in on_disk_text
         assert "test_refresh_token_" not in on_disk_text
 

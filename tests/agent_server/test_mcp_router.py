@@ -17,9 +17,14 @@ from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.mcp_router import (
     MCPTestRequest,
+    _OAUTH_PROBE_JOB_TTL_SECONDS,
     _BrowserCoordinatedOAuth,
     _MCPOAuthProbeJob,
+    _oauth_probe_jobs,
+    _oauth_probe_jobs_lock,
+    _register_oauth_job,
 )
+from openhands.agent_server.persistence import reset_stores
 from openhands.sdk.mcp.config import MCPServer, to_fastmcp_mcp_config
 
 # Reuse the real FastMCP-based test-server helper from the SDK tests; spinning
@@ -35,8 +40,11 @@ from tests.sdk.mcp.test_create_mcp_tool import (  # noqa: E402
 
 @pytest.fixture
 def client() -> TestClient:
+    reset_stores()
     config = Config(session_api_keys=[])  # Disable authentication.
-    return TestClient(create_app(config), raise_server_exceptions=False)
+    with TestClient(create_app(config), raise_server_exceptions=False) as test_client:
+        yield test_client
+    reset_stores()
 
 
 @pytest.fixture
@@ -512,7 +520,26 @@ def test_mcp_test_rejects_auth_with_auth_header(client: TestClient):
     assert response.status_code == 422
 
 
-def test_mcp_test_rejects_legacy_remote_api_key_field(client: TestClient):
+def test_mcp_test_accepts_legacy_remote_api_key_field_as_bearer():
+    request = MCPTestRequest.model_validate(
+        {
+            "server": {
+                "transport": "http",
+                "url": "https://example.com/mcp",
+                "api_key": "some-token",
+            },
+            "timeout": 5.0,
+        }
+    )
+
+    auth = request.resolved_server.auth
+    assert auth is not None
+    assert auth.strategy == "bearer"
+    assert auth.value is not None
+    assert auth.value.get_secret_value() == "some-token"
+
+
+def test_mcp_test_rejects_legacy_api_key_with_auth(client: TestClient):
     response = client.post(
         "/api/mcp/test",
         json={
@@ -520,6 +547,7 @@ def test_mcp_test_rejects_legacy_remote_api_key_field(client: TestClient):
                 "transport": "http",
                 "url": "https://example.com/mcp",
                 "api_key": "some-token",
+                "auth": {"strategy": "bearer", "value": "other-token"},
             },
             "timeout": 5.0,
         },
@@ -841,6 +869,34 @@ def test_mcp_oauth_callback_rejects_unknown_job(client: TestClient):
     )
 
     assert response.status_code == 404
+
+
+def test_register_oauth_job_sweeps_expired_jobs():
+    old_job = _MCPOAuthProbeJob(
+        request=MCPTestRequest.model_validate(
+            {"server": {"transport": "http", "url": "https://mcp.example.com/mcp"}}
+        ),
+        cipher=None,
+    )
+    old_job.created_at -= _OAUTH_PROBE_JOB_TTL_SECONDS + 1
+    new_job = _MCPOAuthProbeJob(
+        request=MCPTestRequest.model_validate(
+            {"server": {"transport": "http", "url": "https://mcp.example.com/mcp"}}
+        ),
+        cipher=None,
+    )
+    try:
+        with _oauth_probe_jobs_lock:
+            _oauth_probe_jobs.clear()
+            _oauth_probe_jobs[old_job.id] = old_job
+        _register_oauth_job(new_job)
+
+        with _oauth_probe_jobs_lock:
+            assert old_job.id not in _oauth_probe_jobs
+            assert new_job.id in _oauth_probe_jobs
+    finally:
+        with _oauth_probe_jobs_lock:
+            _oauth_probe_jobs.clear()
 
 
 def test_mcp_test_rejects_legacy_top_level_oauth_authentication(client: TestClient):

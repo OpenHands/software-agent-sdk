@@ -110,6 +110,10 @@ class AgentProfileDiagnostics(BaseModel):
     # MCP composition (both variants).
     mcp_server_refs: list[str] | None = None
     resolved_mcp_config_keys: list[str] = Field(default_factory=list)
+    resolved_mcp_servers: list[str] = Field(
+        default_factory=list,
+        description="Deprecated alias for resolved_mcp_config_keys.",
+    )
     dangling_mcp_server_refs: list[str] = Field(default_factory=list)
 
     # Skill selection (both variants). A dangling skill ref flips ``valid`` via
@@ -372,6 +376,7 @@ def resolve_agent_profile_dry_run(
         agent_kind=profile.agent_kind,
         mcp_server_refs=profile.mcp_server_refs,
         resolved_mcp_config_keys=resolved,
+        resolved_mcp_servers=resolved,
         dangling_mcp_server_refs=dangling,
     )
     if dangling:

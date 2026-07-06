@@ -784,6 +784,42 @@ class TestPluginMcpConfigLoading:
             "during plugin loading instead of being deferred."
         )
 
+    def test_plugin_mcp_config_drops_unknown_server_fields(self, tmp_path: Path):
+        """Plugin .mcp.json loading tolerates fields from newer MCP schemas."""
+        import json
+
+        plugin_dir = tmp_path / "test-plugin"
+        plugin_dir.mkdir()
+
+        manifest_dir = plugin_dir / ".plugin"
+        manifest_dir.mkdir()
+        (manifest_dir / "plugin.json").write_text(
+            json.dumps({"name": "test-plugin", "version": "1.0.0"})
+        )
+
+        (plugin_dir / ".mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "test-server": {
+                            "type": "shttp",
+                            "url": "https://example.com/mcp",
+                            "future_field": "ignored",
+                        }
+                    }
+                }
+            )
+        )
+
+        plugin = Plugin.load(plugin_dir)
+
+        assert dump_mcp_config(plugin.mcp_config) == {
+            "test-server": {
+                "transport": "http",
+                "url": "https://example.com/mcp",
+            }
+        }
+
     def test_plugin_mcp_skill_root_is_expanded(self, tmp_path: Path):
         """Test that SKILL_ROOT is correctly expanded during plugin loading.
 

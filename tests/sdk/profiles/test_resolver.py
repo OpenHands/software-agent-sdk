@@ -642,6 +642,7 @@ def test_dry_run_openhands_valid_and_redacted(
     assert diag.llm_profile_resolved is True
     assert diag.llm_api_key_set is True
     assert diag.resolved_mcp_config_keys == ["fetch"]
+    assert diag.resolved_mcp_servers == ["fetch"]
     assert diag.dangling_mcp_server_refs == []
     assert diag.resolved_settings is not None
     # No secret survives into the redacted resolved settings.

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 import uuid
 from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
@@ -68,6 +69,7 @@ mcp_router = APIRouter(prefix="/mcp", tags=["MCP"])
 # route wraps it in a temporary map only at the runtime boundary.
 
 _DEFAULT_SERVER_NAME = "test-server"
+_OAUTH_PROBE_JOB_TTL_SECONDS = 15 * 60
 
 
 class _StdioMCPServerSpec(BaseModel):
@@ -100,7 +102,8 @@ class _RemoteMCPServerSpec(BaseModel):
     api_key: str | None = Field(
         default=None,
         description=(
-            "Bearer token. If provided, sent as 'Authorization: Bearer <token>'."
+            "Deprecated bearer token. Prefer auth.strategy='bearer'. If provided "
+            "without auth, sent as 'Authorization: Bearer <token>'."
         ),
     )
     auth: MCPAuthCredential | None = None
@@ -110,8 +113,15 @@ class _RemoteMCPServerSpec(BaseModel):
 
     @model_validator(mode="after")
     def _reject_ambiguous_auth(self) -> _RemoteMCPServerSpec:
-        if self.api_key is not None:
-            raise ValueError("Use auth.strategy='bearer' instead of api_key.")
+        if self.api_key is not None and self.auth is not None:
+            raise ValueError("api_key cannot be combined with auth.")
+        if self.api_key is not None and any(
+            name.lower() == "authorization" for name in self.headers
+        ):
+            raise ValueError(
+                "api_key cannot be combined with an explicit top-level "
+                "'Authorization' header; use auth.strategy='header' instead."
+            )
         if self.auth is not None and any(
             name.lower() == "authorization" for name in self.headers
         ):
@@ -133,6 +143,8 @@ class _RemoteMCPServerSpec(BaseModel):
         }
         if self.auth is not None:
             data["auth"] = self.auth
+        elif self.api_key is not None:
+            data["auth"] = {"strategy": "bearer", "value": self.api_key}
         return MCPServer.model_validate(data)
 
 
@@ -323,6 +335,7 @@ class _MCPOAuthProbeJob:
         self.id = uuid.uuid4().hex
         self.request = request
         self.cipher = cipher
+        self.created_at = time.monotonic()
         self.authorization_url: str | None = None
         self.callback_url: str | None = None
         self.result: MCPTestResponse | None = None
@@ -391,6 +404,17 @@ class _MCPOAuthProbeJob:
 
 _oauth_probe_jobs: dict[str, _MCPOAuthProbeJob] = {}
 _oauth_probe_jobs_lock = threading.Lock()
+
+
+def _sweep_oauth_probe_jobs_locked(now: float | None = None) -> None:
+    now = time.monotonic() if now is None else now
+    expired = [
+        job_id
+        for job_id, job in _oauth_probe_jobs.items()
+        if now - job.created_at > _OAUTH_PROBE_JOB_TTL_SECONDS
+    ]
+    for job_id in expired:
+        _oauth_probe_jobs.pop(job_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -673,11 +697,13 @@ def _run_oauth_probe_job(job: _MCPOAuthProbeJob) -> None:
 
 def _register_oauth_job(job: _MCPOAuthProbeJob) -> None:
     with _oauth_probe_jobs_lock:
+        _sweep_oauth_probe_jobs_locked()
         _oauth_probe_jobs[job.id] = job
 
 
 def _get_oauth_job(job_id: str) -> _MCPOAuthProbeJob:
     with _oauth_probe_jobs_lock:
+        _sweep_oauth_probe_jobs_locked()
         job = _oauth_probe_jobs.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="MCP OAuth job not found")
