@@ -22,7 +22,29 @@ def find_free_port():
         return s.getsockname()[1]
 
 
+def _drop_site_packages_subdir_paths():
+    """Remove sys.path entries that point *inside* a site-packages directory.
+
+    This test spawns the server with the ``spawn`` start method from within a
+    pytest-xdist worker, so the child inherits the worker's ``sys.path``. Under
+    the full suite another test leaves a stray package directory
+    (``.../site-packages/browser_use``) at ``sys.path[0]``, which makes its
+    sub-packages importable as top-level modules — ``browser_use/mcp`` then
+    shadows the real ``mcp`` and fastmcp's eager ``import mcp`` crashes startup
+    with a ``mcp`` <-> ``browser_use.mcp`` circular import. Dropping such
+    entries restores normal top-level resolution.
+    """
+    cleaned = [
+        entry
+        for entry in sys.path
+        if os.path.basename(os.path.dirname(entry.rstrip(os.sep))) != "site-packages"
+    ]
+    sys.path[:] = cleaned
+
+
 def run_agent_server(port, api_key):
+    _drop_site_packages_subdir_paths()
+
     # Configure authentication for the server process.
     #
     # Use both the V1 indexed env var and the legacy V0 var to keep this test
