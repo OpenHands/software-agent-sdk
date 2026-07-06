@@ -66,6 +66,13 @@ class SubAgentInfo(BaseModel):
     max_iteration_per_run: int | None = None
     max_budget_per_run: float | None = None
     mcp_config: dict[str, MCPServer] | None = None
+    mcp_servers: dict[str, MCPServer] | None = Field(
+        default=None,
+        description=(
+            "Deprecated compatibility alias for mcp_config. "
+            "Use mcp_config for new clients."
+        ),
+    )
     profile_store_dir: str | None = None
     hooks: HookConfig | None = None
     condenser: CondenserBase | None = None
@@ -89,6 +96,7 @@ class SubAgentInfo(BaseModel):
             max_iteration_per_run=agent_def.max_iteration_per_run,
             max_budget_per_run=agent_def.max_budget_per_run,
             mcp_config=agent_def.mcp_config,
+            mcp_servers=agent_def.mcp_config,
             profile_store_dir=agent_def.profile_store_dir,
             hooks=agent_def.hooks,
             condenser=agent_def.condenser,

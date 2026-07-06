@@ -7,6 +7,7 @@ import copy
 from collections.abc import Mapping
 from typing import Annotated, Any, Literal, cast
 
+from fastmcp.mcp_config import MCPConfig as FastMCPConfig
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -493,13 +494,57 @@ class MCPServer(_MCPBaseModel):
 _MCP_CONFIG_ADAPTER: TypeAdapter[dict[str, MCPServer]] = TypeAdapter(
     dict[str, MCPServer]
 )
+_MCP_SERVER_KNOWN_FIELDS = frozenset(MCPServer.model_fields)
+
+
+def _normalize_transport_field(transport: object) -> object:
+    return "http" if transport == "shttp" else transport
+
+
+def _normalize_server_transport_field(
+    server: Mapping[str, object],
+) -> dict[str, object]:
+    normalized = dict(server)
+    typed_transport = normalized.pop("type", None)
+    if "transport" not in normalized and typed_transport is not None:
+        normalized["transport"] = _normalize_transport_field(typed_transport)
+    elif "transport" in normalized:
+        normalized["transport"] = _normalize_transport_field(normalized["transport"])
+    return normalized
+
+
+def drop_unknown_mcp_server_fields(server: Mapping[str, object]) -> dict[str, object]:
+    server = _normalize_server_transport_field(server)
+    return {
+        key: value for key, value in server.items() if key in _MCP_SERVER_KNOWN_FIELDS
+    }
+
+
+def _extract_mcp_config(value: object) -> object:
+    """Extract a server map from SDK-native or external FastMCP-shaped input."""
+    if value in (None, {}):
+        return {}
+    if isinstance(value, FastMCPConfig):
+        return value.model_dump(exclude_none=True, exclude_defaults=True).get(
+            "mcpServers", {}
+        )
+    if isinstance(value, Mapping) and "mcpServers" in value:
+        servers = value.get("mcpServers")
+        return servers if servers is not None else {}
+    return value
 
 
 def coerce_mcp_config(
     value: object, *, context: dict[str, object] | None = None
 ) -> dict[str, MCPServer]:
-    if value in (None, {}):
-        return {}
+    value = _extract_mcp_config(value)
+    if isinstance(value, Mapping):
+        value = {
+            name: _normalize_server_transport_field(server)
+            if isinstance(server, Mapping)
+            else server
+            for name, server in value.items()
+        }
     return _MCP_CONFIG_ADAPTER.validate_python(
         value,
         context=context,
