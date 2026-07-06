@@ -8,6 +8,7 @@ the two together so a tool rename cannot silently drift the SDK-side defaults
 """
 
 from openhands.sdk.tool.defaults import (
+    BROWSER_TOOL_NAME,
     DEFAULT_EXEC_TOOL_NAMES,
     SUB_AGENT_TOOL_NAME,
     default_tool_specs,
@@ -32,17 +33,29 @@ def test_sub_agent_name_matches_task_tool_set() -> None:
     assert SUB_AGENT_TOOL_NAME == TaskToolSet.name
 
 
+def test_browser_name_matches_browser_tool_set() -> None:
+    from openhands.tools.browser_use import BrowserToolSet
+
+    assert BROWSER_TOOL_NAME == BrowserToolSet.name
+
+
 def test_default_tool_specs_parity_with_get_default_tools() -> None:
     from openhands.tools.preset.default import get_default_tools
 
-    for enable_sub_agents in (False, True):
-        sdk_names = [
-            t.name for t in default_tool_specs(enable_sub_agents=enable_sub_agents)
-        ]
-        preset_names = [
-            t.name
-            for t in get_default_tools(
-                enable_browser=False, enable_sub_agents=enable_sub_agents
-            )
-        ]
-        assert sdk_names == preset_names
+    for enable_browser in (False, True):
+        for enable_sub_agents in (False, True):
+            sdk_names = [
+                t.name
+                for t in default_tool_specs(
+                    enable_browser=enable_browser,
+                    enable_sub_agents=enable_sub_agents,
+                )
+            ]
+            preset_names = [
+                t.name
+                for t in get_default_tools(
+                    enable_browser=enable_browser,
+                    enable_sub_agents=enable_sub_agents,
+                )
+            ]
+            assert sdk_names == preset_names

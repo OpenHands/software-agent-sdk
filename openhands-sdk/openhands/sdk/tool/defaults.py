@@ -21,18 +21,38 @@ DEFAULT_EXEC_TOOL_NAMES: tuple[str, ...] = (
 )
 """Names of the standard exec tools every default OpenHands agent gets."""
 
+BROWSER_TOOL_NAME = "browser_tool_set"
+"""Name of the browser tool set, included in the default when the runtime
+has it registered and usable (chromium available)."""
+
 SUB_AGENT_TOOL_NAME = "task_tool_set"
 """Name of the sub-agent delegation tool set, gated on ``enable_sub_agents``."""
 
 
-def default_tool_specs(*, enable_sub_agents: bool = False) -> list[Tool]:
+def default_tool_specs(
+    *,
+    enable_sub_agents: bool = False,
+    enable_browser: bool | None = None,
+) -> list[Tool]:
     """Default tool specs for an OpenHands agent whose settings carry no tools.
 
-    Browser tools are not included: they are not registered on every runtime
-    and resolving an unknown tool raises at conversation start. A caller (or a
-    profile) that wants browser opts in with an explicit tools list.
+    ``enable_browser=None`` (the default) is adaptive: browser tools are
+    included exactly when the current runtime has them registered and usable
+    (chromium present) — the same bar canvas applies via ``GET /tools`` on the
+    settings launch path — so a default-toolset agent gets browser wherever it
+    can actually run, and resolving the spec never raises on a runtime without
+    it. Pass True/False to force.
     """
     names = list(DEFAULT_EXEC_TOOL_NAMES)
+    if enable_browser is None:
+        # Local import: the registry is populated by openhands-tools at import
+        # time in the serving process; consulted lazily so this module stays
+        # import-light and cycle-free.
+        from openhands.sdk.tool.registry import is_tool_usable
+
+        enable_browser = is_tool_usable(BROWSER_TOOL_NAME)
+    if enable_browser:
+        names.append(BROWSER_TOOL_NAME)
     if enable_sub_agents:
         names.append(SUB_AGENT_TOOL_NAME)
     return [Tool(name=name) for name in names]
