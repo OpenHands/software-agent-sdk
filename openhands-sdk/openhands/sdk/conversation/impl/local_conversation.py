@@ -5,7 +5,7 @@ import copy
 import json
 import uuid
 from collections.abc import Mapping, Sequence
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePath
 from typing import Any, Final, TypeGuard, cast
 
 from openhands.sdk.agent.acp_agent import ACPAgent
@@ -526,12 +526,14 @@ class LocalConversation(BaseConversation):
         if not isinstance(raw_path, str) or not raw_path:
             return None
 
-        raw = PurePosixPath(raw_path.replace("\\", "/"))
+        # Use the native path flavour so Windows drive paths (e.g. ``D:\\...``) are
+        # recognized as absolute; emit a POSIX string for glob matching.
+        raw = PurePath(raw_path)
         if not raw.is_absolute():
-            return str(raw)
-        root = PurePosixPath(str(self.workspace.working_dir).replace("\\", "/"))
+            return raw.as_posix()
+        root = PurePath(self.workspace.working_dir)
         with contextlib.suppress(ValueError):
-            return str(raw.relative_to(root))
+            return raw.relative_to(root).as_posix()
         return None  # touched a file outside the workspace; rules are repo-scoped
 
     def _recover_persisted_client_tools(
