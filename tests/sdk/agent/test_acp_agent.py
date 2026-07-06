@@ -1692,7 +1692,8 @@ class TestACPAgentStep:
 
         prompt_call = agent._conn.prompt.await_args
         assert prompt_call is not None
-        prompt_blocks = prompt_call.args[0]
+        assert prompt_call.kwargs["session_id"] == "test-session"
+        prompt_blocks = prompt_call.kwargs["prompt"]
         prompt_text = "\n\n".join(b.text for b in prompt_blocks if hasattr(b, "text"))
         assert "Review this PR." in prompt_text
         assert "<name>review</name>" in prompt_text
@@ -1742,8 +1743,9 @@ class TestACPAgentStep:
 
         prompt_call = agent._conn.prompt.await_args
         assert prompt_call is not None
+        assert prompt_call.kwargs["session_id"] == "test-session"
         prompt_text = "\n\n".join(
-            b.text for b in prompt_call.args[0] if hasattr(b, "text")
+            b.text for b in prompt_call.kwargs["prompt"] if hasattr(b, "text")
         )
         assert "Review this PR." in prompt_text
         assert "<REPO_CONTEXT>" in prompt_text
@@ -1800,8 +1802,9 @@ class TestACPAgentStep:
 
         prompt_call = agent._conn.prompt.await_args
         assert prompt_call is not None
+        assert prompt_call.kwargs["session_id"] == "test-session"
         prompt_text = "\n\n".join(
-            b.text for b in prompt_call.args[0] if hasattr(b, "text")
+            b.text for b in prompt_call.kwargs["prompt"] if hasattr(b, "text")
         )
         assert "Legacy triggered review instructions." in prompt_text
         assert "AgentSkills triggered review instructions." in prompt_text
@@ -1831,8 +1834,10 @@ class TestACPAgentStep:
 
         agent.step(conversation, on_event=lambda _: None)
 
+        prompt_call = agent._conn.prompt.await_args
+        assert prompt_call.kwargs["session_id"] == "test-session"
         prompt_text = "\n\n".join(
-            b.text for b in agent._conn.prompt.await_args.args[0] if hasattr(b, "text")
+            b.text for b in prompt_call.kwargs["prompt"] if hasattr(b, "text")
         )
         assert "Team rules." not in prompt_text
 
@@ -2060,7 +2065,7 @@ class TestACPAgentAstep:
         agent._client = mock_client
         agent._conn = MagicMock()
 
-        async def _fake_prompt(prompt_blocks, session_id):
+        async def _fake_prompt(prompt, session_id):  # noqa: ARG001
             # Must execute on the portal loop's thread, not the caller's
             # — proves we actually crossed the loop boundary.
             prompt_thread_id.append(threading.get_ident())
@@ -2116,7 +2121,7 @@ class TestACPAgentAstep:
         agent._session_id = "test-session"
         agent._restart_session_on_next_turn = True
 
-        async def _fake_prompt(prompt_blocks, session_id):  # noqa: ARG001
+        async def _fake_prompt(prompt, session_id):  # noqa: ARG001
             mock_client.accumulated_text.append("answer")
             return None
 
@@ -2186,7 +2191,7 @@ class TestACPAgentAstep:
         agent._conn = MagicMock()
         agent._session_id = "test-session"
 
-        async def _fake_prompt(prompt_blocks, session_id):  # noqa: ARG001
+        async def _fake_prompt(prompt, session_id):  # noqa: ARG001
             # ~0.5s total (> 0.3s idle window), one update every 0.02s so the
             # deadline keeps resetting; then complete the turn.
             for _ in range(25):
@@ -2240,7 +2245,7 @@ class TestACPAgentAstep:
         agent._conn = MagicMock()
         agent._session_id = "test-session"
 
-        async def _failing_prompt(prompt_blocks, session_id):
+        async def _failing_prompt(prompt, session_id):  # noqa: ARG001
             raise RuntimeError("simulated upstream failure")
 
         agent._conn.prompt = _failing_prompt
@@ -2387,7 +2392,7 @@ class TestACPAgentAstep:
             prompt_released = threading.Event()
             caller_loop = asyncio.get_running_loop()
 
-            async def _fake_prompt(prompt_blocks, session_id):
+            async def _fake_prompt(prompt, session_id):  # noqa: ARG001
                 # Seed an in-flight tool call AFTER _reset_client_for_turn
                 # has run (which clears accumulated_tool_calls).  In
                 # production the bridge accumulates these inside
@@ -2488,7 +2493,7 @@ class TestACPAgentAstep:
             prompt_released = threading.Event()
             caller_loop = asyncio.get_running_loop()
 
-            async def _fake_prompt(prompt_blocks, session_id):  # noqa: ARG001
+            async def _fake_prompt(prompt, session_id):  # noqa: ARG001
                 caller_loop.call_soon_threadsafe(prompt_entered.set)
                 released = await asyncio.to_thread(prompt_released.wait, 10.0)
                 assert released
@@ -2556,7 +2561,7 @@ class TestACPAgentAstep:
             prompt_released = threading.Event()
             caller_loop = asyncio.get_running_loop()
 
-            async def _fake_prompt(prompt_blocks, session_id):  # noqa: ARG001
+            async def _fake_prompt(prompt, session_id):  # noqa: ARG001
                 caller_loop.call_soon_threadsafe(prompt_entered.set)
                 released = await asyncio.to_thread(prompt_released.wait, 10.0)
                 assert released
@@ -2617,7 +2622,7 @@ class TestACPAgentAstep:
             prompt_released = threading.Event()
             caller_loop = asyncio.get_running_loop()
 
-            async def _fake_prompt(prompt_blocks, session_id):  # noqa: ARG001
+            async def _fake_prompt(prompt, session_id):  # noqa: ARG001
                 caller_loop.call_soon_threadsafe(prompt_entered.set)
                 released = await asyncio.to_thread(prompt_released.wait, 10.0)
                 assert released
@@ -2678,7 +2683,7 @@ class TestACPAgentAstep:
             prompt_released = threading.Event()
             caller_loop = asyncio.get_running_loop()
 
-            async def _fake_prompt(prompt_blocks, session_id):  # noqa: ARG001
+            async def _fake_prompt(prompt, session_id):  # noqa: ARG001
                 caller_loop.call_soon_threadsafe(prompt_entered.set)
                 released = await asyncio.to_thread(prompt_released.wait, 10.0)
                 assert released
@@ -2775,7 +2780,7 @@ class TestACPAgentAstep:
             prompt_released = threading.Event()
             caller_loop = asyncio.get_running_loop()
 
-            async def _fake_prompt(prompt_blocks, session_id):
+            async def _fake_prompt(prompt, session_id):  # noqa: ARG001
                 caller_loop.call_soon_threadsafe(prompt_entered.set)
                 released = await asyncio.to_thread(prompt_released.wait, 10.0)
                 assert released
@@ -2845,7 +2850,7 @@ class TestACPAgentAstep:
         agent._client = mock_client
         agent._conn = MagicMock()
 
-        async def _fake_prompt(prompt_blocks, session_id):
+        async def _fake_prompt(prompt, session_id):  # noqa: ARG001
             mock_client.accumulated_text.append("done")
             return None
 

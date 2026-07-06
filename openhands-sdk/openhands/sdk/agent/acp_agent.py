@@ -2943,7 +2943,10 @@ class ACPAgent(AgentBase):
         ``_finalize_successful_turn`` already accepts ``PromptResponse | None``.
         """
         usage_sync = self._client.prepare_usage_sync(self._session_id or "")
-        response = await self._conn.prompt(prompt_blocks, self._session_id)
+        response = await self._conn.prompt(
+            prompt=prompt_blocks,
+            session_id=self._session_id,
+        )
         if self._client.get_turn_usage_update(self._session_id or "") is None:
             try:
                 await asyncio.wait_for(usage_sync.wait(), timeout=_USAGE_UPDATE_TIMEOUT)
@@ -3564,8 +3567,8 @@ class ACPAgent(AgentBase):
                 fork_t0 = time.monotonic()
                 usage_sync = client.prepare_usage_sync(fork_session_id)
                 response = await self._conn.prompt(
-                    [text_block(question)],
-                    fork_session_id,
+                    prompt=[text_block(question)],
+                    session_id=fork_session_id,
                 )
                 if client.get_turn_usage_update(fork_session_id) is None:
                     try:
