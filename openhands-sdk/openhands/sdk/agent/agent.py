@@ -1316,9 +1316,11 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         try:
             if should_enable_observability():
                 tool_name = extract_action_name(action_event)
-                observation: Observation = observe(name=tool_name, span_type="TOOL")(
-                    tool
-                )(action_event.action, conversation)
+                observation: Observation = observe(
+                    name=tool_name,
+                    span_type="TOOL",
+                    metadata={"tool_call_id": action_event.tool_call.id},
+                )(tool)(action_event.action, conversation)
             else:
                 observation = tool(action_event.action, conversation)
             assert isinstance(observation, Observation), (
