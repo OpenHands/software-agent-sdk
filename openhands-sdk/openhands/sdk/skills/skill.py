@@ -541,6 +541,24 @@ class Skill(BaseModel):
         # 3. If keywords exist -> KeywordTrigger
         # 4. Else (no keywords) -> None (always active)
         if paths:
+            # A skill is either path-triggered OR model-invocable, not both:
+            # `paths:` wins and any `triggers:`/`inputs:` are ignored. Warn so the
+            # dropped fields are discoverable instead of silently disappearing.
+            ignored = []
+            if keywords:
+                ignored.append(f"'triggers': {keywords}")
+            if "inputs" in metadata_dict:
+                ignored.append("'inputs'")
+            if ignored:
+                logger.warning(
+                    "Skill '%s' declares 'paths:' together with %s; 'paths:' "
+                    "takes precedence (path-triggered rule) and %s will be "
+                    "ignored. A skill can be either path-triggered OR "
+                    "model-invocable, not both.",
+                    agent_name,
+                    " and ".join(ignored),
+                    " and ".join(ignored),
+                )
             return Skill(
                 name=agent_name,
                 content=content,

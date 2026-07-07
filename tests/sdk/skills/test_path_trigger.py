@@ -203,13 +203,46 @@ def test_path_rule_serialization_round_trip() -> None:
     assert back.disable_model_invocation is True
 
 
-def test_paths_and_triggers_frontmatter_paths_wins(tmp_path: Path) -> None:
-    """A file with both `paths:` and `triggers:` becomes a PathTrigger rule."""
+def test_paths_and_triggers_frontmatter_paths_wins(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A file with both `paths:` and `triggers:` becomes a PathTrigger rule, and
+    the dropped `triggers:` are surfaced via a warning."""
     path = _write_rule(
         tmp_path, "both.md", 'paths:\n  - "**/*.ts"\ntriggers:\n  - "deploy"', "body"
     )
-    skill = Skill.load(path)
+    with caplog.at_level("WARNING"):
+        skill = Skill.load(path)
     assert isinstance(skill.trigger, PathTrigger)
+    assert "paths" in caplog.text and "'triggers'" in caplog.text
+    assert "deploy" in caplog.text
+
+
+def test_paths_and_inputs_frontmatter_warns_inputs_ignored(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """`paths:` alongside `inputs:` wins and warns that `inputs:` are ignored."""
+    path = _write_rule(
+        tmp_path,
+        "both.md",
+        'paths:\n  - "**/*.ts"\ninputs:\n  - name: x\n    description: d',
+        "body",
+    )
+    with caplog.at_level("WARNING"):
+        skill = Skill.load(path)
+    assert isinstance(skill.trigger, PathTrigger)
+    assert "'inputs'" in caplog.text
+
+
+def test_paths_only_frontmatter_does_not_warn(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A path rule with no `triggers:`/`inputs:` loads without a warning."""
+    path = _write_rule(tmp_path, "r.md", 'paths:\n  - "**/*.ts"', "body")
+    with caplog.at_level("WARNING"):
+        skill = Skill.load(path)
+    assert isinstance(skill.trigger, PathTrigger)
+    assert "will be ignored" not in caplog.text
 
 
 @pytest.mark.parametrize("value", ["", "[]"])
