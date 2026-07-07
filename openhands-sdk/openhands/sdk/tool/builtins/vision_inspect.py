@@ -1,7 +1,8 @@
 import base64
 import mimetypes
+import tempfile
 from collections.abc import Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, ClassVar, Self
 
 from pydantic import Field
@@ -17,6 +18,9 @@ from openhands.sdk.tool.tool import (
     ToolDefinition,
     ToolExecutor,
 )
+from openhands.sdk.utils.path import to_posix_path
+from openhands.sdk.workspace.base import BaseWorkspace
+from openhands.sdk.workspace.local import LocalWorkspace
 
 
 if TYPE_CHECKING:
@@ -171,50 +175,112 @@ def _latest_user_image_urls(conversation: "LocalConversation") -> list[str]:
     return []
 
 
+def _normalize_posix_path(path: str) -> PurePosixPath:
+    pure_path = PurePosixPath(path)
+    parts: list[str] = []
+    for part in pure_path.parts:
+        if part in ("", "/", "."):
+            continue
+        if part == "..":
+            if parts:
+                parts.pop()
+            else:
+                parts.append(part)
+            continue
+        parts.append(part)
+
+    if pure_path.is_absolute():
+        return PurePosixPath("/") / PurePosixPath(*parts)
+    return PurePosixPath(*parts)
+
+
+def _workspace_source_path(
+    workspace: BaseWorkspace,
+    image_path: str,
+) -> tuple[str | Path | None, str | None]:
+    if isinstance(workspace, LocalWorkspace):
+        root = Path(workspace.working_dir).expanduser().resolve()
+        requested = Path(image_path).expanduser()
+        if not requested.is_absolute():
+            requested = root / requested
+        try:
+            resolved = requested.resolve()
+            resolved.relative_to(root)
+        except Exception:
+            return None, f"Image path '{image_path}' is outside the workspace."
+        if not resolved.is_file():
+            return None, f"Image path '{image_path}' does not exist or is not a file."
+        return resolved, None
+
+    root = _normalize_posix_path(to_posix_path(workspace.working_dir))
+    requested = _normalize_posix_path(to_posix_path(image_path))
+    if not requested.is_absolute():
+        requested = _normalize_posix_path(str(root / requested))
+    try:
+        requested.relative_to(root)
+    except ValueError:
+        return None, f"Image path '{image_path}' is outside the workspace."
+    return str(requested), None
+
+
+def _download_workspace_image(
+    workspace: BaseWorkspace,
+    image_path: str,
+    destination: Path,
+) -> str | None:
+    source_path, error = _workspace_source_path(workspace, image_path)
+    if error is not None or source_path is None:
+        return error or "Failed to resolve workspace image path."
+
+    result = workspace.file_download(source_path, destination)
+    if not result.success:
+        return result.error or f"Failed to download image path '{image_path}'."
+    return None
+
+
 def _workspace_image_url(
     conversation: "LocalConversation",
     image_path: str,
 ) -> tuple[str | None, str | None]:
-    workspace_dir = conversation.state.workspace.working_dir
+    workspace = conversation.state.workspace
+    workspace_dir = workspace.working_dir
     if workspace_dir is None:
         return None, "Cannot inspect workspace image files without a workspace."
 
-    root = Path(workspace_dir).expanduser().resolve()
-    requested = Path(image_path).expanduser()
-    if not requested.is_absolute():
-        requested = root / requested
-    try:
-        resolved = requested.resolve()
-        resolved.relative_to(root)
-    except Exception:
-        return None, f"Image path '{image_path}' is outside the workspace."
+    with tempfile.TemporaryDirectory(prefix="openhands-vision-inspect-") as tmp_dir:
+        local_name = PurePosixPath(to_posix_path(image_path)).name or "image"
+        local_image_path = Path(tmp_dir) / local_name
+        error = _download_workspace_image(workspace, image_path, local_image_path)
+        if error is not None:
+            return None, error
 
-    if not resolved.is_file():
-        return None, f"Image path '{image_path}' does not exist or is not a file."
+        resolved = local_image_path
+        if not resolved.is_file():
+            return None, f"Image path '{image_path}' does not exist or is not a file."
 
-    size = resolved.stat().st_size
-    if size > MAX_WORKSPACE_IMAGE_BYTES:
-        return (
-            None,
-            (
-                f"Image path '{image_path}' is too large ({size} bytes). "
-                f"Maximum supported size is {MAX_WORKSPACE_IMAGE_BYTES} bytes."
-            ),
-        )
+        size = resolved.stat().st_size
+        if size > MAX_WORKSPACE_IMAGE_BYTES:
+            return (
+                None,
+                (
+                    f"Image path '{image_path}' is too large ({size} bytes). "
+                    f"Maximum supported size is {MAX_WORKSPACE_IMAGE_BYTES} bytes."
+                ),
+            )
 
-    mime_type = mimetypes.guess_type(resolved.name)[0]
-    if mime_type not in SUPPORTED_WORKSPACE_IMAGE_MIME_TYPES:
-        supported = ", ".join(sorted(SUPPORTED_WORKSPACE_IMAGE_MIME_TYPES))
-        return (
-            None,
-            (
-                f"Image path '{image_path}' has unsupported MIME type "
-                f"'{mime_type or 'unknown'}'. Supported types: {supported}."
-            ),
-        )
+        mime_type = mimetypes.guess_type(resolved.name)[0]
+        if mime_type not in SUPPORTED_WORKSPACE_IMAGE_MIME_TYPES:
+            supported = ", ".join(sorted(SUPPORTED_WORKSPACE_IMAGE_MIME_TYPES))
+            return (
+                None,
+                (
+                    f"Image path '{image_path}' has unsupported MIME type "
+                    f"'{mime_type or 'unknown'}'. Supported types: {supported}."
+                ),
+            )
 
-    data = base64.b64encode(resolved.read_bytes()).decode("ascii")
-    return f"data:{mime_type};base64,{data}", None
+        data = base64.b64encode(resolved.read_bytes()).decode("ascii")
+        return f"data:{mime_type};base64,{data}", None
 
 
 class VisionInspectExecutor(ToolExecutor):

@@ -1,4 +1,6 @@
 from collections.abc import Sequence
+from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -23,7 +25,10 @@ from openhands.sdk.tool import ToolDefinition
 from openhands.sdk.tool.builtins.vision_inspect import (
     VISION_PROFILE_USAGE_PREFIX,
     VisionInspectObservation,
+    _workspace_image_url,
 )
+from openhands.sdk.workspace.base import BaseWorkspace
+from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 
 
 if TYPE_CHECKING:
@@ -56,6 +61,55 @@ class CapturingTestLLM(TestLLM):
             call_context=call_context,
             **kwargs,
         )
+
+
+class DownloadOnlyWorkspace(BaseWorkspace):
+    _downloads: list[tuple[str, str]] = PrivateAttr(default_factory=list)
+    _image_bytes: bytes = PrivateAttr()
+
+    def __init__(self, *, working_dir: str, image_bytes: bytes):
+        super().__init__(working_dir=working_dir)
+        self._image_bytes = image_bytes
+
+    @property
+    def downloads(self) -> list[tuple[str, str]]:
+        return self._downloads
+
+    def execute_command(
+        self,
+        command: str,
+        cwd: str | Path | None = None,
+        timeout: float = 30.0,
+    ) -> CommandResult:
+        raise NotImplementedError
+
+    def file_upload(
+        self,
+        source_path: str | Path,
+        destination_path: str | Path,
+    ) -> FileOperationResult:
+        raise NotImplementedError
+
+    def file_download(
+        self,
+        source_path: str | Path,
+        destination_path: str | Path,
+    ) -> FileOperationResult:
+        destination = Path(destination_path)
+        destination.write_bytes(self._image_bytes)
+        self.downloads.append((str(source_path), str(destination_path)))
+        return FileOperationResult(
+            success=True,
+            source_path=str(source_path),
+            destination_path=str(destination_path),
+            file_size=len(self._image_bytes),
+        )
+
+    def git_changes(self, path: str | Path):
+        raise NotImplementedError
+
+    def git_diff(self, path: str | Path):
+        raise NotImplementedError
 
 
 def _image_message() -> Message:
@@ -409,6 +463,26 @@ def test_workspace_image_file_must_exist(monkeypatch, tmp_path):
     observation_content = observation.content[0]
     assert isinstance(observation_content, TextContent)
     assert "does not exist or is not a file" in observation_content.text
+
+
+def test_workspace_image_file_uses_workspace_download_for_nonlocal_workspace():
+    workspace = DownloadOnlyWorkspace(
+        working_dir="/remote/workspace",
+        image_bytes=b"\x89PNG\r\n\x1a\n",
+    )
+    conversation = SimpleNamespace(state=SimpleNamespace(workspace=workspace))
+
+    image_url, error = _workspace_image_url(
+        cast(LocalConversation, conversation),
+        "screenshots/result.png",
+    )
+
+    assert error is None
+    assert image_url == "data:image/png;base64,iVBORw0KGgo="
+    assert len(workspace.downloads) == 1
+    source_path, destination_path = workspace.downloads[0]
+    assert source_path == "/remote/workspace/screenshots/result.png"
+    assert Path(destination_path).name == "result.png"
 
 
 def test_profile_helper_registers_auxiliary_vision_llm(monkeypatch):
