@@ -114,6 +114,41 @@ class FIFOLock:
                 if self._waiters:
                     self._waiters[0].notify()
 
+    def release_all(self) -> int:
+        """Fully release this thread's hold, returning the prior reentrancy depth.
+
+        Mirrors :meth:`release` reaching count 0 (it hands the lock to the next
+        FIFO waiter), but drops *all* reentrant levels at once so a held lock
+        can be handed off across an awaited call and later restored with
+        :meth:`reacquire`.
+
+        Raises:
+            RuntimeError: If the current thread doesn't own the lock.
+        """
+        ident = threading.get_ident()
+        with self._mutex:
+            if self._owner != ident:
+                raise RuntimeError("Cannot release lock not owned by current thread")
+            depth = self._count
+            self._count = 0
+            self._owner = None
+            if self._waiters:
+                self._waiters[0].notify()
+        return depth
+
+    def reacquire(self, depth: int) -> None:
+        """Re-acquire the lock and restore a reentrancy ``depth`` from release_all().
+
+        Blocks until the lock is acquired (FIFO-fair), then restores the
+        reentrancy counter so a subsequent matching number of releases behaves
+        exactly as it would have before the paired :meth:`release_all`.
+        """
+        if depth <= 0:
+            return
+        self.acquire()
+        with self._mutex:
+            self._count = depth
+
     def __enter__(self: Self) -> Self:
         """Context manager entry."""
         self.acquire()

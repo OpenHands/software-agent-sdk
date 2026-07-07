@@ -1,5 +1,6 @@
+import contextlib
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Mapping
+from collections.abc import AsyncIterator, Iterable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, TypeVar, cast
 
@@ -225,6 +226,17 @@ class BaseConversation(ABC):
         to use async agent steps for non-blocking LLM I/O.
         """
         self.run()
+
+    @contextlib.asynccontextmanager
+    async def _released_state_lock_during_io(self) -> AsyncIterator[None]:
+        """Release any run-loop state lock across an awaited LLM call.
+
+        Default implementation is a no-op. :class:`LocalConversation` overrides
+        it to drop its state lock during the LLM network round-trip so other
+        callers (e.g. ``send_message``) are not blocked for the whole response
+        time. ``Agent.astep`` wraps its LLM call in this context manager.
+        """
+        yield
 
     @abstractmethod
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:

@@ -1609,6 +1609,46 @@ class LocalConversation(BaseConversation):
         with self._state:
             self._on_event(event)
 
+    @contextlib.asynccontextmanager
+    async def _released_state_lock_during_io(self):
+        """Release the run loop's state lock across an awaited LLM network call.
+
+        ``arun()`` holds the conversation state lock across the entire agent
+        step so state mutations are serialized. That is correct for the fast
+        in-memory prep/processing sections but wrong for the LLM round-trip:
+        holding the lock there blocks ``send_message()``, new WebSocket state
+        snapshots, and every other caller that needs this conversation's lock
+        for the whole provider response time (many seconds for reasoning
+        models). Release it for just the network wait and restore it -- at the
+        same reentrancy depth, on this event-loop thread -- afterward.
+
+        This is a no-op unless the caller is the run loop holding the lock on
+        the current thread, so direct ``astep`` calls (tests, custom drivers,
+        the confirmation-mode early return) are unaffected.
+
+        Safe against deadlock because ``arun`` is the only coroutine that ever
+        holds this lock across an ``await``; every other holder -- worker
+        threads via ``run_in_executor`` and short synchronous sections on the
+        event-loop thread -- takes it only briefly, so the re-acquire below
+        cannot block for long and cannot deadlock.
+        """
+        lock = self._state._lock
+        if not lock.owned():
+            yield
+            return
+        held_flag = self._step_holds_state_lock
+        depth = lock.release_all()
+        # The lock is genuinely not held now; keep _step_holds_state_lock
+        # honest so a concurrent switch_llm (which runs on the event-loop
+        # thread from its HTTP handler) takes the now-free lock instead of
+        # skipping it and racing worker-thread state mutators.
+        self._step_holds_state_lock = False
+        try:
+            yield
+        finally:
+            lock.reacquire(depth)
+            self._step_holds_state_lock = held_flag
+
     @observe(name="conversation.run")
     def run(self) -> None:
         """Runs the conversation until the agent finishes.
