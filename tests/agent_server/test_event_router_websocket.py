@@ -12,9 +12,7 @@ from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import EventPage
 from openhands.agent_server.sockets import _WebSocketSubscriber
 from openhands.sdk import Message
-from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import Event
-from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm.message import TextContent
 
