@@ -8,7 +8,7 @@ import os
 import threading
 import warnings
 from collections.abc import AsyncIterable, Callable, Iterable, Sequence
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
 
@@ -553,7 +553,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _call_context: LLMCallContext = PrivateAttr(default_factory=LLMCallContext)
     _effective_max_input_tokens: int | None = PrivateAttr(default=None)
     _effective_max_output_tokens: int | None = PrivateAttr(default=None)
-    _litellm_modify_params_lock: ClassVar[threading.RLock] = threading.RLock()
+    # Plain (non-reentrant) Lock: the async transport path acquires this off
+    # the event loop thread (see `_alitellm_modify_params_ctx`) and releases
+    # it back on the event loop thread, which an RLock would reject since it
+    # tracks a single owning thread.
+    _litellm_modify_params_lock: ClassVar[threading.Lock] = threading.Lock()
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="ignore", arbitrary_types_allowed=True
@@ -855,8 +859,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         offloaded to a thread via :func:`asyncio.loop.run_in_executor` to
         avoid blocking the event loop.
         """
-        import asyncio
-
         assert self._telemetry is not None
         self._telemetry.on_error(error)
         if self.fallback_strategy and self.fallback_strategy.should_fallback(error):
@@ -1751,7 +1753,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             assert self._telemetry is not None
             self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
             final_kwargs = {**call_kwargs, **retry_kwargs}
-            with self._litellm_modify_params_ctx(self.modify_params):
+            async with self._alitellm_modify_params_ctx(self.modify_params):
                 with warnings.catch_warnings():
                     warnings.filterwarnings("ignore", category=DeprecationWarning)
                     auth_values = await self._aget_litellm_auth_values()
@@ -2000,6 +2002,36 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 )
                 yield
 
+    @asynccontextmanager
+    async def _atransport_ctx(self):
+        """Async variant of :meth:`_transport_ctx`.
+
+        See :meth:`_alitellm_modify_params_ctx` for why this must not use a
+        plain blocking ``with`` statement around the lock.
+        """
+        async with self._alitellm_modify_params_ctx(self.modify_params):
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore", category=DeprecationWarning, module="httpx.*"
+                )
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r".*content=.*upload.*",
+                    category=DeprecationWarning,
+                )
+                warnings.filterwarnings(
+                    "ignore",
+                    message="There is no current event loop",
+                    category=DeprecationWarning,
+                )
+                warnings.filterwarnings("ignore", category=UserWarning)
+                warnings.filterwarnings(
+                    "ignore",
+                    category=DeprecationWarning,
+                    message="Accessing the 'model_fields' attribute.*",
+                )
+                yield
+
     def _prepare_transport_kwargs(
         self,
         *,
@@ -2074,7 +2106,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     ) -> ModelResponse:
         """Async variant of :meth:`_transport_call`."""
         auth_values = await self._aget_litellm_auth_values()
-        with self._transport_ctx():
+        async with self._atransport_ctx():
             ret = await litellm_acompletion(
                 **self._prepare_transport_kwargs(
                     messages=messages,
@@ -2118,6 +2150,42 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 yield
             finally:
                 litellm.modify_params = old
+
+    @asynccontextmanager
+    async def _alitellm_modify_params_ctx(self, flag: bool):
+        """Async variant of :meth:`_litellm_modify_params_ctx`.
+
+        ``litellm.modify_params`` is a process-wide global, so the lock must
+        stay held for the full duration of the transport call, not just the
+        moment the flag is set. A plain ``with self._litellm_modify_params_lock:``
+        would work for that, but only for the sync path: entering it here
+        with a blocking ``with`` statement would hold a real OS-level lock
+        across the ``await`` below. If a concurrent *sync* transport call
+        (e.g. a condenser or non-async agent step running in a worker
+        thread) is holding that lock at the time, this coroutine's attempt
+        to acquire it blocks the event loop thread itself -- which freezes
+        every other request the server is handling until the sync call
+        finishes (this is what makes agent-server stop responding to all
+        requests while waiting on a slow/local LLM response, most visible
+        during condensation).
+
+        Acquiring via ``run_in_executor`` moves the wait for the lock onto a
+        worker thread, so the event loop stays free to serve other requests
+        while this call is blocked on a concurrent transport call. The lock
+        is a plain (non-reentrant) ``threading.Lock``, so it is safe to
+        acquire on one thread and release on another.
+        """
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._litellm_modify_params_lock.acquire)
+        try:
+            old = getattr(litellm, "modify_params", None)
+            try:
+                litellm.modify_params = flag
+                yield
+            finally:
+                litellm.modify_params = old
+        finally:
+            self._litellm_modify_params_lock.release()
 
     # =========================================================================
     # Capabilities, formatting, and info
