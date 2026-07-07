@@ -1613,24 +1613,11 @@ class LocalConversation(BaseConversation):
     async def _released_state_lock_during_io(self):
         """Release the run loop's state lock across an awaited LLM network call.
 
-        ``arun()`` holds the conversation state lock across the entire agent
-        step so state mutations are serialized. That is correct for the fast
-        in-memory prep/processing sections but wrong for the LLM round-trip:
-        holding the lock there blocks ``send_message()``, new WebSocket state
-        snapshots, and every other caller that needs this conversation's lock
-        for the whole provider response time (many seconds for reasoning
-        models). Release it for just the network wait and restore it -- at the
-        same reentrancy depth, on this event-loop thread -- afterward.
-
-        This is a no-op unless the caller is the run loop holding the lock on
-        the current thread, so direct ``astep`` calls (tests, custom drivers,
-        the confirmation-mode early return) are unaffected.
-
-        Safe against deadlock because ``arun`` is the only coroutine that ever
-        holds this lock across an ``await``; every other holder -- worker
-        threads via ``run_in_executor`` and short synchronous sections on the
-        event-loop thread -- takes it only briefly, so the re-acquire below
-        cannot block for long and cannot deadlock.
+        ``arun()`` holds the state lock across the whole step; releasing it for
+        just the network wait keeps ``send_message()`` and state snapshots
+        responsive. No-op unless this thread holds the lock, so direct ``astep``
+        calls are unaffected. Deadlock-safe: ``arun`` is the only holder across
+        an ``await``; every other holder takes it only briefly.
         """
         lock = self._state._lock
         if not lock.owned():
@@ -1638,10 +1625,8 @@ class LocalConversation(BaseConversation):
             return
         held_flag = self._step_holds_state_lock
         depth = lock.release_all()
-        # The lock is genuinely not held now; keep _step_holds_state_lock
-        # honest so a concurrent switch_llm (which runs on the event-loop
-        # thread from its HTTP handler) takes the now-free lock instead of
-        # skipping it and racing worker-thread state mutators.
+        # Keep the flag honest while released so a concurrent switch_llm (on the
+        # event-loop thread) takes the now-free lock instead of racing mutators.
         self._step_holds_state_lock = False
         try:
             yield

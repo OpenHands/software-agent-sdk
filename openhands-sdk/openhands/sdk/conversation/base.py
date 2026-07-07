@@ -231,10 +231,7 @@ class BaseConversation(ABC):
     async def _released_state_lock_during_io(self) -> AsyncIterator[None]:
         """Release any run-loop state lock across an awaited LLM call.
 
-        Default implementation is a no-op. :class:`LocalConversation` overrides
-        it to drop its state lock during the LLM network round-trip so other
-        callers (e.g. ``send_message``) are not blocked for the whole response
-        time. ``Agent.astep`` wraps its LLM call in this context manager.
+        No-op by default; :class:`LocalConversation` overrides it.
         """
         yield
 

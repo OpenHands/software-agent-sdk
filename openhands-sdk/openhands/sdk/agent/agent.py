@@ -876,12 +876,9 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         )
 
         try:
-            # Do not hold the conversation state lock across the LLM network
-            # round-trip. arun() holds it across the whole step to serialize
-            # state mutations, but keeping it during the provider wait blocks
-            # send_message() and state snapshots for the full response time.
-            # Release it for just the network call (a no-op when the caller is
-            # not the lock-holding run loop, e.g. a direct astep() in tests).
+            # Release the state lock for just the network wait so send_message()
+            # and state snapshots aren't blocked for the whole response. No-op
+            # unless the run loop holds the lock (e.g. direct astep() in tests).
             async with conversation._released_state_lock_during_io():
                 llm_response = await amake_llm_completion(
                     self.llm,

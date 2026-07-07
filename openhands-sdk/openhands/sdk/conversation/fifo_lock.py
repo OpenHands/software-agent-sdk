@@ -115,15 +115,10 @@ class FIFOLock:
                     self._waiters[0].notify()
 
     def release_all(self) -> int:
-        """Fully release this thread's hold, returning the prior reentrancy depth.
+        """Drop all reentrant levels at once, returning the prior depth.
 
-        Mirrors :meth:`release` reaching count 0 (it hands the lock to the next
-        FIFO waiter), but drops *all* reentrant levels at once so a held lock
-        can be handed off across an awaited call and later restored with
-        :meth:`reacquire`.
-
-        Raises:
-            RuntimeError: If the current thread doesn't own the lock.
+        Hands the lock to the next FIFO waiter, so it can be restored later with
+        :meth:`reacquire`. Raises RuntimeError if not owned by the current thread.
         """
         ident = threading.get_ident()
         with self._mutex:
@@ -137,12 +132,7 @@ class FIFOLock:
         return depth
 
     def reacquire(self, depth: int) -> None:
-        """Re-acquire the lock and restore a reentrancy ``depth`` from release_all().
-
-        Blocks until the lock is acquired (FIFO-fair), then restores the
-        reentrancy counter so a subsequent matching number of releases behaves
-        exactly as it would have before the paired :meth:`release_all`.
-        """
+        """Re-acquire (FIFO-fair) and restore the ``depth`` from release_all()."""
         if depth <= 0:
             return
         self.acquire()
