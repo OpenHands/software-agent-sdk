@@ -452,3 +452,144 @@ async def test_async_aresponses_stream_path_retry_bumps_temperature(
     assert mock_aresponses.call_count == 2
     _, second_kwargs = mock_aresponses.call_args_list[1]
     assert second_kwargs.get("temperature") == 1.0
+
+
+# ------------------------------------------------------------------
+# Laminar-shaped Responses stream (bare generator yielding response objects)
+#
+# Laminar's `process_streaming_coroutine` (lmnr/opentelemetry_lib/opentelemetry/
+# instrumentation/litellm/wrappers/__init__.py:279) re-shapes
+# `litellm.aresponses` into an async generator that yields full
+# `BaseLiteLLMOpenAIResponseObject` instances rather than typed Responses
+# stream events. The SDK must accept that shape too.
+# ------------------------------------------------------------------
+
+
+class _FakeLaminarSyncStream:
+    """Sync plain generator yielding ``ResponsesAPIResponse`` items.
+
+    Has NO ``completed_response`` attribute (Laminar's wrapped output does
+    not expose the wrapper's interface), no ``__aiter__`` for the async
+    test, and no streaming-event shape either. Just raw response objects.
+    """
+
+    def __init__(self, *responses: ResponsesAPIResponse) -> None:
+        self._responses = list(responses)
+
+    def __iter__(self):
+        yield from self._responses
+
+
+class _FakeLaminarAsyncStream:
+    """Async plain generator yielding ``ResponsesAPIResponse`` items.
+
+    Mirror of :class:`_FakeLaminarSyncStream` for the async path.
+    """
+
+    def __init__(self, *responses: ResponsesAPIResponse) -> None:
+        self._responses = list(responses)
+
+    def __aiter__(self):
+        async def _gen():
+            for r in self._responses:
+                yield r
+
+        return _gen()
+
+
+@patch("openhands.sdk.llm.llm.litellm_responses")
+def test_responses_recovers_response_from_laminar_shaped_generator(
+    mock_responses,
+) -> None:
+    """A sync ``litellm.responses`` that yields response-shaped items directly
+    (the Laminar wrapping pattern) must produce a normal LLMResponse with the
+    yielded payload's id — no AttributeError on `.completed_response`."""
+    streaming_llm = LLM(
+        usage_id="test-laminar-sync",
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        num_retries=2,
+        retry_min_wait=0,
+        retry_max_wait=0,
+        stream=True,
+    )
+
+    expected = create_mock_responses_api_response("hello")
+    mock_responses.return_value = _FakeLaminarSyncStream(expected)
+
+    resp = streaming_llm.responses(
+        messages=[Message(role="user", content=[TextContent(text="hi")])],
+        on_token=lambda _chunk: None,
+    )
+
+    assert isinstance(resp, LLMResponse)
+    assert mock_responses.call_count == 1
+
+
+@pytest.mark.asyncio
+@patch(
+    "openhands.sdk.llm.llm.litellm_aresponses",
+    new_callable=AsyncMock,
+)
+async def test_aresponses_recovers_response_from_laminar_shaped_generator(
+    mock_aresponses: AsyncMock,
+) -> None:
+    """The same Laminar-shape behaviour for the async path: a plain
+    ``async_generator`` yielding ``ResponsesAPIResponse`` items (no
+    ``.completed_response``, no ``ResponseCompletedEvent``) must be
+    unwrapped to a normal LLMResponse without raising."""
+    streaming_llm = LLM(
+        usage_id="test-laminar-async",
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        num_retries=2,
+        retry_min_wait=0,
+        retry_max_wait=0,
+        stream=True,
+    )
+
+    expected = create_mock_responses_api_response("hello")
+    mock_aresponses.return_value = _FakeLaminarAsyncStream(expected)
+
+    resp = await streaming_llm.aresponses(
+        messages=[Message(role="user", content=[TextContent(text="hi")])],
+        on_token=lambda _chunk: None,
+    )
+
+    assert isinstance(resp, LLMResponse)
+    assert mock_aresponses.call_count == 1
+
+
+@patch("openhands.sdk.llm.llm.litellm_responses")
+def test_responses_laminar_shape_without_terminal_triggers_retry(
+    mock_responses,
+) -> None:
+    """A Laminar-shaped generator that yields no response-shaped item at all
+    should fall through to the existing LLMNoResponseError → retry path,
+    not crash with AttributeError. Verify retry kicks in and temperature
+    bumps from 0→1.0 like the other retry tests."""
+    streaming_llm = LLM(
+        usage_id="test-laminar-sync-empty",
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        num_retries=2,
+        retry_min_wait=0,
+        retry_max_wait=0,
+        temperature=0.0,
+        stream=True,
+    )
+
+    mock_responses.side_effect = [
+        _FakeLaminarSyncStream(),  # no terminal item → LLMNoResponseError
+        create_mock_responses_api_response("ok"),
+    ]
+
+    resp = streaming_llm.responses(
+        messages=[Message(role="user", content=[TextContent(text="hi")])],
+        on_token=lambda _chunk: None,
+    )
+
+    assert isinstance(resp, LLMResponse)
+    assert mock_responses.call_count == 2
+    _, second_kwargs = mock_responses.call_args_list[1]
+    assert second_kwargs.get("temperature") == 1.0

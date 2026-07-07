@@ -62,6 +62,7 @@ from litellm.responses.main import (
     aresponses as litellm_aresponses,
     responses as litellm_responses,
 )
+from litellm.types.llms.base import BaseLiteLLMOpenAIResponseObject
 from litellm.types.llms.openai import (
     OutputTextDeltaEvent,
     ReasoningSummaryTextDeltaEvent,
@@ -952,19 +953,31 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
     def _process_stream_event(
         self, event: Any, *, emit_deltas: bool = True
-    ) -> tuple[Any | None, ModelResponseStream | None]:
-        """Extract output item and delta chunk from a Responses stream event.
+    ) -> tuple[Any | None, ModelResponseStream | None, Any | None]:
+        """Extract output item, delta chunk, and (optional) terminal item.
 
         Args:
-            event: A single Responses streaming event.
+            event: A single item yielded by a Responses stream iterator.
             emit_deltas: When ``False`` the delta chunk is never built — skip
                 the allocation when there is no stream callback to receive it.
 
         Returns:
-            (output_item, delta_chunk) — either or both may be ``None``.
+            ``(output_item, delta_chunk, terminal)`` — any element may be ``None``.
+
+            ``output_item`` is populated for ``response.output_item.done`` events.
+
+            ``delta_chunk`` is populated for text/refusal/reasoning delta events.
+
+            ``terminal`` is populated when the item already represents the
+            completed Responses payload — either as a typed ``ResponseCompletedEvent``
+            (the standard Responses stream shape) or as a
+            ``BaseLiteLLMOpenAIResponseObject`` (the shape that some third-party
+            litellm wrappers, e.g. ``lmnr``'s ``process_streaming_coroutine``,
+            yield when they re-shape the response into a pseudo-stream).
         """
         output_item: Any | None = None
         delta_chunk: ModelResponseStream | None = None
+        terminal: ResponseCompletedEvent | BaseLiteLLMOpenAIResponseObject | None = None
 
         # Collect finished output items
         evt_type = getattr(event, "type", None)
@@ -972,6 +985,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             item = getattr(event, "item", None)
             if item is not None:
                 output_item = item
+
+        # Recognise the standard Responses "completed" event.
+        if isinstance(event, ResponseCompletedEvent):
+            terminal = event
+
+        # Some litellm wrappers (Laminar's `process_streaming_coroutine`) yield
+        # the response payload directly via an async generator rather than as a
+        # typed stream event. Anything `BaseLiteLLMOpenAIResponseObject`-shaped
+        # we accept as the terminal response itself.
+        if terminal is None and isinstance(event, BaseLiteLLMOpenAIResponseObject):
+            terminal = event
 
         if emit_deltas and isinstance(
             event,
@@ -987,7 +1011,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     choices=[StreamingChoices(delta=Delta(content=delta))]
                 )
 
-        return output_item, delta_chunk
+        return output_item, delta_chunk, terminal
 
     def _finalize_stream_response(
         self,
@@ -995,6 +1019,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         collected_output_items: list[Any],
     ) -> ResponsesAPIResponse:
         """Validate and patch the completed response from a Responses stream.
+
+        ``completed_response`` may be either:
+
+        - a ``ResponseCompletedEvent`` — the standard Responses stream shape;
+          the actual ``ResponsesAPIResponse`` is exposed via ``.response``.
+        - a ``BaseLiteLLMOpenAIResponseObject`` (or subclass such as
+          ``ResponsesAPIResponse`` itself) — already the terminal payload.
+          Some third-party litellm wrappers (e.g. Laminar's
+          ``process_streaming_coroutine``) yield this shape directly through
+          a pseudo-stream.
 
         Raises:
             LLMNoResponseError: If the stream finished without a completed
@@ -1004,12 +1038,19 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             raise LLMNoResponseError(
                 "Responses stream finished without a completed response"
             )
-        if not isinstance(completed_response, ResponseCompletedEvent):
+        if isinstance(completed_response, ResponseCompletedEvent):
+            completed_resp = completed_response.response
+        elif isinstance(completed_response, BaseLiteLLMOpenAIResponseObject):
+            # Concrete subclasses (``ResponsesAPIResponse`` and friends)
+            # declare ``.output`` and the other response fields; the empty
+            # base class doesn't. Cast through the standard Responses shape
+            # so the rest of this function can work against ``.output`` etc.
+            completed_resp = cast(ResponsesAPIResponse, completed_response)
+        else:
             raise LLMNoResponseError(
                 f"Unexpected completed event: {type(completed_response)}"
             )
 
-        completed_resp = completed_response.response
         # Patch empty output with items collected from stream
         if not completed_resp.output and collected_output_items:
             completed_resp.output = collected_output_items
@@ -1644,19 +1685,42 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         # on the base class; bind through Any rather than
                         # gating on a concrete subclass.
                         stream: Any = ret
+                        # Three independent sources for the terminal response:
+                        #   - the wrapper's `.completed_response` attribute
+                        #     (the standard ``ResponsesAPIStreamingIterator``)
+                        #   - a ``ResponseCompletedEvent`` yielded mid-stream
+                        #   - a ``BaseLiteLLMOpenAIResponseObject`` yielded
+                        #     mid-stream (e.g. Laminar's wrapped output)
+                        wrapper_terminal: Any = None
+                        stream_event_terminal: ResponseCompletedEvent | None = None
+                        stream_response_terminal: (
+                            BaseLiteLLMOpenAIResponseObject | None
+                        ) = None
                         for event in stream:
                             if event is None:
                                 continue
-                            output_item, delta_chunk = self._process_stream_event(
-                                event, emit_deltas=stream_callback is not None
+                            output_item, delta_chunk, terminal = (
+                                self._process_stream_event(
+                                    event, emit_deltas=stream_callback is not None
+                                )
                             )
                             if output_item is not None:
                                 collected_output_items.append(output_item)
                             if stream_callback is not None and delta_chunk is not None:
                                 stream_callback(delta_chunk)
+                            if isinstance(terminal, ResponseCompletedEvent):
+                                stream_event_terminal = terminal
+                            elif isinstance(terminal, BaseLiteLLMOpenAIResponseObject):
+                                stream_response_terminal = terminal
 
+                        wrapper_terminal = getattr(stream, "completed_response", None)
+                        completed_response = (
+                            wrapper_terminal
+                            or stream_event_terminal
+                            or stream_response_terminal
+                        )
                         return self._finalize_stream_response(
-                            stream.completed_response, collected_output_items
+                            completed_response, collected_output_items
                         )
 
                     raise AssertionError(
@@ -1788,19 +1852,42 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         # on the base class; bind through Any rather than
                         # gating on a concrete subclass.
                         stream: Any = ret
+                        # Three independent sources for the terminal response:
+                        #   - the wrapper's `.completed_response` attribute
+                        #     (the standard ``ResponsesAPIStreamingIterator``)
+                        #   - a ``ResponseCompletedEvent`` yielded mid-stream
+                        #   - a ``BaseLiteLLMOpenAIResponseObject`` yielded
+                        #     mid-stream (e.g. Laminar's wrapped output)
+                        wrapper_terminal: Any = None
+                        stream_event_terminal: ResponseCompletedEvent | None = None
+                        stream_response_terminal: (
+                            BaseLiteLLMOpenAIResponseObject | None
+                        ) = None
                         async for event in stream:
                             if event is None:
                                 continue
-                            output_item, delta_chunk = self._process_stream_event(
-                                event, emit_deltas=stream_cb is not None
+                            output_item, delta_chunk, terminal = (
+                                self._process_stream_event(
+                                    event, emit_deltas=stream_cb is not None
+                                )
                             )
                             if output_item is not None:
                                 collected_output_items.append(output_item)
                             if stream_cb is not None and delta_chunk is not None:
                                 await _invoke_token_callback(stream_cb, delta_chunk)
+                            if isinstance(terminal, ResponseCompletedEvent):
+                                stream_event_terminal = terminal
+                            elif isinstance(terminal, BaseLiteLLMOpenAIResponseObject):
+                                stream_response_terminal = terminal
 
+                        wrapper_terminal = getattr(stream, "completed_response", None)
+                        completed_response = (
+                            wrapper_terminal
+                            or stream_event_terminal
+                            or stream_response_terminal
+                        )
                         return self._finalize_stream_response(
-                            stream.completed_response, collected_output_items
+                            completed_response, collected_output_items
                         )
 
                     raise AssertionError(
