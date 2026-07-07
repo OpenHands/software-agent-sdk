@@ -588,40 +588,6 @@ def _extract_tarball(tarball: Path, dest: Path) -> None:
         tar.extractall(path=".", filter="data")
 
 
-def _copy_git_tracked_source(sdk_project_root: Path) -> Path | None:
-    result = subprocess.run(
-        ["git", "-C", str(sdk_project_root), "ls-files", "-z"],
-        capture_output=True,
-        check=False,
-    )
-    if result.returncode != 0 or not result.stdout:
-        return None
-
-    snapshot_root = Path(tempfile.mkdtemp(prefix="agent-source-", dir=None)).resolve()
-    try:
-        for raw_path in result.stdout.split(b"\0"):
-            if not raw_path:
-                continue
-            relative_path = Path(os.fsdecode(raw_path))
-            source_path = sdk_project_root / relative_path
-            if not source_path.exists() and not source_path.is_symlink():
-                continue
-
-            destination_path = snapshot_root / relative_path
-            destination_path.parent.mkdir(parents=True, exist_ok=True)
-            if source_path.is_symlink():
-                os.symlink(os.readlink(source_path), destination_path)
-            elif source_path.is_dir():
-                destination_path.mkdir(exist_ok=True)
-            else:
-                shutil.copy2(source_path, destination_path)
-    except Exception:
-        shutil.rmtree(snapshot_root, ignore_errors=True)
-        raise
-
-    return snapshot_root
-
-
 def _make_build_context(
     sdk_project_root: Path,
     prebuilt_sdist: Path | None = None,
@@ -629,17 +595,14 @@ def _make_build_context(
     dockerfile_path = _get_dockerfile_path(sdk_project_root)
     tmp_root = Path(tempfile.mkdtemp(prefix="agent-build-", dir=None)).resolve()
     sdist_dir: Path | None = None
-    source_snapshot: Path | None = None
     try:
         if prebuilt_sdist is None:
-            source_snapshot = _copy_git_tracked_source(sdk_project_root)
-            build_source_root = source_snapshot or sdk_project_root
             sdist_dir = Path(
                 tempfile.mkdtemp(prefix="agent-sdist-", dir=None)
             ).resolve()
             _run(
                 ["uv", "build", "--sdist", "--out-dir", str(sdist_dir.resolve())],
-                cwd=str(build_source_root.resolve()),
+                cwd=str(sdk_project_root.resolve()),
             )
             sdists = sorted(sdist_dir.glob("*.tar.gz"), key=lambda p: p.stat().st_mtime)
             logger.info(
@@ -673,8 +636,6 @@ def _make_build_context(
     finally:
         if sdist_dir is not None:
             shutil.rmtree(sdist_dir, ignore_errors=True)
-        if source_snapshot is not None:
-            shutil.rmtree(source_snapshot, ignore_errors=True)
 
 
 def _active_buildx_driver() -> str | None:
