@@ -275,6 +275,7 @@ def _resolve_agent_from_profile(
         get_llm_profile_store,
     )
     from openhands.sdk.profiles.resolver import ProfileNotFound, resolve_agent_profile
+    from openhands.sdk.settings.model import OpenHandsAgentSettings
 
     store = get_agent_profile_store()
     profile_name = store.name_for_id(profile_id)
@@ -282,7 +283,7 @@ def _resolve_agent_from_profile(
         raise ProfileNotFound(f"Agent profile with id '{profile_id}' not found")
 
     try:
-        profile = store.load(profile_name, cipher=cipher)
+        profile = store.load(profile_name)
     except FileNotFoundError:
         raise ProfileNotFound(
             f"Agent profile '{profile_name}' (id={profile_id}) not found"
@@ -313,6 +314,23 @@ def _resolve_agent_from_profile(
         )
     except (TypeError, ValueError) as exc:
         raise ValueError(f"Profile '{profile_name}' failed to resolve: {exc}") from exc
+
+    if isinstance(settings_config, OpenHandsAgentSettings):
+        # Guarantee the on_token wiring this launch path needs (#4014): unlike
+        # an inline agent_settings launch, a client can't set llm.stream on a
+        # profile's referenced LLM ahead of time. This layer — not the SDK
+        # resolver, which runs for every caller including headless/scripted
+        # ones — is where the guarantee holds: this agent-server always wires
+        # _token_streaming_callback based on streaming_enabled (event_service.py,
+        # `any(llm.stream for llm in agent.get_all_llms())`), so setting it here
+        # is never a stream/callback mismatch. Forcing it any earlier (e.g. in
+        # the SDK resolver) would risk crashing a caller that resolves a
+        # profile without ever wiring on_token — acompletion now degrades
+        # gracefully in that case too (llm.py), but this is the layer that can
+        # make streaming actually happen instead of just failing safe.
+        settings_config = settings_config.model_copy(
+            update={"llm": settings_config.llm.model_copy(update={"stream": True})}
+        )
 
     agent = settings_config.create_agent()
     # Browser is deliberately absent from the deterministic SDK default

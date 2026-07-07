@@ -55,7 +55,8 @@ def build_seed_profile(
             ),
             acp_args=list(agent_settings.acp_args) or None,
             mcp_server_refs=None,
-            # ACP default; explicit for symmetry with the OpenHands seed below.
+            # Explicit: matches ACPAgentProfile's own [] default (ACP agents own
+            # their tooling), which differs from the OpenHands seed below.
             skill_refs=[],
         )
     context = agent_settings.agent_context
@@ -65,11 +66,10 @@ def build_seed_profile(
         agent=agent_settings.agent,
         # Verbatim: preserves explicit toolsets; None stays "server default".
         tools=agent_settings.tools,
-        # Embed the global's already-resolved skills + skill_refs=[] (no further
-        # discovery) to reproduce its exact set; skill_refs=None would re-discover
-        # user+public and inject skills a partial-source global never had.
-        skills=list(context.skills),
-        skill_refs=[],
+        # None = all discovered — profiles no longer embed skills (#4017), so
+        # there is nothing to freeze an exact prior set against; the seed
+        # simply inherits whatever the server-owned catalog discovers.
+        skill_refs=None,
         system_message_suffix=context.system_message_suffix,
         condenser=agent_settings.condenser,
         verification=build_profile_verification(agent_settings.verification),

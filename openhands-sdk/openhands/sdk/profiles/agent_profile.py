@@ -30,11 +30,10 @@ from openhands.sdk.settings.model import (
     LLMSummarizingCondenserSettings,
     VerificationSettings,
 )
-from openhands.sdk.skills import Skill
 from openhands.sdk.tool import Tool
 
 
-AGENT_PROFILE_SCHEMA_VERSION = 1
+AGENT_PROFILE_SCHEMA_VERSION = 2
 
 
 class ProfileVerificationSettings(BaseModel):
@@ -112,22 +111,20 @@ class AgentProfileBase(BaseModel):
             "null = all; [] = none; a non-null list = filter to the named keys."
         ),
     )
-    # On the base because both variants consume skills as prompt context. null
-    # (all discovered) and [] (none) are distinct; the default is [] — NOT null,
-    # unlike ``mcp_server_refs`` — because auto-injecting the whole catalog isn't
-    # behavior-preserving and a profile persisted before this field existed must
-    # not silently start pulling it on load. ``default_factory=list`` makes an
-    # absent field ([]) distinct from an explicit ``null`` (None), the opt-in for
-    # "all discovered".
+    # On the base because both variants consume skills as prompt context. A
+    # true twin of ``mcp_server_refs``: null = all discovered, [] = none, a
+    # non-null list filters to the named skills. OpenHands profiles default to
+    # null (all of the server-owned catalog) — there is no embedded ``skills``
+    # to fall back to anymore (#4017), so an unset field must mean "all",
+    # mirroring ``mcp_server_refs``. ``ACPAgentProfile`` overrides this default
+    # back to ``[]`` (see its docstring).
     skill_refs: list[str] | None = Field(
-        default_factory=list,
+        default=None,
         description=(
             "Which of the server-discovered skills to expose in the agent's "
             "prompt, selected by name (mirrors ``mcp_server_refs`` over "
-            "``mcp_config``). null = all discovered; [] = none (the default); a "
-            "non-null list = filter to the named skills. For OpenHands profiles, "
-            "any explicitly embedded ``skills`` are always included on top of "
-            "the filtered set."
+            "``mcp_config``). null = all discovered (the default); [] = none; "
+            "a non-null list = filter to the named skills."
         ),
     )
 
@@ -171,10 +168,6 @@ class OpenHandsAgentProfile(AgentProfileBase):
             "server's standard tool set; [] = an explicitly bare agent; a "
             "non-empty list is used exactly as given."
         ),
-    )
-    skills: list[Skill] = Field(
-        default_factory=list,
-        description="Skills that extend the agent's context.",
     )
     system_message_suffix: str | None = Field(
         default=None,
@@ -227,9 +220,18 @@ class ACPAgentProfile(AgentProfileBase):
             "ACP-delegating agent."
         ),
     )
-    # ``skill_refs`` is inherited from ``AgentProfileBase`` with the safe []
-    # default (no discovered skills injected unless a null/list is set) — ACP
-    # agents own their tooling, so that default is exactly right here.
+    # Overrides the base's null(=all) default back to [] (=none): ACP agents
+    # own their tooling and prompt construction, so no discovered skills are
+    # injected unless a profile explicitly opts in with a null/list value.
+    skill_refs: list[str] | None = Field(
+        default_factory=list,
+        description=(
+            "Which of the server-discovered skills to expose in the agent's "
+            "prompt, selected by name. null = all discovered; [] = none (the "
+            "default for ACP profiles); a non-null list = filter to the named "
+            "skills."
+        ),
+    )
     acp_server: ACPServerKind = Field(
         default="claude-code",
         description=(
@@ -317,10 +319,31 @@ validate/construct instances from raw payloads.
 
 PersistedProfileMigrator = Callable[[dict[str, Any]], dict[str, Any]]
 
+
+def _migrate_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
+    """v1→v2: drop the embedded ``skills`` field (#4017).
+
+    Agent Profiles has no production data yet (both consumers — canvas#1571 and
+    OpenHands#15060 — are still open), so this is belt-and-suspenders for a
+    stray hand-authored payload rather than a real data migration: the field is
+    simply dropped, not folded into ``skill_refs`` by name, since a v1 payload's
+    ``skill_refs=[]`` default meant "no further discovery" was already implied
+    by the embed (see the old field's docstring). A v1 payload's ``skill_refs``
+    is otherwise left untouched by this migration; only the model's *class*
+    default changes going forward, which does not apply to already-serialized
+    values.
+    """
+    migrated = dict(payload)
+    migrated.pop("skills", None)
+    migrated["schema_version"] = 2
+    return migrated
+
+
 # Registered per *source* schema_version; each migrator returns a payload with
-# an advanced ``schema_version``. Empty while only v1 exists — the first schema
-# bump adds ``{1: _migrate_v1_to_v2}`` here.
-_AGENT_PROFILE_MIGRATIONS: dict[int, PersistedProfileMigrator] = {}
+# an advanced ``schema_version``.
+_AGENT_PROFILE_MIGRATIONS: dict[int, PersistedProfileMigrator] = {
+    1: _migrate_v1_to_v2,
+}
 
 
 def _apply_persisted_migrations(payload: dict[str, Any]) -> dict[str, Any]:
@@ -405,13 +428,16 @@ def validate_agent_profile(
 
 
 def safe_validation_error_detail(exc: ValidationError) -> list[dict[str, Any]]:
-    """Secret-safe ``detail`` for a 422 from a failed profile validation.
+    """Conservative ``detail`` for a 422 from a failed profile validation.
 
-    Surfaces only ``loc``/``type`` per error and **drops ``msg``/``input``** — a
-    nested ``skills[].mcp_tools`` FastMCP config error embeds the offending
-    input, which may carry secrets. Shaped like FastAPI's request-validation ``detail``
-    (a list of error objects) so routers can hand it straight to ``HTTPException``.
-    Hoisted from the agent-server router so the local and cloud routers redact
-    identically.
+    Surfaces only ``loc``/``type`` per error and **drops ``msg``/``input``**.
+    Since the profile dropped its last secret-bearing field (embedded
+    ``skills[].mcp_tools``, #4017), no field can currently embed a secret in a
+    validation error — this redaction is now defense-in-depth rather than
+    strictly required, kept so error shape doesn't change if a future field
+    reintroduces one. Shaped like FastAPI's request-validation ``detail`` (a
+    list of error objects) so routers can hand it straight to
+    ``HTTPException``. Hoisted from the agent-server router so the local and
+    cloud routers redact identically.
     """
     return [{"loc": list(err["loc"]), "type": str(err["type"])} for err in exc.errors()]

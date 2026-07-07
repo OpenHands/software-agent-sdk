@@ -1,8 +1,9 @@
 """Tests for ``resolve_agent_profile`` / ``resolve_agent_profile_dry_run``.
 
 Covers both union variants, the null/empty/filter/dangling MCP cases, the
-dangling-LLM hard error, ``skills[].mcp_tools`` decryption, and the dry-run's
-redacted, side-effect-free diagnostics.
+dangling-LLM hard error, and the dry-run's redacted, side-effect-free
+diagnostics. Profiles no longer embed ``skills`` (#4017) — the skill catalog
+is server-discovered and filtered by ``skill_refs`` only.
 """
 
 from pathlib import Path
@@ -16,7 +17,6 @@ from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config
 from openhands.sdk.profiles import (
     ACPAgentProfile,
-    AgentProfileStore,
     DanglingMcpServerRef,
     DanglingSkillRef,
     OpenHandsAgentProfile,
@@ -27,7 +27,6 @@ from openhands.sdk.profiles import (
 from openhands.sdk.settings.model import ACPAgentSettings, OpenHandsAgentSettings
 from openhands.sdk.skills import Skill
 from openhands.sdk.tool import Tool
-from openhands.sdk.utils.cipher import Cipher
 
 
 _LLM_SECRET = "sk-LLM-SECRET-SHOULD-NOT-LEAK"
@@ -174,14 +173,10 @@ def test_openhands_profile_tools_selection_is_passed_through(
     assert settings.create_agent().tools == []
 
 
-def test_openhands_copies_skills_and_verification(
+def test_openhands_copies_verification(
     llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
 ) -> None:
-    profile = OpenHandsAgentProfile(
-        name="oh",
-        llm_profile_ref="default",
-        skills=[Skill(name="s1", content="do x")],
-    )
+    profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default")
     profile.verification.critic_enabled = True
     profile.verification.critic_model_name = "critic-x"
 
@@ -193,11 +188,30 @@ def test_openhands_copies_skills_and_verification(
         cipher=None,
     )
     assert isinstance(settings, OpenHandsAgentSettings)
-    assert [s.name for s in settings.agent_context.skills] == ["s1"]
     assert settings.verification.critic_enabled is True
     assert settings.verification.critic_model_name == "critic-x"
     # The profile carries no critic_api_key; it defaults to None on resolve.
     assert settings.verification.critic_api_key is None
+
+
+def test_openhands_resolve_sets_load_project_skills(
+    llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
+) -> None:
+    """Project skills are repo-scoped and can't be resolved at profile-resolve
+    time (no workspace yet); ``LocalConversation`` loads them lazily on first
+    use, gated on ``load_project_skills`` (#4016). The resolver must set it,
+    since the resolved ``AgentContext`` otherwise defaults it False."""
+    profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default")
+    settings = resolve_agent_profile(
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=None,
+        cipher=None,
+    )
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.agent_context is not None
+    assert settings.agent_context.load_project_skills is True
 
 
 def test_missing_llm_ref_raises_profile_not_found(
@@ -371,59 +385,14 @@ def test_skill_refs_duplicate_is_deduped(
     assert [s.name for s in acp_settings.agent_context.skills] == ["alpha"]
 
 
-def test_embedded_skills_compose_with_filtered_discovered(
+def test_no_available_skills_yields_no_skills(
     llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
 ) -> None:
+    # available_skills=None (no discovery run) → no skills reach the agent from
+    # this filter, regardless of skill_refs. Profiles no longer embed skills
+    # (#4017), so there is no other source.
     profile = OpenHandsAgentProfile(
-        name="oh",
-        llm_profile_ref="default",
-        skills=[Skill(name="embedded", content="x")],
-        skill_refs=["beta"],
-    )
-    settings = resolve_agent_profile(
-        profile,
-        llm_store=llm_store,
-        mcp_config=mcp_config,
-        available_skills=_discovered_skills(),
-        cipher=None,
-    )
-    assert isinstance(settings, OpenHandsAgentSettings)
-    assert [s.name for s in settings.agent_context.skills] == ["embedded", "beta"]
-
-
-def test_embedded_skill_wins_name_conflict_over_discovered(
-    llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
-) -> None:
-    profile = OpenHandsAgentProfile(
-        name="oh",
-        llm_profile_ref="default",
-        skills=[Skill(name="alpha", content="EMBEDDED")],
-        skill_refs=["alpha"],
-    )
-    settings = resolve_agent_profile(
-        profile,
-        llm_store=llm_store,
-        mcp_config=mcp_config,
-        available_skills=_discovered_skills(),
-        cipher=None,
-    )
-    assert isinstance(settings, OpenHandsAgentSettings)
-    skills = settings.agent_context.skills
-    assert [s.name for s in skills] == ["alpha"]
-    # Embedded definition is authoritative on a name collision.
-    assert skills[0].content == "EMBEDDED"
-
-
-def test_no_available_skills_yields_embedded_only(
-    llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
-) -> None:
-    # available_skills=None (no discovery run) → only embedded skills reach the
-    # agent, regardless of skill_refs.
-    profile = OpenHandsAgentProfile(
-        name="oh",
-        llm_profile_ref="default",
-        skills=[Skill(name="embedded", content="x")],
-        skill_refs=None,
+        name="oh", llm_profile_ref="default", skill_refs=None
     )
     settings = resolve_agent_profile(
         profile,
@@ -433,7 +402,7 @@ def test_no_available_skills_yields_embedded_only(
         cipher=None,
     )
     assert isinstance(settings, OpenHandsAgentSettings)
-    assert [s.name for s in settings.agent_context.skills] == ["embedded"]
+    assert settings.agent_context.skills == []
 
 
 # --------------------------------------------------------------------------- #
@@ -523,58 +492,6 @@ def test_mcp_dangling_when_config_is_none(
             cipher=None,
         )
     assert exc.value.missing == ["fetch"]
-
-
-# --------------------------------------------------------------------------- #
-# skills[].mcp_tools decryption
-# --------------------------------------------------------------------------- #
-
-
-def test_profile_load_decrypts_skill_mcp_tools_before_resolve(tmp_path: Path) -> None:
-    cipher = Cipher("k" * 64)
-    secret = "ghp_SKILL_MCP_SECRET"
-    skill = Skill(
-        name="leaky",
-        content="x",
-        mcp_tools={
-            "svc": MCPServer(
-                url="https://svc.test",
-                headers={"Authorization": SecretStr(f"Bearer {secret}")},
-                env={"API_KEY": SecretStr(secret)},
-            )
-        },
-    )
-    lstore = LLMProfileStore(base_dir=tmp_path / "llm")
-    lstore.save(
-        "default",
-        LLM(model="gpt-4o", api_key=SecretStr("sk-x"), usage_id="x"),
-        include_secrets=True,
-    )
-    astore = AgentProfileStore(base_dir=tmp_path / "agent")
-    astore.save(
-        OpenHandsAgentProfile(name="p", llm_profile_ref="default", skills=[skill]),
-        cipher=cipher,
-    )
-
-    loaded = astore.load("p", cipher=cipher)
-    assert isinstance(loaded, OpenHandsAgentProfile)
-    stored_tools = loaded.skills[0].mcp_tools
-    assert stored_tools is not None
-    stored = stored_tools["svc"]
-    assert stored.env is not None
-    assert stored.env["API_KEY"].get_secret_value() == secret
-
-    settings = resolve_agent_profile(
-        loaded, llm_store=lstore, mcp_config={}, available_skills=None, cipher=cipher
-    )
-    assert isinstance(settings, OpenHandsAgentSettings)
-    resolved_tools = settings.agent_context.skills[0].mcp_tools
-    assert resolved_tools is not None
-    resolved = resolved_tools["svc"]
-    assert resolved.headers is not None
-    assert resolved.env is not None
-    assert resolved.headers["Authorization"].get_secret_value() == f"Bearer {secret}"
-    assert resolved.env["API_KEY"].get_secret_value() == secret
 
 
 # --------------------------------------------------------------------------- #
@@ -674,11 +591,14 @@ def test_acp_skill_refs_none_includes_all_discovered(
     }
 
 
-def test_acp_skill_refs_empty_leaves_agent_context_none(
+def test_acp_skill_refs_empty_still_carries_load_project_skills(
     llm_store: LLMProfileStore,
 ) -> None:
-    # No selected skills => no agent_context, preserving the unchanged
-    # "no prompt context" ACP behavior.
+    """No selected skills leaves the *prompt* content unchanged (empty skills,
+    same as before), but ``agent_context`` is no longer ``None`` — it must
+    always be constructed so ``load_project_skills=True`` reaches
+    ``LocalConversation``'s lazy project-skill load (#4016), which applies to
+    ACP profiles the same as OpenHands ones."""
     profile = ACPAgentProfile(name="acp", acp_server="claude-code", skill_refs=[])
     settings = resolve_agent_profile(
         profile,
@@ -688,7 +608,10 @@ def test_acp_skill_refs_empty_leaves_agent_context_none(
         cipher=None,
     )
     assert isinstance(settings, ACPAgentSettings)
-    assert settings.agent_context is None
+    assert settings.agent_context is not None
+    assert settings.agent_context.skills == []
+    assert settings.agent_context.load_project_skills is True
+    assert settings.agent_context.current_datetime is None
 
 
 # --------------------------------------------------------------------------- #

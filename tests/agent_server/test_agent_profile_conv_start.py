@@ -215,6 +215,77 @@ class TestResolveAgentFromProfile:
         MockDiscover.assert_called_once()
         assert MockResolve.call_args.kwargs["available_skills"] == []
 
+    def test_openhands_profile_forces_llm_stream_true(self):
+        """A profile-launched OpenHands conversation must guarantee on_token
+        wiring (#4014): unlike an inline agent_settings launch, a client can't
+        set llm.stream ahead of time on a profile's referenced LLM. This
+        agent-server layer forces it after resolution — not the SDK resolver,
+        which runs for every caller including headless/scripted ones."""
+        from openhands.agent_server.conversation_service import (
+            _resolve_agent_from_profile,
+        )
+        from openhands.sdk.settings.model import OpenHandsAgentSettings
+
+        profile = _make_openhands_profile()
+        # A real (unmocked) settings object so isinstance(...) narrows for real.
+        resolved_settings = OpenHandsAgentSettings(
+            llm=LLM(model="gpt-4o", usage_id="agent", stream=False)
+        )
+        assert resolved_settings.llm.stream is False
+
+        with (
+            patch(_STORE_PATH) as MockStore,
+            patch(_LLM_STORE_PATH),
+            patch(_RESOLVE_PATH, return_value=resolved_settings),
+            patch(
+                "openhands.agent_server.conversation_service.is_tool_usable",
+                return_value=False,
+            ),
+        ):
+            store_inst = MockStore.return_value
+            store_inst.name_for_id.return_value = profile.name
+            store_inst.load.return_value = profile
+
+            result_agent, _ = _resolve_agent_from_profile(
+                profile.id, cipher=None, mcp_config={}
+            )
+
+        assert result_agent.llm.stream is True
+        # The original resolved settings object is untouched (model_copy, not
+        # a mutation), and the referenced LLM profile on disk is never
+        # rewritten — unlike a client-side self-heal that persists the flag.
+        assert resolved_settings.llm.stream is False
+
+    def test_acp_profile_does_not_force_llm_stream(self):
+        """The stream-forcing guarantee is OpenHands-only: ACP agents emit
+        their own message chunks through the ACP bridge without exposing an
+        LLM the same way (event_service.py's streaming_enabled already treats
+        every ACPAgent as streaming-capable regardless of llm.stream)."""
+        from openhands.agent_server.conversation_service import (
+            _resolve_agent_from_profile,
+        )
+
+        profile = _make_acp_profile()
+        agent = MagicMock()
+
+        with (
+            patch(_STORE_PATH) as MockStore,
+            patch(_LLM_STORE_PATH),
+            patch(_RESOLVE_PATH) as MockResolve,
+        ):
+            store_inst = MockStore.return_value
+            store_inst.name_for_id.return_value = profile.name
+            store_inst.load.return_value = profile
+            mock_config = MagicMock()
+            mock_config.create_agent.return_value = agent
+            MockResolve.return_value = mock_config
+
+            _resolve_agent_from_profile(profile.id, cipher=None, mcp_config={})
+
+        # No model_copy/mutation attempted on an ACP (non-OpenHandsAgentSettings)
+        # resolved settings object.
+        mock_config.model_copy.assert_not_called()
+
     def test_openhands_default_tools_get_browser_when_usable(self):
         """A default-toolset (tools=None) OpenHands profile launch injects the
         browser tool set when this server's runtime can run it — the
@@ -345,17 +416,45 @@ class TestResolveAgentFromProfile:
         MockUsable.assert_not_called()
         assert result_agent is agent
 
-    def test_openhands_default_profile_skips_discovery(self):
-        """A profile with the default ``skill_refs`` (== [], incl. any persisted
-        before the field existed) must NOT trigger catalog discovery — otherwise
-        every legacy OpenHands profile would silently inject the full discovered
-        skill set into its prompt on launch (regression guard for #3868)."""
+    def test_openhands_default_profile_triggers_discovery(self):
+        """A profile's default ``skill_refs`` is ``None`` (all discovered,
+        #4017) — a true twin of ``mcp_server_refs``, since there is no
+        embedded-skills fallback anymore. This *does* trigger catalog
+        discovery by default, unlike the old ``[]``-default behavior."""
         from openhands.agent_server.conversation_service import (
             _resolve_agent_from_profile,
         )
 
         profile = _make_openhands_profile()
-        assert profile.skill_refs == []  # the default, not None
+        assert profile.skill_refs is None  # the default, not []
+        agent = _make_agent()
+
+        with (
+            patch(_STORE_PATH) as MockStore,
+            patch(_LLM_STORE_PATH),
+            patch(_RESOLVE_PATH) as MockResolve,
+            patch(_DISCOVER_PATH, return_value=[]) as MockDiscover,
+        ):
+            store_inst = MockStore.return_value
+            store_inst.name_for_id.return_value = profile.name
+            store_inst.load.return_value = profile
+            mock_config = MagicMock()
+            mock_config.create_agent.return_value = agent
+            MockResolve.return_value = mock_config
+
+            _resolve_agent_from_profile(profile.id, cipher=None, mcp_config={})
+
+        MockDiscover.assert_called_once()
+
+    def test_openhands_explicit_empty_skill_refs_skips_discovery(self):
+        """An explicit ``skill_refs=[]`` (none) still skips the (network-bound)
+        catalog discovery — the opt-out path #3868 introduced, unaffected by
+        the default changing from ``[]`` to ``None``."""
+        from openhands.agent_server.conversation_service import (
+            _resolve_agent_from_profile,
+        )
+
+        profile = _make_openhands_profile().model_copy(update={"skill_refs": []})
         agent = _make_agent()
 
         with (
@@ -373,8 +472,6 @@ class TestResolveAgentFromProfile:
 
             _resolve_agent_from_profile(profile.id, cipher=None, mcp_config={})
 
-        # Default skill_refs=[] selects no discovered skills, so the
-        # (network-bound) discovery is skipped and the resolver gets None.
         MockDiscover.assert_not_called()
         assert MockResolve.call_args.kwargs["available_skills"] is None
 

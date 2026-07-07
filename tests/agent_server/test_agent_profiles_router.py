@@ -425,25 +425,38 @@ def test_save_missing_required_ref_returns_422(client):
     assert any("llm_profile_ref" in err["loc"] for err in detail)
 
 
-def test_save_invalid_body_does_not_leak_mcp_secret(client):
-    """A malformed profile body's 422 must not echo skills[].mcp_tools secrets."""
-    secret = "ghp_should_never_appear_in_error"
+def test_save_v1_body_with_stray_skills_key_is_migrated_and_saved(client, store):
+    """A body with no ``schema_version`` is treated as v1 and migrated (#4017):
+    the now-removed ``skills`` field is dropped before validation, so the save
+    succeeds rather than tripping extra='forbid'."""
+    response = client.post(
+        "/api/agent-profiles/legacy",
+        json={
+            "llm_profile_ref": "base",
+            "skills": [{"name": "old", "content": "x"}],
+        },
+    )
+    assert response.status_code == 201
+    loaded = store.load("legacy")
+    assert isinstance(loaded, OpenHandsAgentProfile)
+    assert not hasattr(loaded, "skills")
+
+
+def test_save_current_schema_version_rejects_stray_skills_key(client):
+    """A body that already claims the current schema version skips migration,
+    so a stray ``skills`` key is a genuine extra='forbid' violation (422), not
+    silently dropped."""
+    from openhands.sdk.profiles.agent_profile import AGENT_PROFILE_SCHEMA_VERSION
+
     response = client.post(
         "/api/agent-profiles/bad",
         json={
+            "schema_version": AGENT_PROFILE_SCHEMA_VERSION,
             "llm_profile_ref": "base",
-            "skills": [
-                {
-                    "name": "leaky",
-                    "content": "x",
-                    # Malformed: mcpServers must be an object, forcing a failure.
-                    "mcp_tools": {"mcpServers": {"svc": {"headers": secret}}},
-                }
-            ],
+            "skills": [{"name": "old", "content": "x"}],
         },
     )
     assert response.status_code == 422
-    assert secret not in response.text
 
 
 def test_save_extra_field_returns_422(client):
@@ -479,6 +492,19 @@ def test_get_not_found(client):
     response = client.get("/api/agent-profiles/nonexistent")
     assert response.status_code == 404
     assert "not found" in response.json()["detail"].lower()
+
+
+def test_get_ignores_expose_secrets_header(client, store):
+    """A profile is secret-free at rest (#4017); GET has no ``X-Expose-Secrets``
+    behavior — unlike the LLM ``/api/profiles`` router, the header is simply
+    ignored rather than changing the response."""
+    store.save(OpenHandsAgentProfile(name="p", llm_profile_ref="base"))
+
+    plain = client.get("/api/agent-profiles/p").json()
+    encrypted = client.get(
+        "/api/agent-profiles/p", headers={"X-Expose-Secrets": "encrypted"}
+    ).json()
+    assert plain == encrypted
 
 
 def test_get_corrupted_returns_400(client, temp_agent_profiles_dir):
@@ -644,23 +670,21 @@ def test_seed_preserves_openhands_fields(client):
     assert prof["enable_switch_llm_tool"] is False
     assert prof["tool_concurrency_limit"] == 3
     assert prof["system_message_suffix"] == "be terse"
-    # The seed embeds the global's resolved skills and selects no further
-    # discovery (skill_refs=[]), so it resolves to exactly that skill set.
-    assert prof["skill_refs"] == []
+    # The seed no longer embeds skills (#4017); skill_refs=None (all
+    # discovered) is behavior-preserving going forward, since there is no
+    # partial-source global snapshot to freeze against anymore.
+    assert prof["skill_refs"] is None
     assert prof["verification"]["critic_enabled"] is True
     assert prof["verification"]["critic_model_name"] == "x-critic"
     # The profile verification is secret-free — no critic_api_key projected.
     assert "critic_api_key" not in prof["verification"]
 
 
-def test_seed_clears_skill_refs_even_when_global_autoloads(client):
-    """A global that auto-loads skills still seeds skill_refs=[] (embedded
-    snapshot), not None.
-
-    skill_refs=None would re-discover user+public at resolve time and inject
-    skills a partial-source global never had; the embedded snapshot of
-    context.skills is the faithful mapping regardless of source flags.
-    """
+def test_seed_skill_refs_is_none_regardless_of_global_autoload_flags(client):
+    """The seed's ``skill_refs=None`` doesn't depend on the global's
+    ``load_user_skills`` / ``load_public_skills`` — those flags governed the
+    now-removed embedded-skills snapshot; the profile model has nothing left
+    to key off, so the seed is unconditionally ``None``."""
     client.patch(
         "/api/settings",
         json={"agent_settings_diff": {"agent_context": {"load_user_skills": True}}},
@@ -668,7 +692,7 @@ def test_seed_clears_skill_refs_even_when_global_autoloads(client):
     client.get("/api/agent-profiles")  # triggers the seed
 
     prof = client.get("/api/agent-profiles/default").json()["profile"]
-    assert prof["skill_refs"] == []
+    assert prof["skill_refs"] is None
 
 
 def test_seed_preserves_acp_fields(client):
@@ -696,120 +720,6 @@ def test_seed_preserves_acp_fields(client):
     assert prof["skill_refs"] == []
 
 
-# ── Cipher: skills[].mcp_tools secret round-trip ────────────────────────────
-
-
-@pytest.fixture
-def secret_key():
-    from base64 import urlsafe_b64encode
-
-    return urlsafe_b64encode(b"a" * 32).decode("ascii")
-
-
-@pytest.fixture
-def cipher(secret_key):
-    from openhands.sdk.utils.cipher import Cipher
-
-    return Cipher(secret_key)
-
-
-@pytest.fixture
-def client_with_cipher(
-    temp_agent_profiles_dir, temp_settings_dir, secret_key, monkeypatch
-):
-    from pydantic import SecretStr
-
-    reset_stores()
-    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(temp_settings_dir))
-    config = Config(
-        static_files_path=None, session_api_keys=[], secret_key=SecretStr(secret_key)
-    )
-    app = create_app(config)
-    with patch(
-        "openhands.agent_server.agent_profiles_router.get_agent_profile_store",
-        lambda: AgentProfileStore(base_dir=temp_agent_profiles_dir),
-    ):
-        yield TestClient(app)
-    reset_stores()
-
-
-def _profile_with_mcp_secret(token_value: str) -> dict:
-    return {
-        "llm_profile_ref": "base",
-        "skills": [
-            {
-                "name": "leaky",
-                "content": "do stuff",
-                "mcp_tools": {
-                    "mcpServers": {
-                        "svc": {
-                            "url": "https://x.test",
-                            "auth": {
-                                "strategy": "bearer",
-                                "value": token_value,
-                            },
-                        }
-                    }
-                },
-            }
-        ],
-    }
-
-
-def _mcp_auth_value(profile_payload: dict) -> str:
-    servers = profile_payload["skills"][0]["mcp_tools"]
-    return servers["svc"]["auth"]["value"]
-
-
-def test_mcp_tools_secret_encrypted_roundtrip(client_with_cipher, cipher):
-    """GET(encrypted) -> POST -> the secret still decrypts exactly once.
-
-    Without decrypt-incoming-before-save the re-posted token would be encrypted
-    again and the stored value would decrypt to a stale token.
-    """
-    secret = "ghp_roundtrip_secret"
-
-    created = client_with_cipher.post(
-        "/api/agent-profiles/p", json=_profile_with_mcp_secret(secret)
-    )
-    assert created.status_code == 201
-
-    # GET encrypted: a Fernet token of the ORIGINAL secret (not double-encrypted).
-    enc = client_with_cipher.get(
-        "/api/agent-profiles/p", headers={"X-Expose-Secrets": "encrypted"}
-    ).json()
-    token = _mcp_auth_value(enc["profile"])
-    assert token != secret
-    assert cipher.decrypt(token).get_secret_value() == secret
-
-    # Re-post the encrypted API payload (an ordinary client edit round-trip).
-    reposted = client_with_cipher.post("/api/agent-profiles/p", json=enc["profile"])
-    assert reposted.status_code == 201
-
-    # Plaintext GET returns the original secret -> decrypted exactly once.
-    plain = client_with_cipher.get(
-        "/api/agent-profiles/p", headers={"X-Expose-Secrets": "plaintext"}
-    ).json()
-    assert _mcp_auth_value(plain["profile"]) == secret
-
-
-def test_mcp_tools_secret_encrypted_at_rest(
-    client_with_cipher, temp_agent_profiles_dir, cipher
-):
-    """A posted plaintext MCP secret is encrypted on disk, never stored raw."""
-    import json
-
-    secret = "ghp_at_rest_secret"
-    client_with_cipher.post(
-        "/api/agent-profiles/p", json=_profile_with_mcp_secret(secret)
-    )
-
-    raw = json.loads((temp_agent_profiles_dir / "p.json").read_text())
-    stored = raw["skills"][0]["mcp_tools"]["svc"]["auth"]["value"]
-    assert stored != secret
-    assert cipher.decrypt(stored).get_secret_value() == secret
-
-
 # ── Store errors → HTTP ─────────────────────────────────────────────────────
 
 
@@ -823,7 +733,7 @@ def test_list_timeout_returns_503(client, monkeypatch):
 
 
 def test_save_timeout_returns_503(client, monkeypatch):
-    def boom(self, profile, *, cipher=None, max_profiles=None):
+    def boom(self, profile, *, max_profiles=None):
         raise TimeoutError("locked")
 
     monkeypatch.setattr(AgentProfileStore, "save", boom)

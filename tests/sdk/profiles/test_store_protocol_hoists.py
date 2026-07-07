@@ -71,7 +71,7 @@ class InMemoryAgentProfileStore:
             )
         return out
 
-    def save(self, profile, *, cipher=None, max_profiles=None) -> None:
+    def save(self, profile, *, max_profiles=None) -> None:
         if (
             max_profiles is not None
             and profile.name not in self._profiles
@@ -80,7 +80,7 @@ class InMemoryAgentProfileStore:
             raise ProfileLimitExceeded(f"Profile limit reached ({max_profiles}).")
         self._profiles[profile.name] = profile
 
-    def load(self, name, *, cipher=None):
+    def load(self, name):
         if name not in self._profiles:
             raise FileNotFoundError(name)
         return self._profiles[name]
@@ -245,6 +245,9 @@ def test_build_seed_profile_openhands_branch():
     assert profile.mcp_server_refs is None
     # Default settings carry tools=None -> the seed inherits the server default.
     assert profile.tools is None
+    # None (all discovered) — there is no embedded skills to freeze against
+    # anymore (#4017), so the seed simply inherits future catalog discovery.
+    assert profile.skill_refs is None
     # Secret-free verification projection (no critic_api_key on the profile type).
     assert "critic_api_key" not in type(profile.verification).model_fields
 
@@ -279,6 +282,8 @@ def test_build_seed_profile_acp_branch():
     assert profile.name == SEED_PROFILE_NAME
     assert profile.acp_server == "claude-code"
     assert profile.mcp_server_refs is None
+    # ACP profiles keep the [] (none) default — they own their tooling.
+    assert profile.skill_refs == []
     assert not hasattr(profile, "llm_profile_ref")
 
 
