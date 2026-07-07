@@ -245,9 +245,9 @@ def test_build_seed_profile_openhands_branch():
     assert profile.mcp_server_refs is None
     # Default settings carry tools=None -> the seed inherits the server default.
     assert profile.tools is None
-    # None (all discovered) — there is no embedded skills to freeze against
-    # anymore (#4017), so the seed simply inherits future catalog discovery.
-    assert profile.skill_refs is None
+    # Default settings resolve to no skills, so the seed freezes an empty
+    # selection (== [], no skills) rather than None (all discovered).
+    assert profile.skill_refs == []
     # Secret-free verification projection (no critic_api_key on the profile type).
     assert "critic_api_key" not in type(profile.verification).model_fields
 
@@ -255,6 +255,25 @@ def test_build_seed_profile_openhands_branch():
     fallback = build_seed_profile(settings, active_llm_profile=None)
     assert isinstance(fallback, OpenHandsAgentProfile)
     assert fallback.llm_profile_ref == SEED_PROFILE_NAME
+
+
+def test_build_seed_profile_freezes_resolved_skills_by_name():
+    """A global with a resolved skill set seeds a profile that names exactly
+    those skills, so a partial-source global isn't expanded to all-discovered."""
+    settings = validate_agent_settings(
+        {
+            "agent_kind": "openhands",
+            "agent_context": {
+                "skills": [
+                    {"name": "alpha", "content": "x"},
+                    {"name": "beta", "content": "y"},
+                ]
+            },
+        }
+    )
+    profile = build_seed_profile(settings, active_llm_profile="my-llm")
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert profile.skill_refs == ["alpha", "beta"]
 
 
 def test_build_seed_profile_copies_explicit_tools():

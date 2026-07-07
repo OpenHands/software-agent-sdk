@@ -235,18 +235,12 @@ def _build_openhands_settings(
 ) -> AgentSettingsConfig:
     """Compose the resolved ``OpenHandsAgentSettings`` from a profile + LLM.
 
-    ``filtered_skills`` (the ``skill_refs`` selection over the server-discovered
-    catalog) is the sole skill source — profiles no longer embed ``skills``
-    (#4017). ``load_project_skills=True`` restores the one enrichment the
-    catalog can't provide: project skills are repo-scoped, not resolvable at
-    profile-resolve time (no workspace yet), so ``LocalConversation`` loads them
-    lazily on first use, the same way an ``agent_settings``-launched
-    conversation already does (#4016). ``load_user_skills`` /
-    ``load_public_skills`` are deliberately left at their default ``False`` —
-    unlike project skills, user/public skills already reach the agent through
-    ``filtered_skills`` (the resolver's catalog, via ``discover_profile_skills``,
-    already includes them); flipping those flags too would trigger a second,
-    redundant discovery pass inside ``AgentContext`` itself.
+    ``filtered_skills`` is the sole skill source (profiles no longer embed
+    skills). ``load_project_skills=True`` lets ``LocalConversation`` lazily load
+    repo-scoped project skills, which can't be resolved here (no workspace yet).
+    ``load_user_skills`` / ``load_public_skills`` stay False on purpose:
+    user/public skills already arrive via ``filtered_skills``, so enabling the
+    flags would double-load them.
     """
     payload = {
         "schema_version": AGENT_SETTINGS_SCHEMA_VERSION,
@@ -279,19 +273,13 @@ def _build_acp_settings(
 
     ``acp_command`` is stored as a shell string and split into the settings'
     token list. No credential is set — provider creds ride
-    ``state.secret_registry`` (#3720). ``filtered_skills`` (the ``skill_refs``
-    selection, ``[]`` by default for ACP profiles) become prompt-only context
-    via ``agent_context``; ``current_datetime=None`` matches ACP's convention of
-    not injecting a timestamp. ``agent_context`` is always constructed (never
-    ``None``, even with no selected skills) so ``load_project_skills=True``
-    still reaches ``LocalConversation``'s lazy project-skill load (#4016) —
-    project skills are repo-scoped, not gated by ``skill_refs``, and apply to
-    ACP profiles the same as OpenHands ones. This is behavior-preserving for the
-    rendered ACP prompt: an ``AgentContext`` with no skills/suffix/secrets
-    renders the same "no context" content as ``None`` (see
-    ``ACPAgent._render_suffix``). A ``custom`` server has no default command, so
-    one must be supplied — the same invariant ``resolve_acp_command`` enforces
-    at ``create_agent``, surfaced here so the resolved settings stay executable.
+    ``state.secret_registry``. ``filtered_skills`` become prompt-only context
+    (``current_datetime=None`` matches ACP's no-timestamp convention).
+    ``agent_context`` is always built (never ``None``) so
+    ``load_project_skills=True`` reaches ``LocalConversation``'s lazy load;
+    project skills apply to ACP profiles too. Caveat: an ACP CLI that already
+    ingests repo files (e.g. AGENTS.md) may then see that content twice. A
+    ``custom`` server has no default command, so one must be supplied.
     """
     command = shlex.split(profile.acp_command) if profile.acp_command else []
     if profile.acp_server == "custom" and not command:

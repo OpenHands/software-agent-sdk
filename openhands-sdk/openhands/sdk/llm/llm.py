@@ -1387,18 +1387,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         _caller_kwargs = kwargs.copy()
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
-        if enable_streaming and on_token is None:
-            # Degrade gracefully instead of hard-raising: a stream/callback
-            # mismatch (e.g. a profile-launched conversation whose LLM has
-            # stream=True but no on_token wired) must not crash the run (#4014).
-            logger.warning(
-                "Streaming requested but no on_token callback was provided; "
-                "falling back to a non-streaming call."
-            )
-            enable_streaming = False
-        # Unconditional: a caller-supplied stream=True must be cleared on
-        # degrade, not just left un-set-to-True.
-        kwargs["stream"] = enable_streaming
+        if enable_streaming:
+            if on_token is None:
+                raise ValueError("Streaming requires an on_token callback")
+            kwargs["stream"] = True
 
         (
             formatted_messages,
@@ -1484,18 +1476,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         _caller_kwargs = kwargs.copy()
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
-        if enable_streaming and on_token is None:
-            # Degrade gracefully instead of hard-raising: a stream/callback
-            # mismatch (e.g. a profile-launched conversation whose LLM has
-            # stream=True but no on_token wired) must not crash the run (#4014).
-            logger.warning(
-                "Streaming requested but no on_token callback was provided; "
-                "falling back to a non-streaming call."
-            )
-            enable_streaming = False
-        # Unconditional: a caller-supplied stream=True must be cleared on
-        # degrade, not just left un-set-to-True.
-        kwargs["stream"] = enable_streaming
+        if enable_streaming:
+            if on_token is None:
+                raise ValueError("Streaming requires an on_token callback")
+            kwargs["stream"] = True
 
         (
             formatted_messages,
@@ -1598,19 +1582,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         _caller_kwargs = kwargs.copy()
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
-        # We allow on_token to be None for subscription mode.
-        if user_enable_streaming and on_token is None and not self.is_subscription:
-            # Degrade gracefully instead of hard-raising: a stream/callback
-            # mismatch (e.g. a profile-launched conversation whose LLM has
-            # stream=True but no on_token wired) must not crash the run (#4014).
-            logger.warning(
-                "Streaming requested but no on_token callback was provided; "
-                "falling back to a non-streaming call."
-            )
-            user_enable_streaming = False
-        # Unconditional: a caller-supplied stream=True must be cleared on
-        # degrade, not just left un-set-to-True.
-        kwargs["stream"] = user_enable_streaming
+        if user_enable_streaming:
+            # We allow on_token to be None for subscription mode
+            if on_token is None and not self.is_subscription:
+                raise ValueError("Streaming requires an on_token callback")
+            kwargs["stream"] = True
 
         (
             instructions,
@@ -1746,19 +1722,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         _caller_kwargs = kwargs.copy()
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
-        # We allow on_token to be None for subscription mode.
-        if user_enable_streaming and on_token is None and not self.is_subscription:
-            # Degrade gracefully instead of hard-raising: a stream/callback
-            # mismatch (e.g. a profile-launched conversation whose LLM has
-            # stream=True but no on_token wired) must not crash the run (#4014).
-            logger.warning(
-                "Streaming requested but no on_token callback was provided; "
-                "falling back to a non-streaming call."
-            )
-            user_enable_streaming = False
-        # Unconditional: a caller-supplied stream=True must be cleared on
-        # degrade, not just left un-set-to-True.
-        kwargs["stream"] = user_enable_streaming
+        if user_enable_streaming:
+            # We allow on_token to be None for subscription mode
+            if on_token is None and not self.is_subscription:
+                raise ValueError("Streaming requires an on_token callback")
+            kwargs["stream"] = True
 
         (
             instructions,

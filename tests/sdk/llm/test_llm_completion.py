@@ -167,31 +167,15 @@ def test_llm_completion_basic(mock_completion):
     assert not llm.should_mock_tool_calls(cc_tools)
 
 
-@patch("openhands.sdk.llm.llm.logger")
-@patch("openhands.sdk.llm.llm.litellm_completion")
-def test_llm_streaming_without_callback_degrades_gracefully(
-    mock_completion, mock_logger, default_config
-):
-    """A stream/callback mismatch must not crash the run (#4014) — e.g. a
-    profile-launched conversation whose LLM has stream=True but no on_token
-    wired. ``completion`` degrades to a non-streaming call instead of raising,
-    and warns rather than silently swallowing the mismatch.
-
-    Patches the module logger locally (rather than relying on caplog) so the
-    mock is properly typed, unlike the module-level object the autouse
-    ``suppress_logging`` fixture substitutes it with.
-    """
+def test_llm_streaming_not_supported(default_config):
+    """Test that streaming requires an on_token callback."""
     llm = default_config
-    mock_completion.return_value = create_mock_response("Test response")
 
     messages = [Message(role="user", content=[TextContent(text="Hello")])]
-    response = llm.completion(messages=messages, stream=True)
 
-    assert response.message.content[0].text == "Test response"
-    # Never asked litellm for a streaming response.
-    assert mock_completion.call_args.kwargs.get("stream") is not True
-    mock_logger.warning.assert_called_once()
-    assert "on_token" in mock_logger.warning.call_args.args[0]
+    # Streaming without callback should raise an error
+    with pytest.raises(ValueError, match="Streaming requires an on_token callback"):
+        llm.completion(messages=messages, stream=True)
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")

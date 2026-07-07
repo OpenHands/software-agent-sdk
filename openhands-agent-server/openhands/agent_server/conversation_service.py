@@ -316,18 +316,11 @@ def _resolve_agent_from_profile(
         raise ValueError(f"Profile '{profile_name}' failed to resolve: {exc}") from exc
 
     if isinstance(settings_config, OpenHandsAgentSettings):
-        # Guarantee the on_token wiring this launch path needs (#4014): unlike
-        # an inline agent_settings launch, a client can't set llm.stream on a
-        # profile's referenced LLM ahead of time. This layer — not the SDK
-        # resolver, which runs for every caller including headless/scripted
-        # ones — is where the guarantee holds: this agent-server always wires
-        # _token_streaming_callback based on streaming_enabled (event_service.py,
-        # `any(llm.stream for llm in agent.get_all_llms())`), so setting it here
-        # is never a stream/callback mismatch. Forcing it any earlier (e.g. in
-        # the SDK resolver) would risk crashing a caller that resolves a
-        # profile without ever wiring on_token — acompletion now degrades
-        # gracefully in that case too (llm.py), but this is the layer that can
-        # make streaming actually happen instead of just failing safe.
+        # Force streaming so this launch path wires on_token: a client can't set
+        # llm.stream on a profile's referenced LLM ahead of time. Safe at this
+        # layer (not the SDK resolver) because this server wires the token
+        # callback whenever any llm.stream is set; a headless resolver caller
+        # that never wires on_token is covered by LLM's graceful degradation.
         settings_config = settings_config.model_copy(
             update={"llm": settings_config.llm.model_copy(update={"stream": True})}
         )

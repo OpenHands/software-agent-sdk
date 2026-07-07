@@ -66,10 +66,12 @@ def build_seed_profile(
         agent=agent_settings.agent,
         # Verbatim: preserves explicit toolsets; None stays "server default".
         tools=agent_settings.tools,
-        # None = all discovered — profiles no longer embed skills (#4017), so
-        # there is nothing to freeze an exact prior set against; the seed
-        # simply inherits whatever the server-owned catalog discovers.
-        skill_refs=None,
+        # Freeze the global's already-resolved skills by name so the seed
+        # reproduces its exact set (empty -> [] -> no skills). The model's
+        # None=all-discovered default is for user-created profiles; the seed is
+        # a behavior-preserving migration and must not add skills the global
+        # never had.
+        skill_refs=[skill.name for skill in context.skills],
         system_message_suffix=context.system_message_suffix,
         condenser=agent_settings.condenser,
         verification=build_profile_verification(agent_settings.verification),

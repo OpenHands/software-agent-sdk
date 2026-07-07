@@ -670,29 +670,36 @@ def test_seed_preserves_openhands_fields(client):
     assert prof["enable_switch_llm_tool"] is False
     assert prof["tool_concurrency_limit"] == 3
     assert prof["system_message_suffix"] == "be terse"
-    # The seed no longer embeds skills (#4017); skill_refs=None (all
-    # discovered) is behavior-preserving going forward, since there is no
-    # partial-source global snapshot to freeze against anymore.
-    assert prof["skill_refs"] is None
+    # The seed freezes the global's resolved skills by name; this global has
+    # none, so skill_refs is the empty list (no skills), not None (all).
+    assert prof["skill_refs"] == []
     assert prof["verification"]["critic_enabled"] is True
     assert prof["verification"]["critic_model_name"] == "x-critic"
     # The profile verification is secret-free — no critic_api_key projected.
     assert "critic_api_key" not in prof["verification"]
 
 
-def test_seed_skill_refs_is_none_regardless_of_global_autoload_flags(client):
-    """The seed's ``skill_refs=None`` doesn't depend on the global's
-    ``load_user_skills`` / ``load_public_skills`` — those flags governed the
-    now-removed embedded-skills snapshot; the profile model has nothing left
-    to key off, so the seed is unconditionally ``None``."""
+def test_seed_freezes_resolved_skills_by_name(client):
+    """The seed reproduces the global's resolved skill set by name, so a
+    partial-source global (some skills, not the whole catalog) is preserved
+    rather than silently expanded to all-discovered."""
     client.patch(
         "/api/settings",
-        json={"agent_settings_diff": {"agent_context": {"load_user_skills": True}}},
+        json={
+            "agent_settings_diff": {
+                "agent_context": {
+                    "skills": [
+                        {"name": "alpha", "content": "x"},
+                        {"name": "beta", "content": "y"},
+                    ]
+                }
+            }
+        },
     )
     client.get("/api/agent-profiles")  # triggers the seed
 
     prof = client.get("/api/agent-profiles/default").json()["profile"]
-    assert prof["skill_refs"] is None
+    assert prof["skill_refs"] == ["alpha", "beta"]
 
 
 def test_seed_preserves_acp_fields(client):

@@ -321,17 +321,11 @@ PersistedProfileMigrator = Callable[[dict[str, Any]], dict[str, Any]]
 
 
 def _migrate_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
-    """v1→v2: drop the embedded ``skills`` field (#4017).
+    """v1→v2: drop the embedded ``skills`` field.
 
-    Agent Profiles has no production data yet (both consumers — canvas#1571 and
-    OpenHands#15060 — are still open), so this is belt-and-suspenders for a
-    stray hand-authored payload rather than a real data migration: the field is
-    simply dropped, not folded into ``skill_refs`` by name, since a v1 payload's
-    ``skill_refs=[]`` default meant "no further discovery" was already implied
-    by the embed (see the old field's docstring). A v1 payload's ``skill_refs``
-    is otherwise left untouched by this migration; only the model's *class*
-    default changes going forward, which does not apply to already-serialized
-    values.
+    No production data exists yet, so this only guards a stray hand-authored
+    payload. The field is dropped, not folded into ``skill_refs``; a v1
+    payload's ``skill_refs`` is left untouched.
     """
     migrated = dict(payload)
     migrated.pop("skills", None)
