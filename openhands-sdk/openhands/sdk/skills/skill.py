@@ -117,6 +117,20 @@ TriggerType = Annotated[
 ]
 
 
+def _keyword_matches(keyword: str, message_lower: str) -> bool:
+    """Return True if ``keyword`` appears as a whole token in ``message_lower``.
+
+    Uses alphanumeric boundaries (not ``\\b``) so ``git`` does not fire on
+    ``github`` while slash-prefixed keywords like ``/linear`` still match.
+    ``message_lower`` is expected to be lowercased by the caller.
+    """
+    keyword_lower = keyword.lower()
+    if not keyword_lower:
+        return False
+    pattern = rf"(?<![a-z0-9]){re.escape(keyword_lower)}(?![a-z0-9])"
+    return re.search(pattern, message_lower) is not None
+
+
 class Skill(BaseModel):
     """A skill provides specialized knowledge or functionality.
 
@@ -594,17 +608,23 @@ class Skill(BaseModel):
 
         Returns the first trigger that matches the message, or None if no match.
         Only applies to KeywordTrigger and TaskTrigger types.
+
+        Matching is whole-token and case-insensitive: a keyword only fires when
+        it appears bounded by non-alphanumeric characters, so ``git`` does not
+        match ``github`` and ``issue`` does not match ``tissue``. See
+        :func:`_keyword_matches` for details.
         """
         if isinstance(self.trigger, KeywordTrigger):
-            message_lower = message.lower()
-            for keyword in self.trigger.keywords:
-                if keyword.lower() in message_lower:
-                    return keyword
+            keywords = self.trigger.keywords
         elif isinstance(self.trigger, TaskTrigger):
-            message_lower = message.lower()
-            for trigger_str in self.trigger.triggers:
-                if trigger_str.lower() in message_lower:
-                    return trigger_str
+            keywords = self.trigger.triggers
+        else:
+            return None
+
+        message_lower = message.lower()
+        for keyword in keywords:
+            if _keyword_matches(keyword, message_lower):
+                return keyword
         return None
 
     def extract_variables(self, content: str) -> list[str]:
