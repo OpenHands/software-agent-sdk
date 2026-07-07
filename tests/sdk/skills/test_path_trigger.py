@@ -1,14 +1,25 @@
 """Tests for path-scoped skills ("rules"): PathTrigger, glob matching, loading,
 partition exclusion, and the AgentContext tool-use injection matcher."""
 
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from openhands.sdk.context.agent_context import AgentContext
-from openhands.sdk.skills import KeywordTrigger, PathTrigger, Skill, load_project_skills
+from openhands.sdk.skills import (
+    KeywordTrigger,
+    PathTrigger,
+    Skill,
+    load_project_skills,
+    utils as skills_utils,
+)
 from openhands.sdk.skills.exceptions import SkillValidationError
 from openhands.sdk.skills.skill import path_matches_glob
+
+
+_HAS_GIT = shutil.which("git") is not None
 
 
 @pytest.mark.parametrize(
@@ -277,3 +288,197 @@ def test_match_path_trigger_none_for_non_path_triggers() -> None:
     repo = Skill(name="r", content="c")  # trigger=None
     assert kw.match_path_trigger("src/api/x.ts") is None
     assert repo.match_path_trigger("src/api/x.ts") is None
+
+
+# ---------------------------------------------------------------------------
+# Nested AGENTS.md / third-party files -> directory-scoped path rules.
+# A root AGENTS.md stays always-on; nested ones inject only when the agent
+# touches a file under their directory.
+# ---------------------------------------------------------------------------
+
+
+def _make_agents_workspace(tmp_path: Path) -> Path:
+    """Root AGENTS.md plus two nested ones (one shallow, one deep)."""
+    (tmp_path / "AGENTS.md").write_text("ROOT guidance.\n")
+    server = tmp_path / "server"
+    server.mkdir()
+    (server / "AGENTS.md").write_text("SERVER rule: validate inputs.\n")
+    deep = tmp_path / "pkg" / "sub"
+    deep.mkdir(parents=True)
+    (deep / "AGENTS.md").write_text("SUB rule.\n")
+    return tmp_path
+
+
+def _force_walk_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make discovery use the filesystem-walk path (no git)."""
+    monkeypatch.setattr(skills_utils, "_git_worktree_relpaths", lambda _wd: None)
+
+
+def _assert_nested_rules(skills_by_name: dict[str, Skill]) -> None:
+    # Root stays always-on (full content, no path trigger).
+    assert skills_by_name["agents"].trigger is None
+
+    server = skills_by_name["agents:server"]
+    assert isinstance(server.trigger, PathTrigger)
+    assert server.trigger.paths == ["server/**"]
+    assert server.disable_model_invocation is True  # forced for path rules
+    assert "SERVER rule" in server.content
+
+    sub = skills_by_name["agents:pkg/sub"]
+    assert isinstance(sub.trigger, PathTrigger)
+    assert sub.trigger.paths == ["pkg/sub/**"]
+
+
+def test_nested_agents_md_become_path_rules_walk_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _force_walk_fallback(monkeypatch)
+    _make_agents_workspace(tmp_path)
+    skills = {s.name: s for s in load_project_skills(tmp_path)}
+    _assert_nested_rules(skills)
+
+
+@pytest.mark.skipif(not _HAS_GIT, reason="git not available")
+def test_nested_agents_md_become_path_rules_git(tmp_path: Path) -> None:
+    _make_agents_workspace(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    skills = {s.name: s for s in load_project_skills(tmp_path)}
+    _assert_nested_rules(skills)
+
+
+def test_find_nested_excludes_top_level_and_prunes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _force_walk_fallback(monkeypatch)
+    (tmp_path / "AGENTS.md").write_text("root")  # top-level: not nested
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "AGENTS.md").write_text("a")
+    vendored = tmp_path / "node_modules" / "pkg"
+    vendored.mkdir(parents=True)
+    (vendored / "AGENTS.md").write_text("vendored")  # node_modules: pruned
+    hidden = tmp_path / ".venv" / "pkg"
+    hidden.mkdir(parents=True)
+    (hidden / "AGENTS.md").write_text("hidden")  # hidden dir: pruned
+
+    found = skills_utils.find_nested_third_party_files(
+        tmp_path, Skill.PATH_TO_THIRD_PARTY_SKILL_NAME
+    )
+    rel_dirs = {rel_dir.as_posix() for _path, rel_dir in found}
+    assert rel_dirs == {"a"}
+
+
+def test_nested_rule_injection_and_dedup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _force_walk_fallback(monkeypatch)
+    _make_agents_workspace(tmp_path)
+    rules = [
+        s for s in load_project_skills(tmp_path) if isinstance(s.trigger, PathTrigger)
+    ]
+    ctx = AgentContext(skills=rules)
+
+    # Touching a file under server/ injects the server rule once.
+    result = ctx.get_tool_use_suffix(file_path="server/app.py", skip_skill_names=[])
+    assert result is not None
+    _content, activated = result
+    assert activated == ["agents:server"]
+
+    # Already-activated rule is not re-injected.
+    assert (
+        ctx.get_tool_use_suffix(file_path="server/other.py", skip_skill_names=activated)
+        is None
+    )
+
+    # A file matching no nested rule injects nothing.
+    assert ctx.get_tool_use_suffix(file_path="README.md", skip_skill_names=[]) is None
+
+
+@pytest.mark.skipif(not _HAS_GIT, reason="git not available")
+def test_nested_discovery_includes_untracked_excludes_gitignored(
+    tmp_path: Path,
+) -> None:
+    """Uncommitted AGENTS.md still count; .gitignore'd ones do not."""
+    (tmp_path / "kept").mkdir()
+    (tmp_path / "kept" / "AGENTS.md").write_text("kept")  # untracked, not ignored
+    (tmp_path / ".gitignore").write_text("skipped/\n")
+    (tmp_path / "skipped").mkdir()
+    (tmp_path / "skipped" / "AGENTS.md").write_text("nope")  # gitignored
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True)
+    # AGENTS.md files are deliberately left uncommitted.
+
+    found = skills_utils.find_nested_third_party_files(
+        tmp_path, Skill.PATH_TO_THIRD_PARTY_SKILL_NAME
+    )
+    rel_dirs = {rel_dir.as_posix() for _path, rel_dir in found}
+    assert rel_dirs == {"kept"}
+
+
+def test_nested_non_agents_third_party_name_scoped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A nested CLAUDE.md becomes a directory-scoped ``claude:<dir>`` rule."""
+    _force_walk_fallback(monkeypatch)
+    svc = tmp_path / "svc"
+    svc.mkdir()
+    (svc / "CLAUDE.md").write_text("claude guidance")
+    skills = {s.name: s for s in load_project_skills(tmp_path)}
+    rule = skills["claude:svc"]
+    assert isinstance(rule.trigger, PathTrigger)
+    assert rule.trigger.paths == ["svc/**"]
+
+
+def test_nested_unreadable_file_skipped_without_aborting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-UTF-8 nested file is skipped; other rules still load."""
+    _force_walk_fallback(monkeypatch)
+    (tmp_path / "good").mkdir()
+    (tmp_path / "good" / "AGENTS.md").write_text("good rule")
+    (tmp_path / "bad").mkdir()
+    (tmp_path / "bad" / "AGENTS.md").write_bytes(b"\xff\xfe not utf-8 \x80")
+    skills = {s.name: s for s in load_project_skills(tmp_path)}
+    assert "agents:good" in skills  # unaffected by the bad sibling
+    assert "agents:bad" not in skills  # skipped, no exception
+
+
+def test_find_nested_nonexistent_workdir_returns_empty(tmp_path: Path) -> None:
+    missing = tmp_path / "does-not-exist"
+    assert (
+        skills_utils.find_nested_third_party_files(
+            missing, Skill.PATH_TO_THIRD_PARTY_SKILL_NAME
+        )
+        == []
+    )
+
+
+def test_git_worktree_relpaths_none_when_git_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """git absent -> None, so the caller falls back to a filesystem walk."""
+
+    def _raise(*_args: object, **_kwargs: object) -> None:
+        raise FileNotFoundError("git not installed")
+
+    monkeypatch.setattr(skills_utils.subprocess, "run", _raise)
+    assert skills_utils._git_worktree_relpaths(tmp_path) is None
+
+
+def test_nested_symlink_deduped_by_real_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AGENTS.md and a CLAUDE.md symlink to it resolve to one file -> one entry."""
+    _force_walk_fallback(monkeypatch)
+    d = tmp_path / "dir"
+    d.mkdir()
+    (d / "AGENTS.md").write_text("real")
+    try:
+        (d / "CLAUDE.md").symlink_to(d / "AGENTS.md")
+    except OSError:
+        pytest.skip("symlinks not supported on this platform")
+
+    found = skills_utils.find_nested_third_party_files(
+        tmp_path, Skill.PATH_TO_THIRD_PARTY_SKILL_NAME
+    )
+    assert len(found) == 1

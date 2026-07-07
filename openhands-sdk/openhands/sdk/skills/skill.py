@@ -6,7 +6,7 @@ import threading
 import time
 from collections.abc import Iterable
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated, ClassVar, Final, Literal, Union
 from xml.sax.saxutils import escape as xml_escape
 
@@ -34,6 +34,7 @@ from openhands.sdk.skills.types import InputMetadata
 from openhands.sdk.skills.utils import (
     discover_skill_resources,
     find_mcp_config,
+    find_nested_third_party_files,
     find_regular_md_files,
     find_skill_md_directories,
     find_third_party_files,
@@ -635,6 +636,26 @@ class Skill(BaseModel):
 
         return None
 
+    @classmethod
+    def _handle_nested_third_party(
+        cls, path: Path, file_content: str, rel_dir: PurePosixPath
+    ) -> Union["Skill", None]:
+        """Build a ``PathTrigger`` rule scoped to ``rel_dir`` from a nested
+        third-party file, so its guidance is injected only when a file under that
+        directory is touched. ``rel_dir`` is workspace-relative (the matcher's
+        base)."""
+        skill_name = cls.PATH_TO_THIRD_PARTY_SKILL_NAME.get(path.name.lower())
+        if skill_name is None:
+            return None
+        # Encode the directory in the name so multiple nested files (all mapping
+        # to e.g. "agents") stay distinct for dedup and activation tracking.
+        return Skill(
+            name=f"{skill_name}:{rel_dir.as_posix()}",
+            content=file_content,
+            source=to_posix_path(path),
+            trigger=PathTrigger(paths=[f"{rel_dir.as_posix()}/**"]),
+        )
+
     @model_validator(mode="after")
     def _truncate_long_description(self):
         """Truncate description to MAX_DESCRIPTION_LENGTH via maybe_truncate.
@@ -1041,6 +1062,21 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
                     logger.debug(f"Loaded third-party skill: {skill.name} from {path}")
             except (SkillError, OSError, yaml.YAMLError) as e:
                 logger.warning(f"Failed to load third-party skill from {path}: {e}")
+
+    # Load nested third-party files (e.g. server/AGENTS.md) as directory-scoped
+    # path rules, keyed off work_dir (the matcher's base).
+    for path, rel_dir in find_nested_third_party_files(
+        work_dir, Skill.PATH_TO_THIRD_PARTY_SKILL_NAME
+    ):
+        try:
+            content = path.read_text(encoding="utf-8")
+            rule = Skill._handle_nested_third_party(path, content, rel_dir)
+            if rule is not None and rule.name not in seen_names:
+                all_skills.append(rule)
+                seen_names.add(rule.name)
+                logger.debug(f"Loaded nested path rule: {rule.name} from {path}")
+        except (SkillError, OSError, UnicodeDecodeError, yaml.YAMLError) as e:
+            logger.warning(f"Failed to load nested third-party file {path}: {e}")
 
     # Load project-specific skills from .agents/skills, .openhands/skills,
     # and legacy microagents (priority order; first wins for duplicates)
