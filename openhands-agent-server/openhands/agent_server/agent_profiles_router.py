@@ -19,13 +19,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, HTTPException, Path, Request, status
 from pydantic import BaseModel, Field, ValidationError
 
-from openhands.agent_server._secrets_exposure import (
-    build_expose_context,
-    get_cipher,
-    get_config,
-    parse_expose_secrets_header,
-    translate_missing_cipher,
-)
+from openhands.agent_server._secrets_exposure import get_cipher, get_config
 from openhands.agent_server.persistence import (
     PersistedSettings,
     get_agent_profile_store,
@@ -33,7 +27,7 @@ from openhands.agent_server.persistence import (
     get_settings_store,
 )
 from openhands.agent_server.profiles_router import MAX_PROFILES
-from openhands.agent_server.skills_service import discover_profile_skills_if_needed
+from openhands.agent_server.skills_service import discover_profile_skills
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import (
     ProfileLimitExceeded as LLMProfileLimitExceeded,
@@ -213,7 +207,7 @@ def _seed_default_profile(
                 settings.agent_settings.llm, cipher
             )
         profile = build_seed_profile(settings.agent_settings, active_llm_profile)
-        store.save(profile, cipher=cipher, max_profiles=MAX_AGENT_PROFILES)
+        store.save(profile, max_profiles=MAX_AGENT_PROFILES)
 
         profile_id = str(profile.id)
         settings_store = get_settings_store(get_config(request))
@@ -266,31 +260,24 @@ async def list_agent_profiles(request: Request) -> AgentProfileListResponse:
 
 
 @agent_profiles_router.get("/{name}", response_model=AgentProfileDetailResponse)
-async def get_agent_profile(
-    request: Request, name: ProfileName
-) -> AgentProfileDetailResponse:
+async def get_agent_profile(name: ProfileName) -> AgentProfileDetailResponse:
     """Get a stored profile.
 
-    Use the ``X-Expose-Secrets`` header to control ``skills[].mcp_tools`` secret
-    exposure (``encrypted`` / ``plaintext``); absent, those values are masked.
+    A profile is secret-free at rest (#4017), so there is nothing to mask or
+    expose — unlike the LLM ``/api/profiles`` router, this endpoint has no
+    ``X-Expose-Secrets`` behavior.
     """
-    expose_mode = parse_expose_secrets_header(request)
-    cipher = get_cipher(request)
-
     store = get_agent_profile_store()
     try:
         with _store_errors():
-            profile = store.load(name, cipher=cipher)
+            profile = store.load(name)
     except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Agent profile '{name}' not found",
         )
 
-    context = build_expose_context(expose_mode, cipher)
-    with translate_missing_cipher():
-        payload = profile.model_dump(mode="json", context=context)
-
+    payload = profile.model_dump(mode="json")
     return AgentProfileDetailResponse(name=name, profile=payload)
 
 
@@ -300,31 +287,29 @@ async def get_agent_profile(
     status_code=status.HTTP_201_CREATED,
 )
 async def save_agent_profile(
-    request: Request, name: ProfileName, body: dict[str, Any]
+    name: ProfileName, body: dict[str, Any]
 ) -> AgentProfileMutationResponse:
     """Save an ``AgentProfile`` under ``name`` (overwriting a namesake).
 
     The path ``name`` is authoritative — it overrides any ``name`` in the body.
-    With ``OH_SECRET_KEY`` configured, ``skills[].mcp_tools`` secrets are
-    encrypted at rest; otherwise they are redacted. Returns 409 if creating a
-    new profile would exceed ``MAX_AGENT_PROFILES``.
+    The profile is secret-free at rest (#4017), so no cipher/encryption is
+    involved. Returns 409 if creating a new profile would exceed
+    ``MAX_AGENT_PROFILES``.
     """
-    cipher = get_cipher(request)
     try:
         profile = validate_agent_profile({**body, "name": name})
     except ValidationError as e:
-        # Match FastAPI's request-validation shape (``detail`` is a list of error
-        # objects), but surface only ``loc``/``type`` — a nested mcp_tools
-        # FastMCP config error embeds the input (which may carry secrets) in
-        # ``msg``.
+        # Match FastAPI's request-validation shape (``detail`` is a list of
+        # error objects): ``loc``/``type``/``msg`` (``input`` dropped — see
+        # safe_validation_error_detail's docstring for why msg is now safe).
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=safe_validation_error_detail(e),
         )
     except Exception:
-        # Any other validation failure (e.g. SkillValidationError from a
-        # malformed mcp_tools, or a schema/migration error) is a client error,
-        # never a 500. Stay generic — these messages can embed the input.
+        # Any other validation failure (e.g. a schema/migration error) is a
+        # client error, never a 500. Stay generic — these messages can embed
+        # the input.
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Invalid agent profile",
@@ -339,7 +324,7 @@ async def save_agent_profile(
     try:
         with _store_errors():
             save_profile_preserving_identity(
-                store, profile, cipher=cipher, max_profiles=MAX_AGENT_PROFILES
+                store, profile, max_profiles=MAX_AGENT_PROFILES
             )
     except ProfileLimitExceeded:
         raise HTTPException(
@@ -489,36 +474,37 @@ async def materialize_agent_profile(
     than raising — the only error status is 404 (unknown profile name).
     resolved_settings is redacted (api_key_set booleans; no raw secrets).
     """
-    cipher = get_cipher(request)
-
     store = get_agent_profile_store()
     try:
         with _store_errors():
-            profile = store.load(name, cipher=cipher)
+            profile = store.load(name)
     except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Agent profile '{name}' not found",
         )
 
+    # Still needed here (unlike the profile load above): resolve_agent_profile_
+    # dry_run uses it to decrypt the *referenced LLM profile's* own secret.
+    cipher = get_cipher(request)
     config = get_config(request)
     settings = get_settings_store(config).load() or PersistedSettings()
     mcp_config = settings.agent_settings.mcp_config
 
-    # Discover skills off the event loop so the dry-run can report which
-    # ``skill_refs`` resolve vs. dangle. A discovery failure must not 500 the
-    # preview: pass ``available_skills=None`` (catalog unknown — the dry-run then
-    # reports nothing dangling, rather than flagging every selected skill) and
-    # surface the failure as its own diagnostic below.
+    # Discover skills off the event loop so the dry-run can report which skills
+    # (catalog minus ``disabled_skills``) resolve. Only OpenHands profiles carry
+    # user/public skills; ACP profiles do not. A discovery failure must not 500
+    # the preview: pass ``available_skills=None`` and surface the failure as its
+    # own diagnostic below.
     discovery_error: str | None = None
-    try:
-        available_skills = await asyncio.to_thread(
-            discover_profile_skills_if_needed, profile
-        )
-    except Exception as exc:
-        available_skills = None
-        discovery_error = str(exc)
-        logger.warning("Skill discovery failed during materialize: %s", exc)
+    available_skills = None
+    if profile.agent_kind == "openhands":
+        try:
+            available_skills = await asyncio.to_thread(discover_profile_skills)
+        except Exception as exc:
+            available_skills = None
+            discovery_error = str(exc)
+            logger.warning("Skill discovery failed during materialize: %s", exc)
 
     llm_store = get_llm_profile_store()
     diagnostics = resolve_agent_profile_dry_run(

@@ -104,18 +104,20 @@ If the matching manifest is already in GHCR, the wait step exits immediately.
 
 After successful PyPI publication, the workflow will automatically create PRs to update SDK versions in downstream repositories:
 
-- **[OpenHands](https://github.com/All-Hands-AI/OpenHands)** - Updates `openhands-sdk`, `openhands-tools`, and `openhands-agent-server` versions
-- **[OpenHands-CLI](https://github.com/All-Hands-AI/openhands-cli)** - Updates `openhands-sdk` and `openhands-tools` versions
+- **[OpenHands](https://github.com/OpenHands/OpenHands)** - Updates `openhands-sdk`, `openhands-tools`, and `openhands-agent-server` versions
+- **[OpenHands-CLI](https://github.com/OpenHands/openhands-cli)** - Updates `openhands-sdk` and `openhands-tools` versions
+- **[automation](https://github.com/OpenHands/automation)** - Updates `openhands-sdk` and `openhands-workspace` versions. Opened with a `fix:` title so the repo's release-please cuts a patch release, publishing an `openhands-automation` build pinned to this SDK (which the agent-canvas `sdk-version-sync` check requires).
+- **[typescript-client](https://github.com/OpenHands/typescript-client)** - Updates the pinned `agent-server` image tag (`config.agentServerImage`); runs as a separate job that waits on the GHCR image rather than PyPI.
 
 These PRs will:
-- Be created automatically with branch name `bump-sdk-X.Y.Z`
+- Be created automatically with branch name `bump-sdk-X.Y.Z` (`bump-agent-server-X.Y.Z` for typescript-client)
 - Include links back to the SDK release
 - Need to be reviewed and merged by the respective repository maintainers
 
 ### Step 6: Post-Release Tasks
 
 - [ ] Merge the release PR to main
-- [ ] Review and merge the auto-created version bump PRs in OpenHands and OpenHands-CLI
+- [ ] Review and merge the auto-created version bump PRs in OpenHands, OpenHands-CLI, automation, and typescript-client (merging the automation PR triggers its release-please release PR; merge that too to publish the pinned `openhands-automation`)
 - [ ] Run evaluation on OpenHands Index (manual step)
 - [ ] Announce the release
 
