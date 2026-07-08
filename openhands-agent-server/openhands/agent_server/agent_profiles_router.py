@@ -300,8 +300,8 @@ async def save_agent_profile(
         profile = validate_agent_profile({**body, "name": name})
     except ValidationError as e:
         # Match FastAPI's request-validation shape (``detail`` is a list of
-        # error objects), but surface only ``loc``/``type`` (see
-        # safe_validation_error_detail's docstring).
+        # error objects): ``loc``/``type``/``msg`` (``input`` dropped — see
+        # safe_validation_error_detail's docstring for why msg is now safe).
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=safe_validation_error_detail(e),
