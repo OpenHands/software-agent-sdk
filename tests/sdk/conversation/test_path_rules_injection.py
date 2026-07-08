@@ -190,6 +190,34 @@ def test_file_outside_workspace_is_not_matched(tmp_path: Path) -> None:
         conv.close()
 
 
+def test_symlinked_workspace_root_still_matches(tmp_path: Path) -> None:
+    """A rule fires even when the action path and the workspace root differ only
+    by a symlink (e.g. macOS /tmp -> /private/tmp); the resolve() fallback in
+    ``_touched_rule_path`` recovers the workspace-relative path."""
+    real = tmp_path / "real_ws"
+    real.mkdir()
+    link = tmp_path / "link_ws"
+    try:
+        link.symlink_to(real)
+    except OSError:
+        import pytest
+
+        pytest.skip("symlinks not supported on this platform")
+
+    rule = Skill(
+        name="api", content="Use zod.", trigger=PathTrigger(paths=["src/api/**/*.ts"])
+    )
+    conv = _conversation(link, rule)  # workspace is the symlink form
+    try:
+        # Action reports the resolved (real) path — the mismatch the fix handles.
+        action_event = _append_file_action(conv, str(real / "src" / "api" / "u.ts"))
+        injected = _inject(conv, _observation_for(action_event))
+        assert any("Use zod." in c.text for c in injected.extended_content)
+        assert conv._state.activated_path_rules == ["api"]
+    finally:
+        conv.close()
+
+
 def test_non_path_action_does_not_inject(tmp_path: Path) -> None:
     """A tool action with no ``path`` field never triggers a rule."""
     rule = Skill(name="any", content="rule", trigger=PathTrigger(paths=["**/*"]))

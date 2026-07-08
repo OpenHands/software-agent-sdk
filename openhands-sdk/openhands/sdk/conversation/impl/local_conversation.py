@@ -534,6 +534,13 @@ class LocalConversation(BaseConversation):
         root = PurePath(self.workspace.working_dir)
         with contextlib.suppress(ValueError):
             return raw.relative_to(root).as_posix()
+        # Fall back to filesystem resolution so a symlinked workspace root (e.g.
+        # macOS /tmp -> /private/tmp) still matches; strict=False keeps a
+        # not-yet-created leaf.
+        with contextlib.suppress(ValueError, OSError):
+            resolved = Path(raw_path).resolve()
+            resolved_root = Path(self.workspace.working_dir).resolve()
+            return resolved.relative_to(resolved_root).as_posix()
         return None  # touched a file outside the workspace; rules are repo-scoped
 
     def _recover_persisted_client_tools(
