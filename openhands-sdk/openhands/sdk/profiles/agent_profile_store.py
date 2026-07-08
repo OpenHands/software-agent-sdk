@@ -50,8 +50,9 @@ class AgentProfileStore:
     JSON file per profile under ``~/.openhands/agent-profiles``, the filename is
     the (renameable) profile ``name``, and the stable ``id`` (uuid) lives inside
     the file. The profile is secret-free at rest — every field is a reference
-    (``llm_profile_ref``, ``mcp_server_refs``, ``skill_refs``) or a plain value,
-    so no cipher/encryption is needed to persist or load one (#4017).
+    (``llm_profile_ref``, ``mcp_server_refs``), a deny-list of names
+    (``disabled_skills``), or a plain value, so no cipher/encryption is needed to
+    persist or load one (#4017).
     """
 
     def __init__(self, base_dir: Path | str | None = None) -> None:

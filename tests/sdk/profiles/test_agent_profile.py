@@ -37,7 +37,7 @@ def test_openhands_profile_round_trips() -> None:
         llm_profile_ref="default",
         revision=3,
         mcp_server_refs=["fetch"],
-        skill_refs=["pdf-tools"],
+        disabled_skills=["pdf-tools"],
         system_message_suffix="be terse",
         enable_sub_agents=True,
         enable_switch_llm_tool=False,
@@ -52,64 +52,56 @@ def test_openhands_profile_round_trips() -> None:
     assert reloaded.llm_profile_ref == "default"
     assert reloaded.revision == 3
     assert reloaded.mcp_server_refs == ["fetch"]
-    assert reloaded.skill_refs == ["pdf-tools"]
+    assert reloaded.disabled_skills == ["pdf-tools"]
     assert reloaded.enable_switch_llm_tool is False
     assert reloaded.tool_concurrency_limit == 4
 
 
 def test_openhands_profile_new_field_defaults() -> None:
-    """``enable_switch_llm_tool`` defaults True (global parity); ``skill_refs``
-    defaults ``None`` (all discovered) — a true twin of ``mcp_server_refs``
-    (#4017). There is no embedded ``skills`` fallback anymore, so an unset
-    field must mean "all", not "none"."""
+    """``enable_switch_llm_tool`` defaults True (global parity); ``disabled_skills``
+    defaults ``[]`` — the deny-list starts empty, so an unset field means "all
+    discovered skills" (#4017). Skills are selected by exclusion, never an
+    allow-list of names that could dangle."""
     profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default")
     assert profile.enable_switch_llm_tool is True
-    assert profile.skill_refs is None
+    assert profile.disabled_skills == []
     reloaded = validate_agent_profile(
         {"agent_kind": "openhands", "name": "oh", "llm_profile_ref": "default"}
     )
     assert isinstance(reloaded, OpenHandsAgentProfile)
     assert reloaded.enable_switch_llm_tool is True
-    assert reloaded.skill_refs is None
+    assert reloaded.disabled_skills == []
 
 
-def test_skill_refs_empty_vs_null_are_distinct() -> None:
-    """``[]`` (none) and ``None`` (all discovered) must survive round-trip
-    distinctly, mirroring ``mcp_server_refs``."""
-    none_ref = validate_agent_profile(
+def test_disabled_skills_round_trips() -> None:
+    """A non-empty deny-list survives the JSON round-trip verbatim."""
+    profile = validate_agent_profile(
         OpenHandsAgentProfile(
-            name="oh", llm_profile_ref="default", skill_refs=None
+            name="oh", llm_profile_ref="default", disabled_skills=["a", "b"]
         ).model_dump(mode="json")
     )
-    empty_ref = validate_agent_profile(
-        OpenHandsAgentProfile(
-            name="oh", llm_profile_ref="default", skill_refs=[]
-        ).model_dump(mode="json")
-    )
-    assert isinstance(none_ref, OpenHandsAgentProfile)
-    assert isinstance(empty_ref, OpenHandsAgentProfile)
-    assert none_ref.skill_refs is None
-    assert empty_ref.skill_refs == []
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert profile.disabled_skills == ["a", "b"]
 
 
-def test_acp_profile_skill_refs_defaults_empty() -> None:
-    """ACP profiles default ``skill_refs=[]`` (they own their tooling) —
-    overriding the shared base's ``None`` (all discovered) default, which is
-    right for OpenHands profiles but not ACP ones."""
+def test_acp_profile_has_no_skill_field() -> None:
+    """ACP profiles carry no skill-selection field at all — the subprocess owns
+    its tooling and prompt context (#4017). ``extra="forbid"`` rejects a stray
+    ``skill_refs``/``disabled_skills`` on an ACP payload."""
     from openhands.sdk.profiles import ACPAgentProfile
 
     profile = ACPAgentProfile(name="acp", acp_server="claude-code")
-    assert profile.skill_refs == []
-    reloaded = validate_agent_profile(
-        {"agent_kind": "acp", "name": "acp", "acp_server": "claude-code"}
-    )
-    assert isinstance(reloaded, ACPAgentProfile)
-    assert reloaded.skill_refs == []
-    # null stays an explicit opt-in (all discovered), distinct from the default.
-    explicit_null = ACPAgentProfile(
-        name="acp", acp_server="claude-code", skill_refs=None
-    )
-    assert explicit_null.skill_refs is None
+    assert not hasattr(profile, "skill_refs")
+    assert not hasattr(profile, "disabled_skills")
+    with pytest.raises(ValidationError):
+        validate_agent_profile(
+            {
+                "agent_kind": "acp",
+                "name": "acp",
+                "acp_server": "claude-code",
+                "disabled_skills": ["x"],
+            }
+        )
 
 
 def test_acp_profile_round_trips() -> None:
@@ -122,7 +114,6 @@ def test_acp_profile_round_trips() -> None:
         acp_command="codex-acp",
         acp_args=["--flag"],
         mcp_server_refs=None,
-        skill_refs=["pdf-tools"],
     )
     reloaded = validate_agent_profile(profile.model_dump(mode="json"))
 
@@ -134,8 +125,6 @@ def test_acp_profile_round_trips() -> None:
     assert reloaded.acp_command == "codex-acp"
     assert reloaded.acp_args == ["--flag"]
     assert reloaded.mcp_server_refs is None
-    # skill_refs lives on the shared base, so ACP profiles round-trip it too.
-    assert reloaded.skill_refs == ["pdf-tools"]
 
 
 def test_acp_profile_minimal_defaults() -> None:
@@ -405,13 +394,15 @@ def test_openhands_profile_has_no_embedded_skills_field() -> None:
 
 
 # ---------------------------------------------------------------------------
-# v1 -> v2 migration: drop embedded ``skills`` (#4017)
+# migration: v1 drops embedded ``skills``; v2->v3 drops allow-list ``skill_refs``
+# for the ``disabled_skills`` deny-list (#4017)
 # ---------------------------------------------------------------------------
 
 
 def test_v1_payload_with_embedded_skills_migrates_cleanly() -> None:
-    """A v1 payload carrying the now-removed ``skills`` field migrates to v2
-    with the field dropped, rather than tripping ``extra="forbid"``."""
+    """A v1 payload carrying the now-removed ``skills`` field migrates to the
+    current schema with the field dropped, rather than tripping
+    ``extra="forbid"``."""
     payload = {
         "schema_version": 1,
         "agent_kind": "openhands",
@@ -425,13 +416,10 @@ def test_v1_payload_with_embedded_skills_migrates_cleanly() -> None:
     assert not hasattr(profile, "skills")
 
 
-def test_v1_payload_missing_skill_refs_adopts_current_default() -> None:
-    """A v1 payload that never set ``skill_refs`` picks up the model's
-    *current* class default on reload — ``None`` (all discovered), not the
-    ``[]`` the class defaulted to when the payload was written. Intentional
-    (#4017): Agent Profiles has no production data yet, so there is no
-    compatibility contract to preserve, and ``None``-by-default now mirrors
-    ``mcp_server_refs``."""
+def test_migrated_payload_adopts_empty_disabled_skills_default() -> None:
+    """A pre-``disabled_skills`` payload picks up the model's current default on
+    reload — ``[]`` (all discovered skills). No production data exists, so there
+    is no compatibility contract to preserve (#4017)."""
     payload = {
         "schema_version": 1,
         "agent_kind": "openhands",
@@ -440,20 +428,23 @@ def test_v1_payload_missing_skill_refs_adopts_current_default() -> None:
     }
     profile = validate_agent_profile(payload)
     assert isinstance(profile, OpenHandsAgentProfile)
-    assert profile.skill_refs is None
+    assert profile.disabled_skills == []
 
 
-def test_v1_payload_explicit_skill_refs_is_untouched_by_migration() -> None:
-    """The migration only drops ``skills``; an explicit ``skill_refs`` on a v1
-    payload (e.g. the canvas ``withDefaultSkillRefs`` shim's ``null``) survives
-    unchanged."""
+def test_v2_payload_skill_refs_is_dropped_by_migration() -> None:
+    """v2->v3 drops the allow-list ``skill_refs`` entirely (skills are now a
+    deny-list). A v2 payload carrying ``skill_refs`` migrates to a profile with
+    no ``skill_refs`` and the default empty ``disabled_skills`` — the field is
+    not folded forward (no real subset ever shipped)."""
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "agent_kind": "openhands",
         "name": "oh",
         "llm_profile_ref": "default",
-        "skill_refs": [],
+        "skill_refs": ["pdf-tools"],
     }
     profile = validate_agent_profile(payload)
     assert isinstance(profile, OpenHandsAgentProfile)
-    assert profile.skill_refs == []
+    assert profile.schema_version == AGENT_PROFILE_SCHEMA_VERSION
+    assert not hasattr(profile, "skill_refs")
+    assert profile.disabled_skills == []

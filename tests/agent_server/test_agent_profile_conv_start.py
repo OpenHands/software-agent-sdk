@@ -41,7 +41,6 @@ from openhands.sdk.profiles.agent_profile import (
 )
 from openhands.sdk.profiles.resolver import (
     DanglingMcpServerRef,
-    DanglingSkillRef,
     ProfileNotFound,
 )
 from openhands.sdk.workspace import LocalWorkspace
@@ -155,11 +154,10 @@ class TestStartConversationRequestValidation:
 _STORE_PATH = "openhands.agent_server.persistence.store.get_agent_profile_store"
 _LLM_STORE_PATH = "openhands.agent_server.persistence.store.get_llm_profile_store"
 _RESOLVE_PATH = "openhands.sdk.profiles.resolver.resolve_agent_profile"
-# Skill discovery is patched so OpenHands-profile resolves don't hit the
-# network (load_all_skills loads public skills from GitHub).
-# conversation_service calls discover_profile_skills_if_needed, which looks up
-# discover_profile_skills in skills_service — patch it at the source.
-_DISCOVER_PATH = "openhands.agent_server.skills_service.discover_profile_skills"
+# Skill discovery is patched so OpenHands-profile resolves don't hit the network
+# (load_all_skills loads public skills from GitHub). conversation_service imports
+# discover_profile_skills directly, so patch it in that namespace.
+_DISCOVER_PATH = "openhands.agent_server.conversation_service.discover_profile_skills"
 
 
 class TestResolveAgentFromProfile:
@@ -178,9 +176,9 @@ class TestResolveAgentFromProfile:
             _resolve_agent_from_profile,
         )
 
-        # skill_refs defaults to [] (skip); set None to exercise the
-        # all-discovered opt-in, where discovery runs and is threaded through.
-        profile = _make_openhands_profile().model_copy(update={"skill_refs": None})
+        # OpenHands profiles always discover the catalog (deny-list needs the
+        # full set), threaded through to the resolver as available_skills.
+        profile = _make_openhands_profile()
         agent = _make_agent()
 
         with (
@@ -211,7 +209,7 @@ class TestResolveAgentFromProfile:
         assert result_agent is agent
         assert launched.agent_profile_id == profile.id
         assert launched.revision == profile.revision
-        # skill_refs=None (all discovered) triggers discovery, threaded through.
+        # OpenHands discovery always runs; its result is threaded through.
         MockDiscover.assert_called_once()
         assert MockResolve.call_args.kwargs["available_skills"] == []
 
@@ -417,16 +415,15 @@ class TestResolveAgentFromProfile:
         assert result_agent is agent
 
     def test_openhands_default_profile_triggers_discovery(self):
-        """A profile's default ``skill_refs`` is ``None`` (all discovered,
-        #4017) — a true twin of ``mcp_server_refs``, since there is no
-        embedded-skills fallback anymore. This *does* trigger catalog
-        discovery by default, unlike the old ``[]``-default behavior."""
+        """An OpenHands profile always discovers the skill catalog (the deny-list
+        needs the full set, minus disabled names). The default deny-list is []
+        (all discovered); there is no discovery-skip path anymore (#4017)."""
         from openhands.agent_server.conversation_service import (
             _resolve_agent_from_profile,
         )
 
         profile = _make_openhands_profile()
-        assert profile.skill_refs is None  # the default, not []
+        assert profile.disabled_skills == []  # the default: disable nothing
         agent = _make_agent()
 
         with (
@@ -445,35 +442,6 @@ class TestResolveAgentFromProfile:
             _resolve_agent_from_profile(profile.id, cipher=None, mcp_config={})
 
         MockDiscover.assert_called_once()
-
-    def test_openhands_explicit_empty_skill_refs_skips_discovery(self):
-        """An explicit ``skill_refs=[]`` (none) still skips the (network-bound)
-        catalog discovery — the opt-out path #3868 introduced, unaffected by
-        the default changing from ``[]`` to ``None``."""
-        from openhands.agent_server.conversation_service import (
-            _resolve_agent_from_profile,
-        )
-
-        profile = _make_openhands_profile().model_copy(update={"skill_refs": []})
-        agent = _make_agent()
-
-        with (
-            patch(_STORE_PATH) as MockStore,
-            patch(_LLM_STORE_PATH),
-            patch(_RESOLVE_PATH) as MockResolve,
-            patch(_DISCOVER_PATH) as MockDiscover,
-        ):
-            store_inst = MockStore.return_value
-            store_inst.name_for_id.return_value = profile.name
-            store_inst.load.return_value = profile
-            mock_config = MagicMock()
-            mock_config.create_agent.return_value = agent
-            MockResolve.return_value = mock_config
-
-            _resolve_agent_from_profile(profile.id, cipher=None, mcp_config={})
-
-        MockDiscover.assert_not_called()
-        assert MockResolve.call_args.kwargs["available_skills"] is None
 
     def test_dangling_mcp_server_ref_propagates(self):
         from openhands.agent_server.conversation_service import (
@@ -502,42 +470,9 @@ class TestResolveAgentFromProfile:
         )
         from openhands.sdk.agent.acp_agent import ACPAgent
 
-        # ACP defaults skill_refs=[] (skip); set None to exercise the
-        # all-discovered opt-in, where discovery runs and is threaded through.
-        profile = _make_acp_profile().model_copy(update={"skill_refs": None})
-        acp_agent = MagicMock(spec=ACPAgent)
-
-        with (
-            patch(_STORE_PATH) as MockStore,
-            patch(_LLM_STORE_PATH),
-            patch(_RESOLVE_PATH) as MockResolve,
-            patch(_DISCOVER_PATH, return_value=[]) as MockDiscover,
-        ):
-            store_inst = MockStore.return_value
-            store_inst.name_for_id.return_value = profile.name
-            store_inst.load.return_value = profile
-            mock_config = MagicMock()
-            mock_config.create_agent.return_value = acp_agent
-            MockResolve.return_value = mock_config
-
-            result_agent, launched = _resolve_agent_from_profile(
-                profile.id, cipher=None, mcp_config={}
-            )
-
-        assert result_agent is acp_agent
-        assert launched.agent_profile_id == profile.id
-        assert launched.revision == profile.revision
-        MockDiscover.assert_called_once()
-        assert MockResolve.call_args.kwargs["available_skills"] == []
-
-    def test_acp_profile_with_empty_skill_refs_skips_discovery(self):
-        from openhands.agent_server.conversation_service import (
-            _resolve_agent_from_profile,
-        )
-        from openhands.sdk.agent.acp_agent import ACPAgent
-
+        # ACP profiles carry no user/public skills, so discovery never runs and
+        # the resolver receives available_skills=None.
         profile = _make_acp_profile()
-        profile = profile.model_copy(update={"skill_refs": []})
         acp_agent = MagicMock(spec=ACPAgent)
 
         with (
@@ -553,10 +488,13 @@ class TestResolveAgentFromProfile:
             mock_config.create_agent.return_value = acp_agent
             MockResolve.return_value = mock_config
 
-            _resolve_agent_from_profile(profile.id, cipher=None, mcp_config={})
+            result_agent, launched = _resolve_agent_from_profile(
+                profile.id, cipher=None, mcp_config={}
+            )
 
-        # skill_refs == [] selects no discovered skills, so the (network-bound)
-        # discovery is skipped and the resolver gets available_skills=None.
+        assert result_agent is acp_agent
+        assert launched.agent_profile_id == profile.id
+        assert launched.revision == profile.revision
         MockDiscover.assert_not_called()
         assert MockResolve.call_args.kwargs["available_skills"] is None
 
@@ -707,23 +645,9 @@ class TestConversationRouterProfileErrors:
         assert "dangling_mcp_server_refs" in detail
         assert "missing-server" in detail["dangling_mcp_server_refs"]
 
-    def test_dangling_skill_ref_returns_422(self, client, mock_conversation_service):
-        mock_conversation_service.start_conversation.side_effect = DanglingSkillRef(
-            ["missing-skill"]
-        )
-        client.app.dependency_overrides[get_conversation_service] = lambda: (
-            mock_conversation_service
-        )
-
-        payload = {
-            "agent_profile_id": str(uuid4()),
-            "workspace": {"working_dir": "/tmp/test", "kind": "LocalWorkspace"},
-        }
-        resp = client.post("/api/conversations", json=payload)
-        assert resp.status_code == 422
-        detail = resp.json().get("detail", {})
-        assert "dangling_skill_refs" in detail
-        assert "missing-skill" in detail["dangling_skill_refs"]
+    # No dangling-skill 422: skills use a deny-list (disabled_skills) that can't
+    # dangle — a disabled name absent from the catalog is a no-op, so a profile
+    # launch never fails on skill selection (#4017).
 
 
 # ---------------------------------------------------------------------------

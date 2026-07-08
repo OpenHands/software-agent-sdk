@@ -937,6 +937,12 @@ class LocalConversation(BaseConversation):
                 merged_skills = merge_skills_by_name(
                     project_skills.values(), merged_context.skills
                 )
+                # Honor the context deny-list here too: model_copy below bypasses
+                # AgentContext's validator, and a project skill can match a
+                # disabled name (absent name => harmless no-op).
+                if merged_context.disabled_skills:
+                    disabled = set(merged_context.disabled_skills)
+                    merged_skills = [s for s in merged_skills if s.name not in disabled]
                 merged_context = merged_context.model_copy(
                     update={"skills": merged_skills}
                 )

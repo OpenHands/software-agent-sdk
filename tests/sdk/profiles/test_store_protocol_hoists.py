@@ -245,9 +245,9 @@ def test_build_seed_profile_openhands_branch():
     assert profile.mcp_server_refs is None
     # Default settings carry tools=None -> the seed inherits the server default.
     assert profile.tools is None
-    # Default settings resolve to no skills, so the seed freezes an empty
-    # selection (== [], no skills) rather than None (all discovered).
-    assert profile.skill_refs == []
+    # The seed disables nothing -> the default profile launches with all
+    # discovered skills (deny-list model; nothing frozen, nothing can dangle).
+    assert profile.disabled_skills == []
     # Secret-free verification projection (no critic_api_key on the profile type).
     assert "critic_api_key" not in type(profile.verification).model_fields
 
@@ -257,9 +257,12 @@ def test_build_seed_profile_openhands_branch():
     assert fallback.llm_profile_ref == SEED_PROFILE_NAME
 
 
-def test_build_seed_profile_freezes_resolved_skills_by_name():
-    """A global with a resolved skill set seeds a profile that names exactly
-    those skills, so a partial-source global isn't expanded to all-discovered."""
+def test_build_seed_profile_disables_nothing_even_with_inline_global_skills():
+    """The seed never freezes the global's skills by name — it sets an empty
+    deny-list, so the migrated default profile launches with all discovered
+    skills. Freezing by name was the #4017 launch-break: an inline global skill
+    absent from the launch catalog would have dangled. See the seed->resolve
+    regression in test_resolver.py."""
     settings = validate_agent_settings(
         {
             "agent_kind": "openhands",
@@ -273,7 +276,7 @@ def test_build_seed_profile_freezes_resolved_skills_by_name():
     )
     profile = build_seed_profile(settings, active_llm_profile="my-llm")
     assert isinstance(profile, OpenHandsAgentProfile)
-    assert profile.skill_refs == ["alpha", "beta"]
+    assert profile.disabled_skills == []
 
 
 def test_build_seed_profile_copies_explicit_tools():
@@ -301,8 +304,9 @@ def test_build_seed_profile_acp_branch():
     assert profile.name == SEED_PROFILE_NAME
     assert profile.acp_server == "claude-code"
     assert profile.mcp_server_refs is None
-    # ACP profiles keep the [] (none) default — they own their tooling.
-    assert profile.skill_refs == []
+    # ACP profiles have no skill-selection field — they own their tooling.
+    assert not hasattr(profile, "skill_refs")
+    assert not hasattr(profile, "disabled_skills")
     assert not hasattr(profile, "llm_profile_ref")
 
 
@@ -320,18 +324,21 @@ def test_build_profile_verification_drops_critic_api_key():
     assert "critic_api_key" not in ProfileVerificationSettings.model_fields
 
 
-def test_safe_validation_error_detail_is_secret_safe():
+def test_safe_validation_error_detail_surfaces_msg_without_input():
     secret = "sk-super-secret-value"
     with pytest.raises(Exception) as exc_info:
-        # extra=forbid -> the unexpected key (carrying a secret) triggers a
-        # ValidationError that embeds the input in msg/input.
+        # extra=forbid -> the unexpected key (carrying a value) triggers a
+        # ValidationError whose ``input`` echoes the rejected value.
         validate_agent_profile({"name": "p", "llm_profile_ref": "gpt", "leak": secret})
     from pydantic import ValidationError
 
     assert isinstance(exc_info.value, ValidationError)
     detail = safe_validation_error_detail(exc_info.value)
     assert detail, "expected at least one error entry"
+    # loc/type/msg are surfaced so a client can see *why* the save failed;
+    # ``input`` (which echoes the whole rejected payload) is dropped.
     for entry in detail:
-        assert set(entry.keys()) == {"loc", "type"}
-    # The secret never appears in the redacted detail.
+        assert set(entry.keys()) == {"loc", "type", "msg"}
+    # The rejected value lived in ``input``, which is dropped — so a value passed
+    # in an unexpected field never appears in the detail.
     assert secret not in repr(detail)

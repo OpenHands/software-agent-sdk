@@ -670,19 +670,20 @@ def test_seed_preserves_openhands_fields(client):
     assert prof["enable_switch_llm_tool"] is False
     assert prof["tool_concurrency_limit"] == 3
     assert prof["system_message_suffix"] == "be terse"
-    # The seed freezes the global's resolved skills by name; this global has
-    # none, so skill_refs is the empty list (no skills), not None (all).
-    assert prof["skill_refs"] == []
+    # The seed disables nothing — the default profile launches with all
+    # discovered skills (deny-list model).
+    assert prof["disabled_skills"] == []
     assert prof["verification"]["critic_enabled"] is True
     assert prof["verification"]["critic_model_name"] == "x-critic"
     # The profile verification is secret-free — no critic_api_key projected.
     assert "critic_api_key" not in prof["verification"]
 
 
-def test_seed_freezes_resolved_skills_by_name(client):
-    """The seed reproduces the global's resolved skill set by name, so a
-    partial-source global (some skills, not the whole catalog) is preserved
-    rather than silently expanded to all-discovered."""
+def test_seed_disables_nothing_even_with_inline_global_skills(client):
+    """The seed never freezes the global's skills by name — it sets an empty
+    deny-list, so the migrated default profile launches with all discovered
+    skills. Freezing by name was the #4017 launch-break (an inline global skill
+    absent from the launch catalog would dangle)."""
     client.patch(
         "/api/settings",
         json={
@@ -699,7 +700,7 @@ def test_seed_freezes_resolved_skills_by_name(client):
     client.get("/api/agent-profiles")  # triggers the seed
 
     prof = client.get("/api/agent-profiles/default").json()["profile"]
-    assert prof["skill_refs"] == ["alpha", "beta"]
+    assert prof["disabled_skills"] == []
 
 
 def test_seed_preserves_acp_fields(client):
@@ -722,9 +723,9 @@ def test_seed_preserves_acp_fields(client):
     assert prof["acp_server"] == "codex"
     assert prof["acp_model"] == "gpt-5.5"
     assert prof["acp_args"] == ["--foo", "--bar"]
-    # Conservative ACP seed: skill_refs=[] so an existing ACP run doesn't start
-    # receiving the discovered skill catalog until the user opts in.
-    assert prof["skill_refs"] == []
+    # ACP profiles carry no skill-selection field at all.
+    assert "skill_refs" not in prof
+    assert "disabled_skills" not in prof
 
 
 # ── Store errors → HTTP ─────────────────────────────────────────────────────
@@ -863,11 +864,12 @@ def test_materialize_dangling_mcp_ref(client_with_llm_store, store, llm_store):
     assert body["resolved_settings"] is None
 
 
-def test_materialize_reports_resolved_and_dangling_skill_refs(
+def test_materialize_reports_disabled_and_resolved_skills(
     client_with_llm_store, store, llm_store
 ):
-    """skill_refs are resolved against the discovered catalog; a stale ref is
-    reported and invalidates the profile (mirrors dangling MCP refs)."""
+    """The materialize dry-run reports the deny-list and the resolved set
+    (catalog minus disabled). A disabled name absent from the catalog is a no-op
+    and does NOT invalidate the profile — the deny-list can't dangle (#4017)."""
     from openhands.sdk.skills import Skill
 
     llm_store.save("base-llm", LLM(model="gpt-4o"), include_secrets=True)
@@ -875,23 +877,25 @@ def test_materialize_reports_resolved_and_dangling_skill_refs(
         OpenHandsAgentProfile(
             name="p",
             llm_profile_ref="base-llm",
-            skill_refs=["known", "stale"],
+            disabled_skills=["beta", "not-in-catalog"],
         )
     )
 
     with patch(
-        "openhands.agent_server.skills_service.discover_profile_skills",
-        return_value=[Skill(name="known", content="x")],
+        "openhands.agent_server.agent_profiles_router.discover_profile_skills",
+        return_value=[
+            Skill(name="alpha", content="x"),
+            Skill(name="beta", content="y"),
+        ],
     ):
         response = client_with_llm_store.post("/api/agent-profiles/p/materialize")
 
     assert response.status_code == 200
     body = response.json()
-    assert body["valid"] is False
-    assert body["skill_refs"] == ["known", "stale"]
-    assert body["resolved_skills"] == ["known"]
-    assert body["dangling_skill_refs"] == ["stale"]
-    assert body["resolved_settings"] is None
+    assert body["valid"] is True
+    assert body["disabled_skills"] == ["beta", "not-in-catalog"]
+    assert body["resolved_skills"] == ["alpha"]
+    assert body["resolved_settings"] is not None
 
 
 def test_materialize_unknown_name_returns_404(client_with_llm_store):

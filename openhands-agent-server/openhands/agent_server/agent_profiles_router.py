@@ -27,7 +27,7 @@ from openhands.agent_server.persistence import (
     get_settings_store,
 )
 from openhands.agent_server.profiles_router import MAX_PROFILES
-from openhands.agent_server.skills_service import discover_profile_skills_if_needed
+from openhands.agent_server.skills_service import discover_profile_skills
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import (
     ProfileLimitExceeded as LLMProfileLimitExceeded,
@@ -491,20 +491,20 @@ async def materialize_agent_profile(
     settings = get_settings_store(config).load() or PersistedSettings()
     mcp_config = settings.agent_settings.mcp_config
 
-    # Discover skills off the event loop so the dry-run can report which
-    # ``skill_refs`` resolve vs. dangle. A discovery failure must not 500 the
-    # preview: pass ``available_skills=None`` (catalog unknown — the dry-run then
-    # reports nothing dangling, rather than flagging every selected skill) and
-    # surface the failure as its own diagnostic below.
+    # Discover skills off the event loop so the dry-run can report which skills
+    # (catalog minus ``disabled_skills``) resolve. Only OpenHands profiles carry
+    # user/public skills; ACP profiles do not. A discovery failure must not 500
+    # the preview: pass ``available_skills=None`` and surface the failure as its
+    # own diagnostic below.
     discovery_error: str | None = None
-    try:
-        available_skills = await asyncio.to_thread(
-            discover_profile_skills_if_needed, profile
-        )
-    except Exception as exc:
-        available_skills = None
-        discovery_error = str(exc)
-        logger.warning("Skill discovery failed during materialize: %s", exc)
+    available_skills = None
+    if profile.agent_kind == "openhands":
+        try:
+            available_skills = await asyncio.to_thread(discover_profile_skills)
+        except Exception as exc:
+            available_skills = None
+            discovery_error = str(exc)
+            logger.warning("Skill discovery failed during materialize: %s", exc)
 
     llm_store = get_llm_profile_store()
     diagnostics = resolve_agent_profile_dry_run(

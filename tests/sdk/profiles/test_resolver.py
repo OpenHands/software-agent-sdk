@@ -2,8 +2,9 @@
 
 Covers both union variants, the null/empty/filter/dangling MCP cases, the
 dangling-LLM hard error, and the dry-run's redacted, side-effect-free
-diagnostics. Profiles no longer embed ``skills`` (#4017) — the skill catalog
-is server-discovered and filtered by ``skill_refs`` only.
+diagnostics. Profiles no longer embed ``skills`` (#4017) — the skill catalog is
+server-discovered and filtered by the ``disabled_skills`` deny-list (never an
+allow-list, which could dangle).
 """
 
 from pathlib import Path
@@ -18,7 +19,6 @@ from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config
 from openhands.sdk.profiles import (
     ACPAgentProfile,
     DanglingMcpServerRef,
-    DanglingSkillRef,
     OpenHandsAgentProfile,
     ProfileNotFound,
     resolve_agent_profile,
@@ -267,7 +267,7 @@ def test_enable_switch_llm_tool_false_threads_through(
 
 
 # --------------------------------------------------------------------------- #
-# skill_refs filter over discovered skills (#3868)
+# disabled_skills deny-list over discovered skills (#4017)
 # --------------------------------------------------------------------------- #
 
 
@@ -279,11 +279,57 @@ def _discovered_skills() -> list[Skill]:
     ]
 
 
-def test_skill_refs_none_includes_all_discovered(
+def test_disabled_skills_empty_includes_all_discovered(
     llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
 ) -> None:
+    # The default deny-list ([]) keeps every discovered skill.
+    profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default")
+    assert profile.disabled_skills == []
+    settings = resolve_agent_profile(
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=_discovered_skills(),
+        cipher=None,
+    )
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert {s.name for s in settings.agent_context.skills} == {
+        "alpha",
+        "beta",
+        "gamma",
+    }
+    # The deny-list is carried onto the context so the lazy project-skill load
+    # honors it too.
+    assert settings.agent_context.disabled_skills == []
+
+
+def test_disabled_skills_excludes_named(
+    llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
+) -> None:
+    # Disabling one skill drops exactly it; the rest of the catalog remains.
     profile = OpenHandsAgentProfile(
-        name="oh", llm_profile_ref="default", skill_refs=None
+        name="oh", llm_profile_ref="default", disabled_skills=["beta"]
+    )
+    settings = resolve_agent_profile(
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=_discovered_skills(),
+        cipher=None,
+    )
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert {s.name for s in settings.agent_context.skills} == {"alpha", "gamma"}
+    assert settings.agent_context.disabled_skills == ["beta"]
+
+
+def test_disabled_skills_missing_name_is_noop(
+    llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
+) -> None:
+    # The #4017 fix: a disabled name absent from the catalog is a harmless no-op
+    # — resolution succeeds (never DanglingSkillRef) and yields all catalog
+    # skills. This is the whole point of the deny-list over an allow-list.
+    profile = OpenHandsAgentProfile(
+        name="oh", llm_profile_ref="default", disabled_skills=["not-in-catalog"]
     )
     settings = resolve_agent_profile(
         profile,
@@ -300,79 +346,14 @@ def test_skill_refs_none_includes_all_discovered(
     }
 
 
-def test_skill_refs_empty_includes_none(
-    llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
+def test_acp_profile_gets_no_user_public_skills(
+    llm_store: LLMProfileStore,
 ) -> None:
-    profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default", skill_refs=[])
-    settings = resolve_agent_profile(
-        profile,
-        llm_store=llm_store,
-        mcp_config=mcp_config,
-        available_skills=_discovered_skills(),
-        cipher=None,
-    )
-    assert isinstance(settings, OpenHandsAgentSettings)
-    assert settings.agent_context.skills == []
-
-
-def test_skill_refs_filters_to_named_subset_in_ref_order(
-    llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
-) -> None:
-    profile = OpenHandsAgentProfile(
-        name="oh", llm_profile_ref="default", skill_refs=["gamma", "alpha"]
-    )
-    settings = resolve_agent_profile(
-        profile,
-        llm_store=llm_store,
-        mcp_config=mcp_config,
-        available_skills=_discovered_skills(),
-        cipher=None,
-    )
-    assert isinstance(settings, OpenHandsAgentSettings)
-    assert [s.name for s in settings.agent_context.skills] == ["gamma", "alpha"]
-
-
-def test_skill_refs_dangling_raises(
-    llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
-) -> None:
-    # Mirroring mcp_server_refs, a skill ref absent from the discovered catalog
-    # hard-fails (DanglingSkillRef) rather than being silently dropped.
-    profile = OpenHandsAgentProfile(
-        name="oh", llm_profile_ref="default", skill_refs=["alpha", "missing"]
-    )
-    with pytest.raises(DanglingSkillRef) as exc_info:
-        resolve_agent_profile(
-            profile,
-            llm_store=llm_store,
-            mcp_config=mcp_config,
-            available_skills=_discovered_skills(),
-            cipher=None,
-        )
-    assert exc_info.value.missing == ["missing"]
-
-
-def test_skill_refs_duplicate_is_deduped(
-    llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
-) -> None:
-    # A repeated skill ref collapses to one entry (shared _partition_refs), so
-    # the ACP path — which feeds AgentContext, where duplicate names are
-    # rejected — no longer crashes on a duplicated selection.
-    oh = OpenHandsAgentProfile(
-        name="oh", llm_profile_ref="default", skill_refs=["alpha", "alpha"]
-    )
-    oh_settings = resolve_agent_profile(
-        oh,
-        llm_store=llm_store,
-        mcp_config=mcp_config,
-        available_skills=_discovered_skills(),
-        cipher=None,
-    )
-    assert isinstance(oh_settings, OpenHandsAgentSettings)
-    assert [s.name for s in oh_settings.agent_context.skills] == ["alpha"]
-
-    acp = ACPAgentProfile(
-        name="acp", acp_server="claude-code", skill_refs=["alpha", "alpha"]
-    )
+    # ACP profiles carry no skill field — the subprocess owns its context, so no
+    # user/public discovered skills are injected regardless of the catalog.
+    acp = ACPAgentProfile(name="acp", acp_server="claude-code")
+    assert not hasattr(acp, "skill_refs")
+    assert not hasattr(acp, "disabled_skills")
     acp_settings = resolve_agent_profile(
         acp,
         llm_store=llm_store,
@@ -382,18 +363,16 @@ def test_skill_refs_duplicate_is_deduped(
     )
     assert isinstance(acp_settings, ACPAgentSettings)
     assert acp_settings.agent_context is not None
-    assert [s.name for s in acp_settings.agent_context.skills] == ["alpha"]
+    assert acp_settings.agent_context.skills == []
 
 
 def test_no_available_skills_yields_no_skills(
     llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
 ) -> None:
-    # available_skills=None (no discovery run) → no skills reach the agent from
-    # this filter, regardless of skill_refs. Profiles no longer embed skills
-    # (#4017), so there is no other source.
-    profile = OpenHandsAgentProfile(
-        name="oh", llm_profile_ref="default", skill_refs=None
-    )
+    # available_skills=None (no discovery run) → no user/public skills reach the
+    # agent. Profiles no longer embed skills (#4017), so there is no other
+    # source (project skills load separately in LocalConversation).
+    profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default")
     settings = resolve_agent_profile(
         profile,
         llm_store=llm_store,
@@ -403,6 +382,43 @@ def test_no_available_skills_yields_no_skills(
     )
     assert isinstance(settings, OpenHandsAgentSettings)
     assert settings.agent_context.skills == []
+
+
+def test_seed_then_resolve_with_narrower_catalog_does_not_dangle(
+    llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
+) -> None:
+    # #4017 regression: a global whose AgentContext carries an inline skill whose
+    # name is NOT in the launch discovery catalog. The old freeze-by-name seed
+    # would name that skill and then hard-fail at launch (DanglingSkillRef). The
+    # deny-list seed disables nothing, so seed->resolve against the narrower
+    # catalog succeeds and yields exactly the catalog skills.
+    from openhands.sdk.profiles import build_seed_profile
+    from openhands.sdk.settings.model import validate_agent_settings
+
+    settings = validate_agent_settings(
+        {
+            "agent_kind": "openhands",
+            "agent_context": {"skills": [{"name": "inline-only", "content": "x"}]},
+        }
+    )
+    profile = build_seed_profile(settings, active_llm_profile="default")
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert profile.disabled_skills == []
+
+    # Launch catalog does NOT contain "inline-only" — must still resolve.
+    resolved = resolve_agent_profile(
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=_discovered_skills(),
+        cipher=None,
+    )
+    assert isinstance(resolved, OpenHandsAgentSettings)
+    assert {s.name for s in resolved.agent_context.skills} == {
+        "alpha",
+        "beta",
+        "gamma",
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -548,58 +564,14 @@ def test_acp_blank_command_resolves_empty_list(
     assert settings.acp_args == []
 
 
-def test_acp_skill_refs_filter_into_agent_context_prompt(
+def test_acp_carries_no_user_public_skills_but_keeps_load_project_skills(
     llm_store: LLMProfileStore,
 ) -> None:
-    # ACP agents receive the selected skills as prompt context via
-    # agent_context.to_acp_prompt_context — skill_refs honors that too.
-    profile = ACPAgentProfile(
-        name="acp", acp_server="claude-code", skill_refs=["gamma", "alpha"]
-    )
-    settings = resolve_agent_profile(
-        profile,
-        llm_store=llm_store,
-        mcp_config={},
-        available_skills=_discovered_skills(),
-        cipher=None,
-    )
-    assert isinstance(settings, ACPAgentSettings)
-    assert settings.agent_context is not None
-    # Ref order preserved; ACP has no embedded skills to compose.
-    assert [s.name for s in settings.agent_context.skills] == ["gamma", "alpha"]
-    # ACP convention: no injected datetime (unlike the OpenHands agent).
-    assert settings.agent_context.current_datetime is None
-
-
-def test_acp_skill_refs_none_includes_all_discovered(
-    llm_store: LLMProfileStore,
-) -> None:
-    profile = ACPAgentProfile(name="acp", acp_server="claude-code", skill_refs=None)
-    settings = resolve_agent_profile(
-        profile,
-        llm_store=llm_store,
-        mcp_config={},
-        available_skills=_discovered_skills(),
-        cipher=None,
-    )
-    assert isinstance(settings, ACPAgentSettings)
-    assert settings.agent_context is not None
-    assert {s.name for s in settings.agent_context.skills} == {
-        "alpha",
-        "beta",
-        "gamma",
-    }
-
-
-def test_acp_skill_refs_empty_still_carries_load_project_skills(
-    llm_store: LLMProfileStore,
-) -> None:
-    """No selected skills leaves the *prompt* content unchanged (empty skills,
-    same as before), but ``agent_context`` is no longer ``None`` — it must
-    always be constructed so ``load_project_skills=True`` reaches
-    ``LocalConversation``'s lazy project-skill load (#4016), which applies to
-    ACP profiles the same as OpenHands ones."""
-    profile = ACPAgentProfile(name="acp", acp_server="claude-code", skill_refs=[])
+    """ACP profiles inject no user/public discovered skills (the subprocess owns
+    its context), but ``agent_context`` is still constructed (never ``None``) so
+    ``load_project_skills=True`` reaches ``LocalConversation``'s lazy
+    project-skill load (#4016). ACP convention: no injected datetime."""
+    profile = ACPAgentProfile(name="acp", acp_server="claude-code")
     settings = resolve_agent_profile(
         profile,
         llm_store=llm_store,
@@ -669,11 +641,14 @@ def test_dry_run_reports_dangling_llm_and_mcp(
     assert diag.resolved_settings is None
 
 
-def test_dry_run_reports_resolved_and_dangling_skill_refs(
+def test_dry_run_reports_disabled_and_resolved_skills(
     llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
 ) -> None:
+    # Deny-list: the dry-run reports the disabled names and the resolved set
+    # (catalog minus disabled). A disabled name absent from the catalog does not
+    # invalidate the profile — the deny-list can't dangle.
     profile = OpenHandsAgentProfile(
-        name="oh", llm_profile_ref="default", skill_refs=["alpha", "missing"]
+        name="oh", llm_profile_ref="default", disabled_skills=["beta", "missing"]
     )
     diag = resolve_agent_profile_dry_run(
         profile,
@@ -682,22 +657,18 @@ def test_dry_run_reports_resolved_and_dangling_skill_refs(
         available_skills=_discovered_skills(),
         cipher=None,
     )
-    assert diag.skill_refs == ["alpha", "missing"]
-    assert diag.resolved_skills == ["alpha"]
-    assert diag.dangling_skill_refs == ["missing"]
-    # A dangling skill ref flips validity via an error (mirrors MCP).
-    assert diag.valid is False
-    assert any("Skill(s) not found" in e for e in diag.errors)
-    assert diag.resolved_settings is None
+    assert diag.disabled_skills == ["beta", "missing"]
+    assert set(diag.resolved_skills) == {"alpha", "gamma"}
+    assert diag.valid is True
+    assert not any("Skill" in e for e in diag.errors)
+    assert diag.resolved_settings is not None
 
 
-def test_dry_run_skill_refs_null_resolves_all_discovered(
+def test_dry_run_default_disabled_resolves_all_discovered(
     llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
 ) -> None:
-    # Explicit null (all discovered) — NOT the default, which is [] (none).
-    profile = OpenHandsAgentProfile(
-        name="oh", llm_profile_ref="default", skill_refs=None
-    )
+    # Default deny-list ([]) resolves the whole catalog.
+    profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default")
     diag = resolve_agent_profile_dry_run(
         profile,
         llm_store=llm_store,
@@ -705,9 +676,8 @@ def test_dry_run_skill_refs_null_resolves_all_discovered(
         available_skills=_discovered_skills(),
         cipher=None,
     )
-    assert diag.skill_refs is None
+    assert diag.disabled_skills == []
     assert set(diag.resolved_skills) == {"alpha", "beta", "gamma"}
-    assert diag.dangling_skill_refs == []
 
 
 def test_dry_run_total_on_llm_store_transient_error(
@@ -783,14 +753,12 @@ def test_dry_run_acp_reports_credential_channels_by_role(
     assert diag.resolved_settings is not None
 
 
-def test_dry_run_acp_reports_skill_refs(
+def test_dry_run_acp_reports_no_skills(
     llm_store: LLMProfileStore,
 ) -> None:
-    # skill_refs diagnostics are reported for ACP profiles too (the field is on
-    # the shared base); a dangling ref invalidates the profile, as for OpenHands.
-    profile = ACPAgentProfile(
-        name="acp", acp_server="codex", skill_refs=["alpha", "missing"]
-    )
+    # ACP profiles carry no skill field, so the dry-run reports no resolved
+    # skills regardless of the catalog, and stays valid.
+    profile = ACPAgentProfile(name="acp", acp_server="codex")
     diag = resolve_agent_profile_dry_run(
         profile,
         llm_store=llm_store,
@@ -798,20 +766,19 @@ def test_dry_run_acp_reports_skill_refs(
         available_skills=_discovered_skills(),
         cipher=None,
     )
-    assert diag.skill_refs == ["alpha", "missing"]
-    assert diag.resolved_skills == ["alpha"]
-    assert diag.dangling_skill_refs == ["missing"]
-    assert diag.valid is False
-    assert any("Skill(s) not found" in e for e in diag.errors)
+    assert diag.disabled_skills == []
+    assert diag.resolved_skills == []
+    assert diag.valid is True
 
 
 def test_dry_run_skill_verdict_matches_real_resolve(
     llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
 ) -> None:
-    # A dangling skill ref: dry-run says invalid, real resolve raises — the same
-    # dry-run/resolve agreement the MCP path has.
+    # A disabled name absent from the catalog never invalidates: dry-run stays
+    # valid and the real resolve succeeds with the full catalog. The deny-list
+    # cannot dangle (unlike the MCP allow-list).
     profile = OpenHandsAgentProfile(
-        name="oh", llm_profile_ref="default", skill_refs=["missing"]
+        name="oh", llm_profile_ref="default", disabled_skills=["missing"]
     )
     diag = resolve_agent_profile_dry_run(
         profile,
@@ -820,25 +787,29 @@ def test_dry_run_skill_verdict_matches_real_resolve(
         available_skills=_discovered_skills(),
         cipher=None,
     )
-    assert diag.valid is False
-    with pytest.raises(DanglingSkillRef):
-        resolve_agent_profile(
-            profile,
-            llm_store=llm_store,
-            mcp_config=mcp_config,
-            available_skills=_discovered_skills(),
-            cipher=None,
-        )
+    assert diag.valid is True
+    settings = resolve_agent_profile(
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=_discovered_skills(),
+        cipher=None,
+    )
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert {s.name for s in settings.agent_context.skills} == {
+        "alpha",
+        "beta",
+        "gamma",
+    }
 
 
-def test_dry_run_skill_refs_unknown_catalog_reports_nothing_dangling(
+def test_dry_run_unknown_catalog_resolves_no_skills(
     llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
 ) -> None:
-    # available_skills=None (discovery skipped/failed) → catalog unknown, so a
-    # named ref is NOT reported dangling (the materialize path relies on this so
-    # a discovery failure doesn't mislabel every selected skill as missing).
+    # available_skills=None (discovery skipped/failed) → no user/public skills
+    # resolve, and the profile stays valid (the deny-list has nothing to flag).
     profile = OpenHandsAgentProfile(
-        name="oh", llm_profile_ref="default", skill_refs=["alpha"]
+        name="oh", llm_profile_ref="default", disabled_skills=["alpha"]
     )
     diag = resolve_agent_profile_dry_run(
         profile,
@@ -847,7 +818,6 @@ def test_dry_run_skill_refs_unknown_catalog_reports_nothing_dangling(
         available_skills=None,
         cipher=None,
     )
-    assert diag.dangling_skill_refs == []
     assert diag.resolved_skills == []
     assert diag.valid is True
 
