@@ -8,6 +8,7 @@ import os
 import threading
 import warnings
 from collections.abc import AsyncIterable, Callable, Iterable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
@@ -558,6 +559,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # it back on the event loop thread, which an RLock would reject since it
     # tracks a single owning thread.
     _litellm_modify_params_lock: ClassVar[threading.Lock] = threading.Lock()
+    # Waiting on the lock from the async path is offloaded to this dedicated
+    # executor rather than the event loop's default one. The coroutine that
+    # *holds* the lock may itself need a default-executor thread to make
+    # progress before it can release (e.g. draining a synchronous stream via
+    # ``run_in_executor``); if lock-waiters shared that pool they could occupy
+    # every worker and starve the holder, deadlocking instead of just
+    # serialising. Keeping the wait on its own pool prevents that.
+    _litellm_modify_params_lock_executor: ClassVar[ThreadPoolExecutor] = (
+        ThreadPoolExecutor(thread_name_prefix="llm-modify-params-lock")
+    )
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="ignore", arbitrary_types_allowed=True
@@ -1972,6 +1983,33 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         api_key_value, _ = await self._aget_litellm_auth_values()
         return api_key_value
 
+    @staticmethod
+    @contextmanager
+    def _suppress_transport_warnings():
+        """Filter the noisy provider/litellm warnings emitted during a
+        transport call. Shared by the sync and async transport guards."""
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", category=DeprecationWarning, module="httpx.*"
+            )
+            warnings.filterwarnings(
+                "ignore",
+                message=r".*content=.*upload.*",
+                category=DeprecationWarning,
+            )
+            warnings.filterwarnings(
+                "ignore",
+                message="There is no current event loop",
+                category=DeprecationWarning,
+            )
+            warnings.filterwarnings("ignore", category=UserWarning)
+            warnings.filterwarnings(
+                "ignore",
+                category=DeprecationWarning,
+                message="Accessing the 'model_fields' attribute.*",
+            )
+            yield
+
     @contextmanager
     def _transport_ctx(self):
         """Guard a litellm transport call.
@@ -1980,26 +2018,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         and the noisy provider/litellm warnings are filtered out for the call.
         """
         with self._litellm_modify_params_ctx(self.modify_params):
-            with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore", category=DeprecationWarning, module="httpx.*"
-                )
-                warnings.filterwarnings(
-                    "ignore",
-                    message=r".*content=.*upload.*",
-                    category=DeprecationWarning,
-                )
-                warnings.filterwarnings(
-                    "ignore",
-                    message="There is no current event loop",
-                    category=DeprecationWarning,
-                )
-                warnings.filterwarnings("ignore", category=UserWarning)
-                warnings.filterwarnings(
-                    "ignore",
-                    category=DeprecationWarning,
-                    message="Accessing the 'model_fields' attribute.*",
-                )
+            with self._suppress_transport_warnings():
                 yield
 
     @asynccontextmanager
@@ -2010,26 +2029,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         plain blocking ``with`` statement around the lock.
         """
         async with self._alitellm_modify_params_ctx(self.modify_params):
-            with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore", category=DeprecationWarning, module="httpx.*"
-                )
-                warnings.filterwarnings(
-                    "ignore",
-                    message=r".*content=.*upload.*",
-                    category=DeprecationWarning,
-                )
-                warnings.filterwarnings(
-                    "ignore",
-                    message="There is no current event loop",
-                    category=DeprecationWarning,
-                )
-                warnings.filterwarnings("ignore", category=UserWarning)
-                warnings.filterwarnings(
-                    "ignore",
-                    category=DeprecationWarning,
-                    message="Accessing the 'model_fields' attribute.*",
-                )
+            with self._suppress_transport_warnings():
                 yield
 
     def _prepare_transport_kwargs(
@@ -2174,9 +2174,35 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         while this call is blocked on a concurrent transport call. The lock
         is a plain (non-reentrant) ``threading.Lock``, so it is safe to
         acquire on one thread and release on another.
+
+        Cancellation subtlety: if this coroutine is cancelled while waiting
+        (conversation stop/pause, timeout), the worker thread has already
+        started ``acquire()`` and cannot be interrupted -- it will still take
+        the lock. We therefore ``shield`` the acquire so the cancellation does
+        not mark it cancelled: the shielded future still resolves to the real
+        acquire result, and a done-callback releases the lock if it was
+        actually taken. Without this the lock would be acquired with nobody to
+        release it, permanently wedging every LLM call process-wide.
         """
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._litellm_modify_params_lock.acquire)
+        acquire = loop.run_in_executor(
+            self._litellm_modify_params_lock_executor,
+            self._litellm_modify_params_lock.acquire,
+        )
+        try:
+            await asyncio.shield(acquire)
+        except asyncio.CancelledError:
+            lock = self._litellm_modify_params_lock
+
+            def _release_if_acquired(fut: asyncio.Future) -> None:
+                # ``shield`` kept ``acquire`` alive, so its result reflects
+                # whether the worker thread actually took the lock. Release it
+                # if so, since the cancelled coroutine below never will.
+                if not fut.cancelled() and fut.exception() is None:
+                    lock.release()
+
+            acquire.add_done_callback(_release_if_acquired)
+            raise
         try:
             old = getattr(litellm, "modify_params", None)
             try:
