@@ -346,6 +346,32 @@ def test_disabled_skills_missing_name_is_noop(
     }
 
 
+def test_duplicate_named_catalog_is_deduped(
+    llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
+) -> None:
+    # A colliding catalog (e.g. the app-server's fuller catalog merging sources
+    # whose names overlap) is de-duplicated by name, last-wins — resolution must
+    # not trip AgentContext's duplicate-name validator.
+    catalog = [
+        Skill(name="alpha", content="first"),
+        Skill(name="beta", content="b"),
+        Skill(name="alpha", content="second"),
+    ]
+    profile = OpenHandsAgentProfile(
+        name="oh", llm_profile_ref="default", disabled_skills=["beta"]
+    )
+    settings = resolve_agent_profile(
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=catalog,
+        cipher=None,
+    )
+    assert isinstance(settings, OpenHandsAgentSettings)
+    skills = {s.name: s.content for s in settings.agent_context.skills}
+    assert skills == {"alpha": "second"}  # de-duped (last wins); beta disabled
+
+
 def test_acp_profile_gets_no_user_public_skills(
     llm_store: LLMProfileStore,
 ) -> None:

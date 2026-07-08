@@ -176,18 +176,23 @@ def _apply_disabled_skills(
     is by *exclusion*, not by an allow-list of names (which would dangle when the
     catalog a profile was authored against differs from the one resolved at
     launch — the #4017 root cause). A disabled name absent from the catalog is a
-    harmless no-op; this can never raise.
+    harmless no-op.
+
+    The catalog is de-duplicated by name (last occurrence wins, matching
+    ``load_all_skills``'s later-source-overrides precedence) so a caller passing a
+    colliding catalog — the app-server's "fuller catalog" merges multiple sources
+    whose names can collide — cannot trip ``AgentContext``'s duplicate-name
+    validator. So this can never raise.
 
     ``available_skills is None`` (discovery skipped or failed) → no skills, the
     caller having surfaced its own signal. ``disabled == []`` → the whole
-    catalog.
+    (de-duplicated) catalog.
     """
     if not available_skills:
         return []
-    if not disabled:
-        return list(available_skills)
+    by_name = {s.name: s for s in available_skills}
     denied = set(disabled)
-    return [s for s in available_skills if s.name not in denied]
+    return [s for s in by_name.values() if s.name not in denied]
 
 
 def _api_key_set(llm: LLM) -> bool:
