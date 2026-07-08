@@ -1386,50 +1386,11 @@ def test_acp_api_key_env_var_maps_known_servers() -> None:
     )
 
 
-def test_acp_resolve_provider_env_from_llm_credentials() -> None:
-    # Deprecated (removed in 1.33.0 with the llm field): still functional for
-    # the deprecation window, but warns callers toward the secrets channel.
-    settings = ACPAgentSettings(
-        acp_server="gemini-cli",
-        llm=LLM(
-            model="gemini-2.5-pro",
-            api_key=SecretStr("sk-test-gemini"),
-            base_url="https://gemini-proxy.example.com",
-        ),
-    )
-
-    with pytest.warns(
-        DeprecationWarning, match=r"ACPAgentSettings\.resolve_provider_env"
-    ):
-        assert settings.resolve_provider_env() == {
-            "GEMINI_API_KEY": "sk-test-gemini",
-            "GEMINI_BASE_URL": "https://gemini-proxy.example.com",
-        }
-
-
-def test_acp_resolve_provider_env_custom_server_empty() -> None:
-    settings = ACPAgentSettings(
-        acp_server="custom",
-        acp_command=["custom-acp"],
-        llm=LLM(
-            model="custom-model",
-            api_key=SecretStr("sk-test"),
-            base_url="https://proxy.example.com",
-        ),
-    )
-
-    with pytest.warns(
-        DeprecationWarning, match=r"ACPAgentSettings\.resolve_provider_env"
-    ):
-        assert settings.resolve_provider_env() == {}
-
-
 def test_acp_create_agent_ignores_llm_credentials() -> None:
-    # llm.api_key/base_url are deprecated (llm is removed in 1.33.0) and no
-    # longer folded into agent_context.secrets: an LLM-profile base_url would
-    # leak into the subprocess and silently re-route its API calls (#3632).
-    # create_agent warns and ignores them; provider credentials ride the
-    # conversation secrets channel keyed by the provider's env var name.
+    # llm.api_key/base_url are never read: an LLM-profile base_url would leak
+    # into the subprocess and silently re-route its API calls (#3632). Provider
+    # credentials ride the conversation secrets channel keyed by the provider's
+    # env var name; the caller's secrets pass through untouched.
     context = AgentContext(secrets={"GITHUB_TOKEN": "ghp_test"})
     settings = ACPAgentSettings(
         acp_server="codex",
@@ -1441,41 +1402,23 @@ def test_acp_create_agent_ignores_llm_credentials() -> None:
         agent_context=context,
     )
 
-    with pytest.warns(DeprecationWarning, match=r"ACPAgentSettings\.llm is deprecated"):
-        agent = settings.create_agent()
+    agent = settings.create_agent()
 
     # The caller's secrets pass through untouched; no provider creds appear.
     assert agent.agent_context is not None
     assert dict(agent.agent_context.secrets or {}) == {"GITHUB_TOKEN": "ghp_test"}
 
 
-def test_acp_create_agent_credentials_warn_even_without_context() -> None:
+def test_acp_create_agent_ignores_credentials_without_context() -> None:
     # No caller agent_context: nothing is synthesized for the ignored creds —
-    # the context stays None and the deprecation warning is the only signal.
+    # the context stays None.
     settings = ACPAgentSettings(
         acp_server="claude-code",
         llm=LLM(model="claude-opus-4-6", api_key=SecretStr("sk-ui-key")),
     )
 
-    with pytest.warns(DeprecationWarning, match=r"ACPAgentSettings\.llm is deprecated"):
-        agent = settings.create_agent()
+    agent = settings.create_agent()
 
-    assert agent.agent_context is None
-
-
-def test_acp_create_agent_without_llm_credentials_does_not_warn() -> None:
-    import warnings
-
-    settings = ACPAgentSettings(
-        acp_server="claude-code",
-        llm=LLM(model="claude-opus-4-6"),
-    )
-
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        agent = settings.create_agent()
-
-    assert not [w for w in caught if "ACPAgentSettings.llm" in str(w.message)]
     assert agent.agent_context is None
 
 

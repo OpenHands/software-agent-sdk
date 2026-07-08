@@ -52,7 +52,6 @@ from openhands.sdk.mcp.config import (
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.tool import Tool
-from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import (
     serialize_secret,
     validate_secret,
@@ -1403,13 +1402,12 @@ class ACPAgentSettings(AgentSettingsBase):
     tools, MCP, and (primary) LLM calls; those fields from
     :class:`OpenHandsAgentSettings` do not apply here.
 
-    The :attr:`llm` field is deprecated (removed in 1.33.0). ``ACPAgent``
-    uses it purely for cost/token attribution, never for LLM requests;
-    :attr:`acp_model` is the model identity. Credentials set on it
-    (``llm.api_key`` / ``llm.base_url``) are ignored — provider credentials
-    ride the conversation secrets channel (``request.secrets`` /
-    ``agent_context.secrets`` → ``state.secret_registry``) keyed by the
-    provider's env var name (:attr:`api_key_env_var`).
+    ``ACPAgent`` uses the :attr:`llm` field purely for cost/token attribution,
+    never for LLM requests; :attr:`acp_model` is the model identity. Any
+    credentials set on it (``llm.api_key`` / ``llm.base_url``) are ignored —
+    provider credentials ride the conversation secrets channel
+    (``request.secrets`` / ``agent_context.secrets`` → ``state.secret_registry``)
+    keyed by the provider's env var name (:attr:`api_key_env_var`).
     """
 
     agent_kind: Literal["acp"] = Field(
@@ -1649,52 +1647,6 @@ class ACPAgentSettings(AgentSettingsBase):
         info = self.provider_info
         return info.base_url_env_var if info is not None else None
 
-    def resolve_provider_env(self) -> dict[str, str]:
-        """Derive provider-native env vars from the attribution LLM settings.
-
-        Built-in ACP providers read credentials and optional base URLs from
-        provider-specific env var names. This helper translates the generic
-        :attr:`llm` settings into that provider-native subprocess environment.
-        Custom servers return an empty mapping.
-
-        .. deprecated:: 1.28.0
-            Removed in 1.33.0 together with :attr:`llm`. ``create_agent()``
-            no longer reads ``llm.api_key`` / ``llm.base_url``; supply
-            provider credentials as conversation secrets keyed by
-            :attr:`api_key_env_var` (e.g. ``ANTHROPIC_API_KEY``) instead.
-        """
-        warn_deprecated(
-            "ACPAgentSettings.resolve_provider_env",
-            deprecated_in="1.28.0",
-            removed_in="1.33.0",
-            details=(
-                "Supply ACP provider credentials as conversation secrets "
-                "(agent_context.secrets / StartConversationRequest.secrets, "
-                "which route through state.secret_registry) keyed by the "
-                "provider's env var name instead of ACPAgentSettings.llm."
-            ),
-        )
-        env: dict[str, str] = {}
-
-        api_key = self.llm.api_key
-        if api_key is not None and self.api_key_env_var:
-            key_value = (
-                api_key.get_secret_value()
-                if isinstance(api_key, SecretStr)
-                else str(api_key)
-            )
-            key_value = key_value.strip()
-            if key_value:
-                env[self.api_key_env_var] = key_value
-
-        base_url = self.llm.base_url
-        if base_url is not None and self.base_url_env_var:
-            base_url_value = str(base_url).strip()
-            if base_url_value:
-                env[self.base_url_env_var] = base_url_value
-
-        return env
-
     def resolve_acp_command(self) -> list[str]:
         """Return the effective subprocess command for this settings block.
 
@@ -1807,27 +1759,10 @@ class ACPAgentSettings(AgentSettingsBase):
         """
         from openhands.sdk.agent import ACPAgent
 
-        # llm.api_key/base_url used to be folded into agent_context.secrets
-        # here. Both production clients route credentials via request.secrets
-        # already (canvas never sends llm; OpenHands strips the credentials
-        # before create_agent), so the fold only fired for direct-SDK callers
-        # — warn them toward the secrets channel instead of silently leaking
-        # a profile base_url into the subprocess (#3632).
-        if self.llm.api_key is not None or self.llm.base_url is not None:
-            warn_deprecated(
-                "ACPAgentSettings.llm",
-                deprecated_in="1.28.0",
-                removed_in="1.33.0",
-                details=(
-                    "create_agent() ignores its api_key/base_url. Supply ACP "
-                    "provider credentials as conversation secrets "
-                    "(agent_context.secrets / StartConversationRequest."
-                    "secrets, which route through state.secret_registry) "
-                    "keyed by the provider's env var name (e.g. "
-                    "ANTHROPIC_API_KEY); use acp_model for model identity."
-                ),
-            )
-
+        # Credentials on ``llm`` (api_key / base_url) are intentionally not read:
+        # provider credentials ride the conversation secrets channel keyed by the
+        # provider's env var name (#3632). ``llm`` is kept only for cost/token
+        # attribution; ``acp_model`` is the model identity.
         return ACPAgent(
             llm=self.llm,
             acp_command=self.resolve_acp_command(),
