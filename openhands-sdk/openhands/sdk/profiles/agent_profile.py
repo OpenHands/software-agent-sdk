@@ -33,7 +33,7 @@ from openhands.sdk.settings.model import (
 from openhands.sdk.tool import Tool
 
 
-AGENT_PROFILE_SCHEMA_VERSION = 3
+AGENT_PROFILE_SCHEMA_VERSION = 1
 
 
 class ProfileVerificationSettings(BaseModel):
@@ -314,38 +314,15 @@ validate/construct instances from raw payloads.
 PersistedProfileMigrator = Callable[[dict[str, Any]], dict[str, Any]]
 
 
-def _migrate_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
-    """v1→v2: drop the embedded ``skills`` field.
-
-    No production data exists yet, so this only guards a stray hand-authored
-    payload. The field is dropped, not folded into a ref list.
-    """
-    migrated = dict(payload)
-    migrated.pop("skills", None)
-    migrated["schema_version"] = 2
-    return migrated
-
-
-def _migrate_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
-    """v2→v3: drop the allow-list ``skill_refs`` for the ``disabled_skills`` deny-list.
-
-    Skills are now selected by exclusion, so the former ``skill_refs`` name
-    filter is dropped. No production profile carries a real subset (no skill
-    picker ever shipped), so nothing is folded forward; an omitted
-    ``disabled_skills`` defaults to [] = all discovered skills.
-    """
-    migrated = dict(payload)
-    migrated.pop("skill_refs", None)
-    migrated["schema_version"] = 3
-    return migrated
-
-
-# Registered per *source* schema_version; each migrator returns a payload with
-# an advanced ``schema_version``.
-_AGENT_PROFILE_MIGRATIONS: dict[int, PersistedProfileMigrator] = {
-    1: _migrate_v1_to_v2,
-    2: _migrate_v2_to_v3,
-}
+# No migrations: the profile model has never shipped to prod or any client, so
+# v1 is a clean baseline — embedded ``skills`` and the allow-list ``skill_refs``
+# never existed in a released profile, so there is nothing to migrate. This
+# registry is the home for the first *real* post-ship schema change; until then
+# ``_apply_persisted_migrations`` is a validating no-op and a stray removed key
+# (``skills`` / ``skill_refs``) is rejected by ``extra="forbid"`` at validation
+# rather than silently dropped. Register migrators here (keyed by source version)
+# when the first shipped schema needs to evolve.
+_AGENT_PROFILE_MIGRATIONS: dict[int, PersistedProfileMigrator] = {}
 
 
 def _apply_persisted_migrations(payload: dict[str, Any]) -> dict[str, Any]:

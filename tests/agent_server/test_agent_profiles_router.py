@@ -425,10 +425,10 @@ def test_save_missing_required_ref_returns_422(client):
     assert any("llm_profile_ref" in err["loc"] for err in detail)
 
 
-def test_save_v1_body_with_stray_skills_key_is_migrated_and_saved(client, store):
-    """A body with no ``schema_version`` is treated as v1 and migrated (#4017):
-    the now-removed ``skills`` field is dropped before validation, so the save
-    succeeds rather than tripping extra='forbid'."""
+def test_save_schemaless_body_with_stray_skills_key_rejected(client):
+    """A body with no ``schema_version`` canonicalizes to the clean v1 baseline;
+    the removed ``skills`` field never shipped, so it is a genuine extra='forbid'
+    violation (422) — there is no migration to silently drop it (#4017)."""
     response = client.post(
         "/api/agent-profiles/legacy",
         json={
@@ -436,16 +436,12 @@ def test_save_v1_body_with_stray_skills_key_is_migrated_and_saved(client, store)
             "skills": [{"name": "old", "content": "x"}],
         },
     )
-    assert response.status_code == 201
-    loaded = store.load("legacy")
-    assert isinstance(loaded, OpenHandsAgentProfile)
-    assert not hasattr(loaded, "skills")
+    assert response.status_code == 422
 
 
 def test_save_current_schema_version_rejects_stray_skills_key(client):
-    """A body that already claims the current schema version skips migration,
-    so a stray ``skills`` key is a genuine extra='forbid' violation (422), not
-    silently dropped."""
+    """A body that claims the current schema version with a stray ``skills`` key
+    is a genuine extra='forbid' violation (422)."""
     from openhands.sdk.profiles.agent_profile import AGENT_PROFILE_SCHEMA_VERSION
 
     response = client.post(

@@ -394,57 +394,52 @@ def test_openhands_profile_has_no_embedded_skills_field() -> None:
 
 
 # ---------------------------------------------------------------------------
-# migration: v1 drops embedded ``skills``; v2->v3 drops allow-list ``skill_refs``
-# for the ``disabled_skills`` deny-list (#4017)
+# clean v1 baseline: nothing ever shipped, so the removed ``skills`` /
+# ``skill_refs`` fields are rejected (``extra="forbid"``), not migrated (#4017)
 # ---------------------------------------------------------------------------
 
 
-def test_v1_payload_with_embedded_skills_migrates_cleanly() -> None:
-    """A v1 payload carrying the now-removed ``skills`` field migrates to the
-    current schema with the field dropped, rather than tripping
-    ``extra="forbid"``."""
-    payload = {
-        "schema_version": 1,
-        "agent_kind": "openhands",
-        "name": "oh",
-        "llm_profile_ref": "default",
-        "skills": [{"name": "old-skill", "content": "do stuff"}],
-    }
-    profile = validate_agent_profile(payload)
-    assert isinstance(profile, OpenHandsAgentProfile)
-    assert profile.schema_version == AGENT_PROFILE_SCHEMA_VERSION
-    assert not hasattr(profile, "skills")
+def test_removed_skills_field_is_rejected() -> None:
+    """The embedded ``skills`` field never shipped, so a payload carrying it is a
+    genuine ``extra="forbid"`` violation — there is no migration to drop it."""
+    with pytest.raises(ValidationError):
+        validate_agent_profile(
+            {
+                "schema_version": 1,
+                "agent_kind": "openhands",
+                "name": "oh",
+                "llm_profile_ref": "default",
+                "skills": [{"name": "old-skill", "content": "do stuff"}],
+            }
+        )
 
 
-def test_migrated_payload_adopts_empty_disabled_skills_default() -> None:
-    """A pre-``disabled_skills`` payload picks up the model's current default on
-    reload — ``[]`` (all discovered skills). No production data exists, so there
-    is no compatibility contract to preserve (#4017)."""
-    payload = {
-        "schema_version": 1,
-        "agent_kind": "openhands",
-        "name": "oh",
-        "llm_profile_ref": "default",
-    }
-    profile = validate_agent_profile(payload)
+def test_removed_skill_refs_field_is_rejected() -> None:
+    """The allow-list ``skill_refs`` was replaced by the ``disabled_skills``
+    deny-list and never shipped, so a payload carrying it is rejected."""
+    with pytest.raises(ValidationError):
+        validate_agent_profile(
+            {
+                "schema_version": 1,
+                "agent_kind": "openhands",
+                "name": "oh",
+                "llm_profile_ref": "default",
+                "skill_refs": ["pdf-tools"],
+            }
+        )
+
+
+def test_payload_without_disabled_skills_adopts_empty_default() -> None:
+    """A payload that omits ``disabled_skills`` picks up the model default —
+    ``[]`` (all discovered skills)."""
+    profile = validate_agent_profile(
+        {
+            "schema_version": 1,
+            "agent_kind": "openhands",
+            "name": "oh",
+            "llm_profile_ref": "default",
+        }
+    )
     assert isinstance(profile, OpenHandsAgentProfile)
     assert profile.disabled_skills == []
-
-
-def test_v2_payload_skill_refs_is_dropped_by_migration() -> None:
-    """v2->v3 drops the allow-list ``skill_refs`` entirely (skills are now a
-    deny-list). A v2 payload carrying ``skill_refs`` migrates to a profile with
-    no ``skill_refs`` and the default empty ``disabled_skills`` — the field is
-    not folded forward (no real subset ever shipped)."""
-    payload = {
-        "schema_version": 2,
-        "agent_kind": "openhands",
-        "name": "oh",
-        "llm_profile_ref": "default",
-        "skill_refs": ["pdf-tools"],
-    }
-    profile = validate_agent_profile(payload)
-    assert isinstance(profile, OpenHandsAgentProfile)
-    assert profile.schema_version == AGENT_PROFILE_SCHEMA_VERSION
-    assert not hasattr(profile, "skill_refs")
     assert profile.disabled_skills == []
