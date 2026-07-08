@@ -82,6 +82,7 @@ VERIFIED_GLM_MODELS = [
     "glm-4.7",
     "glm-5",
     "glm-5.1",
+    "glm-5.2",
 ]
 
 VERIFIED_NVIDIA_MODELS = [
@@ -130,6 +131,7 @@ VERIFIED_OPENHANDS_MODELS = [
     "glm-4.7",
     "glm-5",
     "glm-5.1",
+    "glm-5.2",
     "nemotron-3-nano",
     "nemotron-3-super-120b-a12b",
     "qwen3-6-plus",
