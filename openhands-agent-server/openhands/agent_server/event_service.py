@@ -1415,6 +1415,36 @@ class EventService:
         )
         await self.save_meta()
 
+    async def switch_llm(self, llm: LLM) -> None:
+        """Swap the conversation's LLM, mirroring it into ``meta.json``.
+
+        Like :meth:`switch_acp_model`, the new agent must be written back to
+        ``meta.json`` (``self.stored.agent``): ``start()`` rebuilds the runtime
+        agent from there and ``ConversationState.create()`` copies it over the
+        persisted ``base_state.json`` on resume. A switch that only updated the
+        live conversation would be silently reverted — reinstating the
+        conversation's creation-time LLM (and its ``timeout``) — on the next
+        agent-server restart.
+        """
+        if self._conversation is None:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._conversation.switch_llm, llm)
+        self.stored = self.stored.model_copy(update={"agent": self._conversation.agent})
+        await self.save_meta()
+
+    async def switch_profile(self, profile_name: str) -> None:
+        """Switch the conversation's LLM to a stored profile, mirroring it into
+        ``meta.json`` so it survives a restart (see :meth:`switch_llm`)."""
+        if self._conversation is None:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None, self._conversation.switch_profile, profile_name
+        )
+        self.stored = self.stored.model_copy(update={"agent": self._conversation.agent})
+        await self.save_meta()
+
     async def close(self):
         self._closing = True
         self._explicit_interrupt_generation += 1

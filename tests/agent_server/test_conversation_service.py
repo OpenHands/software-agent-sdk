@@ -539,6 +539,49 @@ async def test_restart_resumes_conversations_after_non_graceful_shutdown(tmp_pat
         )
 
 
+@pytest.mark.asyncio
+async def test_switch_llm_survives_restart(tmp_path):
+    """A switched LLM (and its timeout) must persist across a restart.
+
+    Reproduces the reported bug: a conversation is created with a placeholder
+    LLM and then switched to the real one (the #3017 app-server flow). Because
+    resume rebuilds the agent from meta.json and ConversationState.create()
+    overrides base_state.json with it, the switch has to be mirrored into
+    meta.json — otherwise the agent-server reinstates the creation-time timeout
+    on every restart, and only a manual re-switch temporarily fixes it.
+    """
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    request = StartConversationRequest(
+        agent=Agent(
+            llm=LLM(model="gpt-4o", usage_id="creation", timeout=300), tools=[]
+        ),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    async with ConversationService(conversations_dir=conversations_dir) as primary:
+        info, _ = await primary.start_conversation(request)
+        conversation_id = info.id
+        event_service = await primary.get_event_service(conversation_id)
+        assert event_service is not None
+
+        await event_service.switch_llm(
+            LLM(model="gpt-4o", usage_id="switched", timeout=600)
+        )
+        # The live conversation reflects the switch immediately.
+        assert event_service.get_conversation().agent.llm.timeout == 600
+
+    # Restart: a fresh service resumes from disk and must keep the switched LLM.
+    async with ConversationService(conversations_dir=conversations_dir) as restarted:
+        assert restarted._event_services is not None
+        resumed = restarted._event_services.get(conversation_id)
+        assert resumed is not None
+        assert resumed.get_conversation().agent.llm.timeout == 600
+
+
 class TestConversationServiceSearchConversations:
     """Test cases for ConversationService.search_conversations method."""
 

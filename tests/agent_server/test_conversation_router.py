@@ -1,6 +1,6 @@
 """Tests for conversation_router.py endpoints."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -2075,9 +2075,7 @@ def test_switch_conversation_profile_success(
     client, mock_conversation_service, mock_event_service, sample_conversation_id
 ):
     """Test switch_conversation_profile endpoint with a valid profile."""
-    mock_conversation = MagicMock()
     mock_conversation_service.get_event_service.return_value = mock_event_service
-    mock_event_service.get_conversation.return_value = mock_conversation
 
     client.app.dependency_overrides[get_conversation_service] = lambda: (
         mock_conversation_service
@@ -2095,8 +2093,9 @@ def test_switch_conversation_profile_success(
         mock_conversation_service.get_event_service.assert_called_once_with(
             sample_conversation_id
         )
-        mock_event_service.get_conversation.assert_called_once()
-        mock_conversation.switch_profile.assert_called_once_with("gpt")
+        # The router persists the switch through EventService (which mirrors it
+        # into meta.json) rather than mutating the live conversation directly.
+        mock_event_service.switch_profile.assert_awaited_once_with("gpt")
     finally:
         client.app.dependency_overrides.clear()
 
@@ -2129,12 +2128,10 @@ def test_switch_conversation_profile_nonexistent_profile(
     client, mock_conversation_service, mock_event_service, sample_conversation_id
 ):
     """Test switch_conversation_profile when the profile does not exist on disk."""
-    mock_conversation = MagicMock()
-    mock_conversation.switch_profile.side_effect = FileNotFoundError(
+    mock_event_service.switch_profile.side_effect = FileNotFoundError(
         "Profile 'missing' not found"
     )
     mock_conversation_service.get_event_service.return_value = mock_event_service
-    mock_event_service.get_conversation.return_value = mock_conversation
 
     client.app.dependency_overrides[get_conversation_service] = lambda: (
         mock_conversation_service
@@ -2148,7 +2145,7 @@ def test_switch_conversation_profile_nonexistent_profile(
 
         assert response.status_code == 404
         assert "missing" in response.json()["detail"]
-        mock_conversation.switch_profile.assert_called_once_with("missing")
+        mock_event_service.switch_profile.assert_awaited_once_with("missing")
     finally:
         client.app.dependency_overrides.clear()
 
@@ -2157,10 +2154,8 @@ def test_switch_conversation_profile_corrupted_profile(
     client, mock_conversation_service, mock_event_service, sample_conversation_id
 ):
     """Test switch_conversation_profile when the profile is corrupted or invalid."""
-    mock_conversation = MagicMock()
-    mock_conversation.switch_profile.side_effect = ValueError("Invalid profile format")
+    mock_event_service.switch_profile.side_effect = ValueError("Invalid profile format")
     mock_conversation_service.get_event_service.return_value = mock_event_service
-    mock_event_service.get_conversation.return_value = mock_conversation
 
     client.app.dependency_overrides[get_conversation_service] = lambda: (
         mock_conversation_service
@@ -2174,7 +2169,7 @@ def test_switch_conversation_profile_corrupted_profile(
 
         assert response.status_code == 400
         assert "Invalid profile format" in response.json()["detail"]
-        mock_conversation.switch_profile.assert_called_once_with("corrupted")
+        mock_event_service.switch_profile.assert_awaited_once_with("corrupted")
     finally:
         client.app.dependency_overrides.clear()
 
@@ -2338,9 +2333,7 @@ def test_switch_conversation_llm_success(
     """The /switch_llm endpoint forwards the inline LLM to switch_llm,
     bypassing the profile store (#3017).
     """
-    mock_conversation = MagicMock()
     mock_conversation_service.get_event_service.return_value = mock_event_service
-    mock_event_service.get_conversation.return_value = mock_conversation
 
     client.app.dependency_overrides[get_conversation_service] = lambda: (
         mock_conversation_service
@@ -2359,8 +2352,8 @@ def test_switch_conversation_llm_success(
         )
 
         assert response.status_code == 200
-        mock_conversation.switch_llm.assert_called_once()
-        forwarded_llm = mock_conversation.switch_llm.call_args.args[0]
+        mock_event_service.switch_llm.assert_awaited_once()
+        forwarded_llm = mock_event_service.switch_llm.call_args.args[0]
         assert isinstance(forwarded_llm, LLM)
         assert forwarded_llm.model == "openai/gpt-4o"
         assert forwarded_llm.usage_id == "caller-supplied-id"
@@ -2392,9 +2385,7 @@ def test_switch_conversation_llm_decrypts_encrypted_api_key(
         secret_key=SecretStr(secret_key),
     )
 
-    mock_conversation = MagicMock()
     mock_conversation_service.get_event_service.return_value = mock_event_service
-    mock_event_service.get_conversation.return_value = mock_conversation
 
     client.app.dependency_overrides[get_conversation_service] = lambda: (
         mock_conversation_service
@@ -2413,7 +2404,7 @@ def test_switch_conversation_llm_decrypts_encrypted_api_key(
         )
 
         assert response.status_code == 200
-        forwarded_llm = mock_conversation.switch_llm.call_args.args[0]
+        forwarded_llm = mock_event_service.switch_llm.call_args.args[0]
         assert isinstance(forwarded_llm, LLM)
         assert isinstance(forwarded_llm.api_key, SecretStr)
         assert forwarded_llm.api_key.get_secret_value() == "plaintext-api-key"
@@ -2438,9 +2429,7 @@ def test_switch_conversation_llm_plaintext_with_cipher_passes_through(
         secret_key=SecretStr(secret_key),
     )
 
-    mock_conversation = MagicMock()
     mock_conversation_service.get_event_service.return_value = mock_event_service
-    mock_event_service.get_conversation.return_value = mock_conversation
 
     client.app.dependency_overrides[get_conversation_service] = lambda: (
         mock_conversation_service
@@ -2459,7 +2448,7 @@ def test_switch_conversation_llm_plaintext_with_cipher_passes_through(
         )
 
         assert response.status_code == 200
-        forwarded_llm = mock_conversation.switch_llm.call_args.args[0]
+        forwarded_llm = mock_event_service.switch_llm.call_args.args[0]
         assert isinstance(forwarded_llm.api_key, SecretStr)
         assert forwarded_llm.api_key.get_secret_value() == "sk-plaintext"
     finally:

@@ -1844,6 +1844,101 @@ class TestEventServiceSaveMeta:
         with pytest.raises(ValueError, match="inactive_service"):
             await service.switch_acp_model("new-model")
 
+    @pytest.mark.asyncio
+    async def test_switch_llm_persists_to_meta(self, tmp_path):
+        """switch_llm mirrors the switched agent into meta.json.
+
+        start() rebuilds the runtime agent from meta.json (self.stored.agent)
+        and ConversationState.create() copies that agent over the persisted
+        base_state.json on resume. A switch that only touched the live
+        conversation would therefore be silently reverted to the
+        creation-time LLM (and its timeout) on the next agent-server restart.
+        """
+        stored = StoredConversation(
+            id=uuid4(),
+            agent=Agent(
+                llm=LLM(model="gpt-4o", usage_id="creation", timeout=300), tools=[]
+            ),
+            workspace=LocalWorkspace(working_dir=str(tmp_path)),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+        )
+        service = EventService(stored=stored, conversations_dir=tmp_path)
+        conv_dir = tmp_path / stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+
+        new_llm = LLM(model="gpt-4o", usage_id="switched", timeout=600)
+        # Stand in for a live conversation whose switch_llm installed new_llm.
+        service._conversation = MagicMock()
+        service._conversation.agent = stored.agent.model_copy(update={"llm": new_llm})
+
+        await service.switch_llm(new_llm)
+
+        # Live switch was delegated to the conversation...
+        service._conversation.switch_llm.assert_called_once_with(new_llm)
+        # ...the in-memory stored agent carries the new LLM...
+        assert service.stored.agent.llm.timeout == 600
+        # ...and it was persisted to meta.json so it survives a restart.
+        loaded = StoredConversation.model_validate_json(
+            (conv_dir / "meta.json").read_text()
+        )
+        assert loaded.agent.llm.timeout == 600
+
+    @pytest.mark.asyncio
+    async def test_switch_profile_persists_to_meta(self, tmp_path):
+        """switch_profile mirrors the switched agent into meta.json.
+
+        Same restart-safety contract as :meth:`test_switch_llm_persists_to_meta`;
+        the profile path must persist the loaded profile's LLM too.
+        """
+        stored = StoredConversation(
+            id=uuid4(),
+            agent=Agent(
+                llm=LLM(model="gpt-4o", usage_id="creation", timeout=300), tools=[]
+            ),
+            workspace=LocalWorkspace(working_dir=str(tmp_path)),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+        )
+        service = EventService(stored=stored, conversations_dir=tmp_path)
+        conv_dir = tmp_path / stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+
+        profile_llm = LLM(model="gpt-4o", usage_id="profile:fast", timeout=600)
+        service._conversation = MagicMock()
+        service._conversation.agent = stored.agent.model_copy(
+            update={"llm": profile_llm}
+        )
+
+        await service.switch_profile("fast")
+
+        service._conversation.switch_profile.assert_called_once_with("fast")
+        assert service.stored.agent.llm.timeout == 600
+        loaded = StoredConversation.model_validate_json(
+            (conv_dir / "meta.json").read_text()
+        )
+        assert loaded.agent.llm.timeout == 600
+
+    @pytest.mark.asyncio
+    async def test_switch_llm_inactive_service_raises_value_error(self, tmp_path):
+        """An inactive service (no live conversation) raises ``inactive_service``
+        so the conversation router maps it to 400, matching switch_acp_model."""
+        stored = StoredConversation(
+            id=uuid4(),
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="creation"), tools=[]),
+            workspace=LocalWorkspace(working_dir=str(tmp_path)),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+        )
+        service = EventService(stored=stored, conversations_dir=tmp_path)
+        assert service._conversation is None
+
+        with pytest.raises(ValueError, match="inactive_service"):
+            await service.switch_llm(LLM(model="gpt-4o", usage_id="switched"))
+
 
 class TestEventServiceStartWithRunningStatus:
     """Test cases for EventService.start handling of RUNNING execution status."""
