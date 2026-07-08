@@ -947,7 +947,7 @@ class TestPluginMcpConfigLoading:
 
 class TestRootSkillMcpHandling:
     """Tests for proper MCP config handling in root SKILL.md plugins.
-    
+
     These tests verify the fix for issues where root .mcp.json files were
     being loaded twice with different semantics, causing failures and
     inconsistencies.
@@ -955,11 +955,11 @@ class TestRootSkillMcpHandling:
 
     def test_malformed_root_mcp_json_does_not_drop_skill(self, tmp_path: Path):
         """Issue #1: Malformed root .mcp.json should not silently drop the skill.
-        
+
         Before fix: Plugin-level loader tolerates malformed .mcp.json (logs warning),
         but skill-level loader raises SkillValidationError, caught by broad except,
         returning [] - skill silently dropped.
-        
+
         After fix: skip_mcp=True prevents double-loading, skill loads successfully.
         """
         import json
@@ -1001,10 +1001,10 @@ This is a test skill.
 
     def test_root_mcp_json_not_double_loaded(self, tmp_path: Path):
         """Issue #2: Root .mcp.json should not be loaded twice with different semantics.
-        
-        Before fix: Same file loaded by both _load_plugin_mcp_config 
+
+        Before fix: Same file loaded by both _load_plugin_mcp_config
         (expand_defaults=False) and Skill.load (expand_defaults=True).
-        
+
         After fix: Only loaded once at plugin level, skill uses skip_mcp=True.
         """
         import json
@@ -1047,7 +1047,7 @@ description: A test skill
         # Load the plugin
         plugin = Plugin.load(plugin_dir)
 
-        # Plugin-level MCP config should preserve the placeholder (expand_defaults=False)
+        # Plugin-level MCP preserves placeholders (expand_defaults=False)
         mcp_dump = dump_mcp_config(plugin.mcp_config)
         assert "${DB_TOKEN:-DEFAULT_TOKEN}" in mcp_dump["test-server"]["args"]
 
@@ -1059,10 +1059,10 @@ description: A test skill
 
     def test_root_skill_resources_not_duplicated(self, tmp_path: Path):
         """Issue #3: Resources should not be discovered twice for root skills.
-        
+
         Before fix: discover_skill_resources called both by Skill.load() and
         by plugin loader (redundant).
-        
+
         After fix: Only Skill.load() discovers resources, plugin loader doesn't
         call discover_skill_resources.
         """
@@ -1107,7 +1107,7 @@ description: A test skill
 
     def test_nested_skill_with_own_mcp_json_still_loads(self, tmp_path: Path):
         """Verify nested skills with their own .mcp.json still work correctly.
-        
+
         Nested skills should continue to load their own .mcp.json normally
         (not skipped) since they're in a different directory than the plugin root.
         """

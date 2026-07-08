@@ -406,7 +406,7 @@ def _load_skills_from_skills_dir(skills_dir: Path) -> list[Skill]:
             skill_md = find_skill_md(item)
             if skill_md:
                 try:
-                    # Don't manually set skill.resources: Skill.load() already discovers them
+                    # Skill.load() discovers resources, no need to do it again
                     skill = Skill.load(skill_md, skills_dir, strict=False)
                     skills.append(skill)
                     logger.debug(f"Loaded skill: {skill.name} from {skill_md}")
@@ -426,7 +426,7 @@ def _load_skills_from_skills_dir(skills_dir: Path) -> list[Skill]:
 
 def _load_root_skill(plugin_dir: Path, skill_md: Path) -> list[Skill]:
     """Load a single-skill plugin whose ``SKILL.md`` lives at the plugin root.
-    
+
     For root skills, the plugin directory is the skill root, so .mcp.json at the
     plugin level is the same file that Skill.load() would try to load. We pass
     skip_mcp=True to avoid double-loading with different semantics (plugin-level
@@ -434,8 +434,8 @@ def _load_root_skill(plugin_dir: Path, skill_md: Path) -> list[Skill]:
     use expand_defaults=True and raise on validation errors).
     """
     try:
-        # skip_mcp=True: Plugin-level MCP config already loaded by _load_plugin_mcp_config()
-        # Don't manually set skill.resources: Skill.load() already discovers them
+        # skip_mcp=True: Plugin-level MCP already loaded
+        # Skill.load() discovers resources, no need to do it again
         skill = Skill.load(skill_md, plugin_dir, strict=False, skip_mcp=True)
         logger.debug(f"Loaded single-skill plugin: {skill.name} from {skill_md}")
         return [skill]
