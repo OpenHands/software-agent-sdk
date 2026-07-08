@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import time
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -102,7 +103,7 @@ def _make_test_llm() -> LLM:
     return LLM(
         model="gpt-4o-mini",
         api_key=SecretStr("test-key-not-used"),
-        service_id="test-guardrail",
+        usage_id="test-guardrail",
     )
 
 
@@ -133,6 +134,17 @@ def _patch_completion(analyzer: ToolShieldLLMSecurityAnalyzer, response_or_side_
     # and Pydantic refuses direct assignment since there's no Field for it.
     object.__setattr__(analyzer.llm, "completion", mock)
     return mock
+
+
+def _last_messages(analyzer: ToolShieldLLMSecurityAnalyzer):
+    """Messages passed to the last (mocked) completion call.
+
+    ``analyzer.llm.completion`` was replaced with a MagicMock via
+    ``object.__setattr__``, so fetch it back with a cast -- static typing
+    still sees the original bound method, which has no ``call_args``.
+    """
+    completion = cast(MagicMock, analyzer.llm.completion)
+    return completion.call_args.kwargs.get("messages") or completion.call_args.args[0]
 
 
 # ---------------------------------------------------------------------------
@@ -429,8 +441,7 @@ class TestSecurityRisk:
         _patch_completion(analyzer, _mock_llm_response("RISK: LOW\n"))
         analyzer.security_risk(_make_action_event(command="marker_value"))
 
-        call_args = analyzer.llm.completion.call_args
-        messages = call_args.kwargs.get("messages") or call_args.args[0]
+        messages = _last_messages(analyzer)
         user_msg = next(m for m in messages if m.role == "user")
         user_text = user_msg.content[0].text
         assert "marker_value" in user_text
@@ -448,10 +459,7 @@ class TestHistoryWindow:
         _patch_completion(analyzer, _mock_llm_response("RISK: LOW\n"))
         analyzer.security_risk(_make_action_event())
 
-        messages = (
-            analyzer.llm.completion.call_args.kwargs.get("messages")
-            or analyzer.llm.completion.call_args.args[0]
-        )
+        messages = _last_messages(analyzer)
         user_text = next(m for m in messages if m.role == "user").content[0].text
         assert "no prior actions" in user_text
 
@@ -462,10 +470,7 @@ class TestHistoryWindow:
         analyzer.security_risk(_make_action_event(command="first_marker"))
         analyzer.security_risk(_make_action_event(command="second_marker"))
 
-        messages = (
-            analyzer.llm.completion.call_args.kwargs.get("messages")
-            or analyzer.llm.completion.call_args.args[0]
-        )
+        messages = _last_messages(analyzer)
         user_text = next(m for m in messages if m.role == "user").content[0].text
         # Second call's history should contain the first action
         assert "first_marker" in user_text
@@ -481,10 +486,7 @@ class TestHistoryWindow:
 
         # Last call's history window = 2 means it saw cmd_1 and cmd_2 in history,
         # with cmd_3 as the current action. cmd_0 should be evicted.
-        messages = (
-            analyzer.llm.completion.call_args.kwargs.get("messages")
-            or analyzer.llm.completion.call_args.args[0]
-        )
+        messages = _last_messages(analyzer)
         user_text = next(m for m in messages if m.role == "user").content[0].text
         assert "cmd_0" not in user_text
         assert "cmd_3" in user_text
@@ -515,10 +517,7 @@ class TestHistoryWindow:
         # Next call should see "(no prior actions)" in the user prompt --
         # none of the earlier conversation's commands leaks through.
         analyzer.security_risk(_make_action_event(command="delta_marker"))
-        messages = (
-            analyzer.llm.completion.call_args.kwargs.get("messages")
-            or analyzer.llm.completion.call_args.args[0]
-        )
+        messages = _last_messages(analyzer)
         user_text = next(m for m in messages if m.role == "user").content[0].text
         assert "no prior actions" in user_text
         assert "alpha_marker" not in user_text
@@ -535,10 +534,7 @@ class TestHistoryWindow:
         analyzer.security_risk(_make_action_event(command="step_one"))
         analyzer.security_risk(_make_action_event(command="step_two"))
 
-        messages = (
-            analyzer.llm.completion.call_args.kwargs.get("messages")
-            or analyzer.llm.completion.call_args.args[0]
-        )
+        messages = _last_messages(analyzer)
         user_text = next(m for m in messages if m.role == "user").content[0].text
         # step_one is now in the prior-action history; step_two is current.
         assert "step_one" in user_text
@@ -556,10 +552,7 @@ class TestSafetyExperiences:
         _patch_completion(analyzer, _mock_llm_response("RISK: LOW\n"))
         analyzer.security_risk(_make_action_event())
 
-        messages = (
-            analyzer.llm.completion.call_args.kwargs.get("messages")
-            or analyzer.llm.completion.call_args.args[0]
-        )
+        messages = _last_messages(analyzer)
         sys_text = next(m for m in messages if m.role == "system").content[0].text
         assert "Never touch /etc/passwd" in sys_text
 
@@ -568,10 +561,7 @@ class TestSafetyExperiences:
         _patch_completion(analyzer, _mock_llm_response("RISK: LOW\n"))
         analyzer.security_risk(_make_action_event())
 
-        messages = (
-            analyzer.llm.completion.call_args.kwargs.get("messages")
-            or analyzer.llm.completion.call_args.args[0]
-        )
+        messages = _last_messages(analyzer)
         sys_text = next(m for m in messages if m.role == "system").content[0].text
         assert "No tool-specific safety experiences" in sys_text
 
@@ -589,10 +579,7 @@ class TestSafetyExperiences:
         # tell at a glance that no experiences were loaded.
         _patch_completion(analyzer, _mock_llm_response("RISK: LOW\n"))
         analyzer.security_risk(_make_action_event())
-        messages = (
-            analyzer.llm.completion.call_args.kwargs.get("messages")
-            or analyzer.llm.completion.call_args.args[0]
-        )
+        messages = _last_messages(analyzer)
         sys_text = next(m for m in messages if m.role == "system").content[0].text
         assert "No tool-specific safety experiences" in sys_text
 
@@ -878,35 +865,19 @@ class TestToolShieldHelpers:
         """Built-in SDK tools never appear in mcp_config; the tool_names
         parameter maps them (e.g. file_editor -> filesystem-mcp) so the
         recommended path doesn't silently omit filesystem experiences
-        (red-team finding on PR #2911). Uses the REAL registered names --
-        ``ToolDefinition.name`` is snake_case -- so map-key drift from the
-        actual registry fails here instead of shipping as a silent no-op."""
+        (red-team finding on PR #2911). Registered names are snake_case
+        (``ToolDefinition.__init_subclass__``); the literals here are
+        pinned against the real registry in
+        tests/cross/test_toolshield_tool_experience_mapping.py, since
+        tests/sdk is layered below the tools package."""
         from openhands.sdk.security import toolshield_helpers as th
-        from openhands.tools.file_editor import FileEditorTool
-        from openhands.tools.task_tracker import TaskTrackerTool
-
-        # Contract guard: registered names are snake_case, not class names.
-        assert FileEditorTool.name == "file_editor"
 
         result = th.mcp_tools_from_config(
-            {}, tool_names=[FileEditorTool.name, TaskTrackerTool.name]
+            {}, tool_names=["file_editor", "task_tracker"]
         )
         assert "filesystem-mcp" in result
         # Unmapped SDK tools are ignored, not forwarded.
         assert all("task_tracker" not in n for n in result)
-
-    def test_mcp_tools_from_config_covers_default_preset_names(self):
-        """The documented pattern ``tool_names=[t.name for t in agent.tools]``
-        must map for the default preset: filesystem and playwright
-        experiences both appear."""
-        from openhands.sdk.security import toolshield_helpers as th
-        from openhands.tools.preset.default import get_default_tools
-
-        names = [t.name for t in get_default_tools()]
-        result = th.mcp_tools_from_config({}, tool_names=names)
-        assert "filesystem-mcp" in result
-        assert "playwright-mcp" in result
-        assert "terminal-mcp" in result
 
     def test_mcp_tools_from_config_accepts_camelcase_aliases(self):
         """Hand-authored configs may use class names; aliases still map."""
