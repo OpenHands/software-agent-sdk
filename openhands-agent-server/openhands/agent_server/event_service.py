@@ -86,6 +86,10 @@ class EventService:
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
     _conversation: LocalConversation | None = field(default=None, init=False)
+    # The agent object last mirrored into meta.json. Lets _sync_agent_to_meta
+    # cheaply detect an LLM/profile swap (which replaces the agent object) and
+    # skip the no-op case where a run left the agent untouched.
+    _synced_agent: AgentBase | None = field(default=None, init=False)
     _pub_sub: PubSub[Event] = field(
         default_factory=lambda: PubSub[Event](max_subscribers=50), init=False
     )
@@ -845,6 +849,8 @@ class EventService:
         conversation.set_confirmation_policy(self.stored.confirmation_policy)
         conversation.set_security_analyzer(self.stored.security_analyzer)
         self._conversation = conversation
+        # Baseline for _sync_agent_to_meta: meta.json already matches this agent.
+        self._synced_agent = conversation.agent
         self._conversation._state.set_write_guard(self._write_guard)
         if not self._external_lease_renewal:
             self._lease_task = asyncio.create_task(self._renew_lease_loop())
@@ -995,6 +1001,16 @@ class EventService:
                     # Clear task reference and publish state update
                     self._run_task = None
                     await self._publish_state_update()
+
+                    # Persist an in-run agent swap (the agent's switch_llm tool)
+                    # to meta.json so it survives a restart. Best-effort: a
+                    # failure here must not break run completion.
+                    try:
+                        await self._sync_agent_to_meta()
+                    except Exception:
+                        logger.exception(
+                            "Failed to persist in-run agent change to meta.json"
+                        )
 
                     # Re-arm a run for input stranded while this task was
                     # wrapping up. A send_message(run=True) that arrived during
@@ -1415,35 +1431,56 @@ class EventService:
         )
         await self.save_meta()
 
-    async def switch_llm(self, llm: LLM) -> None:
-        """Swap the conversation's LLM, mirroring it into ``meta.json``.
+    async def _sync_agent_to_meta(self) -> None:
+        """Mirror the live agent into ``meta.json`` when it has changed.
 
-        Like :meth:`switch_acp_model`, the new agent must be written back to
-        ``meta.json`` (``self.stored.agent``): ``start()`` rebuilds the runtime
-        agent from there and ``ConversationState.create()`` copies it over the
-        persisted ``base_state.json`` on resume. A switch that only updated the
-        live conversation would be silently reverted — reinstating the
-        conversation's creation-time LLM (and its ``timeout``) — on the next
-        agent-server restart.
+        ``start()`` rebuilds the runtime agent from ``meta.json``
+        (``self.stored.agent``) and ``ConversationState.create()`` copies it
+        over the persisted ``base_state.json`` on resume. So every way the live
+        agent's LLM can change — the ``/switch_llm`` and ``/switch_profile``
+        endpoints, and the agent's own ``switch_llm`` tool mid-run — must be
+        written back to ``meta.json`` or it silently reverts to the
+        conversation's creation-time config (including the LLM ``timeout``) on
+        the next agent-server restart. This is the single place that persists
+        that change; callers just invoke it after a potential swap.
+
+        An LLM/profile swap replaces the agent object, so the identity check
+        against ``_synced_agent`` makes this a no-op for the common case of a
+        run that left the agent untouched. ``_synced_agent`` is established in
+        ``start()`` alongside ``_conversation``; a ``None`` baseline means the
+        service was never started, so there is nothing to reconcile.
         """
+        conversation = self._conversation
+        if (
+            conversation is None
+            or self._synced_agent is None
+            or conversation.agent is self._synced_agent
+        ):
+            return
+        self.stored = self.stored.model_copy(update={"agent": conversation.agent})
+        self._synced_agent = conversation.agent
+        await self.save_meta()
+
+    async def switch_llm(self, llm: LLM) -> None:
+        """Swap the conversation's LLM and persist it (see
+        :meth:`_sync_agent_to_meta` for why the switch is mirrored to
+        ``meta.json``)."""
         if self._conversation is None:
             raise ValueError("inactive_service")
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.switch_llm, llm)
-        self.stored = self.stored.model_copy(update={"agent": self._conversation.agent})
-        await self.save_meta()
+        await self._sync_agent_to_meta()
 
     async def switch_profile(self, profile_name: str) -> None:
-        """Switch the conversation's LLM to a stored profile, mirroring it into
-        ``meta.json`` so it survives a restart (see :meth:`switch_llm`)."""
+        """Switch the conversation's LLM to a stored profile and persist it
+        (see :meth:`_sync_agent_to_meta`)."""
         if self._conversation is None:
             raise ValueError("inactive_service")
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             None, self._conversation.switch_profile, profile_name
         )
-        self.stored = self.stored.model_copy(update={"agent": self._conversation.agent})
-        await self.save_meta()
+        await self._sync_agent_to_meta()
 
     async def close(self):
         self._closing = True

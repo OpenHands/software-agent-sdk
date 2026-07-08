@@ -1871,6 +1871,7 @@ class TestEventServiceSaveMeta:
         new_llm = LLM(model="gpt-4o", usage_id="switched", timeout=600)
         # Stand in for a live conversation whose switch_llm installed new_llm.
         service._conversation = MagicMock()
+        service._synced_agent = stored.agent  # baseline start() would establish
         service._conversation.agent = stored.agent.model_copy(update={"llm": new_llm})
 
         await service.switch_llm(new_llm)
@@ -1908,6 +1909,7 @@ class TestEventServiceSaveMeta:
 
         profile_llm = LLM(model="gpt-4o", usage_id="profile:fast", timeout=600)
         service._conversation = MagicMock()
+        service._synced_agent = stored.agent  # baseline start() would establish
         service._conversation.agent = stored.agent.model_copy(
             update={"llm": profile_llm}
         )
@@ -1938,6 +1940,87 @@ class TestEventServiceSaveMeta:
 
         with pytest.raises(ValueError, match="inactive_service"):
             await service.switch_llm(LLM(model="gpt-4o", usage_id="switched"))
+
+    @pytest.mark.asyncio
+    async def test_sync_agent_to_meta_noop_when_agent_unchanged(self, tmp_path):
+        """No meta.json write when the live agent object is unchanged.
+
+        The post-run hook calls this after every run; the identity check must
+        keep it a no-op for ordinary runs so meta.json is not rewritten each
+        turn.
+        """
+        stored = StoredConversation(
+            id=uuid4(),
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="agent"), tools=[]),
+            workspace=LocalWorkspace(working_dir=str(tmp_path)),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+        )
+        service = EventService(stored=stored, conversations_dir=tmp_path)
+        service._conversation = MagicMock()
+        service._conversation.agent = stored.agent
+        # Baseline matches the live agent (as start() leaves it after resume).
+        service._synced_agent = stored.agent
+
+        with patch.object(service, "save_meta", new=AsyncMock()) as save_meta:
+            await service._sync_agent_to_meta()
+
+        save_meta.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_in_run_switch_llm_persists_to_meta(self, tmp_path):
+        """The agent's own switch_llm tool swaps the LLM mid-run, bypassing the
+        /switch_llm and /switch_profile endpoints. The post-run sync must still
+        mirror the new agent into meta.json so the switched timeout survives a
+        restart (the same reconciliation the endpoints rely on).
+        """
+        import json
+
+        from pydantic import SecretStr
+
+        from openhands.sdk.testing import TestLLM
+
+        with patch("openhands.sdk.llm.utils.model_info.httpx.get") as mock_get:
+            mock_get.return_value = MagicMock(json=lambda: {"data": []})
+            stored = StoredConversation(
+                id=uuid4(),
+                agent=Agent(
+                    llm=LLM(
+                        usage_id="agent",
+                        model="test-model",
+                        api_key=SecretStr("x"),
+                        timeout=300,
+                    ),
+                    tools=[],
+                ),
+                workspace=LocalWorkspace(working_dir=str(tmp_path / "workspace")),
+            )
+            service = EventService(
+                stored=stored, conversations_dir=tmp_path / "conversations"
+            )
+            (tmp_path / "workspace").mkdir(parents=True, exist_ok=True)
+            await service.start()
+
+            # Simulate the switch_llm tool: swap the live LLM directly on the
+            # conversation (not via EventService.switch_llm), timeout 300 -> 600.
+            switched = TestLLM.from_messages(
+                [Message(role="assistant", content=[TextContent(text="done")])],
+                usage_id="switched",
+            ).model_copy(update={"timeout": 600})
+            service.get_conversation().switch_llm(switched)
+
+            # A run finishes on the content-only reply, firing the post-run sync.
+            await service.run()
+            run_task = service._run_task
+            assert run_task is not None
+            await asyncio.wait_for(run_task, timeout=15)
+
+            conv_dir = (tmp_path / "conversations") / stored.id.hex
+            meta = json.loads((conv_dir / "meta.json").read_text())
+            assert meta["agent"]["llm"]["timeout"] == 600
+
+            await service.close()
 
 
 class TestEventServiceStartWithRunningStatus:
