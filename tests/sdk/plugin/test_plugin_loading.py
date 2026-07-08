@@ -139,6 +139,91 @@ This is a test skill content.
         assert len(plugin.skills) == 1
         assert plugin.skills[0].name == "test-skill"
 
+    def test_load_single_skill_plugin_root_skill_md(self, tmp_path: Path):
+        """A SKILL.md at the plugin root loads as a single-skill plugin.
+
+        Mirrors Claude Code's single-skill-plugin behavior (v2.1.142+): when a
+        plugin has no skills/ directory, a root SKILL.md is loaded as the
+        plugin's skill. This is how standalone Agent Skills are published as
+        plugins without an extra nesting level.
+        """
+        plugin_dir = tmp_path / "solo-skill"
+        plugin_dir.mkdir()
+        manifest_dir = plugin_dir / ".claude-plugin"
+        manifest_dir.mkdir()
+        (manifest_dir / "plugin.json").write_text(
+            '{"name": "solo-skill", "version": "1.0.0"}'
+        )
+        (plugin_dir / "SKILL.md").write_text(
+            """---
+name: solo-skill
+description: A standalone skill published as a single-skill plugin.
+---
+
+Body of the solo skill.
+"""
+        )
+
+        plugin = Plugin.load(plugin_dir)
+
+        assert plugin.name == "solo-skill"
+        assert len(plugin.skills) == 1
+        assert plugin.skills[0].name == "solo-skill"
+
+    def test_load_single_skill_plugin_without_manifest(self, tmp_path: Path):
+        """Root SKILL.md loads even when plugin.json is absent."""
+        plugin_dir = tmp_path / "inferred-solo"
+        plugin_dir.mkdir()
+        (plugin_dir / "SKILL.md").write_text(
+            """---
+name: inferred-solo
+description: Root skill with no manifest.
+---
+
+Body.
+"""
+        )
+
+        plugin = Plugin.load(plugin_dir)
+
+        assert plugin.name == "inferred-solo"
+        assert len(plugin.skills) == 1
+        assert plugin.skills[0].name == "inferred-solo"
+
+    def test_skills_dir_takes_precedence_over_root_skill_md(self, tmp_path: Path):
+        """When a skills/ directory exists, it wins over a root SKILL.md.
+
+        Matches Claude Code: the root SKILL.md is only a fallback used when
+        there is no skills/ directory.
+        """
+        plugin_dir = tmp_path / "both"
+        plugin_dir.mkdir()
+        # Root SKILL.md that must be IGNORED because skills/ exists.
+        (plugin_dir / "SKILL.md").write_text(
+            "---\nname: root-ignored\ndescription: should not load\n---\nbody\n"
+        )
+        skill_dir = plugin_dir / "skills" / "nested"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: nested\ndescription: the real one\n---\nbody\n"
+        )
+
+        plugin = Plugin.load(plugin_dir)
+
+        names = {s.name for s in plugin.skills}
+        assert names == {"nested"}
+        assert "root-ignored" not in names
+
+    def test_load_plugin_no_skills_anywhere(self, tmp_path: Path):
+        """A plugin with neither skills/ nor a root SKILL.md loads zero skills."""
+        plugin_dir = tmp_path / "empty"
+        plugin_dir.mkdir()
+        (plugin_dir / "README.md").write_text("# not a skill\n")
+
+        plugin = Plugin.load(plugin_dir)
+
+        assert plugin.skills == []
+
     def test_load_plugin_with_hooks(self, tmp_path: Path):
         """Test loading a plugin with hooks."""
         plugin_dir = tmp_path / "hook-plugin"

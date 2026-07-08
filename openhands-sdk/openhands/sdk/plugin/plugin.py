@@ -374,15 +374,33 @@ def _load_manifest(plugin_dir: Path) -> PluginManifest:
 
 
 def _load_skills(plugin_dir: Path) -> list[Skill]:
-    """Load skills from the skills/ directory.
+    """Load a plugin's skills.
+
+    Supports both Claude Code plugin skill layouts:
+
+    - Multi-skill: a ``skills/`` directory containing one ``<name>/SKILL.md``
+      per skill (or single ``.md`` files).
+    - Single-skill: a ``SKILL.md`` at the plugin root when there is no
+      ``skills/`` directory. Claude Code loads such a plugin as a single-skill
+      plugin (v2.1.142+); this mirrors that behavior so standalone Agent Skills
+      published as plugins load without an extra nesting level.
 
     Note: Plugin skills are loaded with relaxed validation (strict=False)
     to support Claude Code plugins which may use different naming conventions.
     """
     skills_dir = plugin_dir / "skills"
-    if not skills_dir.is_dir():
-        return []
+    if skills_dir.is_dir():
+        return _load_skills_from_skills_dir(skills_dir)
 
+    root_skill_md = find_skill_md(plugin_dir)
+    if root_skill_md is not None:
+        return _load_root_skill(plugin_dir, root_skill_md)
+
+    return []
+
+
+def _load_skills_from_skills_dir(skills_dir: Path) -> list[Skill]:
+    """Load every skill under a plugin's ``skills/`` directory."""
     skills: list[Skill] = []
     for item in sorted(skills_dir.iterdir()):
         if item.is_dir():
@@ -406,6 +424,18 @@ def _load_skills(plugin_dir: Path) -> list[Skill]:
                 logger.warning(f"Failed to load skill from {item}: {e}")
 
     return skills
+
+
+def _load_root_skill(plugin_dir: Path, skill_md: Path) -> list[Skill]:
+    """Load a single-skill plugin whose ``SKILL.md`` lives at the plugin root."""
+    try:
+        skill = Skill.load(skill_md, plugin_dir, strict=False)
+        skill.resources = discover_skill_resources(plugin_dir)
+        logger.debug(f"Loaded single-skill plugin: {skill.name} from {skill_md}")
+        return [skill]
+    except Exception as e:
+        logger.warning(f"Failed to load root skill from {plugin_dir}: {e}")
+        return []
 
 
 def _load_hooks(plugin_dir: Path) -> HookConfig | None:
