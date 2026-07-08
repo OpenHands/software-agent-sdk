@@ -32,7 +32,7 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
-from openhands.agent_server.skills_service import discover_profile_skills_if_needed
+from openhands.agent_server.skills_service import discover_profile_skills
 from openhands.agent_server.utils import safe_rmtree, utc_now
 from openhands.sdk import LLM, AgentContext, Event, Message
 from openhands.sdk.agent.base import AgentBase
@@ -267,7 +267,6 @@ def _resolve_agent_from_profile(
     Raises:
         ProfileNotFound: No stored profile has ``profile_id``.
         DanglingMcpServerRef: A referenced MCP server is absent from the global config.
-        DanglingSkillRef: A referenced skill is absent from the discovered catalog.
         ValueError: Profile load or settings validation failure.
     """
     from openhands.agent_server.persistence.store import (
@@ -275,6 +274,7 @@ def _resolve_agent_from_profile(
         get_llm_profile_store,
     )
     from openhands.sdk.profiles.resolver import ProfileNotFound, resolve_agent_profile
+    from openhands.sdk.settings.model import OpenHandsAgentSettings
 
     store = get_agent_profile_store()
     profile_name = store.name_for_id(profile_id)
@@ -282,7 +282,7 @@ def _resolve_agent_from_profile(
         raise ProfileNotFound(f"Agent profile with id '{profile_id}' not found")
 
     try:
-        profile = store.load(profile_name, cipher=cipher)
+        profile = store.load(profile_name)
     except FileNotFoundError:
         raise ProfileNotFound(
             f"Agent profile '{profile_name}' (id={profile_id}) not found"
@@ -292,15 +292,18 @@ def _resolve_agent_from_profile(
             f"Failed to load agent profile '{profile_name}': {exc}"
         ) from exc
 
-    # Both variants honor ``skill_refs``; the helper skips discovery when it
-    # selects none. A genuine discovery failure fails the launch loudly rather
-    # than silently producing a zero-skill agent.
-    try:
-        available_skills = discover_profile_skills_if_needed(profile)
-    except Exception as exc:
-        raise ValueError(
-            f"Skill discovery failed for profile '{profile_name}': {exc}"
-        ) from exc
+    # OpenHands profiles get the discovered catalog minus their ``disabled_skills``
+    # deny-list; ACP profiles carry no user/public skills so discovery is skipped.
+    # A genuine discovery failure fails the launch loudly rather than silently
+    # producing a zero-skill agent.
+    available_skills = None
+    if profile.agent_kind == "openhands":
+        try:
+            available_skills = discover_profile_skills()
+        except Exception as exc:
+            raise ValueError(
+                f"Skill discovery failed for profile '{profile_name}': {exc}"
+            ) from exc
 
     llm_store = get_llm_profile_store()
     try:
@@ -313,6 +316,16 @@ def _resolve_agent_from_profile(
         )
     except (TypeError, ValueError) as exc:
         raise ValueError(f"Profile '{profile_name}' failed to resolve: {exc}") from exc
+
+    if isinstance(settings_config, OpenHandsAgentSettings):
+        # Force streaming so this launch path wires on_token: a client can't set
+        # llm.stream on a profile's referenced LLM ahead of time. Safe at this
+        # layer (not the SDK resolver) because this server wires the token
+        # callback whenever any llm.stream is set; a headless resolver caller
+        # that never wires on_token is covered by LLM's graceful degradation.
+        settings_config = settings_config.model_copy(
+            update={"llm": settings_config.llm.model_copy(update={"stream": True})}
+        )
 
     agent = settings_config.create_agent()
     # Browser is deliberately absent from the deterministic SDK default
