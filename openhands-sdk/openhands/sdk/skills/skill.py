@@ -299,6 +299,7 @@ class Skill(BaseModel):
         path: str | Path,
         skill_base_dir: Path | None = None,
         strict: bool = True,
+        skip_mcp: bool = False,
     ) -> "Skill":
         """Load a skill from a markdown file with frontmatter.
 
@@ -313,6 +314,9 @@ class Skill(BaseModel):
             skill_base_dir: Base directory for skills (used to derive relative names).
             strict: If True, enforce strict AgentSkills name validation.
                 If False, allow relaxed naming (e.g., for plugin compatibility).
+            skip_mcp: If True, skip loading MCP configuration from .mcp.json.
+                Used when loading root plugin skills where MCP config is already
+                loaded at the plugin level to avoid double-loading.
         """
         path = Path(path) if isinstance(path, str) else path
 
@@ -320,13 +324,15 @@ class Skill(BaseModel):
             file_content = f.read()
 
         if path.name.lower() == "skill.md":
-            return cls._load_agentskills_skill(path, file_content, strict=strict)
+            return cls._load_agentskills_skill(
+                path, file_content, strict=strict, skip_mcp=skip_mcp
+            )
         else:
             return cls._load_legacy_openhands_skill(path, file_content, skill_base_dir)
 
     @classmethod
     def _load_agentskills_skill(
-        cls, path: Path, file_content: str, strict: bool = True
+        cls, path: Path, file_content: str, strict: bool = True, skip_mcp: bool = False
     ) -> "Skill":
         """Load a skill from an AgentSkills-format SKILL.md file.
 
@@ -334,6 +340,7 @@ class Skill(BaseModel):
             path: Path to the SKILL.md file.
             file_content: Content of the file.
             strict: If True, enforce strict AgentSkills name validation.
+            skip_mcp: If True, skip loading MCP configuration from .mcp.json.
         """
         # For SKILL.md files, use parent directory name as the skill name
         directory_name = path.parent.name
@@ -357,10 +364,11 @@ class Skill(BaseModel):
 
         # Load MCP configuration from .mcp.json (agent_skills ONLY use .mcp.json)
         mcp_tools: dict[str, MCPServer] | None = None
-        mcp_json_path = find_mcp_config(skill_root)
-        if mcp_json_path:
-            mcp_config = load_mcp_config(mcp_json_path, skill_root)
-            mcp_tools = coerce_mcp_config(mcp_config.get("mcpServers", {}))
+        if not skip_mcp:
+            mcp_json_path = find_mcp_config(skill_root)
+            if mcp_json_path:
+                mcp_config = load_mcp_config(mcp_json_path, skill_root)
+                mcp_tools = coerce_mcp_config(mcp_config.get("mcpServers", {}))
 
         # Discover resource directories
         resources: SkillResources | None = None

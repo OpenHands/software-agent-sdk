@@ -943,3 +943,220 @@ class TestPluginMcpConfigLoading:
         command = dump_mcp_config(plugin.mcp_config)["test-server"]["command"]
         assert str(plugin_dir) in command
         assert "${SKILL_ROOT}" not in command
+
+
+class TestRootSkillMcpHandling:
+    """Tests for proper MCP config handling in root SKILL.md plugins.
+    
+    These tests verify the fix for issues where root .mcp.json files were
+    being loaded twice with different semantics, causing failures and
+    inconsistencies.
+    """
+
+    def test_malformed_root_mcp_json_does_not_drop_skill(self, tmp_path: Path):
+        """Issue #1: Malformed root .mcp.json should not silently drop the skill.
+        
+        Before fix: Plugin-level loader tolerates malformed .mcp.json (logs warning),
+        but skill-level loader raises SkillValidationError, caught by broad except,
+        returning [] - skill silently dropped.
+        
+        After fix: skip_mcp=True prevents double-loading, skill loads successfully.
+        """
+        import json
+
+        plugin_dir = tmp_path / "test-plugin"
+        plugin_dir.mkdir()
+
+        # Create minimal manifest
+        manifest_dir = plugin_dir / ".plugin"
+        manifest_dir.mkdir()
+        (manifest_dir / "plugin.json").write_text(
+            json.dumps({"name": "test-plugin", "version": "1.0.0"})
+        )
+
+        # Create valid root SKILL.md
+        (plugin_dir / "SKILL.md").write_text(
+            """---
+name: test-skill
+description: A test skill
+---
+
+# Test Skill
+
+This is a test skill.
+"""
+        )
+
+        # Create MALFORMED root .mcp.json (invalid JSON)
+        (plugin_dir / ".mcp.json").write_text('{ "mcpServers": { invalid json }')
+
+        # Load the plugin
+        plugin = Plugin.load(plugin_dir)
+
+        # The skill should still load (MCP loading is skipped for root skills)
+        assert len(plugin.skills) == 1
+        assert plugin.skills[0].name == "test-skill"
+        # Plugin-level MCP config should be empty (malformed file tolerated)
+        assert plugin.mcp_config == {}
+
+    def test_root_mcp_json_not_double_loaded(self, tmp_path: Path):
+        """Issue #2: Root .mcp.json should not be loaded twice with different semantics.
+        
+        Before fix: Same file loaded by both _load_plugin_mcp_config 
+        (expand_defaults=False) and Skill.load (expand_defaults=True).
+        
+        After fix: Only loaded once at plugin level, skill uses skip_mcp=True.
+        """
+        import json
+
+        plugin_dir = tmp_path / "test-plugin"
+        plugin_dir.mkdir()
+
+        # Create minimal manifest
+        manifest_dir = plugin_dir / ".plugin"
+        manifest_dir.mkdir()
+        (manifest_dir / "plugin.json").write_text(
+            json.dumps({"name": "test-plugin", "version": "1.0.0"})
+        )
+
+        # Create root SKILL.md
+        (plugin_dir / "SKILL.md").write_text(
+            """---
+name: test-skill
+description: A test skill
+---
+
+# Test Skill
+"""
+        )
+
+        # Create root .mcp.json with variable placeholder
+        (plugin_dir / ".mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "test-server": {
+                            "command": "server",
+                            "args": ["--token", "${DB_TOKEN:-DEFAULT_TOKEN}"],
+                        }
+                    }
+                }
+            )
+        )
+
+        # Load the plugin
+        plugin = Plugin.load(plugin_dir)
+
+        # Plugin-level MCP config should preserve the placeholder (expand_defaults=False)
+        mcp_dump = dump_mcp_config(plugin.mcp_config)
+        assert "${DB_TOKEN:-DEFAULT_TOKEN}" in mcp_dump["test-server"]["args"]
+
+        # Skill should have loaded successfully with skip_mcp=True
+        assert len(plugin.skills) == 1
+        assert plugin.skills[0].name == "test-skill"
+        # Skill's mcp_tools should be None (not loaded due to skip_mcp=True)
+        assert plugin.skills[0].mcp_tools is None
+
+    def test_root_skill_resources_not_duplicated(self, tmp_path: Path):
+        """Issue #3: Resources should not be discovered twice for root skills.
+        
+        Before fix: discover_skill_resources called both by Skill.load() and
+        by plugin loader (redundant).
+        
+        After fix: Only Skill.load() discovers resources, plugin loader doesn't
+        call discover_skill_resources.
+        """
+        import json
+
+        plugin_dir = tmp_path / "test-plugin"
+        plugin_dir.mkdir()
+
+        # Create minimal manifest
+        manifest_dir = plugin_dir / ".plugin"
+        manifest_dir.mkdir()
+        (manifest_dir / "plugin.json").write_text(
+            json.dumps({"name": "test-plugin", "version": "1.0.0"})
+        )
+
+        # Create root SKILL.md
+        (plugin_dir / "SKILL.md").write_text(
+            """---
+name: test-skill
+description: A test skill
+---
+
+# Test Skill
+"""
+        )
+
+        # Create some resources
+        (plugin_dir / "test.txt").write_text("test resource")
+        assets_dir = plugin_dir / "assets"
+        assets_dir.mkdir()
+        (assets_dir / "asset.txt").write_text("asset content")
+
+        # Load the plugin
+        plugin = Plugin.load(plugin_dir)
+
+        # Resources should be discovered and attached
+        assert len(plugin.skills) == 1
+        assert plugin.skills[0].resources is not None
+        assert plugin.skills[0].resources.assets == ["asset.txt"]
+        # This test passes if no exception is raised - the fix prevents the
+        # redundant call but the end result is the same
+
+    def test_nested_skill_with_own_mcp_json_still_loads(self, tmp_path: Path):
+        """Verify nested skills with their own .mcp.json still work correctly.
+        
+        Nested skills should continue to load their own .mcp.json normally
+        (not skipped) since they're in a different directory than the plugin root.
+        """
+        import json
+
+        plugin_dir = tmp_path / "test-plugin"
+        plugin_dir.mkdir()
+
+        # Create minimal manifest
+        manifest_dir = plugin_dir / ".plugin"
+        manifest_dir.mkdir()
+        (manifest_dir / "plugin.json").write_text(
+            json.dumps({"name": "test-plugin", "version": "1.0.0"})
+        )
+
+        # Create nested skill with its own .mcp.json
+        skills_dir = plugin_dir / "skills"
+        skills_dir.mkdir()
+        skill_dir = skills_dir / "nested-skill"
+        skill_dir.mkdir()
+
+        (skill_dir / "SKILL.md").write_text(
+            """---
+name: nested-skill
+description: A nested skill
+---
+
+# Nested Skill
+"""
+        )
+
+        (skill_dir / ".mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "nested-server": {
+                            "command": "nested-server",
+                        }
+                    }
+                }
+            )
+        )
+
+        # Load the plugin
+        plugin = Plugin.load(plugin_dir)
+
+        # Skill should load with its own MCP config
+        assert len(plugin.skills) == 1
+        assert plugin.skills[0].name == "nested-skill"
+        # Nested skill SHOULD have mcp_tools (not skipped)
+        assert plugin.skills[0].mcp_tools is not None
+        assert "nested-server" in plugin.skills[0].mcp_tools
