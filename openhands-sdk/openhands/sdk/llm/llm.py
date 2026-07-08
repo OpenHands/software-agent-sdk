@@ -1387,9 +1387,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         _caller_kwargs = kwargs.copy()
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
-        if enable_streaming:
-            if on_token is None:
-                raise ValueError("Streaming requires an on_token callback")
+        if enable_streaming and on_token is None:
+            # Gracefully degrade to non-streaming rather than crashing a run when
+            # streaming is requested without a callback wired. See #4014.
+            logger.debug(
+                "Streaming requested without an on_token callback; "
+                "falling back to a non-streaming completion."
+            )
+            enable_streaming = False
+            kwargs.pop("stream", None)
+        elif enable_streaming:
             kwargs["stream"] = True
 
         (
@@ -1476,9 +1483,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         _caller_kwargs = kwargs.copy()
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
-        if enable_streaming:
-            if on_token is None:
-                raise ValueError("Streaming requires an on_token callback")
+        if enable_streaming and on_token is None:
+            # Gracefully degrade to non-streaming rather than crashing a run when
+            # streaming is requested without a callback wired. See #4014.
+            logger.debug(
+                "Streaming requested without an on_token callback; "
+                "falling back to a non-streaming completion."
+            )
+            enable_streaming = False
+            kwargs.pop("stream", None)
+        elif enable_streaming:
             kwargs["stream"] = True
 
         (
@@ -1582,10 +1596,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         _caller_kwargs = kwargs.copy()
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
-        if user_enable_streaming:
-            # We allow on_token to be None for subscription mode
-            if on_token is None and not self.is_subscription:
-                raise ValueError("Streaming requires an on_token callback")
+        if user_enable_streaming and on_token is None and not self.is_subscription:
+            # Gracefully degrade to non-streaming rather than crashing a run when
+            # streaming is requested without a callback wired (subscription mode
+            # is exempt — it streams internally without an on_token). See #4014.
+            logger.debug(
+                "Streaming requested without an on_token callback; "
+                "falling back to a non-streaming responses call."
+            )
+            user_enable_streaming = False
+            kwargs.pop("stream", None)
+        elif user_enable_streaming:
             kwargs["stream"] = True
 
         (
@@ -1722,10 +1743,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         _caller_kwargs = kwargs.copy()
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
-        if user_enable_streaming:
-            # We allow on_token to be None for subscription mode
-            if on_token is None and not self.is_subscription:
-                raise ValueError("Streaming requires an on_token callback")
+        if user_enable_streaming and on_token is None and not self.is_subscription:
+            # Gracefully degrade to non-streaming rather than crashing a run when
+            # streaming is requested without a callback wired (subscription mode
+            # is exempt — it streams internally without an on_token). See #4014.
+            logger.debug(
+                "Streaming requested without an on_token callback; "
+                "falling back to a non-streaming responses call."
+            )
+            user_enable_streaming = False
+            kwargs.pop("stream", None)
+        elif user_enable_streaming:
             kwargs["stream"] = True
 
         (
