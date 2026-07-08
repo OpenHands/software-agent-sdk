@@ -440,11 +440,15 @@ jobs:
                   if [ -n "$EXISTING_PR" ]; then
                     echo "✅ PR #$EXISTING_PR already exists for $REPO"
                   else
-                    # Create PR. The `fix:` title matches the repo's manual bump
-                    # convention and triggers release-please to cut a patch release.
+                    # Create PR with a `chore:` title to match the automation
+                    # repo's bump-PR convention (and the other steps here).
+                    # release-please still cuts a patch release: the repo squashes
+                    # single-commit PRs using the commit message (the `fix:` subject
+                    # above), not the PR title (squash_title_source is
+                    # COMMIT_OR_PR_TITLE).
                     gh pr create \
                       --repo "$REPO" \
-                      --title "fix: bump SDK to $VERSION" \
+                      --title "chore: bump SDK to $VERSION" \
                       --body "## Automated Version Bump
 
                   This PR updates the following packages to version **$VERSION**:
