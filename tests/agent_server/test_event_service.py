@@ -1871,7 +1871,7 @@ class TestEventServiceSaveMeta:
         new_llm = LLM(model="gpt-4o", usage_id="switched", timeout=600)
         # Stand in for a live conversation whose switch_llm installed new_llm.
         service._conversation = MagicMock()
-        service._synced_agent = stored.agent  # baseline start() would establish
+        service._synced_llm = stored.agent.llm  # baseline start() would establish
         service._conversation.agent = stored.agent.model_copy(update={"llm": new_llm})
 
         await service.switch_llm(new_llm)
@@ -1909,7 +1909,7 @@ class TestEventServiceSaveMeta:
 
         profile_llm = LLM(model="gpt-4o", usage_id="profile:fast", timeout=600)
         service._conversation = MagicMock()
-        service._synced_agent = stored.agent  # baseline start() would establish
+        service._synced_llm = stored.agent.llm  # baseline start() would establish
         service._conversation.agent = stored.agent.model_copy(
             update={"llm": profile_llm}
         )
@@ -1942,8 +1942,8 @@ class TestEventServiceSaveMeta:
             await service.switch_llm(LLM(model="gpt-4o", usage_id="switched"))
 
     @pytest.mark.asyncio
-    async def test_sync_agent_to_meta_noop_when_agent_unchanged(self, tmp_path):
-        """No meta.json write when the live agent object is unchanged.
+    async def test_sync_llm_to_meta_noop_when_llm_unchanged(self, tmp_path):
+        """No meta.json write when the live LLM is unchanged.
 
         The post-run hook calls this after every run; the identity check must
         keep it a no-op for ordinary runs so meta.json is not rewritten each
@@ -1960,13 +1960,47 @@ class TestEventServiceSaveMeta:
         service = EventService(stored=stored, conversations_dir=tmp_path)
         service._conversation = MagicMock()
         service._conversation.agent = stored.agent
-        # Baseline matches the live agent (as start() leaves it after resume).
-        service._synced_agent = stored.agent
+        # Baseline matches the live LLM (as start() leaves it after resume).
+        service._synced_llm = stored.agent.llm
 
         with patch.object(service, "save_meta", new=AsyncMock()) as save_meta:
-            await service._sync_agent_to_meta()
+            await service._sync_llm_to_meta()
 
         save_meta.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sync_llm_to_meta_ignores_plugin_merge(self, tmp_path):
+        """A run that loads plugins replaces the agent object but keeps the same
+        LLM. That must NOT be mirrored into meta.json: the stored agent has to
+        stay plugin-unmerged, or plugins double-merge on every resume.
+        """
+        from openhands.sdk.context.agent_context import AgentContext
+
+        stored = StoredConversation(
+            id=uuid4(),
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="agent"), tools=[]),
+            workspace=LocalWorkspace(working_dir=str(tmp_path)),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+        )
+        service = EventService(stored=stored, conversations_dir=tmp_path)
+        llm = stored.agent.llm
+        service._conversation = MagicMock()
+        service._synced_llm = llm
+        # Mimic _ensure_plugins_loaded: new agent object, merged agent_context,
+        # but the same LLM object.
+        service._conversation.agent = stored.agent.model_copy(
+            update={"agent_context": AgentContext(system_message_suffix="from plugin")}
+        )
+        assert service._conversation.agent.llm is llm
+
+        with patch.object(service, "save_meta", new=AsyncMock()) as save_meta:
+            await service._sync_llm_to_meta()
+
+        save_meta.assert_not_awaited()
+        # The stored agent keeps its original context, not the merged one.
+        assert service.stored.agent.agent_context is None
 
     @pytest.mark.asyncio
     async def test_in_run_switch_llm_persists_to_meta(self, tmp_path):
