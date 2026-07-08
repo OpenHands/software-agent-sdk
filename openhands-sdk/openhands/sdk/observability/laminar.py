@@ -90,6 +90,9 @@ def maybe_init_laminar():
 
     from lmnr import Instruments, Laminar
 
+    if Laminar.is_initialized():
+        return
+
     base_url = get_env("LMNR_BASE_URL") or None
     force_http = _get_bool_env("LMNR_FORCE_HTTP")
 
