@@ -5,8 +5,8 @@ import copy
 import json
 import uuid
 from collections.abc import Mapping, Sequence
-from pathlib import Path
-from typing import Any, TypeGuard
+from pathlib import Path, PurePath
+from typing import Any, Final, TypeGuard, cast
 
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
@@ -39,6 +39,7 @@ from openhands.sdk.event import (
     AgentErrorEvent,
     CondensationRequest,
     Event,
+    EventID,
     InterruptEvent,
     MessageEvent,
     ObservationEvent,
@@ -47,20 +48,23 @@ from openhands.sdk.event import (
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
-from openhands.sdk.io import LocalFileStore
+from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
 from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
+from openhands.sdk.llm.llm import LLMCallContext
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
 from openhands.sdk.marketplace.registry import MarketplaceRegistry
-from openhands.sdk.mcp import create_mcp_tools
+from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config, dump_mcp_config
+from openhands.sdk.mcp.utils import DefaultMCPToolProvider, MCPToolProvider
 from openhands.sdk.observability.laminar import observe
 from openhands.sdk.plugin import (
     Plugin,
     PluginSource,
     ResolvedPluginSource,
     fetch_plugin_with_resolution,
+    load_available_plugins,
 )
 from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
@@ -93,6 +97,8 @@ ACP_SUPERSEDE_INFLIGHT_PROMPT = "acp_supersede_inflight_prompt"
 _RUNTIME_MCP_TIMEOUT_SECS = 30
 
 ACP_STOP_HOOK_FEEDBACK_PREFIX = "[Stop hook feedback]"
+
+ASK_AGENT_LLM_USAGE_ID: Final[str] = "ask-agent-llm"
 
 
 def _agent_already_surfaced_error(events: Sequence[Event], since: int = 0) -> bool:
@@ -162,6 +168,7 @@ class LocalConversation(BaseConversation):
     _plugins_loaded: bool
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
     _subscription_disabled_condenser: Any | None
+    _mcp_tool_provider: MCPToolProvider
 
     def __init__(
         self,
@@ -189,9 +196,13 @@ class LocalConversation(BaseConversation):
         client_tools: list[ClientToolSpec] | None = None,
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
-        # Appended at the end (not grouped with max_iteration_per_run) to avoid
-        # shifting the position of any existing positional argument.
+        # Appended at the end to avoid shifting the position of any existing
+        # positional argument.
         max_budget_per_run: float | None = None,
+        observability_span_name: str = "conversation",
+        prompt_cache_key: str | None = None,
+        file_store: FileStore | None = None,
+        mcp_tool_provider: MCPToolProvider | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -207,7 +218,8 @@ class LocalConversation(BaseConversation):
                 semantics: skills override by name (last wins), MCP config
                 override by key (last wins), hooks concatenate (all run).
             persistence_dir: Directory for persisting conversation state and events.
-                Can be a string path or Path object.
+                Can be a string path or Path object. When file_store is provided,
+                this value is still used to derive environment observation paths.
             conversation_id: Optional ID for the conversation. If provided, will
                       be used to identify the conversation. The user might want to
                       suffix their persistent filestore with this ID.
@@ -241,6 +253,14 @@ class LocalConversation(BaseConversation):
                   (e.g. a frontend) observing the emitted ActionEvent.
             observability_metadata: Optional trace metadata for observability backends.
             observability_tags: Optional root span tags for observability backends.
+            observability_span_name: Optional child span name for observability
+                  backends. The root span remains named "conversation".
+            prompt_cache_key: Override for the prompt-cache shard key. Defaults
+                to the conversation's own ID. Sub-conversations set this to
+                the parent's ID to share the same cache shard.
+            file_store: Optional FileStore to use for conversation state and EventLog
+                persistence. If provided, this takes precedence over persistence_dir
+                for state and EventLog storage.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -248,6 +268,7 @@ class LocalConversation(BaseConversation):
         self._cleanup_initiated = False
         self._arun_task = None
         self._cancel_token = None
+        self._prompt_cache_key = prompt_cache_key
         self._step_holds_state_lock = False
 
         # Store plugin specs for lazy loading (no IO in constructor)
@@ -258,6 +279,7 @@ class LocalConversation(BaseConversation):
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
         self._subscription_disabled_condenser = None
+        self._mcp_tool_provider = mcp_tool_provider or DefaultMCPToolProvider()
 
         # Create-or-resume: factory inspects BASE_STATE to decide
         desired_id = conversation_id or uuid.uuid4()
@@ -303,20 +325,23 @@ class LocalConversation(BaseConversation):
             persistence_dir=self.get_persistence_dir(persistence_dir, desired_id)
             if persistence_dir
             else None,
+            file_store=file_store,
             max_iterations=max_iteration_per_run,
             stuck_detection=stuck_detection,
             cipher=cipher,
             tags=tags,
         )
 
-        self._pin_prompt_cache_key()
+        self._bind_conversation_context(self.agent.llm)
 
         # Default callback: persist every event to state
         def _default_callback(e):
             # This callback runs while holding the conversation state's lock
             # (see BaseConversation.compose_callbacks usage inside `with self._state:`
             # regions), so updating state here is thread-safe.
-            self._state.events.append(e)
+            # Single chokepoint: stamps parent_id (catching any event a hook
+            # swapped in downstream of _tree_stamping) and advances HEAD.
+            self._state.append_event(e)
             # Track user MessageEvent IDs here so hook callbacks (which may
             # synthesize or alter user messages) are captured in one place.
             if isinstance(e, MessageEvent) and e.source == "user":
@@ -355,7 +380,7 @@ class LocalConversation(BaseConversation):
         # This runs on first run()/send_message() call and handles both
         # explicit hooks and plugin hooks in one place
         self._hook_processor = None
-        self._on_event = base_callback
+        self._on_event = self._tree_stamping(self._rules_injecting(base_callback))
         self._on_token = (
             BaseConversation.compose_callbacks(token_callbacks)
             if token_callbacks
@@ -421,12 +446,106 @@ class LocalConversation(BaseConversation):
         atexit.register(self.close)
         self._start_observability_span(
             str(desired_id),
+            span_name=observability_span_name,
             user_id=user_id,
             metadata=observability_metadata,
             tags=observability_tags,
             conversation_tags=tags,
         )
         self.delete_on_close = delete_on_close
+
+    def _tree_stamping(
+        self, inner: ConversationCallbackType
+    ) -> ConversationCallbackType:
+        """Wrap a callback so in-flight subscribers see a lineage-bearing event.
+
+        Convenience only: the authoritative stamp is
+        ``ConversationState.append_event``, which re-stamps anything a hook swaps
+        in downstream. HEAD advances at the append site, not here.
+        """
+
+        def wrapped(event: Event) -> None:
+            inner(self._state._stamp_parent_id(event))
+
+        return cast(ConversationCallbackType, wrapped)
+
+    def _rules_injecting(
+        self, inner: ConversationCallbackType
+    ) -> ConversationCallbackType:
+        """Wrap a callback so path rules are injected on file-touch, mirroring
+        the skill injection in :meth:`send_message`. Runs under the state lock
+        (see the run loop), so mutating the dedup set is safe."""
+
+        def wrapped(event: Event) -> None:
+            inner(self._maybe_inject_path_rules(event))
+
+        return cast(ConversationCallbackType, wrapped)
+
+    def _maybe_inject_path_rules(self, event: Event) -> Event:
+        """Return ``event`` with matching path-rule content, or unchanged.
+
+        Only ``ObservationEvent``s carrying a file path are considered. Matching
+        rules already injected in this conversation are skipped via
+        ``state.activated_path_rules``.
+        """
+        if not isinstance(event, ObservationEvent):
+            return event
+
+        if (agent_context := self.agent.agent_context) is None:
+            return event
+
+        if (file_path := self._touched_rule_path(event)) is None:
+            return event
+
+        result = agent_context.get_tool_use_suffix(
+            file_path=file_path,
+            skip_skill_names=self._state.activated_path_rules,
+        )
+        if result is None:
+            return event
+
+        content, activated_rule_names = result
+        self._state.activated_path_rules.extend(activated_rule_names)
+        return event.model_copy(
+            update={"extended_content": list(event.extended_content) + [content]}
+        )
+
+    def _touched_rule_path(self, event: ObservationEvent) -> str | None:
+        """Return the workspace-relative POSIX path a tool observation touched.
+
+        Correlates the observation to its ``ActionEvent`` and reads the action's
+        ``path`` field generically (no dependency on the tools package). Returns
+        None when the action has no file ``path`` or the path is outside the
+        workspace.
+        """
+        action_event: Event | None = None
+        with contextlib.suppress(KeyError):
+            idx = self._state.events.get_index(event.action_id)
+            action_event = self._state.events[idx]
+        if not isinstance(action_event, ActionEvent) or action_event.action is None:
+            return None
+        # Read the field directly rather than model_dump(): avoids copying large
+        # edit payloads (file_text/old_str/new_str) just to read the path.
+        raw_path = getattr(action_event.action, "path", None)
+        if not isinstance(raw_path, str) or not raw_path:
+            return None
+
+        # Use the native path flavour so Windows drive paths (e.g. ``D:\\...``) are
+        # recognized as absolute; emit a POSIX string for glob matching.
+        raw = PurePath(raw_path)
+        if not raw.is_absolute():
+            return raw.as_posix()
+        root = PurePath(self.workspace.working_dir)
+        with contextlib.suppress(ValueError):
+            return raw.relative_to(root).as_posix()
+        # Fall back to filesystem resolution so a symlinked workspace root (e.g.
+        # macOS /tmp -> /private/tmp) still matches; strict=False keeps a
+        # not-yet-created leaf.
+        with contextlib.suppress(ValueError, OSError):
+            resolved = Path(raw_path).resolve()
+            resolved_root = Path(self.workspace.working_dir).resolve()
+            return resolved.relative_to(resolved_root).as_posix()
+        return None  # touched a file outside the workspace; rules are repo-scoped
 
     def _recover_persisted_client_tools(
         self,
@@ -546,6 +665,7 @@ class LocalConversation(BaseConversation):
         title: str | None = None,
         tags: dict[str, str] | None = None,
         reset_metrics: bool = True,
+        from_event_id: EventID | None = None,
     ) -> "LocalConversation":
         """Deep-copy this conversation with a new ID.
 
@@ -562,18 +682,24 @@ class LocalConversation(BaseConversation):
             tags: Optional tags for the forked conversation.
             reset_metrics: If ``True`` (default), cost/token stats start
                 fresh on the fork.
+            from_event_id: If set, copy only the branch up to this event
+                (``path_to_root``) and set the fork's HEAD there. If ``None``
+                (default), copy the whole log and keep the source's HEAD.
 
         Returns:
             A new ``LocalConversation`` that shares the same event history
             but has its own identity and independent state going forward.
+
+        Raises:
+            ValueError: If ``from_event_id`` is not an event in this conversation.
         """
         fork_id = conversation_id or uuid.uuid4()
         # Always deep-copy the agent (supplied or source) so the fork owns
-        # its own object graph. Required because __init__ mutates
-        # agent.llm._prompt_cache_key in place (#2917): a shared/aliased
-        # agent would clobber the source conversation's cache key.
-        # Round-trip via JSON avoids thread-lock pickling issues with
-        # model_copy(deep=True).
+        # its own object graph. Required because __init__ binds
+        # per-conversation call context on the LLM (#2917, #3443): a
+        # shared/aliased agent would clobber the source conversation's
+        # context. Round-trip via JSON avoids thread-lock pickling issues
+        # with model_copy(deep=True).
         source_agent = agent if agent is not None else self.agent
         agent_cls = type(source_agent)
         fork_agent = agent_cls.model_validate(
@@ -583,6 +709,11 @@ class LocalConversation(BaseConversation):
         # Hold the state lock while reading mutable state from the source
         # conversation to avoid torn reads if run() is executing concurrently.
         with self._state:
+            # Validate before constructing the fork so an unknown branch point
+            # does not leave an orphaned persistence directory behind.
+            if from_event_id is not None and from_event_id not in self._state.events:
+                raise ValueError(f"Unknown from_event_id: {from_event_id}")
+
             # Determine persistence_dir for the fork.
             # Pass the *base* directory only — __init__ calls
             # get_persistence_dir() which appends the conversation ID hex,
@@ -607,8 +738,25 @@ class LocalConversation(BaseConversation):
                 tags=tags,
             )
 
-            for event in self._state.events:
+            # Branch slice copies path_to_root(event) (root-first, re-rootable);
+            # a full fork copies the whole log and inherits the source's HEAD.
+            if from_event_id is not None:
+                source_events: list[Event] = self._state.events.path_to_root(
+                    from_event_id
+                )
+                fork_leaf: EventID | None = from_event_id
+            else:
+                source_events = list(self._state.events)
+                fork_leaf = self._state.leaf_event_id
+
+            for event in source_events:
                 fork_conv._state.events.append(_copy_event_for_fork(event))
+            fork_conv._state.leaf_event_id = fork_leaf
+            # A full fork inherits the source's empty-HEAD state; a branch slice
+            # roots HEAD at a real event (from_event_id), so it is never empty.
+            fork_conv._state.head_is_empty = (
+                self._state.head_is_empty if from_event_id is None else False
+            )
             # Full rebuild: the copied events may need property enforcement
             # (same posture as cold load).
             fork_conv._state.rebuild_view()
@@ -619,6 +767,9 @@ class LocalConversation(BaseConversation):
             # agent_state can hold arbitrary mutable values, so deep-copy it.
             fork_conv._state.activated_knowledge_skills = list(
                 self._state.activated_knowledge_skills
+            )
+            fork_conv._state.activated_path_rules = list(
+                self._state.activated_path_rules
             )
             fork_conv._state.agent_state = copy.deepcopy(self._state.agent_state)
 
@@ -633,14 +784,40 @@ class LocalConversation(BaseConversation):
             if not reset_metrics:
                 fork_conv._state.stats = self._state.stats.model_copy(deep=True)
 
-            event_count = len(self._state.events)
+            event_count = len(source_events)
 
         logger.info(
             f"Forked conversation {self.id} → {fork_id} "
             f"({event_count} events copied, "
-            f"reset_metrics={reset_metrics})"
+            f"reset_metrics={reset_metrics}, "
+            f"from_event_id={from_event_id})"
         )
         return fork_conv
+
+    def navigate_to(self, event_id: EventID | None) -> None:
+        """Move the conversation HEAD within this conversation (no new fork).
+
+        Re-roots the active branch: the agent's next context becomes
+        ``path_to_root(event_id)``. All branches stay on disk — appending after
+        navigating creates a sibling; abandoned events stay in the log but drop
+        out of ``state.view``.
+
+        Args:
+            event_id: Event to make the new HEAD, or ``None`` for the empty tree.
+
+        Raises:
+            ValueError: If ``event_id`` is not ``None`` and not in this
+                conversation.
+        """
+        with self._state:
+            if event_id is not None and event_id not in self._state.events:
+                raise ValueError(f"Unknown event_id: {event_id}")
+            self._state.leaf_event_id = event_id  # autosaves base_state.json
+            # Mark an explicit empty HEAD so it is not misread as a legacy/unset
+            # leaf (which would resolve back to the last event). See
+            # ConversationState._resolve_active_leaf.
+            self._state.head_is_empty = event_id is None
+            self._state.rebuild_view()
 
     def _ensure_plugins_loaded(self) -> None:
         """Lazy load plugins and set up hooks on first use.
@@ -662,6 +839,10 @@ class LocalConversation(BaseConversation):
 
         all_plugin_hooks: list[HookConfig] = []
         all_plugin_agents: list[AgentDefinition] = []
+        # Names of explicitly-attached plugins (populated in the loop below). Used
+        # to keep explicit attach authoritative over ambient installed/local
+        # plugins (and to avoid double-registering their hooks/agents).
+        explicit_plugin_names: set[str] = set()
 
         merged_context = self.agent.agent_context
         merged_mcp = dict(self.agent.mcp_config) if self.agent.mcp_config else {}
@@ -694,6 +875,8 @@ class LocalConversation(BaseConversation):
                     )
                     continue
                 for entry in marketplace.plugins:
+                    if not registration.auto_loads_plugin(entry.name):
+                        continue
                     source, ref, repo_path = marketplace.resolve_plugin_source(entry)
                     plugins_to_load.append(
                         (
@@ -743,6 +926,7 @@ class LocalConversation(BaseConversation):
                     f"Loaded plugin '{plugin.manifest.name}'"
                     + (f" @ {resolved_ref[:8]}" if resolved_ref else "")
                 )
+                explicit_plugin_names.add(plugin.name)
 
                 # Merge plugin contents
                 merged_context = plugin.add_skills_to(merged_context)
@@ -758,6 +942,54 @@ class LocalConversation(BaseConversation):
                     all_plugin_agents.extend(plugin.agents)
 
             logger.info(f"Loaded {len(plugins_to_load)} plugin(s) via Conversation")
+
+        # Ambient plugins: enabled installed plugins plus local user/project
+        # plugins, mirroring how installed/local skills already auto-load. These
+        # are additive to the explicit plugins above, de-duplicated by plugin
+        # name. Explicit attach wins: an ambient plugin whose name was already
+        # attached above is skipped (this also avoids double-registering its
+        # hooks/agents). Best-effort — a failure here must not prevent the
+        # conversation from starting.
+        #
+        # Ambient plugins have no pinned commit SHA, so (unlike explicit attach)
+        # they are intentionally NOT recorded in self._resolved_plugins. On
+        # resume they are re-discovered from disk / current enabled state, just
+        # like project skills. Automation/sandbox runs lack the user's installed
+        # and home directories, so discovery naturally yields nothing there.
+        ambient_plugins_loaded = False
+        try:
+            ambient_plugins = load_available_plugins(
+                work_dir=self.workspace.working_dir,
+                include_user=True,
+                include_project=True,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to load ambient (installed/local) plugins; "
+                "continuing without them",
+                exc_info=True,
+            )
+            ambient_plugins = {}
+
+        for plugin in ambient_plugins.values():
+            if plugin.name in explicit_plugin_names:
+                logger.debug(
+                    f"Skipping ambient plugin '{plugin.name}' "
+                    "(explicitly attached to this conversation)"
+                )
+                continue
+
+            merged_context = plugin.add_skills_to(merged_context)
+            merged_mcp = plugin.add_mcp_config_to(merged_mcp)
+            has_mcp_config = has_mcp_config or bool(merged_mcp)
+
+            if plugin.hooks and not plugin.hooks.is_empty():
+                all_plugin_hooks.append(plugin.hooks)
+            if plugin.agents:
+                all_plugin_agents.extend(plugin.agents)
+
+            ambient_plugins_loaded = True
+            logger.debug(f"Loaded ambient plugin '{plugin.name}'")
 
         # Resolve project skills from the workspace. AgentContext can't do this
         # itself (the workspace path is unknown at validation time), so it is done
@@ -786,6 +1018,12 @@ class LocalConversation(BaseConversation):
                 merged_skills = merge_skills_by_name(
                     project_skills.values(), merged_context.skills
                 )
+                # Honor the context deny-list here too: model_copy below bypasses
+                # AgentContext's validator, and a project skill can match a
+                # disabled name (absent name => harmless no-op).
+                if merged_context.disabled_skills:
+                    disabled = set(merged_context.disabled_skills)
+                    merged_skills = [s for s in merged_skills if s.name not in disabled]
                 merged_context = merged_context.model_copy(
                     update={"skills": merged_skills}
                 )
@@ -800,17 +1038,23 @@ class LocalConversation(BaseConversation):
         if merged_mcp:
             # Pass the registry's lookup method as a callback - secrets are retrieved
             # lazily, one at a time, only when actually referenced in the config
-            merged_mcp = expand_mcp_variables(
-                merged_mcp,
+            expanded_mcp = expand_mcp_variables(
+                {"mcpServers": dump_mcp_config(merged_mcp)},
                 {},
                 get_secret=self._state.secret_registry.get_secret_value,
                 expand_defaults=True,
             )
+            merged_mcp = coerce_mcp_config(expanded_mcp["mcpServers"])
             logger.debug("Expanded MCP config variables")
 
         # Update agent with merged content only if something changed.
         # Skip update otherwise to avoid unnecessary agent state mutations.
-        if plugins_to_load or has_mcp_config or project_skills_loaded:
+        if (
+            plugins_to_load
+            or has_mcp_config
+            or project_skills_loaded
+            or ambient_plugins_loaded
+        ):
             self.agent = self.agent.model_copy(
                 update={
                     "agent_context": merged_context,
@@ -852,7 +1096,7 @@ class LocalConversation(BaseConversation):
                 else None
             )
 
-            self._hook_processor, self._on_event = create_hook_callback(
+            self._hook_processor, raw_on_event = create_hook_callback(
                 hook_config=final_hook_config,
                 working_dir=str(self.workspace.working_dir),
                 session_id=str(self._state.id),
@@ -864,6 +1108,7 @@ class LocalConversation(BaseConversation):
                 visualizer=self._visualizer,
                 conversation_stats=self._state.stats,
             )
+            self._on_event = self._tree_stamping(self._rules_injecting(raw_on_event))
             self._hook_processor.set_conversation_state(self._state)
             self._hook_processor.run_session_start()
 
@@ -926,7 +1171,7 @@ class LocalConversation(BaseConversation):
 
         self._state.hook_config = merged_config
         self._pending_hook_config = merged_config
-        self._hook_processor, self._on_event = create_hook_callback(
+        self._hook_processor, raw_on_event = create_hook_callback(
             hook_config=merged_config,
             working_dir=str(self.workspace.working_dir),
             session_id=str(self._state.id),
@@ -936,17 +1181,24 @@ class LocalConversation(BaseConversation):
             visualizer=self._visualizer,
             conversation_stats=self._state.stats,
         )
+        self._on_event = self._tree_stamping(self._rules_injecting(raw_on_event))
         self._hook_processor.set_conversation_state(self._state)
         self._hook_processor.run_session_start()
 
-    def _runtime_mcp_tools_for_plugin(
-        self, plugin_mcp_config: dict[str, Any] | None
+    def _runtime_mcp_tools(
+        self, mcp_config: dict[str, MCPServer]
     ) -> list[ToolDefinition]:
-        if not plugin_mcp_config:
+        if not mcp_config:
             return []
-        return list(
-            create_mcp_tools(plugin_mcp_config, _RUNTIME_MCP_TIMEOUT_SECS).tools
+        client = self._mcp_tool_provider.create_tools(
+            mcp_config, _RUNTIME_MCP_TIMEOUT_SECS
         )
+        return list(client.tools)
+
+    def _runtime_mcp_tools_for_agent(self) -> list[ToolDefinition]:
+        if not self.agent.supports_openhands_tools or not self.agent.mcp_config:
+            return []
+        return self._runtime_mcp_tools(self.agent.mcp_config)
 
     def _runtime_skill_tools_for_agent(self) -> list[ToolDefinition]:
         agent_context = self.agent.agent_context
@@ -993,31 +1245,29 @@ class LocalConversation(BaseConversation):
         )
 
         get_secret = self._state.secret_registry.get_secret_value
-        runtime_plugin_mcp = (
-            expand_mcp_variables(
-                plugin.mcp_config,
+        runtime_plugin_mcp: dict[str, MCPServer] = {}
+        if plugin.mcp_config:
+            expanded_plugin_mcp = expand_mcp_variables(
+                {"mcpServers": dump_mcp_config(plugin.mcp_config)},
                 {},
                 get_secret=get_secret,
                 expand_defaults=True,
             )
-            if plugin.mcp_config
-            else None
-        )
+            runtime_plugin_mcp = coerce_mcp_config(expanded_plugin_mcp["mcpServers"])
         merged_context = plugin.add_skills_to(self.agent.agent_context)
         merged_mcp = plugin.add_mcp_config_to(
             dict(self.agent.mcp_config) if self.agent.mcp_config else {}
         )
         if merged_mcp:
-            merged_mcp = expand_mcp_variables(
-                merged_mcp,
+            expanded_mcp = expand_mcp_variables(
+                {"mcpServers": dump_mcp_config(merged_mcp)},
                 {},
                 get_secret=get_secret,
                 expand_defaults=True,
             )
+            merged_mcp = coerce_mcp_config(expanded_mcp["mcpServers"])
         runtime_mcp_tools = (
-            self._runtime_mcp_tools_for_plugin(runtime_plugin_mcp)
-            if self._agent_ready
-            else []
+            self._runtime_mcp_tools(runtime_plugin_mcp) if self._agent_ready else []
         )
 
         with self._state:
@@ -1108,8 +1358,20 @@ class LocalConversation(BaseConversation):
             # register file-based agents
             self._register_file_based_agents()
 
-            # Initialize agent with complete configuration
-            self.agent.init_state(self._state, on_event=self._on_event)
+            runtime_mcp_tools: list[ToolDefinition] = []
+            try:
+                if self.agent.supports_openhands_tools:
+                    self.agent._initialize(self._state)
+                    runtime_mcp_tools = self._runtime_mcp_tools_for_agent()
+                    self.agent.add_runtime_tools(runtime_mcp_tools)
+
+                self.agent.init_state(
+                    self._state,
+                    on_event=self._on_event,
+                )
+            except Exception:
+                self._close_runtime_tools(runtime_mcp_tools)
+                raise
 
             # Register LLMs in the registry (still holding lock).
             # `registered` is updated after each add so that duplicate usage_ids
@@ -1122,7 +1384,9 @@ class LocalConversation(BaseConversation):
                 if llm.usage_id not in registered:
                     self.llm_registry.add(llm)
                     registered.add(llm.usage_id)
-                self._pin_session_affinity_header(llm)
+                # Rebinds the primary LLM (harmless, same values) and
+                # binds any additional LLMs (e.g. condenser).
+                self._bind_conversation_context(llm)
 
             self._agent_ready = True
 
@@ -1136,27 +1400,32 @@ class LocalConversation(BaseConversation):
         """
         return not isinstance(self.agent, ACPAgent)
 
-    def _pin_prompt_cache_key(self) -> None:
-        # Pin the OpenAI prefix-cache shard to this conversation (#2904, #2918).
-        # Skip if a key is already set: sub-agent LLMs inherit the parent's
-        # via model_copy, and overwriting would put each sub-agent on its own
-        # shard, defeating cross-sub-agent cache reuse on OpenAI models.
-        if self.agent.llm._prompt_cache_key is None:
-            self.agent.llm._prompt_cache_key = str(self._state.id)
+    def get_llm_call_context(self) -> LLMCallContext:
+        """Build an :class:`LLMCallContext` for this conversation.
 
-    def _pin_session_affinity_header(self, llm: LLM) -> None:
-        """Ensure *llm* carries ``x-litellm-session-id`` for routing affinity.
-
-        Note: if a caller passes ``extra_headers`` as a kwarg directly to
-        ``completion()``, ``select_chat_options`` skips ``llm.extra_headers``
-        entirely — the same limitation that affects OpenRouter headers.
+        The ``prompt_cache_key`` uses the override supplied at construction
+        (for sub-agent cache-shard sharing) or defaults to the conversation's
+        own ID.  ``session_id`` is always the conversation's ID.
         """
-        existing = llm.extra_headers or {}
-        if "x-litellm-session-id" not in existing:
-            llm.extra_headers = {
-                "x-litellm-session-id": str(self._state.id),
-                **existing,
-            }
+        conv_id = str(self._state.id)
+        return LLMCallContext(
+            prompt_cache_key=self._prompt_cache_key or conv_id,
+            session_id=conv_id,
+        )
+
+    def _bind_conversation_context(self, llm: LLM) -> None:
+        """Bind per-conversation call context to *llm* as a PrivateAttr fallback.
+
+        This sets the LLM's ``_call_context`` so that callers who don't
+        thread an explicit ``call_context`` through the completion call
+        (e.g. the condenser's dedicated LLM) still get correct per-
+        conversation state.  The primary agent completion path threads
+        context explicitly via ``Agent.step()`` → ``make_llm_completion()``
+        → ``llm.completion(call_context=...)``.
+
+        See #3443 for background.
+        """
+        llm._call_context = self.get_llm_call_context()
 
     def _condenser_for_switched_llm(
         self,
@@ -1231,8 +1500,9 @@ class LocalConversation(BaseConversation):
                 )
             self.agent = self.agent.model_copy(update=update)
             self._state.agent = self.agent
-            self._pin_prompt_cache_key()
-            self._pin_session_affinity_header(new_llm)
+            self._bind_conversation_context(new_llm)
+            # Invalidate the cached ask-agent LLM so it re-clones.
+            self.llm_registry.remove(ASK_AGENT_LLM_USAGE_ID)
 
     def switch_profile(self, profile_name: str) -> None:
         """Switch the agent's LLM to a profile loaded from disk.
@@ -1255,6 +1525,24 @@ class LocalConversation(BaseConversation):
             loaded = self._profile_store.load(profile_name, cipher=self._cipher)
             cached = loaded.model_copy(update={"usage_id": usage_id})
         self.switch_llm(cached)
+
+    def get_or_create_profile_llm(self, profile_name: str, usage_id: str) -> LLM:
+        """Return a saved profile LLM registered for this conversation.
+
+        Unlike :meth:`switch_profile`, this does not replace the active agent
+        model. It is intended for auxiliary one-off model calls from tools while
+        still routing token and cost accounting through ``llm_registry`` and
+        ``ConversationStats``.
+        """
+        try:
+            return self.llm_registry.get(usage_id)
+        except KeyError:
+            loaded = self._profile_store.load(profile_name, cipher=self._cipher)
+            llm = loaded.model_copy(update={"usage_id": usage_id})
+            llm = create_subscription_llm_from_config(llm)
+            self.llm_registry.add(llm)
+            self._bind_conversation_context(llm)
+            return llm
 
     def switch_acp_model(self, model: str) -> None:
         """Switch the model on an ACP conversation.
@@ -1407,6 +1695,31 @@ class LocalConversation(BaseConversation):
         """Emit an event while holding the conversation state lock."""
         with self._state:
             self._on_event(event)
+
+    @contextlib.asynccontextmanager
+    async def _released_state_lock_during_io(self):
+        """Release the run loop's state lock across an awaited LLM network call.
+
+        ``arun()`` holds the state lock across the whole step; releasing it for
+        just the network wait keeps ``send_message()`` and state snapshots
+        responsive. No-op unless this thread holds the lock, so direct ``astep``
+        calls are unaffected. Deadlock-safe: ``arun`` is the only holder across
+        an ``await``; every other holder takes it only briefly.
+        """
+        lock = self._state._lock
+        if not lock.owned():
+            yield
+            return
+        held_flag = self._step_holds_state_lock
+        depth = lock.release_all()
+        # Keep the flag honest while released so a concurrent switch_llm (on the
+        # event-loop thread) takes the now-free lock instead of racing mutators.
+        self._step_holds_state_lock = False
+        try:
+            yield
+        finally:
+            lock.reacquire(depth)
+            self._step_holds_state_lock = held_flag
 
     @observe(name="conversation.run")
     def run(self) -> None:
@@ -1704,7 +2017,7 @@ class LocalConversation(BaseConversation):
 
                         acp_prompt_messages = [
                             event
-                            for event in self._state.events
+                            for event in self._state.active_branch()
                             if _is_acp_prompt_message(event)
                         ]
                         if last_acp_prompt_user_message_id is None:
@@ -1819,7 +2132,7 @@ class LocalConversation(BaseConversation):
                     with self._state:
                         acp_prompt_messages = [
                             event
-                            for event in self._state.events
+                            for event in self._state.active_branch()
                             if _is_acp_prompt_message(event)
                         ]
                         latest_acp_prompt_message_id = (
@@ -1917,7 +2230,7 @@ class LocalConversation(BaseConversation):
 
                     acp_prompt_messages = [
                         event
-                        for event in self._state.events
+                        for event in self._state.active_branch()
                         if _is_acp_prompt_message(event)
                     ]
                     latest_acp_prompt_message_id = (
@@ -2060,7 +2373,9 @@ class LocalConversation(BaseConversation):
         This is a non-invasive method to reject actions between run() calls.
         Also clears the agent_waiting_for_confirmation flag.
         """
-        pending_actions = ConversationState.get_unmatched_actions(self._state.events)
+        pending_actions = ConversationState.get_unmatched_actions(
+            self._state.active_branch()
+        )
 
         with self._state:
             # Always clear the agent_waiting_for_confirmation flag
@@ -2096,7 +2411,7 @@ class LocalConversation(BaseConversation):
 
         Must be called while holding ``self._state``.
         """
-        orphans = ConversationState.get_unmatched_actions(self._state.events)
+        orphans = ConversationState.get_unmatched_actions(self._state.active_branch())
         for ae in orphans:
             logger.info(
                 "Emitting synthetic error for orphaned action %s (%s)",
@@ -2282,11 +2597,14 @@ class LocalConversation(BaseConversation):
 
         # Get or create the specialized ask-agent LLM
         try:
-            question_llm = self.llm_registry.get("ask-agent-llm")
+            question_llm = self.llm_registry.get(ASK_AGENT_LLM_USAGE_ID)
         except KeyError:
+            # stream=False: the reply is consumed whole with no on_token
+            # callback, which a streaming LLM requires.
             question_llm = self.agent.llm.model_copy(
                 update={
-                    "usage_id": "ask-agent-llm",
+                    "usage_id": ASK_AGENT_LLM_USAGE_ID,
+                    "stream": False,
                 },
                 deep=True,
             )
@@ -2329,7 +2647,9 @@ class LocalConversation(BaseConversation):
         """
         effective_llm = llm if llm is not None else self.agent.llm
         return generate_conversation_title(
-            events=self._state.events, llm=effective_llm, max_length=max_length
+            events=self._state.active_branch(),
+            llm=effective_llm,
+            max_length=max_length,
         )
 
     def condense(self) -> None:

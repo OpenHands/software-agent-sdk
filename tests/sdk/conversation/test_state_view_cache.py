@@ -217,15 +217,15 @@ def test_resume_path_rebuilds_view(tmp_path):
 
 
 def test_rebuild_view_leaves_cache_unchanged_on_error(state):
-    """If View.from_events raises, the old cache and watermark are preserved."""
+    """If View.from_events raises, the old cache and branch marker are preserved."""
     state.events.append(_msg("pre-error"))
     _ = state.view  # populate the incremental cache
     old_view = state._view
-    old_watermark = state._view_watermark
+    old_branch_leaf = state._view_branch_leaf
 
     with patch.object(View, "from_events", side_effect=RuntimeError("boom")):
         with pytest.raises(RuntimeError, match="boom"):
             state.rebuild_view()
 
     assert state._view is old_view
-    assert state._view_watermark == old_watermark
+    assert state._view_branch_leaf == old_branch_leaf

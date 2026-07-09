@@ -13,6 +13,7 @@ from uuid import uuid4
 import pytest
 import pytest_asyncio
 
+from openhands.agent_server.conversation_lease import LEASE_FILE_NAME
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
@@ -1343,6 +1344,32 @@ class TestEventServiceSendMessage:
                 None, conversation.send_message, system_message
             )
 
+    @pytest.mark.asyncio
+    async def test_load_plugin_delegates_to_conversation(self, event_service):
+        """Runtime plugin loads are delegated through the executor."""
+        conversation = MagicMock()
+        conversation.load_plugin = MagicMock()
+        event_service._conversation = conversation
+
+        with patch("asyncio.get_running_loop") as mock_get_loop:
+            mock_loop = MagicMock()
+            mock_get_loop.return_value = mock_loop
+            mock_loop.run_in_executor.side_effect = lambda *args: self._mock_executor()
+
+            await event_service.load_plugin("plugin@team")
+
+        mock_loop.run_in_executor.assert_called_once_with(
+            None, conversation.load_plugin, "plugin@team"
+        )
+
+    @pytest.mark.asyncio
+    async def test_load_plugin_inactive_service(self, event_service):
+        """Runtime plugin loads require an active conversation."""
+        event_service._conversation = None
+
+        with pytest.raises(ValueError, match="inactive_service"):
+            await event_service.load_plugin("plugin@team")
+
 
 class TestEventServiceRespondToConfirmation:
     """Test cases for confirmation responses and rejection handling."""
@@ -2240,6 +2267,25 @@ class TestEventServiceConcurrentSubscriptions:
             assert isinstance(events[0], ConversationStateUpdateEvent)
 
     @pytest.mark.asyncio
+    async def test_subscription_receives_state_when_conversation_not_open(
+        self, event_service
+    ):
+        """Inactive services still need an initial state event for WS readiness."""
+        received_events: list[Event] = []
+
+        class TestSubscriber(Subscriber[Event]):
+            async def __call__(self, event: Event):
+                received_events.append(event)
+
+        await event_service.subscribe_to_events(TestSubscriber())
+
+        assert len(received_events) == 1
+        event = received_events[0]
+        assert isinstance(event, ConversationStateUpdateEvent)
+        assert event.key == "execution_status"
+        assert event.value == ConversationExecutionStatus.IDLE
+
+    @pytest.mark.asyncio
     async def test_slow_subscriber_does_not_block_lock(
         self, event_service, mock_conversation_with_real_lock
     ):
@@ -2701,6 +2747,9 @@ class TestEventServiceClose:
 
             def fork(self, **kwargs):
                 return mock.fork(**kwargs)
+
+            def navigate_to(self, event_id):
+                return mock.navigate_to(event_id)
 
         conv = SyncOnlyConversation()
         event_service._conversation = conv  # type: ignore[assignment]
@@ -3198,3 +3247,116 @@ async def test_run_false_message_in_cleanup_tail_is_not_run(
         f"(call_count={parent_llm._call_count})"
     )
     assert es._run_task is None
+
+
+def test_emit_event_from_thread_uses_captured_loop(event_service: EventService) -> None:
+    """_emit_event_from_thread must use the captured main_loop, not self._main_loop.
+
+    Before this fix, the method captured _main_loop into a local variable for
+    the if-check but then called self._main_loop.run_in_executor(...) in the
+    body. A concurrent close() setting self._main_loop = None between the
+    check and the call would cause AttributeError. The fix uses main_loop.
+    """
+    captured_calls: list = []
+
+    mock_loop = MagicMock()
+    mock_loop.is_running.return_value = True
+
+    def record_and_null(*args, **kwargs):
+        # Simulate concurrent close() nulling self._main_loop mid-call
+        object.__setattr__(event_service, "_main_loop", None)
+        captured_calls.append(args)
+
+    mock_loop.run_in_executor.side_effect = record_and_null
+
+    event_service._main_loop = mock_loop  # type: ignore[assignment]
+    event_service._conversation = MagicMock()  # type: ignore[assignment]
+
+    event = MagicMock()
+
+    # Should not raise AttributeError even though self._main_loop is cleared
+    event_service._emit_event_from_thread(event)
+    assert len(captured_calls) == 1, "run_in_executor should have been called once"
+
+
+def test_llm_log_callback_swallows_emit_failures(
+    event_service: EventService, caplog
+) -> None:
+    callbacks = []
+    llm = MagicMock(log_completions=True, usage_id="test-usage", model="gpt-4o")
+    llm.telemetry.set_log_completions_callback.side_effect = callbacks.append
+
+    object.__setattr__(
+        event_service,
+        "_emit_event_from_thread",
+        MagicMock(side_effect=RuntimeError("emit failed")),
+    )
+
+    with caplog.at_level("ERROR"):
+        event_service._setup_llm_log_streaming(MagicMock(get_all_llms=lambda: [llm]))
+        callbacks[0]("completion.json", "{}")
+
+    emit_mock = cast(MagicMock, event_service._emit_event_from_thread)
+    emit_mock.assert_called_once()
+    assert "Failed to emit LLM completion log event" in caplog.text
+
+
+def _make_stored(tmp_path: Path) -> StoredConversation:
+    return StoredConversation(
+        id=uuid4(),
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(tmp_path)),
+        confirmation_policy=NeverConfirm(),
+        initial_message=None,
+        metrics=None,
+    )
+
+
+def _make_mock_conv() -> MagicMock:
+    mock_conv = MagicMock()
+    mock_state = MagicMock()
+    mock_state.execution_status = ConversationExecutionStatus.IDLE
+    mock_state.events = []
+    mock_state.stats = MagicMock()
+    mock_conv.agent.get_all_llms.return_value = []
+    mock_conv._state = mock_state
+    mock_conv.state = mock_state
+    mock_conv._on_event = MagicMock()
+    return mock_conv
+
+
+@pytest.mark.asyncio
+async def test_event_service_skips_lease_when_ttl_is_zero(tmp_path: Path) -> None:
+    stored = _make_stored(tmp_path)
+    service = EventService(
+        stored=stored,
+        conversations_dir=tmp_path,
+        lease_ttl_seconds=0,
+    )
+    with patch(
+        "openhands.agent_server.event_service.LocalConversation",
+        return_value=_make_mock_conv(),
+    ):
+        await service.start()
+
+    assert service._lease is None
+    assert not (tmp_path / stored.id.hex / LEASE_FILE_NAME).exists()
+
+
+@pytest.mark.asyncio
+async def test_event_service_creates_lease_with_custom_ttl(tmp_path: Path) -> None:
+    stored = _make_stored(tmp_path)
+    service = EventService(
+        stored=stored,
+        conversations_dir=tmp_path,
+        lease_ttl_seconds=10.0,
+    )
+    with patch(
+        "openhands.agent_server.event_service.LocalConversation",
+        return_value=_make_mock_conv(),
+    ):
+        await service.start()
+
+    assert service._lease is not None
+    assert service._lease._ttl_seconds == 10.0
+    assert (tmp_path / stored.id.hex / LEASE_FILE_NAME).exists()

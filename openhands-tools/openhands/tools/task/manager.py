@@ -312,6 +312,7 @@ class TaskManager:
             max_budget_per_run=max_budget_per_run,
             hook_config=hook_config,
             delete_on_close=True,
+            prompt_cache_key=str(parent.state.id),
         )
 
     def _get_sub_agent(self, subagent_type: str) -> Agent:

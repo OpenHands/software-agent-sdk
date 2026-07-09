@@ -74,6 +74,9 @@ def serialize_secret(v: SecretStr | None, info):
                 "Cannot encrypt secret: no cipher configured. "
                 "Set OH_SECRET_KEY environment variable."
             )
+        raw = v.get_secret_value()
+        if raw.startswith(FERNET_TOKEN_PREFIX) and cipher.try_decrypt_str(raw):
+            return raw
         return cipher.encrypt(v)
 
     return v
@@ -86,8 +89,10 @@ def validate_secret(v: str | SecretStr | None, info) -> SecretStr | None:
     Accepts both str and SecretStr inputs, always returns SecretStr | None.
     - Empty secrets are converted to None
     - Plain strings are converted to SecretStr
-    - If a cipher is provided in context, attempts to decrypt the value
-    - If decryption fails, the cipher returns None and a warning is logged
+    - If a cipher is provided in context and the value is a Fernet token,
+      attempts to decrypt the value
+    - If Fernet decryption fails, the cipher returns None and a warning is logged
+    - Non-token strings pass through as plaintext for legacy settings and PATCHes
     - This gracefully handles conversations encrypted with different keys or were redacted
     """  # noqa: E501
     if v is None:
@@ -103,8 +108,14 @@ def validate_secret(v: str | SecretStr | None, info) -> SecretStr | None:
     if not secret_value or not secret_value.strip() or is_redacted_secret(secret_value):
         return None
 
-    # check if a cipher is supplied
-    if info.context and info.context.get("cipher"):
+    # Check if a cipher is supplied and the value is an encrypted Fernet token.
+    # Legacy plaintext settings and ordinary PATCH payloads should not be
+    # dropped just because the storage layer has encryption configured.
+    if (
+        info.context
+        and info.context.get("cipher")
+        and secret_value.startswith(FERNET_TOKEN_PREFIX)
+    ):
         cipher: Cipher = info.context.get("cipher")
         return cipher.decrypt(secret_value)
 

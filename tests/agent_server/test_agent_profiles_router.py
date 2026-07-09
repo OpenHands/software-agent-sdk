@@ -6,17 +6,20 @@ activation by id (no ``agent_settings`` write), and the lazy migration seed.
 """
 
 import concurrent.futures
+import json
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
 from openhands.agent_server import agent_profiles_router as router_module
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.persistence import reset_stores
+from openhands.agent_server.profiles_router import MAX_PROFILES
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.profiles import (
@@ -60,6 +63,14 @@ def client(temp_agent_profiles_dir, temp_settings_dir, monkeypatch):
 @pytest.fixture
 def store(temp_agent_profiles_dir):
     return AgentProfileStore(base_dir=temp_agent_profiles_dir)
+
+
+@pytest.fixture
+def default_llm_profile_store(temp_settings_dir):
+    """The real (unpatched) LLM profile store the ``client`` fixture's
+    ``get_llm_profile_store()`` resolves to, given ``OH_PERSISTENCE_DIR`` —
+    see ``_get_profile_persistence_dir`` (``<dir>/profiles``)."""
+    return LLMProfileStore(base_dir=temp_settings_dir / "profiles")
 
 
 # ── Lazy migration seed ─────────────────────────────────────────────────────
@@ -116,6 +127,193 @@ def test_seed_acp_when_settings_acp(client):
 
     detail = client.get("/api/agent-profiles/default").json()
     assert detail["profile"]["acp_server"] == "codex"
+
+
+def test_seed_backfills_default_llm_profile_when_real_config(
+    client, default_llm_profile_store
+):
+    """No active LLM profile but a *real* live LLM config: seed backfills a
+    resolvable 'default' LLM profile.
+
+    Regression test for #3933 — previously ``llm_profile_ref`` fell back to the
+    literal 'default' without anything ever creating that LLM profile, so the
+    seeded (and active) agent profile 404'd at conversation launch. The backfill
+    fires only when the live ``agent_settings.llm`` is real, pre-existing config
+    (here: a custom ``base_url``) — the legacy/cloud migration case — not for a
+    fresh account's bare SDK defaults (see the ghost-profile test below, #4031).
+    """
+    # Give the live LLM real config so the backfill is warranted.
+    client.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"llm": {"base_url": "https://proxy.example/v1"}}},
+    )
+
+    body = client.get("/api/agent-profiles").json()
+    seeded = body["profiles"][0]
+    assert seeded["llm_profile_ref"] == "default"
+    assert "default.json" in default_llm_profile_store.list()
+
+    materialized = client.post("/api/agent-profiles/default/materialize").json()
+    assert materialized["valid"] is True
+    assert materialized["llm_profile_resolved"] is True
+
+
+def test_seed_skips_ghost_llm_profile_for_bare_defaults(
+    client, default_llm_profile_store
+):
+    """A fresh, never-configured account must NOT get a keyless 'default' LLM
+    profile persisted (#4031).
+
+    On bare SDK defaults (``model="gpt-5.5"``, no api_key) the backfill is
+    skipped: no ``default.json`` is written, so the LLM profiles list stays
+    empty rather than showing an unexplained, non-functional 'ghost' profile.
+    The agent profile's ``llm_profile_ref`` is left as a *soft* 'default' ref —
+    which materialize reports as dangling (never raises) and which resolves for
+    real the moment the user saves an actual LLM profile.
+    """
+    body = client.get("/api/agent-profiles").json()
+    seeded = body["profiles"][0]
+    # The agent profile is still seeded, with a soft (unresolved) ref.
+    assert seeded["llm_profile_ref"] == "default"
+    # ...but no ghost LLM profile is left behind.
+    assert "default.json" not in default_llm_profile_store.list()
+    assert default_llm_profile_store.list() == []
+
+    # The soft ref surfaces as dangling at materialize time, not a 500.
+    materialized = client.post("/api/agent-profiles/default/materialize").json()
+    assert materialized["valid"] is False
+    assert materialized["llm_profile_resolved"] is False
+
+
+def test_seed_does_not_clobber_existing_default_llm_profile(
+    client, default_llm_profile_store
+):
+    """A pre-existing 'default' LLM profile is left untouched by the seed."""
+    default_llm_profile_store.save("default", LLM(model="existing/model"))
+
+    client.get("/api/agent-profiles")
+
+    reloaded = default_llm_profile_store.load("default")
+    assert reloaded.model == "existing/model"
+
+
+def test_seed_does_not_clobber_differently_cased_default_llm_profile(
+    client, default_llm_profile_store
+):
+    """A pre-existing differently-cased 'Default' LLM profile is never
+    overwritten.
+
+    Regression test: the existence check must resolve names the same way
+    ``save()`` does (via the store's own path resolution), not via a
+    case-sensitive ``list()`` membership check — on a case-insensitive
+    filesystem (macOS/Windows) 'default' and 'Default' are the same path, so
+    the naive check would miss the collision and ``save()`` would silently
+    clobber the existing profile.
+    """
+    default_llm_profile_store.save("Default", LLM(model="existing/model"))
+
+    client.get("/api/agent-profiles")
+
+    reloaded = default_llm_profile_store.load("Default")
+    assert reloaded.model == "existing/model"
+
+
+def test_seed_llm_profile_limit_reached_does_not_500(client, default_llm_profile_store):
+    """Hitting the LLM profile cap during backfill warns and continues
+    instead of 500ing.
+
+    Regression test: the backfill must catch the LLM store's own
+    ``ProfileLimitExceeded`` (``openhands.sdk.llm.llm_profile_store``), not
+    the identically-named exception from the agent-profile store
+    (``openhands.sdk.profiles``) — catching the wrong class let the real one
+    propagate as an unhandled 500.
+    """
+    for i in range(MAX_PROFILES):
+        default_llm_profile_store.save(f"other-{i}", LLM(model="x"))
+
+    response = client.get("/api/agent-profiles")
+
+    assert response.status_code == 200
+    seeded = response.json()["profiles"][0]
+    assert seeded["llm_profile_ref"] == "default"
+    assert "default.json" not in default_llm_profile_store.list()
+
+
+def test_seed_backfills_when_active_profile_is_empty_string(
+    client, default_llm_profile_store, temp_settings_dir
+):
+    """An empty-string (not ``None``) ``active_profile`` still triggers the
+    backfill.
+
+    Regression test: the trigger condition must be a falsy check, matching
+    ``build_seed_profile``'s own ``active_llm_profile or SEED_PROFILE_NAME``
+    fallback — an ``is None`` check would skip the backfill for ``""`` while
+    ``build_seed_profile`` still falls back to the unresolvable literal
+    ``"default"`` ref, reproducing the exact #3933 dangling ref. The HTTP
+    PATCH payload's pattern validator blocks a client from setting `""`, but
+    the stored ``PersistedSettings`` field has no such constraint, so a
+    hand-edited or legacy settings.json can still contain it.
+
+    The live LLM carries a custom ``base_url`` so it counts as real config and
+    the backfill actually persists a profile (#4031 gates it on real config).
+    """
+    (temp_settings_dir / "settings.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "agent_settings": {
+                    "agent_kind": "openhands",
+                    "llm": {"model": "gpt-5.5", "base_url": "https://proxy.example/v1"},
+                },
+                "conversation_settings": {},
+                "active_profile": "",
+                "active_agent_profile_id": None,
+                "misc_settings": {},
+            }
+        )
+    )
+
+    body = client.get("/api/agent-profiles").json()
+    assert body["profiles"][0]["llm_profile_ref"] == "default"
+    assert "default.json" in default_llm_profile_store.list()
+
+    materialized = client.post("/api/agent-profiles/default/materialize").json()
+    assert materialized["valid"] is True
+
+
+def test_seed_acp_does_not_backfill_llm_profile(client, default_llm_profile_store):
+    """An ACP seed has no ``llm_profile_ref``, so no LLM profile is created."""
+    client.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"agent_kind": "acp", "acp_server": "codex"}},
+    )
+
+    client.get("/api/agent-profiles")
+
+    assert default_llm_profile_store.list() == []
+
+
+@pytest.mark.parametrize(
+    "llm, expected",
+    [
+        # Bare SDK defaults on a never-configured account -> not real config.
+        (LLM(model="gpt-5.5"), False),
+        (LLM(model="gpt-5.5", base_url=""), False),
+        (LLM(model="gpt-5.5", base_url="   "), False),
+        # A real API key.
+        (LLM(model="gpt-5.5", api_key=SecretStr("sk-real")), True),
+        # A blank API key does not count.
+        (LLM(model="gpt-5.5", api_key=SecretStr("  ")), False),
+        # A custom endpoint (proxy / self-hosted) counts.
+        (LLM(model="gpt-5.5", base_url="https://proxy.example/v1"), True),
+        # Subscription auth counts even without an api_key.
+        (LLM(model="gpt-5.5", auth_type="subscription"), True),
+    ],
+)
+def test_llm_has_real_config(llm, expected):
+    """``_llm_has_real_config`` gates the seed so only real, pre-existing
+    configuration is mirrored into a persisted 'default' LLM profile (#4031)."""
+    assert router_module._llm_has_real_config(llm) is expected
 
 
 def test_no_seed_when_store_nonempty(client, store):
@@ -294,25 +492,34 @@ def test_save_missing_required_ref_returns_422(client):
     assert any("llm_profile_ref" in err["loc"] for err in detail)
 
 
-def test_save_invalid_body_does_not_leak_mcp_secret(client):
-    """A malformed profile body's 422 must not echo skills[].mcp_tools secrets."""
-    secret = "ghp_should_never_appear_in_error"
+def test_save_schemaless_body_with_stray_skills_key_rejected(client):
+    """A body with no ``schema_version`` canonicalizes to the clean v1 baseline;
+    the removed ``skills`` field never shipped, so it is a genuine extra='forbid'
+    violation (422) — there is no migration to silently drop it (#4017)."""
     response = client.post(
-        "/api/agent-profiles/bad",
+        "/api/agent-profiles/legacy",
         json={
             "llm_profile_ref": "base",
-            "skills": [
-                {
-                    "name": "leaky",
-                    "content": "x",
-                    # Malformed: mcpServers must be an object, forcing a failure.
-                    "mcp_tools": {"mcpServers": {"svc": {"headers": secret}}},
-                }
-            ],
+            "skills": [{"name": "old", "content": "x"}],
         },
     )
     assert response.status_code == 422
-    assert secret not in response.text
+
+
+def test_save_current_schema_version_rejects_stray_skills_key(client):
+    """A body that claims the current schema version with a stray ``skills`` key
+    is a genuine extra='forbid' violation (422)."""
+    from openhands.sdk.profiles.agent_profile import AGENT_PROFILE_SCHEMA_VERSION
+
+    response = client.post(
+        "/api/agent-profiles/bad",
+        json={
+            "schema_version": AGENT_PROFILE_SCHEMA_VERSION,
+            "llm_profile_ref": "base",
+            "skills": [{"name": "old", "content": "x"}],
+        },
+    )
+    assert response.status_code == 422
 
 
 def test_save_extra_field_returns_422(client):
@@ -348,6 +555,19 @@ def test_get_not_found(client):
     response = client.get("/api/agent-profiles/nonexistent")
     assert response.status_code == 404
     assert "not found" in response.json()["detail"].lower()
+
+
+def test_get_ignores_expose_secrets_header(client, store):
+    """A profile is secret-free at rest (#4017); GET has no ``X-Expose-Secrets``
+    behavior — unlike the LLM ``/api/profiles`` router, the header is simply
+    ignored rather than changing the response."""
+    store.save(OpenHandsAgentProfile(name="p", llm_profile_ref="base"))
+
+    plain = client.get("/api/agent-profiles/p").json()
+    encrypted = client.get(
+        "/api/agent-profiles/p", headers={"X-Expose-Secrets": "encrypted"}
+    ).json()
+    assert plain == encrypted
 
 
 def test_get_corrupted_returns_400(client, temp_agent_profiles_dir):
@@ -496,6 +716,7 @@ def test_seed_preserves_openhands_fields(client):
         json={
             "agent_settings_diff": {
                 "enable_sub_agents": True,
+                "enable_switch_llm_tool": False,
                 "tool_concurrency_limit": 3,
                 "agent_context": {"system_message_suffix": "be terse"},
                 "verification": {
@@ -509,12 +730,40 @@ def test_seed_preserves_openhands_fields(client):
 
     prof = client.get("/api/agent-profiles/default").json()["profile"]
     assert prof["enable_sub_agents"] is True
+    assert prof["enable_switch_llm_tool"] is False
     assert prof["tool_concurrency_limit"] == 3
     assert prof["system_message_suffix"] == "be terse"
+    # The seed disables nothing — the default profile launches with all
+    # discovered skills (deny-list model).
+    assert prof["disabled_skills"] == []
     assert prof["verification"]["critic_enabled"] is True
     assert prof["verification"]["critic_model_name"] == "x-critic"
     # The profile verification is secret-free — no critic_api_key projected.
     assert "critic_api_key" not in prof["verification"]
+
+
+def test_seed_disables_nothing_even_with_inline_global_skills(client):
+    """The seed never freezes the global's skills by name — it sets an empty
+    deny-list, so the migrated default profile launches with all discovered
+    skills. Freezing by name was the #4017 launch-break (an inline global skill
+    absent from the launch catalog would dangle)."""
+    client.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "agent_context": {
+                    "skills": [
+                        {"name": "alpha", "content": "x"},
+                        {"name": "beta", "content": "y"},
+                    ]
+                }
+            }
+        },
+    )
+    client.get("/api/agent-profiles")  # triggers the seed
+
+    prof = client.get("/api/agent-profiles/default").json()["profile"]
+    assert prof["disabled_skills"] == []
 
 
 def test_seed_preserves_acp_fields(client):
@@ -537,121 +786,9 @@ def test_seed_preserves_acp_fields(client):
     assert prof["acp_server"] == "codex"
     assert prof["acp_model"] == "gpt-5.5"
     assert prof["acp_args"] == ["--foo", "--bar"]
-
-
-# ── Cipher: skills[].mcp_tools secret round-trip ────────────────────────────
-
-
-@pytest.fixture
-def secret_key():
-    from base64 import urlsafe_b64encode
-
-    return urlsafe_b64encode(b"a" * 32).decode("ascii")
-
-
-@pytest.fixture
-def cipher(secret_key):
-    from openhands.sdk.utils.cipher import Cipher
-
-    return Cipher(secret_key)
-
-
-@pytest.fixture
-def client_with_cipher(
-    temp_agent_profiles_dir, temp_settings_dir, secret_key, monkeypatch
-):
-    from pydantic import SecretStr
-
-    reset_stores()
-    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(temp_settings_dir))
-    config = Config(
-        static_files_path=None, session_api_keys=[], secret_key=SecretStr(secret_key)
-    )
-    app = create_app(config)
-    with patch(
-        "openhands.agent_server.agent_profiles_router.get_agent_profile_store",
-        lambda: AgentProfileStore(base_dir=temp_agent_profiles_dir),
-    ):
-        yield TestClient(app)
-    reset_stores()
-
-
-def _profile_with_mcp_secret(header_value: str) -> dict:
-    return {
-        "llm_profile_ref": "base",
-        "skills": [
-            {
-                "name": "leaky",
-                "content": "do stuff",
-                "mcp_tools": {
-                    "mcpServers": {
-                        "svc": {
-                            "url": "https://x.test",
-                            "headers": {"Authorization": header_value},
-                        }
-                    }
-                },
-            }
-        ],
-    }
-
-
-def _mcp_auth(profile_payload: dict) -> str:
-    servers = profile_payload["skills"][0]["mcp_tools"]["mcpServers"]
-    return servers["svc"]["headers"]["Authorization"]
-
-
-def test_mcp_tools_secret_encrypted_roundtrip(client_with_cipher, cipher):
-    """GET(encrypted) -> POST -> the secret still decrypts exactly once.
-
-    Without decrypt-incoming-before-save the re-posted token would be encrypted
-    again and the stored value would decrypt to a stale token.
-    """
-    secret = "Bearer ghp_roundtrip_secret"
-
-    created = client_with_cipher.post(
-        "/api/agent-profiles/p", json=_profile_with_mcp_secret(secret)
-    )
-    assert created.status_code == 201
-
-    # GET encrypted: a Fernet token of the ORIGINAL secret (not double-encrypted).
-    enc = client_with_cipher.get(
-        "/api/agent-profiles/p", headers={"X-Expose-Secrets": "encrypted"}
-    ).json()
-    token = _mcp_auth(enc["profile"])
-    assert token != secret
-    assert cipher.decrypt(token).get_secret_value() == secret
-
-    # Re-post the encrypted token (an ordinary client edit round-trip).
-    reposted = client_with_cipher.post(
-        "/api/agent-profiles/p", json=_profile_with_mcp_secret(token)
-    )
-    assert reposted.status_code == 201
-
-    # Plaintext GET returns the original secret -> decrypted exactly once.
-    plain = client_with_cipher.get(
-        "/api/agent-profiles/p", headers={"X-Expose-Secrets": "plaintext"}
-    ).json()
-    assert _mcp_auth(plain["profile"]) == secret
-
-
-def test_mcp_tools_secret_encrypted_at_rest(
-    client_with_cipher, temp_agent_profiles_dir, cipher
-):
-    """A posted plaintext MCP secret is encrypted on disk, never stored raw."""
-    import json
-
-    secret = "Bearer ghp_at_rest_secret"
-    client_with_cipher.post(
-        "/api/agent-profiles/p", json=_profile_with_mcp_secret(secret)
-    )
-
-    raw = json.loads((temp_agent_profiles_dir / "p.json").read_text())
-    stored = raw["skills"][0]["mcp_tools"]["mcpServers"]["svc"]["headers"][
-        "Authorization"
-    ]
-    assert stored != secret
-    assert cipher.decrypt(stored).get_secret_value() == secret
+    # ACP profiles carry no skill-selection field at all.
+    assert "skill_refs" not in prof
+    assert "disabled_skills" not in prof
 
 
 # ── Store errors → HTTP ─────────────────────────────────────────────────────
@@ -667,7 +804,7 @@ def test_list_timeout_returns_503(client, monkeypatch):
 
 
 def test_save_timeout_returns_503(client, monkeypatch):
-    def boom(self, profile, *, cipher=None, max_profiles=None):
+    def boom(self, profile, *, max_profiles=None):
         raise TimeoutError("locked")
 
     monkeypatch.setattr(AgentProfileStore, "save", boom)
@@ -790,6 +927,40 @@ def test_materialize_dangling_mcp_ref(client_with_llm_store, store, llm_store):
     assert body["resolved_settings"] is None
 
 
+def test_materialize_reports_disabled_and_resolved_skills(
+    client_with_llm_store, store, llm_store
+):
+    """The materialize dry-run reports the deny-list and the resolved set
+    (catalog minus disabled). A disabled name absent from the catalog is a no-op
+    and does NOT invalidate the profile — the deny-list can't dangle (#4017)."""
+    from openhands.sdk.skills import Skill
+
+    llm_store.save("base-llm", LLM(model="gpt-4o"), include_secrets=True)
+    store.save(
+        OpenHandsAgentProfile(
+            name="p",
+            llm_profile_ref="base-llm",
+            disabled_skills=["beta", "not-in-catalog"],
+        )
+    )
+
+    with patch(
+        "openhands.agent_server.agent_profiles_router.discover_profile_skills",
+        return_value=[
+            Skill(name="alpha", content="x"),
+            Skill(name="beta", content="y"),
+        ],
+    ):
+        response = client_with_llm_store.post("/api/agent-profiles/p/materialize")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is True
+    assert body["disabled_skills"] == ["beta", "not-in-catalog"]
+    assert body["resolved_skills"] == ["alpha"]
+    assert body["resolved_settings"] is not None
+
+
 def test_materialize_unknown_name_returns_404(client_with_llm_store):
     """Materializing an unknown profile name returns 404."""
     response = client_with_llm_store.post("/api/agent-profiles/ghost/materialize")
@@ -803,7 +974,6 @@ def test_materialize_no_raw_secrets_in_resolved_settings(
 ):
     """resolved_settings must not contain raw API key values."""
     raw_key = "sk-secret-key-should-not-appear"
-    from pydantic import SecretStr
 
     llm_store.save(
         "base-llm",

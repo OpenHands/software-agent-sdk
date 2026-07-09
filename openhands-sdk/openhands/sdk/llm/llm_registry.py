@@ -160,6 +160,21 @@ class LLMRegistry:
         )
         return self._usage_to_llm[usage_id]
 
+    def remove(self, usage_id: str) -> None:
+        """Remove an LLM instance from the registry, if present.
+
+        Unlike :meth:`add` and :meth:`get`, this is a no-op when ``usage_id``
+        is absent, so callers can invalidate a lazily-cached slot without
+        first checking for it.
+
+        Args:
+            usage_id: Usage slot to drop from the registry.
+        """
+        if self._usage_to_llm.pop(usage_id, None) is not None:
+            logger.debug(
+                f"[LLM registry {self.registry_id}]: Removed LLM for usage {usage_id}"
+            )
+
     def list_usage_ids(self) -> list[str]:
         """List all registered usage IDs."""
 

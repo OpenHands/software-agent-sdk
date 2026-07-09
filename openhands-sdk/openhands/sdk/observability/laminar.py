@@ -90,6 +90,9 @@ def maybe_init_laminar():
 
     from lmnr import Instruments, Laminar
 
+    if Laminar.is_initialized():
+        return
+
     base_url = get_env("LMNR_BASE_URL") or None
     force_http = _get_bool_env("LMNR_FORCE_HTTP")
 
@@ -334,6 +337,29 @@ def end_root_span(root: RootSpan | None) -> None:
     if root is None:
         return
     root.end()
+
+
+def start_child_span(
+    root: RootSpan | None,
+    name: str,
+    tags: list[str] | None = None,
+) -> None:
+    """Create and immediately end a child span under a conversation root span."""
+    if root is None or root.span is None:
+        return
+    try:
+        from lmnr import Laminar
+
+        with Laminar.use_span(
+            root.span,
+            record_exception=False,
+            set_status_on_exception=False,
+        ):
+            with Laminar.start_as_current_span(name=name):
+                if tags:
+                    Laminar.set_span_tags(tags)
+    except Exception:
+        logger.debug("Failed to create observability child span", exc_info=True)
 
 
 @contextlib.contextmanager

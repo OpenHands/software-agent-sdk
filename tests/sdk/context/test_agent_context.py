@@ -1,5 +1,7 @@
 """Tests for AgentContext template rendering functionality."""
 
+import re
+
 import pytest
 from pydantic import SecretStr
 
@@ -48,6 +50,26 @@ class TestAgentContext:
 
         with pytest.raises(ValueError, match="Duplicate skill name found: duplicate"):
             AgentContext(skills=[repo_skill1, repo_skill2])
+
+    def test_disabled_skills_drops_named_skill(self):
+        """The disabled_skills deny-list drops the named skill from the context
+        after loading, regardless of source; a name not present is a no-op."""
+        keep = Skill(name="keep", content="k", source="keep.md", trigger=None)
+        drop = Skill(name="drop", content="d", source="drop.md", trigger=None)
+        context = AgentContext(
+            skills=[keep, drop],
+            # "absent" is not among the skills — must be a harmless no-op.
+            disabled_skills=["drop", "absent"],
+        )
+        assert [s.name for s in context.skills] == ["keep"]
+
+    def test_disabled_skills_empty_keeps_all(self):
+        """The default empty deny-list keeps every skill."""
+        a = Skill(name="a", content="a", source="a.md", trigger=None)
+        b = Skill(name="b", content="b", source="b.md", trigger=None)
+        context = AgentContext(skills=[a, b])
+        assert context.disabled_skills == []
+        assert {s.name for s in context.skills} == {"a", "b"}
 
     def test_get_system_message_suffix_no_repo_skills(self):
         """Test system message suffix with no repo skills but with triggered skills."""
@@ -959,13 +981,13 @@ templates.",
         assert result == "2024-03-15T14:30:00+00:00"
 
     def test_get_formatted_datetime_with_datetime_object(self):
-        """Test get_formatted_datetime formats datetime as ISO 8601."""
+        """Datetime objects render to the minute: no seconds or offset."""
         from datetime import datetime
 
-        dt = datetime(2024, 3, 15, 14, 30, 0)
+        dt = datetime(2024, 3, 15, 14, 30, 45)
         context = AgentContext(current_datetime=dt)
         result = context.get_formatted_datetime()
-        assert result == "2024-03-15T14:30:00"
+        assert result == "2024-03-15T14:30"
 
     def test_get_formatted_datetime_with_none(self):
         """Test get_formatted_datetime returns None when current_datetime is None."""
@@ -984,16 +1006,13 @@ templates.",
         # Verify current_datetime is set and is a datetime object
         assert context.current_datetime is not None
         assert isinstance(context.current_datetime, datetime)
-        # Regression for #3438: the default must be timezone-aware (not naive
-        # local time) so the datetime injected into the system prompt is
-        # unambiguous.
+        # The default field value is timezone-aware (the rendered string trims it).
         assert context.current_datetime.tzinfo is not None
-        # The bug surfaced in the rendered value injected into the prompt, not
-        # just the field: get_formatted_datetime() must carry a UTC offset.
+        # Rendered value is "YYYY-MM-DDTHH:MM": no seconds, no UTC offset.
         formatted = context.get_formatted_datetime()
         assert formatted is not None
-        assert "+" in formatted or "-" in formatted.split("T", 1)[1], (
-            f"formatted datetime should carry a UTC offset, got {formatted!r}"
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", formatted), (
+            f"formatted datetime should be YYYY-MM-DDTHH:MM, got {formatted!r}"
         )
         # Verify it's approximately the current time (within 1 second)
         assert before <= context.current_datetime <= after + timedelta(seconds=1)
@@ -1029,10 +1048,11 @@ templates.",
         assert "2024-03-15T14:30:00Z" in result
         assert "<REPO_CONTEXT>" in result
         assert "coding_standards" in result
-        # Datetime should appear before repo context
+        # Datetime renders last in the dynamic block (after repo context) so the
+        # stable dynamic content stays a cache-friendly prefix.
         datetime_pos = result.index("<CURRENT_DATETIME>")
         repo_context_pos = result.index("<REPO_CONTEXT>")
-        assert datetime_pos < repo_context_pos
+        assert datetime_pos > repo_context_pos
 
     def test_get_system_message_suffix_with_datetime_and_secrets(self):
         """Test system message suffix with datetime and secrets."""
@@ -1090,13 +1110,13 @@ templates.",
         """Test system message suffix with a datetime object."""
         from datetime import datetime
 
-        dt = datetime(2024, 3, 15, 14, 30, 0)
+        dt = datetime(2024, 3, 15, 14, 30, 45)
         context = AgentContext(current_datetime=dt)
         result = context.get_system_message_suffix()
 
         assert result is not None
         assert "<CURRENT_DATETIME>" in result
-        assert "The current date and time is: 2024-03-15T14:30:00" in result
+        assert "The current date and time is: 2024-03-15T14:30\n" in result
 
 
 def test_agent_context_secrets_raw_strings_redacted_by_default():

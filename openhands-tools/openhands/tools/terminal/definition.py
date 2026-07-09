@@ -2,7 +2,7 @@
 
 import os
 import platform
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field
@@ -288,6 +288,8 @@ class TerminalTool(ToolDefinition[TerminalAction, TerminalObservation]):
         terminal_type: Literal["tmux", "subprocess", "powershell"] | None = None,
         shell_path: str | None = None,
         executor: ToolExecutor | None = None,
+        *,
+        env: Mapping[str, str] | None = None,
     ) -> Sequence["TerminalTool"]:
         """Initialize TerminalTool with executor parameters.
 
@@ -305,6 +307,9 @@ class TerminalTool(ToolDefinition[TerminalAction, TerminalObservation]):
             shell_path: Path to the shell binary. On Unix this applies to the
                        subprocess backend; on Windows it can point to a
                        PowerShell executable.
+            env: Extra environment variables to add to the terminal session.
+                 These are client-controlled session settings and are not part
+                 of the LLM-facing TerminalAction schema.
         """
         # Import here to avoid circular imports
         from openhands.tools.terminal.impl import TerminalExecutor
@@ -321,6 +326,7 @@ class TerminalTool(ToolDefinition[TerminalAction, TerminalObservation]):
                 no_change_timeout_seconds=no_change_timeout_seconds,
                 terminal_type=terminal_type,
                 shell_path=shell_path,
+                env=env,
                 full_output_save_dir=conv_state.env_observation_persistence_dir,
             )
 

@@ -16,6 +16,8 @@ from pydantic import (
 )
 
 from openhands.sdk.context.prompts import render_template
+from openhands.sdk.context.prompts.presets import create_registry
+from openhands.sdk.context.prompts.section import PromptContext
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
@@ -41,8 +43,8 @@ PROMPT_DIR = pathlib.Path(__file__).parent / "prompts" / "templates"
 
 
 class ResolvedDynamicData(NamedTuple):
-    """Dynamic-tier inputs resolved once, shared by the legacy ``.j2`` renderer and
-    the section registry (skills gated by model family, secrets merged)."""
+    """Dynamic-tier inputs resolved once, fed into the section registry
+    (skills gated by model family, secrets merged)."""
 
     repo_skills: list[Skill]
     available_skills_prompt: str
@@ -116,7 +118,8 @@ class AgentContext(BaseModel):
         default_factory=list,
         description=(
             "Marketplace registrations for plugin resolution. Registrations with "
-            "auto_load=True are resolved by LocalConversation at startup."
+            "auto_load=True or a list of plugin names are resolved by "
+            "LocalConversation at startup."
         ),
         json_schema_extra={"acp_compatible": True},
     )
@@ -136,6 +139,18 @@ class AgentContext(BaseModel):
         ),
         json_schema_extra={"acp_compatible": True},
     )
+    disabled_skills: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of skills to EXCLUDE from this context — a deny-list applied "
+            "after every skill source is loaded (auto-loaded user/public, "
+            "explicit, and lazily-loaded project skills). A listed name absent "
+            "from the loaded set is a harmless no-op. [] (the default) keeps "
+            "every skill. This is the single, drift-tolerant skill-selection "
+            "mechanism (agent profiles set it from their own deny-list; #4017)."
+        ),
+        json_schema_extra={"acp_compatible": True},
+    )
     secrets: Mapping[str, SecretValue] | None = Field(
         default=None,
         description=(
@@ -147,8 +162,8 @@ class AgentContext(BaseModel):
         json_schema_extra={"acp_compatible": True},
     )
     current_datetime: datetime | str | None = Field(
-        # Timezone-aware local "now" so the value injected into the system prompt
-        # carries a UTC offset instead of an ambiguous naive local time (#3438).
+        # Timezone-aware local "now"; get_formatted_datetime renders it to the
+        # minute for the prompt.
         default_factory=lambda: datetime.now().astimezone(),
         description=(
             "Current date and time information to provide to the agent. "
@@ -215,29 +230,35 @@ class AgentContext(BaseModel):
 
     @model_validator(mode="after")
     def _load_auto_skills(self):
-        """Load user and/or legacy public skills if enabled."""
+        """Load user/legacy-public skills if enabled, then apply ``disabled_skills``."""
         # Any marketplace registration opts the context out of the legacy
         # public-skills path, even when the registration is resolution-only.
         include_public = self.load_public_skills and not self.registered_marketplaces
-        if not self.load_user_skills and not include_public:
-            return self
+        if self.load_user_skills or include_public:
+            auto_skills = load_available_skills(
+                work_dir=None,
+                include_user=self.load_user_skills,
+                include_project=False,
+                include_public=include_public,
+                marketplace_path=self.marketplace_path,
+            )
 
-        auto_skills = load_available_skills(
-            work_dir=None,
-            include_user=self.load_user_skills,
-            include_project=False,
-            include_public=include_public,
-            marketplace_path=self.marketplace_path,
-        )
+            # Explicit skills are authoritative; auto-loaded skills only fill gaps.
+            explicit_names = {skill.name for skill in self.skills}
+            for name in auto_skills:
+                if name in explicit_names:
+                    logger.debug(
+                        f"Skipping auto-loaded skill '{name}' "
+                        "(already in explicit skills)"
+                    )
+            self.skills = merge_skills_by_name(self.skills, auto_skills.values())
 
-        # Explicit skills are authoritative; auto-loaded skills only fill gaps.
-        explicit_names = {skill.name for skill in self.skills}
-        for name in auto_skills:
-            if name in explicit_names:
-                logger.debug(
-                    f"Skipping auto-loaded skill '{name}' (already in explicit skills)"
-                )
-        self.skills = merge_skills_by_name(self.skills, auto_skills.values())
+        # Deny-list: drop disabled skills from whatever ended up loaded (explicit
+        # + auto). A disabled name that isn't present is a harmless no-op — this
+        # is the drift-tolerant selection model that replaced allow-list refs.
+        if self.disabled_skills:
+            disabled = set(self.disabled_skills)
+            self.skills = [s for s in self.skills if s.name not in disabled]
         return self
 
     def get_secret_infos(self) -> list[dict[str, str | None]]:
@@ -263,13 +284,17 @@ class AgentContext(BaseModel):
 
         Returns:
             Formatted datetime string, or None if current_datetime is not set.
-            If current_datetime is a datetime object, it's formatted as ISO 8601.
+            If current_datetime is a datetime object, it's formatted as
+            "YYYY-MM-DDTHH:MM" (no seconds, microseconds, or UTC offset).
             If current_datetime is already a string, it's returned as-is.
         """
         if self.current_datetime is None:
             return None
         if isinstance(self.current_datetime, datetime):
-            return self.current_datetime.isoformat()
+            # Local wall-clock to the minute: drop seconds, microseconds, offset.
+            return self.current_datetime.replace(tzinfo=None).isoformat(
+                timespec="minutes"
+            )
         return self.current_datetime
 
     def _partition_skills(self) -> tuple[list[Skill], list[Skill]]:
@@ -289,6 +314,8 @@ class AgentContext(BaseModel):
         available_skills: list[Skill] = []
         for s in self.skills:
             if s.is_agentskills_format or s.trigger is not None:
+                # Path rules force disable_model_invocation (Skill validator), so
+                # they fall out here — injected only on file-touch, never listed.
                 if not s.disable_model_invocation:
                     available_skills.append(s)
             else:
@@ -327,27 +354,16 @@ class AgentContext(BaseModel):
         data = self._resolve_dynamic_data(
             llm_model, llm_model_canonical, additional_secret_infos
         )
-        has_content = (
-            data.repo_skills
-            or self.system_message_suffix
-            or data.secret_infos
-            or data.available_skills_prompt
-            or data.formatted_datetime
+        ctx = PromptContext(
+            now=data.formatted_datetime,
+            repo_skills=tuple((s.name, s.content) for s in data.repo_skills),
+            available_skills_prompt=data.available_skills_prompt or None,
+            custom_suffix=self.system_message_suffix or None,
+            secret_infos=tuple(
+                (info["name"] or "", info["description"]) for info in data.secret_infos
+            ),
         )
-        if has_content:
-            formatted_text = render_template(
-                prompt_dir=str(PROMPT_DIR),
-                template_name="system_message_suffix.j2",
-                repo_skills=data.repo_skills,
-                system_message_suffix=self.system_message_suffix or "",
-                secret_infos=data.secret_infos,
-                available_skills_prompt=data.available_skills_prompt,
-                current_datetime=data.formatted_datetime,
-            ).strip()
-            return formatted_text
-        elif self.system_message_suffix and self.system_message_suffix.strip():
-            return self.system_message_suffix.strip()
-        return None
+        return create_registry().build(ctx).dynamic
 
     def _resolve_dynamic_data(
         self,
@@ -433,9 +449,10 @@ class AgentContext(BaseModel):
         this adapter only emits prompt-only context.  Unsupported AgentContext
         fields are rejected by :meth:`validate_acp_compatibility`.
 
-        The rendering reuses :meth:`get_system_message_suffix` with the same
-        ``system_message_suffix.j2`` template so that ACP agents receive the
-        identical prompt layout as the regular agent.  This includes the
+        The rendering reuses :meth:`get_system_message_suffix`, which assembles
+        the dynamic-tier sections via the shared prompt registry, so that ACP
+        agents receive the identical prompt layout as the regular agent.  This
+        includes the
         ``<CUSTOM_SECRETS>`` block when secrets are present, informing the ACP
         subprocess which environment variables are available.  The actual secret
         values are injected into the subprocess environment by
@@ -455,7 +472,8 @@ class AgentContext(BaseModel):
         """
         self.validate_acp_compatibility()
         # No model-specific skill filtering for ACP — delegate to the shared
-        # renderer which also renders the <CUSTOM_SECRETS> block from secrets.
+        # builder, whose dynamic-tier sections also emit the <CUSTOM_SECRETS>
+        # block from secrets.
         return self.get_system_message_suffix(
             additional_secret_infos=additional_secret_infos
         )
@@ -518,3 +536,48 @@ class AgentContext(BaseModel):
         if user_message_suffix:
             return TextContent(text=user_message_suffix), []
         return None
+
+    def get_tool_use_suffix(
+        self, file_path: str, skip_skill_names: list[str]
+    ) -> tuple[TextContent, list[str]] | None:
+        """Match ``PathTrigger`` skills ("rules") against a touched file path.
+
+        The path-based counterpart of :meth:`get_user_message_suffix`. Returns
+        the rendered rule content and the rules that fired, or None.
+        ``skip_skill_names`` suppresses rules already injected (dedup).
+        """
+        if not file_path:
+            return None
+
+        recalled_knowledge: list[SkillKnowledge] = []
+        for skill in self.skills:
+            if not isinstance(skill, Skill) or skill.name in skip_skill_names:
+                continue
+            if pattern := skill.match_path_trigger(file_path):
+                logger.info(
+                    "Rule '%s' triggered by path match '%s' for '%s'",
+                    skill.name,
+                    pattern,
+                    file_path,
+                )
+                recalled_knowledge.append(
+                    SkillKnowledge(
+                        name=skill.name,
+                        trigger=pattern,
+                        content=skill.content,
+                        location=skill.source,
+                    )
+                )
+
+        if not recalled_knowledge:
+            return None
+
+        blocks = [
+            "<EXTRA_INFO>\n"
+            "The following rule applies because a file you touched matches "
+            f'"{k.trigger}". Follow it when working with matching files.\n'
+            + (f"Rule location: {k.location}\n" if k.location else "")
+            + f"\n{k.content}\n</EXTRA_INFO>"
+            for k in recalled_knowledge
+        ]
+        return TextContent(text="\n".join(blocks)), [k.name for k in recalled_knowledge]

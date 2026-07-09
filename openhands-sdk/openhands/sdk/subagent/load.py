@@ -115,6 +115,51 @@ def _load_agents_from_dirs(dirs: list[Path]) -> list[AgentDefinition]:
     return result
 
 
+def discover_agents(
+    project_dir: str | Path | None,
+    *,
+    include_project: bool = True,
+    include_user: bool = True,
+) -> list[AgentDefinition]:
+    """Discover project/user file-based agents without registering them.
+
+    Non-mutating counterpart to ``register_file_agents``: returns the discovered
+    definitions with ``level``/``source`` set, leaving the global registry
+    untouched (registry mutation stays conversation-scoped). Built-ins live in
+    ``openhands-tools`` (not an SDK dependency), so callers wanting them add
+    ``discover_builtin_agents`` separately.
+
+    Precedence matches ``register_file_agents``: project wins over user.
+
+    Args:
+        project_dir: Project directory to scan, or None to skip project agents.
+        include_project: Include project-level agents.
+        include_user: Include user-level agents.
+
+    Returns:
+        Definitions de-duplicated by name (first wins).
+    """
+    discovered: list[AgentDefinition] = []
+    if include_project and project_dir is not None:
+        discovered.extend(
+            agent_def.model_copy(update={"level": "project"})
+            for agent_def in load_project_agents(project_dir)
+        )
+    if include_user:
+        discovered.extend(
+            agent_def.model_copy(update={"level": "user"})
+            for agent_def in load_user_agents()
+        )
+
+    seen_names: set[str] = set()
+    result: list[AgentDefinition] = []
+    for agent_def in discovered:
+        if agent_def.name not in seen_names:
+            seen_names.add(agent_def.name)
+            result.append(agent_def)
+    return result
+
+
 def load_agents_from_dir(agents_dir: Path) -> list[AgentDefinition]:
     """Scans a directory for Markdown-based agent definitions.
 

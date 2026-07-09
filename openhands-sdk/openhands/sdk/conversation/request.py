@@ -25,6 +25,7 @@ from openhands.sdk.agent.agent import Agent as Agent
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.types import (
     ConversationObservabilityMetadata,
+    ConversationObservabilitySpanName,
     ConversationObservabilityTags,
     ConversationTags,
 )
@@ -211,6 +212,14 @@ class StartConversationRequest(BaseModel):
     observability_tags: ConversationObservabilityTags = Field(
         default_factory=list,
         description="Tags to attach to the conversation root observability span.",
+    )
+    observability_span_name: ConversationObservabilitySpanName = Field(
+        default="conversation",
+        description=(
+            "Optional named child span to emit under the conversation root. Use "
+            "stable, low-cardinality names because observability backends may use "
+            "span names for grouping or signal routing."
+        ),
     )
     autotitle: bool = Field(
         default=True,

@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 from pydantic import ValidationError
 
 from openhands.agent_server.conversation_lease import (
+    DEFAULT_LEASE_TTL_SECONDS,
     ConversationLease,
     ConversationOwnershipLostError,
 )
@@ -54,6 +55,7 @@ from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.llm.streaming import LLMStreamChunk
+from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
@@ -80,7 +82,9 @@ class EventService:
     stored: StoredConversation
     conversations_dir: Path
     cipher: Cipher | None = None
+    mcp_tool_provider: MCPToolProvider | None = None
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
+    lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
     _conversation: LocalConversation | None = field(default=None, init=False)
     _pub_sub: PubSub[Event] = field(
         default_factory=lambda: PubSub[Event](max_subscribers=50), init=False
@@ -577,21 +581,26 @@ class EventService:
         # conversation's synchronous FIFOLock cannot block the server event loop.
         if self._conversation:
             state_update_event = await self._create_state_update_event()
+        else:
+            state_update_event = ConversationStateUpdateEvent(
+                key="execution_status",
+                value=ConversationExecutionStatus.IDLE,
+            )
 
-            try:
-                await asyncio.wait_for(
-                    subscriber(state_update_event),
-                    timeout=INITIAL_STATE_PUSH_TIMEOUT_SECONDS,
-                )
-            except TimeoutError:
-                # Subscriber stays registered; only the initial-state push is
-                # dropped. Subsequent publishes go through pub_sub and may
-                # still block there if the subscriber remains wedged.
-                logger.warning(
-                    f"Initial state push to subscriber {subscriber_id} timed "
-                    f"out after {INITIAL_STATE_PUSH_TIMEOUT_SECONDS}s."
-                )
-            # Non-timeout errors propagate to caller (e.g. webhook failures).
+        try:
+            await asyncio.wait_for(
+                subscriber(state_update_event),
+                timeout=INITIAL_STATE_PUSH_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            # Subscriber stays registered; only the initial-state push is
+            # dropped. Subsequent publishes go through pub_sub and may
+            # still block there if the subscriber remains wedged.
+            logger.warning(
+                f"Initial state push to subscriber {subscriber_id} timed "
+                f"out after {INITIAL_STATE_PUSH_TIMEOUT_SECONDS}s."
+            )
+        # Non-timeout errors propagate to caller (e.g. webhook failures).
 
         return subscriber_id
 
@@ -605,10 +614,9 @@ class EventService:
         from callbacks that may run in different threads. Events are emitted through
         the conversation's normal event flow to ensure they are persisted.
         """
-        if self._main_loop and self._main_loop.is_running() and self._conversation:
-            # Capture conversation reference for closure
-            conversation = self._conversation
-
+        main_loop = self._main_loop
+        conversation = self._conversation
+        if main_loop and main_loop.is_running() and conversation:
             # Wrap _on_event with lock acquisition to ensure thread-safe access
             # to conversation state and event log during concurrent operations
             def locked_on_event():
@@ -617,7 +625,7 @@ class EventService:
 
             # Run the locked callback in an executor to ensure the event is
             # both persisted and sent to WebSocket subscribers
-            self._main_loop.run_in_executor(None, locked_on_event)
+            main_loop.run_in_executor(None, locked_on_event)
 
     def _setup_llm_log_streaming(self, agent: AgentBase) -> None:
         """Configure LLM log callbacks to stream logs via events."""
@@ -633,13 +641,16 @@ class EventService:
                 filename: str, log_data: str, uid=usage_id, model=model_name
             ) -> None:
                 """Callback to emit LLM completion logs as events."""
-                event = LLMCompletionLogEvent(
-                    filename=filename,
-                    log_data=log_data,
-                    model_name=model,
-                    usage_id=uid,
-                )
-                self._emit_event_from_thread(event)
+                try:
+                    event = LLMCompletionLogEvent(
+                        filename=filename,
+                        log_data=log_data,
+                        model_name=model,
+                        usage_id=uid,
+                    )
+                    self._emit_event_from_thread(event)
+                except Exception:
+                    logger.exception("Failed to emit LLM completion log event")
 
             llm.telemetry.set_log_completions_callback(log_callback)
 
@@ -731,12 +742,16 @@ class EventService:
 
         # self.stored contains an Agent configuration we can instantiate
         self.conversation_dir.mkdir(parents=True, exist_ok=True)
-        self._lease = ConversationLease(
-            conversation_dir=self.conversation_dir,
-            owner_instance_id=self.owner_instance_id,
-        )
-        lease_claim = self._lease.claim()
-        self._lease_generation = lease_claim.generation
+        # lease_ttl_seconds=0 disables leasing for single-instance deployments
+        # where shared-storage stale leases would otherwise block pod restarts.
+        if self.lease_ttl_seconds > 0:
+            self._lease = ConversationLease(
+                conversation_dir=self.conversation_dir,
+                owner_instance_id=self.owner_instance_id,
+                ttl_seconds=self.lease_ttl_seconds,
+            )
+            lease_claim = self._lease.claim()
+            self._lease_generation = lease_claim.generation
         workspace = self.stored.workspace
         assert isinstance(workspace, LocalWorkspace)
         working_dir = Path(workspace.working_dir)
@@ -823,6 +838,8 @@ class EventService:
             user_id=self.stored.user_id,
             observability_metadata=self.stored.observability_metadata,
             observability_tags=self.stored.observability_tags,
+            observability_span_name=self.stored.observability_span_name,
+            mcp_tool_provider=self.mcp_tool_provider,
         )
 
         conversation.set_confirmation_policy(self.stored.confirmation_policy)
@@ -854,6 +871,11 @@ class EventService:
         state = self._conversation.state
         if state.execution_status == ConversationExecutionStatus.RUNNING:
             state.execution_status = ConversationExecutionStatus.ERROR
+            # Crash recovery scans the full log, not the active branch: the
+            # process may have died between writing an event file and persisting
+            # the advanced HEAD, so the leaf can lag the on-disk events. (Remote
+            # branching is unsupported — #3749 — so there are no abandoned
+            # branches to exclude here anyway.)
             unmatched_actions = ConversationState.get_unmatched_actions(state.events)
             if unmatched_actions:
                 first_action = unmatched_actions[0]
@@ -1360,6 +1382,13 @@ class EventService:
             None, self._conversation.set_security_analyzer, security_analyzer
         )
 
+    async def load_plugin(self, plugin_ref: str) -> None:
+        """Load a marketplace plugin into the active conversation."""
+        if self._conversation is None:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._conversation.load_plugin, plugin_ref)
+
     async def switch_acp_model(self, model: str) -> None:
         """Switch the model on an ACP conversation.
 
@@ -1488,6 +1517,22 @@ class EventService:
 
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._conversation.condense)
+
+    async def navigate_to(self, event_id: str | None) -> None:
+        """Move the conversation HEAD to an existing event (in-place re-root).
+
+        Delegates to LocalConversation in an executor to avoid blocking the event loop.
+
+        Raises:
+            ValueError: If ``event_id`` is not ``None`` and not in the conversation.
+        """
+        if not self._conversation:
+            raise ValueError("inactive_service")
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, self._conversation.navigate_to, event_id
+        )
 
     def _get_agent_final_response_sync(self) -> str:
         """Extract the agent's final response from the conversation events.

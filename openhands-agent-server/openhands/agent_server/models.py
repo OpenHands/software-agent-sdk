@@ -92,6 +92,21 @@ class StoredConversation(StartConversationRequest):
     metrics: MetricsSnapshot | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+    forked_from_conversation_id: OpenHandsUUID | None = Field(
+        default=None,
+        description=(
+            "ID of the conversation this one was forked from. ``None`` for "
+            "conversations created directly (not via fork)."
+        ),
+    )
+    forked_from_event_id: str | None = Field(
+        default=None,
+        description=(
+            "The ``from_event_id`` branch point this conversation was forked at. "
+            "``None`` for conversations not created via fork, or for "
+            "whole-conversation forks (no branch slice)."
+        ),
+    )
     launched_agent_profile: LaunchedAgentProfile | None = Field(
         default=None,
         description=(
@@ -166,6 +181,15 @@ class _ConversationInfoBase(BaseModel):
             "hook-blocked checks are skipped (legacy conversations)."
         ),
     )
+    leaf_event_id: str | None = Field(
+        default=None,
+        description=(
+            "HEAD of the conversation tree: the parent of the next appended "
+            "event. ``None`` means an empty tree (or, for pre-feature "
+            "conversations, the linear tail). Moving it via ``navigate`` "
+            "re-roots the active branch the agent runs on."
+        ),
+    )
     stats: ConversationStats = Field(
         default_factory=ConversationStats,
         description="Conversation statistics for tracking LLM metrics",
@@ -194,6 +218,22 @@ class _ConversationInfoBase(BaseModel):
     metrics: MetricsSnapshot | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+    # Plain ``UUID`` (not ``OpenHandsUUID``) so it JSON-serializes dashed, exactly
+    # like the ``id`` field above — clients must be able to correlate the two.
+    forked_from_conversation_id: UUID | None = Field(
+        default=None,
+        description=(
+            "ID of the conversation this one was forked from. ``None`` for "
+            "conversations created directly (not via fork)."
+        ),
+    )
+    forked_from_event_id: str | None = Field(
+        default=None,
+        description=(
+            "Event ID this conversation was forked at. ``None`` for non-forked "
+            "conversations or whole-conversation forks."
+        ),
+    )
 
     tags: ConversationTags = Field(
         default_factory=dict,
@@ -466,6 +506,27 @@ class ForkConversationRequest(BaseModel):
         description=(
             "If true, cost/token stats start fresh on the fork. "
             "If false, metrics are copied from the source."
+        ),
+    )
+    from_event_id: str | None = Field(
+        default=None,
+        description=(
+            "If set, fork only the branch up to and including this event and "
+            "set the fork's HEAD there. If null (default), copy the whole "
+            "conversation."
+        ),
+    )
+
+
+class NavigateConversationRequest(BaseModel):
+    """Payload to move a conversation's HEAD to an existing event."""
+
+    event_id: str | None = Field(
+        default=None,
+        description=(
+            "Event to make the new HEAD, re-rooting the active branch the agent "
+            "runs on. All branches stay on disk; this creates no new "
+            "conversation. ``None`` selects the empty tree."
         ),
     )
 

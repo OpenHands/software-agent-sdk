@@ -34,11 +34,17 @@ Policies enforced:
      property-removal artifacts for fields that still exist on one union member;
      this script downgrades those artifacts to informational notices.
 
-4) No in-place contract breakage
+4) Additive response property type widening is allowed with release notes
+   - If a response property's old type remains valid and the schema only adds more
+     accepted types, the check passes and the workflow marks the PR
+     release-note-required.
+
+5) No in-place contract breakage
    - Breaking REST contract changes that are not removals of previously-deprecated
-     operations/properties or additive oneOf expansions fail the check. REST clients
-     need 5 minor releases of runway, so incompatible replacements must ship
-     additively or behind a versioned contract until the scheduled removal version.
+     operations/properties, additive oneOf expansions, or additive response property
+     type widenings fail the check. REST clients need 5 minor releases of runway, so
+     incompatible replacements must ship additively or behind a versioned contract
+     until the scheduled removal version.
 
 If the baseline release schema can't be generated (e.g., missing tag / repo issues),
 the script emits a warning and exits successfully to avoid flaky CI.
@@ -47,13 +53,16 @@ the script emits a warning and exits successfully to avoid flaky CI.
 from __future__ import annotations
 
 import ast
+import copy
 import json
+import os
 import re
 import subprocess
 import sys
 import tempfile
 import tomllib
 import urllib.request
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from packaging import version as pkg_version
@@ -80,6 +89,19 @@ HTTP_METHODS = {
     "trace",
 }
 PUBLIC_REST_PATH_PREFIX = "/api/"
+AGENT_SERVER_REST_API_BASE_REF_ENV = "AGENT_SERVER_REST_API_BASE_REF"
+RESPONSE_TYPE_WIDENING_REPORT_ENV = "AGENT_SERVER_REST_TYPE_WIDENING_REPORT_PATH"
+
+
+@dataclass(frozen=True)
+class ResponsePropertyTypeWidening:
+    property_path: str
+    added_types: str
+    media_type: str
+    response_status: str
+    text: str
+
+
 ROUTE_DECORATOR_NAMES = HTTP_METHODS | {"api_route"}
 OPENAPI_PROGRAM = """
 import json
@@ -564,6 +586,37 @@ _RESPONSE_ENUM_VALUE_ADDED_IDS = frozenset(
         "response-write-only-property-enum-value-added",
     }
 )
+_RESPONSE_PROPERTY_TYPE_WIDENING_RE = re.compile(
+    r"response property `(?P<property_path>[^`]+)` list-of-types was widened "
+    r"by adding types `(?P<added_types>[^`]+)` to media type "
+    r"`(?P<media_type>[^`]+)` of response `(?P<response_status>[^`]+)`"
+)
+
+
+def _parse_response_property_type_widening(
+    change: dict,
+) -> ResponsePropertyTypeWidening | None:
+    text = str(change.get("text", ""))
+    match = _RESPONSE_PROPERTY_TYPE_WIDENING_RE.search(text)
+    if match is None:
+        return None
+    return ResponsePropertyTypeWidening(text=text, **match.groupdict())
+
+
+def _is_additive_response_property_type_widening(change: dict) -> bool:
+    return _parse_response_property_type_widening(change) is not None
+
+
+def _response_type_widening_report_items(
+    changes: list[dict],
+) -> list[ResponsePropertyTypeWidening]:
+    items: list[ResponsePropertyTypeWidening] = []
+    for change in changes:
+        widening = _parse_response_property_type_widening(change)
+        if widening is not None:
+            items.append(widening)
+    return items
+
 
 # Response properties that are known extensible discriminated-union discriminators
 # and may therefore grow new enum values additively. Adding a HookType value
@@ -762,6 +815,55 @@ def _run_oasdiff_breakage_check(
     return breaking_changes, result.returncode
 
 
+def _find_response_property_type_widenings(
+    prev_schema: dict,
+    current_schema: dict,
+) -> list[ResponsePropertyTypeWidening]:
+    previous = _normalize_openapi_for_oasdiff(copy.deepcopy(prev_schema))
+    current = _normalize_openapi_for_oasdiff(copy.deepcopy(current_schema))
+    with tempfile.TemporaryDirectory(prefix="oasdiff-type-widening-") as tmp:
+        tmp_path = Path(tmp)
+        prev_spec_file = tmp_path / "prev_spec.json"
+        cur_spec_file = tmp_path / "cur_spec.json"
+        prev_spec_file.write_text(json.dumps(previous, indent=2))
+        cur_spec_file.write_text(json.dumps(current, indent=2))
+        breaking_changes, _ = _run_oasdiff_breakage_check(prev_spec_file, cur_spec_file)
+    return _response_type_widening_report_items(breaking_changes)
+
+
+def _collect_response_property_type_widenings_since_ref(
+    base_ref: str,
+    current_schema: dict,
+) -> list[ResponsePropertyTypeWidening] | None:
+    base_schema = _generate_openapi_for_git_ref(base_ref)
+    if base_schema is None:
+        return None
+    base_schema = _filter_public_rest_openapi(base_schema)
+    return _find_response_property_type_widenings(base_schema, current_schema)
+
+
+def _write_response_type_widening_report(
+    changes: list[ResponsePropertyTypeWidening],
+    *,
+    changes_since_base: list[ResponsePropertyTypeWidening] | None = None,
+) -> None:
+    report_path = os.environ.get(RESPONSE_TYPE_WIDENING_REPORT_ENV, "").strip()
+    if not report_path:
+        return
+
+    report = {
+        "additive_response_property_type_widenings": [
+            asdict(change) for change in changes
+        ]
+    }
+    if changes_since_base is not None:
+        report["additive_response_property_type_widenings_since_base"] = [
+            asdict(change) for change in changes_since_base
+        ]
+
+    Path(report_path).write_text(json.dumps(report, indent=2) + "\n")
+
+
 def main() -> int:
     current_version = _read_version_from_pyproject(AGENT_SERVER_PYPROJECT)
     baseline_version = _get_baseline_version(PYPI_DISTRIBUTION, current_version)
@@ -807,6 +909,17 @@ def main() -> int:
             prev_spec_file, cur_spec_file
         )
 
+    response_type_widenings: list[ResponsePropertyTypeWidening] = []
+    response_type_widenings_since_base: list[ResponsePropertyTypeWidening] | None = None
+    report_path = os.environ.get(RESPONSE_TYPE_WIDENING_REPORT_ENV, "").strip()
+    base_ref = os.environ.get(AGENT_SERVER_REST_API_BASE_REF_ENV, "").strip()
+    if report_path and base_ref:
+        response_type_widenings_since_base = (
+            _collect_response_property_type_widenings_since_ref(
+                base_ref, current_schema
+            )
+        )
+
     if not breaking_changes:
         if exit_code == 0:
             print("No breaking changes detected.")
@@ -815,6 +928,11 @@ def main() -> int:
                 f"oasdiff returned exit code {exit_code} but no breaking changes "
                 "in JSON format. There may be warnings only."
             )
+        _write_response_type_widening_report(
+            response_type_widenings,
+            changes_since_base=response_type_widenings_since_base,
+        )
+
     else:
         (
             removed_operations,
@@ -842,6 +960,20 @@ def main() -> int:
             for change in other_breaking_changes
             if not _is_union_type_change_artifact(change)
         ]
+        accepted_response_type_widening_changes = [
+            change
+            for change in other_breaking_changes
+            if _is_additive_response_property_type_widening(change)
+        ]
+        other_breaking_changes = [
+            change
+            for change in other_breaking_changes
+            if not _is_additive_response_property_type_widening(change)
+        ]
+        response_type_widenings = _response_type_widening_report_items(
+            accepted_response_type_widening_changes
+        )
+
         accepted_cloud_proxy_removals = [
             operation
             for operation in removed_operations
@@ -908,12 +1040,23 @@ def main() -> int:
                     "artifact(s) caused by union widening"
                 )
 
+        if response_type_widenings:
+            print(
+                f"\n::notice title={PYPI_DISTRIBUTION} REST API::"
+                "Additive response property type widenings detected. The previous "
+                "type remains valid, so these changes are accepted with a "
+                "release-note-required label."
+            )
+            for item in response_type_widenings:
+                print(f"  - {item.text}")
+
         if other_breaking_changes:
             print(
                 "::error "
                 f"title={PYPI_DISTRIBUTION} REST API::Detected breaking REST API "
                 "changes other than removing previously-deprecated operations/"
-                "properties or additive response oneOf expansions. "
+                "properties, additive response oneOf expansions, or additive "
+                "response property type widenings. "
                 "REST contract changes must preserve compatibility for 5 minor "
                 "releases; keep the old contract available until its scheduled "
                 "removal version."
@@ -932,12 +1075,17 @@ def main() -> int:
         for text in breaking_changes:
             print(f"- {text.get('text', str(text))}")
 
+        _write_response_type_widening_report(
+            response_type_widenings,
+            changes_since_base=response_type_widenings_since_base,
+        )
+
         if not (removal_errors or property_removal_errors or other_breaking_changes):
             print(
                 "Breaking changes are limited to previously-deprecated operations "
                 "or properties whose scheduled removal versions have been reached, "
-                "the accepted POST /api/cloud-proxy removal, and/or additive "
-                "response oneOf expansions."
+                "the accepted POST /api/cloud-proxy removal, additive response "
+                "oneOf expansions, and/or additive response property type widenings."
             )
         else:
             return 1

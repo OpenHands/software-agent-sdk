@@ -40,6 +40,19 @@ def test_is_context_window_exceeded_via_text():
     assert is_context_window_exceeded(e2) is True
 
 
+def test_is_context_window_exceeded_llama_cpp_token_counts():
+    error = BadRequestError(
+        (
+            "OpenAIException - request (138229 tokens) exceeds the available "
+            "context size (133376 tokens), try increasing it"
+        ),
+        MODEL,
+        PROVIDER,
+    )
+
+    assert is_context_window_exceeded(error) is True
+
+
 def test_is_context_window_exceeded_minimax_api_connection_error():
     """Minimax provider wraps context window errors in APIConnectionError."""
     minimax_error = APIConnectionError(
