@@ -10,6 +10,7 @@ import time
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import quote
 from uuid import uuid4
 
 import pytest
@@ -883,6 +884,40 @@ def test_archive_non_git_directory_has_no_repo_metadata_headers(client, workspac
     assert "x-archive-repo-remote" not in resp.headers
     assert "x-archive-branch" not in resp.headers
     assert "x-archive-head-commit" not in resp.headers
+
+
+def test_archive_remote_with_embedded_control_char_is_percent_encoded(client, tmp_path):
+    # A remote URL is free-form text (unlike a ref name), so it can carry a
+    # literal control character straight into what becomes a header value.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init"], repo)
+    _git(["config", "remote.origin.url", "https://example.com/repo\nline-two"], repo)
+    _git(["commit", "--allow-empty", "-m", "init"], repo)
+
+    resp = client.get(
+        "/api/file/archive", params={"path": str(repo), "format": "tar.gz"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    remote = resp.headers["x-archive-repo-remote"]
+    assert "\n" not in remote
+    assert remote == quote("https://example.com/repo\nline-two", safe="")
+
+
+def test_archive_non_ascii_branch_is_percent_encoded_not_dropped(client, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init"], repo)
+    _git(["commit", "--allow-empty", "-m", "init"], repo)
+    _git(["checkout", "-b", "café-branch"], repo)
+
+    resp = client.get(
+        "/api/file/archive", params={"path": str(repo), "format": "tar.gz"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["x-archive-branch"] == quote("café-branch", safe="")
 
 
 # =============================================================================

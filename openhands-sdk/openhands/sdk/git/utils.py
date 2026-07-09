@@ -18,6 +18,23 @@ logger = logging.getLogger(__name__)
 GIT_EMPTY_TREE_HASH = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 
+def run_git_subprocess(
+    args: list[str],
+    cwd: str | Path | None,
+    timeout: int,
+) -> subprocess.CompletedProcess[str]:
+    """Run a subprocess with the capture/decode settings all git callers need."""
+    return subprocess.run(
+        args,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        errors="replace",
+        check=False,
+        timeout=timeout,
+    )
+
+
 def run_git_command(
     args: list[str],
     cwd: str | Path | None = None,
@@ -40,14 +57,7 @@ def run_git_command(
     cmd_str = shlex.join(redacted_args)
 
     try:
-        result = subprocess.run(
-            args,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=timeout,
-        )
+        result = run_git_subprocess(args, cwd, timeout)
 
         if result.returncode != 0:
             error_msg = f"Git command failed: {cmd_str}"

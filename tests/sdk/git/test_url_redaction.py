@@ -2,6 +2,7 @@
 
 import logging
 import subprocess
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -10,6 +11,7 @@ from openhands.sdk.git.exceptions import GitCommandError
 from openhands.sdk.git.utils import (
     redact_url_credentials,
     run_git_command,
+    run_git_subprocess,
 )  # re-exported for compat
 from openhands.sdk.plugin.types import PluginSource, ResolvedPluginSource
 from openhands.sdk.utils.redact import (
@@ -326,3 +328,14 @@ class TestRunGitCommandCredentialRedaction:
                     run_git_command(self._args())
         assert "SUPERSECRET" not in caplog.text
         assert REDACTED_URL in caplog.text
+
+
+def test_run_git_subprocess_replaces_undecodable_stdout_bytes():
+    """Invalid-encoding stdout must not raise UnicodeDecodeError (AGE-1871)."""
+    result = run_git_subprocess(
+        [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'\\xff\\xfe')"],
+        cwd=None,
+        timeout=5,
+    )
+    assert result.returncode == 0
+    assert result.stdout == "��"

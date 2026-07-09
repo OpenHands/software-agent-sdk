@@ -10,6 +10,7 @@ import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import IO, Annotated, Literal
+from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import (
@@ -32,6 +33,7 @@ from openhands.sdk.git.utils import (
     GIT_EMPTY_TREE_HASH,
     get_valid_ref,
     run_git_command,
+    run_git_subprocess,
     validate_git_repository,
 )
 from openhands.sdk.logger import get_logger
@@ -325,46 +327,36 @@ def _head_is_detached(root: Path) -> bool:
 
 
 def _git_probe(args: list[str], root: Path) -> str:
-    """Run a read-only git probe, returning stripped stdout or ``""``.
-
-    Unlike ``run_git_command`` this never logs or raises on a non-zero exit:
-    a repo with no ``origin`` remote, a detached HEAD, or no commits is the
-    expected case here, not an error worth surfacing.
-    """
+    """Run a read-only git probe; never logs or raises, returns "" on any failure."""
     try:
-        result = subprocess.run(
-            ["git", "--no-pager", *args],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30,
-        )
+        result = run_git_subprocess(["git", "--no-pager", *args], root, timeout=30)
     except (OSError, subprocess.SubprocessError):
         return ""
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
-def _git_repo_metadata(root: Path) -> dict[str, str]:
-    """Best-effort repo identity headers for the archived work-tree.
+def _header_safe(value: str) -> str:
+    """Percent-encode a value if needed so it is always a legal ASCII header value."""
+    if value.isascii() and value.isprintable():
+        return value
+    return quote(value, safe="")
 
-    Returns the redacted ``origin`` remote URL, the current branch
-    (``DETACHED`` for a detached HEAD), and the HEAD commit, keyed by response
-    header name. Each value is independently best-effort and omitted when
-    unavailable; values that an HTTP header cannot carry (e.g. a non-ASCII
-    branch name) are dropped so an exotic ref cannot 500 the response.
-    """
+
+def _git_repo_metadata(root: Path) -> dict[str, str]:
+    """Best-effort repo identity headers (remote/branch/HEAD) for the archived tree."""
     metadata: dict[str, str] = {}
     remote = _git_probe(["remote", "get-url", "origin"], root)
     if remote:
         metadata["X-Archive-Repo-Remote"] = redact_url_credentials(remote)
-    branch = _git_probe(["rev-parse", "--abbrev-ref", "HEAD"], root)
-    if branch:
-        metadata["X-Archive-Branch"] = "DETACHED" if branch == "HEAD" else branch
-    head = _git_probe(["rev-parse", "HEAD"], root)
-    if head:
+    # Combine into one call: --abbrev-ref only applies to args after it, so the
+    # first HEAD stays a full sha while the second is abbreviated to the branch.
+    head_and_branch = _git_probe(["rev-parse", "HEAD", "--abbrev-ref", "HEAD"], root)
+    lines = head_and_branch.splitlines()
+    if len(lines) == 2:
+        head, branch = lines
         metadata["X-Archive-Head-Commit"] = head
-    return {k: v for k, v in metadata.items() if v.isascii()}
+        metadata["X-Archive-Branch"] = "DETACHED" if branch == "HEAD" else branch
+    return {k: _header_safe(v) for k, v in metadata.items()}
 
 
 def _create_git_delta(
