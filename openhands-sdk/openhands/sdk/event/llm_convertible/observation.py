@@ -35,6 +35,13 @@ class ObservationEvent(ObservationBaseEvent):
     action_id: EventID = Field(
         ..., description="The action id that this observation is responding to"
     )
+    extended_content: list[TextContent] = Field(
+        default_factory=list,
+        description=(
+            "Content added by agent context (e.g. path-scoped rules triggered "
+            "by the touched file), appended after the tool result in to_llm_message."
+        ),
+    )
 
     @property
     def visualize(self) -> Text:
@@ -46,12 +53,19 @@ class ObservationEvent(ObservationBaseEvent):
             content.append(self.tool_name)
             content.append("\nResult:\n", style="bold")
             content.append(to_viz)
+        # Surface agent-context injections (e.g. path-scoped rules) for parity
+        # with MessageEvent, so triggered rules are visible when debugging.
+        if self.extended_content:
+            content.append(
+                "\n\nPrompt Extension based on Agent Context:\n", style="bold"
+            )
+            content.append(" ".join(content_to_str(self.extended_content)))
         return content
 
     def to_llm_message(self) -> Message:
         return Message(
             role="tool",
-            content=self.observation.to_llm_content,
+            content=list(self.observation.to_llm_content) + list(self.extended_content),
             name=self.tool_name,
             tool_call_id=self.tool_call_id,
         )
