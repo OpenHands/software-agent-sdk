@@ -487,7 +487,7 @@ class LocalConversation(BaseConversation):
         if not isinstance(event, ObservationEvent):
             return event
 
-        if (agent_context := getattr(self.agent, "agent_context", None)) is None:
+        if (agent_context := self.agent.agent_context) is None:
             return event
 
         if (file_path := self._touched_rule_path(event)) is None:

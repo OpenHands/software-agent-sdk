@@ -394,6 +394,29 @@ def test_nested_rule_injection_and_dedup(
     assert ctx.get_tool_use_suffix(file_path="README.md", skip_skill_names=[]) is None
 
 
+def test_nested_overlapping_rules_both_inject(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _force_walk_fallback(monkeypatch)
+    # A child dir's glob (pkg/sub/**) is a subset of its parent's (pkg/**), so
+    # a file under the child matches BOTH nested rules ("inherit up the tree").
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "AGENTS.md").write_text("PARENT rule.\n")
+    (tmp_path / "pkg" / "sub").mkdir()
+    (tmp_path / "pkg" / "sub" / "AGENTS.md").write_text("CHILD rule.\n")
+    rules = [
+        s for s in load_project_skills(tmp_path) if isinstance(s.trigger, PathTrigger)
+    ]
+    ctx = AgentContext(skills=rules)
+
+    result = ctx.get_tool_use_suffix(file_path="pkg/sub/foo.py", skip_skill_names=[])
+    assert result is not None
+    content, activated = result
+    assert sorted(activated) == ["agents:pkg", "agents:pkg/sub"]  # both, once each
+    assert "PARENT rule." in content.text
+    assert "CHILD rule." in content.text
+
+
 @pytest.mark.skipif(not _HAS_GIT, reason="git not available")
 def test_nested_discovery_includes_untracked_excludes_gitignored(
     tmp_path: Path,
