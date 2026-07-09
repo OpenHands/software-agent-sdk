@@ -52,6 +52,7 @@ jobs:
                   enable-cache: false
 
             - name: Wait for packages to be available on PyPI
+              id: wait_for_packages
               env:
                   VERSION: ${{ steps.get_version.outputs.version }}
               run: |
@@ -98,6 +99,9 @@ jobs:
                   echo "✅ All packages are resolvable on PyPI!"
 
             - name: Create PR for OpenHands repo
+              # Runs independently of the other "Create PR" steps below: each
+              # bumps an unrelated repo, so one failing shouldn't skip the rest.
+              if: ${{ !cancelled() && steps.wait_for_packages.outcome == 'success' }}
               env:
                   VERSION: ${{ steps.get_version.outputs.version }}
               run: |
@@ -300,6 +304,7 @@ jobs:
                   fi
 
             - name: Create PR for OpenHands-CLI repo
+              if: ${{ !cancelled() && steps.wait_for_packages.outcome == 'success' }}
               env:
                   VERSION: ${{ steps.get_version.outputs.version }}
               run: |
@@ -376,6 +381,7 @@ jobs:
                   fi
 
             - name: Create PR for automation repo
+              if: ${{ !cancelled() && steps.wait_for_packages.outcome == 'success' }}
               env:
                   VERSION: ${{ steps.get_version.outputs.version }}
               run: |
@@ -466,6 +472,7 @@ jobs:
                   fi
 
             - name: Summary
+              if: ${{ !cancelled() && steps.wait_for_packages.outcome == 'success' }}
               env:
                   VERSION: ${{ steps.get_version.outputs.version }}
               run: |
@@ -478,7 +485,7 @@ jobs:
                   echo "- [automation](https://github.com/OpenHands/automation/pulls?q=is%3Apr+bump-sdk-$VERSION)" >> $GITHUB_STEP_SUMMARY
 
             - name: Notify Slack
-              if: env.SLACK_BOT_TOKEN != ''
+              if: ${{ !cancelled() && steps.wait_for_packages.outcome == 'success' && env.SLACK_BOT_TOKEN != '' }}
               uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c # v3.0.3
               with:
                   method: chat.postMessage
