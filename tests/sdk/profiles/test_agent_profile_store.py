@@ -1,9 +1,9 @@
 """Tests for ``AgentProfileStore`` — mirrors the ``LLMProfileStore`` suite.
 
 Adds the profile-specific contracts: both union variants round-trip, the
-``id`` is stable across rename, ``list_summaries`` projects the FK fields
-without instantiating secrets, and ``skills[].mcp_tools`` secrets are redacted
-by default / encrypted (never cleartext) under a cipher.
+``id`` is stable across rename, and ``list_summaries`` projects the FK fields.
+The profile is secret-free at rest (#4017) — every field is a reference or a
+plain value, so no cipher is involved anywhere in this store.
 """
 
 import concurrent.futures
@@ -21,12 +21,6 @@ from openhands.sdk.profiles import (
     ProfileLimitExceeded,
 )
 from openhands.sdk.profiles.agent_profile import AGENT_PROFILE_SCHEMA_VERSION
-from openhands.sdk.skills import Skill
-from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
-
-
-# A clearly identifiable secret carried by a skill's mcp_tools env/headers.
-_MCP_SECRET = "ghp_SUPER_SECRET_TOKEN_SHOULD_NOT_LEAK"
 
 
 @pytest.fixture
@@ -47,30 +41,6 @@ def openhands_profile() -> OpenHandsAgentProfile:
 @pytest.fixture
 def acp_profile() -> ACPAgentProfile:
     return ACPAgentProfile(name="acp", acp_server="codex", acp_model="gpt-5.5/medium")
-
-
-def _skill_with_secret() -> Skill:
-    return Skill(
-        name="leaky",
-        content="do stuff",
-        mcp_tools={
-            "mcpServers": {
-                "svc": {
-                    "url": "https://x.test",
-                    "headers": {"Authorization": f"Bearer {_MCP_SECRET}"},
-                    "env": {"API_KEY": _MCP_SECRET},
-                }
-            }
-        },
-    )
-
-
-def _profile_with_secret_skill(name: str = "secretful") -> OpenHandsAgentProfile:
-    return OpenHandsAgentProfile(
-        name=name,
-        llm_profile_ref="default",
-        skills=[_skill_with_secret()],
-    )
 
 
 # ── Init ────────────────────────────────────────────────────────────────────
@@ -214,39 +184,10 @@ def test_save_overwrites_existing(
     assert loaded.llm_profile_ref == "other"
 
 
-# ── Cipher round-trip / secret-at-rest ──────────────────────────────────────
+# ── Round-trip (secret-free, no cipher) ─────────────────────────────────────
 
 
-def test_save_without_cipher_redacts_skill_secret(
-    agent_store: AgentProfileStore,
-) -> None:
-    agent_store.save(_profile_with_secret_skill())
-
-    content = (agent_store.base_dir / "secretful.json").read_text()
-    assert _MCP_SECRET not in content
-
-
-def test_save_with_cipher_encrypts_skill_secret(
-    agent_store: AgentProfileStore,
-) -> None:
-    cipher = Cipher(secret_key="test-key")
-    agent_store.save(_profile_with_secret_skill(), cipher=cipher)
-
-    content = (agent_store.base_dir / "secretful.json").read_text()
-    # No cleartext, but recoverable: the stored token decrypts back via cipher.
-    assert _MCP_SECRET not in content
-    assert FERNET_TOKEN_PREFIX in content
-
-    data = json.loads(content)
-    env = data["skills"][0]["mcp_tools"]["mcpServers"]["svc"]["env"]
-    token = env["API_KEY"]
-    assert token != _MCP_SECRET
-    decrypted = cipher.decrypt(token)
-    assert decrypted is not None
-    assert decrypted.get_secret_value() == _MCP_SECRET
-
-
-def test_roundtrip_openhands_without_cipher(
+def test_roundtrip_openhands(
     agent_store: AgentProfileStore, openhands_profile: OpenHandsAgentProfile
 ) -> None:
     agent_store.save(openhands_profile)
@@ -259,7 +200,7 @@ def test_roundtrip_openhands_without_cipher(
     assert loaded.revision == 2
 
 
-def test_roundtrip_acp_without_cipher(
+def test_roundtrip_acp(
     agent_store: AgentProfileStore, acp_profile: ACPAgentProfile
 ) -> None:
     agent_store.save(acp_profile)
@@ -269,40 +210,6 @@ def test_roundtrip_acp_without_cipher(
     assert loaded.id == acp_profile.id
     assert loaded.acp_server == "codex"
     assert loaded.acp_model == "gpt-5.5/medium"
-
-
-def test_roundtrip_with_cipher_preserves_non_secret_fields(
-    agent_store: AgentProfileStore,
-) -> None:
-    cipher = Cipher(secret_key="test-key")
-    profile = _profile_with_secret_skill()
-    agent_store.save(profile, cipher=cipher)
-    loaded = agent_store.load("secretful", cipher=cipher)
-
-    assert isinstance(loaded, OpenHandsAgentProfile)
-    assert loaded.id == profile.id
-    assert loaded.llm_profile_ref == "default"
-    assert loaded.skills[0].name == "leaky"
-
-
-def test_load_with_cipher_leaves_skill_secret_encrypted(
-    agent_store: AgentProfileStore,
-) -> None:
-    """Skill.mcp_tools has a masking serializer but no symmetric decrypt
-    validator, so encrypted env/headers load as ciphertext. The resolver
-    (#3717) decrypts; the store only guarantees no-cleartext-at-rest."""
-    cipher = Cipher(secret_key="test-key")
-    agent_store.save(_profile_with_secret_skill(), cipher=cipher)
-    loaded = agent_store.load("secretful", cipher=cipher)
-
-    assert isinstance(loaded, OpenHandsAgentProfile)
-    mcp_tools = loaded.skills[0].mcp_tools
-    assert mcp_tools is not None
-    token = mcp_tools["mcpServers"]["svc"]["env"]["API_KEY"]
-    assert token != _MCP_SECRET
-    decrypted = cipher.decrypt(token)
-    assert decrypted is not None
-    assert decrypted.get_secret_value() == _MCP_SECRET
 
 
 # ── Load ────────────────────────────────────────────────────────────────────
@@ -442,17 +349,21 @@ def test_list_summaries_returns_fk_fields(
     assert acp["llm_profile_ref"] is None
 
 
-def test_list_summaries_does_not_decrypt_secrets(
-    agent_store: AgentProfileStore,
+def test_list_summaries_projects_only_fk_fields(
+    agent_store: AgentProfileStore, openhands_profile: OpenHandsAgentProfile
 ) -> None:
-    cipher = Cipher(secret_key="test-key")
-    agent_store.save(_profile_with_secret_skill(), cipher=cipher)
+    agent_store.save(openhands_profile)
 
     summaries = agent_store.list_summaries()
-    # No skill content / secret is loaded — only the FK projection.
-    assert _MCP_SECRET not in json.dumps(summaries)
-    assert summaries[0]["name"] == "secretful"
-    assert "skills" not in summaries[0]
+    assert summaries[0]["name"] == "oh"
+    assert set(summaries[0]) == {
+        "id",
+        "name",
+        "agent_kind",
+        "revision",
+        "llm_profile_ref",
+        "mcp_server_refs",
+    }
 
 
 def test_list_summaries_skips_corrupted(

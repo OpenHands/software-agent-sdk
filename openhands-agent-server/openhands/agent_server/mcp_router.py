@@ -12,23 +12,47 @@ one caller-chosen tool (``tool_call``), then tears the connection down.
 The optional tool call exists because listing tools does not exercise the
 credentials many servers only use inside tool handlers (e.g. the Slack MCP
 server starts fine with a bogus token); callers must pick a read-only tool.
+For OAuth MCP servers, any token/client metadata acquired during the probe is
+returned on the success response's ``oauth_state`` field so the caller can
+persist it through the settings API under the tested server's ``auth.state``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
+import uuid
 from typing import Annotated, Any, Literal
+from urllib.parse import urlparse
 
+import anyio
+import httpx
 import mcp.types
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
+from fastmcp.client.auth.oauth import ClientNotFoundError, OAuth
+from fastmcp.client.oauth_callback import (
+    OAuthCallbackResult,
+    create_oauth_callback_server,
+)
 from pydantic import BaseModel, Field, model_validator
 
 from openhands.agent_server._secrets_exposure import get_cipher
+from openhands.agent_server.mcp_oauth_store import (
+    InMemoryMCPOAuthTokenStore,
+)
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
+from openhands.sdk.mcp.client import MCPClient
+from openhands.sdk.mcp.config import (
+    MCPAuthCredential,
+    MCPOAuthAuthCredential,
+    MCPOAuthAuthentication,
+    MCPOAuthStateResponse,
+    MCPServer,
+)
 from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
 from openhands.sdk.utils.cipher import Cipher
-from openhands.sdk.utils.pydantic_secrets import decrypt_str_with_cipher_or_keep
 
 
 logger = get_logger(__name__)
@@ -40,20 +64,16 @@ mcp_router = APIRouter(prefix="/mcp", tags=["MCP"])
 # Request / response models
 # ---------------------------------------------------------------------------
 #
-# We accept a single server spec instead of the full ``MCPConfig`` map. The
-# UI flow this powers ("add a new MCP server") always validates one server
-# at a time, and keeping the request shape narrow avoids exposing tuple-of-
-# transports semantics the caller doesn't need.
+# We accept one canonical MCPServer instead of the full MCP server map. The UI
+# flow this powers ("add a new MCP server") validates one server at a time; the
+# route wraps it in a temporary map only at the runtime boundary.
 
 _DEFAULT_SERVER_NAME = "test-server"
+_OAUTH_PROBE_JOB_TTL_SECONDS = 15 * 60
 
 
 class _StdioMCPServerSpec(BaseModel):
-    """Stdio (subprocess) MCP server spec.
-
-    Mirrors the subset of ``fastmcp.mcp_config.StdioMCPServer`` fields the
-    OpenHands UI exposes today.
-    """
+    """Legacy stdio MCP server spec accepted by the public REST API."""
 
     type: Literal["stdio"] = "stdio"
     command: str = Field(..., min_length=1, description="Executable to invoke")
@@ -61,35 +81,77 @@ class _StdioMCPServerSpec(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
     cwd: str | None = None
 
+    def to_mcp_server(self) -> MCPServer:
+        return MCPServer.model_validate(
+            {
+                "transport": "stdio",
+                "command": self.command,
+                "args": self.args,
+                "env": self.env,
+                "cwd": self.cwd,
+            }
+        )
+
 
 class _RemoteMCPServerSpec(BaseModel):
-    """Remote (HTTP / SSE) MCP server spec."""
+    """Legacy remote MCP server spec accepted by the public REST API."""
 
-    # ``shttp`` is the alias the OpenHands settings layer uses for
-    # streamable-http; we accept both spellings so the UI can forward
-    # its own value unchanged.
     type: Literal["http", "shttp", "streamable-http", "sse"]
     url: str = Field(..., min_length=1)
     headers: dict[str, str] = Field(default_factory=dict)
     api_key: str | None = Field(
         default=None,
         description=(
-            "Bearer token. If provided, sent as 'Authorization: Bearer <token>'."
+            "Deprecated bearer token. Prefer auth.strategy='bearer'. If provided "
+            "without auth, sent as 'Authorization: Bearer <token>'."
         ),
     )
+    auth: MCPAuthCredential | None = None
+    timeout: float | None = None
+    sse_read_timeout: float | None = None
+    keep_alive: bool | None = None
 
-    def to_fastmcp_dict(self) -> dict[str, Any]:
-        # fastmcp's RemoteMCPServer accepts "http", "streamable-http", "sse";
-        # collapse the OpenHands-specific "shttp" alias to "http".
+    @model_validator(mode="after")
+    def _reject_ambiguous_auth(self) -> _RemoteMCPServerSpec:
+        if self.api_key is not None and self.auth is not None:
+            raise ValueError("api_key cannot be combined with auth.")
+        if self.api_key is not None and any(
+            name.lower() == "authorization" for name in self.headers
+        ):
+            raise ValueError(
+                "api_key cannot be combined with an explicit top-level "
+                "'Authorization' header; use auth.strategy='header' instead."
+            )
+        if self.auth is not None and any(
+            name.lower() == "authorization" for name in self.headers
+        ):
+            raise ValueError(
+                "'auth' cannot be combined with an explicit top-level "
+                "'Authorization' header; use auth.strategy='header' instead."
+            )
+        return self
+
+    def to_mcp_server(self) -> MCPServer:
         transport = "http" if self.type == "shttp" else self.type
-        out: dict[str, Any] = {"url": self.url, "transport": transport}
-        headers = dict(self.headers)
-        if self.api_key:
-            # Don't clobber a caller-provided Authorization header.
-            headers.setdefault("Authorization", f"Bearer {self.api_key}")
-        if headers:
-            out["headers"] = headers
-        return out
+        data: dict[str, Any] = {
+            "url": self.url,
+            "transport": transport,
+            "headers": self.headers,
+            "timeout": self.timeout,
+            "sse_read_timeout": self.sse_read_timeout,
+            "keep_alive": self.keep_alive,
+        }
+        if self.auth is not None:
+            data["auth"] = self.auth
+        elif self.api_key is not None:
+            data["auth"] = {"strategy": "bearer", "value": self.api_key}
+        return MCPServer.model_validate(data)
+
+
+MCPTestServerSpec = Annotated[
+    _StdioMCPServerSpec | _RemoteMCPServerSpec,
+    Field(discriminator="type"),
+]
 
 
 class MCPToolCallSpec(BaseModel):
@@ -116,15 +178,12 @@ class MCPTestRequest(BaseModel):
         min_length=1,
         max_length=128,
         description=(
-            "Name to use for the server inside the temporary MCPConfig. "
+            "Name to use for the server inside the temporary MCP server map. "
             "Only affects error messages -- does not need to match any "
             "persisted setting."
         ),
     )
-    server: Annotated[
-        _StdioMCPServerSpec | _RemoteMCPServerSpec,
-        Field(discriminator="type"),
-    ]
+    server: MCPTestServerSpec
     timeout: float = Field(
         default=15.0,
         gt=0,
@@ -141,12 +200,43 @@ class MCPTestRequest(BaseModel):
         ),
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_native_server_transport(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        server = value.get("server")
+        if not isinstance(server, dict):
+            return value
+        if "authentication" in server:
+            raise ValueError(
+                "OAuth authentication metadata belongs under auth.authentication."
+            )
+        if "type" in server:
+            return value
+        normalized = dict(value)
+        normalized_server = dict(server)
+        transport = normalized_server.pop("transport", None)
+        if transport is None:
+            transport = "stdio" if "command" in normalized_server else "http"
+        normalized_server["type"] = transport
+        normalized["server"] = normalized_server
+        return normalized
+
     @model_validator(mode="after")
     def _strip_name(self) -> MCPTestRequest:
-        # Mirror the validation MCPConfig itself applies to server keys --
+        # Mirror the validation the MCP server map itself applies to server keys --
         # whitespace-only names would silently bypass min_length=1 above.
         self.name = self.name.strip() or _DEFAULT_SERVER_NAME
+        self.resolved_server
         return self
+
+    @property
+    def resolved_server(self) -> MCPServer:
+        return self.server.to_mcp_server()
+
+    def to_mcp_config(self, *, cipher: Cipher | None = None) -> dict[str, MCPServer]:
+        return {self.name: self.resolved_server.with_decrypted_secrets(cipher=cipher)}
 
 
 class MCPToolCallResult(BaseModel):
@@ -174,6 +264,20 @@ class MCPTestSuccess(BaseModel):
         default=None,
         description=("Outcome of the requested `tool_call`, when one was supplied."),
     )
+    resolved_mcp_servers: list[dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "Deprecated compatibility field for older clients that expected "
+            "resolved MCP server metadata in test responses."
+        ),
+    )
+    oauth_state: MCPOAuthStateResponse | None = Field(
+        default=None,
+        description=(
+            "Serialized OAuth state acquired or refreshed by the probe. "
+            "Clients should persist this under the tested server's auth.state."
+        ),
+    )
 
 
 class MCPTestFailure(BaseModel):
@@ -195,47 +299,231 @@ class MCPTestFailure(BaseModel):
 MCPTestResponse = MCPTestSuccess | MCPTestFailure
 
 
+class MCPOAuthStartResponse(BaseModel):
+    """Response for starting an install-time OAuth MCP probe."""
+
+    ok: bool
+    job_id: str | None = None
+    authorization_url: str | None = None
+    error: str | None = None
+    error_kind: Literal["timeout", "connection", "unknown"] | None = None
+
+
+class MCPOAuthStatusResponse(BaseModel):
+    """Current state of an install-time OAuth MCP probe."""
+
+    ok: bool
+    status: Literal["pending", "authorizing", "succeeded", "failed"]
+    job_id: str
+    authorization_url: str | None = None
+    callback_ready: bool = False
+    tools: list[str] | None = None
+    tool_result: MCPToolCallResult | None = None
+    oauth_state: MCPOAuthStateResponse | None = None
+    error: str | None = None
+    error_kind: Literal["timeout", "connection", "unknown"] | None = None
+
+
+class MCPOAuthCallbackRequest(BaseModel):
+    """Callback URL copied from a browser OAuth redirect."""
+
+    callback_url: str = Field(..., min_length=1)
+
+
+class _MCPOAuthProbeJob:
+    def __init__(self, *, request: MCPTestRequest, cipher: Cipher | None):
+        self.id = uuid.uuid4().hex
+        self.request = request
+        self.cipher = cipher
+        self.created_at = time.monotonic()
+        self.authorization_url: str | None = None
+        self.callback_url: str | None = None
+        self.result: MCPTestResponse | None = None
+        self.status: Literal["pending", "authorizing", "succeeded", "failed"] = (
+            "pending"
+        )
+        self.authorization_ready = threading.Event()
+        self.callback_ready = threading.Event()
+        self.done = threading.Event()
+        self.lock = threading.Lock()
+
+    def set_authorization_url(self, authorization_url: str) -> None:
+        with self.lock:
+            self.authorization_url = authorization_url
+            self.status = "authorizing"
+        self.authorization_ready.set()
+
+    def set_callback_ready(self, callback_url: str) -> None:
+        with self.lock:
+            self.callback_url = callback_url
+        self.callback_ready.set()
+
+    def set_result(self, result: MCPTestResponse) -> None:
+        with self.lock:
+            self.result = result
+            self.status = (
+                "succeeded" if isinstance(result, MCPTestSuccess) else "failed"
+            )
+        self.done.set()
+
+    def to_status_response(self) -> MCPOAuthStatusResponse:
+        with self.lock:
+            result = self.result
+            status = self.status
+            authorization_url = self.authorization_url
+
+        if isinstance(result, MCPTestSuccess):
+            return MCPOAuthStatusResponse(
+                ok=True,
+                status="succeeded",
+                job_id=self.id,
+                authorization_url=authorization_url,
+                callback_ready=self.callback_ready.is_set(),
+                tools=result.tools,
+                tool_result=result.tool_result,
+                oauth_state=result.oauth_state,
+            )
+        if isinstance(result, MCPTestFailure):
+            return MCPOAuthStatusResponse(
+                ok=False,
+                status="failed",
+                job_id=self.id,
+                authorization_url=authorization_url,
+                callback_ready=self.callback_ready.is_set(),
+                error=result.error,
+                error_kind=result.error_kind,
+            )
+        return MCPOAuthStatusResponse(
+            ok=True,
+            status=status,
+            job_id=self.id,
+            authorization_url=authorization_url,
+            callback_ready=self.callback_ready.is_set(),
+        )
+
+
+_oauth_probe_jobs: dict[str, _MCPOAuthProbeJob] = {}
+_oauth_probe_jobs_lock = threading.Lock()
+
+
+def _sweep_oauth_probe_jobs_locked(now: float | None = None) -> None:
+    now = time.monotonic() if now is None else now
+    expired = [
+        job_id
+        for job_id, job in _oauth_probe_jobs.items()
+        if now - job.created_at > _OAUTH_PROBE_JOB_TTL_SECONDS
+    ]
+    for job_id in expired:
+        _oauth_probe_jobs.pop(job_id, None)
+
+
 # ---------------------------------------------------------------------------
 # Endpoint
 # ---------------------------------------------------------------------------
 
 
-def _decrypt_mapping(cipher: Cipher | None, mapping: dict[str, str]) -> dict[str, str]:
-    """Decrypt Fernet-encrypted values round-tripped from settings.
-
-    The GUI fetches stored settings with ``X-Expose-Secrets: encrypted`` and
-    forwards the ciphertext unchanged so the edit flow can test the *real*
-    stored credentials without ever seeing them. Plaintext values (the
-    common case: freshly typed input) pass through untouched.
-    """
-    if cipher is None:
-        return dict(mapping)
-    return {
-        key: decrypt_str_with_cipher_or_keep(
-            cipher, value, description="MCP test env/headers"
+def _oauth_auth_from_authentication(
+    authentication: MCPOAuthAuthentication | None,
+    *,
+    oauth_token_storage: InMemoryMCPOAuthTokenStore | None,
+    job: _MCPOAuthProbeJob,
+) -> OAuth:
+    additional_client_metadata: dict[str, Any] = {}
+    if authentication is not None:
+        additional_client_metadata.update(
+            authentication.additional_client_metadata or {}
         )
-        for key, value in mapping.items()
-    }
+        if authentication.client_auth_method is not None:
+            additional_client_metadata["token_endpoint_auth_method"] = (
+                authentication.client_auth_method
+            )
+    return _BrowserCoordinatedOAuth(
+        job=job,
+        scopes=authentication.scopes if authentication is not None else None,
+        client_name=(
+            authentication.client_name
+            if authentication is not None and authentication.client_name
+            else "FastMCP Client"
+        ),
+        token_storage=oauth_token_storage,
+        additional_client_metadata=additional_client_metadata or None,
+        client_metadata_url=(
+            authentication.client_metadata_url if authentication is not None else None
+        ),
+        client_id=authentication.client_id if authentication is not None else None,
+        client_secret=(
+            authentication.client_secret.get_secret_value()
+            if authentication is not None and authentication.client_secret is not None
+            else None
+        ),
+    )
 
 
-def _server_to_fastmcp_dict(
-    spec: _StdioMCPServerSpec | _RemoteMCPServerSpec, cipher: Cipher | None
-) -> dict:
-    if isinstance(spec, _StdioMCPServerSpec):
-        out: dict[str, Any] = {"command": spec.command, "args": list(spec.args)}
-        if spec.env:
-            out["env"] = _decrypt_mapping(cipher, spec.env)
-        if spec.cwd:
-            out["cwd"] = spec.cwd
-        return out
-    remote = spec.to_fastmcp_dict()
-    if "headers" in remote:
-        remote["headers"] = _decrypt_mapping(cipher, remote["headers"])
-    return remote
+class _BrowserCoordinatedOAuth(OAuth):
+    """FastMCP OAuth client that lets the frontend own browser navigation."""
+
+    def __init__(self, *, job: _MCPOAuthProbeJob, **kwargs: Any):
+        super().__init__(**kwargs)
+        self._job = job
+
+    async def redirect_handler(self, authorization_url: str) -> None:
+        """Capture the URL instead of opening a browser from the backend."""
+        async with self.httpx_client_factory() as client:
+            response = await client.get(authorization_url, follow_redirects=False)
+            if response.status_code == 400:
+                raise ClientNotFoundError(
+                    "OAuth client not found - cached credentials may be stale"
+                )
+            if response.status_code not in (200, 302, 303, 307, 308):
+                raise RuntimeError(
+                    f"Unexpected authorization response: {response.status_code}"
+                )
+
+        logger.info("MCP OAuth authorization URL captured for job %s", self._job.id)
+        self._job.set_authorization_url(authorization_url)
+
+    async def callback_handler(self) -> tuple[str, str | None]:
+        """Run FastMCP's callback server and expose readiness to the frontend."""
+        result = OAuthCallbackResult()
+        result_ready = anyio.Event()
+        server = create_oauth_callback_server(
+            port=self.redirect_port,
+            server_url=self.mcp_url,
+            result_container=result,
+            result_ready=result_ready,
+        )
+        callback_url = f"http://localhost:{self.redirect_port}/callback"
+        callback_timeout = 300.0
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(server.serve)
+            self._job.set_callback_ready(callback_url)
+            logger.info(
+                "MCP OAuth callback server ready for job %s at %s",
+                self._job.id,
+                callback_url,
+            )
+
+            try:
+                with anyio.fail_after(callback_timeout):
+                    await result_ready.wait()
+                    if result.error:
+                        raise result.error
+                    return result.code, result.state  # type: ignore[return-value]
+            except TimeoutError as e:
+                raise TimeoutError(
+                    f"OAuth callback timed out after {callback_timeout} seconds"
+                ) from e
+            finally:
+                server.should_exit = True
+                await anyio.sleep(0.1)
+                tg.cancel_scope.cancel()
+
+        raise RuntimeError("OAuth callback handler could not be started")
 
 
 def _run_tool_call(
-    client: Any, spec: MCPToolCallSpec, tool_names: list[str], timeout: float
+    client: MCPClient, spec: MCPToolCallSpec, tool_names: list[str], timeout: float
 ) -> MCPToolCallResult:
     """Invoke the requested tool on the connected client.
 
@@ -273,7 +561,9 @@ def _run_tool_call(
 
 
 def _probe_mcp_server(
-    request: MCPTestRequest, cipher: Cipher | None
+    request: MCPTestRequest,
+    cipher: Cipher | None,
+    mcp_oauth_factory: Any | None = None,
 ) -> MCPTestResponse:
     """Synchronous probe -- safe to run inside ``run_in_executor``.
 
@@ -283,22 +573,48 @@ def _probe_mcp_server(
     threadpool first.
     """
 
-    config = {
-        "mcpServers": {request.name: _server_to_fastmcp_dict(request.server, cipher)}
-    }
+    mcp_config = request.to_mcp_config(cipher=cipher)
 
     try:
+        server = request.resolved_server
+        oauth_auth = server.oauth_auth
+        oauth_token_storage: InMemoryMCPOAuthTokenStore | None = None
+        if oauth_auth is not None:
+            oauth_token_storage = InMemoryMCPOAuthTokenStore(
+                state=server.initial_oauth_state(cipher=cipher)
+            )
         # ``create_mcp_tools`` returns a client that owns a background loop
         # and a (possibly long-lived) subprocess. Use the context-manager
         # form so we always tear it down, even when listing succeeded.
-        with create_mcp_tools(config, timeout=request.timeout) as client:
+        create_tools_kwargs: dict[str, Any] = {
+            "mcp_oauth_token_storage": oauth_token_storage
+        }
+        if mcp_oauth_factory is not None:
+            create_tools_kwargs["mcp_oauth_factory"] = mcp_oauth_factory
+        with create_mcp_tools(
+            mcp_config,
+            timeout=request.timeout,
+            **create_tools_kwargs,
+        ) as client:
             tool_names = [tool.name for tool in client.tools]
             tool_result: MCPToolCallResult | None = None
             if request.tool_call is not None:
                 tool_result = _run_tool_call(
-                    client, request.tool_call, tool_names, request.timeout
+                    client,
+                    request.tool_call,
+                    tool_names,
+                    request.timeout,
                 )
-            return MCPTestSuccess(tools=tool_names, tool_result=tool_result)
+            oauth_state: MCPOAuthStateResponse | None = None
+            if oauth_token_storage is not None:
+                state = oauth_token_storage.export_state()
+                if state.has_values:
+                    oauth_state = state.to_response(cipher=cipher)
+            return MCPTestSuccess(
+                tools=tool_names,
+                tool_result=tool_result,
+                oauth_state=oauth_state,
+            )
     except MCPTimeoutError as exc:
         logger.info("MCP test timed out for server %r: %s", request.name, exc)
         return MCPTestFailure(error=str(exc), error_kind="timeout")
@@ -330,11 +646,14 @@ def _probe_mcp_server(
 @mcp_router.post(
     "/test",
     response_model=MCPTestResponse,
+    response_model_exclude_none=True,
     summary="Test an MCP server configuration",
     description=(
         "Attempt to connect to a candidate MCP server and list its tools, "
         "without persisting any settings. Useful for validating user input "
         "in 'add MCP server' flows before storing the config. "
+        "For OAuth servers, any acquired state is returned as `oauth_state` "
+        "so clients can persist it under the MCP server object's `auth.state`. "
         "Optionally invokes one caller-chosen (read-only) tool via "
         "`tool_call` and reports its outcome in `tool_result`, so callers "
         "can verify credentials that are only exercised on tool invocation. "
@@ -353,3 +672,153 @@ async def test_mcp_server(
     cipher = get_cipher(http_request)
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _probe_mcp_server, request, cipher)
+
+
+def _run_oauth_probe_job(job: _MCPOAuthProbeJob) -> None:
+    def oauth_factory(
+        _server_name: str,
+        _server: MCPServer,
+        auth: MCPOAuthAuthCredential,
+        oauth_token_storage: InMemoryMCPOAuthTokenStore | None,
+    ) -> OAuth:
+        return _oauth_auth_from_authentication(
+            auth.authentication,
+            oauth_token_storage=oauth_token_storage,
+            job=job,
+        )
+
+    result = _probe_mcp_server(
+        job.request,
+        job.cipher,
+        mcp_oauth_factory=oauth_factory,
+    )
+    job.set_result(result)
+
+
+def _register_oauth_job(job: _MCPOAuthProbeJob) -> None:
+    with _oauth_probe_jobs_lock:
+        _sweep_oauth_probe_jobs_locked()
+        _oauth_probe_jobs[job.id] = job
+
+
+def _get_oauth_job(job_id: str) -> _MCPOAuthProbeJob:
+    with _oauth_probe_jobs_lock:
+        _sweep_oauth_probe_jobs_locked()
+        job = _oauth_probe_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="MCP OAuth job not found")
+    return job
+
+
+@mcp_router.post(
+    "/oauth/start",
+    response_model=MCPOAuthStartResponse,
+    response_model_exclude_none=True,
+    summary="Start an MCP OAuth install probe",
+)
+async def start_mcp_oauth(
+    request: MCPTestRequest, http_request: Request
+) -> MCPOAuthStartResponse:
+    """Start OAuth for a candidate MCP server and return the authorization URL."""
+    if request.resolved_server.oauth_auth is None:
+        raise HTTPException(
+            status_code=400,
+            detail="MCP OAuth start requires auth.strategy='oauth2'",
+        )
+
+    job = _MCPOAuthProbeJob(request=request, cipher=get_cipher(http_request))
+    _register_oauth_job(job)
+    thread = threading.Thread(
+        target=_run_oauth_probe_job,
+        args=(job,),
+        name=f"mcp-oauth-{job.id[:8]}",
+        daemon=True,
+    )
+    thread.start()
+
+    authorization_timeout = min(max(request.timeout, 1.0), 30.0)
+    loop = asyncio.get_running_loop()
+    authorization_ready = await loop.run_in_executor(
+        None,
+        job.authorization_ready.wait,
+        authorization_timeout,
+    )
+    if authorization_ready and job.authorization_url is not None:
+        return MCPOAuthStartResponse(
+            ok=True,
+            job_id=job.id,
+            authorization_url=job.authorization_url,
+        )
+
+    if job.done.is_set() and isinstance(job.result, MCPTestFailure):
+        return MCPOAuthStartResponse(
+            ok=False,
+            job_id=job.id,
+            error=job.result.error,
+            error_kind=job.result.error_kind,
+        )
+
+    return MCPOAuthStartResponse(
+        ok=False,
+        job_id=job.id,
+        error="Timed out waiting for OAuth authorization URL",
+        error_kind="timeout",
+    )
+
+
+@mcp_router.get(
+    "/oauth/status/{job_id}",
+    response_model=MCPOAuthStatusResponse,
+    response_model_exclude_none=True,
+    summary="Get an MCP OAuth install probe status",
+)
+async def get_mcp_oauth_status(job_id: str) -> MCPOAuthStatusResponse:
+    return _get_oauth_job(job_id).to_status_response()
+
+
+def _validate_callback_url(callback_url: str, job: _MCPOAuthProbeJob) -> None:
+    parsed = urlparse(callback_url)
+    if parsed.scheme != "http" or parsed.hostname not in {
+        "localhost",
+        "127.0.0.1",
+        "::1",
+    }:
+        raise HTTPException(status_code=400, detail="Invalid OAuth callback URL")
+
+    with job.lock:
+        expected = job.callback_url
+    if expected is None:
+        raise HTTPException(status_code=409, detail="OAuth callback is not ready")
+
+    expected_parsed = urlparse(expected)
+    if parsed.port != expected_parsed.port or parsed.path != expected_parsed.path:
+        raise HTTPException(status_code=400, detail="Unexpected OAuth callback URL")
+
+
+@mcp_router.post(
+    "/oauth/callback/{job_id}",
+    response_model=MCPOAuthStatusResponse,
+    response_model_exclude_none=True,
+    summary="Submit an MCP OAuth callback URL",
+)
+async def submit_mcp_oauth_callback(
+    job_id: str, request: MCPOAuthCallbackRequest
+) -> MCPOAuthStatusResponse:
+    job = _get_oauth_job(job_id)
+    _validate_callback_url(request.callback_url, job)
+    async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+        response = await client.get(request.callback_url)
+    if response.status_code >= 400:
+        return MCPOAuthStatusResponse(
+            ok=False,
+            status="failed",
+            job_id=job.id,
+            authorization_url=job.authorization_url,
+            callback_ready=job.callback_ready.is_set(),
+            error=f"OAuth callback returned HTTP {response.status_code}",
+            error_kind="connection",
+        )
+
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, job.done.wait, 5.0)
+    return job.to_status_response()

@@ -30,7 +30,7 @@ from openhands.sdk.settings.model import (
     LLMSummarizingCondenserSettings,
     VerificationSettings,
 )
-from openhands.sdk.skills import Skill
+from openhands.sdk.tool import Tool
 
 
 AGENT_PROFILE_SCHEMA_VERSION = 1
@@ -103,30 +103,18 @@ class AgentProfileBase(BaseModel):
         description="Monotonic revision counter, bumped on each saved edit.",
     )
     # null = all of the user's MCP servers; [] = none; a non-null list filters
-    # to the named keys. null and [] are deliberately distinct.
+    # to the named keys. null and [] are deliberately distinct. MCP servers are
+    # user-configured and persisted, so this reference is safe: every name that
+    # can be referenced is present in ``mcp_config``. Skills are NOT modeled this
+    # way — they are discovered from many lazy/incomplete sources, so a profile
+    # selects them by *exclusion* (``OpenHandsAgentProfile.disabled_skills``, a
+    # deny-list) rather than by an allow-list of names that can dangle. See the
+    # #4017 architecture discussion.
     mcp_server_refs: list[str] | None = Field(
         default=None,
         description=(
             "Which of the user's globally configured MCP servers to expose. "
             "null = all; [] = none; a non-null list = filter to the named keys."
-        ),
-    )
-    # On the base because both variants consume skills as prompt context. null
-    # (all discovered) and [] (none) are distinct; the default is [] — NOT null,
-    # unlike ``mcp_server_refs`` — because auto-injecting the whole catalog isn't
-    # behavior-preserving and a profile persisted before this field existed must
-    # not silently start pulling it on load. ``default_factory=list`` makes an
-    # absent field ([]) distinct from an explicit ``null`` (None), the opt-in for
-    # "all discovered".
-    skill_refs: list[str] | None = Field(
-        default_factory=list,
-        description=(
-            "Which of the server-discovered skills to expose in the agent's "
-            "prompt, selected by name (mirrors ``mcp_server_refs`` over "
-            "``mcp_config``). null = all discovered; [] = none (the default); a "
-            "non-null list = filter to the named skills. For OpenHands profiles, "
-            "any explicitly embedded ``skills`` are always included on top of "
-            "the filtered set."
         ),
     )
 
@@ -160,13 +148,32 @@ class OpenHandsAgentProfile(AgentProfileBase):
         default="CodeActAgent",
         description="Agent class to build.",
     )
-    skills: list[Skill] = Field(
-        default_factory=list,
-        description="Skills that extend the agent's context.",
+    # Same tri-state as the resolved settings' ``tools``: passed through
+    # verbatim by the resolver, so ``create_agent`` is the single defaulting
+    # point (#3978). Secret-free by construction (``Tool`` is name + params).
+    tools: list[Tool] | None = Field(
+        default=None,
+        description=(
+            "Tool selection for the resolved agent. None (the default) = the "
+            "server's standard tool set; [] = an explicitly bare agent; a "
+            "non-empty list is used exactly as given."
+        ),
     )
     system_message_suffix: str | None = Field(
         default=None,
         description="Optional suffix appended to the system prompt.",
+    )
+    disabled_skills: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of server-discovered skills to EXCLUDE from this agent's "
+            "prompt — a deny-list over the discovered catalog. [] (the default) "
+            "= all discovered skills; a listed name that is absent from the "
+            "catalog is simply a no-op, so the field never fails a launch when "
+            "the catalog drifts. Replaces the former allow-list ``skill_refs`` "
+            "(#4017): skills are discovered from many incomplete sources, so "
+            "exclusion is the only selection model that can't dangle."
+        ),
     )
     condenser: CondenserSettingsConfig = Field(
         default_factory=LLMSummarizingCondenserSettings,
@@ -215,9 +222,10 @@ class ACPAgentProfile(AgentProfileBase):
             "ACP-delegating agent."
         ),
     )
-    # ``skill_refs`` is inherited from ``AgentProfileBase`` with the safe []
-    # default (no discovered skills injected unless a null/list is set) — ACP
-    # agents own their tooling, so that default is exactly right here.
+    # No skill-selection field: ACP agents own their tooling and prompt
+    # construction, so no user/public discovered skills are injected. (Only
+    # repo-scoped project skills reach an ACP agent, via the resolver's
+    # ``load_project_skills`` — see #4019 for whether even those should.)
     acp_server: ACPServerKind = Field(
         default="claude-code",
         description=(
@@ -305,9 +313,15 @@ validate/construct instances from raw payloads.
 
 PersistedProfileMigrator = Callable[[dict[str, Any]], dict[str, Any]]
 
-# Registered per *source* schema_version; each migrator returns a payload with
-# an advanced ``schema_version``. Empty while only v1 exists — the first schema
-# bump adds ``{1: _migrate_v1_to_v2}`` here.
+
+# No migrations: the profile model has never shipped to prod or any client, so
+# v1 is a clean baseline — embedded ``skills`` and the allow-list ``skill_refs``
+# never existed in a released profile, so there is nothing to migrate. This
+# registry is the home for the first *real* post-ship schema change; until then
+# ``_apply_persisted_migrations`` is a validating no-op and a stray removed key
+# (``skills`` / ``skill_refs``) is rejected by ``extra="forbid"`` at validation
+# rather than silently dropped. Register migrators here (keyed by source version)
+# when the first shipped schema needs to evolve.
 _AGENT_PROFILE_MIGRATIONS: dict[int, PersistedProfileMigrator] = {}
 
 
@@ -393,13 +407,20 @@ def validate_agent_profile(
 
 
 def safe_validation_error_detail(exc: ValidationError) -> list[dict[str, Any]]:
-    """Secret-safe ``detail`` for a 422 from a failed profile validation.
+    """FastAPI-shaped ``detail`` for a 422 from a failed profile validation.
 
-    Surfaces only ``loc``/``type`` per error and **drops ``msg``/``input``** — a
-    nested ``skills[].mcp_tools`` ``MCPConfig`` error embeds the offending input,
-    which may carry secrets. Shaped like FastAPI's request-validation ``detail``
-    (a list of error objects) so routers can hand it straight to ``HTTPException``.
-    Hoisted from the agent-server router so the local and cloud routers redact
+    Surfaces ``loc``/``type``/``msg`` per error. The profile carries no
+    secret-bearing field — embedded ``skills[].mcp_tools`` was removed in #4017,
+    and the ``disabled_skills`` deny-list holds only skill *names* — so the full
+    validation message is safe to return, and a client needs it to see *why* a
+    save failed (e.g. an invalid ``acp_server`` value). ``input`` is still
+    dropped: it echoes the whole rejected payload, which is noisy and not needed
+    to explain the error. Shaped like FastAPI's request-validation ``detail`` (a
+    list of error objects) so routers can hand it straight to ``HTTPException``.
+    Hoisted from the agent-server router so the local and cloud routers behave
     identically.
     """
-    return [{"loc": err["loc"], "type": err["type"]} for err in exc.errors()]
+    return [
+        {"loc": list(err["loc"]), "type": str(err["type"]), "msg": str(err["msg"])}
+        for err in exc.errors()
+    ]

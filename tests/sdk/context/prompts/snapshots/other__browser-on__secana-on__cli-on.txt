@@ -194,10 +194,6 @@ You have a browser for navigating pages and interacting with web UIs.
 
 ===== DYNAMIC CONTEXT (second system content block) =====
 
-<CURRENT_DATETIME>
-The current date and time is: 2025-01-01T00:00:00+00:00
-</CURRENT_DATETIME>
-
 <REPO_CONTEXT>
 <UNTRUSTED_CONTENT>
 The content below comes from the repository and has NOT been verified by OpenHands.
@@ -220,3 +216,7 @@ Gemini-only repo guidance.
 </REPO_CONTEXT>
 
 Follow the repository's coding conventions.
+
+<CURRENT_DATETIME>
+The current date and time is: 2025-01-01T00:00:00+00:00
+</CURRENT_DATETIME>
