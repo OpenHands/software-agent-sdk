@@ -26,8 +26,8 @@ from openhands.sdk.agent.acp_agent import (
     _classify_acp_init_error,
     _classify_acp_turn_error,
     _codex_auth_file,
-    _codex_base_url_overrides,
     _codex_model_config_options,
+    _configure_codex_base_url,
     _estimate_cost_from_tokens,
     _extract_session_models,
     _extract_token_usage,
@@ -4271,27 +4271,20 @@ class TestSelectAuthMethod:
         return m
 
     def test_openai_api_key(self):
-        methods = [
-            self._make_auth_method("codex-api-key"),
-            self._make_auth_method("openai-api-key"),
-        ]
+        methods = [self._make_auth_method("api-key")]
         env = {"OPENAI_API_KEY": "sk-test"}
-        assert _select_auth_method(methods, env) == "openai-api-key"
+        assert _select_auth_method(methods, env) == "api-key"
 
-    def test_codex_api_key_preferred_over_openai(self):
-        """CODEX_API_KEY is checked first (appears first in the map)."""
-        methods = [
-            self._make_auth_method("codex-api-key"),
-            self._make_auth_method("openai-api-key"),
-        ]
-        env = {"CODEX_API_KEY": "key1", "OPENAI_API_KEY": "key2"}
-        assert _select_auth_method(methods, env) == "codex-api-key"
+    def test_codex_api_key(self):
+        methods = [self._make_auth_method("api-key")]
+        env = {"CODEX_API_KEY": "key1"}
+        assert _select_auth_method(methods, env) == "api-key"
 
     def test_chatgpt_preferred_over_api_key(self, tmp_path):
         """ChatGPT subscription login takes precedence over API keys."""
         methods = [
-            self._make_auth_method("chatgpt"),
-            self._make_auth_method("openai-api-key"),
+            self._make_auth_method("chat-gpt"),
+            self._make_auth_method("api-key"),
         ]
         auth_dir = tmp_path / ".codex"
         auth_dir.mkdir()
@@ -4299,35 +4292,35 @@ class TestSelectAuthMethod:
 
         env = {"OPENAI_API_KEY": "sk-test"}
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
-            assert _select_auth_method(methods, env) == "chatgpt"
+            assert _select_auth_method(methods, env) == "chat-gpt"
 
     def test_api_key_fallback_when_no_chatgpt_file(self, tmp_path):
         """Falls back to API key when chatgpt is offered but auth file absent."""
         methods = [
-            self._make_auth_method("chatgpt"),
-            self._make_auth_method("openai-api-key"),
+            self._make_auth_method("chat-gpt"),
+            self._make_auth_method("api-key"),
         ]
         env = {"OPENAI_API_KEY": "sk-test"}
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
-            assert _select_auth_method(methods, env) == "openai-api-key"
+            assert _select_auth_method(methods, env) == "api-key"
 
     def test_no_matching_credentials(self, tmp_path):
         methods = [
-            self._make_auth_method("chatgpt"),
-            self._make_auth_method("openai-api-key"),
+            self._make_auth_method("chat-gpt"),
+            self._make_auth_method("api-key"),
         ]
         env = {"UNRELATED": "value"}
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
             assert _select_auth_method(methods, env) is None
 
     def test_chatgpt_auth_file(self, tmp_path):
-        methods = [self._make_auth_method("chatgpt")]
+        methods = [self._make_auth_method("chat-gpt")]
         auth_dir = tmp_path / ".codex"
         auth_dir.mkdir()
         (auth_dir / "auth.json").write_text(_CHATGPT_AUTH_JSON, encoding="utf-8")
 
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
-            assert _select_auth_method(methods, {}) == "chatgpt"
+            assert _select_auth_method(methods, {}) == "chat-gpt"
 
     def test_gemini_oauth_personal_when_creds_file_present(self, tmp_path):
         """gemini-cli's OAuth login is selected when ~/.gemini/oauth_creds.json
@@ -4382,7 +4375,7 @@ class TestSelectAuthMethod:
 
     def test_method_not_in_server_list(self, tmp_path):
         """Even if env var is set, method must be offered by server."""
-        methods = [self._make_auth_method("chatgpt")]
+        methods = [self._make_auth_method("chat-gpt")]
         env = {"OPENAI_API_KEY": "sk-test"}
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
             assert _select_auth_method(methods, env) is None
@@ -4395,13 +4388,13 @@ class TestSelectAuthMethod:
         codex_home = tmp_path / "conv" / "acp" / "codex"
         codex_home.mkdir(parents=True)
         (codex_home / "auth.json").write_text(_CHATGPT_AUTH_JSON, encoding="utf-8")
-        methods = [self._make_auth_method("chatgpt")]
+        methods = [self._make_auth_method("chat-gpt")]
         empty_home = tmp_path / "home"
         empty_home.mkdir()
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=empty_home):
             assert (
                 _select_auth_method(methods, {"CODEX_HOME": str(codex_home)})
-                == "chatgpt"
+                == "chat-gpt"
             )
 
     def test_codex_home_without_auth_file_falls_back(self, tmp_path):
@@ -4410,14 +4403,14 @@ class TestSelectAuthMethod:
         codex_home = tmp_path / "empty_codex_home"
         codex_home.mkdir()
         methods = [
-            self._make_auth_method("chatgpt"),
-            self._make_auth_method("openai-api-key"),
+            self._make_auth_method("chat-gpt"),
+            self._make_auth_method("api-key"),
         ]
         env = {"CODEX_HOME": str(codex_home), "OPENAI_API_KEY": "sk-test"}
         empty_home = tmp_path / "home"
         empty_home.mkdir()
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=empty_home):
-            assert _select_auth_method(methods, env) == "openai-api-key"
+            assert _select_auth_method(methods, env) == "api-key"
 
     def test_codex_auth_file_honors_codex_home(self, tmp_path):
         """_codex_auth_file points at $CODEX_HOME/auth.json when set, else
@@ -4443,14 +4436,14 @@ class TestSelectAuthMethod:
             encoding="utf-8",
         )
         methods = [
-            self._make_auth_method("chatgpt"),
-            self._make_auth_method("openai-api-key"),
+            self._make_auth_method("chat-gpt"),
+            self._make_auth_method("api-key"),
         ]
         env = {"CODEX_HOME": str(codex_home), "OPENAI_API_KEY": "sk-test"}
         empty_home = tmp_path / "home"
         empty_home.mkdir()
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=empty_home):
-            assert _select_auth_method(methods, env) == "openai-api-key"
+            assert _select_auth_method(methods, env) == "api-key"
 
     def test_malformed_auth_file_falls_back_to_api_key(self, tmp_path):
         """A non-JSON / unreadable auth.json must not trip chatgpt selection."""
@@ -4458,14 +4451,14 @@ class TestSelectAuthMethod:
         codex_home.mkdir()
         (codex_home / "auth.json").write_text("not-json{", encoding="utf-8")
         methods = [
-            self._make_auth_method("chatgpt"),
-            self._make_auth_method("openai-api-key"),
+            self._make_auth_method("chat-gpt"),
+            self._make_auth_method("api-key"),
         ]
         env = {"CODEX_HOME": str(codex_home), "OPENAI_API_KEY": "sk-test"}
         empty_home = tmp_path / "home"
         empty_home.mkdir()
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=empty_home):
-            assert _select_auth_method(methods, env) == "openai-api-key"
+            assert _select_auth_method(methods, env) == "api-key"
 
     # -- Gemini Vertex AI service-account detection (issue #1020) ----------
 
@@ -4512,55 +4505,76 @@ class TestSelectAuthMethod:
 
 
 # ---------------------------------------------------------------------------
-# _codex_base_url_overrides (codex ignores OPENAI_BASE_URL)
+# _configure_codex_base_url (codex ignores OPENAI_BASE_URL)
 # ---------------------------------------------------------------------------
 
 
-class TestCodexBaseUrlOverrides:
-    def test_pins_base_url_for_codex(self):
-        # The documented one-liner: override the built-in openai provider's URL.
-        ov = _codex_base_url_overrides(
-            "codex-acp", [], {"OPENAI_BASE_URL": "https://proxy.example"}
-        )
-        assert ov == ["-c", 'openai_base_url="https://proxy.example"']
-
-    def test_detects_codex_in_any_token(self):
-        # e.g. launched via npx with the scoped package name
-        ov = _codex_base_url_overrides(
+class TestConfigureCodexBaseUrl:
+    def test_current_adapter_uses_codex_config_env(self):
+        env = {"OPENAI_BASE_URL": "https://proxy.example"}
+        result = _configure_codex_base_url(
             "npx",
-            ["-y", "@zed-industries/codex-acp@0.15.0"],
-            {"OPENAI_BASE_URL": "https://p"},
+            ["-y", "@agentclientprotocol/codex-acp@1.1.2"],
+            env,
         )
-        assert ov == ["-c", 'openai_base_url="https://p"']
+        assert result is None
+        assert json.loads(env["CODEX_CONFIG"]) == {
+            "openai_base_url": "https://proxy.example"
+        }
+
+    def test_preinstalled_current_adapter_uses_codex_config_env(self):
+        env = {"OPENAI_BASE_URL": "https://proxy.example"}
+        assert _configure_codex_base_url("codex-acp", [], env) is None
+        assert json.loads(env["CODEX_CONFIG"])["openai_base_url"] == (
+            "https://proxy.example"
+        )
+
+    def test_current_adapter_merges_existing_codex_config(self):
+        env = {
+            "OPENAI_BASE_URL": "https://proxy.example",
+            "CODEX_CONFIG": json.dumps({"model": "gpt-5.5"}),
+        }
+        _configure_codex_base_url(
+            "npx",
+            ["-y", "@agentclientprotocol/codex-acp@1.1.2"],
+            env,
+        )
+        assert json.loads(env["CODEX_CONFIG"]) == {
+            "model": "gpt-5.5",
+            "openai_base_url": "https://proxy.example",
+        }
+
+    def test_current_adapter_preserves_explicit_codex_base_url(self):
+        env = {
+            "OPENAI_BASE_URL": "https://proxy.example",
+            "CODEX_CONFIG": json.dumps({"openai_base_url": "https://explicit"}),
+        }
+        _configure_codex_base_url(
+            "npx",
+            ["-y", "@agentclientprotocol/codex-acp@1.1.2"],
+            env,
+        )
+        assert json.loads(env["CODEX_CONFIG"])["openai_base_url"] == (
+            "https://explicit"
+        )
 
     def test_noop_for_non_codex(self):
-        assert (
-            _codex_base_url_overrides(
-                "claude-agent-acp", [], {"OPENAI_BASE_URL": "https://p"}
-            )
-            == []
-        )
+        env = {"OPENAI_BASE_URL": "https://p"}
+        assert _configure_codex_base_url("claude-agent-acp", [], env) is None
+        assert "CODEX_CONFIG" not in env
 
     def test_noop_when_no_base_url(self):
-        assert _codex_base_url_overrides("codex-acp", [], {}) == []
+        env: dict[str, str] = {}
+        assert _configure_codex_base_url("codex-acp", [], env) is None
+        assert "CODEX_CONFIG" not in env
 
-    def test_noop_when_caller_already_set_base_url(self):
-        args = ["-c", 'openai_base_url="https://other"']
-        assert (
-            _codex_base_url_overrides(
-                "codex-acp", args, {"OPENAI_BASE_URL": "https://p"}
-            )
-            == []
-        )
-
-    def test_noop_when_caller_already_set_provider(self):
-        args = ["-c", 'model_provider="custom"']
-        assert (
-            _codex_base_url_overrides(
-                "codex-acp", args, {"OPENAI_BASE_URL": "https://p"}
-            )
-            == []
-        )
+    def test_noop_when_model_provider_is_explicit(self):
+        env = {
+            "OPENAI_BASE_URL": "https://p",
+            "MODEL_PROVIDER": "custom",
+        }
+        _configure_codex_base_url("codex-acp", [], env)
+        assert "CODEX_CONFIG" not in env
 
 
 class TestCodexModelConfigOptions:
@@ -4585,8 +4599,8 @@ class TestCodexModelConfigOptions:
 class TestMaybeSetSessionModel:
     @pytest.mark.asyncio
     async def test_set_session_model_mechanism(self):
-        # ``via_config_option=False`` (gemini-cli, older codex/claude with the
-        # ``models`` capability) applies the model via ``set_session_model``.
+        # ``via_config_option=False`` (gemini-cli's ``models`` capability)
+        # applies the model via ``set_session_model``.
         conn = AsyncMock()
         applied = await _maybe_set_session_model(
             conn, "codex-acp", "session-1", "gpt-5.4", via_config_option=False
@@ -4601,7 +4615,7 @@ class TestMaybeSetSessionModel:
 
     @pytest.mark.asyncio
     async def test_set_config_option_mechanism(self):
-        # ``via_config_option=True`` (codex-acp 0.16+, claude-agent-acp 0.44+)
+        # ``via_config_option=True`` (codex-acp and claude-agent-acp)
         # applies the model via ``set_config_option(configId="model")``.
         conn = AsyncMock()
         applied = await _maybe_set_session_model(
@@ -4621,8 +4635,8 @@ class TestMaybeSetSessionModel:
 
     @pytest.mark.asyncio
     async def test_codex_config_option_splits_reasoning_effort(self):
-        # Canvas may persist Codex ids as ``model/effort``; codex-acp 0.16
-        # exposes effort as its own config option.
+        # Canvas may persist Codex ids as ``model/effort``; codex-acp exposes
+        # effort as its own config option.
         conn = AsyncMock()
         applied = await _maybe_set_session_model(
             conn, "codex-acp", "session-1", "gpt-5.4/low", via_config_option=True
@@ -4733,7 +4747,7 @@ class TestReapplySessionModelOnResume:
 
     @pytest.mark.asyncio
     async def test_reapply_via_set_config_option_mechanism(self):
-        # codex-acp 0.16+/claude-agent-acp 0.44+ reapply via
+        # codex-acp/claude-agent-acp 0.44+ reapply via
         # ``set_config_option(configId="model")`` with the bare preset id.
         conn = AsyncMock()
         applied = await _reapply_session_model_on_resume(
@@ -4936,7 +4950,7 @@ class TestSetACPModel:
         assert agent.llm.metrics.model_name == "gpt-5.5"
 
     def test_switches_codex_via_config_option_single_call(self):
-        # codex-acp 0.16 configOptions: the bare preset id applies as a single
+        # codex-acp configOptions: the bare preset id applies as a single
         # `model` selection.
         agent = self._wire(_make_agent(), "codex-acp", via_config_option=True)
         agent.set_acp_model("gpt-5.5")
@@ -6342,10 +6356,10 @@ class TestACPSessionIdPersistence:
             "acp_session_id": "stored-sess",
             "acp_session_cwd": str(tmp_path),
         }
-        # Named "codex-acp"; any built-in provider routes acp_model through
-        # conn.set_session_model on this path.
+        # The maintained Codex adapter reports its scoped package name; provider
+        # detection still routes acp_model through conn.set_session_model.
         conn = self._make_conn()
-        conn.initialize.return_value.agent_info.name = "codex-acp"
+        conn.initialize.return_value.agent_info.name = "@agentclientprotocol/codex-acp"
         conn.initialize.return_value.auth_methods = []
 
         self._patched_start_acp_server(agent, state, conn=conn)
@@ -6357,7 +6371,7 @@ class TestACPSessionIdPersistence:
             session_id="stored-sess",
         )
         conn.set_session_mode.assert_awaited_once_with(
-            mode_id="full-access",
+            mode_id="agent-full-access",
             session_id="stored-sess",
         )
 
@@ -7132,8 +7146,7 @@ class TestACPAgentCurrentModelIdProperty:
 
         Mirrors the resolution logic in ``_init``: a caller-provided
         ``acp_model`` takes precedence over whatever the server happens to
-        report — both for the ``set_session_model`` path (Codex / Gemini)
-        and the ``session _meta`` path (Claude Code).
+        report, regardless of which protocol model-selection mechanism applies.
         """
         agent = _make_agent(acp_model="gpt-5")
         agent._current_model_id = agent.acp_model or "fallback-from-server"
@@ -7275,8 +7288,7 @@ class TestExtractSessionModelsNormalization:
 class TestConfigOptionModelMechanism:
     """Model selection via the ``model`` ``configOptions`` select.
 
-    codex-acp 0.16+ and claude-agent-acp 0.44+ dropped the UNSTABLE ``models``
-    capability + ``session/set_model`` in favour of a ``model`` config-option
+    Current codex-acp and claude-agent-acp expose a ``model`` config-option
     select driven by ``session/set_config_option``. ``_extract_session_models``
     reads that select and reports the apply mechanism as its third return value
     (``via_config_option``) in the same scan.
@@ -7339,8 +7351,8 @@ class TestConfigOptionModelMechanism:
         assert avail is not None
         assert [m.model_id for m in avail] == ["opus[1m]", "sonnet"]
 
-    def test_models_capability_wins_over_config_option(self):
-        # If a server somehow carries both, the ``models`` capability is used.
+    def test_config_option_wins_over_models_capability(self):
+        # Current codex-acp carries both; use the standard config-option path.
         models = MagicMock()
         models.current_model_id = "from-models"
         models.available_models = []
@@ -7353,9 +7365,11 @@ class TestConfigOptionModelMechanism:
             ],
         )
         cur, avail, via = _extract_session_models(response)
-        assert cur == "from-models"
-        assert avail == []
-        assert via is False
+        assert cur == "from-config"
+        assert avail == [
+            ACPModelInfo(model_id="from-config", name="X", description=None)
+        ]
+        assert via is True
 
     def test_detects_config_option_mechanism(self):
         response = self._response(
@@ -7453,15 +7467,25 @@ _CLAUDE_046_SESSION = {
         _select_dict("effort", "xhigh", ["xhigh", "low"]),
     ],
 }
-_CODEX_016_SESSION = {
+_CODEX_112_SESSION = {
     "sessionId": "sess-codex",
-    "models": None,
+    "models": {
+        "currentModelId": "gpt-5.6-sol[xhigh]",
+        "availableModels": [
+            {"modelId": "gpt-5.6-sol[xhigh]", "name": "GPT-5.6-Sol (xhigh)"},
+            {"modelId": "gpt-5.5[xhigh]", "name": "GPT-5.5 (xhigh)"},
+        ],
+    },
     "configOptions": [
-        _select_dict("mode", "read-only", ["read-only", "full-access"]),
+        _select_dict(
+            "mode",
+            "agent-full-access",
+            ["read-only", "agent", "agent-full-access"],
+        ),
         _select_dict(
             "model",
-            "gpt-5.5",
-            ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"],
+            "gpt-5.6-sol",
+            ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"],
             category="model",
         ),
         _select_dict("reasoning_effort", "xhigh", ["xhigh", "low"]),
@@ -7510,13 +7534,18 @@ class TestDetectionAgainstRealSessionResponses:
         assert avail is not None
         assert [m.model_id for m in avail] == ["default", "opus[1m]", "sonnet", "haiku"]
 
-    def test_codex_016_uses_config_option(self):
-        resp = NewSessionResponse.model_validate(_CODEX_016_SESSION)
+    def test_codex_112_prefers_config_option_over_legacy_models(self):
+        resp = NewSessionResponse.model_validate(_CODEX_112_SESSION)
         cur, avail, via = _extract_session_models(resp)
         assert via is True
-        assert cur == "gpt-5.5"
+        assert cur == "gpt-5.6-sol"
         assert avail is not None
-        assert [m.model_id for m in avail] == ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]
+        assert [m.model_id for m in avail] == [
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-5.5",
+        ]
 
     def test_gemini_046_uses_set_session_model(self):
         resp = NewSessionResponse.model_validate(_GEMINI_046_SESSION)

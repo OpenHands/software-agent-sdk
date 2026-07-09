@@ -3071,10 +3071,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         - "openai": ChatGPT Plus/Pro subscription for Codex models
 
         Supported OpenAI models:
-        - gpt-5.1-codex-max
-        - gpt-5.1-codex-mini
-        - gpt-5.2
-        - gpt-5.2-codex
+        - gpt-5.6
+        - gpt-5.6-sol
+        - gpt-5.6-terra
+        - gpt-5.6-luna
+        - gpt-5.5
+        - gpt-5.4
+        - gpt-5.4-mini
 
         Args:
             vendor: The vendor/provider. Currently only "openai" is supported.
@@ -3099,10 +3102,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             from openhands.sdk import LLM
 
             # First time: opens browser for OAuth login
-            llm = LLM.subscription_login(vendor="openai", model="gpt-5.2-codex")
+            llm = LLM.subscription_login(vendor="openai", model="gpt-5.6")
 
             # Subsequent calls: reuses cached credentials
-            llm = LLM.subscription_login(vendor="openai", model="gpt-5.2-codex")
+            llm = LLM.subscription_login(vendor="openai", model="gpt-5.6")
             ```
         """
         from openhands.sdk.llm.auth.openai import subscription_login
