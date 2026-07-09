@@ -1,6 +1,7 @@
 """Tests for WebSocketCallbackClient."""
 
 import asyncio
+import json
 import time
 from datetime import datetime
 from unittest.mock import MagicMock, patch
@@ -10,6 +11,7 @@ import websockets
 import websockets.frames
 
 from openhands.sdk.conversation.impl.remote_conversation import WebSocketCallbackClient
+from openhands.sdk.event.conversation_state import FULL_STATE_KEY
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm import Message, TextContent
 
@@ -140,8 +142,8 @@ def test_websocket_client_url_encodes_api_key():
         async def __aenter__(self):
             captured_urls.append(self.url)
             raise websockets.exceptions.ConnectionClosed(
-                rcvd=websockets.frames.Close(1000, "test"),
-                sent=websockets.frames.Close(1000, "test"),
+                rcvd=websockets.frames.Close(4001, "test"),
+                sent=websockets.frames.Close(4001, "test"),
                 rcvd_then_sent=False,
             )
 
@@ -167,3 +169,170 @@ def test_websocket_client_url_encodes_api_key():
 
     assert len(captured_urls) == 1
     assert "session_api_key=1%2BFYh%2FSRE%3Dds%208Q" in captured_urls[0]
+
+
+def _state_update_payload(event_id: str) -> str:
+    return json.dumps(
+        {
+            "kind": "ConversationStateUpdateEvent",
+            "id": event_id,
+            "timestamp": "2024-01-01T00:00:00Z",
+            "source": "environment",
+            "key": FULL_STATE_KEY,
+            "value": {"execution_status": "running"},
+        }
+    )
+
+
+def _connection_closed(code: int) -> websockets.exceptions.ConnectionClosed:
+    return websockets.exceptions.ConnectionClosed(
+        rcvd=websockets.frames.Close(code, "test"),
+        sent=websockets.frames.Close(code, "test"),
+        rcvd_then_sent=False,
+    )
+
+
+class _MockWebSocket:
+    def __init__(self, messages, close_code: int):
+        self._messages = list(messages)
+        self._close_code = close_code
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self._messages:
+            return self._messages.pop(0)
+        raise _connection_closed(self._close_code)
+
+
+class _MockWebSocketContext:
+    def __init__(self, ws: _MockWebSocket):
+        self._ws = ws
+
+    async def __aenter__(self):
+        return self._ws
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+def test_websocket_client_retries_after_retryable_connection_closed():
+    """Test that transient WebSocket closures reconnect instead of exiting."""
+    connect_calls = 0
+    callback_events = []
+
+    def callback(event):
+        callback_events.append(event)
+        if event.id == "state-2":
+            client._stop.set()
+
+    class _MockConnect:
+        def __call__(self, url, *args, **kwargs):
+            nonlocal connect_calls
+            connect_calls += 1
+            return _MockWebSocketContext(
+                _MockWebSocket(
+                    [_state_update_payload(f"state-{connect_calls}")],
+                    close_code=1000,
+                )
+            )
+
+    client = WebSocketCallbackClient(
+        host="http://localhost:8000",
+        conversation_id="test-conv-id",
+        callback=callback,
+    )
+
+    async def no_sleep(delay):
+        return None
+
+    client._sleep_before_retry = no_sleep
+
+    with patch(
+        "openhands.sdk.conversation.impl.remote_conversation.websockets.connect",
+        _MockConnect(),
+    ):
+        asyncio.run(client._client_loop())
+
+    assert connect_calls == 2
+    assert [event.id for event in callback_events] == ["state-1", "state-2"]
+
+
+@pytest.mark.parametrize("close_code", [4001, 4004])
+def test_websocket_client_stops_after_fatal_connection_closed(close_code):
+    """Test that fatal WebSocket close codes are not retried."""
+    connect_calls = 0
+
+    class _MockAsyncContextManager:
+        async def __aenter__(self):
+            raise _connection_closed(close_code)
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _MockConnect:
+        def __call__(self, url, *args, **kwargs):
+            nonlocal connect_calls
+            connect_calls += 1
+            return _MockAsyncContextManager()
+
+    client = WebSocketCallbackClient(
+        host="http://localhost:8000",
+        conversation_id="test-conv-id",
+        callback=lambda event: None,
+    )
+
+    with patch(
+        "openhands.sdk.conversation.impl.remote_conversation.websockets.connect",
+        _MockConnect(),
+    ):
+        asyncio.run(client._client_loop())
+
+    assert connect_calls == 1
+    assert client._stop.is_set()
+
+
+def test_websocket_client_calls_on_reconnect_after_subscription_restored():
+    """Test reconnect callback runs after the replacement subscription is ready."""
+    connect_calls = 0
+    reconnect = MagicMock()
+    callback_events = []
+
+    def callback(event):
+        callback_events.append(event)
+        if event.id == "state-2":
+            client._stop.set()
+
+    class _MockConnect:
+        def __call__(self, url, *args, **kwargs):
+            nonlocal connect_calls
+            connect_calls += 1
+            return _MockWebSocketContext(
+                _MockWebSocket(
+                    [_state_update_payload(f"state-{connect_calls}")],
+                    close_code=1000,
+                )
+            )
+
+    client = WebSocketCallbackClient(
+        host="http://localhost:8000",
+        conversation_id="test-conv-id",
+        callback=callback,
+        on_reconnect=reconnect,
+    )
+
+    async def no_sleep(delay):
+        return None
+
+    client._sleep_before_retry = no_sleep
+
+    with patch(
+        "openhands.sdk.conversation.impl.remote_conversation.websockets.connect",
+        _MockConnect(),
+    ):
+        asyncio.run(client._client_loop())
+
+    assert connect_calls == 2
+    assert [event.id for event in callback_events] == ["state-1", "state-2"]
+    reconnect.assert_called_once_with()
