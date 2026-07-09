@@ -32,6 +32,7 @@ import sys
 from security_scan_common import (
     Report,
     github_request,
+    github_request_all,
     last_release_tag,
     resolve_repo,
     run_git,
@@ -85,7 +86,11 @@ def audit_pr(
     """
     try:
         pr = github_request(f"/repos/{repo}/pulls/{number}", token)
-        reviews = github_request(
+        # Paginate: the reviews endpoint returns every review (COMMENTED too),
+        # so a heavily-discussed PR can exceed one page. A human APPROVED past
+        # the first page must not be missed, or the PR is misclassified as
+        # unapproved and blocks a clean release.
+        reviews = github_request_all(
             f"/repos/{repo}/pulls/{number}/reviews?per_page=100", token
         )
     except Exception as exc:  # noqa: BLE001 - report, do not crash the gate

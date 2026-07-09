@@ -46,18 +46,60 @@ def last_release_tag() -> str | None:
     return tags[0].strip() if tags and tags[0].strip() else None
 
 
-def github_request(path_or_url: str, token: str | None) -> object:
-    """GET a GitHub REST endpoint and parse JSON. Raises on HTTP error."""
-    url = path_or_url
-    if url.startswith("/"):
-        url = f"{GITHUB_API}{url}"
+def _github_get(url: str, token: str | None) -> tuple[object, str | None]:
+    """GET one GitHub REST page; return ``(parsed_json, link_header)``."""
     req = urllib.request.Request(url)
     req.add_header("Accept", "application/vnd.github+json")
     req.add_header("X-GitHub-Api-Version", "2022-11-28")
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        return json.loads(resp.read().decode("utf-8")), resp.headers.get("Link")
+
+
+def github_request(path_or_url: str, token: str | None) -> object:
+    """GET a GitHub REST endpoint and parse JSON. Raises on HTTP error."""
+    url = path_or_url
+    if url.startswith("/"):
+        url = f"{GITHUB_API}{url}"
+    body, _ = _github_get(url, token)
+    return body
+
+
+def _next_link(link_header: str | None) -> str | None:
+    """The ``rel="next"`` URL from a REST ``Link`` header, or None."""
+    if not link_header:
+        return None
+    for part in link_header.split(","):
+        segments = part.split(";")
+        if len(segments) < 2:
+            continue
+        url_part = segments[0].strip().lstrip("<").rstrip(">")
+        if any('rel="next"' in seg.strip() for seg in segments[1:]):
+            return url_part
+    return None
+
+
+def github_request_all(path_or_url: str, token: str | None) -> list[object]:
+    """GET a paginated GitHub REST list endpoint, following ``Link: next``.
+
+    Concatenates every page into one list. A security gate must see *all*
+    reviews — if a human APPROVED sits past the first page, truncating to a
+    single page would misclassify the PR as unapproved (a false-positive
+    block). A non-list response is returned wrapped as a single-item list.
+    """
+    url = path_or_url
+    if url.startswith("/"):
+        url = f"{GITHUB_API}{url}"
+    items: list[object] = []
+    while url:
+        page, link = _github_get(url, token)
+        if isinstance(page, list):
+            items.extend(page)
+        else:
+            return [page]
+        url = _next_link(link)
+    return items
 
 
 def osv_query_batch(
