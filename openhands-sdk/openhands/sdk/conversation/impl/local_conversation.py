@@ -484,8 +484,8 @@ class LocalConversation(BaseConversation):
     def _maybe_inject_path_rules(self, event: Event) -> Event:
         """Return ``event`` with matching path-rule content, or unchanged.
 
-        Only ``ObservationEvent``s carrying a file path are considered. Matching
-        rules already injected in this conversation are skipped via
+        Only ``ObservationEvent``s that report ``affected_paths`` are considered.
+        Matching rules already injected in this conversation are skipped via
         ``state.activated_path_rules``.
         """
         if not isinstance(event, ObservationEvent):
@@ -494,40 +494,33 @@ class LocalConversation(BaseConversation):
         if (agent_context := self.agent.agent_context) is None:
             return event
 
-        if (file_path := self._touched_rule_path(event)) is None:
-            return event
+        contents: list[TextContent] = []
+        for raw_path in event.observation.affected_paths:
+            if (file_path := self._normalize_rule_path(raw_path)) is None:
+                continue
+            result = agent_context.get_tool_use_suffix(
+                file_path=file_path,
+                skip_skill_names=self._state.activated_path_rules,
+            )
+            if result is None:
+                continue
+            content, activated_rule_names = result
+            self._state.activated_path_rules.extend(activated_rule_names)
+            contents.append(content)
 
-        result = agent_context.get_tool_use_suffix(
-            file_path=file_path,
-            skip_skill_names=self._state.activated_path_rules,
-        )
-        if result is None:
+        if not contents:
             return event
-
-        content, activated_rule_names = result
-        self._state.activated_path_rules.extend(activated_rule_names)
         return event.model_copy(
-            update={"extended_content": list(event.extended_content) + [content]}
+            update={"extended_content": list(event.extended_content) + contents}
         )
 
-    def _touched_rule_path(self, event: ObservationEvent) -> str | None:
-        """Return the workspace-relative POSIX path a tool observation touched.
+    def _normalize_rule_path(self, raw_path: str) -> str | None:
+        """Return the workspace-relative POSIX form of ``raw_path``.
 
-        Correlates the observation to its ``ActionEvent`` and reads the action's
-        ``path`` field generically (no dependency on the tools package). Returns
-        None when the action has no file ``path`` or the path is outside the
-        workspace.
+        Returns None when the path is empty or resolves outside the workspace
+        (rules are repo-scoped).
         """
-        action_event: Event | None = None
-        with contextlib.suppress(KeyError):
-            idx = self._state.events.get_index(event.action_id)
-            action_event = self._state.events[idx]
-        if not isinstance(action_event, ActionEvent) or action_event.action is None:
-            return None
-        # Read the field directly rather than model_dump(): avoids copying large
-        # edit payloads (file_text/old_str/new_str) just to read the path.
-        raw_path = getattr(action_event.action, "path", None)
-        if not isinstance(raw_path, str) or not raw_path:
+        if not raw_path:
             return None
 
         # Use the native path flavour so Windows drive paths (e.g. ``D:\\...``) are

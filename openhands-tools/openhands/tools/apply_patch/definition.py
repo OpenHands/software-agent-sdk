@@ -53,6 +53,18 @@ class ApplyPatchObservation(Observation):
     fuzz: int = 0
     commit: Commit | None = None
 
+    @property
+    def affected_paths(self) -> list[str]:
+        if self.is_error or self.commit is None:
+            return []
+        paths = list(self.commit.changes.keys())
+        paths.extend(
+            change.move_path
+            for change in self.commit.changes.values()
+            if change.move_path
+        )
+        return paths
+
 
 class ApplyPatchExecutor(ToolExecutor[ApplyPatchAction, ApplyPatchObservation]):
     """Executor that applies unified text patches within the workspace.

@@ -1,11 +1,14 @@
 """Tests for the path-rule injection seam in LocalConversation.
 
-When the agent touches a file whose path matches a PathTrigger skill ("rule"),
-the rule content is appended to the resulting ObservationEvent's
-``extended_content`` and deduped via ``state.activated_path_rules``.
+When a tool observation reports an ``affected_paths`` entry matching a
+PathTrigger skill ("rule"), the rule content is appended to the
+ObservationEvent's ``extended_content`` and deduped via
+``state.activated_path_rules``.
 """
 
 from pathlib import Path
+
+from pydantic import Field
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.context.agent_context import AgentContext
@@ -19,7 +22,7 @@ from openhands.sdk.tool.builtins.invoke_skill import (
     InvokeSkillAction,
     InvokeSkillExecutor,
 )
-from openhands.sdk.tool.schema import Action
+from openhands.sdk.tool.schema import Action, Observation
 
 
 class _FileAction(Action):
@@ -35,7 +38,21 @@ class _NoPathAction(Action):
     command: str = "ls"
 
 
-def _conversation(tmp_path: Path, rule: Skill) -> LocalConversation:
+class _FileObservation(Observation):
+    """Minimal path-bearing observation (stands in for a file-tool result).
+
+    The injection seam reads ``observation.affected_paths``; this stand-in lets
+    the SDK tests exercise it without importing openhands-tools.
+    """
+
+    paths: list[str] = Field(default_factory=list)
+
+    @property
+    def affected_paths(self) -> list[str]:
+        return list(self.paths)
+
+
+def _conversation(tmp_path: Path, *rules: Skill) -> LocalConversation:
     agent = Agent(
         llm=TestLLM.from_messages(
             [Message(role="assistant", content=[TextContent(text="ok")])],
@@ -43,7 +60,7 @@ def _conversation(tmp_path: Path, rule: Skill) -> LocalConversation:
         ),
         tools=[],
         include_default_tools=[],
-        agent_context=AgentContext(skills=[rule]),
+        agent_context=AgentContext(skills=list(rules)),
     )
     return LocalConversation(
         agent=agent,
@@ -71,8 +88,14 @@ def _append_file_action(conv: LocalConversation, abs_path: str) -> ActionEvent:
 
 
 def _observation_for(action_event: ActionEvent) -> ObservationEvent:
+    # Mirror the action's touched path onto the observation, which is where the
+    # injection seam reads it from (``observation.affected_paths``).
+    touched = getattr(action_event.action, "path", None)
     return ObservationEvent(
-        observation=FinishObservation(content=[TextContent(text="tool-result")]),
+        observation=_FileObservation(
+            paths=[touched] if touched else [],
+            content=[TextContent(text="tool-result")],
+        ),
         action_id=action_event.id,
         tool_name=action_event.tool_name,
         tool_call_id=action_event.tool_call_id,
@@ -193,7 +216,7 @@ def test_file_outside_workspace_is_not_matched(tmp_path: Path) -> None:
 def test_symlinked_workspace_root_still_matches(tmp_path: Path) -> None:
     """A rule fires even when the action path and the workspace root differ only
     by a symlink (e.g. macOS /tmp -> /private/tmp); the resolve() fallback in
-    ``_touched_rule_path`` recovers the workspace-relative path."""
+    ``_normalize_rule_path`` recovers the workspace-relative path."""
     real = tmp_path / "real_ws"
     real.mkdir()
     link = tmp_path / "link_ws"
@@ -331,19 +354,53 @@ def test_no_injection_when_agent_has_no_context(tmp_path: Path) -> None:
         conv.close()
 
 
-def test_no_injection_when_action_not_correlated(tmp_path: Path) -> None:
-    """An observation whose action_id isn't in the event log yields no path."""
+def test_no_injection_when_observation_reports_no_paths(tmp_path: Path) -> None:
+    """An observation that reports no ``affected_paths`` never injects a rule."""
     rule = Skill(name="any", content="rule", trigger=PathTrigger(paths=["**/*"]))
     conv = _conversation(tmp_path, rule)
     try:
-        orphan = ObservationEvent(
+        obs = ObservationEvent(
             observation=FinishObservation(content=[TextContent(text="x")]),
-            action_id="nonexistent-action-id",
-            tool_name="file_editor",
+            action_id="unrelated-action-id",
+            tool_name="finish",
             tool_call_id="tc9",
         )
-        injected = _inject(conv, orphan)
+        injected = _inject(conv, obs)
         assert injected.extended_content == []
         assert conv._state.activated_path_rules == []
+    finally:
+        conv.close()
+
+
+def test_multiple_affected_paths_inject_matching_rules(tmp_path: Path) -> None:
+    """An observation touching several files fires each matching rule (e.g. an
+    apply_patch that edits and renames across directories)."""
+    api = Skill(
+        name="api", content="Use zod.", trigger=PathTrigger(paths=["src/api/**/*.ts"])
+    )
+    ui = Skill(
+        name="ui",
+        content="Use tailwind.",
+        trigger=PathTrigger(paths=["src/ui/**/*.ts"]),
+    )
+    conv = _conversation(tmp_path, api, ui)
+    try:
+        obs = ObservationEvent(
+            observation=_FileObservation(
+                paths=[
+                    str(tmp_path / "src" / "api" / "a.ts"),
+                    str(tmp_path / "src" / "ui" / "b.ts"),
+                ],
+                content=[TextContent(text="tool-result")],
+            ),
+            action_id="a1",
+            tool_name="apply_patch",
+            tool_call_id="tc1",
+        )
+        injected = _inject(conv, obs)
+        texts = " ".join(c.text for c in injected.extended_content)
+        assert "Use zod." in texts
+        assert "Use tailwind." in texts
+        assert sorted(conv._state.activated_path_rules) == ["api", "ui"]
     finally:
         conv.close()

@@ -63,6 +63,10 @@ class ReadFileObservation(Observation):
     )
 
     @property
+    def affected_paths(self) -> list[str]:
+        return [self.file_path] if self.file_path and not self.is_error else []
+
+    @property
     def visualize(self) -> Text:
         """Return Rich Text representation of this observation."""
         text = Text()

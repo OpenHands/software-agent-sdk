@@ -363,6 +363,16 @@ class Observation(Schema, ABC):
         default=False, description="Whether the observation indicates an error"
     )
 
+    @property
+    def affected_paths(self) -> list[str]:
+        """Filesystem paths this tool created, modified, or moved.
+
+        Empty by default; file-touching observations override it so consumers
+        (e.g. path-rule injection) read typed data instead of guessing a
+        ``path`` field on the action.
+        """
+        return []
+
     @classmethod
     def from_text(
         cls,

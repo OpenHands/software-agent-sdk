@@ -91,6 +91,10 @@ class FileEditorObservation(Observation):
     _diff_cache: Text | None = PrivateAttr(default=None)
 
     @property
+    def affected_paths(self) -> list[str]:
+        return [self.path] if self.path and not self.is_error else []
+
+    @property
     def visualize(self) -> Text:
         """Return Rich Text representation of this observation.
 
