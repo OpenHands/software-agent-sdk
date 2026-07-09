@@ -106,6 +106,9 @@ class EventService:
     _closing: bool = field(default=False, init=False)
     _run_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     _callback_wrapper: AsyncCallbackWrapper | None = field(default=None, init=False)
+    # Reacts to the agent-change event to mirror an in-run LLM swap into
+    # meta.json (see _on_conversation_event / _sync_llm_to_meta).
+    _meta_sync_listener: AsyncCallbackWrapper | None = field(default=None, init=False)
     _lease: ConversationLease | None = field(default=None, init=False)
     _lease_generation: int | None = field(default=None, init=False)
     _lease_task: asyncio.Task | None = field(default=None, init=False)
@@ -773,6 +776,12 @@ class EventService:
         self._callback_wrapper = AsyncCallbackWrapper(
             self._pub_sub, loop=asyncio.get_running_loop()
         )
+        # Listener that mirrors an LLM swap into meta.json when the agent
+        # changes. The wrapper bridges worker-thread emissions onto the main
+        # loop, so _sync_llm_to_meta's save_meta() runs there safely.
+        self._meta_sync_listener = AsyncCallbackWrapper(
+            self._on_conversation_event, loop=asyncio.get_running_loop()
+        )
 
         # Only wire token streaming for agents that can actually emit token
         # callbacks. SDK LLM agents need stream=True, while ACP agents emit
@@ -828,7 +837,7 @@ class EventService:
             plugins=self.stored.plugins,
             persistence_dir=str(self.conversations_dir),
             conversation_id=self.stored.id,
-            callbacks=[self._callback_wrapper],
+            callbacks=[self._callback_wrapper, self._meta_sync_listener],
             token_callbacks=([_token_streaming_callback] if streaming_enabled else []),
             max_iteration_per_run=self.stored.max_iterations,
             stuck_detection=self.stored.stuck_detection,
@@ -996,18 +1005,18 @@ class EventService:
                             None, self._callback_wrapper.wait_for_pending, 30.0
                         )
 
+                    # An in-run switch_llm tool changes state.agent, which the
+                    # meta-sync listener persists to meta.json off the main loop.
+                    # Flush it here so the swap is durable before the run task
+                    # completes (the listener is a no-op for ordinary runs).
+                    if self._meta_sync_listener:
+                        await loop.run_in_executor(
+                            None, self._meta_sync_listener.wait_for_pending, 30.0
+                        )
+
                     # Clear task reference and publish state update
                     self._run_task = None
                     await self._publish_state_update()
-
-                    # Persist an in-run LLM swap (switch_llm tool); best-effort
-                    # so it can never break run completion.
-                    try:
-                        await self._sync_llm_to_meta()
-                    except Exception:
-                        logger.exception(
-                            "Failed to persist in-run LLM change to meta.json"
-                        )
 
                     # Re-arm a run for input stranded while this task was
                     # wrapping up. A send_message(run=True) that arrived during
@@ -1428,18 +1437,35 @@ class EventService:
         )
         await self.save_meta()
 
+    async def _on_conversation_event(self, event: Event) -> None:
+        """Persist an in-run LLM swap the moment the agent changes.
+
+        The agent's own ``switch_llm`` tool swaps the LLM mid-run without going
+        through the endpoints; that swap ends in ``state.agent = ...``, which
+        emits ``ConversationStateUpdateEvent(key="agent")``. Reacting to that one
+        event covers the tool path (the endpoints persist synchronously
+        themselves). Best-effort so it can never break a run;
+        :meth:`_sync_llm_to_meta`'s identity guard keeps ordinary runs and
+        plugin merges (new agent object, same LLM) a no-op.
+        """
+        if not (
+            isinstance(event, ConversationStateUpdateEvent) and event.key == "agent"
+        ):
+            return
+        try:
+            await self._sync_llm_to_meta()
+        except Exception:
+            logger.exception("Failed to persist in-run LLM change to meta.json")
+
     async def _sync_llm_to_meta(self) -> None:
         """Persist an LLM swap into ``meta.json`` so it survives a restart.
 
-        On resume ``start()`` rebuilds the agent from ``meta.json`` and
-        ``ConversationState.create()`` copies it over ``base_state.json``, so a
-        switch that only touched the live conversation reverts to the
-        creation-time LLM (and its ``timeout``). Only the stored agent's
-        ``llm``/``condenser`` are updated — not the whole live agent — so its
-        plugin-unmerged ``agent_context``/``mcp_config`` stay intact (persisting
-        the merged agent would double-merge plugins on resume). Keyed on LLM
-        object identity, so plugin loading — which replaces the agent but keeps
-        the LLM — is a no-op. ``_synced_llm`` is ``None`` only before start().
+        Resume rebuilds the agent from ``meta.json`` and copies it over
+        ``base_state.json``, so a live-only switch reverts to the creation-time
+        LLM (and its ``timeout``). Only ``llm``/``condenser`` are mirrored — not
+        the whole agent — so plugin-merged ``agent_context``/``mcp_config`` isn't
+        baked in (it would double-merge on resume). Keyed on LLM identity, so
+        plugin loading (new agent, same LLM) is a no-op.
         """
         conversation = self._conversation
         if (
