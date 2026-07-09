@@ -94,7 +94,7 @@ def audit_pr(
     ]
 
     if not approvals:
-        merged_by = (pr.get("merged_by") or {})
+        merged_by = pr.get("merged_by") or {}
         if _is_bot(merged_by) and merged_by.get("login") in trusted_bots:
             return "trusted-bot", f"merged by trusted bot {merged_by.get('login')}"
         return (
