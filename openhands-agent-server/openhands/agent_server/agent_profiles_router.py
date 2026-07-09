@@ -26,7 +26,7 @@ from openhands.agent_server.persistence import (
     get_llm_profile_store,
     get_settings_store,
 )
-from openhands.agent_server.profiles_router import MAX_PROFILES
+from openhands.agent_server.profiles_router import MAX_PROFILES, _has_api_key
 from openhands.agent_server.skills_service import discover_profile_skills
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import (
@@ -124,6 +124,25 @@ def _store_errors() -> Iterator[None]:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
+def _llm_has_real_config(llm: LLM) -> bool:
+    """True when ``llm`` carries real, user-provided configuration.
+
+    Distinguishes an already-working setup — a real API key, subscription auth,
+    or a custom endpoint — from bare SDK field defaults on a never-configured
+    account (``model="gpt-5.5"``, no ``api_key``). Only the former is worth
+    mirroring into a named ``default`` LLM profile; persisting the latter leaves
+    a keyless, non-functional "ghost" profile that the user never asked for and
+    that nothing ever cleans up (#4031).
+    """
+    if _has_api_key(llm):
+        return True
+    if llm.is_subscription or llm.auth_type == "subscription":
+        return True
+    if llm.base_url and llm.base_url.strip():
+        return True
+    return False
+
+
 def _seed_default_llm_profile(llm: LLM, cipher: Cipher | None) -> str:
     """Mirror the live LLM config into a ``SEED_PROFILE_NAME`` LLM profile.
 
@@ -134,6 +153,17 @@ def _seed_default_llm_profile(llm: LLM, cipher: Cipher | None) -> str:
     ``SaasSettingsStore``'s legacy-LLM backfill: materialize the current
     ``agent_settings.llm`` under that name so the reference resolves, unless a
     profile is already stored there (never clobber it).
+
+    Only a *real, pre-existing* LLM config is persisted (``_llm_has_real_config``
+    — an API key, subscription auth, or a custom base_url), which is exactly the
+    legacy/cloud migration case the backfill exists for. On a fresh,
+    never-configured account the live LLM is untouched SDK defaults (keyless
+    ``gpt-5.5``); persisting *that* only litters the profile list with a keyless,
+    unusable ``default`` "ghost" profile (#4031), so we skip the save and leave
+    ``llm_profile_ref="default"`` as a soft/dangling ref — the canvas
+    "LLM not configured" banner and the legible launch-time error already cover
+    that state, and materialize/dry-run reports it as ``dangling_llm_profile_ref``
+    rather than raising.
 
     Existence is checked via ``load()``, not ``list()``: the store resolves a
     name straight to a filesystem path, so on a case-insensitive filesystem
@@ -156,6 +186,15 @@ def _seed_default_llm_profile(llm: LLM, cipher: Cipher | None) -> str:
             logger.warning(
                 f"Default LLM profile '{SEED_PROFILE_NAME}' exists but "
                 "failed to load; leaving it as-is"
+            )
+            return SEED_PROFILE_NAME
+        if not _llm_has_real_config(llm):
+            # Never-configured account: don't persist a keyless ghost profile.
+            # Leave the ref soft/dangling; the banner + launch-time error handle
+            # it, and it resolves for real once the user saves a profile.
+            logger.info(
+                f"Skipping default LLM profile '{SEED_PROFILE_NAME}' seed: "
+                "no real LLM config yet (leaving llm_profile_ref as a soft ref)"
             )
             return SEED_PROFILE_NAME
         try:
