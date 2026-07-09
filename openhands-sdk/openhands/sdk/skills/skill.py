@@ -4,25 +4,26 @@ import os
 import re
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
-from typing import Annotated, ClassVar, Final, Literal, Union
+from typing import Annotated, Any, ClassVar, Final, Literal, Union
 from xml.sax.saxutils import escape as xml_escape
 
 import frontmatter
 import yaml
-from fastmcp.mcp_config import MCPConfig
 from pydantic import (
     BaseModel,
     Field,
     SerializationInfo,
+    ValidationInfo,
     field_serializer,
     field_validator,
     model_validator,
 )
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config, dump_mcp_config
 from openhands.sdk.skills.exceptions import SkillError, SkillValidationError
 from openhands.sdk.skills.execute import render_content_with_commands
 from openhands.sdk.skills.trigger import (
@@ -197,13 +198,9 @@ class Skill(BaseModel):
             "When it is None, it is treated as a programmatically defined skill."
         ),
     )
-    mcp_tools: dict | None = Field(
+    mcp_tools: dict[str, MCPServer] | None = Field(
         default=None,
-        description=(
-            "MCP tools configuration for the skill (repo skills only). "
-            "It should conform to the MCPConfig schema: "
-            "https://gofastmcp.com/clients/client#configuration-format"
-        ),
+        description=("MCP servers for the skill (repo skills only)."),
     )
     inputs: list[InputMetadata] = Field(
         default_factory=list,
@@ -307,37 +304,30 @@ class Skill(BaseModel):
             return {str(k): str(val) for k, val in v.items()}
         raise SkillValidationError("metadata must be a dictionary")
 
-    @field_validator("mcp_tools")
+    @field_validator("mcp_tools", mode="before")
     @classmethod
-    def _validate_mcp_tools(cls, v: dict | None, _info):
-        """Validate mcp_tools conforms to MCPConfig schema."""
+    def _validate_mcp_tools(
+        cls, v: object, info: ValidationInfo
+    ) -> dict[str, MCPServer] | None:
+        """Validate skill MCP tools as native MCP server models."""
         if v is None:
-            return v
-        if isinstance(v, dict):
-            try:
-                MCPConfig.model_validate(v)
-            except Exception as e:
-                raise SkillValidationError(f"Invalid MCPConfig dictionary: {e}") from e
-        return v
+            return None
+        if not isinstance(v, Mapping):
+            raise SkillValidationError("mcp_tools must be a dictionary or None")
+        try:
+            return coerce_mcp_config(v, context=info.context)
+        except Exception as e:
+            raise SkillValidationError(f"Invalid MCP config dictionary: {e}") from e
 
     @field_serializer("mcp_tools")
     def _serialize_mcp_tools(
-        self, value: dict | None, info: SerializationInfo
-    ) -> dict | None:
-        """Mask credentials in ``mcp_tools`` (``mcpServers.*.env``/``headers``).
-
-        ``mcp_tools`` is an unmodeled ``dict``, so it would otherwise dump its
-        MCP server secrets in plaintext wherever a ``Skill`` is serialized.
-        Route it through the same ``serialize_mcp_config`` as settings
-        ``mcp_config``: redacted by default, plaintext under ``expose_secrets``,
-        encrypted under a cipher. Imported lazily to avoid the
-        settings.model -> agent_context -> skills import cycle.
-        """
+        self, value: dict[str, MCPServer] | None, info: SerializationInfo
+    ) -> dict[str, dict[str, Any]] | None:
+        if value is None:
+            return None
         if not value:
-            return value
-        from openhands.sdk.settings.model import serialize_mcp_config
-
-        return serialize_mcp_config(MCPConfig.model_validate(value), info)
+            return {}
+        return dump_mcp_config(value, context=info.context or {})
 
     PATH_TO_THIRD_PARTY_SKILL_NAME: ClassVar[dict[str, str]] = {
         ".cursorrules": "cursorrules",
@@ -353,6 +343,7 @@ class Skill(BaseModel):
         path: str | Path,
         skill_base_dir: Path | None = None,
         strict: bool = True,
+        skip_mcp: bool = False,
     ) -> "Skill":
         """Load a skill from a markdown file with frontmatter.
 
@@ -367,6 +358,9 @@ class Skill(BaseModel):
             skill_base_dir: Base directory for skills (used to derive relative names).
             strict: If True, enforce strict AgentSkills name validation.
                 If False, allow relaxed naming (e.g., for plugin compatibility).
+            skip_mcp: If True, skip loading MCP configuration from .mcp.json.
+                Used when loading root plugin skills where MCP config is already
+                loaded at the plugin level to avoid double-loading.
         """
         path = Path(path) if isinstance(path, str) else path
 
@@ -374,13 +368,15 @@ class Skill(BaseModel):
             file_content = f.read()
 
         if path.name.lower() == "skill.md":
-            return cls._load_agentskills_skill(path, file_content, strict=strict)
+            return cls._load_agentskills_skill(
+                path, file_content, strict=strict, skip_mcp=skip_mcp
+            )
         else:
             return cls._load_legacy_openhands_skill(path, file_content, skill_base_dir)
 
     @classmethod
     def _load_agentskills_skill(
-        cls, path: Path, file_content: str, strict: bool = True
+        cls, path: Path, file_content: str, strict: bool = True, skip_mcp: bool = False
     ) -> "Skill":
         """Load a skill from an AgentSkills-format SKILL.md file.
 
@@ -388,6 +384,7 @@ class Skill(BaseModel):
             path: Path to the SKILL.md file.
             file_content: Content of the file.
             strict: If True, enforce strict AgentSkills name validation.
+            skip_mcp: If True, skip loading MCP configuration from .mcp.json.
         """
         # For SKILL.md files, use parent directory name as the skill name
         directory_name = path.parent.name
@@ -410,10 +407,12 @@ class Skill(BaseModel):
                 )
 
         # Load MCP configuration from .mcp.json (agent_skills ONLY use .mcp.json)
-        mcp_tools: dict | None = None
-        mcp_json_path = find_mcp_config(skill_root)
-        if mcp_json_path:
-            mcp_tools = load_mcp_config(mcp_json_path, skill_root)
+        mcp_tools: dict[str, MCPServer] | None = None
+        if not skip_mcp:
+            mcp_json_path = find_mcp_config(skill_root)
+            if mcp_json_path:
+                mcp_config = load_mcp_config(mcp_json_path, skill_root)
+                mcp_tools = coerce_mcp_config(mcp_config.get("mcpServers", {}))
 
         # Discover resource directories
         resources: SkillResources | None = None
@@ -467,13 +466,14 @@ class Skill(BaseModel):
         mcp_tools = metadata_dict.get("mcp_tools")
         if mcp_tools is not None and not isinstance(mcp_tools, dict):
             raise SkillValidationError("mcp_tools must be a dictionary or None")
+        mcp_tools = coerce_mcp_config(mcp_tools) if mcp_tools is not None else None
 
         return cls._create_skill_from_metadata(
             agent_name, content, path, metadata_dict, mcp_tools
         )
 
     @staticmethod
-    def _parse_paths(v: str | list | None) -> list[str] | None:
+    def _parse_paths(v: object) -> list[str] | None:
         """Parse ``paths`` frontmatter (comma-separated string or list) into a
         non-empty list of globs, or None. Mirrors Claude Code / AgentSkills."""
         if v is None:
@@ -490,8 +490,8 @@ class Skill(BaseModel):
         agent_name: str,
         content: str,
         path: Path,
-        metadata_dict: dict,
-        mcp_tools: dict | None = None,
+        metadata_dict: dict[str, object],
+        mcp_tools: dict[str, MCPServer] | None = None,
         resources: SkillResources | None = None,
         is_agentskills_format: bool = False,
     ) -> "Skill":

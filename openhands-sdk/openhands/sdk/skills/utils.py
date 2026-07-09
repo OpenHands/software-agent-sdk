@@ -168,23 +168,6 @@ def find_mcp_config(skill_dir: Path) -> Path | None:
     return None
 
 
-def _serialize_for_json(obj: object) -> object:
-    """Recursively convert Pydantic models to dicts for JSON serialization.
-
-    This handles the case where MCP config contains Pydantic model objects
-    (RemoteMCPServer, StdioMCPServer) instead of plain dicts.
-    """
-    # Check for Pydantic v2 model_dump method
-    model_dump = getattr(obj, "model_dump", None)
-    if callable(model_dump):
-        return model_dump()
-    elif isinstance(obj, dict):
-        return {k: _serialize_for_json(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [_serialize_for_json(item) for item in obj]
-    return obj
-
-
 def expand_mcp_variables(
     config: dict,
     variables: dict[str, str],
@@ -205,9 +188,7 @@ def expand_mcp_variables(
     4. Default value (if specified and expand_defaults=True)
 
     Args:
-        config: MCP configuration dictionary. May contain Pydantic model objects
-            (e.g., RemoteMCPServer, StdioMCPServer) which will be converted to
-            dicts before JSON serialization.
+        config: MCP configuration dictionary.
         variables: Dictionary of variable names to values (e.g., SKILL_ROOT).
         get_secret: Callback to look up a secret by name. We use a callback
             rather than a dict to avoid extracting all secrets into plain text.
@@ -219,14 +200,11 @@ def expand_mcp_variables(
     Returns:
         Configuration with variables expanded.
     """
-    # Convert Pydantic models to plain containers before variable expansion.
-    serializable_config = _serialize_for_json(config)
-
     # Use the shared expansion function with MCP config settings:
     # - check_env=True (check environment variables)
     # - support_unbraced=False (only ${VAR} syntax for config files)
     expanded_config = expand_variable_references(
-        serializable_config,
+        config,
         variables=variables,
         get_secret=get_secret,
         check_env=True,
@@ -286,7 +264,7 @@ def load_mcp_config(
         config, variables, get_secret=get_secret, expand_defaults=expand_defaults
     )
 
-    # Validate using MCPConfig
+    # Validate the external .mcp.json shape using FastMCP's config model.
     try:
         MCPConfig.model_validate(config)
     except Exception as e:

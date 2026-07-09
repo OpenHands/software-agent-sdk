@@ -56,7 +56,8 @@ from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
 from openhands.sdk.marketplace.registry import MarketplaceRegistry
-from openhands.sdk.mcp import create_mcp_tools
+from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config, dump_mcp_config
+from openhands.sdk.mcp.utils import DefaultMCPToolProvider, MCPToolProvider
 from openhands.sdk.observability.laminar import observe
 from openhands.sdk.plugin import (
     Plugin,
@@ -167,6 +168,7 @@ class LocalConversation(BaseConversation):
     _plugins_loaded: bool
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
     _subscription_disabled_condenser: Any | None
+    _mcp_tool_provider: MCPToolProvider
 
     def __init__(
         self,
@@ -200,6 +202,7 @@ class LocalConversation(BaseConversation):
         observability_span_name: str = "conversation",
         prompt_cache_key: str | None = None,
         file_store: FileStore | None = None,
+        mcp_tool_provider: MCPToolProvider | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -276,6 +279,7 @@ class LocalConversation(BaseConversation):
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
         self._subscription_disabled_condenser = None
+        self._mcp_tool_provider = mcp_tool_provider or DefaultMCPToolProvider()
 
         # Create-or-resume: factory inspects BASE_STATE to decide
         desired_id = conversation_id or uuid.uuid4()
@@ -1014,6 +1018,12 @@ class LocalConversation(BaseConversation):
                 merged_skills = merge_skills_by_name(
                     project_skills.values(), merged_context.skills
                 )
+                # Honor the context deny-list here too: model_copy below bypasses
+                # AgentContext's validator, and a project skill can match a
+                # disabled name (absent name => harmless no-op).
+                if merged_context.disabled_skills:
+                    disabled = set(merged_context.disabled_skills)
+                    merged_skills = [s for s in merged_skills if s.name not in disabled]
                 merged_context = merged_context.model_copy(
                     update={"skills": merged_skills}
                 )
@@ -1028,12 +1038,13 @@ class LocalConversation(BaseConversation):
         if merged_mcp:
             # Pass the registry's lookup method as a callback - secrets are retrieved
             # lazily, one at a time, only when actually referenced in the config
-            merged_mcp = expand_mcp_variables(
-                merged_mcp,
+            expanded_mcp = expand_mcp_variables(
+                {"mcpServers": dump_mcp_config(merged_mcp)},
                 {},
                 get_secret=self._state.secret_registry.get_secret_value,
                 expand_defaults=True,
             )
+            merged_mcp = coerce_mcp_config(expanded_mcp["mcpServers"])
             logger.debug("Expanded MCP config variables")
 
         # Update agent with merged content only if something changed.
@@ -1174,14 +1185,20 @@ class LocalConversation(BaseConversation):
         self._hook_processor.set_conversation_state(self._state)
         self._hook_processor.run_session_start()
 
-    def _runtime_mcp_tools_for_plugin(
-        self, plugin_mcp_config: dict[str, Any] | None
+    def _runtime_mcp_tools(
+        self, mcp_config: dict[str, MCPServer]
     ) -> list[ToolDefinition]:
-        if not plugin_mcp_config:
+        if not mcp_config:
             return []
-        return list(
-            create_mcp_tools(plugin_mcp_config, _RUNTIME_MCP_TIMEOUT_SECS).tools
+        client = self._mcp_tool_provider.create_tools(
+            mcp_config, _RUNTIME_MCP_TIMEOUT_SECS
         )
+        return list(client.tools)
+
+    def _runtime_mcp_tools_for_agent(self) -> list[ToolDefinition]:
+        if not self.agent.supports_openhands_tools or not self.agent.mcp_config:
+            return []
+        return self._runtime_mcp_tools(self.agent.mcp_config)
 
     def _runtime_skill_tools_for_agent(self) -> list[ToolDefinition]:
         agent_context = self.agent.agent_context
@@ -1228,31 +1245,29 @@ class LocalConversation(BaseConversation):
         )
 
         get_secret = self._state.secret_registry.get_secret_value
-        runtime_plugin_mcp = (
-            expand_mcp_variables(
-                plugin.mcp_config,
+        runtime_plugin_mcp: dict[str, MCPServer] = {}
+        if plugin.mcp_config:
+            expanded_plugin_mcp = expand_mcp_variables(
+                {"mcpServers": dump_mcp_config(plugin.mcp_config)},
                 {},
                 get_secret=get_secret,
                 expand_defaults=True,
             )
-            if plugin.mcp_config
-            else None
-        )
+            runtime_plugin_mcp = coerce_mcp_config(expanded_plugin_mcp["mcpServers"])
         merged_context = plugin.add_skills_to(self.agent.agent_context)
         merged_mcp = plugin.add_mcp_config_to(
             dict(self.agent.mcp_config) if self.agent.mcp_config else {}
         )
         if merged_mcp:
-            merged_mcp = expand_mcp_variables(
-                merged_mcp,
+            expanded_mcp = expand_mcp_variables(
+                {"mcpServers": dump_mcp_config(merged_mcp)},
                 {},
                 get_secret=get_secret,
                 expand_defaults=True,
             )
+            merged_mcp = coerce_mcp_config(expanded_mcp["mcpServers"])
         runtime_mcp_tools = (
-            self._runtime_mcp_tools_for_plugin(runtime_plugin_mcp)
-            if self._agent_ready
-            else []
+            self._runtime_mcp_tools(runtime_plugin_mcp) if self._agent_ready else []
         )
 
         with self._state:
@@ -1343,8 +1358,20 @@ class LocalConversation(BaseConversation):
             # register file-based agents
             self._register_file_based_agents()
 
-            # Initialize agent with complete configuration
-            self.agent.init_state(self._state, on_event=self._on_event)
+            runtime_mcp_tools: list[ToolDefinition] = []
+            try:
+                if self.agent.supports_openhands_tools:
+                    self.agent._initialize(self._state)
+                    runtime_mcp_tools = self._runtime_mcp_tools_for_agent()
+                    self.agent.add_runtime_tools(runtime_mcp_tools)
+
+                self.agent.init_state(
+                    self._state,
+                    on_event=self._on_event,
+                )
+            except Exception:
+                self._close_runtime_tools(runtime_mcp_tools)
+                raise
 
             # Register LLMs in the registry (still holding lock).
             # `registered` is updated after each add so that duplicate usage_ids
@@ -1668,6 +1695,31 @@ class LocalConversation(BaseConversation):
         """Emit an event while holding the conversation state lock."""
         with self._state:
             self._on_event(event)
+
+    @contextlib.asynccontextmanager
+    async def _released_state_lock_during_io(self):
+        """Release the run loop's state lock across an awaited LLM network call.
+
+        ``arun()`` holds the state lock across the whole step; releasing it for
+        just the network wait keeps ``send_message()`` and state snapshots
+        responsive. No-op unless this thread holds the lock, so direct ``astep``
+        calls are unaffected. Deadlock-safe: ``arun`` is the only holder across
+        an ``await``; every other holder takes it only briefly.
+        """
+        lock = self._state._lock
+        if not lock.owned():
+            yield
+            return
+        held_flag = self._step_holds_state_lock
+        depth = lock.release_all()
+        # Keep the flag honest while released so a concurrent switch_llm (on the
+        # event-loop thread) takes the now-free lock instead of racing mutators.
+        self._step_holds_state_lock = False
+        try:
+            yield
+        finally:
+            lock.reacquire(depth)
+            self._step_holds_state_lock = held_flag
 
     @observe(name="conversation.run")
     def run(self) -> None:

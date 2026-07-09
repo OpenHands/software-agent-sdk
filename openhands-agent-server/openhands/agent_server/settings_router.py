@@ -181,7 +181,7 @@ async def update_settings(
 
         PATCH /api/settings
         {"agent_settings_diff":
-            {"mcp_config": {"mcpServers": {"svc": {"headers": {"X-Old": null}}}}}}
+            {"mcp_config": {"svc": {"headers": {"X-Old": null}}}}}
 
     A ``null`` on a top-level *field* (e.g. ``{"confirmation_mode": null}``)
     is **not** an unset — it flows to model validation as before, so it still
@@ -220,7 +220,8 @@ async def update_settings(
 
     # Apply updates atomically with file locking
     def apply_update(settings: PersistedSettings) -> PersistedSettings:
-        settings.update(cast(SettingsUpdatePayload, update_data))
+        context = {"cipher": config.cipher} if config.cipher is not None else None
+        settings.update(cast(SettingsUpdatePayload, update_data), context=context)
         return settings
 
     client_host = request.client.host if request.client else "unknown"

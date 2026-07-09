@@ -139,6 +139,18 @@ class AgentContext(BaseModel):
         ),
         json_schema_extra={"acp_compatible": True},
     )
+    disabled_skills: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of skills to EXCLUDE from this context — a deny-list applied "
+            "after every skill source is loaded (auto-loaded user/public, "
+            "explicit, and lazily-loaded project skills). A listed name absent "
+            "from the loaded set is a harmless no-op. [] (the default) keeps "
+            "every skill. This is the single, drift-tolerant skill-selection "
+            "mechanism (agent profiles set it from their own deny-list; #4017)."
+        ),
+        json_schema_extra={"acp_compatible": True},
+    )
     secrets: Mapping[str, SecretValue] | None = Field(
         default=None,
         description=(
@@ -218,29 +230,35 @@ class AgentContext(BaseModel):
 
     @model_validator(mode="after")
     def _load_auto_skills(self):
-        """Load user and/or legacy public skills if enabled."""
+        """Load user/legacy-public skills if enabled, then apply ``disabled_skills``."""
         # Any marketplace registration opts the context out of the legacy
         # public-skills path, even when the registration is resolution-only.
         include_public = self.load_public_skills and not self.registered_marketplaces
-        if not self.load_user_skills and not include_public:
-            return self
+        if self.load_user_skills or include_public:
+            auto_skills = load_available_skills(
+                work_dir=None,
+                include_user=self.load_user_skills,
+                include_project=False,
+                include_public=include_public,
+                marketplace_path=self.marketplace_path,
+            )
 
-        auto_skills = load_available_skills(
-            work_dir=None,
-            include_user=self.load_user_skills,
-            include_project=False,
-            include_public=include_public,
-            marketplace_path=self.marketplace_path,
-        )
+            # Explicit skills are authoritative; auto-loaded skills only fill gaps.
+            explicit_names = {skill.name for skill in self.skills}
+            for name in auto_skills:
+                if name in explicit_names:
+                    logger.debug(
+                        f"Skipping auto-loaded skill '{name}' "
+                        "(already in explicit skills)"
+                    )
+            self.skills = merge_skills_by_name(self.skills, auto_skills.values())
 
-        # Explicit skills are authoritative; auto-loaded skills only fill gaps.
-        explicit_names = {skill.name for skill in self.skills}
-        for name in auto_skills:
-            if name in explicit_names:
-                logger.debug(
-                    f"Skipping auto-loaded skill '{name}' (already in explicit skills)"
-                )
-        self.skills = merge_skills_by_name(self.skills, auto_skills.values())
+        # Deny-list: drop disabled skills from whatever ended up loaded (explicit
+        # + auto). A disabled name that isn't present is a harmless no-op — this
+        # is the drift-tolerant selection model that replaced allow-list refs.
+        if self.disabled_skills:
+            disabled = set(self.disabled_skills)
+            self.skills = [s for s in self.skills if s.name not in disabled]
         return self
 
     def get_secret_infos(self) -> list[dict[str, str | None]]:
