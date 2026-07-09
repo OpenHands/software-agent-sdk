@@ -30,7 +30,7 @@ on:
     pull_request:
         # `opened/synchronize/reopened` drive behavior A on release/** PRs;
         # `labeled` drives behavior B anywhere.
-        types: [opened, synchronize, reopened, labeled]
+        types: [labeled]
     workflow_dispatch:
         inputs:
             reason:
