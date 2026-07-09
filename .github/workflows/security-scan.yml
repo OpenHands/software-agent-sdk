@@ -1,0 +1,117 @@
+---
+name: Release Security Scan
+run-name: >-
+    Release Security Scan ${{ inputs.reason || github.event.label.name || 'manual' }}
+
+# Fourth release-PR check, alongside integration-test / behavior-test /
+# test-examples. It guards the *release* diff (last tag -> this PR) against two
+# supply-chain / integrity risks:
+#   1. approval drift (TOCTOU): code that shipped without the human-approved
+#      state actually being what merged;
+#   2. dependency risk: new/bumped deps with known OSV vulns or non-PyPI
+#      sources.
+#
+# Deterministic by design: the scanners only read git history and query
+# read-only APIs (GitHub REST, OSV). They never install or execute the code
+# under review — a security gate that runs untrusted content is itself an
+# injection target. We therefore use plain `pull_request` (not
+# pull_request_target) and need no secrets beyond the default GITHUB_TOKEN.
+
+on:
+    pull_request:
+        types: [labeled]
+    workflow_dispatch:
+        inputs:
+            reason:
+                description: Reason for manual trigger
+                required: true
+                default: ''
+            baseline_tag:
+                description: >-
+                    Baseline release tag to diff against (default: auto-detect
+                    the latest reachable v* tag).
+                required: false
+                default: ''
+
+permissions:
+    contents: read
+    pull-requests: write
+    issues: write
+
+jobs:
+    security-scan:
+        # Only run on the release label, or manual dispatch.
+        if: >-
+            github.event.label.name == 'security-scan' ||
+            github.event_name == 'workflow_dispatch'
+        runs-on: ubuntu-24.04
+        timeout-minutes: 15
+        steps:
+            - name: Checkout (full history + tags for the baseline diff)
+              uses: actions/checkout@v7
+              with:
+                  ref: ${{ github.event.pull_request.head.sha || github.sha }}
+                  fetch-depth: 0
+
+            - name: Set up Python
+              uses: actions/setup-python@v6
+              with:
+                  python-version: '3.13'
+
+            - name: Run approval-drift check (TOCTOU)
+              id: approval
+              continue-on-error: true
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  GITHUB_REPOSITORY: ${{ github.repository }}
+                  SECURITY_SCAN_BASELINE_TAG: ${{ inputs.baseline_tag }}
+                  SECURITY_SCAN_OUTPUT: ${{ github.workspace }}/security-report.md
+                  # Dependabot merges are allowed without a human approval; the
+                  # dependency check still audits what they bring in.
+                  SECURITY_SCAN_TRUSTED_BOTS: dependabot[bot]
+              run: python .github/scripts/check_approval_drift.py
+
+            - name: Run supply-chain dependency diff
+              id: deps
+              continue-on-error: true
+              env:
+                  SECURITY_SCAN_BASELINE_TAG: ${{ inputs.baseline_tag }}
+                  SECURITY_SCAN_OUTPUT: ${{ github.workspace }}/security-report.md
+              run: python .github/scripts/check_dependency_diff.py
+
+            - name: Post results to the PR
+              if: github.event_name == 'pull_request'
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  PR_NUMBER: ${{ github.event.pull_request.number }}
+                  REPO: ${{ github.repository }}
+              run: |
+                  set -euo pipefail
+                  BODY_FILE="security-report.md"
+                  {
+                      echo "## 🔒 Release Security Scan"
+                      echo
+                      if [ -f "$BODY_FILE" ]; then
+                          cat "$BODY_FILE"
+                      else
+                          echo "_No report produced._"
+                      fi
+                      echo
+                      echo "<sub>Deterministic scanners: approval-drift + supply-chain dependency diff. Read-only; no PR code executed.</sub>"
+                  } > comment.md
+                  jq -Rs '{body: .}' comment.md > payload.json
+                  curl -sSf -X POST \
+                      -H "Authorization: token ${GITHUB_TOKEN}" \
+                      -H "Accept: application/vnd.github+json" \
+                      "https://api.github.com/repos/${REPO}/issues/${PR_NUMBER}/comments" \
+                      -d @payload.json > /dev/null
+                  echo "Posted security-scan comment to PR #${PR_NUMBER}."
+
+            - name: Fail if any check found blocking issues
+              run: |
+                  if [ "${{ steps.approval.outcome }}" = "failure" ] || \
+                     [ "${{ steps.deps.outcome }}" = "failure" ]; then
+                      echo "::error::Release security scan found blocking issues. See the PR comment."
+                      exit 1
+                  fi
+                  echo "Release security scan passed."
