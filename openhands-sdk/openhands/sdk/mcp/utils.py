@@ -1,5 +1,6 @@
 """Utility functions for MCP integration."""
 
+import asyncio
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from typing import Protocol
@@ -241,6 +242,8 @@ class _ToolListChangedHandler(MessageHandler):
         super().__init__()
         self._client = client
         self._on_tools_changed = on_tools_changed
+        self._refresh_lock = asyncio.Lock()
+        self._refresh_tasks: set[asyncio.Task[None]] = set()
 
     async def on_tool_list_changed(
         self,
@@ -250,8 +253,19 @@ class _ToolListChangedHandler(MessageHandler):
         if client._closed:
             return
         logger.debug("MCP tools/list_changed received; refreshing tools")
+        # The message handler runs on the MCP receive loop; awaiting list_tools()
+        # here would block the same loop that must process the list_tools response.
+        task = asyncio.create_task(self._refresh_tools())
+        self._refresh_tasks.add(task)
+        task.add_done_callback(self._refresh_tasks.discard)
+
+    async def _refresh_tools(self) -> None:
+        client = self._client
         try:
-            await _refresh_tools(client, self._on_tools_changed)
+            async with self._refresh_lock:
+                if client._closed:
+                    return
+                await _refresh_tools(client, self._on_tools_changed)
         except Exception:
             logger.warning(
                 "Failed to refresh MCP tools after list_changed notification",

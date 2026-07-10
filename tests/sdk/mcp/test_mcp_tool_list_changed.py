@@ -27,6 +27,7 @@ from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_context
 
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.llm import TextContent
 from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.mcp.config import coerce_mcp_config
 from openhands.sdk.mcp.tool import MCPToolDefinition
@@ -174,9 +175,13 @@ def test_handler_invokes_refresh_on_list_changed():
         on_tools_changed=lambda tools: received.append([t.name for t in tools]),
     )
 
-    asyncio.new_event_loop().run_until_complete(
-        handler.on_tool_list_changed(mcp_types.ToolListChangedNotification())
-    )
+    async def run():
+        await handler.on_tool_list_changed(mcp_types.ToolListChangedNotification())
+        deadline = time.time() + 1.0
+        while time.time() < deadline and not received:
+            await asyncio.sleep(0.01)
+
+    asyncio.new_event_loop().run_until_complete(run())
 
     assert {t.name for t in client._tools} == {"a", "b"}
     assert received == [["b"]]
@@ -318,6 +323,54 @@ def test_no_callback_still_connects(progressive_server: int):
         names = {t.name for t in client}
         assert "gateway" in names
         assert "register_extra_tool" in names
+
+
+def test_list_changed_notification_refreshes_client_tools(progressive_server: int):
+    """A real server notification re-lists tools without blocking dispatch."""
+    port = progressive_server
+    config = _native_config(
+        {
+            "mcpServers": {
+                "progressive": {
+                    "transport": "http",
+                    "url": f"http://127.0.0.1:{port}/mcp",
+                }
+            }
+        }
+    )
+    received: list[str] = []
+    with create_mcp_tools(
+        config,
+        timeout=10.0,
+        on_tools_changed=lambda tools: received.extend(t.name for t in tools),
+    ) as client:
+        initial_names = {t.name for t in client.tools}
+        assert "gateway" in initial_names
+        assert "register_extra_tool" in initial_names
+        assert "extra" not in initial_names
+
+        register_tool = next(t for t in client.tools if t.name == "register_extra_tool")
+        register_observation = register_tool(register_tool.action_from_arguments({}))
+        assert not register_observation.is_error
+
+        deadline = time.time() + 10.0
+        current_names = {t.name for t in client.tools}
+        while time.time() < deadline and "extra" not in current_names:
+            time.sleep(0.1)
+            current_names = {t.name for t in client.tools}
+
+        assert "extra" in current_names
+        assert received == ["extra"]
+
+        extra_tool = next(t for t in client.tools if t.name == "extra")
+        extra_observation = extra_tool(extra_tool.action_from_arguments({"value": 21}))
+        extra_text = "\n".join(
+            block.text
+            for block in extra_observation.content
+            if isinstance(block, TextContent)
+        )
+        assert not extra_observation.is_error
+        assert "42" in extra_text
 
 
 def test_on_mcp_tools_changed_registers_runtime_tools():
