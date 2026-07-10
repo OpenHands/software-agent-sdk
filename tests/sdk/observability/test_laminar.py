@@ -139,6 +139,37 @@ def test_lmnr_base_url_not_passed_when_empty():
             del os.environ["LMNR_PROJECT_API_KEY"]
 
 
+def test_maybe_init_laminar_skips_when_already_initialized():
+    """Laminar.initialize must not be called again when already initialized.
+
+    Re-calling Laminar.initialize after a previous init emits
+    'Laminar is already initialized. Skipping initialization.' at INFO level
+    from lmnr. Since ``maybe_init_laminar`` runs at import time in agent.py
+    and acp_agent.py, that line shows up on every module load after the
+    first one. Guard against the re-init to keep logs clean.
+    """
+    original_key = os.environ.get("LMNR_PROJECT_API_KEY")
+
+    try:
+        os.environ["LMNR_PROJECT_API_KEY"] = "test-key"
+
+        with patch("lmnr.Laminar") as mock_laminar:
+            with patch("lmnr.LaminarLiteLLMCallback"):
+                with patch("litellm.callbacks", new=MagicMock()):
+                    mock_laminar.is_initialized.return_value = True
+                    from openhands.sdk.observability.laminar import maybe_init_laminar
+
+                    maybe_init_laminar()
+                    maybe_init_laminar()
+
+                    mock_laminar.initialize.assert_not_called()
+    finally:
+        if original_key is not None:
+            os.environ["LMNR_PROJECT_API_KEY"] = original_key
+        elif "LMNR_PROJECT_API_KEY" in os.environ:
+            del os.environ["LMNR_PROJECT_API_KEY"]
+
+
 @pytest.mark.parametrize(
     ("env_value", "expected"),
     [

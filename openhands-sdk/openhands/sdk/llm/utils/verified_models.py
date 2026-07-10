@@ -1,4 +1,5 @@
 VERIFIED_OPENAI_MODELS = [
+    "gpt-5.6",
     "gpt-5.5",
     "gpt-5.4",
     "gpt-5.2",
@@ -30,6 +31,7 @@ VERIFIED_ANTHROPIC_MODELS = [
     "claude-opus-4-7",
     "claude-opus-4-8",
     "claude-fable-5",
+    "claude-sonnet-5",
     "claude-sonnet-4-5",
     "claude-sonnet-4-6",
     "claude-sonnet-4-20250514",
@@ -82,6 +84,7 @@ VERIFIED_GLM_MODELS = [
     "glm-4.7",
     "glm-5",
     "glm-5.1",
+    "glm-5.2",
 ]
 
 VERIFIED_NVIDIA_MODELS = [
@@ -102,8 +105,10 @@ VERIFIED_OPENHANDS_MODELS = [
     "claude-opus-4-7",
     "claude-opus-4-8",
     "claude-fable-5",
+    "claude-sonnet-5",
     "claude-sonnet-4-5",
     "claude-sonnet-4-6",
+    "gpt-5.6",
     "gpt-5.5",
     "gpt-5.4",
     "gpt-5.2",
@@ -130,6 +135,7 @@ VERIFIED_OPENHANDS_MODELS = [
     "glm-4.7",
     "glm-5",
     "glm-5.1",
+    "glm-5.2",
     "nemotron-3-nano",
     "nemotron-3-super-120b-a12b",
     "qwen3-6-plus",
