@@ -52,7 +52,6 @@ from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.observability.laminar import observe
-from openhands.sdk.runtime_context import ConversationRuntimeContext
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
@@ -726,7 +725,6 @@ class RemoteConversation(BaseConversation):
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
-        runtime_context: ConversationRuntimeContext | None = None,
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
@@ -847,11 +845,6 @@ class RemoteConversation(BaseConversation):
                     [s.model_dump(mode="json") for s in client_tools]
                     if client_tools
                     else []
-                ),
-                "runtime_context": (
-                    runtime_context.model_dump(mode="json")
-                    if runtime_context is not None
-                    else None
                 ),
                 # Include tags and observability metadata if provided
                 "tags": tags if tags is not None else {},

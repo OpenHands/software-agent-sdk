@@ -824,7 +824,6 @@ class EventService:
             agent=agent,
             workspace=workspace,
             plugins=self.stored.plugins,
-            runtime_context=self.stored.runtime_context,
             persistence_dir=str(self.conversations_dir),
             conversation_id=self.stored.id,
             callbacks=[self._callback_wrapper],

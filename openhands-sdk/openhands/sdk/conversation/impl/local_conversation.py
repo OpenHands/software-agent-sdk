@@ -66,7 +66,6 @@ from openhands.sdk.plugin import (
     fetch_plugin_with_resolution,
     load_available_plugins,
 )
-from openhands.sdk.runtime_context import ConversationRuntimeContext
 from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
@@ -204,7 +203,6 @@ class LocalConversation(BaseConversation):
         prompt_cache_key: str | None = None,
         file_store: FileStore | None = None,
         mcp_tool_provider: MCPToolProvider | None = None,
-        runtime_context: ConversationRuntimeContext | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -253,7 +251,6 @@ class LocalConversation(BaseConversation):
                   tool; the executor returns an acknowledgment and the real
                   execution is expected to be handled by a callback/consumer
                   (e.g. a frontend) observing the emitted ActionEvent.
-            runtime_context: Deployment facts captured for this conversation.
             observability_metadata: Optional trace metadata for observability backends.
             observability_tags: Optional root span tags for observability backends.
             observability_span_name: Optional child span name for observability
@@ -325,7 +322,6 @@ class LocalConversation(BaseConversation):
             id=desired_id,
             agent=agent,
             workspace=self.workspace,
-            runtime_context=runtime_context,
             persistence_dir=self.get_persistence_dir(persistence_dir, desired_id)
             if persistence_dir
             else None,
@@ -733,7 +729,6 @@ class LocalConversation(BaseConversation):
                 agent=fork_agent,
                 workspace=self.workspace,
                 plugins=self._plugin_specs,
-                runtime_context=self._state.runtime_context,
                 persistence_dir=fork_persistence,
                 conversation_id=fork_id,
                 max_iteration_per_run=self.max_iteration_per_run,

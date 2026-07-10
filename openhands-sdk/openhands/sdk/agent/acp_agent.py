@@ -62,7 +62,6 @@ from pydantic import (
 from openhands.sdk.agent.acp_models import ACPModelInfo
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context import AgentContext
-from openhands.sdk.context.prompts.presets import create_registry
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import (
     ACPToolCallEvent,
@@ -2121,7 +2120,7 @@ class ACPAgent(AgentBase):
             # parts of the empty AgentContext's defaults (current_datetime, …)
             # that the old "agent_context is None ⇒ no suffix" rule used to
             # suppress.
-            if not secret_infos and state.runtime_context is None:
+            if not secret_infos:
                 return None
             agent_context = AgentContext(current_datetime=None)
         elif agent_context.secrets:
@@ -2129,14 +2128,7 @@ class ACPAgent(AgentBase):
             # clear the agent_context copy to advertise from the registry alone
             # rather than re-merging a redundant second source.
             agent_context = agent_context.model_copy(update={"secrets": {}})
-        agent_context.validate_acp_compatibility()
-        prompt_context = agent_context.build_dynamic_prompt_context(
-            additional_secret_infos=secret_infos
-        )
-        prompt_context = prompt_context.model_copy(
-            update={"runtime_context": state.runtime_context}
-        )
-        return create_registry().build(prompt_context).dynamic
+        return agent_context.to_acp_prompt_context(additional_secret_infos=secret_infos)
 
     def _present_file_secret_names(self, state: ConversationState) -> set[str]:
         """Reserved file-content secret names supplied for this conversation.

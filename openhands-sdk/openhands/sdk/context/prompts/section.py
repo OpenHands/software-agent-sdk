@@ -11,8 +11,6 @@ from typing import NamedTuple, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from openhands.sdk.runtime_context import ConversationRuntimeContext
-
 
 __all__ = [
     "CacheTier",
@@ -76,7 +74,6 @@ class PromptContext(BaseModel):
     repo_skills: tuple[tuple[str, str], ...] = Field(default_factory=tuple)
     available_skills_prompt: str | None = None
     custom_suffix: str | None = None
-    runtime_context: ConversationRuntimeContext | None = None
     secret_infos: tuple[tuple[str, str | None], ...] = Field(default_factory=tuple)
 
     @field_validator("template_kwargs", mode="after")

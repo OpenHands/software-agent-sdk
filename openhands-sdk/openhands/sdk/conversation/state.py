@@ -32,7 +32,6 @@ from openhands.sdk.event.types import EventID
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.io import FileStore, InMemoryFileStore, LocalFileStore
 from openhands.sdk.logger import get_logger
-from openhands.sdk.runtime_context import ConversationRuntimeContext
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
@@ -46,7 +45,7 @@ from openhands.sdk.workspace.base import BaseWorkspace
 logger = get_logger(__name__)
 
 
-class ConversationExecutionStatus(str, Enum):  # noqa: UP042
+class ConversationExecutionStatus(str, Enum):
     """Enum representing the current execution state of the conversation."""
 
     IDLE = "idle"  # Conversation is ready to receive tasks
@@ -104,10 +103,6 @@ class ConversationState(OpenHandsModel):
         default="workspace/conversations",
         description="Directory for persisting conversation state and events. "
         "If None, conversation will not be persisted.",
-    )
-    runtime_context: ConversationRuntimeContext | None = Field(
-        default=None,
-        description="Deployment and service topology for this conversation.",
     )
 
     max_iterations: int = Field(
@@ -445,7 +440,6 @@ class ConversationState(OpenHandsModel):
         cipher: Cipher | None = None,
         tags: dict[str, str] | None = None,
         file_store: FileStore | None = None,
-        runtime_context: ConversationRuntimeContext | None = None,
     ) -> "ConversationState":
         """Create a new conversation state or resume from persistence.
 
@@ -466,7 +460,6 @@ class ConversationState(OpenHandsModel):
             id: Unique conversation identifier
             agent: The Agent to use (tools must match persisted on restore)
             workspace: Working directory for agent operations
-            runtime_context: Deployment facts captured for this conversation
             persistence_dir: Directory for persisting state and events when
                 file_store is not provided. When file_store is provided, this
                 value is still stored on the state and used for environment
@@ -555,7 +548,6 @@ class ConversationState(OpenHandsModel):
             id=id,
             agent=agent,
             workspace=workspace,
-            runtime_context=runtime_context,
             persistence_dir=persistence_dir,
             max_iterations=max_iterations,
             stuck_detection=stuck_detection,

@@ -540,10 +540,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         # Get secret infos from conversation's secret_registry
         secret_infos = state.secret_registry.get_secret_infos()
 
-        ctx = self._build_prompt_context(
-            additional_secret_infos=secret_infos,
-            runtime_context=state.runtime_context,
-        )
+        ctx = self._build_prompt_context(additional_secret_infos=secret_infos)
         # The dynamic tier is preset-independent; fall back to the default tier for a
         # custom Jinja template (preset None), as before.
         preset = self._prompt_preset or PromptPreset.DEFAULT
@@ -568,8 +565,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         batch.emit(on_event)
         batch.finalize(
             on_event=on_event,
-            check_iterative_refinement=lambda ae: self._check_iterative_refinement(
-                conversation, ae
+            check_iterative_refinement=lambda ae: (
+                self._check_iterative_refinement(conversation, ae)
             ),
             mark_finished=lambda: setattr(
                 state,
@@ -602,8 +599,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         batch.emit(on_event)
         batch.finalize(
             on_event=on_event,
-            check_iterative_refinement=lambda ae: self._check_iterative_refinement(
-                conversation, ae
+            check_iterative_refinement=lambda ae: (
+                self._check_iterative_refinement(conversation, ae)
             ),
             mark_finished=lambda: setattr(
                 state,

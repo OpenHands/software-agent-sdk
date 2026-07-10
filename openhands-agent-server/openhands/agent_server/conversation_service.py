@@ -36,6 +36,7 @@ from openhands.agent_server.skills_service import discover_profile_skills
 from openhands.agent_server.utils import safe_rmtree, utc_now
 from openhands.sdk import LLM, AgentContext, Event, Message
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.conversation.request import RuntimeServices
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -89,17 +90,61 @@ def _append_worktree_guidance(
     workspace_dir: Path,
     branch: str,
 ) -> AgentBase:
-    context = agent.agent_context or AgentContext()
     guidance = _build_worktree_guidance(
         source_workspace=source_workspace,
         worktree_root=worktree_root,
         workspace_dir=workspace_dir,
         branch=branch,
     )
+    return _append_system_message_suffix(agent, guidance)
+
+
+def _append_system_message_suffix(agent: AgentBase, addition: str) -> AgentBase:
+    context = agent.agent_context or AgentContext()
     existing_suffix = (context.system_message_suffix or "").strip()
-    suffix = f"{existing_suffix}\n\n{guidance}" if existing_suffix else guidance
+    suffix = f"{existing_suffix}\n\n{addition}" if existing_suffix else addition
     updated_context = context.model_copy(update={"system_message_suffix": suffix})
     return agent.model_copy(update={"agent_context": updated_context})
+
+
+def _render_runtime_services(runtime_services: RuntimeServices) -> str:
+    lines = ["<RUNTIME_SERVICES>"]
+    if runtime_services.mode:
+        lines.append(f"Deployment mode: {runtime_services.mode}")
+    lines.extend(
+        [
+            "URLs are written from the agent runtime's point of view.",
+            "Services available to this conversation:",
+        ]
+    )
+    for service in runtime_services.services:
+        label = service.name.replace("_", " ").title()
+        url = (
+            service.url_from_agent
+            if service.available and service.url_from_agent
+            else "unavailable"
+        )
+        lines.append(f"* {label}: {url}")
+        if service.api_prefix:
+            lines.append(f"    API prefix: {service.api_prefix}")
+        if service.docs_url:
+            lines.append(f"    Docs: {service.docs_url}")
+        if service.openapi_url:
+            lines.append(f"    OpenAPI: {service.openapi_url}")
+        if service.auth_header_name and service.auth_env_var:
+            lines.append(
+                f"    Auth: header '{service.auth_header_name}: "
+                f"${service.auth_env_var}'"
+            )
+        elif service.auth_env_var:
+            lines.append(f"    Auth environment variable: ${service.auth_env_var}")
+    lines.extend(
+        [
+            "Use only the listed URLs; do not guess alternate endpoints.",
+            "</RUNTIME_SERVICES>",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def _has_git_remote(repo_root: Path, remote: str = "origin") -> bool:
@@ -745,6 +790,16 @@ class ConversationService:
             )
             request = request.model_copy(update={"agent": resolved_agent})
 
+        if request.runtime_services is not None:
+            request = request.model_copy(
+                update={
+                    "agent": _append_system_message_suffix(
+                        request.agent,
+                        _render_runtime_services(request.runtime_services),
+                    )
+                }
+            )
+
         request = _prepare_request_workspace(request, conversation_id)
 
         # Dynamically register tools from client's registry
@@ -807,12 +862,11 @@ class ConversationService:
         # serialize to plain strings. Pass expose_secrets=True so StaticSecret values
         # are preserved through the round-trip; the dict is only used in-process to
         # construct StoredConversation, not sent over the network.
-        # agent_profile_id is excluded: it was resolved into `launched_agent_profile`
-        # above and must not re-trigger the mutual-exclusivity validator.
+        # Launch-only fields are already folded into stored conversation state.
         request_data = request.model_dump(
             mode="json",
             context={"expose_secrets": True},
-            exclude={"agent_profile_id"},
+            exclude={"agent_profile_id", "runtime_services"},
         )
 
         # If secrets_encrypted=True, the agent's secrets (e.g., LLM api_key) are
