@@ -5,7 +5,7 @@ import copy
 import json
 import uuid
 from collections.abc import Mapping, Sequence
-from pathlib import Path, PurePath
+from pathlib import Path
 from typing import Any, Final, TypeGuard, cast
 
 from openhands.sdk.agent.acp_agent import ACPAgent
@@ -72,6 +72,7 @@ from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
 from openhands.sdk.skills import load_available_skills, merge_skills_by_name
+from openhands.sdk.skills.skill import normalize_rule_path
 from openhands.sdk.skills.utils import (
     expand_mcp_variables,
     expand_variable_references,
@@ -495,8 +496,9 @@ class LocalConversation(BaseConversation):
             return event
 
         contents: list[TextContent] = []
+        working_dir = self.workspace.working_dir
         for raw_path in event.observation.affected_paths:
-            if (file_path := self._normalize_rule_path(raw_path)) is None:
+            if (file_path := normalize_rule_path(raw_path, working_dir)) is None:
                 continue
             result = agent_context.get_tool_use_suffix(
                 file_path=file_path,
@@ -513,32 +515,6 @@ class LocalConversation(BaseConversation):
         return event.model_copy(
             update={"extended_content": list(event.extended_content) + contents}
         )
-
-    def _normalize_rule_path(self, raw_path: str) -> str | None:
-        """Return the workspace-relative POSIX form of ``raw_path``.
-
-        Returns None when the path is empty or resolves outside the workspace
-        (rules are repo-scoped).
-        """
-        if not raw_path:
-            return None
-
-        # Use the native path flavour so Windows drive paths (e.g. ``D:\\...``) are
-        # recognized as absolute; emit a POSIX string for glob matching.
-        raw = PurePath(raw_path)
-        if not raw.is_absolute():
-            return raw.as_posix()
-        root = PurePath(self.workspace.working_dir)
-        with contextlib.suppress(ValueError):
-            return raw.relative_to(root).as_posix()
-        # Fall back to filesystem resolution so a symlinked workspace root (e.g.
-        # macOS /tmp -> /private/tmp) still matches; strict=False keeps a
-        # not-yet-created leaf.
-        with contextlib.suppress(ValueError, OSError):
-            resolved = Path(raw_path).resolve()
-            resolved_root = Path(self.workspace.working_dir).resolve()
-            return resolved.relative_to(resolved_root).as_posix()
-        return None  # touched a file outside the workspace; rules are repo-scoped
 
     def _recover_persisted_client_tools(
         self,

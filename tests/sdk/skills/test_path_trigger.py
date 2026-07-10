@@ -16,7 +16,7 @@ from openhands.sdk.skills import (
     utils as skills_utils,
 )
 from openhands.sdk.skills.exceptions import SkillValidationError
-from openhands.sdk.skills.skill import path_matches_glob
+from openhands.sdk.skills.skill import normalize_rule_path, path_matches_glob
 
 
 _HAS_GIT = shutil.which("git") is not None
@@ -68,6 +68,45 @@ def test_path_matches_glob(file_path: str, pattern: str, expected: bool) -> None
 
 def test_empty_pattern_never_matches() -> None:
     assert path_matches_glob("anything.ts", "") is False
+
+
+def test_normalize_rule_path_relative_is_passed_through() -> None:
+    # A relative path is already workspace-relative; only the flavour is
+    # normalized to POSIX (matters on Windows).
+    assert normalize_rule_path("src/api/x.ts", "/ws") == "src/api/x.ts"
+
+
+def test_normalize_rule_path_absolute_inside_workspace() -> None:
+    assert normalize_rule_path("/ws/src/api/x.ts", "/ws") == "src/api/x.ts"
+
+
+def test_normalize_rule_path_empty_is_none() -> None:
+    assert normalize_rule_path("", "/ws") is None
+
+
+def test_normalize_rule_path_absolute_outside_workspace_is_none(
+    tmp_path: Path,
+) -> None:
+    # Outside the workspace on the filesystem too, so the resolve() fallback
+    # cannot rescue it -> rules are repo-scoped, so None.
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    outside = tmp_path / "outside" / "x.ts"
+    assert normalize_rule_path(str(outside), str(workspace)) is None
+
+
+def test_normalize_rule_path_symlinked_root_resolved(tmp_path: Path) -> None:
+    """A path under the resolved root still normalizes when the workspace is
+    given by its symlinked form (e.g. macOS /tmp -> /private/tmp)."""
+    real = tmp_path / "real_ws"
+    real.mkdir()
+    link = tmp_path / "link_ws"
+    try:
+        link.symlink_to(real)
+    except OSError:
+        pytest.skip("symlinks not supported on this platform")
+    # workspace passed as the symlink; touched path is the resolved (real) form.
+    assert normalize_rule_path(str(real / "src" / "x.ts"), str(link)) == "src/x.ts"
 
 
 def _write_rule(directory: Path, name: str, frontmatter: str, body: str) -> Path:

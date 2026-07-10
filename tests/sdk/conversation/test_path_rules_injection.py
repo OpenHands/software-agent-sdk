@@ -216,7 +216,7 @@ def test_file_outside_workspace_is_not_matched(tmp_path: Path) -> None:
 def test_symlinked_workspace_root_still_matches(tmp_path: Path) -> None:
     """A rule fires even when the action path and the workspace root differ only
     by a symlink (e.g. macOS /tmp -> /private/tmp); the resolve() fallback in
-    ``_normalize_rule_path`` recovers the workspace-relative path."""
+    ``normalize_rule_path`` recovers the workspace-relative path."""
     real = tmp_path / "real_ws"
     real.mkdir()
     link = tmp_path / "link_ws"
