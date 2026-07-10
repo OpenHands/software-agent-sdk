@@ -2933,6 +2933,22 @@ class TestACPActivityHeartbeatWiring:
         assert not hasattr(agent, "_on_activity")
 
 
+def _branch_events(conversation) -> list:
+    """Log events excluding async ``ConversationStateUpdateEvent`` artifacts.
+
+    Those state-sync artifacts are appended to the log asynchronously
+    (``EventService._emit_event_from_thread``), so their position in
+    ``_state.events`` relative to the synchronous message appends is racy.
+    Filtering them keeps positional indexing and length invariants deterministic
+    for the fork/navigate assertions below.
+    """
+    return [
+        e
+        for e in conversation._state.events
+        if not isinstance(e, ConversationStateUpdateEvent)
+    ]
+
+
 class TestConversationTreeForkAndNavigate:
     """Service-level coverage for fork-from-event lineage and navigation."""
 
@@ -2962,7 +2978,7 @@ class TestConversationTreeForkAndNavigate:
                 Message(role="user", content=[TextContent(text=text)]),
                 run=False,
             )
-        events = list(event_service.get_conversation()._state.events)
+        events = _branch_events(event_service.get_conversation())
         return info, event_service, events
 
     @pytest.mark.asyncio
@@ -2999,12 +3015,14 @@ class TestConversationTreeForkAndNavigate:
 
             fork_service = await svc.get_event_service(fork_info.id)
             assert fork_service is not None
-            fork_events = list(fork_service.get_conversation()._state.events)
+            fork_events = _branch_events(fork_service.get_conversation())
+            # Only path_to_root(branch_point) was copied — the active branch up
+            # to and including the branch point, not the whole log.
             assert [e.id for e in fork_events] == expected_branch_ids
             assert len(fork_events) < len(events)
 
             # Source is untouched by the fork.
-            src_events = list(source_service.get_conversation()._state.events)
+            src_events = _branch_events(source_service.get_conversation())
             assert len(src_events) == len(events)
 
     @pytest.mark.asyncio
@@ -3026,7 +3044,7 @@ class TestConversationTreeForkAndNavigate:
             assert fork_info.forked_from_event_id is None
             fork_service = await svc.get_event_service(fork_info.id)
             assert fork_service is not None
-            fork_events = list(fork_service.get_conversation()._state.events)
+            fork_events = _branch_events(fork_service.get_conversation())
             assert len(fork_events) == len(events)
 
     @pytest.mark.asyncio
@@ -3064,9 +3082,7 @@ class TestConversationTreeForkAndNavigate:
             assert nav_info is not None
             assert nav_info.leaf_event_id == target
             # All branches stay on disk — nothing is pruned.
-            assert len(list(event_service.get_conversation()._state.events)) == len(
-                events
-            )
+            assert len(_branch_events(event_service.get_conversation())) == len(events)
 
     @pytest.mark.asyncio
     async def test_navigate_unknown_event_raises(self, tmp_path):
