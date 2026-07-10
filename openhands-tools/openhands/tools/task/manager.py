@@ -216,6 +216,9 @@ class TaskManager:
                 persistence_dir=self._persistence_dir,
                 conversation_id=conversation_id,
                 hook_config=factory.definition.hooks,
+                llm_extra_headers=(
+                    self.parent_conversation.get_llm_call_context().extra_headers
+                ),
                 delete_on_close=True,
             )
 
@@ -311,6 +314,7 @@ class TaskManager:
             max_iteration_per_run=max_iteration_per_run,
             max_budget_per_run=max_budget_per_run,
             hook_config=hook_config,
+            llm_extra_headers=parent.get_llm_call_context().extra_headers,
             delete_on_close=True,
             prompt_cache_key=str(parent.state.id),
         )

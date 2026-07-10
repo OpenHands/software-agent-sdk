@@ -1780,6 +1780,21 @@ class TestEventServiceSaveMeta:
         assert loaded.updated_at == original_updated_at
 
     @pytest.mark.asyncio
+    async def test_save_meta_excludes_llm_extra_headers(self, event_service, tmp_path):
+        event_service.stored.llm_extra_headers = {
+            "Authorization": "Bearer sensitive-value"
+        }
+        event_service.conversations_dir = tmp_path
+        conversation_dir = tmp_path / event_service.stored.id.hex
+        conversation_dir.mkdir(parents=True, exist_ok=True)
+
+        await event_service.save_meta()
+
+        payload = (conversation_dir / "meta.json").read_text()
+        assert "llm_extra_headers" not in payload
+        assert "sensitive-value" not in payload
+
+    @pytest.mark.asyncio
     async def test_save_meta_round_trips_agent_definition_mcp_secrets(
         self, sample_stored_conversation, tmp_path
     ):

@@ -242,6 +242,7 @@ def test_conversation_settings_create_request() -> None:
         max_iterations=77,
         confirmation_mode=True,
         security_analyzer="llm",
+        llm_extra_headers={"X-Request-ID": "request-1"},
     )
     workspace = LocalWorkspace(working_dir="/tmp")
     agent = OpenHandsAgentSettings(llm=LLM(model="test-model")).create_agent()
@@ -255,8 +256,10 @@ def test_conversation_settings_create_request() -> None:
     assert isinstance(request, StartConversationRequest)
     assert request.workspace == workspace
     assert request.max_iterations == 77
+    assert request.llm_extra_headers == {"X-Request-ID": "request-1"}
     assert isinstance(request.confirmation_policy, ConfirmRisky)
     assert isinstance(request.security_analyzer, LLMSecurityAnalyzer)
+    assert "llm_extra_headers" not in settings.model_dump(mode="json")
 
     overridden_request = settings.create_request(
         StartConversationRequest,

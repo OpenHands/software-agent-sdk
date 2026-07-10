@@ -12,6 +12,7 @@ from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.llm import LLM, TextContent
+from openhands.sdk.llm.llm import LLMCallContext
 from openhands.sdk.subagent.registry import (
     _reset_registry_for_tests,
     register_agent,
@@ -178,6 +179,22 @@ def test_delegation_manager_init():
 
     # Test that sub-agents dict is empty initially
     assert len(manager._sub_agents) == 0
+
+
+def test_delegate_sub_agents_inherit_parent_llm_extra_headers():
+    register_builtins_agents()
+    executor, parent_conversation = create_test_executor_and_parent()
+    parent_conversation.get_llm_call_context.return_value = LLMCallContext(
+        extra_headers={"X-Request-ID": "request-1"}
+    )
+    parent_conversation._visualizer = None
+
+    executor(DelegateAction(command="spawn", ids=["agent1"]), parent_conversation)
+
+    sub_conversation = executor._sub_agents["agent1"]
+    assert sub_conversation.get_llm_call_context().extra_headers == {
+        "X-Request-ID": "request-1"
+    }
 
 
 def test_close_closes_spawned_sub_agents():

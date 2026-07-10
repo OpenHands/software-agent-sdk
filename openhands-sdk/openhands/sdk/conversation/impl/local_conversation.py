@@ -6,6 +6,7 @@ import json
 import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePath
+from types import MappingProxyType
 from typing import Any, Final, TypeGuard, cast
 
 from openhands.sdk.agent.acp_agent import ACPAgent
@@ -169,6 +170,7 @@ class LocalConversation(BaseConversation):
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
     _subscription_disabled_condenser: Any | None
     _mcp_tool_provider: MCPToolProvider
+    _llm_extra_headers: Mapping[str, str]
 
     def __init__(
         self,
@@ -203,6 +205,7 @@ class LocalConversation(BaseConversation):
         prompt_cache_key: str | None = None,
         file_store: FileStore | None = None,
         mcp_tool_provider: MCPToolProvider | None = None,
+        llm_extra_headers: Mapping[str, str] | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -261,6 +264,8 @@ class LocalConversation(BaseConversation):
             file_store: Optional FileStore to use for conversation state and EventLog
                 persistence. If provided, this takes precedence over persistence_dir
                 for state and EventLog storage.
+            llm_extra_headers: Headers applied to every LLM request made by this
+                conversation.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -269,6 +274,7 @@ class LocalConversation(BaseConversation):
         self._arun_task = None
         self._cancel_token = None
         self._prompt_cache_key = prompt_cache_key
+        self._llm_extra_headers = MappingProxyType(dict(llm_extra_headers or {}))
         self._step_holds_state_lock = False
 
         # Store plugin specs for lazy loading (no IO in constructor)
@@ -1104,6 +1110,7 @@ class LocalConversation(BaseConversation):
                 # Resolve lazily: switch_llm()/switch_profile() rebind self.agent,
                 # so agent hooks must read the current LLM at execution time.
                 llm_getter=lambda: self.agent.llm,
+                llm_extra_headers=self._llm_extra_headers,
                 persistence_dir=hook_persistence_dir,
                 visualizer=self._visualizer,
                 conversation_stats=self._state.stats,
@@ -1177,6 +1184,7 @@ class LocalConversation(BaseConversation):
             session_id=str(self._state.id),
             original_callback=self._base_callback,
             llm_getter=lambda: self.agent.llm,
+            llm_extra_headers=self._llm_extra_headers,
             persistence_dir=hook_persistence_dir,
             visualizer=self._visualizer,
             conversation_stats=self._state.stats,
@@ -1411,6 +1419,7 @@ class LocalConversation(BaseConversation):
         return LLMCallContext(
             prompt_cache_key=self._prompt_cache_key or conv_id,
             session_id=conv_id,
+            extra_headers=self._llm_extra_headers,
         )
 
     def _bind_conversation_context(self, llm: LLM) -> None:

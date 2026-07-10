@@ -220,6 +220,9 @@ class DelegateExecutor(ToolExecutor):
                     "visualizer": sub_visualizer,
                     "hook_config": factory.definition.hooks,
                     "persistence_dir": subagents_persistence_dir,
+                    "llm_extra_headers": (
+                        parent_conversation.get_llm_call_context().extra_headers
+                    ),
                 }
 
                 if factory.definition.max_iteration_per_run is not None:

@@ -975,6 +975,12 @@ class ConversationSettings(BaseModel):
         exclude=True,
         description="Hook configuration for lifecycle events.",
     )
+    llm_extra_headers: dict[str, str] | None = Field(
+        default=None,
+        exclude=True,
+        repr=False,
+        description="Headers applied to every LLM request made by this conversation.",
+    )
     selected_repository: str | None = Field(
         default=None,
         exclude=True,
@@ -1115,6 +1121,8 @@ class ConversationSettings(BaseModel):
             payload.setdefault("plugins", self.plugins)
         if self.hook_config is not None:
             payload.setdefault("hook_config", self.hook_config)
+        if self.llm_extra_headers is not None:
+            payload.setdefault("llm_extra_headers", self.llm_extra_headers)
         if self.observability_metadata is not None:
             payload.setdefault("observability_metadata", self.observability_metadata)
         if self.observability_tags is not None:

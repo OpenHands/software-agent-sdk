@@ -921,6 +921,8 @@ class TestRemoteConversation:
         ]
         assert len(request_calls) == 1, "Should have made exactly one POST call"
 
+        assert "json" not in request_calls[0].kwargs
+
         # Verify NO polling GET calls were made (only the initial events fetch)
         get_conversation_calls = [
             call
@@ -928,10 +930,33 @@ class TestRemoteConversation:
             if call[0][0] == "GET"
             and call[0][1] == f"/api/conversations/{conversation_id}"
         ]
-        # Should be 0 because blocking=False skips polling
         assert len(get_conversation_calls) == 0, (
             "Should not poll for status when blocking=False"
         )
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_remote_conversation_creation_forwards_llm_extra_headers(
+        self, mock_ws_client
+    ):
+        conversation_id = str(uuid.uuid4())
+        mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
+        mock_ws_client.return_value = Mock()
+        RemoteConversation(
+            agent=self.agent,
+            workspace=self.workspace,
+            llm_extra_headers={"X-Request-ID": "request-1"},
+        )
+
+        create_call = next(
+            call
+            for call in mock_client_instance.request.call_args_list
+            if call.args[:2] == ("POST", "/api/conversations")
+        )
+        assert create_call.kwargs["json"]["llm_extra_headers"] == {
+            "X-Request-ID": "request-1"
+        }
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"

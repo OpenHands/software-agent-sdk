@@ -7,10 +7,11 @@ import json
 import os
 import threading
 import warnings
-from collections.abc import AsyncIterable, Callable, Iterable, Sequence
+from collections.abc import AsyncIterable, Callable, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
 
 from pydantic import (
@@ -185,21 +186,26 @@ LLM_PROFILE_SCHEMA_VERSION: Final[int] = 1
 class LLMCallContext:
     """Per-conversation state threaded through the completion call chain.
 
-    The primary path threads this explicitly:
-    ``Agent.step()`` → ``make_llm_completion()`` → ``llm.completion(call_context=...)``
-    → ``select_chat_options(call_context=...)``.
-
-    A fallback copy is also stored as a ``PrivateAttr`` on :class:`LLM`
-    (via ``_bind_conversation_context``) for callers that don't thread
-    context explicitly (e.g. the condenser's dedicated LLM).  The
-    PrivateAttr is:
-    * dropped on ``model_dump()`` / ``model_validate()`` round-trips,
-    * shallow-copied by ``model_copy()`` (sub-agent),
-    * never serialised into user-visible config.
+    The primary path threads this explicitly from the agent step into the LLM
+    call. A fallback copy is stored as a private attribute on :class:`LLM` for
+    callers that do not thread context explicitly, such as a dedicated
+    condenser LLM. The context is immutable and never serialized into LLM or
+    conversation configuration.
     """
 
     prompt_cache_key: str | None = None
     session_id: str | None = None
+    extra_headers: Mapping[str, str] = field(default_factory=dict, repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "extra_headers",
+            MappingProxyType(dict(self.extra_headers)),
+        )
+
+    def __deepcopy__(self, _memo: dict[int, object]) -> LLMCallContext:
+        return self
 
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
