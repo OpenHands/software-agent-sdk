@@ -723,10 +723,10 @@ class RemoteConversation(BaseConversation):
         tags: dict[str, str] | None = None,
         user_id: str | None = None,
         client_tools: list[ClientToolSpec] | None = None,
-        runtime_context: ConversationRuntimeContext | None = None,
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
+        runtime_context: ConversationRuntimeContext | None = None,
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.

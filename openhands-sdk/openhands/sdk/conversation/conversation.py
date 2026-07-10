@@ -86,10 +86,10 @@ class Conversation:
         tags: dict[str, str] | None = None,
         user_id: str | None = None,
         client_tools: list[ClientToolSpec] | None = None,
-        runtime_context: ConversationRuntimeContext | None = None,
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
+        runtime_context: ConversationRuntimeContext | None = None,
     ) -> "LocalConversation": ...
 
     @overload
@@ -116,10 +116,10 @@ class Conversation:
         tags: dict[str, str] | None = None,
         user_id: str | None = None,
         client_tools: list[ClientToolSpec] | None = None,
-        runtime_context: ConversationRuntimeContext | None = None,
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
+        runtime_context: ConversationRuntimeContext | None = None,
     ) -> "RemoteConversation": ...
 
     def __new__(
@@ -146,10 +146,10 @@ class Conversation:
         tags: dict[str, str] | None = None,
         user_id: str | None = None,
         client_tools: list[ClientToolSpec] | None = None,
-        runtime_context: ConversationRuntimeContext | None = None,
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
+        runtime_context: ConversationRuntimeContext | None = None,
     ) -> BaseConversation:
         from openhands.sdk.conversation.impl.local_conversation import LocalConversation
         from openhands.sdk.conversation.impl.remote_conversation import (

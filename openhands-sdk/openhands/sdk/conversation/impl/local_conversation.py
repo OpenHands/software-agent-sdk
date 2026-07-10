@@ -195,7 +195,6 @@ class LocalConversation(BaseConversation):
         tags: dict[str, str] | None = None,
         user_id: str | None = None,
         client_tools: list[ClientToolSpec] | None = None,
-        runtime_context: ConversationRuntimeContext | None = None,
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         # Appended at the end to avoid shifting the position of any existing
@@ -205,6 +204,7 @@ class LocalConversation(BaseConversation):
         prompt_cache_key: str | None = None,
         file_store: FileStore | None = None,
         mcp_tool_provider: MCPToolProvider | None = None,
+        runtime_context: ConversationRuntimeContext | None = None,
         **_: object,
     ):
         """Initialize the conversation.

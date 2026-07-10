@@ -439,13 +439,13 @@ class ConversationState(OpenHandsModel):
         id: ConversationID,
         agent: AgentBase,
         workspace: BaseWorkspace,
-        runtime_context: ConversationRuntimeContext | None = None,
         persistence_dir: str | None = None,
         max_iterations: int = 500,
         stuck_detection: bool = True,
         cipher: Cipher | None = None,
         tags: dict[str, str] | None = None,
         file_store: FileStore | None = None,
+        runtime_context: ConversationRuntimeContext | None = None,
     ) -> "ConversationState":
         """Create a new conversation state or resume from persistence.
 
