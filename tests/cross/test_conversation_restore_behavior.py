@@ -35,6 +35,8 @@ from openhands.sdk.context.condenser.llm_summarizing_condenser import (
 )
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.event import ActionEvent, MessageEvent
+from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+from openhands.sdk.event.types import ROOT_PARENT_ID
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.openhands_provider import (
     LITELLM_PROXY_PREFIX,
@@ -829,5 +831,94 @@ def test_restore_reasoning_effort_none_strips_temperature(mock_completion):
             assert last_call["reasoning_effort"] == "none"
             assert "temperature" not in last_call
             assert "top_p" not in last_call
+        finally:
+            restored.close()
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_restore_pre_event_tree_conversation_with_artifact_tail_keeps_history(
+    mock_completion,
+):
+    """Resuming a pre-event-tree conversation whose tail is a startup artifact
+    must keep the full history (#4057).
+
+    Older agent-servers (pre event-tree) wrote events without ``parent_id`` and
+    never persisted ``leaf_event_id``. We reproduce that shape from a *real* run:
+    strip ``parent_id`` off every event and drop the tree HEAD markers from
+    ``base_state``, then append the kind of non-tree artifact a newer server
+    writes onto the tail during an interrupted startup (a
+    ``ConversationStateUpdateEvent`` carrying a ``parent_id``). On resume the
+    agent must load the whole prior history and chain onto its real tail, rather
+    than stamping the next event a false ``__root__`` that orphans everything.
+    """
+    mock_completion.return_value = create_mock_litellm_response(
+        content="Acknowledged.", finish_reason="stop"
+    )
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        base = Path(temp_dir)
+        lifecycle = RestoreLifecycle(
+            workspace_dir=base / "workspace",
+            persistence_base_dir=base / "persist",
+        )
+        lifecycle.workspace_dir.mkdir(parents=True, exist_ok=True)
+        lifecycle.persistence_base_dir.mkdir(parents=True, exist_ok=True)
+
+        tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
+        agent = _agent(
+            llm_model="gpt-4o-mini",
+            tools=tools,
+            condenser_max_size=80,
+            skill_name="skill-v1",
+            skill_keyword="alpha",
+        )
+
+        # 1) Produce a realistic event log by actually running a session.
+        lifecycle.run_initial_session(agent)
+        assert lifecycle.conversation_id is not None
+        events_dir = (
+            lifecycle.persistence_base_dir / lifecycle.conversation_id.hex / "events"
+        )
+        event_files = sorted(
+            events_dir.glob("event-*.json"),
+            key=lambda p: int(p.name.split("-")[1]),
+        )
+        assert len(event_files) >= 3
+        original_ids = [json.loads(p.read_text())["id"] for p in event_files]
+
+        # 2) Downgrade to the pre-event-tree shape: strip parent_id off every
+        #    event and drop the tree HEAD markers older servers never wrote.
+        for p in event_files:
+            data = json.loads(p.read_text())
+            data.pop("parent_id", None)
+            p.write_text(json.dumps(data))
+        base_state = lifecycle.read_base_state()
+        base_state.pop("leaf_event_id", None)
+        base_state.pop("head_is_empty", None)
+        lifecycle.write_base_state(base_state)
+
+        # 3) Append the interrupted-startup artifact: a non-tree event a newer
+        #    server chained onto the legacy tail (it carries a parent_id).
+        artifact = ConversationStateUpdateEvent(
+            parent_id=original_ids[-1], key="execution_status", value="idle"
+        )
+        artifact_path = events_dir / f"event-{len(event_files):05d}-{artifact.id}.json"
+        artifact_path.write_text(artifact.model_dump_json(exclude_none=True))
+
+        # 4) Resume under the current (tree-aware) code.
+        restored = lifecycle.restore(agent)
+        try:
+            # The whole prior history is the active branch (nothing orphaned);
+            # the non-tree artifact is not on it.
+            active_ids = [e.id for e in restored.state.active_branch()]
+            assert active_ids == original_ids
+
+            # Continuing chains onto the real legacy tail, not a false __root__.
+            restored.send_message("Third message")
+            new_event = restored.state.events[-1]
+            assert new_event.parent_id == original_ids[-1]
+            assert new_event.parent_id != ROOT_PARENT_ID
+            reachable = {e.id for e in restored.state.events.path_to_root(new_event.id)}
+            assert set(original_ids).issubset(reachable)
         finally:
             restored.close()
