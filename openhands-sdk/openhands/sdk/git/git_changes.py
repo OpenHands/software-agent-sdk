@@ -34,52 +34,13 @@ def _map_git_status_to_enum(status: str) -> GitChangeStatus:
     return status_mapping[status]
 
 
-def get_changes_in_repo(
-    repo_dir: str | Path, ref: str | None = None
-) -> list[GitChange]:
-    """Get git changes in a repository relative to a reference.
+def _parse_name_status(changed_files: list[str]) -> list[GitChange]:
+    """Parse ``git diff --name-status`` output lines into GitChange objects.
 
-    By default, compares against the auto-detected remote branch. Pass
-    ``ref="HEAD"`` to get ``git status``-style diffs (working tree + index
-    vs the latest commit) instead.
-
-    Args:
-        repo_dir: Path to the git repository
-        ref: Optional explicit ref to compare against (e.g. ``"HEAD"`` or a
-            commit hash). When ``None``, behaves as before and compares
-            against the upstream/default branch.
-
-    Returns:
-        List of GitChange objects representing the changes
-
-    Raises:
-        GitRepositoryError: If the directory is not a valid git repository
-        GitCommandError: If git commands fail (including when ``ref`` is
-            provided but does not resolve in the repository).
+    Renames are split into DELETED (old path) + ADDED (new path); copies
+    surface only the new path as ADDED.
     """
-    # Validate the repository first
-    validated_repo = validate_git_repository(repo_dir)
-
-    # These changes are rendered to the user (e.g. the GUI's Diff view), so
-    # auto-detect the base with the display policy: committed and even
-    # pushed work stays visible instead of vanishing behind a vacuous base.
-    ref = get_valid_ref(validated_repo, override=ref, purpose="display")
-    if not ref:
-        logger.warning(f"No valid git reference found for {validated_repo}")
-        return []
-
-    # Get changed files using secure git command
-    try:
-        changed_files_output = run_git_command(
-            ["git", "--no-pager", "diff", "--name-status", ref], validated_repo
-        )
-        changed_files = (
-            changed_files_output.splitlines() if changed_files_output else []
-        )
-    except GitCommandError as e:
-        logger.error(f"Failed to get git diff for {validated_repo}: {e}")
-        raise
-    changes = []
+    changes: list[GitChange] = []
     for line in changed_files:
         if not line.strip():
             logger.warning("Empty line in git diff output, skipping")
@@ -180,6 +141,55 @@ def get_changes_in_repo(
                 exit_code=0,
                 stderr=f"Unexpected status code: {status}",
             )
+    return changes
+
+
+def get_changes_in_repo(
+    repo_dir: str | Path, ref: str | None = None
+) -> list[GitChange]:
+    """Get git changes in a repository relative to a reference.
+
+    By default, compares against the auto-detected remote branch. Pass
+    ``ref="HEAD"`` to get ``git status``-style diffs (working tree + index
+    vs the latest commit) instead.
+
+    Args:
+        repo_dir: Path to the git repository
+        ref: Optional explicit ref to compare against (e.g. ``"HEAD"`` or a
+            commit hash). When ``None``, behaves as before and compares
+            against the upstream/default branch.
+
+    Returns:
+        List of GitChange objects representing the changes
+
+    Raises:
+        GitRepositoryError: If the directory is not a valid git repository
+        GitCommandError: If git commands fail (including when ``ref`` is
+            provided but does not resolve in the repository).
+    """
+    # Validate the repository first
+    validated_repo = validate_git_repository(repo_dir)
+
+    # These changes are rendered to the user (e.g. the GUI's Diff view), so
+    # auto-detect the base with the display policy: committed and even
+    # pushed work stays visible instead of vanishing behind a vacuous base.
+    ref = get_valid_ref(validated_repo, override=ref, purpose="display")
+    if not ref:
+        logger.warning(f"No valid git reference found for {validated_repo}")
+        return []
+
+    # Get changed files using secure git command
+    try:
+        changed_files_output = run_git_command(
+            ["git", "--no-pager", "diff", "--name-status", ref], validated_repo
+        )
+        changed_files = (
+            changed_files_output.splitlines() if changed_files_output else []
+        )
+    except GitCommandError as e:
+        logger.error(f"Failed to get git diff for {validated_repo}: {e}")
+        raise
+    changes = _parse_name_status(changed_files)
 
     # Get untracked files
     try:
