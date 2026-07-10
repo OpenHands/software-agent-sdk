@@ -10,7 +10,7 @@ import time
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 from uuid import uuid4
 
 import pytest
@@ -858,6 +858,24 @@ def test_archive_redacts_remote_credentials_in_header(client, tmp_path):
     assert remote == quote("https://****@github.com/example/repo.git", safe="")
 
 
+def test_archive_redacts_remote_query_credentials_in_header(client, tmp_path):
+    _repo_with_remote(
+        tmp_path / "repo",
+        "https://github.com/example/repo.git?access_token=SECRET&depth=1",
+    )
+
+    resp = client.get(
+        "/api/file/archive",
+        params={"path": str(tmp_path / "repo"), "format": "tar.gz"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    remote = unquote(resp.headers["x-archive-repo-remote"])
+    assert "SECRET" not in remote
+    assert "access_token=%3Credacted%3E" in remote
+    assert "depth=1" in remote
+
+
 def test_archive_literal_percent_is_encoded(client, tmp_path):
     _repo_with_remote(
         tmp_path / "repo",
@@ -1199,6 +1217,7 @@ def test_git_delta_auto_descends_to_single_repo_under_base(client, tmp_path):
 
     assert resp.status_code == 200, resp.text
     assert resp.headers["content-type"].startswith("text/x-patch")
+    assert unquote(resp.headers["x-archive-repo-root"]) == str(repo)
     assert "app.py" in resp.content.decode("utf-8")
 
 

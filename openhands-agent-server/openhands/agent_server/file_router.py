@@ -37,7 +37,10 @@ from openhands.sdk.git.utils import (
     validate_git_repository,
 )
 from openhands.sdk.logger import get_logger
-from openhands.sdk.utils.redact import redact_url_credentials_in_text
+from openhands.sdk.utils.redact import (
+    redact_url_credentials_in_text,
+    redact_url_params,
+)
 
 
 class SubdirectoryEntry(BaseModel):
@@ -345,7 +348,9 @@ def _git_repo_metadata(root: Path) -> dict[str, str]:
     metadata: dict[str, str] = {}
     remote = _git_probe(["remote", "get-url", "origin"], root)
     if remote:
-        metadata["X-Archive-Repo-Remote"] = redact_url_credentials_in_text(remote)
+        metadata["X-Archive-Repo-Remote"] = redact_url_params(
+            redact_url_credentials_in_text(remote)
+        )
     # Combine into one call: --abbrev-ref only applies to args after it, so the
     # first HEAD stays a full sha while the second is abbreviated to the branch.
     head_and_branch = _git_probe(["rev-parse", "HEAD", "--abbrev-ref", "HEAD"], root)
@@ -1012,6 +1017,7 @@ async def archive_directory(
     headers: dict[str, str] = {}
     if (repo_root / ".git").exists():
         headers.update(await asyncio.to_thread(_git_repo_metadata, repo_root))
+        headers["X-Archive-Repo-Root"] = _header_safe(str(repo_root))
     if base_commit:
         # Make a git-delta self-describing so consumers can replay the patch.
         headers["X-Archive-Base-Commit"] = base_commit
