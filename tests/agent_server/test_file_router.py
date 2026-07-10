@@ -858,6 +858,23 @@ def test_archive_redacts_remote_credentials_in_header(client, tmp_path):
     assert remote == quote("https://****@github.com/example/repo.git", safe="")
 
 
+def test_archive_redacts_mixed_case_remote_credentials_in_header(client, tmp_path):
+    _repo_with_remote(
+        tmp_path / "repo",
+        "HTTPS://user:ghp_secrettoken@github.com/example/repo.git",
+    )
+
+    resp = client.get(
+        "/api/file/archive",
+        params={"path": str(tmp_path / "repo"), "format": "tar.gz"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    remote = resp.headers["x-archive-repo-remote"]
+    assert "ghp_secrettoken" not in remote
+    assert remote == quote("HTTPS://****@github.com/example/repo.git", safe="")
+
+
 def test_archive_redacts_remote_query_credentials_in_header(client, tmp_path):
     _repo_with_remote(
         tmp_path / "repo",

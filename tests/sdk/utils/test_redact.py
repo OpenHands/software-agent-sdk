@@ -208,6 +208,10 @@ class TestRedactUrlCredentialsInText:
         assert "user:pw" not in result
         assert "http://****@internal.example.com/x" in result
 
+    def test_redacts_mixed_case_scheme(self):
+        s = "HTTPS://user:token@github.com/o/r.git"
+        assert redact_url_credentials_in_text(s) == ("HTTPS://****@github.com/o/r.git")
+
     def test_redacts_multiple_embedded_urls(self):
         s = "a https://t1@github.com/o/r.git b https://user:t2@gitlab.com/o/r.git c"
         result = redact_url_credentials_in_text(s)
