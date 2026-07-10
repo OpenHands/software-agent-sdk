@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
 from openhands.agent_server import agent_profiles_router as router_module
 from openhands.agent_server.api import create_app
@@ -128,15 +129,25 @@ def test_seed_acp_when_settings_acp(client):
     assert detail["profile"]["acp_server"] == "codex"
 
 
-def test_seed_backfills_default_llm_profile_when_none_active(
+def test_seed_backfills_default_llm_profile_when_real_config(
     client, default_llm_profile_store
 ):
-    """No active LLM profile: seed backfills a resolvable 'default' LLM profile.
+    """No active LLM profile but a *real* live LLM config: seed backfills a
+    resolvable 'default' LLM profile.
 
-    Regression test for #3933 — previously ``llm_profile_ref`` fell back to
-    the literal 'default' without anything ever creating that LLM profile, so
-    the seeded (and active) agent profile 404'd at conversation launch.
+    Regression test for #3933 — previously ``llm_profile_ref`` fell back to the
+    literal 'default' without anything ever creating that LLM profile, so the
+    seeded (and active) agent profile 404'd at conversation launch. The backfill
+    fires only when the live ``agent_settings.llm`` is real, pre-existing config
+    (here: a custom ``base_url``) — the legacy/cloud migration case — not for a
+    fresh account's bare SDK defaults (see the ghost-profile test below, #4031).
     """
+    # Give the live LLM real config so the backfill is warranted.
+    client.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"llm": {"base_url": "https://proxy.example/v1"}}},
+    )
+
     body = client.get("/api/agent-profiles").json()
     seeded = body["profiles"][0]
     assert seeded["llm_profile_ref"] == "default"
@@ -145,6 +156,33 @@ def test_seed_backfills_default_llm_profile_when_none_active(
     materialized = client.post("/api/agent-profiles/default/materialize").json()
     assert materialized["valid"] is True
     assert materialized["llm_profile_resolved"] is True
+
+
+def test_seed_skips_ghost_llm_profile_for_bare_defaults(
+    client, default_llm_profile_store
+):
+    """A fresh, never-configured account must NOT get a keyless 'default' LLM
+    profile persisted (#4031).
+
+    On bare SDK defaults (``model="gpt-5.5"``, no api_key) the backfill is
+    skipped: no ``default.json`` is written, so the LLM profiles list stays
+    empty rather than showing an unexplained, non-functional 'ghost' profile.
+    The agent profile's ``llm_profile_ref`` is left as a *soft* 'default' ref —
+    which materialize reports as dangling (never raises) and which resolves for
+    real the moment the user saves an actual LLM profile.
+    """
+    body = client.get("/api/agent-profiles").json()
+    seeded = body["profiles"][0]
+    # The agent profile is still seeded, with a soft (unresolved) ref.
+    assert seeded["llm_profile_ref"] == "default"
+    # ...but no ghost LLM profile is left behind.
+    assert "default.json" not in default_llm_profile_store.list()
+    assert default_llm_profile_store.list() == []
+
+    # The soft ref surfaces as dangling at materialize time, not a 500.
+    materialized = client.post("/api/agent-profiles/default/materialize").json()
+    assert materialized["valid"] is False
+    assert materialized["llm_profile_resolved"] is False
 
 
 def test_seed_does_not_clobber_existing_default_llm_profile(
@@ -215,12 +253,18 @@ def test_seed_backfills_when_active_profile_is_empty_string(
     PATCH payload's pattern validator blocks a client from setting `""`, but
     the stored ``PersistedSettings`` field has no such constraint, so a
     hand-edited or legacy settings.json can still contain it.
+
+    The live LLM carries a custom ``base_url`` so it counts as real config and
+    the backfill actually persists a profile (#4031 gates it on real config).
     """
     (temp_settings_dir / "settings.json").write_text(
         json.dumps(
             {
                 "schema_version": 2,
-                "agent_settings": {"agent_kind": "openhands"},
+                "agent_settings": {
+                    "agent_kind": "openhands",
+                    "llm": {"model": "gpt-5.5", "base_url": "https://proxy.example/v1"},
+                },
                 "conversation_settings": {},
                 "active_profile": "",
                 "active_agent_profile_id": None,
@@ -247,6 +291,29 @@ def test_seed_acp_does_not_backfill_llm_profile(client, default_llm_profile_stor
     client.get("/api/agent-profiles")
 
     assert default_llm_profile_store.list() == []
+
+
+@pytest.mark.parametrize(
+    "llm, expected",
+    [
+        # Bare SDK defaults on a never-configured account -> not real config.
+        (LLM(model="gpt-5.5"), False),
+        (LLM(model="gpt-5.5", base_url=""), False),
+        (LLM(model="gpt-5.5", base_url="   "), False),
+        # A real API key.
+        (LLM(model="gpt-5.5", api_key=SecretStr("sk-real")), True),
+        # A blank API key does not count.
+        (LLM(model="gpt-5.5", api_key=SecretStr("  ")), False),
+        # A custom endpoint (proxy / self-hosted) counts.
+        (LLM(model="gpt-5.5", base_url="https://proxy.example/v1"), True),
+        # Subscription auth counts even without an api_key.
+        (LLM(model="gpt-5.5", auth_type="subscription"), True),
+    ],
+)
+def test_llm_has_real_config(llm, expected):
+    """``_llm_has_real_config`` gates the seed so only real, pre-existing
+    configuration is mirrored into a persisted 'default' LLM profile (#4031)."""
+    assert router_module._llm_has_real_config(llm) is expected
 
 
 def test_no_seed_when_store_nonempty(client, store):
@@ -907,7 +974,6 @@ def test_materialize_no_raw_secrets_in_resolved_settings(
 ):
     """resolved_settings must not contain raw API key values."""
     raw_key = "sk-secret-key-should-not-appear"
-    from pydantic import SecretStr
 
     llm_store.save(
         "base-llm",

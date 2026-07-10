@@ -131,6 +131,15 @@ class ConversationState(OpenHandsModel):
         description="List of activated knowledge skills name",
     )
 
+    activated_path_rules: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of path-scoped rules already injected on file-touch. "
+            "Mirrors activated_knowledge_skills to dedup rule injection "
+            "once per conversation."
+        ),
+    )
+
     invoked_skills: list[str] = Field(
         default_factory=list,
         description=(

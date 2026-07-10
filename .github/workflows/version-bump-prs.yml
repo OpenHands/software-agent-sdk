@@ -98,6 +98,12 @@ jobs:
                   echo "✅ All packages are resolvable on PyPI!"
 
             - name: Create PR for OpenHands repo
+              id: openhands_pr
+              # continue-on-error keeps the sibling "Create PR" steps below
+              # independent: each bumps an unrelated repo, so one failing must
+              # not skip the rest. Failures are surfaced in the Summary step via
+              # steps.<id>.outcome.
+              continue-on-error: true
               env:
                   VERSION: ${{ steps.get_version.outputs.version }}
               run: |
@@ -300,6 +306,8 @@ jobs:
                   fi
 
             - name: Create PR for OpenHands-CLI repo
+              id: cli_pr
+              continue-on-error: true
               env:
                   VERSION: ${{ steps.get_version.outputs.version }}
               run: |
@@ -376,6 +384,8 @@ jobs:
                   fi
 
             - name: Create PR for automation repo
+              id: automation_pr
+              continue-on-error: true
               env:
                   VERSION: ${{ steps.get_version.outputs.version }}
               run: |
@@ -468,14 +478,33 @@ jobs:
             - name: Summary
               env:
                   VERSION: ${{ steps.get_version.outputs.version }}
+                  OPENHANDS_OUTCOME: ${{ steps.openhands_pr.outcome }}
+                  CLI_OUTCOME: ${{ steps.cli_pr.outcome }}
+                  AUTOMATION_OUTCOME: ${{ steps.automation_pr.outcome }}
               run: |
-                  echo "## ✅ Version Bump PRs Created" >> $GITHUB_STEP_SUMMARY
+                  echo "## Version Bump PRs" >> $GITHUB_STEP_SUMMARY
                   echo "" >> $GITHUB_STEP_SUMMARY
-                  echo "PRs have been created to bump SDK packages to version **$VERSION**:" >> $GITHUB_STEP_SUMMARY
+                  echo "Results of bumping SDK packages to version **$VERSION**:" >> $GITHUB_STEP_SUMMARY
                   echo "" >> $GITHUB_STEP_SUMMARY
-                  echo "- [OpenHands](https://github.com/OpenHands/OpenHands/pulls?q=is%3Apr+bump-sdk-$VERSION)" >> $GITHUB_STEP_SUMMARY
-                  echo "- [OpenHands-CLI](https://github.com/OpenHands/openhands-cli/pulls?q=is%3Apr+bump-sdk-$VERSION)" >> $GITHUB_STEP_SUMMARY
-                  echo "- [automation](https://github.com/OpenHands/automation/pulls?q=is%3Apr+bump-sdk-$VERSION)" >> $GITHUB_STEP_SUMMARY
+
+                  # The "Create PR" steps use continue-on-error, so surface any
+                  # failure here instead of silently linking to a PR that was
+                  # never created.
+                  if [ "$OPENHANDS_OUTCOME" = "failure" ]; then
+                    echo "- ⚠️ **OpenHands PR creation FAILED** — see the \"Create PR for OpenHands repo\" step logs" >> $GITHUB_STEP_SUMMARY
+                  else
+                    echo "- [OpenHands](https://github.com/OpenHands/OpenHands/pulls?q=is%3Apr+bump-sdk-$VERSION)" >> $GITHUB_STEP_SUMMARY
+                  fi
+                  if [ "$CLI_OUTCOME" = "failure" ]; then
+                    echo "- ⚠️ **OpenHands-CLI PR creation FAILED** — see the \"Create PR for OpenHands-CLI repo\" step logs" >> $GITHUB_STEP_SUMMARY
+                  else
+                    echo "- [OpenHands-CLI](https://github.com/OpenHands/openhands-cli/pulls?q=is%3Apr+bump-sdk-$VERSION)" >> $GITHUB_STEP_SUMMARY
+                  fi
+                  if [ "$AUTOMATION_OUTCOME" = "failure" ]; then
+                    echo "- ⚠️ **automation PR creation FAILED** — see the \"Create PR for automation repo\" step logs" >> $GITHUB_STEP_SUMMARY
+                  else
+                    echo "- [automation](https://github.com/OpenHands/automation/pulls?q=is%3Apr+bump-sdk-$VERSION)" >> $GITHUB_STEP_SUMMARY
+                  fi
 
             - name: Notify Slack
               if: env.SLACK_BOT_TOKEN != ''
