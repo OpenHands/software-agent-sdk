@@ -60,7 +60,10 @@ def get_changes_in_repo(
     # Validate the repository first
     validated_repo = validate_git_repository(repo_dir)
 
-    ref = get_valid_ref(validated_repo, override=ref)
+    # These changes are rendered to the user (e.g. the GUI's Diff view), so
+    # auto-detect the base with the display policy: committed and even
+    # pushed work stays visible instead of vanishing behind a vacuous base.
+    ref = get_valid_ref(validated_repo, override=ref, purpose="display")
     if not ref:
         logger.warning(f"No valid git reference found for {validated_repo}")
         return []
