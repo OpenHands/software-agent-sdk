@@ -13,6 +13,7 @@ from openhands.sdk.context.prompts.sections.dynamic import (
     CustomSuffixSection,
     DateTimeSection,
     RepoContextSection,
+    RuntimeServicesSection,
 )
 from openhands.sdk.context.prompts.sections.planning import PlanningSection
 from openhands.sdk.context.prompts.sections.static import (
@@ -55,6 +56,7 @@ __all__ = [
     "ProcessManagementSection",
     "PullRequestsSection",
     "RepoContextSection",
+    "RuntimeServicesSection",
     "RoleSection",
     "SecurityRiskAssessmentSection",
     "SecuritySection",

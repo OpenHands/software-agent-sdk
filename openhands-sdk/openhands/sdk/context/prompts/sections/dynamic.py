@@ -21,6 +21,7 @@ __all__ = [
     "CustomSuffixSection",
     "DateTimeSection",
     "RepoContextSection",
+    "RuntimeServicesSection",
 ]
 
 
@@ -102,6 +103,51 @@ class CustomSuffixSection:
 
     def render(self, ctx: PromptContext) -> str | None:
         return ctx.custom_suffix
+
+
+class RuntimeServicesSection:
+    """Render the conversation's deployment services."""
+
+    name = "runtime_services"
+    cache_tier = CacheTier.DYNAMIC
+
+    def guard(self, ctx: PromptContext) -> bool:
+        return bool(ctx.runtime_context and ctx.runtime_context.services)
+
+    def render(self, ctx: PromptContext) -> str | None:
+        runtime_context = ctx.runtime_context
+        if runtime_context is None:
+            return None
+
+        lines = ["<RUNTIME_SERVICES>"]
+        if runtime_context.mode:
+            lines.append(f"Deployment mode: {runtime_context.mode}")
+        lines.append("URLs are written from the agent runtime's point of view.")
+        lines.append("Services available to this conversation:")
+        for service in runtime_context.services:
+            label = service.name.replace("_", " ").title()
+            status = (
+                service.url_from_agent
+                if service.available and service.url_from_agent
+                else "unavailable"
+            )
+            lines.append(f"* {label}: {status}")
+            if service.api_prefix:
+                lines.append(f"    API prefix: {service.api_prefix}")
+            if service.docs_url:
+                lines.append(f"    Docs: {service.docs_url}")
+            if service.openapi_url:
+                lines.append(f"    OpenAPI: {service.openapi_url}")
+            if service.auth_header_name and service.auth_env_var:
+                lines.append(
+                    f"    Auth: header '{service.auth_header_name}: "
+                    f"${service.auth_env_var}'"
+                )
+            elif service.auth_env_var:
+                lines.append(f"    Auth environment variable: ${service.auth_env_var}")
+        lines.append("Use only the listed URLs; do not guess alternate endpoints.")
+        lines.append("</RUNTIME_SERVICES>")
+        return "\n".join(lines)
 
 
 class CustomSecretsSection:

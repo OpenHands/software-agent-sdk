@@ -10,6 +10,7 @@ from openhands.sdk import Agent, Conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
 from openhands.sdk.llm import LLM
+from openhands.sdk.runtime_context import ConversationRuntimeContext, RuntimeService
 from openhands.sdk.workspace import RemoteWorkspace
 
 
@@ -150,6 +151,41 @@ def test_conversation_factory_forwards_remote_user_id_to_create_payload(
     assert payload["user_id"] == "user-42"
     assert payload["tags"] == {"automationid": "auto-1"}
     assert payload["observability_span_name"] == "pr_review_evaluation"
+
+
+@patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")
+def test_conversation_factory_forwards_runtime_context(
+    mock_ws_client, agent, remote_workspace
+):
+    runtime_context = ConversationRuntimeContext(
+        services=(
+            RuntimeService(name="automation", url_from_agent="http://automation"),
+        )
+    )
+
+    conversation = Conversation(
+        agent=agent,
+        workspace=remote_workspace,
+        runtime_context=runtime_context,
+    )
+
+    assert isinstance(conversation, RemoteConversation)
+    create_call = remote_workspace._client.request.call_args_list[0]
+    assert create_call.kwargs["json"]["runtime_context"] == {
+        "mode": None,
+        "services": [
+            {
+                "name": "automation",
+                "url_from_agent": "http://automation",
+                "api_prefix": None,
+                "docs_url": None,
+                "openapi_url": None,
+                "auth_header_name": None,
+                "auth_env_var": None,
+                "available": True,
+            }
+        ],
+    }
 
 
 def test_conversation_factory_string_workspace_creates_local(agent):

@@ -14,7 +14,6 @@ from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.request import (  # re-export for backward compat
     ACPEnabledAgent as ACPEnabledAgent,
-    AgentLaunchOverrides as AgentLaunchOverrides,
     SendMessageRequest as SendMessageRequest,
     StartACPConversationRequest as StartACPConversationRequest,
     StartConversationRequest as StartConversationRequest,
@@ -31,6 +30,10 @@ from openhands.sdk.llm.message import (  # re-export
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot
 from openhands.sdk.profiles.agent_profile import (
     LaunchedAgentProfile as LaunchedAgentProfile,
+)
+from openhands.sdk.runtime_context import (
+    ConversationRuntimeContext as ConversationRuntimeContext,
+    RuntimeService as RuntimeService,
 )
 from openhands.sdk.secret import SecretSource
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
@@ -85,12 +88,6 @@ class StoredConversation(StartConversationRequest):
     # agent_profile_id is resolved into launched_agent_profile at creation; exclude from
     # the persistence payload so it does not re-appear in meta.json.
     agent_profile_id: UUID | None = Field(default=None, exclude=True)
-    # agent_launch_overrides is folded into the resolved agent at creation; exclude
-    # from the persistence payload so it is never double-applied on resume.
-    agent_launch_overrides: AgentLaunchOverrides | None = Field(
-        default=None, exclude=True
-    )
-
     id: OpenHandsUUID
     title: str | None = Field(
         default=None, description="User-defined title for the conversation"
@@ -139,6 +136,10 @@ class _ConversationInfoBase(BaseModel):
         default="workspace/conversations",
         description="Directory for persisting conversation state and events. "
         "If None, conversation will not be persisted.",
+    )
+    runtime_context: ConversationRuntimeContext | None = Field(
+        default=None,
+        description="Deployment and service topology for this conversation.",
     )
     max_iterations: int = Field(
         default=500,

@@ -28,6 +28,7 @@ from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer
+from openhands.sdk.runtime_context import ConversationRuntimeContext
 from openhands.sdk.tool import (
     BUILT_IN_TOOL_CLASSES,
     BUILT_IN_TOOLS,
@@ -399,6 +400,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     def _build_prompt_context(
         self,
         additional_secret_infos: list[dict[str, str | None]] | None = None,
+        runtime_context: ConversationRuntimeContext | None = None,
     ) -> PromptContext:
         """Frozen :class:`PromptContext` snapshot for this agent.
 
@@ -469,6 +471,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             repo_skills=repo_skills,
             available_skills_prompt=available_skills_prompt,
             custom_suffix=custom_suffix,
+            runtime_context=runtime_context,
             secret_infos=secret_infos,
         )
 

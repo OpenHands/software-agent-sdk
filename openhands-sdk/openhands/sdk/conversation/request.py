@@ -32,6 +32,7 @@ from openhands.sdk.conversation.types import (
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm.message import ImageContent, Message, TextContent
 from openhands.sdk.plugin import PluginSource
+from openhands.sdk.runtime_context import ConversationRuntimeContext
 from openhands.sdk.secret import SecretSource
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
@@ -72,33 +73,6 @@ class SendMessageRequest(BaseModel):
 
     def create_message(self) -> Message:
         return Message(role=self.role, content=self.content)
-
-
-class AgentLaunchOverrides(BaseModel):
-    """Client-supplied, launch-time enrichments applied to the resolved agent.
-
-    These are strictly *additive* overlays that the server applies after the
-    agent is resolved (in particular, after ``agent_profile_id`` resolution,
-    which otherwise discards ``agent`` / ``agent_settings``). They exist to
-    carry client-owned, deployment-specific enrichments that have no server-side
-    representation and that the profile resolver therefore cannot reconstruct
-    (e.g. a ``<RUNTIME_SERVICES>`` block describing live service topology).
-
-    Overrides can only append/extend; they cannot swap the LLM or replace the
-    resolved agent configuration — the profile stays authoritative for config.
-    """
-
-    system_message_suffix_append: str | None = Field(
-        default=None,
-        description=(
-            "Text to append to the resolved agent's "
-            "``agent_context.system_message_suffix``. Mirrors how the server "
-            "appends its own worktree guidance: it concatenates onto any "
-            "existing suffix rather than replacing it. Use this to inject "
-            "launch-time, deployment-specific prompt enrichments that cannot be "
-            "persisted on a stored profile."
-        ),
-    )
 
 
 class StartConversationRequest(BaseModel):
@@ -267,6 +241,13 @@ class StartConversationRequest(BaseModel):
             "the agent's LLM."
         ),
     )
+    runtime_context: ConversationRuntimeContext | None = Field(
+        default=None,
+        description=(
+            "Deployment and service topology for this conversation. Stored as "
+            "conversation state and rendered separately from Agent configuration."
+        ),
+    )
 
     agent_settings: dict[str, Any] | None = Field(
         default=None,
@@ -285,19 +266,6 @@ class StartConversationRequest(BaseModel):
             "builds the agent from it. Mutually exclusive with `agent` and "
             "`agent_settings`. The SDK validator enforces exclusivity only — "
             "resolution happens in conversation_service, not here."
-        ),
-    )
-    agent_launch_overrides: AgentLaunchOverrides | None = Field(
-        default=None,
-        description=(
-            "Optional client-supplied, launch-time enrichments applied to the "
-            "resolved agent after agent/profile resolution. Strictly additive: "
-            "they can append to the system message suffix but cannot swap the LLM "
-            "or replace the resolved configuration. Applies uniformly to both the "
-            "`agent`/`agent_settings` and `agent_profile_id` launch paths; on the "
-            "former it is typically a no-op because the client already folds these "
-            "enrichments into `agent`, but on the profile path it is the only "
-            "channel for client-owned, deployment-specific prompt additions."
         ),
     )
     agent: AgentBase = Field(default=cast(AgentBase, None))

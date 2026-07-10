@@ -18,6 +18,7 @@ from openhands.sdk.conversation.visualizer import (
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.plugin import PluginSource
+from openhands.sdk.runtime_context import ConversationRuntimeContext
 from openhands.sdk.secret import SecretValue
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.utils.redact import redact_url_credentials
@@ -85,6 +86,7 @@ class Conversation:
         tags: dict[str, str] | None = None,
         user_id: str | None = None,
         client_tools: list[ClientToolSpec] | None = None,
+        runtime_context: ConversationRuntimeContext | None = None,
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
@@ -114,6 +116,7 @@ class Conversation:
         tags: dict[str, str] | None = None,
         user_id: str | None = None,
         client_tools: list[ClientToolSpec] | None = None,
+        runtime_context: ConversationRuntimeContext | None = None,
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
@@ -143,6 +146,7 @@ class Conversation:
         tags: dict[str, str] | None = None,
         user_id: str | None = None,
         client_tools: list[ClientToolSpec] | None = None,
+        runtime_context: ConversationRuntimeContext | None = None,
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
@@ -206,6 +210,7 @@ class Conversation:
                 tags=effective_tags if effective_tags else None,
                 user_id=user_id,
                 client_tools=client_tools,
+                runtime_context=runtime_context,
                 observability_metadata=observability_metadata,
                 observability_tags=observability_tags,
                 observability_span_name=observability_span_name,
@@ -229,6 +234,7 @@ class Conversation:
             tags=tags,
             user_id=user_id,
             client_tools=client_tools,
+            runtime_context=runtime_context,
             observability_metadata=observability_metadata,
             observability_tags=observability_tags,
             observability_span_name=observability_span_name,

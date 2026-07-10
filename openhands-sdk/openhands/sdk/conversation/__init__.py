@@ -26,6 +26,10 @@ from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
     DefaultConversationVisualizer,
 )
+from openhands.sdk.runtime_context import (
+    ConversationRuntimeContext,
+    RuntimeService,
+)
 
 
 __all__ = [
@@ -34,6 +38,7 @@ __all__ = [
     "BaseConversation",
     "ConversationState",
     "ConversationExecutionStatus",
+    "ConversationRuntimeContext",
     "ConversationCallbackType",
     "ConversationTags",
     "ConversationTokenCallbackType",
@@ -44,6 +49,7 @@ __all__ = [
     "EventLog",
     "ResourceLockManager",
     "ResourceLockTimeout",
+    "RuntimeService",
     "LocalConversation",
     "RemoteConversation",
     "EventsListBase",

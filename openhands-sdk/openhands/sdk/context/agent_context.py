@@ -351,10 +351,22 @@ class AgentContext(BaseModel):
         - Legacy with trigger=None: Full content in <REPO_CONTEXT> (always active)
         - Legacy with triggers: Listed in <available_skills>, injected on trigger
         """
+        ctx = self.build_dynamic_prompt_context(
+            llm_model, llm_model_canonical, additional_secret_infos
+        )
+        return create_registry().build(ctx).dynamic
+
+    def build_dynamic_prompt_context(
+        self,
+        llm_model: str | None = None,
+        llm_model_canonical: str | None = None,
+        additional_secret_infos: list[dict[str, str | None]] | None = None,
+    ) -> PromptContext:
+        """Build the dynamic prompt inputs owned by this agent context."""
         data = self._resolve_dynamic_data(
             llm_model, llm_model_canonical, additional_secret_infos
         )
-        ctx = PromptContext(
+        return PromptContext(
             now=data.formatted_datetime,
             repo_skills=tuple((s.name, s.content) for s in data.repo_skills),
             available_skills_prompt=data.available_skills_prompt or None,
@@ -363,7 +375,6 @@ class AgentContext(BaseModel):
                 (info["name"] or "", info["description"]) for info in data.secret_infos
             ),
         )
-        return create_registry().build(ctx).dynamic
 
     def _resolve_dynamic_data(
         self,

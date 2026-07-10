@@ -22,7 +22,6 @@ from openhands.agent_server.event_service import (
     EventService,
 )
 from openhands.agent_server.models import (
-    AgentLaunchOverrides,
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
@@ -82,20 +81,6 @@ def _build_worktree_guidance(
     )
 
 
-def _append_system_message_suffix(agent: AgentBase, addition: str) -> AgentBase:
-    """Append ``addition`` to the agent's ``system_message_suffix``.
-
-    Concatenates onto any existing suffix (separated by a blank line) rather
-    than replacing it, so multiple post-resolution appenders (worktree guidance,
-    client launch overrides) compose without clobbering each other.
-    """
-    context = agent.agent_context or AgentContext()
-    existing_suffix = (context.system_message_suffix or "").strip()
-    suffix = f"{existing_suffix}\n\n{addition}" if existing_suffix else addition
-    updated_context = context.model_copy(update={"system_message_suffix": suffix})
-    return agent.model_copy(update={"agent_context": updated_context})
-
-
 def _append_worktree_guidance(
     agent: AgentBase,
     *,
@@ -104,32 +89,17 @@ def _append_worktree_guidance(
     workspace_dir: Path,
     branch: str,
 ) -> AgentBase:
+    context = agent.agent_context or AgentContext()
     guidance = _build_worktree_guidance(
         source_workspace=source_workspace,
         worktree_root=worktree_root,
         workspace_dir=workspace_dir,
         branch=branch,
     )
-    return _append_system_message_suffix(agent, guidance)
-
-
-def _apply_launch_overrides(
-    agent: AgentBase,
-    overrides: AgentLaunchOverrides | None,
-) -> AgentBase:
-    """Apply client-supplied, launch-time enrichments to a resolved agent.
-
-    Strictly additive: appends the client's ``system_message_suffix_append`` to
-    the resolved agent's system message suffix. Reuses the same seam the server
-    uses to append its own worktree guidance so client enrichments survive the
-    ``agent_profile_id`` launch path (which otherwise discards the client agent).
-    """
-    if overrides is None:
-        return agent
-    addition = (overrides.system_message_suffix_append or "").strip()
-    if not addition:
-        return agent
-    return _append_system_message_suffix(agent, addition)
+    existing_suffix = (context.system_message_suffix or "").strip()
+    suffix = f"{existing_suffix}\n\n{guidance}" if existing_suffix else guidance
+    updated_context = context.model_copy(update={"system_message_suffix": suffix})
+    return agent.model_copy(update={"agent_context": updated_context})
 
 
 def _has_git_remote(repo_root: Path, remote: str = "origin") -> bool:
@@ -775,20 +745,6 @@ class ConversationService:
             )
             request = request.model_copy(update={"agent": resolved_agent})
 
-        # Apply client-supplied launch-time enrichments after agent/profile
-        # resolution. This is the only channel that carries client-owned,
-        # deployment-specific additions (e.g. a <RUNTIME_SERVICES> block) onto
-        # the agent_profile_id path, which otherwise discards the client agent.
-        # Applies uniformly to both launch paths; a no-op when unset.
-        if request.agent_launch_overrides is not None and request.agent is not None:
-            request = request.model_copy(
-                update={
-                    "agent": _apply_launch_overrides(
-                        request.agent, request.agent_launch_overrides
-                    )
-                }
-            )
-
         request = _prepare_request_workspace(request, conversation_id)
 
         # Dynamically register tools from client's registry
@@ -853,12 +809,10 @@ class ConversationService:
         # construct StoredConversation, not sent over the network.
         # agent_profile_id is excluded: it was resolved into `launched_agent_profile`
         # above and must not re-trigger the mutual-exclusivity validator.
-        # agent_launch_overrides is excluded: it was already folded into the
-        # resolved agent above, so persisting it would risk double application.
         request_data = request.model_dump(
             mode="json",
             context={"expose_secrets": True},
-            exclude={"agent_profile_id", "agent_launch_overrides"},
+            exclude={"agent_profile_id"},
         )
 
         # If secrets_encrypted=True, the agent's secrets (e.g., LLM api_key) are
