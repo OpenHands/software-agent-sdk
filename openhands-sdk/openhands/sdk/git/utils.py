@@ -8,6 +8,7 @@ from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.utils.redact import (
     redact_url_credentials,
     redact_url_credentials_in_text,
+    redact_url_params,
 )
 
 
@@ -16,6 +17,51 @@ logger = logging.getLogger(__name__)
 # Git empty tree hash - this is a well-known constant in git
 # representing the hash of an empty tree object
 GIT_EMPTY_TREE_HASH = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+
+def _run_git_subprocess(
+    args: list[str],
+    cwd: str | Path | None,
+    timeout: int,
+) -> subprocess.CompletedProcess[str]:
+    """Run a subprocess with the capture/decode settings all git callers need."""
+    return subprocess.run(
+        args,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        errors="replace",
+        check=False,
+        timeout=timeout,
+    )
+
+
+def _run_git_probe(args: list[str], cwd: str | Path) -> str:
+    try:
+        result = _run_git_subprocess(["git", "--no-pager", *args], cwd, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def get_git_repository_metadata(repo_dir: str | Path) -> dict[str, str]:
+    """Return best-effort repository identity metadata."""
+    metadata: dict[str, str] = {}
+    remote = _run_git_probe(["remote", "get-url", "origin"], repo_dir)
+    if remote:
+        metadata["repo_remote"] = redact_url_params(
+            redact_url_credentials_in_text(remote)
+        )
+
+    head_and_branch = _run_git_probe(
+        ["rev-parse", "HEAD", "--abbrev-ref", "HEAD"], repo_dir
+    )
+    lines = head_and_branch.splitlines()
+    if len(lines) == 2:
+        head, branch = lines
+        metadata["head_commit"] = head
+        metadata["branch"] = "DETACHED" if branch == "HEAD" else branch
+    return metadata
 
 
 def run_git_command(
@@ -40,14 +86,7 @@ def run_git_command(
     cmd_str = shlex.join(redacted_args)
 
     try:
-        result = subprocess.run(
-            args,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=timeout,
-        )
+        result = _run_git_subprocess(args, cwd, timeout)
 
         if result.returncode != 0:
             error_msg = f"Git command failed: {cmd_str}"

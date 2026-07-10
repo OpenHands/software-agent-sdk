@@ -265,18 +265,32 @@ class ConversationState(OpenHandsModel):
 
         A set leaf is returned as-is. ``head_is_empty`` marks a deliberate empty
         HEAD (``navigate_to(None)``) -> no active branch. Otherwise a ``None`` leaf
-        falls back to the last event only for pre-feature conversations (last
-        event has no ``parent_id``), so legacy history loads unbranched.
+        (pre-feature conversation) falls back to the last *real* event, so legacy
+        history loads unbranched.
+
+        Trailing non-tree artifacts -- a ``ConversationStateUpdateEvent`` or
+        ``ConversationErrorEvent`` a newer server may have written onto a legacy
+        tail during an interrupted startup -- are skipped: they are not tree
+        nodes (see ``append_event``), so treating one as the leaf would both make
+        it the parent of the next event and, because it carries a ``parent_id``,
+        cut the legacy linear fallback and strand all prior history (#4057).
         """
         if self.leaf_event_id is not None:
             return self.leaf_event_id
         if self.head_is_empty:
             return None
-        if (n := len(self._events)) == 0:
+        if len(self._events) == 0:
             return None
-        if self._events[n - 1].parent_id is not None:
-            return None
-        return self._events.get_id(n - 1)
+        from openhands.sdk.event.conversation_error import ConversationErrorEvent
+        from openhands.sdk.event.conversation_state import (
+            ConversationStateUpdateEvent,
+        )
+
+        artifacts = (ConversationStateUpdateEvent, ConversationErrorEvent)
+        for i in range(len(self._events) - 1, -1, -1):
+            if not isinstance(self._events[i], artifacts):
+                return self._events.get_id(i)
+        return None
 
     def active_branch(self, limit: int | None = None) -> list[Event]:
         """Raw events on the active branch (``path_to_root(leaf)``), root-first.
