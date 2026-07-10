@@ -11,6 +11,7 @@ from openhands.sdk.conversation.persistence_const import (
     EVENTS_DIR,
 )
 from openhands.sdk.event import Event, EventID
+from openhands.sdk.event.types import ROOT_PARENT_ID
 from openhands.sdk.io import FileStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.path import posix_path_name
@@ -20,6 +21,10 @@ logger = get_logger(__name__)
 
 LOCK_FILE_NAME = ".eventlog.lock"
 LOCK_TIMEOUT_SECONDS = 30
+
+# ROOT_PARENT_ID now lives in event.types (single source of truth); it is used
+# below in _effective_parent_id and re-exported here so existing
+# ``from event_store import ROOT_PARENT_ID`` importers keep working.
 
 
 class EventLog(EventsListBase):
@@ -71,6 +76,54 @@ class EventLog(EventsListBase):
         if idx < 0 or idx >= self._length:
             raise IndexError("Event index out of range")
         return self._idx_to_id[idx]
+
+    def __contains__(self, item: object) -> bool:
+        """Whether the log contains a given event id or ``Event`` (by id).
+
+        Checking by id (not the ``Sequence`` default of value-equality) keeps
+        ``event in events`` true after the event is stamped with a ``parent_id``
+        on append, and avoids hashing unhashable event payloads.
+        """
+        if isinstance(item, Event):
+            return item.id in self._id_to_idx
+        return item in self._id_to_idx
+
+    def _effective_parent_id(self, idx: int, event: Event) -> EventID | None:
+        """Resolve the parent of ``event`` (at ``idx``) for tree traversal.
+
+        Legacy events predating the tree have no ``parent_id``; they fall back to
+        the linear chain (event ``idx - 1``) so old conversations load unbranched
+        with no disk rewrite.
+        """
+        if event.parent_id == ROOT_PARENT_ID:
+            return None  # explicit root (feature-created root at idx > 0)
+        if event.parent_id is not None:
+            return event.parent_id  # explicit (new events)
+        if idx == 0:
+            return None  # genuine root
+        return self.get_id(idx - 1)  # legacy linear chain (back-compat)
+
+    def path_to_root(
+        self, leaf_id: EventID | None, limit: int | None = None
+    ) -> list[Event]:
+        """The active branch ``leaf -> ... -> root``, returned root-first.
+
+        ``leaf_id=None`` yields ``[]``. ``limit`` keeps only the last ``limit``
+        events (walking back from the leaf), so callers wanting a recent window
+        stay O(limit) instead of O(branch). Raises ValueError on a cycle, KeyError
+        if ``leaf_id`` or an ancestor is missing.
+        """
+        chain: list[Event] = []
+        seen: set[EventID] = set()
+        cur_id: EventID | None = leaf_id
+        while cur_id is not None and (limit is None or len(chain) < limit):
+            if cur_id in seen:
+                raise ValueError(f"Cycle in event tree at {cur_id}")
+            seen.add(cur_id)
+            idx = self.get_index(cur_id)
+            chain.append(evt := self[idx])
+            cur_id = self._effective_parent_id(idx, evt)
+        return chain[::-1]
 
     @overload
     def __getitem__(self, idx: int) -> Event: ...

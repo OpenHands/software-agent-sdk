@@ -55,6 +55,7 @@ from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.llm.streaming import LLMStreamChunk
+from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
@@ -81,6 +82,7 @@ class EventService:
     stored: StoredConversation
     conversations_dir: Path
     cipher: Cipher | None = None
+    mcp_tool_provider: MCPToolProvider | None = None
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
     _conversation: LocalConversation | None = field(default=None, init=False)
@@ -579,21 +581,26 @@ class EventService:
         # conversation's synchronous FIFOLock cannot block the server event loop.
         if self._conversation:
             state_update_event = await self._create_state_update_event()
+        else:
+            state_update_event = ConversationStateUpdateEvent(
+                key="execution_status",
+                value=ConversationExecutionStatus.IDLE,
+            )
 
-            try:
-                await asyncio.wait_for(
-                    subscriber(state_update_event),
-                    timeout=INITIAL_STATE_PUSH_TIMEOUT_SECONDS,
-                )
-            except TimeoutError:
-                # Subscriber stays registered; only the initial-state push is
-                # dropped. Subsequent publishes go through pub_sub and may
-                # still block there if the subscriber remains wedged.
-                logger.warning(
-                    f"Initial state push to subscriber {subscriber_id} timed "
-                    f"out after {INITIAL_STATE_PUSH_TIMEOUT_SECONDS}s."
-                )
-            # Non-timeout errors propagate to caller (e.g. webhook failures).
+        try:
+            await asyncio.wait_for(
+                subscriber(state_update_event),
+                timeout=INITIAL_STATE_PUSH_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            # Subscriber stays registered; only the initial-state push is
+            # dropped. Subsequent publishes go through pub_sub and may
+            # still block there if the subscriber remains wedged.
+            logger.warning(
+                f"Initial state push to subscriber {subscriber_id} timed "
+                f"out after {INITIAL_STATE_PUSH_TIMEOUT_SECONDS}s."
+            )
+        # Non-timeout errors propagate to caller (e.g. webhook failures).
 
         return subscriber_id
 
@@ -832,6 +839,7 @@ class EventService:
             observability_metadata=self.stored.observability_metadata,
             observability_tags=self.stored.observability_tags,
             observability_span_name=self.stored.observability_span_name,
+            mcp_tool_provider=self.mcp_tool_provider,
         )
 
         conversation.set_confirmation_policy(self.stored.confirmation_policy)
@@ -863,6 +871,11 @@ class EventService:
         state = self._conversation.state
         if state.execution_status == ConversationExecutionStatus.RUNNING:
             state.execution_status = ConversationExecutionStatus.ERROR
+            # Crash recovery scans the full log, not the active branch: the
+            # process may have died between writing an event file and persisting
+            # the advanced HEAD, so the leaf can lag the on-disk events. (Remote
+            # branching is unsupported — #3749 — so there are no abandoned
+            # branches to exclude here anyway.)
             unmatched_actions = ConversationState.get_unmatched_actions(state.events)
             if unmatched_actions:
                 first_action = unmatched_actions[0]
@@ -1504,6 +1517,22 @@ class EventService:
 
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._conversation.condense)
+
+    async def navigate_to(self, event_id: str | None) -> None:
+        """Move the conversation HEAD to an existing event (in-place re-root).
+
+        Delegates to LocalConversation in an executor to avoid blocking the event loop.
+
+        Raises:
+            ValueError: If ``event_id`` is not ``None`` and not in the conversation.
+        """
+        if not self._conversation:
+            raise ValueError("inactive_service")
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, self._conversation.navigate_to, event_id
+        )
 
     def _get_agent_final_response_sync(self) -> str:
         """Extract the agent's final response from the conversation events.

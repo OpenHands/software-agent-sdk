@@ -52,6 +52,7 @@ from openhands.sdk.event.condenser import (
 )
 from openhands.sdk.llm import (
     LLM,
+    ImageContent,
     LLMResponse,
     Message,
     MessageToolCall,
@@ -89,6 +90,7 @@ from openhands.sdk.tool.builtins import (
     FinishTool,
     ThinkAction,
 )
+from openhands.sdk.tool.builtins.vision_inspect import VISION_INSPECT_TOOL_NAME
 
 
 logger = get_logger(__name__)
@@ -136,6 +138,38 @@ def _non_multimodal_image_message(model: str) -> Message:
             )
         ],
     )
+
+
+def _replace_latest_user_images_with_references(
+    messages: list[Message],
+) -> list[Message]:
+    rewritten = list(messages)
+    for index in range(len(rewritten) - 1, -1, -1):
+        message = rewritten[index]
+        if message.role != "user" or not message.contains_image:
+            continue
+
+        image_index = 0
+        content: list[TextContent | ImageContent] = []
+        for item in message.content:
+            if isinstance(item, ImageContent):
+                for _ in item.image_urls:
+                    content.append(
+                        TextContent(
+                            text=(
+                                f"[Image {image_index} is attached to the latest "
+                                "user message. Use the inspect_image_with_vision "
+                                f"tool with image_index={image_index} to inspect it.]"
+                            )
+                        )
+                    )
+                    image_index += 1
+            else:
+                content.append(item)
+
+        rewritten[index] = message.model_copy(update={"content": content})
+        break
+    return rewritten
 
 
 def _should_handle_non_multimodal_image_input(
@@ -399,7 +433,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         (condenser, UI, etc.) and also prevent accidentally materializing the full
         event history during initialization.
         """
-        super().init_state(state, on_event=on_event)
+        self._initialize(state)
 
         # Defensive check: Analyze state to detect unexpected initialization scenarios
         # These checks help diagnose issues related to lazy loading and event ordering
@@ -585,7 +619,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         state = conversation.state
         # Check for pending actions (implicit confirmation)
         # and execute them before sampling new actions.
-        pending_actions = ConversationState.get_unmatched_actions(state.events)
+        pending_actions = ConversationState.get_unmatched_actions(state.active_branch())
         if pending_actions:
             logger.info(
                 "Confirmation mode: Executing %d pending action(s)",
@@ -626,18 +660,27 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         _messages = _messages_or_condensation
 
         if _should_handle_non_multimodal_image_input(self.llm, _messages):
-            logger.info(
-                "Image input received while selected model does not support vision: %s",
-                self.llm.model,
-            )
-            on_event(
-                MessageEvent(
-                    source="agent",
-                    llm_message=_non_multimodal_image_message(self.llm.model),
+            if VISION_INSPECT_TOOL_NAME in self.tools_map:
+                logger.info(
+                    "Image input received by non-vision model %s; exposing "
+                    "image references and vision inspection tool",
+                    self.llm.model,
                 )
-            )
-            state.execution_status = ConversationExecutionStatus.FINISHED
-            return
+                _messages = _replace_latest_user_images_with_references(_messages)
+            else:
+                logger.info(
+                    "Image input received while selected model does not support "
+                    "vision: %s",
+                    self.llm.model,
+                )
+                on_event(
+                    MessageEvent(
+                        source="agent",
+                        llm_message=_non_multimodal_image_message(self.llm.model),
+                    )
+                )
+                state.execution_status = ConversationExecutionStatus.FINISHED
+                return
 
         logger.debug(
             "Sending messages to LLM: "
@@ -769,7 +812,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         """
         state = conversation.state
         # Check for pending actions (implicit confirmation)
-        pending_actions = ConversationState.get_unmatched_actions(state.events)
+        pending_actions = ConversationState.get_unmatched_actions(state.active_branch())
         if pending_actions:
             logger.info(
                 "Confirmation mode: Executing %d pending action(s)",
@@ -805,18 +848,27 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         _messages = _messages_or_condensation
 
         if _should_handle_non_multimodal_image_input(self.llm, _messages):
-            logger.info(
-                "Image input received while selected model does not support vision: %s",
-                self.llm.model,
-            )
-            on_event(
-                MessageEvent(
-                    source="agent",
-                    llm_message=_non_multimodal_image_message(self.llm.model),
+            if VISION_INSPECT_TOOL_NAME in self.tools_map:
+                logger.info(
+                    "Image input received by non-vision model %s; exposing "
+                    "image references and vision inspection tool",
+                    self.llm.model,
                 )
-            )
-            state.execution_status = ConversationExecutionStatus.FINISHED
-            return
+                _messages = _replace_latest_user_images_with_references(_messages)
+            else:
+                logger.info(
+                    "Image input received while selected model does not support "
+                    "vision: %s",
+                    self.llm.model,
+                )
+                on_event(
+                    MessageEvent(
+                        source="agent",
+                        llm_message=_non_multimodal_image_message(self.llm.model),
+                    )
+                )
+                state.execution_status = ConversationExecutionStatus.FINISHED
+                return
 
         logger.debug(
             "Sending messages to LLM: "
@@ -824,13 +876,17 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         )
 
         try:
-            llm_response = await amake_llm_completion(
-                self.llm,
-                _messages,
-                tools=list(self.tools_map.values()),
-                on_token=on_token,
-                call_context=call_context,
-            )
+            # Release the state lock for just the network wait so send_message()
+            # and state snapshots aren't blocked for the whole response. No-op
+            # unless the run loop holds the lock (e.g. direct astep() in tests).
+            async with conversation._released_state_lock_during_io():
+                llm_response = await amake_llm_completion(
+                    self.llm,
+                    _messages,
+                    tools=list(self.tools_map.values()),
+                    on_token=on_token,
+                    call_context=call_context,
+                )
         except FunctionCallValidationError as e:
             logger.warning(f"LLM generated malformed function call: {e}")
             error_message = MessageEvent(
