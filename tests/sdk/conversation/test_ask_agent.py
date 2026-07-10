@@ -154,6 +154,43 @@ def test_local_conversation_ask_agent(mock_completion, tmp_path, agent):
 
 
 @patch("openhands.sdk.llm.llm.LLM.completion")
+def test_ask_agent_llm_refreshes_after_switch_llm(mock_completion, tmp_path, agent):
+    """switch_llm() invalidates the cached ask-agent-llm so /btw follows the switch.
+
+    Regression test for #3943: after switching profiles, a second ask_agent()
+    must clone a fresh ask-agent-llm from the new agent LLM rather than reuse
+    the one cached from the previous profile.
+    """
+    mock_completion.return_value = create_mock_llm_response("answer")
+
+    conv = Conversation(
+        agent=agent,
+        persistence_dir=str(tmp_path),
+        workspace=str(tmp_path),
+    )
+
+    # First /btw caches an ask-agent-llm cloned from profile A.
+    conv.ask_agent("profile A?")
+    assert conv.llm_registry.get("ask-agent-llm").model == agent.llm.model
+
+    # Switch the conversation to a distinguishable profile B.
+    profile_b = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test-key"),
+        usage_id="profile-b",
+    )
+    conv.switch_llm(profile_b)
+
+    # The stale ask-agent-llm must be gone, not silently reused.
+    with pytest.raises(KeyError):
+        conv.llm_registry.get("ask-agent-llm")
+
+    # Second /btw re-clones from profile B.
+    conv.ask_agent("profile B?")
+    assert conv.llm_registry.get("ask-agent-llm").model == "gpt-4o"
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
 def test_local_conversation_ask_agent_copies_llm_config(mock_completion, tmp_path):
     """ask_agent creates LLM with parameters copied from original agent's LLM."""
     mock_completion.return_value = create_mock_llm_response("Test response")

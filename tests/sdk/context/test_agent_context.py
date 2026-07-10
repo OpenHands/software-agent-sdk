@@ -51,6 +51,26 @@ class TestAgentContext:
         with pytest.raises(ValueError, match="Duplicate skill name found: duplicate"):
             AgentContext(skills=[repo_skill1, repo_skill2])
 
+    def test_disabled_skills_drops_named_skill(self):
+        """The disabled_skills deny-list drops the named skill from the context
+        after loading, regardless of source; a name not present is a no-op."""
+        keep = Skill(name="keep", content="k", source="keep.md", trigger=None)
+        drop = Skill(name="drop", content="d", source="drop.md", trigger=None)
+        context = AgentContext(
+            skills=[keep, drop],
+            # "absent" is not among the skills — must be a harmless no-op.
+            disabled_skills=["drop", "absent"],
+        )
+        assert [s.name for s in context.skills] == ["keep"]
+
+    def test_disabled_skills_empty_keeps_all(self):
+        """The default empty deny-list keeps every skill."""
+        a = Skill(name="a", content="a", source="a.md", trigger=None)
+        b = Skill(name="b", content="b", source="b.md", trigger=None)
+        context = AgentContext(skills=[a, b])
+        assert context.disabled_skills == []
+        assert {s.name for s in context.skills} == {"a", "b"}
+
     def test_get_system_message_suffix_no_repo_skills(self):
         """Test system message suffix with no repo skills but with triggered skills."""
         knowledge_skill = Skill(
@@ -1028,10 +1048,11 @@ templates.",
         assert "2024-03-15T14:30:00Z" in result
         assert "<REPO_CONTEXT>" in result
         assert "coding_standards" in result
-        # Datetime should appear before repo context
+        # Datetime renders last in the dynamic block (after repo context) so the
+        # stable dynamic content stays a cache-friendly prefix.
         datetime_pos = result.index("<CURRENT_DATETIME>")
         repo_context_pos = result.index("<REPO_CONTEXT>")
-        assert datetime_pos < repo_context_pos
+        assert datetime_pos > repo_context_pos
 
     def test_get_system_message_suffix_with_datetime_and_secrets(self):
         """Test system message suffix with datetime and secrets."""

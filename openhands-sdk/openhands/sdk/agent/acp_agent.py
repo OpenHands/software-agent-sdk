@@ -73,6 +73,7 @@ from openhands.sdk.event import (
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import LLM, ImageContent, Message, MessageToolCall, TextContent
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.observability.laminar import maybe_init_laminar, observe
 from openhands.sdk.settings.acp_providers import (
     ACPFileSecretSpec,
@@ -539,39 +540,39 @@ def _extract_session_models(
 _ACPMcpServer = HttpMcpServer | SseMcpServer | McpServerStdio
 
 
-def _remote_mcp_headers(spec: dict[str, Any], name: str) -> list[HttpHeader]:
+def _remote_mcp_headers(server: MCPServer, name: str) -> list[HttpHeader]:
     """Convert remote MCP headers/auth into ACP's header-only representation."""
-    raw_headers = spec.get("headers") or {}
-    headers = [HttpHeader(name=str(k), value=str(v)) for k, v in raw_headers.items()]
+    headers = [
+        HttpHeader(name=name, value=value.get_secret_value())
+        for name, value in (server.headers or {}).items()
+    ]
 
-    auth = spec.get("auth")
-    has_authorization = any(h.name.lower() == "authorization" for h in headers)
-    if auth and not has_authorization:
-        if isinstance(auth, str) and auth != "oauth":
-            headers.append(HttpHeader(name="Authorization", value=f"Bearer {auth}"))
-        else:
-            logger.warning(
-                "ACP MCP server %r uses unsupported remote MCP auth type %r; "
-                "only explicit headers or string bearer tokens can be forwarded",
-                name,
-                type(auth).__name__,
-            )
+    auth_headers = server.auth.to_http_headers() if server.auth is not None else {}
+    if auth_headers is None:
+        logger.warning(
+            "ACP MCP server %r uses unsupported remote MCP auth type %r; "
+            "only header-compatible auth can be forwarded",
+            name,
+            type(server.auth).__name__,
+        )
+        return headers
+    headers.extend(
+        HttpHeader(name=name, value=value) for name, value in auth_headers.items()
+    )
     return headers
 
 
 def _mcp_config_to_acp_servers(
-    mcp_config: dict[str, Any],
+    mcp_config: dict[str, MCPServer],
     mcp_capabilities: Any,
 ) -> list[_ACPMcpServer]:
-    """Translate an OpenHands ``mcp_config`` dict into ACP MCP server objects.
+    """Translate OpenHands MCP servers into ACP MCP server objects.
 
-    Reads the standard ``{"mcpServers": {name: {...}}}`` shape (the same shape
-    :attr:`AgentBase.mcp_config` carries for the built-in Agent) and returns the
-    list to pass to ``new_session()`` / ``load_session()`` so the ACP
+    Converts the native server map to the ACP protocol objects passed to
+    ``new_session()`` / ``load_session()`` so the ACP
     subprocess connects to those servers itself.  Unlike the built-in Agent
-    these are *not* turned into in-process OpenHands MCP tools
-    (:attr:`ACPAgent.supports_openhands_mcp` stays ``False``) — the ACP server
-    owns the MCP connection and exposes the tools through its own turn.
+    these are *not* turned into in-process SDK MCP tools — the ACP server owns
+    the MCP connection and exposes the tools through its own turn.
 
     Each entry maps by transport:
 
@@ -586,60 +587,48 @@ def _mcp_config_to_acp_servers(
     A remote server whose transport the ACP server does not advertise is dropped
     with a warning rather than failing init — one misconfigured server should
     not sink the whole conversation.  ``env`` / ``headers`` maps are converted
-    to the protocol's ``[{name, value}]`` list form; string ``auth`` values are
-    forwarded as bearer ``Authorization`` headers when no explicit
-    ``Authorization`` header is already present.  Their values were already
-    decrypted by :class:`AgentBase`'s ``mcp_config`` validator.
+    to the protocol's ``[{name, value}]`` list form; header-compatible auth
+    credentials are also converted to headers.
     """
-    servers = mcp_config.get("mcpServers")
-    if not isinstance(servers, dict):
-        return []
     http_ok = bool(getattr(mcp_capabilities, "http", False))
     sse_ok = bool(getattr(mcp_capabilities, "sse", False))
     result: list[_ACPMcpServer] = []
-    for name, spec in servers.items():
-        if not isinstance(spec, dict):
-            logger.warning("Skipping malformed ACP MCP server %r", name)
-            continue
-        command = spec.get("command")
-        url = spec.get("url")
-        if command:
+    for name, server in mcp_config.items():
+        if server.command:
             env = [
-                EnvVariable(name=str(k), value=str(v))
-                for k, v in (spec.get("env") or {}).items()
+                EnvVariable(name=name, value=value.get_secret_value())
+                for name, value in (server.env or {}).items()
             ]
             result.append(
                 McpServerStdio(
-                    name=str(name),
-                    command=str(command),
-                    args=[str(a) for a in (spec.get("args") or [])],
+                    name=name,
+                    command=server.command,
+                    args=list(server.args or []),
                     env=env,
                 )
             )
-        elif url:
-            headers = _remote_mcp_headers(spec, str(name))
-            is_sse = str(spec.get("transport") or "http").lower() == "sse"
+        elif server.url:
+            headers = _remote_mcp_headers(server, name)
+            is_sse = server.effective_transport == "sse"
             if not (sse_ok if is_sse else http_ok):
                 logger.warning(
                     "ACP server does not advertise %s MCP support; "
                     "dropping MCP server %r (%s)",
                     "SSE" if is_sse else "HTTP",
                     name,
-                    url,
+                    server.url,
                 )
                 continue
             # Construct each transport explicitly so the ``type`` literal stays
             # narrow (the union's two arms require distinct ``Literal``s).
             if is_sse:
                 result.append(
-                    SseMcpServer(
-                        type="sse", name=str(name), url=str(url), headers=headers
-                    )
+                    SseMcpServer(type="sse", name=name, url=server.url, headers=headers)
                 )
             else:
                 result.append(
                     HttpMcpServer(
-                        type="http", name=str(name), url=str(url), headers=headers
+                        type="http", name=name, url=server.url, headers=headers
                     )
                 )
         else:
@@ -1786,13 +1775,10 @@ class ACPAgent(AgentBase):
 
     @property
     def supports_openhands_mcp(self) -> bool:
-        """``False`` — OpenHands does not create in-process MCP *tools* here.
+        """``False`` — OpenHands does not create in-process MCP tools here.
 
-        This stays ``False`` even though ``mcp_config`` is honored: any
-        configured MCP servers are forwarded to the ACP subprocess at session
-        creation (see :func:`_mcp_config_to_acp_servers`) rather than connected
-        in-process. The ACP server owns the MCP connection and surfaces the
-        tools through its own turn.
+        ACP agents still honor ``mcp_config`` by forwarding configured servers
+        to the ACP subprocess at session creation time.
         """
         return False
 
@@ -1922,7 +1908,7 @@ class ACPAgent(AgentBase):
         # server tools and context-window management remain owned by the server.
         # mcp_config IS supported: its servers are forwarded to the subprocess at
         # session creation (see _mcp_config_to_acp_servers) rather than turned
-        # into in-process OpenHands MCP tools.
+        # into in-process SDK MCP tools.
         if self.tools:
             raise NotImplementedError(
                 "ACPAgent does not support custom tools; "

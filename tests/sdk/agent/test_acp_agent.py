@@ -6,6 +6,7 @@ import asyncio
 import json
 import threading
 import uuid
+from collections.abc import Mapping
 from concurrent.futures import Future
 from pathlib import Path
 from types import SimpleNamespace
@@ -57,6 +58,7 @@ from openhands.sdk.event import (
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import ImageContent, Message, TextContent
+from openhands.sdk.mcp.config import coerce_mcp_config
 from openhands.sdk.secret import SecretSource
 from openhands.sdk.skills import KeywordTrigger, Skill
 from openhands.sdk.tool.builtins.finish import FinishAction
@@ -88,6 +90,10 @@ class _FakeLookupSecret(SecretSource):
 
 
 def _make_agent(**kwargs) -> ACPAgent:
+    if isinstance(kwargs.get("mcp_config"), dict):
+        mcp_config = kwargs["mcp_config"]
+        servers = mcp_config.get("mcpServers", mcp_config)
+        kwargs["mcp_config"] = coerce_mcp_config(servers)
     return ACPAgent(acp_command=["echo", "test"], **kwargs)
 
 
@@ -259,12 +265,12 @@ class TestACPAgentValidation:
         """
         agent = ACPAgent(
             acp_command=["echo"],
-            mcp_config={"mcpServers": {"test": {"command": "echo"}}},
+            mcp_config=coerce_mcp_config({"test": {"command": "echo"}}),
         )
-        # Should not raise; supports_openhands_mcp stays False (no in-process
-        # tools — the ACP server owns the connection).
+        # Should not raise; ACP receives MCP servers at session creation instead
+        # of OpenHands creating in-process runtime MCP tools.
         self._init_with_patches(agent, tmp_path)
-        assert agent.supports_openhands_mcp is False
+        assert agent.supports_openhands_tools is False
 
     def test_allows_agent_context_for_prompt_extensions(self, tmp_path):
         agent = ACPAgent(
@@ -1833,10 +1839,11 @@ class TestACPAgentStep:
 
         agent.step(conversation, on_event=lambda _: None)
 
+        prompt_call = _agent_conn(agent).prompt.await_args
+        assert prompt_call is not None
+        assert prompt_call.kwargs["session_id"] == "test-session"
         prompt_text = "\n\n".join(
-            b.text
-            for b in _agent_conn(agent).prompt.await_args.kwargs["prompt"]
-            if hasattr(b, "text")
+            b.text for b in prompt_call.kwargs["prompt"] if hasattr(b, "text")
         )
         assert "Team rules." not in prompt_text
 
@@ -2064,7 +2071,7 @@ class TestACPAgentAstep:
         agent._client = mock_client
         agent._conn = MagicMock()
 
-        async def _fake_prompt(session_id, prompt):
+        async def _fake_prompt(session_id, prompt):  # noqa: ARG001
             # Must execute on the portal loop's thread, not the caller's
             # — proves we actually crossed the loop boundary.
             prompt_thread_id.append(threading.get_ident())
@@ -2244,7 +2251,7 @@ class TestACPAgentAstep:
         agent._conn = MagicMock()
         agent._session_id = "test-session"
 
-        async def _failing_prompt(session_id, prompt):
+        async def _failing_prompt(session_id, prompt):  # noqa: ARG001
             raise RuntimeError("simulated upstream failure")
 
         _agent_conn(agent).prompt = _failing_prompt
@@ -2391,7 +2398,7 @@ class TestACPAgentAstep:
             prompt_released = threading.Event()
             caller_loop = asyncio.get_running_loop()
 
-            async def _fake_prompt(session_id, prompt):
+            async def _fake_prompt(session_id, prompt):  # noqa: ARG001
                 # Seed an in-flight tool call AFTER _reset_client_for_turn
                 # has run (which clears accumulated_tool_calls).  In
                 # production the bridge accumulates these inside
@@ -2779,7 +2786,7 @@ class TestACPAgentAstep:
             prompt_released = threading.Event()
             caller_loop = asyncio.get_running_loop()
 
-            async def _fake_prompt(session_id, prompt):
+            async def _fake_prompt(session_id, prompt):  # noqa: ARG001
                 caller_loop.call_soon_threadsafe(prompt_entered.set)
                 released = await asyncio.to_thread(prompt_released.wait, 10.0)
                 assert released
@@ -2849,7 +2856,7 @@ class TestACPAgentAstep:
         agent._client = mock_client
         agent._conn = MagicMock()
 
-        async def _fake_prompt(session_id, prompt):
+        async def _fake_prompt(session_id, prompt):  # noqa: ARG001
             mock_client.accumulated_text.append("done")
             return None
 
@@ -7704,6 +7711,11 @@ class TestMcpConfigToAcpServers:
 
         return McpCapabilities(http=http, sse=sse)
 
+    @staticmethod
+    def _config(config: Mapping[str, object]):
+        servers = config.get("mcpServers", config)
+        return coerce_mcp_config(servers)
+
     def test_stdio_always_forwarded(self):
         from acp.schema import McpServerStdio
 
@@ -7717,7 +7729,9 @@ class TestMcpConfigToAcpServers:
             }
         }
         # Even with no advertised remote capabilities, stdio is forwarded.
-        out = _mcp_config_to_acp_servers(cfg, self._caps(http=False, sse=False))
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=False, sse=False)
+        )
         assert len(out) == 1
         srv = out[0]
         assert isinstance(srv, McpServerStdio)
@@ -7738,9 +7752,16 @@ class TestMcpConfigToAcpServers:
             }
         }
         # Dropped when the server doesn't advertise http.
-        assert _mcp_config_to_acp_servers(cfg, self._caps(http=False, sse=False)) == []
+        assert (
+            _mcp_config_to_acp_servers(
+                self._config(cfg), self._caps(http=False, sse=False)
+            )
+            == []
+        )
         # Forwarded when advertised.
-        out = _mcp_config_to_acp_servers(cfg, self._caps(http=True, sse=False))
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=False)
+        )
         assert len(out) == 1
         assert isinstance(out[0], HttpMcpServer)
         assert out[0].type == "http"
@@ -7756,28 +7777,34 @@ class TestMcpConfigToAcpServers:
             "mcpServers": {
                 "remote": {
                     "url": "https://h/mcp",
-                    "auth": "token-y",
+                    "auth": {"strategy": "bearer", "value": "token-y"},
                 }
             }
         }
-        out = _mcp_config_to_acp_servers(cfg, self._caps(http=True, sse=False))
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=False)
+        )
         assert len(out) == 1
         assert isinstance(out[0], HttpMcpServer)
         assert [(h.name, h.value) for h in out[0].headers] == [
             ("Authorization", "Bearer token-y")
         ]
 
-    def test_http_auth_does_not_override_authorization_header(self):
+    def test_http_header_auth_forwards_authorization_header(self):
         cfg = {
             "mcpServers": {
                 "remote": {
                     "url": "https://h/mcp",
-                    "headers": {"authorization": "Bearer explicit"},
-                    "auth": "token-y",
+                    "auth": {
+                        "strategy": "header",
+                        "headers": {"authorization": "Bearer explicit"},
+                    },
                 }
             }
         }
-        out = _mcp_config_to_acp_servers(cfg, self._caps(http=True, sse=False))
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=False)
+        )
         assert [(h.name, h.value) for h in out[0].headers] == [
             ("authorization", "Bearer explicit")
         ]
@@ -7786,8 +7813,15 @@ class TestMcpConfigToAcpServers:
         from acp.schema import SseMcpServer
 
         cfg = {"mcpServers": {"s": {"url": "https://s/sse", "transport": "sse"}}}
-        assert _mcp_config_to_acp_servers(cfg, self._caps(http=True, sse=False)) == []
-        out = _mcp_config_to_acp_servers(cfg, self._caps(http=True, sse=True))
+        assert (
+            _mcp_config_to_acp_servers(
+                self._config(cfg), self._caps(http=True, sse=False)
+            )
+            == []
+        )
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=True)
+        )
         assert len(out) == 1
         assert isinstance(out[0], SseMcpServer)
         assert out[0].type == "sse"
@@ -7800,18 +7834,16 @@ class TestMcpConfigToAcpServers:
                 "s": {"url": "https://h/mcp", "transport": "streamable-http"}
             }
         }
-        out = _mcp_config_to_acp_servers(cfg, self._caps(http=True, sse=True))
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=True)
+        )
         assert len(out) == 1
         assert isinstance(out[0], HttpMcpServer)
 
-    def test_empty_and_malformed_configs(self):
+    def test_empty_configs(self):
         caps = self._caps(http=True, sse=True)
         assert _mcp_config_to_acp_servers({}, caps) == []
-        assert _mcp_config_to_acp_servers({"mcpServers": {}}, caps) == []
-        # Not a dict -> skipped, no crash.
-        assert _mcp_config_to_acp_servers({"mcpServers": {"bad": 123}}, caps) == []
-        # No command and no url -> skipped.
-        assert _mcp_config_to_acp_servers({"mcpServers": {"x": {}}}, caps) == []
+        assert _mcp_config_to_acp_servers(self._config({"mcpServers": {}}), caps) == []
 
     def test_none_capabilities_drops_remote_keeps_stdio(self):
         from acp.schema import McpServerStdio
@@ -7822,7 +7854,7 @@ class TestMcpConfigToAcpServers:
                 "remote": {"url": "https://h/mcp"},
             }
         }
-        out = _mcp_config_to_acp_servers(cfg, None)
+        out = _mcp_config_to_acp_servers(self._config(cfg), None)
         assert [type(s).__name__ for s in out] == [McpServerStdio.__name__]
 
 
@@ -7837,8 +7869,8 @@ class TestACPMcpForwarding:
         )
         return conn
 
-    def test_new_session_receives_mcp_servers(self, tmp_path):
-        agent = _make_agent(mcp_config={"mcpServers": {"fetch": {"command": "echo"}}})
+    def test_new_session_receives_acp_mcp_servers(self, tmp_path):
+        agent = _make_agent(mcp_config={"fetch": {"command": "echo"}})
         state = _make_state(tmp_path)
         conn = self._conn_with_caps()
 
@@ -7848,10 +7880,10 @@ class TestACPMcpForwarding:
         servers = conn.new_session.call_args.kwargs["mcp_servers"]
         assert [s.name for s in servers] == ["fetch"]
 
-    def test_resume_load_session_receives_mcp_servers(self, tmp_path):
+    def test_resume_load_session_receives_acp_mcp_servers(self, tmp_path):
         """The key correctness point: resume must re-pass MCP servers, since
         load_session does not persist them server-side."""
-        agent = _make_agent(mcp_config={"mcpServers": {"fetch": {"command": "echo"}}})
+        agent = _make_agent(mcp_config={"fetch": {"command": "echo"}})
         state = _make_state(tmp_path)
         state.agent_state = {**state.agent_state, "acp_session_id": "stored-sess"}
         conn = self._conn_with_caps()
@@ -7863,7 +7895,7 @@ class TestACPMcpForwarding:
         assert [s.name for s in servers] == ["fetch"]
         conn.new_session.assert_not_awaited()
 
-    def test_no_mcp_config_forwards_empty_list(self, tmp_path):
+    def test_no_mcp_config_forwards_empty_acp_mcp_servers_list(self, tmp_path):
         agent = _make_agent()
         state = _make_state(tmp_path)
         conn = self._conn_with_caps()
@@ -8100,7 +8132,8 @@ class TestACPFileSecretMaterialisation:
         """No reserved secret present -> no data-dir env var is set."""
         agent = _make_agent()
         state = self._state(tmp_path)
-        env = self._run_start(agent, state, conn=self._make_conn())
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._run_start(agent, state, conn=self._make_conn())
         assert "CODEX_HOME" not in env
 
     def test_materialisation_oserror_fails_fast(self, tmp_path):
@@ -8213,7 +8246,8 @@ class TestACPFileSecretMaterialisation:
         state.secret_registry.update_secrets(
             {"CODEX_AUTH_JSON": StaticSecret(value=SecretStr("blob"))}
         )
-        env = self._run_start(agent, state, conn=self._make_conn())
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._run_start(agent, state, conn=self._make_conn())
 
         assert "CODEX_HOME" not in env
         # Not configured as a file-secret, so it flows through as a plain env var.

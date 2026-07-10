@@ -275,6 +275,97 @@ def run_fairness_test_multiple(num_runs: int = 100) -> list[bool]:
     return results
 
 
+def test_release_all_drops_all_reentrant_levels_and_returns_depth():
+    """release_all() fully frees a reentrantly-held lock and reports the depth."""
+    lock = FIFOLock()
+    lock.acquire()
+    lock.acquire()
+    lock.acquire()
+    assert lock.owned()
+
+    depth = lock.release_all()
+
+    assert depth == 3
+    assert not lock.locked()
+    assert not lock.owned()
+
+
+def test_release_all_requires_ownership():
+    """release_all() from a non-owning thread raises, like release()."""
+    lock = FIFOLock()
+
+    def _grab_and_hold(started: threading.Event, release: threading.Event):
+        lock.acquire()
+        started.set()
+        release.wait()
+        lock.release()
+
+    started, release = threading.Event(), threading.Event()
+    holder = threading.Thread(target=_grab_and_hold, args=(started, release))
+    holder.start()
+    started.wait()
+    try:
+        with pytest.raises(RuntimeError):
+            lock.release_all()
+    finally:
+        release.set()
+        holder.join()
+
+
+def test_reacquire_restores_reentrancy_depth():
+    """reacquire(depth) restores the counter so releases balance out."""
+    lock = FIFOLock()
+    lock.acquire()
+    lock.acquire()
+    depth = lock.release_all()
+    assert depth == 2
+
+    lock.reacquire(depth)
+    assert lock.owned()
+
+    # Exactly `depth` releases return the lock to fully free.
+    lock.release()
+    assert lock.owned()  # still held (was reentrant)
+    lock.release()
+    assert not lock.owned()
+
+
+def test_reacquire_zero_depth_is_noop():
+    lock = FIFOLock()
+    lock.reacquire(0)
+    assert not lock.owned()
+
+
+def test_release_all_then_reacquire_hands_off_to_waiter_first():
+    """A thread waiting during the released window gets the lock before the
+    releaser reacquires (FIFO fairness is preserved across the hand-off)."""
+    lock = FIFOLock()
+    lock.acquire()
+
+    order: list[str] = []
+    waiter_ready = threading.Event()
+
+    def _waiter():
+        waiter_ready.set()
+        with lock:
+            order.append("waiter")
+
+    t = threading.Thread(target=_waiter)
+    t.start()
+    waiter_ready.wait()
+    # Give the waiter a moment to actually enqueue on the lock.
+    time.sleep(0.05)
+
+    depth = lock.release_all()
+    # Waiter should now be able to take it; reacquire queues behind it.
+    lock.reacquire(depth)
+    order.append("releaser")
+    lock.release()
+    t.join()
+
+    assert order == ["waiter", "releaser"]
+
+
 if __name__ == "__main__":
     print("Running FIFO lock fairness test 100 times sequentially...")
 

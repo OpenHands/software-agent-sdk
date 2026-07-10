@@ -10,6 +10,7 @@ import time
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import quote, unquote
 from uuid import uuid4
 
 import pytest
@@ -779,6 +780,213 @@ def test_git_delta_new_repo_has_no_base_commit_header(client, tmp_path):
     assert "x-archive-base-commit" not in resp.headers
 
 
+def _repo_with_remote(root: Path, remote_url: str, branch: str = "feature-x") -> str:
+    """Init a repo with one commit, an ``origin`` remote, and a named branch.
+
+    Returns the HEAD commit sha.
+    """
+    root.mkdir()
+    _git(["init"], root)
+    _git(["remote", "add", "origin", remote_url], root)
+    (root / "a.txt").write_text("original\n", encoding="utf-8")
+    _git(["add", "-A"], root)
+    _git(["commit", "-m", "init"], root)
+    _git(["checkout", "-b", branch], root)
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def test_git_delta_response_includes_repo_metadata_headers(client, tmp_path):
+    head_sha = _repo_with_remote(
+        tmp_path / "repo", "https://github.com/example/repo.git"
+    )
+    (tmp_path / "repo" / "a.txt").write_text("changed\n", encoding="utf-8")
+
+    resp = client.get(
+        "/api/file/archive",
+        params={"path": str(tmp_path / "repo"), "format": "git-delta"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["x-archive-repo-remote"] == quote(
+        "https://github.com/example/repo.git", safe=""
+    )
+    assert resp.headers["x-archive-branch"] == "feature-x"
+    assert resp.headers["x-archive-head-commit"] == head_sha
+
+
+def test_tar_gz_response_includes_repo_metadata_headers(client, tmp_path):
+    # The new repo-identity headers make a tar.gz snapshot self-describing too,
+    # even though it carries no base_commit/base_ref.
+    head_sha = _repo_with_remote(
+        tmp_path / "repo", "https://github.com/example/repo.git"
+    )
+
+    resp = client.get(
+        "/api/file/archive",
+        params={"path": str(tmp_path / "repo"), "format": "tar.gz"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["x-archive-repo-remote"] == quote(
+        "https://github.com/example/repo.git", safe=""
+    )
+    assert resp.headers["x-archive-branch"] == "feature-x"
+    assert resp.headers["x-archive-head-commit"] == head_sha
+    assert "x-archive-base-commit" not in resp.headers
+
+
+def test_archive_redacts_remote_credentials_in_header(client, tmp_path):
+    _repo_with_remote(
+        tmp_path / "repo",
+        "https://user:ghp_secrettoken@github.com/example/repo.git",
+    )
+
+    resp = client.get(
+        "/api/file/archive",
+        params={"path": str(tmp_path / "repo"), "format": "tar.gz"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    remote = resp.headers["x-archive-repo-remote"]
+    assert "ghp_secrettoken" not in remote
+    assert remote == quote("https://****@github.com/example/repo.git", safe="")
+
+
+def test_archive_redacts_mixed_case_remote_credentials_in_header(client, tmp_path):
+    _repo_with_remote(
+        tmp_path / "repo",
+        "HTTPS://user:ghp_secrettoken@github.com/example/repo.git",
+    )
+
+    resp = client.get(
+        "/api/file/archive",
+        params={"path": str(tmp_path / "repo"), "format": "tar.gz"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    remote = resp.headers["x-archive-repo-remote"]
+    assert "ghp_secrettoken" not in remote
+    assert remote == quote("HTTPS://****@github.com/example/repo.git", safe="")
+
+
+def test_archive_redacts_remote_query_credentials_in_header(client, tmp_path):
+    _repo_with_remote(
+        tmp_path / "repo",
+        "https://github.com/example/repo.git?access_token=SECRET&depth=1",
+    )
+
+    resp = client.get(
+        "/api/file/archive",
+        params={"path": str(tmp_path / "repo"), "format": "tar.gz"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    remote = unquote(resp.headers["x-archive-repo-remote"])
+    assert "SECRET" not in remote
+    assert "access_token=%3Credacted%3E" in remote
+    assert "depth=1" in remote
+
+
+def test_archive_literal_percent_is_encoded(client, tmp_path):
+    _repo_with_remote(
+        tmp_path / "repo",
+        "https://github.com/example/feature%2Frepo.git",
+    )
+
+    resp = client.get(
+        "/api/file/archive",
+        params={"path": str(tmp_path / "repo"), "format": "tar.gz"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert "%252F" in resp.headers["x-archive-repo-remote"]
+
+
+def test_archive_redacts_multiline_remote_credentials_in_header(client, tmp_path):
+    _repo_with_remote(
+        tmp_path / "repo",
+        "https://user:ghp_secrettoken@github.com/example/repo.git\nextra",
+    )
+
+    resp = client.get(
+        "/api/file/archive",
+        params={"path": str(tmp_path / "repo"), "format": "tar.gz"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    remote = resp.headers["x-archive-repo-remote"]
+    assert "ghp_secrettoken" not in remote
+    assert remote == quote("https://****@github.com/example/repo.git\nextra", safe="")
+
+
+def test_archive_detached_head_reports_detached_branch(client, tmp_path):
+    head_sha = _repo_with_remote(
+        tmp_path / "repo", "https://github.com/example/repo.git"
+    )
+    # Detach HEAD at the commit (SWE-bench-style pinned checkout).
+    _git(["checkout", head_sha], tmp_path / "repo")
+
+    resp = client.get(
+        "/api/file/archive",
+        params={"path": str(tmp_path / "repo"), "format": "tar.gz"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["x-archive-branch"] == "DETACHED"
+    assert resp.headers["x-archive-head-commit"] == head_sha
+
+
+def test_archive_non_git_directory_has_no_repo_metadata_headers(client, workspace):
+    resp = client.get(
+        "/api/file/archive", params={"path": str(workspace), "format": "tar.gz"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert "x-archive-repo-remote" not in resp.headers
+    assert "x-archive-branch" not in resp.headers
+    assert "x-archive-head-commit" not in resp.headers
+
+
+def test_archive_remote_with_embedded_control_char_is_percent_encoded(client, tmp_path):
+    # A remote URL is free-form text (unlike a ref name), so it can carry a
+    # literal control character straight into what becomes a header value.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init"], repo)
+    _git(["config", "remote.origin.url", "https://example.com/repo\nline-two"], repo)
+    _git(["commit", "--allow-empty", "-m", "init"], repo)
+
+    resp = client.get(
+        "/api/file/archive", params={"path": str(repo), "format": "tar.gz"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    remote = resp.headers["x-archive-repo-remote"]
+    assert "\n" not in remote
+    assert remote == quote("https://example.com/repo\nline-two", safe="")
+
+
+def test_archive_non_ascii_branch_is_percent_encoded_not_dropped(client, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init"], repo)
+    _git(["commit", "--allow-empty", "-m", "init"], repo)
+    _git(["checkout", "-b", "café-branch"], repo)
+
+    resp = client.get(
+        "/api/file/archive", params={"path": str(repo), "format": "tar.gz"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["x-archive-branch"] == quote("café-branch", safe="")
+
+
 # =============================================================================
 # Archive Tests - format=tar.gz (full-workspace archive)
 # =============================================================================
@@ -1026,6 +1234,7 @@ def test_git_delta_auto_descends_to_single_repo_under_base(client, tmp_path):
 
     assert resp.status_code == 200, resp.text
     assert resp.headers["content-type"].startswith("text/x-patch")
+    assert unquote(resp.headers["x-archive-repo-root"]) == str(repo)
     assert "app.py" in resp.content.decode("utf-8")
 
 
