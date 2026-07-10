@@ -27,7 +27,6 @@ from openhands.sdk.agent.acp_agent import (
     _classify_acp_turn_error,
     _codex_auth_file,
     _codex_model_config_options,
-    _configure_codex_base_url,
     _estimate_cost_from_tokens,
     _extract_session_models,
     _extract_token_usage,
@@ -41,6 +40,7 @@ from openhands.sdk.agent.acp_agent import (
     _serialize_tool_content,
     _stringify_acp_error_data,
     _strip_inherited_npm_env,
+    _with_codex_base_url,
 )
 from openhands.sdk.agent.acp_models import ACPModelInfo
 from openhands.sdk.agent.base import AgentBase
@@ -4505,76 +4505,96 @@ class TestSelectAuthMethod:
 
 
 # ---------------------------------------------------------------------------
-# _configure_codex_base_url (codex ignores OPENAI_BASE_URL)
+# _with_codex_base_url
 # ---------------------------------------------------------------------------
 
 
-class TestConfigureCodexBaseUrl:
-    def test_current_adapter_uses_codex_config_env(self):
-        env = {"OPENAI_BASE_URL": "https://proxy.example"}
-        result = _configure_codex_base_url(
+class TestWithCodexBaseUrl:
+    def test_current_adapter_uses_child_config_without_mutating_input(self):
+        env = {
+            "OPENAI_BASE_URL": "https://proxy.example",
+            "OPENAI_API_KEY": "sk-test",
+        }
+        original = env.copy()
+        result = _with_codex_base_url(
             "npx",
             ["-y", "@agentclientprotocol/codex-acp@1.1.2"],
             env,
         )
-        assert result is None
-        assert json.loads(env["CODEX_CONFIG"]) == {
+        assert json.loads(result["CODEX_CONFIG"]) == {
             "openai_base_url": "https://proxy.example"
         }
+        assert env == original
+        assert "CODEX_CONFIG" not in env
 
-    def test_preinstalled_current_adapter_uses_codex_config_env(self):
+    def test_preinstalled_current_adapter_uses_child_config(self):
         env = {"OPENAI_BASE_URL": "https://proxy.example"}
-        assert _configure_codex_base_url("codex-acp", [], env) is None
-        assert json.loads(env["CODEX_CONFIG"])["openai_base_url"] == (
+        result = _with_codex_base_url("codex-acp", [], env)
+        assert json.loads(result["CODEX_CONFIG"])["openai_base_url"] == (
             "https://proxy.example"
         )
 
-    def test_current_adapter_merges_existing_codex_config(self):
+    def test_existing_codex_config_is_merged_in_returned_mapping(self):
         env = {
             "OPENAI_BASE_URL": "https://proxy.example",
             "CODEX_CONFIG": json.dumps({"model": "gpt-5.5"}),
         }
-        _configure_codex_base_url(
-            "npx",
-            ["-y", "@agentclientprotocol/codex-acp@1.1.2"],
-            env,
-        )
-        assert json.loads(env["CODEX_CONFIG"]) == {
+        original = env.copy()
+        result = _with_codex_base_url("codex-acp", [], env)
+        assert json.loads(result["CODEX_CONFIG"]) == {
             "model": "gpt-5.5",
             "openai_base_url": "https://proxy.example",
         }
+        assert env == original
 
     def test_current_adapter_preserves_explicit_codex_base_url(self):
         env = {
             "OPENAI_BASE_URL": "https://proxy.example",
             "CODEX_CONFIG": json.dumps({"openai_base_url": "https://explicit"}),
         }
-        _configure_codex_base_url(
+        result = _with_codex_base_url(
             "npx",
             ["-y", "@agentclientprotocol/codex-acp@1.1.2"],
             env,
         )
-        assert json.loads(env["CODEX_CONFIG"])["openai_base_url"] == (
+        assert json.loads(result["CODEX_CONFIG"])["openai_base_url"] == (
             "https://explicit"
         )
+        assert result == env
+
+    def test_invalid_codex_config_is_left_to_adapter(self):
+        env = {
+            "OPENAI_BASE_URL": "https://proxy.example",
+            "CODEX_CONFIG": "not-json",
+        }
+        result = _with_codex_base_url(
+            "npx",
+            ["-y", "@agentclientprotocol/codex-acp@1.1.2"],
+            env,
+        )
+        assert result == env
 
     def test_noop_for_non_codex(self):
         env = {"OPENAI_BASE_URL": "https://p"}
-        assert _configure_codex_base_url("claude-agent-acp", [], env) is None
-        assert "CODEX_CONFIG" not in env
+        assert _with_codex_base_url("claude-agent-acp", [], env) == env
 
     def test_noop_when_no_base_url(self):
         env: dict[str, str] = {}
-        assert _configure_codex_base_url("codex-acp", [], env) is None
-        assert "CODEX_CONFIG" not in env
+        assert _with_codex_base_url("codex-acp", [], env) == env
 
     def test_noop_when_model_provider_is_explicit(self):
         env = {
             "OPENAI_BASE_URL": "https://p",
             "MODEL_PROVIDER": "custom",
         }
-        _configure_codex_base_url("codex-acp", [], env)
-        assert "CODEX_CONFIG" not in env
+        assert _with_codex_base_url("codex-acp", [], env) == env
+
+    def test_noop_when_config_model_provider_is_explicit(self):
+        env = {
+            "OPENAI_BASE_URL": "https://p",
+            "CODEX_CONFIG": json.dumps({"model_provider": "custom"}),
+        }
+        assert _with_codex_base_url("codex-acp", [], env) == env
 
 
 class TestCodexModelConfigOptions:

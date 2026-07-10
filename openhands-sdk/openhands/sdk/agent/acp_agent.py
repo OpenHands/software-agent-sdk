@@ -350,10 +350,10 @@ def _select_auth_method(
     return None
 
 
-def _configure_codex_base_url(
+def _with_codex_base_url(
     command: str, args: list[str], env: dict[str, str]
-) -> None:
-    """Translate ``OPENAI_BASE_URL`` into the Codex config key that sets it.
+) -> dict[str, str]:
+    """Return the Codex subprocess environment for a configured proxy.
 
     Unlike claude-agent-acp (which honours ``ANTHROPIC_BASE_URL``) and gemini-cli
     (whose base URL is supplied via the ``authenticate`` gateway), **codex does
@@ -369,31 +369,34 @@ def _configure_codex_base_url(
     Existing config values are preserved, and an explicitly configured base URL
     or model provider wins.
 
-    No-op for non-Codex servers, when ``OPENAI_BASE_URL`` is unset, or when the
-    caller already pinned a base URL / model provider.
+    The input mapping is never modified. A new mapping is returned only when the
+    child process needs a synthesized ``CODEX_CONFIG`` value.
     """
     if not any("codex-acp" in tok for tok in (command, *args)):
-        return
+        return env
     base_url = env.get("OPENAI_BASE_URL")
     if not base_url:
-        return
+        return env
     raw_config = env.get("CODEX_CONFIG")
     try:
         config = json.loads(raw_config) if raw_config else {}
     except (TypeError, ValueError):
         # Leave invalid caller-owned config untouched. The adapter will surface
         # its own configuration error instead of us hiding it.
-        return
+        return env
     if not isinstance(config, dict):
-        return
+        return env
     if (
         "openai_base_url" in config
         or "model_provider" in config
         or env.get("MODEL_PROVIDER")
     ):
-        return
+        return env
+
+    configured_env = env.copy()
     config["openai_base_url"] = base_url
-    env["CODEX_CONFIG"] = json.dumps(config, separators=(",", ":"))
+    configured_env["CODEX_CONFIG"] = json.dumps(config, separators=(",", ":"))
+    return configured_env
 
 
 def _write_secret_file(path: Path, value: str) -> None:
@@ -2367,12 +2370,10 @@ class ACPAgent(AgentBase):
 
         command = self.acp_command[0]
         args = list(self.acp_command[1:]) + list(self.acp_args)
-        # codex ignores OPENAI_BASE_URL; translate it into the config key it
-        # reads. Reads the *fully assembled* env above, so it fires regardless of
-        # which channel delivered OPENAI_BASE_URL (agent_context.secrets,
-        # state.secret_registry / StartConversationRequest.secrets,
-        # os.environ) — i.e. eval, canvas, and cloud all route the same way.
-        _configure_codex_base_url(command, args, env)
+        # Codex ignores OPENAI_BASE_URL; translate it into the config key read by
+        # the adapter. The helper returns a child-only environment and never
+        # mutates the fully assembled mapping above.
+        env = _with_codex_base_url(command, args, env)
 
         working_dir = str(state.workspace.working_dir)
 
