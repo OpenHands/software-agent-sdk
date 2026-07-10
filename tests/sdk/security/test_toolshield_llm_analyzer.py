@@ -3,24 +3,27 @@
 from __future__ import annotations
 
 import importlib.util
-import time
-from typing import cast
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
-from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse
-from pydantic import SecretStr
+from pydantic import PrivateAttr
 
 from openhands.sdk.event import ActionEvent
-from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
-from openhands.sdk.llm.llm_response import LLMResponse
-from openhands.sdk.llm.utils.metrics import MetricsSnapshot
+from openhands.sdk.llm import LLMResponse, Message, MessageToolCall, TextContent
+from openhands.sdk.llm.streaming import TokenCallbackType
 from openhands.sdk.security.risk import SecurityRisk
 from openhands.sdk.security.toolshield_llm_analyzer import (
     ToolShieldLLMSecurityAnalyzer,
     _format_action_for_guardrail,
 )
-from openhands.sdk.tool import Action
+from openhands.sdk.testing import TestLLM
+from openhands.sdk.tool import Action, ToolDefinition
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.llm.llm import LLMCallContext
 
 
 # Tests that exercise the real `toolshield` package (bundled experiences,
@@ -64,87 +67,73 @@ def _make_action_event(
     )
 
 
-def _mock_llm_response(text: str) -> LLMResponse:
-    """Build a minimal LLMResponse wrapping plain text content.
+class _GuardrailTestLLM(TestLLM):
+    """TestLLM variant that records guardrail prompts for assertions."""
 
-    ``raw_response`` must be a real ``ModelResponse`` (not a Mock) because
-    Pydantic validates the field against the concrete type even with
-    ``arbitrary_types_allowed=True``.
-    """
-    raw = ModelResponse(
-        id="mock-resp-id",
-        choices=[
-            Choices(
-                finish_reason="stop",
-                index=0,
-                message=LiteLLMMessage(content=text, role="assistant"),
-            )
-        ],
-        created=int(time.time()),
-        model="mock-model",
-        object="chat.completion",
-    )
-    msg = Message(role="assistant", content=[TextContent(text=text)])
-    return LLMResponse(
-        message=msg,
-        metrics=MetricsSnapshot(
-            model_name="mock", accumulated_cost=0.0, max_budget_per_task=None
+    __test__ = False
+    _calls: list[list[Message]] = PrivateAttr(default_factory=list)
+
+    @property
+    def calls(self) -> list[list[Message]]:
+        return self._calls
+
+    def completion(
+        self,
+        messages: list[Message],
+        tools: Sequence[ToolDefinition] | None = None,
+        add_security_risk_prediction: bool = False,
+        on_token: TokenCallbackType | None = None,
+        call_context: LLMCallContext | None = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        self._calls.append(messages)
+        return super().completion(
+            messages=messages,
+            tools=tools,
+            add_security_risk_prediction=add_security_risk_prediction,
+            on_token=on_token,
+            call_context=call_context,
+            **kwargs,
+        )
+
+
+def _assistant_message(text: str) -> Message:
+    return Message(role="assistant", content=[TextContent(text=text)])
+
+
+def _make_test_llm(*outputs: str | Exception) -> _GuardrailTestLLM:
+    return cast(
+        _GuardrailTestLLM,
+        _GuardrailTestLLM.from_messages(
+            [o if isinstance(o, Exception) else _assistant_message(o) for o in outputs],
+            model="test-guardrail-model",
+            usage_id="test-guardrail",
         ),
-        raw_response=raw,
-    )
-
-
-def _make_test_llm() -> LLM:
-    """Construct a real LLM instance for Pydantic validation to pass.
-
-    The ``completion`` method will be patched per-test; we never hit the
-    network.
-    """
-    return LLM(
-        model="gpt-4o-mini",
-        api_key=SecretStr("test-key-not-used"),
-        usage_id="test-guardrail",
     )
 
 
 def _make_analyzer(
     history_window: int = 5,
     safety_experiences: str = "",
+    llm_outputs: Sequence[str | Exception] | None = None,
 ) -> ToolShieldLLMSecurityAnalyzer:
-    """Create an analyzer wired to a real LLM whose completion is patched later."""
+    """Create an analyzer wired to scripted TestLLM guardrail responses."""
+    outputs = llm_outputs if llm_outputs is not None else ["RISK: LOW\n"] * 20
     return ToolShieldLLMSecurityAnalyzer(
-        llm=_make_test_llm(),
+        llm=_make_test_llm(*outputs),
         history_window=history_window,
         safety_experiences=safety_experiences,
     )
 
 
-def _patch_completion(analyzer: ToolShieldLLMSecurityAnalyzer, response_or_side_effect):
-    """Replace analyzer.llm.completion with a mock.
-
-    Accepts either an ``LLMResponse`` (as return_value) or a callable/exception
-    (as side_effect).
-    """
-    mock = MagicMock()
-    if isinstance(response_or_side_effect, LLMResponse):
-        mock.return_value = response_or_side_effect
-    else:
-        mock.side_effect = response_or_side_effect
-    # Bypass Pydantic's __setattr__ guard -- ``completion`` is a method on LLM,
-    # and Pydantic refuses direct assignment since there's no Field for it.
-    object.__setattr__(analyzer.llm, "completion", mock)
-    return mock
+def _guardrail_llm(analyzer: ToolShieldLLMSecurityAnalyzer) -> _GuardrailTestLLM:
+    assert isinstance(analyzer.llm, _GuardrailTestLLM)
+    return analyzer.llm
 
 
-def _last_messages(analyzer: ToolShieldLLMSecurityAnalyzer):
-    """Messages passed to the last (mocked) completion call.
-
-    ``analyzer.llm.completion`` was replaced with a MagicMock via
-    ``object.__setattr__``, so fetch it back with a cast -- static typing
-    still sees the original bound method, which has no ``call_args``.
-    """
-    completion = cast(MagicMock, analyzer.llm.completion)
-    return completion.call_args.kwargs.get("messages") or completion.call_args.args[0]
+def _last_messages(analyzer: ToolShieldLLMSecurityAnalyzer) -> list[Message]:
+    """Messages passed to the last TestLLM completion call."""
+    return _guardrail_llm(analyzer).calls[-1]
 
 
 # ---------------------------------------------------------------------------
@@ -445,44 +434,38 @@ class TestFormatAction:
 
 
 class TestSecurityRisk:
-    """End-to-end analyzer behavior with a mocked LLM."""
+    """End-to-end analyzer behavior with a scripted TestLLM."""
 
     def test_returns_low_when_guardrail_says_low(self):
-        analyzer = _make_analyzer()
-        _patch_completion(analyzer, _mock_llm_response("RISK: LOW\nBenign command."))
+        analyzer = _make_analyzer(llm_outputs=["RISK: LOW\nBenign command."])
         result = analyzer.security_risk(_make_action_event())
         assert result == SecurityRisk.LOW
 
     def test_returns_medium_when_guardrail_says_medium(self):
-        analyzer = _make_analyzer()
-        _patch_completion(
-            analyzer, _mock_llm_response("RISK: MEDIUM\nSlightly concerning.")
+        analyzer = _make_analyzer(
+            llm_outputs=["RISK: MEDIUM\nSlightly concerning."]
         )
         assert analyzer.security_risk(_make_action_event()) == SecurityRisk.MEDIUM
 
     def test_returns_high_when_guardrail_says_high(self):
-        analyzer = _make_analyzer()
-        _patch_completion(analyzer, _mock_llm_response("RISK: HIGH\nDestructive."))
+        analyzer = _make_analyzer(llm_outputs=["RISK: HIGH\nDestructive."])
         assert analyzer.security_risk(_make_action_event()) == SecurityRisk.HIGH
 
     def test_returns_unknown_on_infrastructure_error(self):
         """Transient network/rate-limit errors must not block every action."""
-        analyzer = _make_analyzer()
-        _patch_completion(analyzer, RuntimeError("503 Service Unavailable"))
+        analyzer = _make_analyzer(llm_outputs=[RuntimeError("503 Service Unavailable")])
         assert analyzer.security_risk(_make_action_event()) == SecurityRisk.UNKNOWN
 
     def test_returns_unknown_on_unparseable_output(self):
         """Parse failure now returns UNKNOWN (consistent with the
         infrastructure-error path and with GraySwanAnalyzer).
         ConfirmRisky.confirm_unknown=True still pauses for confirmation."""
-        analyzer = _make_analyzer()
-        _patch_completion(analyzer, _mock_llm_response("I'm not sure what to do."))
+        analyzer = _make_analyzer(llm_outputs=["I'm not sure what to do."])
         assert analyzer.security_risk(_make_action_event()) == SecurityRisk.UNKNOWN
 
     def test_action_content_reaches_the_llm(self):
         """Regression for the repr(action) bug."""
-        analyzer = _make_analyzer()
-        _patch_completion(analyzer, _mock_llm_response("RISK: LOW\n"))
+        analyzer = _make_analyzer(llm_outputs=["RISK: LOW\n"])
         analyzer.security_risk(_make_action_event(command="marker_value"))
 
         messages = _last_messages(analyzer)
@@ -499,8 +482,7 @@ class TestSecurityRisk:
 
 class TestHistoryWindow:
     def test_first_call_has_empty_history(self):
-        analyzer = _make_analyzer()
-        _patch_completion(analyzer, _mock_llm_response("RISK: LOW\n"))
+        analyzer = _make_analyzer(llm_outputs=["RISK: LOW\n"])
         analyzer.security_risk(_make_action_event())
 
         messages = _last_messages(analyzer)
@@ -508,8 +490,7 @@ class TestHistoryWindow:
         assert "no prior actions" in user_text
 
     def test_history_grows_across_calls(self):
-        analyzer = _make_analyzer()
-        _patch_completion(analyzer, _mock_llm_response("RISK: LOW\n"))
+        analyzer = _make_analyzer(llm_outputs=["RISK: LOW\n", "RISK: LOW\n"])
 
         analyzer.security_risk(_make_action_event(command="first_marker"))
         analyzer.security_risk(_make_action_event(command="second_marker"))
@@ -522,8 +503,7 @@ class TestHistoryWindow:
         assert "second_marker" in user_text
 
     def test_history_capped_at_window(self):
-        analyzer = _make_analyzer(history_window=2)
-        _patch_completion(analyzer, _mock_llm_response("RISK: LOW\n"))
+        analyzer = _make_analyzer(history_window=2, llm_outputs=["RISK: LOW\n"] * 4)
 
         for i in range(4):
             analyzer.security_risk(_make_action_event(command=f"cmd_{i}"))
@@ -548,8 +528,7 @@ class TestHistoryWindow:
         who reuse a single analyzer across conversations. After reset,
         the next ``security_risk`` call sees an empty history and only
         the current action ends up in the prompt."""
-        analyzer = _make_analyzer(history_window=10)
-        _patch_completion(analyzer, _mock_llm_response("RISK: LOW\n"))
+        analyzer = _make_analyzer(history_window=10, llm_outputs=["RISK: LOW\n"] * 4)
 
         # Populate the deque with three earlier actions.
         for cmd in ("alpha_marker", "beta_marker", "gamma_marker"):
@@ -572,8 +551,7 @@ class TestHistoryWindow:
     def test_history_persists_within_single_conversation(self):
         """Sanity: without an explicit reset, the deque accumulates as
         normal. ``reset_history`` must be opt-in, not implicit."""
-        analyzer = _make_analyzer(history_window=10)
-        _patch_completion(analyzer, _mock_llm_response("RISK: LOW\n"))
+        analyzer = _make_analyzer(history_window=10, llm_outputs=["RISK: LOW\n"] * 2)
 
         analyzer.security_risk(_make_action_event(command="step_one"))
         analyzer.security_risk(_make_action_event(command="step_two"))
@@ -592,8 +570,10 @@ class TestHistoryWindow:
 
 class TestSafetyExperiences:
     def test_experiences_appear_in_system_prompt(self):
-        analyzer = _make_analyzer(safety_experiences="- Never touch /etc/passwd.")
-        _patch_completion(analyzer, _mock_llm_response("RISK: LOW\n"))
+        analyzer = _make_analyzer(
+            safety_experiences="- Never touch /etc/passwd.",
+            llm_outputs=["RISK: LOW\n"],
+        )
         analyzer.security_risk(_make_action_event())
 
         messages = _last_messages(analyzer)
@@ -601,8 +581,7 @@ class TestSafetyExperiences:
         assert "Never touch /etc/passwd" in sys_text
 
     def test_empty_experiences_shows_placeholder(self):
-        analyzer = _make_analyzer(safety_experiences="")
-        _patch_completion(analyzer, _mock_llm_response("RISK: LOW\n"))
+        analyzer = _make_analyzer(safety_experiences="", llm_outputs=["RISK: LOW\n"])
         analyzer.security_risk(_make_action_event())
 
         messages = _last_messages(analyzer)
@@ -615,13 +594,12 @@ class TestSafetyExperiences:
         still functions; it just lacks distilled per-tool guidance.
         """
         analyzer = ToolShieldLLMSecurityAnalyzer(
-            llm=_make_test_llm(),
+            llm=_make_test_llm("RISK: LOW\n"),
             history_window=5,
         )
         assert analyzer.safety_experiences == ""
         # System prompt shows the bare-mode placeholder so reviewers can
         # tell at a glance that no experiences were loaded.
-        _patch_completion(analyzer, _mock_llm_response("RISK: LOW\n"))
         analyzer.security_risk(_make_action_event())
         messages = _last_messages(analyzer)
         sys_text = next(m for m in messages if m.role == "system").content[0].text
@@ -985,12 +963,11 @@ class TestConfirmRiskyIntegration:
     """
 
     def _confirm(self, llm_output: str) -> bool:
-        """Run the analyzer end-to-end on a mocked LLM response, then ask
+        """Run the analyzer on a scripted TestLLM response, then ask
         the default ConfirmRisky policy whether to pause."""
         from openhands.sdk.security import ConfirmRisky
 
-        analyzer = _make_analyzer()
-        _patch_completion(analyzer, _mock_llm_response(llm_output))
+        analyzer = _make_analyzer(llm_outputs=[llm_output])
         risk = analyzer.security_risk(_make_action_event())
         return ConfirmRisky().should_confirm(risk)
 
@@ -1018,8 +995,7 @@ class TestConfirmRiskyIntegration:
         permissive behavior."""
         from openhands.sdk.security import ConfirmRisky
 
-        analyzer = _make_analyzer()
-        _patch_completion(analyzer, _mock_llm_response("I'm not sure."))
+        analyzer = _make_analyzer(llm_outputs=["I'm not sure."])
         risk = analyzer.security_risk(_make_action_event())
         policy = ConfirmRisky(confirm_unknown=False)
         assert policy.should_confirm(risk) is False
