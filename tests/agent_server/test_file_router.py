@@ -858,6 +858,23 @@ def test_archive_redacts_remote_credentials_in_header(client, tmp_path):
     assert remote == "https://****@github.com/example/repo.git"
 
 
+def test_archive_redacts_multiline_remote_credentials_in_header(client, tmp_path):
+    _repo_with_remote(
+        tmp_path / "repo",
+        "https://user:ghp_secrettoken@github.com/example/repo.git\nextra",
+    )
+
+    resp = client.get(
+        "/api/file/archive",
+        params={"path": str(tmp_path / "repo"), "format": "tar.gz"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    remote = resp.headers["x-archive-repo-remote"]
+    assert "ghp_secrettoken" not in remote
+    assert remote == quote("https://****@github.com/example/repo.git\nextra", safe="")
+
+
 def test_archive_detached_head_reports_detached_branch(client, tmp_path):
     head_sha = _repo_with_remote(
         tmp_path / "repo", "https://github.com/example/repo.git"
