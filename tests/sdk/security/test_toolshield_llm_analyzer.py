@@ -136,6 +136,17 @@ def _last_messages(analyzer: ToolShieldLLMSecurityAnalyzer) -> list[Message]:
     return _guardrail_llm(analyzer).calls[-1]
 
 
+def _message_text(message: Message) -> str:
+    content = message.content[0]
+    assert isinstance(content, TextContent)
+    return content.text
+
+
+def _last_message_text(analyzer: ToolShieldLLMSecurityAnalyzer, role: str) -> str:
+    message = next(m for m in _last_messages(analyzer) if m.role == role)
+    return _message_text(message)
+
+
 # ---------------------------------------------------------------------------
 # _parse_risk
 # ---------------------------------------------------------------------------
@@ -442,9 +453,7 @@ class TestSecurityRisk:
         assert result == SecurityRisk.LOW
 
     def test_returns_medium_when_guardrail_says_medium(self):
-        analyzer = _make_analyzer(
-            llm_outputs=["RISK: MEDIUM\nSlightly concerning."]
-        )
+        analyzer = _make_analyzer(llm_outputs=["RISK: MEDIUM\nSlightly concerning."])
         assert analyzer.security_risk(_make_action_event()) == SecurityRisk.MEDIUM
 
     def test_returns_high_when_guardrail_says_high(self):
@@ -468,9 +477,7 @@ class TestSecurityRisk:
         analyzer = _make_analyzer(llm_outputs=["RISK: LOW\n"])
         analyzer.security_risk(_make_action_event(command="marker_value"))
 
-        messages = _last_messages(analyzer)
-        user_msg = next(m for m in messages if m.role == "user")
-        user_text = user_msg.content[0].text
+        user_text = _last_message_text(analyzer, "user")
         assert "marker_value" in user_text
         assert "<tool>execute_bash</tool>" in user_text
 
@@ -485,8 +492,7 @@ class TestHistoryWindow:
         analyzer = _make_analyzer(llm_outputs=["RISK: LOW\n"])
         analyzer.security_risk(_make_action_event())
 
-        messages = _last_messages(analyzer)
-        user_text = next(m for m in messages if m.role == "user").content[0].text
+        user_text = _last_message_text(analyzer, "user")
         assert "no prior actions" in user_text
 
     def test_history_grows_across_calls(self):
@@ -495,8 +501,7 @@ class TestHistoryWindow:
         analyzer.security_risk(_make_action_event(command="first_marker"))
         analyzer.security_risk(_make_action_event(command="second_marker"))
 
-        messages = _last_messages(analyzer)
-        user_text = next(m for m in messages if m.role == "user").content[0].text
+        user_text = _last_message_text(analyzer, "user")
         # Second call's history should contain the first action
         assert "first_marker" in user_text
         # And the second action should be in "Current Action" section
@@ -510,8 +515,7 @@ class TestHistoryWindow:
 
         # Last call's history window = 2 means it saw cmd_1 and cmd_2 in history,
         # with cmd_3 as the current action. cmd_0 should be evicted.
-        messages = _last_messages(analyzer)
-        user_text = next(m for m in messages if m.role == "user").content[0].text
+        user_text = _last_message_text(analyzer, "user")
         assert "cmd_0" not in user_text
         assert "cmd_3" in user_text
 
@@ -540,8 +544,7 @@ class TestHistoryWindow:
         # Next call should see "(no prior actions)" in the user prompt --
         # none of the earlier conversation's commands leaks through.
         analyzer.security_risk(_make_action_event(command="delta_marker"))
-        messages = _last_messages(analyzer)
-        user_text = next(m for m in messages if m.role == "user").content[0].text
+        user_text = _last_message_text(analyzer, "user")
         assert "no prior actions" in user_text
         assert "alpha_marker" not in user_text
         assert "beta_marker" not in user_text
@@ -556,8 +559,7 @@ class TestHistoryWindow:
         analyzer.security_risk(_make_action_event(command="step_one"))
         analyzer.security_risk(_make_action_event(command="step_two"))
 
-        messages = _last_messages(analyzer)
-        user_text = next(m for m in messages if m.role == "user").content[0].text
+        user_text = _last_message_text(analyzer, "user")
         # step_one is now in the prior-action history; step_two is current.
         assert "step_one" in user_text
         assert "step_two" in user_text
@@ -576,16 +578,14 @@ class TestSafetyExperiences:
         )
         analyzer.security_risk(_make_action_event())
 
-        messages = _last_messages(analyzer)
-        sys_text = next(m for m in messages if m.role == "system").content[0].text
+        sys_text = _last_message_text(analyzer, "system")
         assert "Never touch /etc/passwd" in sys_text
 
     def test_empty_experiences_shows_placeholder(self):
         analyzer = _make_analyzer(safety_experiences="", llm_outputs=["RISK: LOW\n"])
         analyzer.security_risk(_make_action_event())
 
-        messages = _last_messages(analyzer)
-        sys_text = next(m for m in messages if m.role == "system").content[0].text
+        sys_text = _last_message_text(analyzer, "system")
         assert "No tool-specific safety experiences" in sys_text
 
     def test_default_is_bare_guardrail(self):
@@ -601,8 +601,7 @@ class TestSafetyExperiences:
         # System prompt shows the bare-mode placeholder so reviewers can
         # tell at a glance that no experiences were loaded.
         analyzer.security_risk(_make_action_event())
-        messages = _last_messages(analyzer)
-        sys_text = next(m for m in messages if m.role == "system").content[0].text
+        sys_text = _last_message_text(analyzer, "system")
         assert "No tool-specific safety experiences" in sys_text
 
     @requires_toolshield
