@@ -794,8 +794,8 @@ def _extract_token_usage(
             u.thought_tokens or 0,
         )
     if response is not None and response.field_meta is not None:
-        quota = response.field_meta.get("quota", {})
-        tc = quota.get("token_count", {})
+        quota = response.field_meta.get("quota") or {}
+        tc = quota.get("token_count") or {}
         return (tc.get("input_tokens", 0), tc.get("output_tokens", 0), 0, 0, 0)
     return (0, 0, 0, 0, 0)
 

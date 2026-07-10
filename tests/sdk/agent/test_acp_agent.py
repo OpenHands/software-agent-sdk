@@ -5456,6 +5456,12 @@ class TestExtractTokenUsage:
         response.field_meta = {"quota": {}}
         assert _extract_token_usage(response) == (0, 0, 0, 0, 0)
 
+    def test_missing_quota_token_count(self):
+        response = MagicMock()
+        response.usage = None
+        response.field_meta = {"quota": {"token_count": None}}
+        assert _extract_token_usage(response) == (0, 0, 0, 0, 0)
+
 
 # ---------------------------------------------------------------------------
 # _estimate_cost_from_tokens
