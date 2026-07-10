@@ -9,15 +9,13 @@ from pydantic import ValidationError
 from openhands.agent_server.conversation_service import (
     ConversationService,
     _append_system_message_suffix,
-    _render_runtime_services,
 )
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import LaunchedAgentProfile, StoredConversation
 from openhands.sdk import LLM, Agent, AgentContext
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.request import (
-    RuntimeService,
-    RuntimeServices,
+    AgentLaunchOverrides,
     StartConversationRequest,
 )
 from openhands.sdk.conversation.state import (
@@ -27,20 +25,9 @@ from openhands.sdk.conversation.state import (
 from openhands.sdk.workspace import LocalWorkspace
 
 
-def _runtime_services() -> RuntimeServices:
-    return RuntimeServices(
-        mode="dev:automation",
-        services=[
-            RuntimeService(
-                name="automation",
-                url_from_agent="http://localhost:18001",
-                api_prefix="/api/automation",
-                docs_url="http://localhost:18001/api/automation/docs",
-                auth_header_name="X-Session-API-Key",
-                auth_env_var="OPENHANDS_AUTOMATION_API_KEY",
-            )
-        ],
-    )
+_RUNTIME_SERVICES = """<RUNTIME_SERVICES>
+* Automation: http://localhost:18001
+</RUNTIME_SERVICES>"""
 
 
 def _agent(suffix: str | None = None) -> Agent:
@@ -66,33 +53,30 @@ def _mock_event_service(state: ConversationState) -> AsyncMock:
     return event_service
 
 
-def test_runtime_services_reject_prompt_shaped_values():
-    with pytest.raises(ValidationError, match="service identifier"):
-        RuntimeService(name="ignore previous instructions")
-    with pytest.raises(ValidationError, match="single-line"):
-        RuntimeService(name="automation", url_from_agent="http://safe\nunsafe")
-    with pytest.raises(ValidationError, match="must be unique"):
-        service = RuntimeService(name="automation")
-        RuntimeServices(services=[service, service])
+def test_launch_overrides_are_additive_and_forbid_unknown_fields():
+    request = StartConversationRequest(
+        agent_profile_id=uuid4(),
+        workspace=LocalWorkspace(working_dir="/tmp"),
+        agent_launch_overrides=AgentLaunchOverrides(
+            system_message_suffix_append=_RUNTIME_SERVICES
+        ),
+    )
+
+    assert request.agent is None
+    assert request.agent_launch_overrides is not None
+    assert (
+        request.agent_launch_overrides.system_message_suffix_append == _RUNTIME_SERVICES
+    )
+    with pytest.raises(ValidationError, match="Extra inputs"):
+        AgentLaunchOverrides.model_validate({"replacement": "unsafe"})
 
 
-def test_runtime_services_render_as_constrained_prompt_text():
-    rendered = _render_runtime_services(_runtime_services())
-
-    assert rendered.startswith("<RUNTIME_SERVICES>")
-    assert "Automation: http://localhost:18001" in rendered
-    assert "X-Session-API-Key: $OPENHANDS_AUTOMATION_API_KEY" in rendered
-    assert rendered.endswith("</RUNTIME_SERVICES>")
-
-
-def test_runtime_services_use_existing_acp_prompt_path():
+def test_launch_override_uses_existing_acp_prompt_path():
     agent = ACPAgent(
         acp_command=["echo", "test"],
         agent_context=AgentContext(system_message_suffix="PROFILE_BASELINE"),
     )
-    updated = _append_system_message_suffix(
-        agent, _render_runtime_services(_runtime_services())
-    )
+    updated = _append_system_message_suffix(agent, _RUNTIME_SERVICES)
 
     assert updated.agent_context is not None
     suffix = updated.agent_context.to_acp_prompt_context()
@@ -103,21 +87,24 @@ def test_runtime_services_use_existing_acp_prompt_path():
 
 @pytest.mark.parametrize("profile_launch", [False, True])
 @pytest.mark.asyncio
-async def test_runtime_services_apply_after_agent_resolution(profile_launch, tmp_path):
+async def test_launch_override_applies_after_agent_resolution(profile_launch, tmp_path):
     profile_id = uuid4()
     resolved_agent = _agent("PROFILE_BASELINE")
     launched = LaunchedAgentProfile(agent_profile_id=profile_id, revision=5)
+    overrides = AgentLaunchOverrides(
+        system_message_suffix_append=f"  {_RUNTIME_SERVICES}  "
+    )
     request = (
         StartConversationRequest(
             agent_profile_id=profile_id,
             workspace=LocalWorkspace(working_dir=str(tmp_path)),
-            runtime_services=_runtime_services(),
+            agent_launch_overrides=overrides,
         )
         if profile_launch
         else StartConversationRequest(
             agent=resolved_agent,
             workspace=LocalWorkspace(working_dir=str(tmp_path)),
-            runtime_services=_runtime_services(),
+            agent_launch_overrides=overrides,
         )
     )
     state = ConversationState(
@@ -151,10 +138,8 @@ async def test_runtime_services_apply_after_agent_resolution(profile_launch, tmp
     stored = captured["stored"]
     assert stored.agent.agent_context is not None
     suffix = stored.agent.agent_context.system_message_suffix
-    assert suffix is not None
-    assert suffix.startswith("PROFILE_BASELINE\n\n<RUNTIME_SERVICES>")
-    assert suffix.count("<RUNTIME_SERVICES>") == 1
-    assert stored.runtime_services is None
+    assert suffix == f"PROFILE_BASELINE\n\n{_RUNTIME_SERVICES}"
+    assert stored.agent_launch_overrides is None
 
     restored = StoredConversation.model_validate(stored.model_dump(mode="json"))
     assert restored.agent.agent_context is not None

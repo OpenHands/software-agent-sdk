@@ -36,7 +36,6 @@ from openhands.agent_server.skills_service import discover_profile_skills
 from openhands.agent_server.utils import safe_rmtree, utc_now
 from openhands.sdk import LLM, AgentContext, Event, Message
 from openhands.sdk.agent.base import AgentBase
-from openhands.sdk.conversation.request import RuntimeServices
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -105,46 +104,6 @@ def _append_system_message_suffix(agent: AgentBase, addition: str) -> AgentBase:
     suffix = f"{existing_suffix}\n\n{addition}" if existing_suffix else addition
     updated_context = context.model_copy(update={"system_message_suffix": suffix})
     return agent.model_copy(update={"agent_context": updated_context})
-
-
-def _render_runtime_services(runtime_services: RuntimeServices) -> str:
-    lines = ["<RUNTIME_SERVICES>"]
-    if runtime_services.mode:
-        lines.append(f"Deployment mode: {runtime_services.mode}")
-    lines.extend(
-        [
-            "URLs are written from the agent runtime's point of view.",
-            "Services available to this conversation:",
-        ]
-    )
-    for service in runtime_services.services:
-        label = service.name.replace("_", " ").title()
-        url = (
-            service.url_from_agent
-            if service.available and service.url_from_agent
-            else "unavailable"
-        )
-        lines.append(f"* {label}: {url}")
-        if service.api_prefix:
-            lines.append(f"    API prefix: {service.api_prefix}")
-        if service.docs_url:
-            lines.append(f"    Docs: {service.docs_url}")
-        if service.openapi_url:
-            lines.append(f"    OpenAPI: {service.openapi_url}")
-        if service.auth_header_name and service.auth_env_var:
-            lines.append(
-                f"    Auth: header '{service.auth_header_name}: "
-                f"${service.auth_env_var}'"
-            )
-        elif service.auth_env_var:
-            lines.append(f"    Auth environment variable: ${service.auth_env_var}")
-    lines.extend(
-        [
-            "Use only the listed URLs; do not guess alternate endpoints.",
-            "</RUNTIME_SERVICES>",
-        ]
-    )
-    return "\n".join(lines)
 
 
 def _has_git_remote(repo_root: Path, remote: str = "origin") -> bool:
@@ -790,14 +749,15 @@ class ConversationService:
             )
             request = request.model_copy(update={"agent": resolved_agent})
 
-        if request.runtime_services is not None:
+        addition = (
+            request.agent_launch_overrides.system_message_suffix_append.strip()
+            if request.agent_launch_overrides
+            and request.agent_launch_overrides.system_message_suffix_append
+            else ""
+        )
+        if addition:
             request = request.model_copy(
-                update={
-                    "agent": _append_system_message_suffix(
-                        request.agent,
-                        _render_runtime_services(request.runtime_services),
-                    )
-                }
+                update={"agent": _append_system_message_suffix(request.agent, addition)}
             )
 
         request = _prepare_request_workspace(request, conversation_id)
@@ -866,7 +826,7 @@ class ConversationService:
         request_data = request.model_dump(
             mode="json",
             context={"expose_secrets": True},
-            exclude={"agent_profile_id", "runtime_services"},
+            exclude={"agent_profile_id", "agent_launch_overrides"},
         )
 
         # If secrets_encrypted=True, the agent's secrets (e.g., LLM api_key) are
