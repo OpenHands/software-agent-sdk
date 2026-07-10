@@ -12,7 +12,6 @@ from openhands.sdk.git.utils import (
     get_git_repository_metadata,
     redact_url_credentials,
     run_git_command,
-    run_git_subprocess,
 )  # re-exported for compat
 from openhands.sdk.plugin.types import PluginSource, ResolvedPluginSource
 from openhands.sdk.utils.redact import (
@@ -331,15 +330,14 @@ class TestRunGitCommandCredentialRedaction:
         assert REDACTED_URL in caplog.text
 
 
-def test_run_git_subprocess_replaces_undecodable_stdout_bytes():
+def test_run_git_command_replaces_undecodable_stdout_bytes():
     """Invalid-encoding stdout must not raise UnicodeDecodeError (AGE-1871)."""
-    result = run_git_subprocess(
+    result = run_git_command(
         [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'\\xff\\xfe')"],
         cwd=None,
         timeout=5,
     )
-    assert result.returncode == 0
-    assert result.stdout == "��"
+    assert result == "��"
 
 
 def test_get_git_repository_metadata():
@@ -357,7 +355,7 @@ def test_get_git_repository_metadata():
             stderr="",
         ),
     ]
-    with patch("openhands.sdk.git.utils.run_git_subprocess", side_effect=responses):
+    with patch("openhands.sdk.git.utils._run_git_subprocess", side_effect=responses):
         metadata = get_git_repository_metadata("/repo")
 
     assert metadata == {

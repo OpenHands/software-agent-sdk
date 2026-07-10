@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 GIT_EMPTY_TREE_HASH = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 
-def run_git_subprocess(
+def _run_git_subprocess(
     args: list[str],
     cwd: str | Path | None,
     timeout: int,
@@ -38,7 +38,7 @@ def run_git_subprocess(
 
 def _run_git_probe(args: list[str], cwd: str | Path) -> str:
     try:
-        result = run_git_subprocess(["git", "--no-pager", *args], cwd, timeout=30)
+        result = _run_git_subprocess(["git", "--no-pager", *args], cwd, timeout=30)
     except (OSError, subprocess.SubprocessError):
         return ""
     return result.stdout.strip() if result.returncode == 0 else ""
@@ -86,7 +86,7 @@ def run_git_command(
     cmd_str = shlex.join(redacted_args)
 
     try:
-        result = run_git_subprocess(args, cwd, timeout)
+        result = _run_git_subprocess(args, cwd, timeout)
 
         if result.returncode != 0:
             error_msg = f"Git command failed: {cmd_str}"
