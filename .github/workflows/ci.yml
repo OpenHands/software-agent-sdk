@@ -108,8 +108,27 @@ jobs:
       with:
         python-version: '3.12'
 
+    - name: Resolve openhands-sdk source
+      id: sdk-source
+      env:
+        GH_TOKEN: ${{ github.token }}
+        PR_BODY: ${{ github.event.pull_request.body || '' }}
+      run: |
+        sdk_repo=OpenHands/software-agent-sdk
+        sdk_ref=main
+        if [[ "$PR_BODY" =~ github.com/OpenHands/software-agent-sdk/pull/([0-9]+) ]]; then
+          sdk_pr=${BASH_REMATCH[1]}
+          sdk_metadata=$(gh api "repos/OpenHands/software-agent-sdk/pulls/$sdk_pr")
+          sdk_repo=$(jq -r '.head.repo.full_name' <<< "$sdk_metadata")
+          sdk_ref=$(jq -r '.head.sha' <<< "$sdk_metadata")
+        fi
+        echo "repo=$sdk_repo" >> "$GITHUB_OUTPUT"
+        echo "ref=$sdk_ref" >> "$GITHUB_OUTPUT"
+
     - name: Install openhands-sdk
-      run: pip install -r scripts/requirements-acp-check.txt
+      run: >-
+        pip install
+        "openhands-sdk @ git+https://github.com/${{ steps.sdk-source.outputs.repo }}@${{ steps.sdk-source.outputs.ref }}#subdirectory=openhands-sdk"
 
     - name: Check ACP_PROVIDERS matches openhands-sdk
       env:

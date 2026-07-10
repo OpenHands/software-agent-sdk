@@ -39,6 +39,15 @@ describe('ACP provider credential descriptors', () => {
     expect(provider.base_url_env_var).toBe(baseUrlEnvVar);
   });
 
+  it('uses the maintained Codex adapter and exposes GPT-5.6 models', () => {
+    const codex = ACP_PROVIDERS.codex;
+    expect(codex.default_command).toEqual(['npx', '-y', '@agentclientprotocol/codex-acp@1.1.2']);
+    expect(codex.default_session_mode).toBe('agent-full-access');
+    expect(codex.available_models.map((model) => model.id)).toEqual(
+      expect.arrayContaining(['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'])
+    );
+  });
+
   describe('file_secrets', () => {
     it('claude-code authenticates via env var only (no file secrets)', () => {
       expect(ACP_PROVIDERS['claude-code'].file_secrets).toEqual([]);

@@ -36,14 +36,30 @@
   "codex": {
     "key": "codex",
     "display_name": "Codex",
-    "default_command": ["npx", "-y", "@zed-industries/codex-acp@0.16.0"],
+    "default_command": ["npx", "-y", "@agentclientprotocol/codex-acp@1.1.2"],
     "api_key_env_var": "OPENAI_API_KEY",
     "base_url_env_var": "OPENAI_BASE_URL",
-    "default_session_mode": "full-access",
+    "default_session_mode": "agent-full-access",
     "agent_name_patterns": ["codex-acp"],
     "supports_set_session_model": true,
     "session_meta_key": null,
     "available_models": [
+      {
+        "id": "gpt-5.6",
+        "label": "GPT-5.6"
+      },
+      {
+        "id": "gpt-5.6-sol",
+        "label": "GPT-5.6 Sol"
+      },
+      {
+        "id": "gpt-5.6-terra",
+        "label": "GPT-5.6 Terra"
+      },
+      {
+        "id": "gpt-5.6-luna",
+        "label": "GPT-5.6 Luna"
+      },
       {
         "id": "gpt-5.5",
         "label": "GPT-5.5"
