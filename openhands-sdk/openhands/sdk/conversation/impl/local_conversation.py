@@ -284,13 +284,7 @@ class LocalConversation(BaseConversation):
         # Create-or-resume: factory inspects BASE_STATE to decide
         desired_id = conversation_id or uuid.uuid4()
 
-        # Resolve client-defined tools, then register them and inject the matching
-        # Tool specs into the agent so the agent can call them. Execution is
-        # deferred to a consumer of the emitted ActionEvent (e.g. a frontend); the
-        # executor only acks. Specs come either from the caller (`client_tools`)
-        # or, when resuming a persisted conversation without re-supplying them,
-        # from the persisted agent's tool specs — mirroring the server resume
-        # path so a fresh process can re-register the dynamic tools.
+        # Recover persisted client specs before resolving the agent's tools.
         resolved_client_tools = list(client_tools or [])
         if not resolved_client_tools and persistence_dir is not None:
             resolved_client_tools = self._recover_persisted_client_tools(
@@ -299,7 +293,9 @@ class LocalConversation(BaseConversation):
         if resolved_client_tools:
             from openhands.sdk.tool.client_tool import register_client_tools
 
-            client_tool_specs = register_client_tools(resolved_client_tools)
+            client_tool_specs = register_client_tools(
+                resolved_client_tools, agent_tools=agent.tools
+            )
             existing_names = {t.name for t in agent.tools}
             new_tools = [
                 ts for ts in client_tool_specs if ts.name not in existing_names

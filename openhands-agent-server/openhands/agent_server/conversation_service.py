@@ -773,12 +773,11 @@ class ConversationService:
                     conversation_id,
                 )
 
-        # Register client-defined tools (JSON specs, no Python code). The
-        # ClientTool *class* is registered statelessly; each tool's schema
-        # travels with the conversation via the returned Tool.params, so
-        # concurrent conversations never clobber each other's schemas.
+        # Validate and inject self-contained client tool specs.
         if request.client_tools:
-            client_tool_specs = register_client_tools(request.client_tools)
+            client_tool_specs = register_client_tools(
+                request.client_tools, agent_tools=request.agent.tools
+            )
             # Inject Tool specs into the agent so _initialize() resolves them
             existing_names = {t.name for t in request.agent.tools}
             new_tools = [
@@ -1199,11 +1198,11 @@ class ConversationService:
                             f"resuming conversation {stored.id}: "
                             f"{list(stored.tool_module_qualnames.keys())}"
                         )
-                # Re-register client-defined tools when resuming. The agent's
-                # persisted tool specs already carry each schema via params, so
-                # we only need to (re-)register the ClientTool class per name.
+                # Restore dynamic client action types from persisted specs.
                 if stored.client_tools:
-                    register_client_tools(stored.client_tools)
+                    register_client_tools(
+                        stored.client_tools, agent_tools=stored.agent.tools
+                    )
                 # Register agent definitions when resuming
                 if stored.agent_definitions:
                     _register_agent_definitions(

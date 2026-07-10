@@ -48,7 +48,6 @@ logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 _client_action_types: dict[str, type[Action]] = {}
 _client_action_schemas: dict[str, dict[str, Any]] = {}
-_client_tool_names: set[str] = set()
 _client_action_lock = threading.RLock()
 
 
@@ -351,25 +350,36 @@ def extract_client_tool_specs(tools: "Sequence[Tool]") -> list[ClientToolSpec]:
     return specs
 
 
-def register_client_tools(specs: Sequence[ClientToolSpec]) -> list["Tool"]:
-    """Register client-defined tools and return per-conversation tool specs.
+def resolve_client_tool(
+    tool: "Tool", conv_state: "ConversationState"
+) -> Sequence[ToolDefinition] | None:
+    """Resolve a registered client tool from its embedded spec."""
+    raw = (tool.params or {}).get("spec")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        spec = ClientToolSpec.model_validate(raw)
+    except ValueError:
+        return None
+    if spec.name != tool.name:
+        return None
+    with _client_action_lock:
+        if spec.name not in _client_action_types:
+            return None
+    return ClientTool.create(conv_state=conv_state, spec=spec)
 
-    The :class:`ClientTool` *class* (a stateless resolver) is registered once
-    per tool name in the global tool registry, while each tool's schema travels
-    with the conversation through ``Tool.params`` rather than living in the
-    process-global registry. This keeps the resolver stateless so two
-    conversations that define the same tool name with the same schema don't
-    clobber each other.
 
-    Args:
-        specs: The client tool specs to register.
-
-    Returns:
-        A list of :class:`~openhands.sdk.tool.spec.Tool` specs (one per input
-        spec) to inject into an agent's ``tools`` so ``_initialize()`` can
-        resolve them.
-    """
-    from openhands.sdk.tool.registry import list_registered_tools, register_tool
+def register_client_tools(
+    specs: Sequence[ClientToolSpec],
+    *,
+    agent_tools: Sequence["Tool"] | None = None,
+) -> list["Tool"]:
+    """Validate client tools and return per-conversation tool specs."""
+    from openhands.sdk.tool.registry import (
+        is_tool_registered_as,
+        list_registered_tools,
+        register_tool,
+    )
     from openhands.sdk.tool.spec import Tool
 
     seen_names: set[str] = set()
@@ -384,21 +394,38 @@ def register_client_tools(specs: Sequence[ClientToolSpec]) -> list["Tool"]:
     with _client_action_lock:
         tool_specs: list[Tool] = []
         already_registered = set(list_registered_tools())
-        for spec in specs:
-            collides_with_non_client_tool = (
-                spec.name in already_registered and spec.name not in _client_tool_names
+        if agent_tools is None:
+            collisions = [
+                spec.name
+                for spec in specs
+                if spec.name in already_registered
+                and not is_tool_registered_as(spec.name, ClientTool)
+            ]
+        else:
+            collisions = []
+            for spec in specs:
+                existing = [tool for tool in agent_tools if tool.name == spec.name]
+                if not existing:
+                    continue
+                existing_specs = extract_client_tool_specs(existing)
+                if len(existing_specs) != len(existing):
+                    collisions.append(spec.name)
+                elif any(existing_spec != spec for existing_spec in existing_specs):
+                    raise ClientToolRegistrationError(
+                        f"Client tool '{spec.name}' conflicts with the existing "
+                        "client tool spec in this agent."
+                    )
+
+        for name in collisions:
+            raise ClientToolRegistrationError(
+                f"Client tool name '{name}' collides with an existing "
+                "non-client tool. Choose a unique client tool name."
             )
-            if collides_with_non_client_tool:
-                raise ClientToolRegistrationError(
-                    f"Client tool name '{spec.name}' collides with an existing "
-                    "non-client tool. Choose a unique client tool name."
-                )
 
         for spec in specs:
             _get_client_action_type(spec.name, spec.parameters)
             if spec.name not in already_registered:
                 register_tool(spec.name, ClientTool)
                 already_registered.add(spec.name)
-            _client_tool_names.add(spec.name)
             tool_specs.append(Tool(name=spec.name, params={"spec": spec.model_dump()}))
         return tool_specs

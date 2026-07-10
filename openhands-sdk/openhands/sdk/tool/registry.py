@@ -128,6 +128,7 @@ def register_tool(
             "register_tool(...) only accepts: (1) a ToolDefinition instance with "
             ".executor, or (2) a ToolDefinition subclass with .create(**params)"
         )
+    setattr(resolver, "__openhands_tool_factory__", factory)
 
     # Track the module qualname for this tool
     module_qualname = None
@@ -149,6 +150,12 @@ def register_tool(
 def resolve_tool(
     tool_spec: Tool, conv_state: "ConversationState"
 ) -> Sequence[ToolDefinition]:
+    from openhands.sdk.tool.client_tool import resolve_client_tool
+
+    client_tool = resolve_client_tool(tool_spec, conv_state)
+    if client_tool is not None:
+        return client_tool
+
     with _LOCK:
         resolver = _REG.get(tool_spec.name)
 
@@ -161,6 +168,15 @@ def resolve_tool(
 def list_registered_tools() -> list[str]:
     with _LOCK:
         return list(_REG.keys())
+
+
+def is_tool_registered_as(
+    name: str, factory: ToolDefinition | type[ToolDefinition]
+) -> bool:
+    """Return whether ``factory`` currently owns ``name``."""
+    with _LOCK:
+        resolver = _REG.get(name)
+    return getattr(resolver, "__openhands_tool_factory__", None) is factory
 
 
 def is_tool_usable(name: str) -> bool:

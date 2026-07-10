@@ -142,15 +142,18 @@ def conversation_service():
 async def test_start_conversation_registers_and_injects_client_tools(
     conversation_service, tmp_path
 ):
-    """client_tools specs are registered, injected into the agent, and persisted.
-
-    Persistence on ``StoredConversation`` is what allows forks and server
-    restarts to re-register the dynamic client tools.
-    """
-    from openhands.sdk.tool.client_tool import ClientToolSpec
+    """Persist and resolve a client tool beside another agent's server tool."""
+    from openhands.sdk.tool.client_tool import ClientTool, ClientToolSpec
+    from openhands.sdk.tool.registry import (
+        is_tool_registered_as,
+        register_tool,
+        resolve_tool,
+    )
+    from openhands.tools.terminal import TerminalTool
 
     workspace_dir = tmp_path / "workspace"
     workspace_dir.mkdir()
+    register_tool("srv_show_dialog", TerminalTool)
 
     request = StartConversationRequest(
         agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
@@ -192,14 +195,13 @@ async def test_start_conversation_registers_and_injects_client_tools(
         await conversation_service.start_conversation(request)
 
     stored = captured["stored"]
-    # Injected into the agent's tool specs so _initialize() can resolve it
     assert "srv_show_dialog" in {t.name for t in stored.agent.tools}
-    # Persisted so forks / restarts can re-register the dynamic action type
     assert [s.name for s in stored.client_tools] == ["srv_show_dialog"]
-    # The class is registered in the global tool registry
-    from openhands.sdk.tool.registry import list_registered_tools
-
-    assert "srv_show_dialog" in list_registered_tools()
+    assert is_tool_registered_as("srv_show_dialog", TerminalTool)
+    tool_spec = next(t for t in stored.agent.tools if t.name == "srv_show_dialog")
+    resolved = resolve_tool(tool_spec, None)  # type: ignore[arg-type]
+    assert len(resolved) == 1
+    assert isinstance(resolved[0], ClientTool)
 
 
 @pytest.mark.asyncio
