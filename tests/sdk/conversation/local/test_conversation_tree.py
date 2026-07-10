@@ -22,6 +22,7 @@ from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.event.types import ROOT_PARENT_ID, SourceType
+from openhands.sdk.event.user_action import PauseEvent
 from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
 from openhands.sdk.tool.schema import Action
 
@@ -377,6 +378,56 @@ def test_legacy_resume_with_non_tree_artifact_tail_keeps_history(make_tail):
             *(e.id for e in legacy),
             new.id,
         ]
+
+
+@pytest.mark.parametrize(
+    "make_tail",
+    [
+        pytest.param(
+            lambda pid: [
+                ConversationStateUpdateEvent(parent_id=pid, key="k", value="v"),
+                ConversationErrorEvent(
+                    source="environment", parent_id=pid, code="E", detail="d"
+                ),
+                ConversationStateUpdateEvent(parent_id=pid, key="k2", value="v2"),
+            ],
+            id="multiple-stacked-artifacts",
+        ),
+        pytest.param(
+            lambda pid: [PauseEvent(parent_id=pid)],
+            id="tail-type-not-special-cased",
+        ),
+    ],
+)
+def test_legacy_resume_never_orphans_history_regardless_of_tail(make_tail):
+    """No trailing non-tree noise on a legacy log can orphan prior history.
+
+    Whatever a newer server appended onto the legacy tail during an interrupted
+    startup — several stacked artifacts, or an event type ``_resolve_active_leaf``
+    does not special-case — the first post-resume event must not be stamped a
+    false ``__root__``: every legacy event stays reachable from the new leaf
+    (#4057).
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        conv = _conversation(tmp, delete_on_close=False)
+        legacy = [_msg(f"legacy-{i}") for i in range(3)]
+        for ev in legacy:
+            conv.state.events.append(ev)
+        for ev in make_tail(legacy[-1].id):
+            conv.state.events.append(ev)
+        conv_id = conv.id
+        conv.close()
+
+        resumed = _conversation(tmp, conversation_id=conv_id, delete_on_close=False)
+        new = _emit(resumed, _msg("after-resume"))
+        stored = _by_id(resumed.state.events, new.id)
+        reachable = [e.id for e in resumed.state.events.path_to_root(new.id)]
+
+        legacy_ids = [e.id for e in legacy]
+        assert stored.parent_id != ROOT_PARENT_ID  # not a false root
+        # Every legacy event is still reachable, in order (nothing orphaned).
+        assert [i for i in reachable if i in set(legacy_ids)] == legacy_ids
+        assert reachable[-1] == new.id
 
 
 def test_parent_id_round_trips_on_disk_and_root_omits_it():
