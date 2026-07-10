@@ -9,6 +9,7 @@ import pytest
 
 from openhands.sdk.git.exceptions import GitCommandError
 from openhands.sdk.git.utils import (
+    get_git_repository_metadata,
     redact_url_credentials,
     run_git_command,
     run_git_subprocess,
@@ -339,3 +340,28 @@ def test_run_git_subprocess_replaces_undecodable_stdout_bytes():
     )
     assert result.returncode == 0
     assert result.stdout == "��"
+
+
+def test_get_git_repository_metadata():
+    responses = [
+        subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout="HTTPS://user:secret@github.com/org/repo.git\n",
+            stderr="",
+        ),
+        subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout="abc123\nfeature-x\n",
+            stderr="",
+        ),
+    ]
+    with patch("openhands.sdk.git.utils.run_git_subprocess", side_effect=responses):
+        metadata = get_git_repository_metadata("/repo")
+
+    assert metadata == {
+        "repo_remote": "HTTPS://****@github.com/org/repo.git",
+        "head_commit": "abc123",
+        "branch": "feature-x",
+    }

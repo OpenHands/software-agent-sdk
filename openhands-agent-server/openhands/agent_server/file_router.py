@@ -31,16 +31,12 @@ from openhands.agent_server.server_details_router import update_last_execution_t
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import (
     GIT_EMPTY_TREE_HASH,
+    get_git_repository_metadata,
     get_valid_ref,
     run_git_command,
-    run_git_subprocess,
     validate_git_repository,
 )
 from openhands.sdk.logger import get_logger
-from openhands.sdk.utils.redact import (
-    redact_url_credentials_in_text,
-    redact_url_params,
-)
 
 
 class SubdirectoryEntry(BaseModel):
@@ -329,37 +325,9 @@ def _head_is_detached(root: Path) -> bool:
     return branch.strip() == "HEAD"
 
 
-def _git_probe(args: list[str], root: Path) -> str:
-    """Run a read-only git probe; never logs or raises, returns "" on any failure."""
-    try:
-        result = run_git_subprocess(["git", "--no-pager", *args], root, timeout=30)
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    return result.stdout.strip() if result.returncode == 0 else ""
-
-
 def _header_safe(value: str) -> str:
     """Percent-encode a header value."""
     return quote(value, safe="")
-
-
-def _git_repo_metadata(root: Path) -> dict[str, str]:
-    """Best-effort repo identity headers (remote/branch/HEAD) for the archived tree."""
-    metadata: dict[str, str] = {}
-    remote = _git_probe(["remote", "get-url", "origin"], root)
-    if remote:
-        metadata["X-Archive-Repo-Remote"] = redact_url_params(
-            redact_url_credentials_in_text(remote)
-        )
-    # Combine into one call: --abbrev-ref only applies to args after it, so the
-    # first HEAD stays a full sha while the second is abbreviated to the branch.
-    head_and_branch = _git_probe(["rev-parse", "HEAD", "--abbrev-ref", "HEAD"], root)
-    lines = head_and_branch.splitlines()
-    if len(lines) == 2:
-        head, branch = lines
-        metadata["X-Archive-Head-Commit"] = head
-        metadata["X-Archive-Branch"] = "DETACHED" if branch == "HEAD" else branch
-    return {k: _header_safe(v) for k, v in metadata.items()}
 
 
 def _create_git_delta(
@@ -1016,7 +984,14 @@ async def archive_directory(
     # git-delta-only (they describe the patch's replay base).
     headers: dict[str, str] = {}
     if (repo_root / ".git").exists():
-        headers.update(await asyncio.to_thread(_git_repo_metadata, repo_root))
+        repo_metadata = await asyncio.to_thread(get_git_repository_metadata, repo_root)
+        for key, header in (
+            ("repo_remote", "X-Archive-Repo-Remote"),
+            ("branch", "X-Archive-Branch"),
+            ("head_commit", "X-Archive-Head-Commit"),
+        ):
+            if value := repo_metadata.get(key):
+                headers[header] = _header_safe(value)
         headers["X-Archive-Repo-Root"] = _header_safe(str(repo_root))
     if base_commit:
         # Make a git-delta self-describing so consumers can replay the patch.

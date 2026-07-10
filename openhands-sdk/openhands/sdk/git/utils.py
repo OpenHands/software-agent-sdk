@@ -8,6 +8,7 @@ from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.utils.redact import (
     redact_url_credentials,
     redact_url_credentials_in_text,
+    redact_url_params,
 )
 
 
@@ -33,6 +34,34 @@ def run_git_subprocess(
         check=False,
         timeout=timeout,
     )
+
+
+def _run_git_probe(args: list[str], cwd: str | Path) -> str:
+    try:
+        result = run_git_subprocess(["git", "--no-pager", *args], cwd, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def get_git_repository_metadata(repo_dir: str | Path) -> dict[str, str]:
+    """Return best-effort repository identity metadata."""
+    metadata: dict[str, str] = {}
+    remote = _run_git_probe(["remote", "get-url", "origin"], repo_dir)
+    if remote:
+        metadata["repo_remote"] = redact_url_params(
+            redact_url_credentials_in_text(remote)
+        )
+
+    head_and_branch = _run_git_probe(
+        ["rev-parse", "HEAD", "--abbrev-ref", "HEAD"], repo_dir
+    )
+    lines = head_and_branch.splitlines()
+    if len(lines) == 2:
+        head, branch = lines
+        metadata["head_commit"] = head
+        metadata["branch"] = "DETACHED" if branch == "HEAD" else branch
+    return metadata
 
 
 def run_git_command(
