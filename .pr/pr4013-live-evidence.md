@@ -4,15 +4,15 @@ Date: 2026-07-10 UTC
 
 Branch: `fix-settings-mcp-schema-migration`
 
-Head: `2b1a263c92f6741c5606cfbb020eb164be28605c`
+Initial evidence head: `fa22a8f5`
 
 Base: `main` at `91f8b9403c16c30edee2f86cff634c38234c8a27`
 
 ## PR inspection
 
-- Current diff from `origin/main...HEAD`: 9 files, 36 insertions, 160 deletions.
 - Changed areas: SDK persisted settings migration, agent-server event transport,
-  and focused tests/fixtures for those paths.
+  focused tests/fixtures for those paths, test hardening for CI isolation, and
+  temporary `.pr/` evidence artifacts.
 - Review threads: GitHub GraphQL returned no review threads.
 - Checks: `gh pr checks 4013 --repo OpenHands/software-agent-sdk` reports all
   current checks passing, with only `cleanup-on-approval` skipped.
@@ -95,6 +95,37 @@ uv run pre-commit run --files .pr/live_settings_migration_check.py
 
 Result: Ruff format, Ruff lint, pycodestyle, pyright, import dependency rules,
 and tool subclass registration all passed.
+
+CI-failure hardening after first evidence push:
+
+```bash
+uv run pytest -q tests/agent_server/test_conversation_service.py::TestConversationTreeForkAndNavigate::test_fork_from_event_slices_branch_and_records_lineage tests/agent_server/test_sockets_service_getters.py::test_events_socket_uses_app_state_conversation_service tests/agent_server/test_sockets_service_getters.py::test_bash_events_socket_uses_app_state_bash_event_service
+```
+
+Result:
+
+```text
+3 passed, 5 warnings in 0.48s
+```
+
+```bash
+uv run pre-commit run --files tests/agent_server/test_conversation_service.py tests/agent_server/test_sockets_service_getters.py
+```
+
+Result: Ruff format, Ruff lint, pycodestyle, pyright, import dependency rules,
+and tool subclass registration all passed.
+
+Local reproduction of the CI agent-server mode:
+
+```bash
+CI=true uv run python -m pytest -q -n auto -x tests/agent_server
+```
+
+Result:
+
+```text
+1436 passed, 56 warnings in 112.02s (0:01:52)
+```
 
 ## Live-code verification
 

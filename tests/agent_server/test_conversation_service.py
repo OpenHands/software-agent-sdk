@@ -2976,7 +2976,16 @@ class TestConversationTreeForkAndNavigate:
             info, source_service, events = await self._start_with_events(
                 svc, workspace_dir, ["first", "second", "third"]
             )
-            branch_point = events[1]
+            source_event_log = source_service.get_conversation()._state.events
+            branch_point = None
+            expected_branch_events = []
+            for event in events[:-1]:
+                branch_events = source_event_log.path_to_root(event.id)
+                if 1 < len(branch_events) < len(events):
+                    branch_point = event
+                    expected_branch_events = branch_events
+                    break
+            assert branch_point is not None
 
             fork_info = await svc.fork_conversation(
                 info.id, from_event_id=branch_point.id
@@ -2996,7 +3005,7 @@ class TestConversationTreeForkAndNavigate:
             fork_events = list(fork_service.get_conversation()._state.events)
             # Only path_to_root(branch_point) was copied — the active branch up
             # to and including the branch point, not the whole log.
-            assert [e.id for e in fork_events] == [events[0].id, events[1].id]
+            assert [e.id for e in fork_events] == [e.id for e in expected_branch_events]
             assert len(fork_events) < len(events)
 
             # Source is untouched by the fork.
