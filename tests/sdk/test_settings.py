@@ -492,6 +492,17 @@ def test_acp_agent_settings_from_persisted_returns_acp_subtype() -> None:
     assert settings.acp_command == ["echo", "test"]
 
 
+def test_openhands_agent_settings_from_persisted_rejects_current_llm_kind() -> None:
+    with pytest.raises(ValidationError):
+        OpenHandsAgentSettings.from_persisted(
+            {
+                "schema_version": AGENT_SETTINGS_SCHEMA_VERSION,
+                "agent_kind": "llm",
+                "llm": {"model": "legacy-model"},
+            }
+        )
+
+
 def test_agent_settings_from_persisted_current_payload_matches_model_validate() -> None:
     payload = OpenHandsAgentSettings(llm=LLM(model="current-model")).model_dump(
         mode="json"
@@ -511,9 +522,15 @@ def test_openhands_agent_settings_from_persisted_matches_union_validator() -> No
         "llm": {"model": "legacy-model"},
     }
 
-    assert OpenHandsAgentSettings.from_persisted(payload) == validate_agent_settings(
-        payload
-    )
+    from_persisted_settings = OpenHandsAgentSettings.from_persisted(payload)
+    union_settings = validate_agent_settings(payload)
+
+    # agent_context.current_datetime defaults to now(); exclude it so the
+    # comparison is not sensitive to the microseconds between validations.
+    volatile = {"agent_context": {"current_datetime"}}
+    assert from_persisted_settings.model_dump(
+        exclude=volatile
+    ) == union_settings.model_dump(exclude=volatile)
 
 
 def test_agent_settings_from_persisted_rejects_malformed_payload() -> None:

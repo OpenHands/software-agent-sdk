@@ -334,7 +334,26 @@ class AgentSettingsBase(BaseModel):
 
     @classmethod
     def from_persisted(cls, data: Any) -> Self:
-        """Load persisted agent settings, applying any schema migrations."""
+        """Load persisted agent settings into this concrete variant.
+
+        Applies registered schema migrations, then validates the migrated
+        payload against ``cls`` directly. This method is intended for concrete
+        subclasses; callers that want union dispatch across settings variants
+        should use :func:`validate_agent_settings`. Current-schema payloads
+        with the deprecated ``agent_kind='llm'`` discriminator are rejected by
+        :meth:`OpenHandsAgentSettings.from_persisted`.
+
+        Returns:
+            An instance of ``cls``.
+
+        Raises:
+            TypeError: If *data* is not a mapping/BaseModel or has a
+                non-integer ``schema_version``.
+            ValueError: If ``schema_version`` is negative, newer than
+                supported, or cannot be migrated.
+            pydantic.ValidationError: If the migrated payload is invalid for
+                ``cls``.
+        """
         payload = _apply_persisted_migrations(
             data,
             current_version=AGENT_SETTINGS_SCHEMA_VERSION,
