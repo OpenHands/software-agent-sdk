@@ -336,9 +336,7 @@ def _git_probe(args: list[str], root: Path) -> str:
 
 
 def _header_safe(value: str) -> str:
-    """Percent-encode a value if needed so it is always a legal ASCII header value."""
-    if value.isascii() and value.isprintable():
-        return value
+    """Percent-encode a header value."""
     return quote(value, safe="")
 
 

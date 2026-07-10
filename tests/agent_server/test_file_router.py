@@ -813,8 +813,8 @@ def test_git_delta_response_includes_repo_metadata_headers(client, tmp_path):
     )
 
     assert resp.status_code == 200, resp.text
-    assert (
-        resp.headers["x-archive-repo-remote"] == "https://github.com/example/repo.git"
+    assert resp.headers["x-archive-repo-remote"] == quote(
+        "https://github.com/example/repo.git", safe=""
     )
     assert resp.headers["x-archive-branch"] == "feature-x"
     assert resp.headers["x-archive-head-commit"] == head_sha
@@ -833,8 +833,8 @@ def test_tar_gz_response_includes_repo_metadata_headers(client, tmp_path):
     )
 
     assert resp.status_code == 200, resp.text
-    assert (
-        resp.headers["x-archive-repo-remote"] == "https://github.com/example/repo.git"
+    assert resp.headers["x-archive-repo-remote"] == quote(
+        "https://github.com/example/repo.git", safe=""
     )
     assert resp.headers["x-archive-branch"] == "feature-x"
     assert resp.headers["x-archive-head-commit"] == head_sha
@@ -855,7 +855,22 @@ def test_archive_redacts_remote_credentials_in_header(client, tmp_path):
     assert resp.status_code == 200, resp.text
     remote = resp.headers["x-archive-repo-remote"]
     assert "ghp_secrettoken" not in remote
-    assert remote == "https://****@github.com/example/repo.git"
+    assert remote == quote("https://****@github.com/example/repo.git", safe="")
+
+
+def test_archive_literal_percent_is_encoded(client, tmp_path):
+    _repo_with_remote(
+        tmp_path / "repo",
+        "https://github.com/example/feature%2Frepo.git",
+    )
+
+    resp = client.get(
+        "/api/file/archive",
+        params={"path": str(tmp_path / "repo"), "format": "tar.gz"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert "%252F" in resp.headers["x-archive-repo-remote"]
 
 
 def test_archive_redacts_multiline_remote_credentials_in_header(client, tmp_path):
