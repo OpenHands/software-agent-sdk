@@ -41,7 +41,7 @@ requires_toolshield = pytest.mark.skipif(
 # ---------------------------------------------------------------------------
 
 
-class _MockAction(Action):
+class _ToolShieldTestAction(Action):
     command: str = "test"
 
 
@@ -53,7 +53,7 @@ def _make_action_event(
 ) -> ActionEvent:
     return ActionEvent(
         thought=[TextContent(text=thought)] if thought else [],
-        action=_MockAction(command=command),
+        action=_ToolShieldTestAction(command=command),
         tool_name=tool_name,
         tool_call_id="call_123",
         tool_call=MessageToolCall(
