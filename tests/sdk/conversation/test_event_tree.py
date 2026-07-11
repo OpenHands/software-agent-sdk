@@ -65,10 +65,25 @@ def test_path_to_root(leaf, expected):
 
 
 def test_path_to_root_cycle_raises():
-    # a -> b -> a : a malformed cycle must be detected, not loop forever.
-    log = _log(_event("a", parent_id="b"), _event("b", parent_id="a"))
+    # Simulate an already-corrupted persisted event, bypassing append validation.
+    log = _log(_event("a"), _event("b", parent_id="a"))
+    log._event_cache[0] = _event("a", parent_id="b")
     with pytest.raises(ValueError, match="Cycle in event tree"):
         log.path_to_root("a")
+
+
+@pytest.mark.parametrize("parent_id", ["missing", "a"], ids=["unknown", "self"])
+def test_append_rejects_parent_that_does_not_exist(parent_id):
+    log = EventLog(InMemoryFileStore())
+
+    with pytest.raises(ValueError, match="Parent event .* does not exist"):
+        log.append(_event("a", parent_id=parent_id))
+
+
+def test_append_accepts_explicit_root_parent():
+    log = _log(_event("a"), _event("b", parent_id=ROOT_PARENT_ID))
+
+    assert log[1].parent_id == ROOT_PARENT_ID
 
 
 def test_path_to_root_unknown_leaf_raises():
