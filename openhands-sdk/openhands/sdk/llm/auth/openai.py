@@ -128,18 +128,6 @@ OAUTH_TIMEOUT_SECONDS = 300  # 5 minutes
 DEVICE_CODE_TIMEOUT_SECONDS = 900  # 15 minutes
 JWKS_CACHE_TTL_SECONDS = 3600  # 1 hour
 
-# Legacy model IDs available via ChatGPT subscription (not API) before
-# codex-acp's current bare model IDs became the shared picker source.
-_LEGACY_OPENAI_CODEX_MODELS = frozenset(
-    {
-        "gpt-5.1-codex-max",
-        "gpt-5.1-codex-mini",
-        "gpt-5.2",
-        "gpt-5.2-codex",
-        "gpt-5.3-codex",
-    }
-)
-
 
 def _get_current_codex_model_ids() -> frozenset[str]:
     from openhands.sdk.settings.acp_providers import get_acp_provider
@@ -150,9 +138,9 @@ def _get_current_codex_model_ids() -> frozenset[str]:
     return frozenset(model.id for model in provider.available_models)
 
 
-# Models available via ChatGPT subscription (not API). Keep the current model
-# IDs aligned with the Codex ACP registry while preserving older saved profiles.
-OPENAI_CODEX_MODELS = _LEGACY_OPENAI_CODEX_MODELS | _get_current_codex_model_ids()
+# Models available via ChatGPT subscription (not API). Keep these aligned with
+# the current Codex ACP registry, which is the shared picker source.
+OPENAI_CODEX_MODELS = _get_current_codex_model_ids()
 
 
 # Thread-safe JWKS cache
@@ -768,7 +756,7 @@ class OpenAISubscriptionAuth:
 
     def create_llm(
         self,
-        model: str = "gpt-5.2-codex",
+        model: str = "gpt-5.5",
         credentials: OAuthCredentials | None = None,
         instructions: str | None = None,
         **llm_kwargs: Any,
@@ -852,7 +840,7 @@ class OpenAISubscriptionAuth:
 
 async def subscription_login_async(
     vendor: SupportedVendor = "openai",
-    model: str = "gpt-5.2-codex",
+    model: str = "gpt-5.5",
     force_login: bool = False,
     open_browser: bool = True,
     auth_method: OpenAIAuthMethod = "browser",
@@ -884,7 +872,7 @@ async def subscription_login_async(
     Example:
         >>> import asyncio
         >>> from openhands.sdk.llm.auth import subscription_login_async
-        >>> llm = asyncio.run(subscription_login_async(model="gpt-5.2-codex"))
+        >>> llm = asyncio.run(subscription_login_async(model="gpt-5.6"))
     """
     if vendor != "openai":
         raise ValueError(
@@ -956,7 +944,7 @@ def create_subscription_llm_from_config(llm: LLM) -> LLM:
 
 def subscription_login(
     vendor: SupportedVendor = "openai",
-    model: str = "gpt-5.2-codex",
+    model: str = "gpt-5.5",
     force_login: bool = False,
     open_browser: bool = True,
     auth_method: OpenAIAuthMethod = "browser",

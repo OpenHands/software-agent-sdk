@@ -138,9 +138,10 @@ async def list_models(
         models = sorted(set(all_models))
     else:
         filtered_models = []
+        verified_provider_models = set(VERIFIED_MODELS.get(provider, ()))
         for model in all_models:
-            model_provider, model_id, separator = _extract_model_and_provider(model)
-            if model_provider == provider:
+            model_provider, _, _ = _extract_model_and_provider(model)
+            if model_provider == provider or model in verified_provider_models:
                 filtered_models.append(model)
         models = sorted(set(filtered_models))
 
