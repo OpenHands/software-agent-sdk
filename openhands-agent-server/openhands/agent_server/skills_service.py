@@ -350,7 +350,8 @@ def load_all_skills(
     Skills are loaded from multiple sources and merged with the following
     precedence (later overrides earlier for duplicate names):
     1. Sandbox skills (lowest) - Exposed URLs from sandbox
-    2. Registered marketplace skills or public skills legacy fallback
+    2. Registered marketplace skills - Auto-load plugins from registered
+       marketplaces, layered together with the legacy public skills
     3. User skills - From ~/.openhands/skills/
     4. Organization skills - From {org}/.openhands or equivalent
     5. Project skills (highest) - From {workspace}/.openhands/skills/
@@ -367,7 +368,7 @@ def load_all_skills(
         marketplace_path: Relative marketplace JSON path for public skills.
             Pass None to load all public skills without marketplace filtering.
         registered_marketplaces: Marketplace registrations whose auto-load plugins
-            replace legacy public skills when provided.
+            are loaded in addition to legacy public skills.
 
     Returns:
         SkillLoadResult containing merged skills and source counts.
@@ -397,14 +398,13 @@ def load_all_skills(
     skill_lists.append(marketplace_skills)
 
     # 2-3. Load legacy public + user skills via helper (no project yet — org sits
-    # between). Auto-load registered marketplaces replace legacy public skills,
-    # while user skills keep their existing precedence above the public marketplace
-    # tier.
+    # between). Auto-load registered marketplaces are additive with the legacy
+    # public skills, and user skills keep their existing precedence above both.
     sdk_base = load_available_skills(
         work_dir=None,
         include_user=load_user,
         include_project=False,
-        include_public=load_public and not auto_load_registrations,
+        include_public=load_public,
         marketplace_path=marketplace_path,
     )
     sources["sdk_base"] = len(sdk_base)

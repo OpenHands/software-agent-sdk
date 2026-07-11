@@ -259,10 +259,10 @@ class TestLoadAllSkills:
 
     _PATCH_TARGET = "openhands.agent_server.skills_service.load_available_skills"
 
-    def test_load_all_skills_registered_marketplaces_replace_legacy_public(
+    def test_load_all_skills_registered_marketplaces_keep_legacy_public(
         self, tmp_path: Path
     ):
-        """Registered marketplaces load public-tier plugin skills."""
+        """Registered marketplaces load public-tier plugin skills additively."""
         marketplace_dir = _create_test_marketplace(tmp_path / "marketplace")
         user_skill = Skill(name="user-skill", content="user", trigger=None)
 
@@ -288,7 +288,7 @@ class TestLoadAllSkills:
         assert "manual-skill" in skill_names
         assert "user-skill" in skill_names
         assert result.sources["registered_marketplaces"] == 2
-        assert mock_avail.call_args_list[0].kwargs["include_public"] is False
+        assert mock_avail.call_args_list[0].kwargs["include_public"] is True
 
     def test_load_all_skills_non_auto_registered_marketplaces_keep_legacy_public(
         self, tmp_path: Path
