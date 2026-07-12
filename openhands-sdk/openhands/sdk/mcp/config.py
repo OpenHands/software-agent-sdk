@@ -28,6 +28,7 @@ from openhands.sdk.utils.pydantic_secrets import (
     resolve_expose_mode,
     serialize_secret,
     validate_secret,
+    validate_secret_dict,
 )
 
 
@@ -46,17 +47,7 @@ def _serialize_optional_secret(
 
 
 def _validate_secret_map(value: object, info: ValidationInfo) -> object:
-    if not isinstance(value, dict):
-        return value
-    validated = {}
-    for key, item in value.items():
-        if isinstance(item, str | SecretStr):
-            secret = validate_secret(item, info)
-            if secret is not None:
-                validated[key] = secret
-        else:
-            validated[key] = item
-    return validated
+    return validate_secret_dict(value, info, description="MCP env")
 
 
 def _serialize_secret_map(
