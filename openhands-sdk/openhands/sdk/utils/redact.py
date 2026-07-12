@@ -39,7 +39,7 @@ SECRET_KEY_PATTERNS = frozenset(
 
 # Keys that should have ALL nested values redacted (not just detected secret keys).
 # These typically contain environment variables or headers that may include secrets.
-REDACT_ALL_VALUES_KEYS = frozenset({"environment", "env", "headers", "acp_env"})
+REDACT_ALL_VALUES_KEYS = frozenset({"environment", "env", "headers"})
 
 # Specific URL query parameter names (lowercased) that should always be redacted,
 # in addition to any parameter matching SECRET_KEY_PATTERNS via is_secret_key().
@@ -136,6 +136,71 @@ def http_error_log_content(response: httpx.Response) -> str | dict:
     except Exception:
         body_len = len(response.text or "")
         return f"<non-JSON response body omitted ({body_len} chars)>"
+
+
+def redact_url_credentials(url: str, *, preserve_placeholders: bool = False) -> str:
+    """Redact credentials embedded in a URL (e.g. https://user:token@host).
+
+    Replaces the ``user:password`` or bare-token portion before the ``@`` with
+    ``****`` so the URL is safe for logs, error messages, and persisted state.
+    SSH URLs (``git@host``) and credential-free URLs are returned unchanged.
+
+    With ``preserve_placeholders``, a userinfo holding a ``${VAR}`` reference is
+    left intact: it is expanded from the secret registry at fetch time and is
+    not itself a secret, so masking it would break the clone. Inline credentials
+    are still masked.
+
+    Examples:
+        >>> redact_url_credentials("https://oauth2:SECRET@gitlab.com/repo.git")
+        'https://****@gitlab.com/repo.git'
+        >>> redact_url_credentials("https://github.com/owner/repo.git")
+        'https://github.com/owner/repo.git'
+        >>> redact_url_credentials("git@github.com:owner/repo.git")
+        'git@github.com:owner/repo.git'
+        >>> redact_url_credentials(
+        ...     "https://x-token-auth:${TOKEN}@host/r.git", preserve_placeholders=True
+        ... )
+        'https://x-token-auth:${TOKEN}@host/r.git'
+    """
+    match = re.match(r"^(https?://)([^@/]+)@(.+)$", url)
+    if not match:
+        return url
+    if preserve_placeholders and "${" in match.group(2):
+        return url
+    return f"{match.group(1)}****@{match.group(3)}"
+
+
+# Matches embedded ``http(s)://user:token@`` credentials anywhere within a
+# larger string. The userinfo portion excludes ``/``, ``@``, and whitespace so
+# the match stops at the first credential boundary and never spans a path
+# segment or another token.
+_EMBEDDED_URL_CREDENTIALS_RE = re.compile(r"(https?://)[^/@\s]+@", re.IGNORECASE)
+
+
+def redact_url_credentials_in_text(text: str) -> str:
+    """Redact ``https?://user:token@host`` credentials embedded in arbitrary text.
+
+    Unlike :func:`redact_url_credentials`, which is anchored and only redacts when
+    the *entire* string is a credential-bearing URL, this scans for embedded URLs
+    anywhere in a larger string (e.g. git ``stderr`` such as
+    ``fatal: unable to access 'https://oauth2:SECRET@github.com/o/r.git/': 403``)
+    and replaces each credential portion with ``****``.
+
+    Args:
+        text: Arbitrary text that may contain one or more credential-bearing URLs.
+
+    Returns:
+        The text with every embedded URL credential replaced by ``****``.
+
+    Examples:
+        >>> redact_url_credentials_in_text(
+        ...     "fatal: unable to access 'https://oauth2:SECRET@github.com/o/r.git/'"
+        ... )
+        "fatal: unable to access 'https://****@github.com/o/r.git/'"
+        >>> redact_url_credentials_in_text("no credentials here")
+        'no credentials here'
+    """
+    return _EMBEDDED_URL_CREDENTIALS_RE.sub(r"\g<1>****@", text)
 
 
 def redact_url_params(url: str) -> str:

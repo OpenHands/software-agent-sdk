@@ -17,15 +17,21 @@ from openhands.agent_server._secrets_exposure import (
 )
 from openhands.agent_server.persistence import (
     PersistedSettings,
+    get_agent_profile_store,
+    get_llm_profile_store,
     get_settings_store,
 )
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import (
     PROFILE_NAME_PATTERN,
-    LLMProfileStore,
     ProfileLimitExceeded,
 )
 from openhands.sdk.logger import get_logger
+from openhands.sdk.profiles import (
+    ProfileReferenced,
+    delete_llm_profile,
+    rename_llm_profile,
+)
 
 
 logger = get_logger(__name__)
@@ -105,36 +111,21 @@ def _has_api_key(llm: LLM) -> bool:
     return bool(llm.api_key.get_secret_value().strip())
 
 
-def _model_to_profile_name(model: str) -> str:
-    """Convert a model name to a valid profile name.
+def _set_active_profile_if_matches(
+    request: Request, old_name: str, new_name: str | None
+) -> bool:
+    config = get_config(request)
+    settings_store = get_settings_store(config)
+    settings = settings_store.load() or PersistedSettings()
+    if settings.active_profile != old_name:
+        return False
 
-    Transforms model names like "openai/gpt-4o" or "anthropic/claude-3-opus"
-    into valid profile names by:
-    - Taking just the model part after provider prefix (if present)
-    - Replacing invalid characters with dashes
-    - Truncating to max 64 characters
-    """
-    import re
+    def update_active(settings: PersistedSettings) -> PersistedSettings:
+        settings.active_profile = new_name
+        return settings
 
-    # Extract model name after provider prefix (e.g., "openai/gpt-4o" -> "gpt-4o")
-    if "/" in model:
-        model = model.rsplit("/", 1)[-1]
-
-    # Replace any character that's not alphanumeric, dash, underscore, or dot
-    # Profile names must match: ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$
-    sanitized = re.sub(r"[^A-Za-z0-9._-]", "-", model)
-
-    # Ensure it starts with alphanumeric (required by profile name pattern)
-    if sanitized and not sanitized[0].isalnum():
-        sanitized = "m" + sanitized
-
-    # Truncate to max 64 characters
-    sanitized = sanitized[:64]
-
-    # Remove trailing non-alphanumeric characters
-    sanitized = sanitized.rstrip("._-")
-
-    return sanitized or "default"
+    settings_store.update(update_active)
+    return True
 
 
 @profiles_router.get("", response_model=ProfileListResponse)
@@ -144,61 +135,18 @@ async def list_profiles(request: Request) -> ProfileListResponse:
     Returns the list of profiles along with the currently active profile name,
     if one has been activated. The active_profile tracks which LLM profile
     configuration is currently in use.
-
-    Auto-creates a profile named after the model if:
-    - No profiles exist
-    - agent_settings.llm has an API key configured
-
-    The API key check ensures we only auto-create when the user has actually
-    configured their LLM (not just relying on defaults). This allows users
-    with existing LLM configurations to see their settings as a profile
-    without manual creation.
     """
-    cipher = get_cipher(request)
     config = get_config(request)
     settings_store = get_settings_store(config)
     settings = settings_store.load() or PersistedSettings()
 
-    store = LLMProfileStore()
+    store = get_llm_profile_store()
     with _store_errors():
         summaries = store.list_summaries()
 
-    active_profile = settings.active_profile
-
-    # Auto-create profile from existing LLM settings if no profiles exist
-    # but an API key is configured. Use the model name as the profile name.
-    if not summaries and settings.llm_api_key_is_set:
-        llm = settings.agent_settings.llm
-        profile_name = _model_to_profile_name(llm.model or "default")
-        try:
-            with _store_errors():
-                store.save(
-                    profile_name,
-                    llm,
-                    include_secrets=True,
-                    cipher=cipher,
-                )
-
-            # Update settings to mark this as active
-            def set_active(s: PersistedSettings) -> PersistedSettings:
-                s.active_profile = profile_name
-                return s
-
-            settings_store.update(set_active)
-            active_profile = profile_name
-
-            # Refresh summaries to include the new profile
-            summaries = store.list_summaries()
-            logger.info(
-                f"Auto-created '{profile_name}' profile from existing LLM settings"
-            )
-        except Exception as e:
-            # Log but don't fail - auto-creation is a convenience feature
-            logger.warning(f"Failed to auto-create profile: {e}")
-
     return ProfileListResponse(
         profiles=[ProfileInfo(**s) for s in summaries],
-        active_profile=active_profile,
+        active_profile=settings.active_profile,
     )
 
 
@@ -214,7 +162,7 @@ async def get_profile(request: Request, name: ProfileName) -> ProfileDetailRespo
     expose_mode = parse_expose_secrets_header(request)
     cipher = get_cipher(request)
 
-    store = LLMProfileStore()
+    store = get_llm_profile_store()
     try:
         with _store_errors():
             llm = store.load(name, cipher=cipher)
@@ -258,7 +206,7 @@ async def save_profile(
     """
     cipher = get_cipher(request)
     llm = decrypt_incoming_llm_secrets(body.llm, cipher) if cipher else body.llm
-    store = LLMProfileStore()
+    store = get_llm_profile_store()
     try:
         with _store_errors():
             store.save(
@@ -282,11 +230,23 @@ async def save_profile(
 
 
 @profiles_router.delete("/{name}", response_model=ProfileMutationResponse)
-async def delete_profile(name: ProfileName) -> ProfileMutationResponse:
-    """Delete a saved profile (idempotent)."""
-    store = LLMProfileStore()
-    with _store_errors():
-        store.delete(name)
+async def delete_profile(
+    request: Request, name: ProfileName
+) -> ProfileMutationResponse:
+    """Delete a saved profile (idempotent).
+
+    Guarded by the agent-profile FK: returns 409 naming the referrers if any
+    ``AgentProfile`` still cites this LLM profile via ``llm_profile_ref``.
+    """
+    store = get_llm_profile_store()
+    agent_store = get_agent_profile_store()
+    try:
+        with _store_errors():
+            delete_llm_profile(agent_store, store, name)
+    except ProfileReferenced as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    if _set_active_profile_if_matches(request, name, None):
+        logger.info(f"Cleared active_profile for deleted profile '{name}'")
     logger.info(f"Deleted profile '{name}'")
     return ProfileMutationResponse(name=name, message=f"Profile '{name}' deleted")
 
@@ -303,12 +263,14 @@ async def rename_profile(
     exists. A same-name rename is a verified no-op (still 404s if missing).
 
     If the renamed profile is the currently active profile, the active_profile
-    setting is updated to the new name.
+    setting is updated to the new name. Any ``AgentProfile.llm_profile_ref``
+    citing the old name is cascaded to the new name in lock-step.
     """
-    store = LLMProfileStore()
+    store = get_llm_profile_store()
+    agent_store = get_agent_profile_store()
     try:
         with _store_errors():
-            store.rename(name, body.new_name)
+            rename_llm_profile(agent_store, store, name, body.new_name)
     except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -320,21 +282,10 @@ async def rename_profile(
             detail=f"Profile '{body.new_name}' already exists",
         )
 
-    # Update active_profile if the renamed profile was the active one
-    if name != body.new_name:
-        config = get_config(request)
-        settings_store = get_settings_store(config)
-        settings = settings_store.load() or PersistedSettings()
-
-        if settings.active_profile == name:
-            new_name = body.new_name
-
-            def update_active(s: PersistedSettings) -> PersistedSettings:
-                s.active_profile = new_name
-                return s
-
-            settings_store.update(update_active)
-            logger.info(f"Updated active_profile from '{name}' to '{new_name}'")
+    if name != body.new_name and _set_active_profile_if_matches(
+        request, name, body.new_name
+    ):
+        logger.info(f"Updated active_profile from '{name}' to '{body.new_name}'")
 
     if name == body.new_name:
         message = f"Profile '{name}' unchanged (same name)"
@@ -372,7 +323,7 @@ async def activate_profile(
     config = get_config(request)
 
     # Load the profile
-    profile_store = LLMProfileStore()
+    profile_store = get_llm_profile_store()
     try:
         with _store_errors():
             llm = profile_store.load(name, cipher=cipher)
@@ -386,14 +337,10 @@ async def activate_profile(
     settings_store = get_settings_store(config)
 
     def apply_profile(settings: PersistedSettings) -> PersistedSettings:
-        # Update the LLM configuration
-        llm_dict = llm.model_dump(mode="json", context={"expose_secrets": "plaintext"})
-        settings.update(
-            {
-                "agent_settings_diff": {"llm": llm_dict},
-                "active_profile": name,
-            }
+        settings.agent_settings = settings.agent_settings.model_copy(
+            update={"llm": llm}
         )
+        settings.active_profile = name
         return settings
 
     try:

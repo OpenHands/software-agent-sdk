@@ -6,8 +6,10 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent
+from openhands.sdk.context.condenser import LLMSummarizingCondenser, NoOpCondenser
 from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.mcp.config import MCPServer, dump_mcp_config
 from openhands.sdk.subagent.registry import (
     _reset_registry_for_tests,
     agent_definition_to_factory,
@@ -810,16 +812,16 @@ def test_end_to_end_md_to_factory_to_registry(tmp_path: Path) -> None:
     assert isinstance(agent, Agent)
 
 
-def test_agent_definition_to_factory_mcp_servers() -> None:
-    """Factory passes mcp_servers as mcp_config to the Agent."""
+def test_agent_definition_to_factory_mcp_config() -> None:
+    """Factory passes mcp_config to the Agent."""
     agent_def = AgentDefinition(
         name="mcp-agent",
         description="Agent with MCP servers",
         model="inherit",
         tools=[],
         system_prompt="",
-        mcp_servers={
-            "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]},
+        mcp_config={
+            "fetch": MCPServer(command="uvx", args=["mcp-server-fetch"]),
         },
     )
 
@@ -827,13 +829,13 @@ def test_agent_definition_to_factory_mcp_servers() -> None:
     llm = _make_test_llm()
     agent = factory(llm)
 
-    assert agent.mcp_config == {
-        "mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}
+    assert dump_mcp_config(agent.mcp_config) == {
+        "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}
     }
 
 
-def test_agent_definition_to_factory_no_mcp_servers() -> None:
-    """Factory without mcp_servers passes empty mcp_config."""
+def test_agent_definition_to_factory_no_mcp_config() -> None:
+    """Factory without mcp_config passes an empty server map."""
     agent_def = AgentDefinition(
         name="no-mcp-agent",
         model="inherit",
@@ -849,14 +851,14 @@ def test_agent_definition_to_factory_no_mcp_servers() -> None:
 
 
 def test_register_file_agents_passes_mcp_config_to_agent(tmp_path: Path) -> None:
-    """Integration: mcp_servers in markdown flows through registry to Agent."""
+    """Integration: mcp_config in markdown flows through registry to Agent."""
     agents_dir = tmp_path / ".agents" / "agents"
     agents_dir.mkdir(parents=True)
     (agents_dir / "mcp-agent.md").write_text(
         "---\n"
         "name: mcp-agent\n"
         "description: Agent with MCP servers\n"
-        "mcp_servers:\n"
+        "mcp_config:\n"
         "  fetch:\n"
         "    command: uvx\n"
         "    args: [mcp-server-fetch]\n"
@@ -875,6 +877,82 @@ def test_register_file_agents_passes_mcp_config_to_agent(tmp_path: Path) -> None
     llm = _make_test_llm()
     agent = factory.factory_func(llm)
 
-    assert agent.mcp_config == {
-        "mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}
+    assert dump_mcp_config(agent.mcp_config) == {
+        "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}
     }
+
+
+def test_factory_attaches_default_condenser() -> None:
+    """Sub-agents get a summarizing condenser by default (parity with the top-level
+    agent) so deep runs auto-compact instead of erroring on context overflow."""
+    factory = agent_definition_to_factory(AgentDefinition(name="gp"))
+    agent = factory(_make_test_llm())
+    assert isinstance(agent.condenser, LLMSummarizingCondenser)
+
+
+def test_factory_condenser_uses_distinct_usage_id() -> None:
+    """The condenser LLM must use a distinct usage_id or its tokens get deduped out
+    of conversation stats (first-write-wins on usage_id)."""
+    factory = agent_definition_to_factory(AgentDefinition(name="gp"))
+    agent = factory(_make_test_llm())
+    assert isinstance(agent.condenser, LLMSummarizingCondenser)
+    assert agent.condenser.llm.usage_id == "condenser"
+    assert agent.llm.usage_id != agent.condenser.llm.usage_id
+
+
+def test_factory_noop_condenser_disables_condensation() -> None:
+    factory = agent_definition_to_factory(
+        AgentDefinition(name="x", condenser=NoOpCondenser())
+    )
+    assert isinstance(factory(_make_test_llm()).condenser, NoOpCondenser)
+
+
+def test_factory_explicit_condenser_passthrough() -> None:
+    custom = LLMSummarizingCondenser(
+        llm=_make_test_llm().model_copy(update={"usage_id": "custom-condenser"}),
+        max_size=40,
+        keep_first=2,
+    )
+    factory = agent_definition_to_factory(AgentDefinition(name="x", condenser=custom))
+    agent = factory(_make_test_llm())
+    assert isinstance(agent.condenser, LLMSummarizingCondenser)
+    assert agent.condenser.max_size == 40
+
+
+def test_factory_explicit_condenser_fresh_per_spawn() -> None:
+    """Explicit condensers are copied per spawn so sub-agents don't share one
+    Metrics object (cross-contamination/race), and a colliding usage_id is
+    normalized so condenser tokens aren't deduped out of stats."""
+    custom = LLMSummarizingCondenser(
+        llm=_make_test_llm(),  # same usage_id as the agent -> must be normalized
+        max_size=40,
+        keep_first=2,
+    )
+    factory = agent_definition_to_factory(AgentDefinition(name="x", condenser=custom))
+    a1 = factory(_make_test_llm())
+    a2 = factory(_make_test_llm())
+
+    c1, c2 = a1.condenser, a2.condenser
+    assert isinstance(c1, LLMSummarizingCondenser)
+    assert isinstance(c2, LLMSummarizingCondenser)
+    # Fresh per spawn: distinct condenser, LLM, and Metrics objects.
+    assert c1 is not c2
+    assert c1.llm is not c2.llm
+    assert c1.llm.metrics is not c2.llm.metrics
+    # Colliding usage_id normalized; config preserved through the copy.
+    assert c1.llm.usage_id == "condenser"
+    assert c1.llm.usage_id != a1.llm.usage_id
+    assert c1.max_size == 40
+
+
+def test_factory_explicit_condenser_preserves_distinct_usage_id() -> None:
+    """A condenser usage_id that already differs from the agent's is kept."""
+    custom = LLMSummarizingCondenser(
+        llm=_make_test_llm().model_copy(update={"usage_id": "my-condenser"}),
+        max_size=40,
+        keep_first=2,
+    )
+    factory = agent_definition_to_factory(AgentDefinition(name="x", condenser=custom))
+    agent = factory(_make_test_llm())
+    assert isinstance(agent.condenser, LLMSummarizingCondenser)
+    assert agent.condenser.llm.usage_id == "my-condenser"

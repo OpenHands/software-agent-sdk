@@ -144,13 +144,24 @@ def test_end_to_end_caching_flow(tmp_path, dynamic_context, expect_dynamic):
     assert messages[1].content[-1].cache_prompt is True
 
 
-def test_gemini_prompt_caching_marks_formatted_messages():
-    """Gemini models should emit cache_control markers when caching is enabled."""
+def test_gemini_prompt_caching_emits_no_markers():
+    """REGRESSION: Gemini must not emit explicit cache_control markers.
+
+    Explicit markers freeze Gemini's cache at the static prefix and disable
+    Google's implicit caching on the growing body (~6-14x cost). No markers keeps
+    Gemini on the implicit-caching path, where the cached prefix grows.
+    """
     llm = LLM(
         model="litellm_proxy/gemini-3.1-pro-preview",
         usage_id="test",
         caching_prompt=True,
     )
+
+    # Explicit-breakpoint caching must be inactive for Gemini.
+    assert llm.is_caching_prompt_active() is False
+
+    # System (index 0) and last user message (index 3) are non-adjacent — the
+    # case that froze the LiteLLM/Vertex cache at the static prefix.
     messages = [
         Message(
             role="system",
@@ -159,19 +170,21 @@ def test_gemini_prompt_caching_marks_formatted_messages():
                 TextContent(text="Dynamic context"),
             ],
         ),
-        Message(
-            role="user",
-            content=[TextContent(text="Hello")],
-        ),
+        Message(role="user", content=[TextContent(text="First question")]),
+        Message(role="assistant", content=[TextContent(text="First answer")]),
+        Message(role="user", content=[TextContent(text="Second question")]),
     ]
 
     formatted_messages = llm.format_messages_for_llm(messages)
 
-    system_content = formatted_messages[0]["content"]
-    user_content = formatted_messages[1]["content"]
-    assert system_content[0]["cache_control"] == {"type": "ephemeral"}
-    assert "cache_control" not in system_content[1]
-    assert user_content[-1]["cache_control"] == {"type": "ephemeral"}
+    # No cache_control marker anywhere in the formatted payload.
+    for message in formatted_messages:
+        assert "cache_control" not in message
+        content = message.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    assert "cache_control" not in block
 
 
 @pytest.mark.parametrize(

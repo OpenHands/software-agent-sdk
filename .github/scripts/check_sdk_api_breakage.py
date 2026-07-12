@@ -89,6 +89,17 @@ class FieldDefaultChange:
 DEPRECATION_RUNWAY_MINOR_RELEASES = 5
 FIELD_DEFAULT_CHANGE_REPORT_ENV = "SDK_API_BREAKAGE_REPORT_PATH"
 
+_ACCEPTED_REMOVED_MEMBERS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("openhands.workspace", "DockerDevWorkspace.mount_dir"),
+        ("openhands.workspace", "DockerWorkspace.mount_dir"),
+    }
+)
+
+
+def _is_accepted_removed_member(package: str, feature: str) -> bool:
+    return (package, feature) in _ACCEPTED_REMOVED_MEMBERS
+
 
 PACKAGES: tuple[PackageConfig, ...] = (
     PackageConfig(
@@ -120,6 +131,39 @@ def _get_base_ref() -> str | None:
         return None
     base_ref = base_ref.strip()
     return base_ref or None
+
+
+def _has_package_source_changes(repo_root: str, base_ref: str) -> bool:
+    """Return True when package source changed since base_ref, or if diffing fails."""
+
+    changed_files: list[str] | None = None
+    for candidate in _git_ref_candidates(base_ref):
+        result = subprocess.run(
+            ["git", "diff", "--name-only", f"{candidate}...HEAD"],
+            cwd=repo_root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            changed_files = result.stdout.splitlines()
+            break
+
+    if changed_files is None:
+        print(
+            f"::warning title=API breakage::Unable to diff against {base_ref}; "
+            "running breakage checks"
+        )
+        return True
+
+    package_prefixes = tuple(f"{cfg.source_dir}/" for cfg in PACKAGES)
+    package_pyprojects = {f"{cfg.source_dir}/pyproject.toml" for cfg in PACKAGES}
+    for changed_file in changed_files:
+        if changed_file in package_pyprojects or changed_file.startswith(
+            package_prefixes
+        ):
+            return True
+    return False
 
 
 def read_version_from_pyproject(path: str) -> str:
@@ -507,10 +551,13 @@ def _filter_field_metadata_kwargs(call: ast.Call) -> ast.Call:
     )
 
 
+FIELD_DEFAULT_KWARGS = ("default", "default_factory")
+
+
 def _field_default_node(call: ast.Call) -> ast.AST | None:
-    """Return the AST node representing a ``Field`` default value."""
+    """Return the AST node representing a ``Field`` default value/factory."""
     for kw in call.keywords:
-        if kw.arg == "default":
+        if kw.arg in FIELD_DEFAULT_KWARGS:
             return kw.value
     if call.args:
         return call.args[0]
@@ -518,19 +565,19 @@ def _field_default_node(call: ast.Call) -> ast.AST | None:
 
 
 def _remove_field_default(call: ast.Call) -> ast.Call:
-    """Return a copy of a ``Field(...)`` call without its default value."""
+    """Return a copy of a ``Field(...)`` call without its default value/factory."""
     args = list(call.args)
     if args:
         args = args[1:]
     return ast.Call(
         func=call.func,
         args=args,
-        keywords=[kw for kw in call.keywords if kw.arg != "default"],
+        keywords=[kw for kw in call.keywords if kw.arg not in FIELD_DEFAULT_KWARGS],
     )
 
 
 def _field_default_repr(value: object) -> str | None:
-    """Return the string form of a ``Field`` default value, if present."""
+    """Return the string form of a ``Field`` default value/factory, if present."""
     call = _parse_field_call(value)
     if call is None:
         return None
@@ -730,17 +777,28 @@ def _collect_breakages_pairs(
                 if field_defaults_only:
                     continue
 
+                parent = None
+                feature = None
+                if br.kind == BreakageKind.OBJECT_REMOVED:
+                    parent = getattr(obj, "parent", None)
+                    if getattr(parent, "kind", None) == Kind.CLASS:
+                        feature = f"{parent.name}.{obj.name}"
+                        if _is_accepted_removed_member(package, feature):
+                            if emit_diagnostics:
+                                print(
+                                    f"::notice title={title}::Accepted removal of "
+                                    f"{feature}. Maintainers explicitly accepted "
+                                    "this long-deprecated API break in PR #3822, "
+                                    "and that PR is labeled release-note-required."
+                                )
+                            continue
+
                 print(br.explain(style=ExplanationStyle.GITHUB))
                 breakages.append(br)
 
-                if br.kind != BreakageKind.OBJECT_REMOVED:
+                if feature is None or parent is None:
                     continue
 
-                parent = getattr(obj, "parent", None)
-                if getattr(parent, "kind", None) != Kind.CLASS:
-                    continue
-
-                feature = f"{parent.name}.{obj.name}"
                 errors = _deprecation_schedule_errors(
                     feature=feature,
                     metadata=_member_deprecation_metadata(parent, obj.name, deprecated),
@@ -1352,13 +1410,20 @@ def main() -> int:
     """Main entry point for API breakage detection."""
     repo_root = os.getcwd()
     rc = _check_acp_version_bump(repo_root)
+    base_ref = _get_base_ref()
+    if base_ref and not _has_package_source_changes(repo_root, base_ref):
+        print(
+            "::notice title=API breakage::No package source changes since "
+            f"{base_ref}; skipping SDK API breakage checks"
+        )
+        _write_field_default_change_report([], field_default_changes_since_base=[])
+        return rc
 
     ensure_griffe()
     import griffe
 
     field_default_changes: list[FieldDefaultChange] = []
     field_default_changes_since_base: list[FieldDefaultChange] | None = []
-    base_ref = _get_base_ref()
     for cfg in PACKAGES:
         print(f"\n{'=' * 60}")
         print(f"Checking {cfg.distribution} ({cfg.package})")

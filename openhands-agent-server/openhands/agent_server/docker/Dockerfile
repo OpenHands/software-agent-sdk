@@ -8,6 +8,11 @@ ARG USERNAME=openhands
 ARG UID=10001
 ARG GID=10001
 ARG PORT=8000
+# Opt-in build flag for the Vertex AI extra (`openhands-sdk[vertex]`). Off by
+# default to keep the published image lean. Pass `--build-arg ENABLE_VERTEX=1`
+# to bundle google-cloud-aiplatform so the resulting binary supports
+# `vertex_ai/*` partner models (MiniMax, Qwen, Kimi MaaS endpoints).
+ARG ENABLE_VERTEX=0
 
 ####################################################################################
 # Builder (source mode)
@@ -26,7 +31,7 @@ ARG PORT=8000
 # See OpenHands/software-agent-sdk#2761.
 ####################################################################################
 FROM python:3.13-bookworm AS builder
-ARG USERNAME UID GID
+ARG USERNAME UID GID ENABLE_VERTEX
 ENV UV_PROJECT_ENVIRONMENT=/agent-server/.venv
 ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
 
@@ -48,9 +53,11 @@ COPY --chown=${USERNAME}:${USERNAME} openhands-tools ./openhands-tools
 COPY --chown=${USERNAME}:${USERNAME} openhands-workspace ./openhands-workspace
 COPY --chown=${USERNAME}:${USERNAME} openhands-agent-server ./openhands-agent-server
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
+    EXTRA_FLAGS=""; \
+    if [ "$ENABLE_VERTEX" = "1" ]; then EXTRA_FLAGS="--extra vertex"; fi; \
     uv python install 3.13 && \
     uv venv --python-preference only-managed --python 3.13 .venv && \
-    uv sync --frozen --no-editable --managed-python --extra boto3 && \
+    uv sync --frozen --no-editable --managed-python --extra boto3 $EXTRA_FLAGS && \
     readlink -f .venv/bin/python | grep -q '^/agent-server/uv-managed-python/'
 
 ####################################################################################
@@ -58,11 +65,13 @@ RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
 # We run pyinstaller here to produce openhands-agent-server
 ####################################################################################
 FROM builder AS binary-builder
-ARG USERNAME UID GID
+ARG USERNAME UID GID ENABLE_VERTEX
 
 # We need --dev for pyinstaller
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
-    uv sync --frozen --dev --no-editable --extra boto3
+    EXTRA_FLAGS=""; \
+    if [ "$ENABLE_VERTEX" = "1" ]; then EXTRA_FLAGS="--extra vertex"; fi; \
+    uv sync --frozen --dev --no-editable --extra boto3 $EXTRA_FLAGS
 
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
     uv run pyinstaller openhands-agent-server/openhands/agent_server/agent-server.spec
@@ -171,9 +180,9 @@ RUN set -ux; \
          && "$ACP_NODE_DIR/bin/node" --version; then \
         PATH="$ACP_NODE_DIR/bin:$PATH"; \
         if "$ACP_NODE_DIR/bin/npm" install -g \
-            @agentclientprotocol/claude-agent-acp@0.30.0 \
-            @zed-industries/codex-acp@0.15.0 \
-            @google/gemini-cli@0.38.0; then \
+            @agentclientprotocol/claude-agent-acp@0.44.0 \
+            @agentclientprotocol/codex-acp@1.1.2 \
+            @google/gemini-cli@0.46.0; then \
           # Create wrappers in /usr/local/bin that prepend ACP's Node 22 to PATH.
           # This ensures the ACP binary's #!/usr/bin/env node shebang resolves
           # to Node 22, while the repo's own node (NVM/system) stays untouched

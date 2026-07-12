@@ -28,12 +28,16 @@ from openhands.sdk.llm.message import (  # re-export
     TextContent as TextContent,
 )
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot
+from openhands.sdk.profiles.agent_profile import (
+    LaunchedAgentProfile as LaunchedAgentProfile,
+)
 from openhands.sdk.secret import SecretSource
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
 )
+from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.utils import OpenHandsUUID, utc_now
 from openhands.sdk.utils.models import (
     DiscriminatedUnionMixin,
@@ -77,6 +81,10 @@ class StoredConversation(StartConversationRequest):
     Extends StartConversationRequest with server-assigned fields.
     """
 
+    # agent_profile_id is resolved into launched_agent_profile at creation; exclude from
+    # the persistence payload so it does not re-appear in meta.json.
+    agent_profile_id: UUID | None = Field(default=None, exclude=True)
+
     id: OpenHandsUUID
     title: str | None = Field(
         default=None, description="User-defined title for the conversation"
@@ -84,6 +92,30 @@ class StoredConversation(StartConversationRequest):
     metrics: MetricsSnapshot | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+    forked_from_conversation_id: OpenHandsUUID | None = Field(
+        default=None,
+        description=(
+            "ID of the conversation this one was forked from. ``None`` for "
+            "conversations created directly (not via fork)."
+        ),
+    )
+    forked_from_event_id: str | None = Field(
+        default=None,
+        description=(
+            "The ``from_event_id`` branch point this conversation was forked at. "
+            "``None`` for conversations not created via fork, or for "
+            "whole-conversation forks (no branch slice)."
+        ),
+    )
+    launched_agent_profile: LaunchedAgentProfile | None = Field(
+        default=None,
+        description=(
+            "Provenance snapshot of the agent profile that launched this "
+            "conversation. Set at creation when `agent_profile_id` is supplied; "
+            "``None`` for conversations started directly with `agent` or "
+            "`agent_settings`."
+        ),
+    )
 
 
 class _ConversationInfoBase(BaseModel):
@@ -149,6 +181,15 @@ class _ConversationInfoBase(BaseModel):
             "hook-blocked checks are skipped (legacy conversations)."
         ),
     )
+    leaf_event_id: str | None = Field(
+        default=None,
+        description=(
+            "HEAD of the conversation tree: the parent of the next appended "
+            "event. ``None`` means an empty tree (or, for pre-feature "
+            "conversations, the linear tail). Moving it via ``navigate`` "
+            "re-roots the active branch the agent runs on."
+        ),
+    )
     stats: ConversationStats = Field(
         default_factory=ConversationStats,
         description="Conversation statistics for tracking LLM metrics",
@@ -177,6 +218,22 @@ class _ConversationInfoBase(BaseModel):
     metrics: MetricsSnapshot | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+    # Plain ``UUID`` (not ``OpenHandsUUID``) so it JSON-serializes dashed, exactly
+    # like the ``id`` field above — clients must be able to correlate the two.
+    forked_from_conversation_id: UUID | None = Field(
+        default=None,
+        description=(
+            "ID of the conversation this one was forked from. ``None`` for "
+            "conversations created directly (not via fork)."
+        ),
+    )
+    forked_from_event_id: str | None = Field(
+        default=None,
+        description=(
+            "Event ID this conversation was forked at. ``None`` for non-forked "
+            "conversations or whole-conversation forks."
+        ),
+    )
 
     tags: ConversationTags = Field(
         default_factory=dict,
@@ -222,15 +279,25 @@ class _ConversationInfoBase(BaseModel):
     supports_runtime_model_switch: bool = Field(
         default=False,
         description=(
-            "Whether a live, mid-conversation model switch (via "
-            "``session/set_model``) will be attempted for this conversation — "
+            "Whether a live, mid-conversation model switch will be attempted "
+            "for this conversation — "
             "tells the inline picker whether to offer a live-switch control. "
             "Mirrors the SDK's switch gate: ``True`` for known switch-capable "
-            "providers; ``True`` for unknown/custom ACP servers too, since "
-            "OpenHands attempts the switch optimistically rather than refusing "
-            "(a rejection then surfaces as an error). ``False`` for native "
+            "providers; ``False`` for unknown/custom ACP servers because their "
+            "generic config writes are not guaranteed live-switch primitives. "
+            "``False`` for native "
             "OpenHands agents, for a known provider that declares no support, "
             "and before the conversation has started a session."
+        ),
+    )
+    launched_agent_profile: LaunchedAgentProfile | None = Field(
+        default=None,
+        description=(
+            "Provenance snapshot of the agent profile that launched this "
+            "conversation. Set at creation when the conversation was started via "
+            "``agent_profile_id``; ``None`` for conversations started directly "
+            "with ``agent`` or ``agent_settings``. Clients use this to identify "
+            "which agent profile is current without fragile settings-comparison."
         ),
     )
 
@@ -241,6 +308,15 @@ class ConversationInfo(_ConversationInfoBase):
     agent: AgentBase = Field(
         ...,
         description="The agent running in the conversation.",
+    )
+    client_tools: list[ClientToolSpec] = Field(
+        default_factory=list,
+        description=(
+            "Client-defined tool specs registered for this conversation. "
+            "Surfaced so that a client re-attaching by conversation id can "
+            "register the dynamic ClientAction_* action types before syncing "
+            "persisted events, avoiding 'Unknown kind' deserialization errors."
+        ),
     )
 
 
@@ -432,6 +508,27 @@ class ForkConversationRequest(BaseModel):
             "If false, metrics are copied from the source."
         ),
     )
+    from_event_id: str | None = Field(
+        default=None,
+        description=(
+            "If set, fork only the branch up to and including this event and "
+            "set the fork's HEAD there. If null (default), copy the whole "
+            "conversation."
+        ),
+    )
+
+
+class NavigateConversationRequest(BaseModel):
+    """Payload to move a conversation's HEAD to an existing event."""
+
+    event_id: str | None = Field(
+        default=None,
+        description=(
+            "Event to make the new HEAD, re-rooting the active branch the agent "
+            "runs on. All branches stay on disk; this creates no new "
+            "conversation. ``None`` selects the empty tree."
+        ),
+    )
 
 
 class GenerateTitleRequest(BaseModel):
@@ -461,6 +558,15 @@ class AskAgentResponse(BaseModel):
     """Response containing the agent's answer."""
 
     response: str = Field(description="The agent's response to the question")
+
+
+class StartGoalRequest(BaseModel):
+    """Payload to start a ``/goal`` loop inside a conversation."""
+
+    objective: str = Field(description="The goal objective to pursue and audit.")
+    max_iterations: int = Field(
+        default=10, ge=1, description="Maximum audit rounds before giving up."
+    )
 
 
 class AgentResponseResult(BaseModel):

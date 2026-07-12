@@ -8,10 +8,13 @@ import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from filelock import FileLock, Timeout
 
+from openhands.sdk.llm.utils.openhands_provider import (
+    canonicalize_openhands_llm_payload,
+)
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
@@ -34,6 +37,33 @@ logger = get_logger(__name__)
 
 class ProfileLimitExceeded(Exception):
     """Raised when saving would exceed the configured profile limit."""
+
+
+@runtime_checkable
+class LLMProfileLoader(Protocol):
+    """Minimal load-only contract consumed by ``resolve_agent_profile``.
+
+    The resolver reads an LLM profile by name via ``load`` only, so an alternate
+    backend — e.g. a cloud adapter over the ``org.llm_profiles`` column — need
+    implement just this, not the full file-backed :class:`LLMProfileStore`.
+    """
+
+    def load(self, name: str, *, cipher: Cipher | None = ...) -> LLM: ...
+
+
+@runtime_checkable
+class LLMProfileMutator(Protocol):
+    """Delete/rename contract used by the cross-store FK helpers.
+
+    ``profile_refs.delete_llm_profile`` / ``rename_llm_profile`` touch the LLM
+    store only through ``delete`` / ``rename``, so a cloud adapter over
+    ``org.llm_profiles`` can drive the same guarded FK lifecycle without being a
+    full :class:`LLMProfileStore`.
+    """
+
+    def delete(self, name: str) -> None: ...
+
+    def rename(self, old_name: str, new_name: str) -> None: ...
 
 
 class LLMProfileStore:
@@ -277,6 +307,7 @@ class LLMProfileStore:
                         f"[Profile Store] Skipping non-dict profile {name!r}"
                     )
                     continue
+                data = canonicalize_openhands_llm_payload(data)
                 api_key = data.get("api_key")
                 api_key_set = (
                     isinstance(api_key, str)

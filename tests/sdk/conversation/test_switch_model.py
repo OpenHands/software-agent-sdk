@@ -10,19 +10,29 @@ from openhands.sdk import LLM, LocalConversation
 from openhands.sdk.agent import Agent
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.context.condenser import LLMSummarizingCondenser
+from openhands.sdk.context.view import View
 from openhands.sdk.conversation.persistence_const import BASE_STATE
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm import Message, MessageToolCall, TextContent, llm_profile_store
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.utils.cipher import Cipher
+from tests.conftest import create_mock_litellm_response
 
 
 def _make_llm(model: str, usage_id: str) -> LLM:
     return TestLLM.from_messages([], model=model, usage_id=usage_id)
+
+
+def _message_event(content: str) -> MessageEvent:
+    return MessageEvent(
+        llm_message=Message(role="user", content=[TextContent(text=content)]),
+        source="user",
+    )
 
 
 @pytest.fixture()
@@ -78,6 +88,57 @@ def _make_acp_conversation(tmp_path) -> tuple[LocalConversation, ACPAgent]:
         persistence_dir=str(tmp_path / "persist"),
     )
     return conv, agent
+
+
+def _make_pre_session_acp_conversation(tmp_path) -> tuple[LocalConversation, ACPAgent]:
+    """An ACP conversation created but not yet ``run()``.
+
+    No ``_conn`` / ``_session_id`` / ``_executor`` is wired, so there is no live
+    session — ``switch_acp_model`` must defer rather than issue a protocol call.
+    """
+    agent = ACPAgent(acp_command=["echo", "test"], acp_model="model-a")
+    agent._agent_name = "codex-acp"
+    conv = LocalConversation(
+        agent=agent,
+        workspace=tmp_path,
+        persistence_dir=str(tmp_path / "persist"),
+    )
+    return conv, agent
+
+
+def test_switch_acp_model_before_session_defers_and_persists(tmp_path):
+    """A pre-``run()`` switch persists the new model without raising.
+
+    Regression for #3763: ``switch_acp_model`` used to call ``set_acp_model``
+    first, which raised ``RuntimeError`` before the first ``run()``, so the
+    persist block never ran and the new model was silently lost — the first
+    session kept the construction-time ``acp_model``. With no live session the
+    live call must be skipped and the value persisted, so session creation on
+    the first ``run()`` honors the switched model.
+    """
+    conv, agent = _make_pre_session_acp_conversation(tmp_path)
+    assert not agent.has_live_acp_session
+
+    conv.switch_acp_model("model-b")
+
+    # The authoritative model moved even though no live session was touched.
+    switched = conv.agent
+    assert isinstance(switched, ACPAgent)
+    assert switched.acp_model == "model-b"
+    assert not switched.has_live_acp_session
+    assert isinstance(conv.state.agent, ACPAgent)
+    assert conv.state.agent.acp_model == "model-b"
+    # Cold-read hint updated for the chip/picker before any session exists.
+    assert conv.state.agent_state["acp_current_model_id"] == "model-b"
+
+    # Survives a restart before the first run: base_state.json carries the
+    # switched model, and model_post_init re-derives the sentinel LLM from it,
+    # so the first session starts on model-b (acceptance criterion #3).
+    base_text = conv.state._fs.read(BASE_STATE)
+    reloaded = ConversationState.model_validate(json.loads(base_text))
+    assert isinstance(reloaded.agent, ACPAgent)
+    assert reloaded.agent.acp_model == "model-b"
+    assert reloaded.agent.llm.model == "model-b"
 
 
 def test_switch_acp_model_persists_authoritative_model(tmp_path):
@@ -233,17 +294,17 @@ def test_switch_profile_preserves_prompt_cache_key(profile_store):
     """Regression test for #2918: switch_profile must repin _prompt_cache_key."""
     conv = _make_conversation()
     expected = str(conv.id)
-    assert conv.agent.llm._prompt_cache_key == expected
+    assert conv.agent.llm._call_context.prompt_cache_key == expected
 
     conv.switch_profile("fast")
-    assert conv.agent.llm._prompt_cache_key == expected
+    assert conv.agent.llm._call_context.prompt_cache_key == expected
 
     conv.switch_profile("slow")
-    assert conv.agent.llm._prompt_cache_key == expected
+    assert conv.agent.llm._call_context.prompt_cache_key == expected
 
     # Switching back to a cached registry entry must still carry the key.
     conv.switch_profile("fast")
-    assert conv.agent.llm._prompt_cache_key == expected
+    assert conv.agent.llm._call_context.prompt_cache_key == expected
 
 
 def test_switch_then_send_message(profile_store):
@@ -283,7 +344,152 @@ def test_switch_llm_swaps_when_store_empty(empty_profile_store):
     assert conv.agent.llm.usage_id == "caller-supplied-id"
     assert conv.llm_registry.get("caller-supplied-id").model == "inline-model"
     # Cache-key must be repinned (regression guard for #2918 on the new path).
-    assert conv.agent.llm._prompt_cache_key == str(conv.id)
+    assert conv.agent.llm._call_context.prompt_cache_key == str(conv.id)
+
+
+def test_switch_llm_refreshes_llm_condenser_credentials(
+    empty_profile_store, tmp_path, monkeypatch
+):
+    """A mid-session LLM switch must also refresh the default condenser LLM.
+
+    The condenser owns a separate copy of the agent LLM. If the agent LLM is
+    switched but that copy is left behind, normal turns can keep working while
+    the next condensation request still calls the old no-credential model.
+    """
+    initial_llm = LLM(model="litellm_proxy/old-model", usage_id="default")
+    initial_condenser_llm = initial_llm.model_copy(update={"usage_id": "condenser"})
+    initial_condenser_llm.reset_metrics()
+    condenser = LLMSummarizingCondenser(
+        llm=initial_condenser_llm,
+        max_size=100,
+        keep_first=2,
+    )
+    conv = LocalConversation(
+        agent=Agent(llm=initial_llm, condenser=condenser, tools=[]),
+        workspace=tmp_path,
+    )
+    conv._ensure_agent_ready()
+
+    switched_llm = LLM(
+        model="litellm_proxy/new-model",
+        api_key=SecretStr("new-test-key"),
+        usage_id="profile:new",
+    )
+
+    conv.switch_llm(switched_llm)
+
+    assert conv.agent.llm.model == "litellm_proxy/new-model"
+    assert isinstance(conv.agent.condenser, LLMSummarizingCondenser)
+    assert isinstance(conv.state.agent.condenser, LLMSummarizingCondenser)
+
+    condenser_llm = conv.agent.condenser.llm
+    state_condenser_llm = conv.state.agent.condenser.llm
+    assert condenser_llm is not initial_condenser_llm
+    assert condenser_llm.model == "litellm_proxy/new-model"
+    assert condenser_llm.usage_id == "condenser"
+    assert isinstance(condenser_llm.api_key, SecretStr)
+    assert condenser_llm.api_key.get_secret_value() == "new-test-key"
+    assert state_condenser_llm.model == condenser_llm.model
+    assert state_condenser_llm.api_key == condenser_llm.api_key
+    assert condenser_llm.metrics is not conv.agent.llm.metrics
+    assert condenser_llm._telemetry is not None
+
+    async def _fake_acompletion(**kwargs):
+        return create_mock_litellm_response(
+            content="condensed summary",
+            model=kwargs["model"],
+        )
+
+    monkeypatch.setattr("openhands.sdk.llm.llm.litellm_acompletion", _fake_acompletion)
+
+    response = asyncio.run(
+        condenser_llm.acompletion(
+            [Message(role="user", content=[TextContent(text="summarize")])]
+        )
+    )
+
+    content = response.message.content[0]
+    assert isinstance(content, TextContent)
+    assert content.text == "condensed summary"
+
+
+def test_switch_llm_condenser_can_generate_condensation(
+    empty_profile_store, tmp_path, monkeypatch
+):
+    initial_llm = LLM(model="litellm_proxy/old-model", usage_id="default")
+    condenser = LLMSummarizingCondenser(
+        llm=initial_llm.model_copy(update={"usage_id": "condenser"}),
+        max_size=6,
+        keep_first=1,
+    )
+    conv = LocalConversation(
+        agent=Agent(llm=initial_llm, condenser=condenser, tools=[]),
+        workspace=tmp_path,
+    )
+    conv._ensure_agent_ready()
+
+    switched_llm = LLM(
+        model="litellm_proxy/new-model",
+        api_key=SecretStr("new-test-key"),
+        usage_id="profile:new",
+    )
+    conv.switch_llm(switched_llm)
+
+    def _fake_completion(**kwargs):
+        return create_mock_litellm_response(
+            content="condensed summary",
+            model=kwargs["model"],
+        )
+
+    monkeypatch.setattr("openhands.sdk.llm.llm.litellm_completion", _fake_completion)
+
+    assert isinstance(conv.agent.condenser, LLMSummarizingCondenser)
+    condensation = conv.agent.condenser.get_condensation(
+        View.from_events([_message_event(f"event {i}") for i in range(12)]),
+        agent_llm=conv.agent.llm,
+    )
+
+    assert condensation.summary == "condensed summary"
+    assert len(condensation.forgotten_event_ids) > 0
+
+
+def test_switch_llm_preserves_independent_condenser_profile(
+    empty_profile_store, tmp_path
+):
+    initial_llm = LLM(
+        model="litellm_proxy/agent-old",
+        api_key=SecretStr("agent-old-key"),
+        usage_id="default",
+    )
+    independent_condenser_llm = LLM(
+        model="litellm_proxy/condenser-profile",
+        api_key=SecretStr("condenser-key"),
+        usage_id="condenser",
+    )
+    condenser = LLMSummarizingCondenser(
+        llm=independent_condenser_llm,
+        max_size=100,
+        keep_first=2,
+    )
+    conv = LocalConversation(
+        agent=Agent(llm=initial_llm, condenser=condenser, tools=[]),
+        workspace=tmp_path,
+    )
+    conv._ensure_agent_ready()
+
+    conv.switch_llm(
+        LLM(
+            model="litellm_proxy/agent-new",
+            api_key=SecretStr("agent-new-key"),
+            usage_id="profile:new",
+        )
+    )
+
+    assert isinstance(conv.agent.condenser, LLMSummarizingCondenser)
+    condenser_llm = conv.agent.condenser.llm
+    assert condenser_llm.model == "litellm_proxy/condenser-profile"
+    assert isinstance(condenser_llm.api_key, SecretStr)
+    assert condenser_llm.api_key.get_secret_value() == "condenser-key"
 
 
 def test_switch_llm_then_send_message(empty_profile_store):
@@ -463,3 +669,55 @@ def test_switch_llm_tool_during_arun_does_not_deadlock(profile_store, tmp_path):
     assert conv.state.execution_status == ConversationExecutionStatus.FINISHED
     # The switch took effect: the agent now carries the 'fast' profile's model.
     assert conv.agent.llm.model == "fast-model"
+
+
+def test_switch_llm_to_subscription_profile_disables_condenser(
+    monkeypatch, empty_profile_store
+):
+    import openhands.sdk.conversation.impl.local_conversation as local_conversation
+
+    condenser = LLMSummarizingCondenser(
+        llm=_make_llm("condenser-model", "condenser"),
+        max_size=100,
+        keep_first=5,
+    )
+    conv = LocalConversation(
+        agent=Agent(
+            llm=_make_llm("default-model", "test-llm"),
+            tools=[],
+            condenser=condenser,
+        ),
+        workspace=Path.cwd(),
+    )
+    assert conv.agent.condenser is condenser
+
+    def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
+        runtime = llm.model_copy()
+        if llm.auth_type == "subscription":
+            runtime._is_subscription = True
+        return runtime
+
+    monkeypatch.setattr(
+        local_conversation,
+        "create_subscription_llm_from_config",
+        fake_create_subscription_llm_from_config,
+    )
+
+    conv.switch_llm(
+        LLM(
+            model="gpt-5.2-codex",
+            usage_id="profile:codex",
+            auth_type="subscription",
+            subscription_vendor="openai",
+        )
+    )
+
+    assert conv.agent.llm.is_subscription
+    assert conv.agent.condenser is None
+    assert conv.state.agent.condenser is None
+
+    conv.switch_llm(_make_llm("regular-model", "regular"))
+
+    assert conv.agent.llm.model == "regular-model"
+    assert conv.agent.condenser is condenser
+    assert conv.state.agent.condenser is condenser

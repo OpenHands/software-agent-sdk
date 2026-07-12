@@ -29,10 +29,10 @@ _TARGET_DIRECTORIES = (
     EXAMPLES_ROOT / "01_standalone_sdk" / "33_hooks",
     EXAMPLES_ROOT / "01_standalone_sdk" / "37_llm_profile_store",
     EXAMPLES_ROOT / "01_standalone_sdk" / "51_agent_hooks",
-    EXAMPLES_ROOT / "01_standalone_sdk" / "43_mixed_marketplace_skills",
     EXAMPLES_ROOT / "02_remote_agent_server" / "06_custom_tool",
     EXAMPLES_ROOT / "05_skills_and_plugins" / "01_loading_agentskills",
     EXAMPLES_ROOT / "05_skills_and_plugins" / "02_loading_plugins",
+    EXAMPLES_ROOT / "05_skills_and_plugins" / "04_mixed_marketplace_skills",
 )
 
 # LLM-specific examples that require model overrides
@@ -101,6 +101,12 @@ def test_directory_example_is_discovered() -> None:
     assert (
         EXAMPLES_ROOT / "01_standalone_sdk" / "51_agent_hooks" / "main.py"
     ) in EXAMPLES
+    assert (
+        EXAMPLES_ROOT
+        / "05_skills_and_plugins"
+        / "04_mixed_marketplace_skills"
+        / "main.py"
+    ) in EXAMPLES
 
 
 @pytest.mark.parametrize("example_path", EXAMPLES, ids=_normalize_path)
@@ -108,6 +114,7 @@ def test_example_scripts(
     example_path: Path,
     examples_enabled: bool,
     examples_results_dir: Path,
+    tmp_path: Path,
 ) -> None:
     if not examples_enabled:
         pytest.skip("Use --run-examples to execute example scripts.")
@@ -123,6 +130,11 @@ def test_example_scripts(
     env.setdefault("PYTHONUNBUFFERED", "1")
     # Windows pipes default to the active code page; examples may print model text.
     env.setdefault("PYTHONIOENCODING", "utf-8")
+    # Give each example subprocess its own tmux socket directory so that parallel
+    # workers cannot tear down a tmux server shared via the default socket path
+    # (openhands/tools/terminal uses a fixed socket name). tmux creates its own
+    # tmux-<uid> subdirectory inside TMUX_TMPDIR.
+    env["TMUX_TMPDIR"] = str(tmp_path)
     # Apply model overrides for certain examples requiring provider-specific models
     overrides = _LLM_SPECIFIC_EXAMPLES.get(_normalize_path(example_path))
     if overrides:

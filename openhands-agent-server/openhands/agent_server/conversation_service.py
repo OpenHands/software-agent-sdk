@@ -1,18 +1,22 @@
 import asyncio
 import importlib
 import logging
+from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
 
 import httpx
 from pydantic import BaseModel
 
 from openhands.agent_server.config import Config, WebhookSpec
-from openhands.agent_server.conversation_lease import ConversationLeaseHeldError
+from openhands.agent_server.conversation_lease import (
+    DEFAULT_LEASE_TTL_SECONDS,
+    ConversationLeaseHeldError,
+)
 from openhands.agent_server.event_service import (
     LEASE_RENEW_INTERVAL_SECONDS,
     EventService,
@@ -21,12 +25,14 @@ from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
+    LaunchedAgentProfile,
     StartConversationRequest,
     StoredConversation,
     UpdateConversationRequest,
 )
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
+from openhands.agent_server.skills_service import discover_profile_skills
 from openhands.agent_server.utils import safe_rmtree, utc_now
 from openhands.sdk import LLM, AgentContext, Event, Message
 from openhands.sdk.agent.base import AgentBase
@@ -42,11 +48,15 @@ from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
+from openhands.sdk.mcp.utils import MCPToolProvider
+from openhands.sdk.tool import BROWSER_TOOL_NAME, Tool, is_tool_usable
+from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 
 
 if TYPE_CHECKING:
+    from openhands.sdk.mcp.config import MCPServer
     from openhands.sdk.subagent.schema import AgentDefinition
 
 CONVERSATION_WORKTREE_ROOT = Path("/tmp/conversation-worktrees")
@@ -239,6 +249,103 @@ def _prepare_request_workspace(
 logger = logging.getLogger(__name__)
 
 
+def _resolve_agent_from_profile(
+    profile_id: "UUID",
+    cipher: "Cipher | None",
+    mcp_config: "dict[str, MCPServer]",
+) -> "tuple[AgentBase, LaunchedAgentProfile]":
+    """Load and resolve an agent profile by id, returning the built agent + provenance.
+
+    Runs synchronously (call via ``asyncio.to_thread`` from async context).
+
+    Args:
+        mcp_config: Global MCP servers already loaded by the caller using the
+            server's cipher.  Passed explicitly so this free function never
+            touches the settings-store singleton (which may not have been
+            initialised with the correct cipher yet).
+
+    Raises:
+        ProfileNotFound: No stored profile has ``profile_id``.
+        DanglingMcpServerRef: A referenced MCP server is absent from the global config.
+        ValueError: Profile load or settings validation failure.
+    """
+    from openhands.agent_server.persistence.store import (
+        get_agent_profile_store,
+        get_llm_profile_store,
+    )
+    from openhands.sdk.profiles.resolver import ProfileNotFound, resolve_agent_profile
+    from openhands.sdk.settings.model import OpenHandsAgentSettings
+
+    store = get_agent_profile_store()
+    profile_name = store.name_for_id(profile_id)
+    if profile_name is None:
+        raise ProfileNotFound(f"Agent profile with id '{profile_id}' not found")
+
+    try:
+        profile = store.load(profile_name)
+    except FileNotFoundError:
+        raise ProfileNotFound(
+            f"Agent profile '{profile_name}' (id={profile_id}) not found"
+        )
+    except ValueError as exc:
+        raise ValueError(
+            f"Failed to load agent profile '{profile_name}': {exc}"
+        ) from exc
+
+    # OpenHands profiles get the discovered catalog minus their ``disabled_skills``
+    # deny-list; ACP profiles carry no user/public skills so discovery is skipped.
+    # A genuine discovery failure fails the launch loudly rather than silently
+    # producing a zero-skill agent.
+    available_skills = None
+    if profile.agent_kind == "openhands":
+        try:
+            available_skills = discover_profile_skills()
+        except Exception as exc:
+            raise ValueError(
+                f"Skill discovery failed for profile '{profile_name}': {exc}"
+            ) from exc
+
+    llm_store = get_llm_profile_store()
+    try:
+        settings_config = resolve_agent_profile(
+            profile,
+            llm_store=llm_store,
+            mcp_config=mcp_config,
+            available_skills=available_skills,
+            cipher=cipher,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Profile '{profile_name}' failed to resolve: {exc}") from exc
+
+    if isinstance(settings_config, OpenHandsAgentSettings):
+        # Force streaming so this launch path wires on_token: a client can't set
+        # llm.stream on a profile's referenced LLM ahead of time. Safe at this
+        # layer (not the SDK resolver) because this server wires the token
+        # callback whenever any llm.stream is set; a headless resolver caller
+        # that never wires on_token is covered by LLM's graceful degradation.
+        settings_config = settings_config.model_copy(
+            update={"llm": settings_config.llm.model_copy(update={"stream": True})}
+        )
+
+    agent = settings_config.create_agent()
+    # Browser is deliberately absent from the deterministic SDK default
+    # (environment-dependent); this server knows its runtime, so it injects
+    # browser when usable. An explicit profile.tools list is authoritative.
+    if (
+        profile.agent_kind == "openhands"
+        and profile.tools is None
+        and is_tool_usable(BROWSER_TOOL_NAME)
+    ):
+        agent = agent.model_copy(
+            update={"tools": [*agent.tools, Tool(name=BROWSER_TOOL_NAME)]}
+        )
+    launched = LaunchedAgentProfile(
+        agent_profile_id=profile.id,
+        revision=profile.revision,
+    )
+    return agent, launched
+
+
 def _compose_conversation_info(
     stored: StoredConversation, state: ConversationState
 ) -> ConversationInfo:
@@ -263,7 +370,7 @@ def _compose_conversation_info(
     # The ``acp_model`` fallback is gated on the agent NOT being a live,
     # initialized one. Once ``init_state`` has fired, ``current_model_id`` is the
     # authoritative resolved value — including ``None`` when an override couldn't
-    # be applied (unknown provider, or a resume whose ``set_session_model`` the
+    # be applied (unknown provider, or a resume whose model-selection call the
     # server rejected) — so falling back to ``acp_model`` there would re-assert an
     # override the live session isn't actually running. The fallback is only for
     # *cold* reads (``init_state`` hasn't fired, PrivateAttrs still empty), where
@@ -304,9 +411,13 @@ def _compose_conversation_info(
         metrics=stored.metrics,
         created_at=stored.created_at,
         updated_at=stored.updated_at,
+        forked_from_conversation_id=stored.forked_from_conversation_id,
+        forked_from_event_id=stored.forked_from_event_id,
         current_model_id=current_model_id,
         available_models=available_models,
         supports_runtime_model_switch=supports_runtime_model_switch,
+        client_tools=stored.client_tools,
+        launched_agent_profile=stored.launched_agent_profile,
     )
 
 
@@ -377,8 +488,10 @@ class ConversationService:
     webhook_specs: list[WebhookSpec] = field(default_factory=list)
     session_api_key: str | None = field(default=None)
     cipher: Cipher | None = None
+    mcp_tool_provider: MCPToolProvider | None = None
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     max_concurrent_runs: int = 10
+    lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_webhook_subscribers: list["ConversationWebhookSubscriber"] = field(
         default_factory=list, init=False
@@ -610,6 +723,28 @@ class ConversationService:
             )
             return conversation_info, False
 
+        # Profile resolution must happen before _prepare_request_workspace (which
+        # asserts request.agent is not None) and before model_dump so the resolved
+        # agent is captured in request_data.
+        launched_agent_profile: LaunchedAgentProfile | None = None
+        if request.agent_profile_id is not None:
+            # get_settings_store() is safe here: get_instance() initialises the
+            # singleton with the server cipher before any conversation can start.
+            from openhands.agent_server.persistence import (
+                PersistedSettings,
+                get_settings_store,
+            )
+
+            settings = get_settings_store().load() or PersistedSettings()
+            mcp_config = settings.agent_settings.mcp_config
+            resolved_agent, launched_agent_profile = await asyncio.to_thread(
+                _resolve_agent_from_profile,
+                request.agent_profile_id,
+                self.cipher,
+                mcp_config,
+            )
+            request = request.model_copy(update={"agent": resolved_agent})
+
         request = _prepare_request_workspace(request, conversation_id)
 
         # Dynamically register tools from client's registry
@@ -638,6 +773,22 @@ class ConversationService:
                     conversation_id,
                 )
 
+        # Register client-defined tools (JSON specs, no Python code). The
+        # ClientTool *class* is registered statelessly; each tool's schema
+        # travels with the conversation via the returned Tool.params, so
+        # concurrent conversations never clobber each other's schemas.
+        if request.client_tools:
+            client_tool_specs = register_client_tools(request.client_tools)
+            # Inject Tool specs into the agent so _initialize() resolves them
+            existing_names = {t.name for t in request.agent.tools}
+            new_tools = [
+                ts for ts in client_tool_specs if ts.name not in existing_names
+            ]
+            if new_tools:
+                request.agent = request.agent.model_copy(
+                    update={"tools": [*request.agent.tools, *new_tools]}
+                )
+
         # Register subagent definitions forwarded from the client
         if request.agent_definitions:
             _register_agent_definitions(
@@ -656,7 +807,13 @@ class ConversationService:
         # serialize to plain strings. Pass expose_secrets=True so StaticSecret values
         # are preserved through the round-trip; the dict is only used in-process to
         # construct StoredConversation, not sent over the network.
-        request_data = request.model_dump(mode="json", context={"expose_secrets": True})
+        # agent_profile_id is excluded: it was resolved into `launched_agent_profile`
+        # above and must not re-trigger the mutual-exclusivity validator.
+        request_data = request.model_dump(
+            mode="json",
+            context={"expose_secrets": True},
+            exclude={"agent_profile_id"},
+        )
 
         # If secrets_encrypted=True, the agent's secrets (e.g., LLM api_key) are
         # cipher-encrypted and need decryption during model validation. Pass the
@@ -668,11 +825,23 @@ class ConversationService:
                     "Set OH_SECRET_KEY environment variable."
                 )
             stored = StoredConversation.model_validate(
-                {"id": conversation_id, **request_data},
+                {
+                    "id": conversation_id,
+                    **request_data,
+                    "launched_agent_profile": (
+                        launched_agent_profile.model_dump(mode="json")
+                        if launched_agent_profile is not None
+                        else None
+                    ),
+                },
                 context={"cipher": self.cipher},
             )
         else:
-            stored = StoredConversation(id=conversation_id, **request_data)
+            stored = StoredConversation(
+                id=conversation_id,
+                launched_agent_profile=launched_agent_profile,
+                **request_data,
+            )
         event_service = await self._start_event_service(stored)
         initial_message = request.initial_message
         if initial_message:
@@ -877,16 +1046,22 @@ class ConversationService:
         title: str | None = None,
         tags: dict[str, str] | None = None,
         reset_metrics: bool = True,
+        from_event_id: str | None = None,
     ) -> ConversationInfo | None:
         """Fork an existing conversation, deep-copying its event history.
 
         The fork is persisted to disk and then loaded as a new EventService,
         so the forked conversation is fully independent from the source.
 
+        When *from_event_id* is set, only the branch up to and including that
+        event is copied and the fork's HEAD is set there; otherwise the whole
+        conversation is copied (today's behavior).
+
         Returns ``None`` when *source_id* does not exist.
 
         Raises:
             ValueError: If *fork_id* is already taken by an active
+                conversation, or if *from_event_id* is not in the source
                 conversation.
         """
         if self._event_services is None:
@@ -910,6 +1085,7 @@ class ConversationService:
             title=title,
             tags=tags,
             reset_metrics=reset_metrics,
+            from_event_id=from_event_id,
         )
         # Extract the persisted data, then discard the temporary conversation.
         fork_conv_id = fork_conv.id
@@ -919,11 +1095,27 @@ class ConversationService:
         fork_conv.close()
 
         # _start_event_service will resume from the persisted fork directory.
-        fork_stored = StoredConversation(
-            id=fork_conv_id,
-            agent=fork_agent,
-            workspace=fork_workspace,
-        )
+        # Copy the source's stored metadata so request-level configuration
+        # (client_tools, tool_module_qualnames, agent_definitions, plugins,
+        # secrets, ...) is preserved on the fork, then override only the
+        # fork-specific fields. Without this, e.g. a fork of a client-tool
+        # conversation would lose ``client_tools`` in meta.json and be unable
+        # to re-register its tools after a server restart.
+        fork_overrides: dict[str, Any] = {
+            "id": fork_conv_id,
+            "agent": fork_agent,
+            "workspace": fork_workspace,
+            "title": title,
+            "created_at": utc_now(),
+            "updated_at": utc_now(),
+            "forked_from_conversation_id": source_id,
+            "forked_from_event_id": from_event_id,
+        }
+        if reset_metrics:
+            fork_overrides["metrics"] = None
+        if tags is not None:
+            fork_overrides["tags"] = tags
+        fork_stored = source_service.stored.model_copy(update=fork_overrides)
         # If the service fails to start, clean up the orphaned persistence
         # directory so we don't leave stale state on disk.
         fork_dir = self.conversations_dir / fork_conv_id.hex
@@ -935,6 +1127,29 @@ class ConversationService:
 
         state = await fork_event_service.get_state()
         return _compose_conversation_info(fork_event_service.stored, state)
+
+    async def navigate_conversation(
+        self, conversation_id: UUID, *, event_id: str | None = None
+    ) -> ConversationInfo | None:
+        """Move a conversation's HEAD to an existing event (in-place re-root).
+
+        All branches stay on disk; only the active branch the agent runs on
+        changes. The new HEAD persists via the conversation's own state
+        autosave. Returns ``None`` when *conversation_id* does not exist.
+
+        Raises:
+            ValueError: If *event_id* is not ``None`` and not present in the
+                conversation.
+        """
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        event_service = self._event_services.get(conversation_id)
+        if event_service is None:
+            return None
+
+        await event_service.navigate_to(event_id)
+        state = await event_service.get_state()
+        return _compose_conversation_info(event_service.stored, state)
 
     async def __aenter__(self):
         self.conversations_dir.mkdir(parents=True, exist_ok=True)
@@ -984,6 +1199,11 @@ class ConversationService:
                             f"resuming conversation {stored.id}: "
                             f"{list(stored.tool_module_qualnames.keys())}"
                         )
+                # Re-register client-defined tools when resuming. The agent's
+                # persisted tool specs already carry each schema via params, so
+                # we only need to (re-)register the ClientTool class per name.
+                if stored.client_tools:
+                    register_client_tools(stored.client_tools)
                 # Register agent definitions when resuming
                 if stored.agent_definitions:
                     _register_agent_definitions(
@@ -1062,6 +1282,14 @@ class ConversationService:
 
     @classmethod
     def get_instance(cls, config: Config) -> "ConversationService":
+        # Initialise the settings-store singleton with the server cipher before
+        # any conversation handler can call get_settings_store() without config.
+        from openhands.agent_server.mcp_oauth_store import (
+            create_settings_backed_mcp_tool_provider,
+        )
+        from openhands.agent_server.persistence import get_settings_store
+
+        get_settings_store(config)
         return ConversationService(
             conversations_dir=config.conversations_path,
             webhook_specs=config.webhooks,
@@ -1069,7 +1297,9 @@ class ConversationService:
                 config.session_api_keys[0] if config.session_api_keys else None
             ),
             cipher=config.cipher,
+            mcp_tool_provider=create_settings_backed_mcp_tool_provider(config),
             max_concurrent_runs=config.max_concurrent_runs,
+            lease_ttl_seconds=config.lease_ttl_seconds,
         )
 
     async def _start_event_service(self, stored: StoredConversation) -> EventService:
@@ -1081,7 +1311,9 @@ class ConversationService:
             stored=stored,
             conversations_dir=self.conversations_dir,
             cipher=self.cipher,
+            mcp_tool_provider=self.mcp_tool_provider,
             owner_instance_id=self.owner_instance_id,
+            lease_ttl_seconds=self.lease_ttl_seconds,
         )
         # Lease renewal is handled by the centralized
         # _renew_all_leases_loop task on ConversationService.
@@ -1203,9 +1435,11 @@ class AutoTitleSubscriber(Subscriber):
             return None
 
         try:
-            from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+            from openhands.agent_server.persistence.store import (
+                get_llm_profile_store,
+            )
 
-            profile_store = LLMProfileStore()
+            profile_store = get_llm_profile_store()
             return profile_store.load(profile_name, cipher=self.service.cipher)
         except (FileNotFoundError, ValueError) as e:
             logger.warning(
@@ -1223,6 +1457,12 @@ class WebhookSubscriber(Subscriber):
     session_api_key: str | None = None
     queue: list[Event] = field(default_factory=list)
     _flush_timer: asyncio.Task | None = field(default=None, init=False)
+    # Per-instance sleep seam so tests override delays without patching the
+    # global asyncio.sleep. default_factory (not default) keeps it an instance
+    # attribute, else the function would be descriptor-bound as a method.
+    _sleep: Callable[[float], Awaitable[None]] = field(
+        default_factory=lambda: asyncio.sleep, init=False
+    )
 
     async def __call__(self, event: Event):
         """Add event to queue and post to webhook when buffer size is reached."""
@@ -1256,9 +1496,15 @@ class WebhookSubscriber(Subscriber):
         if self.session_api_key:
             headers["X-Session-API-Key"] = self.session_api_key
 
-        # Convert events to serializable format
+        # Convert events to a JSON-serializable format. mode="json" is required
+        # so types like set and SecretStr become JSON-safe primitives; without
+        # it httpx's encoder raises "Object of type set/SecretStr is not JSON
+        # serializable", every retry fails identically, and the events are
+        # dropped. (Mirrors ConversationWebhookSubscriber.post_conversation_info.)
         event_data = [
-            event.model_dump() if hasattr(event, "model_dump") else event.__dict__
+            event.model_dump(mode="json")
+            if hasattr(event, "model_dump")
+            else event.__dict__
             for event in events_to_post
         ]
 
@@ -1287,7 +1533,7 @@ class WebhookSubscriber(Subscriber):
             except Exception as e:
                 logger.warning(f"Webhook post attempt {attempt + 1} failed: {e}")
                 if attempt < self.spec.num_retries:
-                    await asyncio.sleep(self.spec.retry_delay)
+                    await self._sleep(self.spec.retry_delay)
                 else:
                     logger.error(
                         f"Failed to post events to webhook {events_url} "
@@ -1312,7 +1558,7 @@ class WebhookSubscriber(Subscriber):
     async def _flush_after_delay(self):
         """Wait for flush_delay seconds then flush events if any exist."""
         try:
-            await asyncio.sleep(self.spec.flush_delay)
+            await self._sleep(self.spec.flush_delay)
             # Only flush if there are events in the queue
             if self.queue:
                 await self._post_events()
@@ -1329,6 +1575,10 @@ class ConversationWebhookSubscriber:
 
     spec: WebhookSpec
     session_api_key: str | None = None
+    # Per-instance sleep seam; see WebhookSubscriber._sleep.
+    _sleep: Callable[[float], Awaitable[None]] = field(
+        default_factory=lambda: asyncio.sleep, init=False
+    )
 
     async def post_conversation_info(self, conversation_info: BaseModel):
         """Post conversation info to the webhook immediately (no batching)."""
@@ -1366,7 +1616,7 @@ class ConversationWebhookSubscriber:
                     f"Conversation webhook post attempt {attempt + 1} failed: {e}"
                 )
                 if attempt < self.spec.num_retries:
-                    await asyncio.sleep(self.spec.retry_delay)
+                    await self._sleep(self.spec.retry_delay)
                 else:
                     # Log response content for debugging failures
                     response_content = (

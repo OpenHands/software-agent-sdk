@@ -34,14 +34,14 @@ class ACPModelInfo(BaseModel):
     model_id: str = Field(
         description=(
             "Server-assigned model identifier. May be concrete "
-            '(e.g. ``"gpt-5.5/xhigh"``) or an opaque alias '
-            '(e.g. ``"default"``, ``"auto"``). This is the value to pass to '
-            "``set_session_model`` to switch to this model."
+            '(e.g. ``"gpt-5.5"``) or an opaque alias '
+            '(e.g. ``"default"``, ``"auto"``). This is the value to pass back '
+            "to the server to switch to this model."
         ),
     )
     name: str | None = Field(
         default=None,
-        description='Human-readable label, e.g. ``"GPT-5.5 (xhigh)"``.',
+        description='Human-readable label, e.g. ``"GPT-5.5"``.',
     )
     description: str | None = Field(
         default=None,
@@ -49,15 +49,19 @@ class ACPModelInfo(BaseModel):
     )
 
     @classmethod
-    def from_protocol(cls, raw: Any) -> ACPModelInfo:
+    def from_protocol(cls, raw: Any, *, id_attr: str = "model_id") -> ACPModelInfo:
         """Build from a raw ACP ``ModelInfo`` (or any duck-typed object).
 
         Tolerant of partial/malformed entries: non-string fields degrade to
         ``""`` (``model_id``) or ``None`` (``name``/``description``) rather
         than raising, since the source is an UNSTABLE protocol capability that
         older or half-implemented agents may emit incompletely.
+
+        ``id_attr`` names the attribute carrying the model id — ``"model_id"``
+        for a ``models``-capability ``ModelInfo``, ``"value"`` for a
+        ``configOptions`` select option.
         """
-        model_id = getattr(raw, "model_id", None)
+        model_id = getattr(raw, id_attr, None)
         name = getattr(raw, "name", None)
         description = getattr(raw, "description", None)
         return cls(

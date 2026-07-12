@@ -4,6 +4,7 @@ import asyncio
 import os
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -313,7 +314,7 @@ class TestServiceParallelization:
         ):
             # Create a mock FastAPI app
             mock_app = AsyncMock()
-            mock_app.state = AsyncMock()
+            mock_app.state = SimpleNamespace(config=Config())
 
             async with api_lifespan(mock_app):
                 pass
@@ -365,7 +366,7 @@ class TestServiceParallelization:
         ):
             # Create a mock FastAPI app
             mock_app = AsyncMock()
-            mock_app.state = AsyncMock()
+            mock_app.state = SimpleNamespace(config=Config())
 
             async with api_lifespan(mock_app):
                 # Exit the context to trigger shutdown
@@ -394,7 +395,7 @@ class TestServiceParallelization:
         ):
             # Create a mock FastAPI app
             mock_app = AsyncMock()
-            mock_app.state = AsyncMock()
+            mock_app.state = SimpleNamespace(config=Config())
 
             # This should not raise any exceptions
             async with api_lifespan(mock_app):
@@ -424,7 +425,7 @@ class TestServiceParallelization:
             ),
         ):
             mock_app = AsyncMock()
-            mock_app.state = AsyncMock()
+            mock_app.state = SimpleNamespace(config=Config())
             expected_tmux_tmpdir = tmp_path / f"openhands-agent-server-{os.getpid()}"
 
             async with api_lifespan(mock_app):
@@ -547,8 +548,7 @@ class TestHttpExceptionLogging:
 
     They should be logged as a single ERROR line without a full stack
     trace; only genuinely unhandled exceptions should get a traceback.
-    Otherwise routine upstream blips (e.g. a 502 from /api/cloud-proxy
-    when the cloud is unreachable) look indistinguishable from a process
+    Otherwise routine upstream blips look indistinguishable from a process
     crash in the logs.
     """
 

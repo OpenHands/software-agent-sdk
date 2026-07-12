@@ -160,6 +160,9 @@ async def get_settings(request: Request) -> SettingsResponse:
                 mode="json"
             ),
             llm_api_key_is_set=settings.llm_api_key_is_set,
+            active_profile=settings.active_profile,
+            active_agent_profile_id=settings.active_agent_profile_id,
+            misc_settings=settings.misc_settings,
         )
 
 
@@ -169,23 +172,25 @@ async def update_settings(
 ) -> SettingsResponse:
     """Update settings with partial changes.
 
-    Accepts ``agent_settings_diff`` and/or ``conversation_settings_diff``
-    for incremental updates. Diffs are deep-merged; nested objects merge
-    recursively, and a ``null`` value **inside a nested map deletes that
-    entry** — the "unset" primitive that lets a client remove a single map
-    key without round-tripping the whole map. To drop one ACP env-var::
+    Accepts ``agent_settings_diff``, ``conversation_settings_diff``,
+    ``misc_settings_diff``, and/or ``active_profile`` for incremental updates.
+    The three ``*_settings_diff`` fields are deep-merged; nested objects merge
+    recursively, and a ``null`` value **inside a nested map deletes that entry**
+    — the "unset" primitive that lets a client remove a single map key without
+    round-tripping the whole map. To remove one MCP server's header::
 
         PATCH /api/settings
-        {"agent_settings_diff": {"acp_env": {"STALE_KEY": null}}}
-
-    or to remove one MCP server's header::
-
         {"agent_settings_diff":
-            {"mcp_config": {"mcpServers": {"svc": {"headers": {"X-Old": null}}}}}}
+            {"mcp_config": {"svc": {"headers": {"X-Old": null}}}}}
 
     A ``null`` on a top-level *field* (e.g. ``{"confirmation_mode": null}``)
     is **not** an unset — it flows to model validation as before, so it still
     fails loudly rather than silently resetting the field to its default.
+
+    ``misc_settings_diff`` is deep-merged into the persisted ``misc_settings``
+    block. The agent-server treats ``misc_settings`` as opaque frontend-owned
+    data: nested dicts are merged recursively, lists are replaced wholesale,
+    and the contents are never read or validated server-side.
 
     Uses file locking to prevent concurrent updates from overwriting each other.
 
@@ -196,19 +201,27 @@ async def update_settings(
     store = get_settings_store(config)
 
     update_data = payload.model_dump(exclude_none=True)
+    # exclude_none drops an explicit null, so re-add nullable pointers when the
+    # client set them (including to None) to allow clearing.
+    if "active_profile" in payload.model_fields_set:
+        update_data["active_profile"] = payload.active_profile
+    if "active_agent_profile_id" in payload.model_fields_set:
+        update_data["active_agent_profile_id"] = payload.active_agent_profile_id
     if not update_data:
         # No updates provided - this is a client error
         raise HTTPException(
             status_code=400,
             detail=(
-                "At least one of agent_settings_diff or "
-                "conversation_settings_diff must be provided"
+                "At least one of agent_settings_diff, "
+                "conversation_settings_diff, misc_settings_diff, "
+                "active_profile, or active_agent_profile_id must be provided"
             ),
         )
 
     # Apply updates atomically with file locking
     def apply_update(settings: PersistedSettings) -> PersistedSettings:
-        settings.update(cast(SettingsUpdatePayload, update_data))
+        context = {"cipher": config.cipher} if config.cipher is not None else None
+        settings.update(cast(SettingsUpdatePayload, update_data), context=context)
         return settings
 
     client_host = request.client.host if request.client else "unknown"
@@ -223,6 +236,7 @@ async def update_settings(
                 "conversation_settings_modified": (
                     "conversation_settings_diff" in update_data
                 ),
+                "misc_settings_modified": "misc_settings_diff" in update_data,
             },
         )
     except (ValueError, ValidationError):
@@ -256,6 +270,9 @@ async def update_settings(
         agent_settings=settings.agent_settings.model_dump(mode="json"),
         conversation_settings=settings.conversation_settings.model_dump(mode="json"),
         llm_api_key_is_set=settings.llm_api_key_is_set,
+        active_profile=settings.active_profile,
+        active_agent_profile_id=settings.active_agent_profile_id,
+        misc_settings=settings.misc_settings,
     )
 
 

@@ -1012,6 +1012,66 @@ def test_conversation_state_secrets_with_cipher():
         assert db_env_vars == {"DATABASE_URL": "postgresql://localhost/test"}
 
 
+def test_agent_context_seed_preserves_persisted_registry_secret_on_resume():
+    """LocalConversation resume must not downgrade existing registry secrets.
+
+    ``agent_context.secrets`` is a lower-priority bootstrap source for callers
+    that do not build ``request.secrets``. If a prior request secret is already
+    persisted in the registry, reopening the conversation with no new request
+    secrets should keep the registry value.
+    """
+    from openhands.sdk.context.agent_context import AgentContext
+    from openhands.sdk.secret import StaticSecret
+    from openhands.sdk.utils.cipher import Cipher
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        llm = LLM(
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+        )
+        agent = Agent(
+            llm=llm,
+            tools=[],
+            agent_context=AgentContext(
+                secrets={
+                    "ANTHROPIC_API_KEY": StaticSecret(value=SecretStr("sk-from-ctx"))
+                }
+            ),
+        )
+        conv_id = uuid.UUID("12345678-1234-5678-9abc-1234567890ab")
+        cipher = Cipher(secret_key="test-secret-key")
+        conversation_kwargs = {
+            "workspace": str(Path(temp_dir) / "workspace"),
+            "persistence_dir": temp_dir,
+            "conversation_id": conv_id,
+            "cipher": cipher,
+        }
+
+        conv = LocalConversation(
+            agent,
+            **conversation_kwargs,
+            secrets={
+                "ANTHROPIC_API_KEY": StaticSecret(value=SecretStr("sk-from-request"))
+            },
+        )
+        try:
+            assert (
+                conv.state.secret_registry.get_secret_value("ANTHROPIC_API_KEY")
+                == "sk-from-request"
+            )
+            conv.state._save_base_state(conv.state._fs)
+        finally:
+            conv.close()
+
+        resumed = LocalConversation(agent, **conversation_kwargs)
+        try:
+            assert (
+                resumed.state.secret_registry.get_secret_value("ANTHROPIC_API_KEY")
+                == "sk-from-request"
+            )
+        finally:
+            resumed.close()
+
+
 def test_conversation_state_save_with_cipher_load_without():
     """Test loading state saved with cipher but without providing cipher.
 
@@ -1367,44 +1427,3 @@ def test_context_manager_batches_saves() -> None:
     # Mutation outside a context-manager block → immediate save
     state.max_iterations = 42
     assert save_count == 2
-
-
-def test_v1_17_0_conversation_with_mcp_config_restores(tmp_path: Path) -> None:
-    """Test resuming a legacy conversation that persisted agent.mcp_config."""
-    fixture_path = (
-        Path(__file__).resolve().parents[3]
-        / "fixtures"
-        / "conversations"
-        / "v1_17_0_with_mcp_config"
-        / "base_state.json"
-    )
-    conversation_id = uuid.UUID("22222222-3333-4444-5555-666666666666")
-    persistence_root = tmp_path / "persist"
-    persistence_dir = Path(
-        LocalConversation.get_persistence_dir(persistence_root, conversation_id)
-    )
-    persistence_dir.mkdir(parents=True)
-    (persistence_dir / "base_state.json").write_text(fixture_path.read_text())
-    (persistence_dir / "events").mkdir()
-
-    llm = LLM(
-        model="gpt-4o-mini",
-        api_key=SecretStr("test-key"),
-        usage_id="test-llm",
-    )
-    runtime_mcp_config = {
-        "mcpServers": {
-            "runtime-server": {"command": "python", "args": ["-m", "runtime"]}
-        }
-    }
-    runtime_agent = Agent(llm=llm, tools=[], mcp_config=runtime_mcp_config)
-
-    conversation = Conversation(
-        agent=runtime_agent,
-        workspace=tmp_path,
-        persistence_dir=persistence_root,
-        conversation_id=conversation_id,
-    )
-
-    assert isinstance(conversation, LocalConversation)
-    assert conversation.state.agent.mcp_config == runtime_mcp_config

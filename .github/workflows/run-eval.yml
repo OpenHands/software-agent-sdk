@@ -1,138 +1,12 @@
 ---
 name: Run Eval
-run-name: Run Eval (${{ inputs.benchmark || 'swebench' }}) ${{ inputs.reason || github.event.label.name || 'release' }}
+run-name: Run Eval (${{ github.event.label.name || 'release' }})
 
 on:
     pull_request_target:
         types: [labeled]
     release:
         types: [published]
-    workflow_dispatch:
-        inputs:
-            benchmark:
-                description: Benchmark to evaluate
-                required: false
-                default: swebench
-                type: choice
-                options:
-                    - gaia
-                    - swebench
-                    - swebenchpro
-                    - swtbench
-                    - commit0
-                    - swebenchmultimodal
-                    - terminalbench
-                    - programbench
-            sdk_ref:
-                description: SDK commit/ref to evaluate (must be a semantic version like v1.0.0 unless 'Allow unreleased branches' is checked)
-                required: true
-                default: v1.24.0
-
-
-
-
-
-
-
-
-
-
-            allow_unreleased_branches:
-                description: Allow unreleased branches (bypasses semantic version requirement)
-                required: false
-                default: false
-                type: boolean
-            eval_limit:
-                description: Number of instances to run (any positive integer)
-                required: false
-                default: '1'
-                type: string
-            model_ids:
-                description: Comma-separated model IDs to evaluate. Must be keys of MODELS in resolve_model_config.py. Defaults to first model in that
-                    dict.
-                required: false
-                default: ''
-                type: string
-            reason:
-                description: Reason for manual trigger
-                required: false
-                default: ''
-            eval_branch:
-                description: Evaluation repo branch to use (for testing feature branches)
-                required: false
-                default: main
-                type: string
-            benchmarks_branch:
-                description: Benchmarks repo branch to use (for testing feature branches)
-                required: false
-                default: main
-                type: string
-            extensions_branch:
-                description: Extensions repo branch to use (for testing feature branches with skills/plugins)
-                required: false
-                default: main
-                type: string
-            instance_ids:
-                description: >-
-                    Comma-separated instance IDs to evaluate.
-                    Example: "django__django-11583,django__django-12345".
-                    Spaces around commas are automatically stripped.
-                    Leave empty to evaluate all instances up to eval_limit.
-                required: false
-                default: ''
-            num_infer_workers:
-                description: Number of inference workers (optional, overrides benchmark default)
-                required: false
-                default: ''
-                type: string
-            num_eval_workers:
-                description: Number of evaluation workers (optional, overrides benchmark default)
-                required: false
-                default: ''
-                type: string
-            enable_conversation_event_logging:
-                description: 'Enable Datadog persistence for conversation events (default: true)'
-                required: false
-                default: true
-                type: boolean
-            max_retries:
-                description: Max retries per instance (passed to benchmarks)
-                required: false
-                default: '3'
-                type: string
-            tool_preset:
-                description: >-
-                    Tool preset for file editing. 'default' uses FileEditorTool,
-                    'gemini' uses read_file/write_file/edit/list_directory,
-                    'gpt5' uses apply_patch tool.
-                required: false
-                default: default
-                type: choice
-                options:
-                    - default
-                    - gemini
-                    - gpt5
-                    - planning
-            agent_type:
-                description: >-
-                    Agent type: 'default' for standard Agent,
-                    'acp-claude' for ACPAgent with Claude Code,
-                    'acp-codex' for ACPAgent with Codex,
-                    'acp-gemini' for ACPAgent with Gemini CLI.
-                required: false
-                default: default
-                type: choice
-                options:
-                    - default
-                    - acp-claude
-                    - acp-codex
-                    - acp-gemini
-            partial_archive_url:
-                description: Resume partial work from full archive tar.gz
-                required: false
-                default: ''
-                type: string
-
 
 env:
     EVAL_REPO: OpenHands/evaluation
@@ -142,7 +16,6 @@ jobs:
     print-parameters:
         if: >
             github.event_name == 'release' ||
-            github.event_name == 'workflow_dispatch' ||
             (github.event_name == 'pull_request_target' &&
              (github.event.label.name == 'run-eval-1' ||
               github.event.label.name == 'run-eval-50' ||
@@ -155,22 +28,20 @@ jobs:
                   EVENT_NAME: ${{ github.event_name }}
                   ACTOR: ${{ github.actor }}
                   REF: ${{ github.ref }}
-                  BENCHMARK: ${{ github.event.inputs.benchmark || 'swebench' }}
-                  SDK_REF: ${{ github.event.inputs.sdk_ref || 'N/A' }}
-                  ALLOW_UNRELEASED_BRANCHES: ${{ github.event.inputs.allow_unreleased_branches || 'false' }}
-                  EVAL_LIMIT: ${{ github.event.inputs.eval_limit || '1' }}
-                  MODEL_IDS: ${{ github.event.inputs.model_ids || '(default)' }}
-                  REASON: ${{ github.event.inputs.reason || 'N/A' }}
-                  EVAL_BRANCH: ${{ github.event.inputs.eval_branch || 'main' }}
-                  BENCHMARKS_BRANCH: ${{ github.event.inputs.benchmarks_branch || 'main' }}
-                  EXTENSIONS_BRANCH: ${{ github.event.inputs.extensions_branch || 'main' }}
-                  INSTANCE_IDS: ${{ github.event.inputs.instance_ids || 'N/A' }}
-                  NUM_INFER_WORKERS: ${{ github.event.inputs.num_infer_workers || '(default)' }}
-                  NUM_EVAL_WORKERS: ${{ github.event.inputs.num_eval_workers || '(default)' }}
-                  ENABLE_CONVERSATION_EVENT_LOGGING: ${{ github.event.inputs.enable_conversation_event_logging || 'true' }}
-                  MAX_RETRIES: ${{ github.event.inputs.max_retries || '3' }}
-                  TOOL_PRESET: ${{ github.event.inputs.tool_preset || 'default' }}
-                  PARTIAL_ARCHIVE_URL: ${{ github.event.inputs.partial_archive_url || 'N/A' }}
+                  BENCHMARK: swebench
+                  EVAL_LIMIT: ${{ github.event_name == 'release' && '50' || '' }}
+                  MODEL_IDS: (default)
+                  EVAL_BRANCH: main
+                  BENCHMARKS_BRANCH: main
+                  EXTENSIONS_BRANCH: main
+                  INSTANCE_IDS: N/A
+                  NUM_INFER_WORKERS: (default)
+                  NUM_EVAL_WORKERS: (default)
+                  ENABLE_CONVERSATION_EVENT_LOGGING: 'false'
+                  MAX_RETRIES: '3'
+                  TOOL_PRESET: default
+                  AGENT_TYPE: default
+                  PARTIAL_ARCHIVE_URL: N/A
                   LABEL_NAME: ${{ github.event.label.name || 'N/A' }}
               run: |
                   echo "=== Workflow Parameters ==="
@@ -178,13 +49,10 @@ jobs:
                   echo "Actor: $ACTOR"
                   echo "Ref: $REF"
                   echo ""
-                  echo "=== Input Parameters ==="
+                  echo "=== Parameters ==="
                   echo "benchmark: $BENCHMARK"
-                  echo "sdk_ref: $SDK_REF"
-                  echo "allow_unreleased_branches: $ALLOW_UNRELEASED_BRANCHES"
                   echo "eval_limit: $EVAL_LIMIT"
                   echo "model_ids: $MODEL_IDS"
-                  echo "reason: $REASON"
                   echo "eval_branch: $EVAL_BRANCH"
                   echo "benchmarks_branch: $BENCHMARKS_BRANCH"
                   echo "extensions_branch: $EXTENSIONS_BRANCH"
@@ -194,6 +62,7 @@ jobs:
                   echo "enable_conversation_event_logging: $ENABLE_CONVERSATION_EVENT_LOGGING"
                   echo "max_retries: $MAX_RETRIES"
                   echo "tool_preset: $TOOL_PRESET"
+                  echo "agent_type: $AGENT_TYPE"
                   echo "partial_archive_url: $PARTIAL_ARCHIVE_URL"
                   echo ""
                   echo "=== Environment Variables ==="
@@ -214,83 +83,22 @@ jobs:
             pull-requests: write
 
         steps:
-            - name: Checkout sdk code (base for validation)
-              uses: actions/checkout@v6
+            - name: Checkout SDK code
+              uses: actions/checkout@v7
               with:
-                  ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sdk_ref || (github.event_name == 'pull_request_target' && 
-                      github.event.pull_request.base.ref || github.ref) }}
+                  ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.ref || github.ref }}
                   fetch-depth: 0
-
-            - name: Set up Python
-              uses: actions/setup-python@v5
-              with:
-                  python-version: '3.13'
-
-            - name: Install uv
-              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
-              with:
-                  version: latest
-                  python-version: '3.13'
-
-            - name: Validate eval_limit
-              if: github.event_name == 'workflow_dispatch'
-              env:
-                  EVAL_LIMIT: ${{ github.event.inputs.eval_limit }}
-              run: |
-                  if ! [[ "$EVAL_LIMIT" =~ ^[1-9][0-9]*$ ]]; then
-                    echo "Error: eval_limit must be a positive integer, got: $EVAL_LIMIT"
-                    exit 1
-                  fi
-
-            - name: Validate SDK reference and workflow branches
-              if: github.event_name == 'workflow_dispatch'
-              env:
-                  SDK_REF: ${{ github.event.inputs.sdk_ref }}
-                  ALLOW_UNRELEASED_BRANCHES: ${{ github.event.inputs.allow_unreleased_branches }}
-                  EVAL_BRANCH: ${{ github.event.inputs.eval_branch || 'main' }}
-                  BENCHMARKS_BRANCH: ${{ github.event.inputs.benchmarks_branch || 'main' }}
-              run: |
-                  python3 .github/run-eval/validate_sdk_ref.py
-
-            - name: Sync locked workspace dependencies
-              run: |
-                  uv sync --frozen
-
-            - name: Load model IDs from Python script
-              id: load-models
-              run: |
-                  # Extract all model IDs from resolve_model_config.py
-                  ALLOWED_MODEL_IDS=$(uv run python << 'EOF'
-                  import sys
-                  sys.path.insert(0, '.github/run-eval')
-                  from resolve_model_config import MODELS
-                  import json
-                  print(json.dumps(list(MODELS.keys())))
-                  EOF
-                  )
-                  DEFAULT_MODEL=$(echo "$ALLOWED_MODEL_IDS" | jq -r '.[0]')
-                  if [ -z "$DEFAULT_MODEL" ] || [ "$DEFAULT_MODEL" = "null" ]; then
-                    echo "No models configured" >&2
-                    exit 1
-                  fi
-                  echo "allowed_model_ids=$ALLOWED_MODEL_IDS" >> "$GITHUB_OUTPUT"
-                  echo "default_model=$DEFAULT_MODEL" >> "$GITHUB_OUTPUT"
 
             - name: Resolve parameters
               id: params
               env:
-                  DEFAULT_MODEL: ${{ steps.load-models.outputs.default_model }}
-                  ALLOWED_MODEL_IDS_JSON: ${{ steps.load-models.outputs.allowed_model_ids }}
+                  DEFAULT_MODEL: gpt-5.5
                   DISPATCH_TOKEN_DEFAULT: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_EVAL_DISPATCH }}
                   EVENT_NAME: ${{ github.event_name }}
                   LABEL_NAME: ${{ github.event.label.name }}
                   PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
                   PR_NUMBER_VALUE: ${{ github.event.pull_request.number }}
                   RELEASE_TAG: ${{ github.event.release.tag_name }}
-                  EVAL_LIMIT_INPUT: ${{ github.event.inputs.eval_limit }}
-                  SDK_REF_INPUT: ${{ github.event.inputs.sdk_ref }}
-                  REASON_INPUT: ${{ github.event.inputs.reason }}
-                  MODEL_IDS_INPUT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.model_ids || '' }}
               run: |
                   set -euo pipefail
 
@@ -322,35 +130,18 @@ jobs:
                     PR_NUMBER=""
                     TRIGGER_DESCRIPTION="Release $RELEASE_TAG"
                   else
-                    EVAL_LIMIT="$EVAL_LIMIT_INPUT"
-                    SDK_REF="$SDK_REF_INPUT"
-                    # Convert ref to SHA for manual dispatch
-                    # Resolve SHA robustly for both branch refs and raw SHAs (avoid double-prefix issues)
-                    SDK_SHA=$(git rev-parse --verify "$SDK_REF^{commit}" 2>/dev/null || \
-                              git rev-parse --verify "origin/$SDK_REF^{commit}" 2>/dev/null || \
-                              echo "$SDK_REF")
-                    PR_NUMBER=""
-                    REASON="$REASON_INPUT"
-                    if [ -z "$REASON" ]; then
-                      REASON="manual"
-                    fi
-                    TRIGGER_DESCRIPTION="Manual trigger: ${REASON}"
+                    echo "Unsupported event: $EVENT_NAME" >&2
+                    exit 1
                   fi
 
-                  # Normalize and validate model IDs
-                  MODELS_INPUT="$MODEL_IDS_INPUT"
-                  if [ -z "$MODELS_INPUT" ]; then
-                    MODELS_INPUT="$DEFAULT_MODEL"
+                  # Use the default model for label/release triggers. Manual model
+                  # selection and model resolution now live in the eval repo's
+                  # eval-job.yml workflow_dispatch (see OpenHands/evaluation#589).
+                  MODELS=$(printf '%s' "$DEFAULT_MODEL" | tr ', ' '\n' | sed '/^$/d' | paste -sd, -)
+                  if [ -z "$MODELS" ]; then
+                    echo "No models configured" >&2
+                    exit 1
                   fi
-                  MODELS=$(printf '%s' "$MODELS_INPUT" | tr ', ' '\n' | sed '/^$/d' | paste -sd, -)
-                  ALLOWED_LIST=$(echo "$ALLOWED_MODEL_IDS_JSON" | jq -r '.[]')
-                  for MODEL in ${MODELS//,/ }; do
-                    if ! echo "$ALLOWED_LIST" | grep -Fx "$MODEL" >/dev/null; then
-                      echo "Model ID '$MODEL' not found in models.json" >&2
-                      echo "Available models: $(echo "$ALLOWED_LIST" | paste -sd, -)" >&2
-                      exit 1
-                    fi
-                  done
 
                   # Sanitize values to avoid GITHUB_OUTPUT parse errors (e.g., raw SHAs)
                   SDK_SHA=$(printf '%s' "$SDK_SHA" | tr -d '\n\r')
@@ -365,36 +156,27 @@ jobs:
                   printf 'pr_number=%s\n' "$PR_NUMBER" >> "$GITHUB_OUTPUT"
                   printf 'trigger_desc=%s\n' "$TRIGGER_DESCRIPTION" >> "$GITHUB_OUTPUT"
 
-            - name: Resolve model configurations and verify availability
-              id: resolve-models
-              env:
-                  MODEL_IDS: ${{ steps.params.outputs.models }}
-                  LLM_API_KEY: ${{ secrets.LLM_API_KEY_EVAL }}
-                  LLM_BASE_URL: https://llm-proxy.eval.all-hands.dev
-              run: |
-                  uv run python .github/run-eval/resolve_model_config.py
-
             - name: Dispatch evaluation workflow
               env:
                   SDK_SHA: ${{ steps.params.outputs.sdk_sha }}
                   EVAL_LIMIT: ${{ steps.params.outputs.eval_limit }}
-                  MODELS_JSON: ${{ steps.resolve-models.outputs.models_json }}
+                  MODEL_IDS: ${{ steps.params.outputs.models }}
                   EVAL_REPO: ${{ env.EVAL_REPO }}
                   EVAL_WORKFLOW: ${{ env.EVAL_WORKFLOW }}
-                  EVAL_BRANCH: ${{ github.event.inputs.eval_branch || 'main' }}
-                  BENCHMARKS_BRANCH: ${{ github.event.inputs.benchmarks_branch || 'main' }}
-                  EXTENSIONS_BRANCH: ${{ github.event.inputs.extensions_branch || 'main' }}
-                  BENCHMARK: ${{ github.event.inputs.benchmark || 'swebench' }}
-                  TRIGGER_REASON: ${{ github.event.inputs.reason }}
+                  EVAL_BRANCH: main
+                  BENCHMARKS_BRANCH: main
+                  EXTENSIONS_BRANCH: main
+                  BENCHMARK: swebench
+                  TRIGGER_REASON: ''
                   PR_NUMBER: ${{ steps.params.outputs.pr_number }}
-                  INSTANCE_IDS: ${{ github.event.inputs.instance_ids || '' }}
-                  NUM_INFER_WORKERS: ${{ github.event.inputs.num_infer_workers || '' }}
-                  NUM_EVAL_WORKERS: ${{ github.event.inputs.num_eval_workers || '' }}
-                  ENABLE_CONVERSATION_EVENT_LOGGING: ${{ github.event.inputs.enable_conversation_event_logging || false }}
-                  MAX_RETRIES: ${{ github.event.inputs.max_retries || '3' }}
-                  TOOL_PRESET: ${{ github.event.inputs.tool_preset || 'default' }}
-                  AGENT_TYPE: ${{ github.event.inputs.agent_type || 'default' }}
-                  PARTIAL_ARCHIVE_URL: ${{ github.event.inputs.partial_archive_url || '' }}
+                  INSTANCE_IDS: ''
+                  NUM_INFER_WORKERS: ''
+                  NUM_EVAL_WORKERS: ''
+                  ENABLE_CONVERSATION_EVENT_LOGGING: false
+                  MAX_RETRIES: '3'
+                  TOOL_PRESET: default
+                  AGENT_TYPE: default
+                  PARTIAL_ARCHIVE_URL: ''
                   TRIGGERED_BY: ${{ github.actor }}
               run: |
                   # Normalize instance_ids: strip all spaces
@@ -405,7 +187,7 @@ jobs:
                     --arg sdk "$SDK_SHA" \
                     --arg sdk_run_id "${{ github.run_id }}" \
                     --arg eval_limit "$EVAL_LIMIT" \
-                    --argjson models "$MODELS_JSON" \
+                    --arg model_ids "$MODEL_IDS" \
                     --arg ref "$EVAL_BRANCH" \
                     --arg reason "$TRIGGER_REASON" \
                     --arg pr "$PR_NUMBER" \
@@ -421,7 +203,7 @@ jobs:
                     --arg agent_type "$AGENT_TYPE" \
                     --arg partial_archive_url "$PARTIAL_ARCHIVE_URL" \
                     --arg triggered_by "$TRIGGERED_BY" \
-                    '{ref: $ref, inputs: {sdk_commit: $sdk, sdk_workflow_run_id: $sdk_run_id, eval_limit: $eval_limit, models_json: ($models | tostring), trigger_reason: $reason, pr_number: $pr, benchmarks_branch: $benchmarks, extensions_branch: $extensions, benchmark: $benchmark, instance_ids: $instance_ids, num_infer_workers: $num_infer_workers, num_eval_workers: $num_eval_workers, enable_conversation_event_logging: $enable_conversation_event_logging, max_retries: $max_retries, tool_preset: $tool_preset, agent_type: $agent_type, partial_archive_url: $partial_archive_url, triggered_by: $triggered_by}}')
+                    '{ref: $ref, inputs: {sdk_commit: $sdk, sdk_workflow_run_id: $sdk_run_id, eval_limit: $eval_limit, model_ids: $model_ids, trigger_reason: $reason, pr_number: $pr, benchmarks_branch: $benchmarks, extensions_branch: $extensions, benchmark: $benchmark, instance_ids: $instance_ids, num_infer_workers: $num_infer_workers, num_eval_workers: $num_eval_workers, enable_conversation_event_logging: $enable_conversation_event_logging, max_retries: $max_retries, tool_preset: $tool_preset, agent_type: $agent_type, partial_archive_url: $partial_archive_url, triggered_by: $triggered_by}}')
                   RESPONSE=$(curl -sS -o /tmp/dispatch.out -w "%{http_code}" -X POST \
                     -H "Authorization: token $DISPATCH_TOKEN" \
                     -H "Accept: application/vnd.github+json" \

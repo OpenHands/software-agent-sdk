@@ -10,6 +10,7 @@ import pytest
 from cachetools import LRUCache
 
 from openhands.tools.file_editor import file_editor
+from openhands.tools.file_editor.editor import FileEditor
 from openhands.tools.file_editor.utils.encoding import (
     EncodingManager,
     with_encoding,
@@ -365,6 +366,57 @@ def test_insert_non_utf8_file(temp_non_utf8_file):
         assert "Новая переменная" in decoded
     except UnicodeDecodeError:
         pytest.fail("File was not saved with the correct encoding")
+
+
+@pytest.mark.parametrize(
+    "content, read_encoding",
+    [
+        # cp1251 cannot encode U+2192 -> must upgrade to UTF-8 rather than truncate.
+        ("status \u2192 ok", "utf-8"),
+        # Content representable in cp1251 -> keep the original encoding.
+        ("Привет, мир!", "cp1251"),
+    ],
+)
+def test_write_file_falls_back_to_utf8_only_when_needed(
+    tmp_path, content, read_encoding
+):
+    """Regression: writing content the file's encoding cannot represent must not
+    truncate the file; it upgrades to UTF-8. Content that the encoding can represent
+    keeps the original encoding. The encoding is forced (not sniffed) so the test is
+    deterministic across platforms."""
+    editor = FileEditor(workspace_root=str(tmp_path))
+    path = tmp_path / "doc.txt"
+    path.write_text("seed", encoding="ascii")
+
+    editor.write_file(path, content, encoding="cp1251")
+
+    assert path.read_bytes(), "file was truncated/destroyed by a failed write"
+    assert path.read_text(encoding=read_encoding) == content
+
+
+def test_write_failure_leaves_original_file_intact(temp_non_utf8_file, monkeypatch):
+    """Regression: a failure during the write must leave the original file
+    untouched (atomic write) and not leave a stray temp file behind."""
+    before = temp_non_utf8_file.read_bytes()
+
+    def boom(src, dst):
+        raise OSError("simulated os.replace failure")
+
+    monkeypatch.setattr(os, "replace", boom)
+
+    result = file_editor(
+        command="str_replace",
+        path=str(temp_non_utf8_file),
+        old_str="numbers = [1, 2, 3, 4, 5]",
+        new_str="numbers = [9, 9, 9]",
+    )
+
+    assert result.is_error is True
+    assert temp_non_utf8_file.read_bytes() == before
+    leftovers = list(
+        temp_non_utf8_file.parent.glob(f".{temp_non_utf8_file.name}.*.tmp")
+    )
+    assert leftovers == [], f"stray temp files left behind: {leftovers}"
 
 
 def test_create_non_utf8_file():

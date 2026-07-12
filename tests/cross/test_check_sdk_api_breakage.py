@@ -41,6 +41,7 @@ _field_default_repr = _prod._field_default_repr
 _is_field_default_only_change = _prod._is_field_default_only_change
 _is_field_metadata_only_change = _prod._is_field_metadata_only_change
 _was_deprecated = _prod._was_deprecated
+_is_accepted_removed_member = _prod._is_accepted_removed_member
 get_pypi_baseline_version = _prod.get_pypi_baseline_version
 
 # Reusable test config matching the _write_pkg_init helper
@@ -552,6 +553,70 @@ def test_workspace_removed_export_is_breaking(tmp_path):
     assert undeprecated == 1
 
 
+def test_accepted_docker_mount_dir_member_removal_detection_is_exact():
+    assert _is_accepted_removed_member(
+        "openhands.workspace", "DockerWorkspace.mount_dir"
+    )
+    assert _is_accepted_removed_member(
+        "openhands.workspace", "DockerDevWorkspace.mount_dir"
+    )
+    assert not _is_accepted_removed_member(
+        "openhands.workspace", "ApptainerWorkspace.mount_dir"
+    )
+    assert not _is_accepted_removed_member("openhands.sdk", "DockerWorkspace.mount_dir")
+
+
+def test_accepted_docker_mount_dir_removal_is_not_breaking(tmp_path, capsys):
+    ws_cfg = PackageConfig(
+        package="openhands.workspace",
+        distribution="openhands-workspace",
+        source_dir="openhands-workspace",
+    )
+    old_pkg = _write_pkg_init(
+        tmp_path,
+        "old",
+        ["DockerWorkspace", "DockerDevWorkspace"],
+        module_parts=("openhands", "workspace"),
+    )
+    new_pkg = _write_pkg_init(
+        tmp_path,
+        "new",
+        ["DockerWorkspace", "DockerDevWorkspace"],
+        module_parts=("openhands", "workspace"),
+    )
+
+    old_pkg.joinpath("__init__.py").write_text(
+        old_pkg.joinpath("__init__.py").read_text()
+        + "\nfrom pydantic import BaseModel, Field\n\n"
+        + "class DockerWorkspace(BaseModel):\n"
+        + "    mount_dir: str | None = Field(default=None)\n\n"
+        + "class DockerDevWorkspace(DockerWorkspace):\n"
+        + "    pass\n"
+    )
+    new_pkg.joinpath("__init__.py").write_text(
+        new_pkg.joinpath("__init__.py").read_text()
+        + "\nfrom pydantic import BaseModel\n\n"
+        + "class DockerWorkspace(BaseModel):\n"
+        + "    pass\n\n"
+        + "class DockerDevWorkspace(DockerWorkspace):\n"
+        + "    pass\n"
+    )
+
+    old_root = griffe.load("openhands.workspace", search_paths=[str(tmp_path / "old")])
+    new_root = griffe.load("openhands.workspace", search_paths=[str(tmp_path / "new")])
+
+    total_breaks, removal_policy_errors = _prod._compute_breakages(
+        old_root,
+        new_root,
+        ws_cfg,
+    )
+
+    assert total_breaks == 0
+    assert removal_policy_errors == 0
+    captured = capsys.readouterr()
+    assert "Accepted removal of DockerWorkspace.mount_dir" in captured.out
+
+
 def test_unresolved_alias_exports_do_not_crash_breakage_detection(tmp_path):
     """Unresolvable aliases should not abort checking other exports.
 
@@ -629,6 +694,16 @@ def test_is_field_default_only_change_detects_keyword_default_change():
     assert _is_field_default_only_change(old, new) is True
 
 
+def test_is_field_default_only_change_detects_keyword_default_factory_change():
+    """Changing only Field default_factory is classified separately."""
+    old = "Field(default_factory=datetime.now, description='desc')"
+    new = (
+        "Field(default_factory=lambda: datetime.now().astimezone(), description='new')"
+    )
+
+    assert _is_field_default_only_change(old, new) is True
+
+
 def test_is_field_default_only_change_ignores_other_runtime_changes():
     """Changing non-default runtime kwargs is not a default-only change."""
     old = "Field(default='claude-sonnet-4-20250514', alias='model')"
@@ -642,6 +717,14 @@ def test_field_default_repr_supports_positional_default():
     assert (
         _field_default_repr("Field('gpt-5.5', description='Model name.')")
         == "'gpt-5.5'"
+    )
+
+
+def test_field_default_repr_supports_default_factory():
+    """Field default_factory values are normalized for reporting."""
+    assert (
+        _field_default_repr("Field(default_factory=datetime.now, description='desc')")
+        == "datetime.now"
     )
 
 
@@ -936,6 +1019,54 @@ def test_field_default_change_is_reported_but_not_breaking(tmp_path):
             object_path="openhands.sdk.Config.model",
             old_default="'claude-sonnet-4-20250514'",
             new_default="'gpt-5.5'",
+        )
+    ]
+
+
+def test_field_default_factory_change_is_reported_but_not_breaking(tmp_path):
+    """Public Field default_factory changes should be collected for release notes."""
+    old_pkg = _write_pkg_init(tmp_path, "old", ["Config"])
+    new_pkg = _write_pkg_init(tmp_path, "new", ["Config"])
+
+    old_init = old_pkg / "__init__.py"
+    new_init = new_pkg / "__init__.py"
+
+    old_init.write_text(
+        old_init.read_text()
+        + "\nfrom datetime import datetime\n"
+        + "from pydantic import BaseModel, Field\n\n"
+        + "class Config(BaseModel):\n"
+        + "    current_datetime: datetime = Field(default_factory=datetime.now)\n"
+    )
+    new_init.write_text(
+        new_init.read_text()
+        + "\nfrom datetime import datetime\n"
+        + "from pydantic import BaseModel, Field\n\n"
+        + "class Config(BaseModel):\n"
+        + "    current_datetime: datetime = Field(\n"
+        + "        default_factory=lambda: datetime.now().astimezone(),\n"
+        + "    )\n"
+    )
+
+    old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])
+    new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
+
+    field_default_changes: list[FieldDefaultChange] = []
+    total_breaks, undeprecated = _prod._compute_breakages(
+        old_root,
+        new_root,
+        _SDK_CFG,
+        field_default_changes=field_default_changes,
+    )
+
+    assert total_breaks == 0
+    assert undeprecated == 0
+    assert field_default_changes == [
+        _prod.FieldDefaultChange(
+            package="openhands.sdk",
+            object_path="openhands.sdk.Config.current_datetime",
+            old_default="datetime.now",
+            new_default="lambda: datetime.now().astimezone()",
         )
     ]
 

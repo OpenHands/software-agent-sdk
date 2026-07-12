@@ -13,10 +13,12 @@ from litellm import ChatCompletionToolParam
 from openai.types.responses import FunctionToolParam
 from pydantic import Field, ValidationError
 
+from openhands.sdk.llm import TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.definition import MCPToolAction, MCPToolObservation
 from openhands.sdk.observability.laminar import observe
+from openhands.sdk.skills.utils import expand_variable_references
 from openhands.sdk.tool import (
     Action,
     Observation,
@@ -29,6 +31,7 @@ from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
 
 logger = get_logger(__name__)
+
 
 # Default timeout for MCP tool execution in seconds
 MCP_TOOL_TIMEOUT_SECONDS = 300
@@ -63,12 +66,38 @@ class MCPToolExecutor(ToolExecutor):
 
     @observe(name="MCPToolExecutor.call_tool", span_type="TOOL")
     async def call_tool(self, action: MCPToolAction) -> MCPToolObservation:
-        """Execute the MCP tool call using the already-connected client."""
+        """Execute the MCP tool call using the already-connected client.
+
+        If the client's session has been lost (e.g., due to a transient
+        server error such as HTTP 503), attempt to reconnect once before
+        failing. This prevents a single transient error from permanently
+        disabling all MCP tools for the remainder of the conversation.
+        """
         if not self.client.is_connected():
-            raise RuntimeError(
-                f"MCP client not connected for tool '{self.tool_name}'. "
-                "The connection may have been closed or failed to establish."
+            if self.client._closed:
+                return MCPToolObservation.from_text(
+                    text=(
+                        f"MCP client not connected for tool '{self.tool_name}'. "
+                        "The client has been closed and cannot be reconnected."
+                    ),
+                    is_error=True,
+                    tool_name=self.tool_name,
+                )
+            logger.info(
+                f"MCP client not connected for tool '{self.tool_name}'; "
+                "attempting reconnection before failing."
             )
+            try:
+                await self.client.connect()
+            except Exception as exc:
+                return MCPToolObservation.from_text(
+                    text=(
+                        f"MCP client not connected for tool '{self.tool_name}'. "
+                        f"Reconnection attempt failed: {exc}"
+                    ),
+                    is_error=True,
+                    tool_name=self.tool_name,
+                )
         try:
             logger.debug(
                 f"Calling MCP tool {self.tool_name} with args: {action.model_dump()}"
@@ -91,13 +120,38 @@ class MCPToolExecutor(ToolExecutor):
     def __call__(
         self,
         action: MCPToolAction,
-        conversation: "LocalConversation | None" = None,  # noqa: ARG002
+        conversation: "LocalConversation | None" = None,
     ) -> MCPToolObservation:
-        """Execute an MCP tool call."""
+        """Execute an MCP tool call.
+
+        If a conversation is provided, secret references in the action data
+        (e.g., $VAR, ${VAR}, ${VAR:-default}) are expanded using the
+        conversation's secret registry before calling the MCP server.
+        """
+        # Expand secret references (e.g. $VAR, ${VAR}, ${VAR:-default}) in the
+        # action data, mirroring how terminal commands resolve secrets before
+        # execution. Reuses the same expander as MCP config expansion.
+        expanded_action = action
+        if conversation is not None:
+            try:
+                secret_registry = conversation.state.secret_registry
+                expanded_data = expand_variable_references(
+                    action.data,
+                    get_secret=secret_registry.get_secret_value,
+                    check_env=False,  # secrets only — never expand host env vars
+                    support_unbraced=True,  # also resolve $VAR like the shell
+                )
+                expanded_action = action.model_copy(update={"data": expanded_data})
+            except Exception as e:
+                logger.warning(f"Failed to expand secrets in MCP tool action: {e}")
+                # Fall back to original action if expansion fails
+
         try:
-            return self.client.call_async_from_sync(
-                self.call_tool, action=action, timeout=self.timeout
+            observation = self.client.call_async_from_sync(
+                self.call_tool, action=expanded_action, timeout=self.timeout
             )
+            # Mask secrets in observation output
+            return self._mask_observation(observation, conversation)
         except TimeoutError:
             error_msg = (
                 f"MCP tool '{self.tool_name}' timed out after {self.timeout} seconds. "
@@ -110,6 +164,29 @@ class MCPToolExecutor(ToolExecutor):
                 is_error=True,
                 tool_name=self.tool_name,
             )
+
+    def _mask_observation(
+        self,
+        observation: MCPToolObservation,
+        conversation: "LocalConversation | None" = None,
+    ) -> MCPToolObservation:
+        """Apply automatic secrets masking to observation content."""
+        if conversation is None:
+            return observation
+
+        try:
+            secret_registry = conversation.state.secret_registry
+            # Mask secrets in text blocks; pass image blocks through untouched.
+            masked_content = [
+                TextContent(text=secret_registry.mask_secrets_in_output(block.text))
+                if isinstance(block, TextContent) and block.text
+                else block
+                for block in observation.content
+            ]
+            return observation.model_copy(update={"content": masked_content})
+        except Exception as e:
+            logger.warning(f"Failed to mask secrets in MCP observation: {e}")
+            return observation
 
     def close(self) -> None:
         self.client.sync_close()
@@ -219,7 +296,11 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
         exclude_fields = set(DiscriminatedUnionMixin.model_fields.keys()) | set(
             DiscriminatedUnionMixin.model_computed_fields.keys()
         )
-        sanitized = validated.model_dump(exclude_none=True, exclude=exclude_fields)
+        sanitized = validated.model_dump(
+            by_alias=True,  # Use MCP arg names (e.g. "kind"), not internal fields.
+            exclude_none=True,
+            exclude=exclude_fields,
+        )
         return MCPToolAction(data=sanitized)
 
     @classmethod
