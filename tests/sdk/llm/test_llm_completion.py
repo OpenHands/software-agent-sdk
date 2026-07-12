@@ -1156,6 +1156,65 @@ def _make_streaming_chunks(text: str = "Hello world!"):
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
+def test_empty_stream_retries_and_succeeds(mock_completion):
+    chunks = _make_streaming_chunks()
+    mock_completion.side_effect = [iter(()), iter(chunks)]
+
+    llm = LLM(
+        usage_id="test-llm",
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        num_retries=2,
+        retry_multiplier=0,
+        retry_min_wait=0,
+        retry_max_wait=0,
+    )
+
+    received: list[ModelResponseStream] = []
+    response = llm.completion(
+        messages=[Message(role="user", content=[TextContent(text="Hi")])],
+        stream=True,
+        on_token=received.append,
+    )
+
+    assert received == chunks
+    assert mock_completion.call_count == 2
+    assert response.message.role == "assistant"
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.litellm_acompletion", new_callable=AsyncMock)
+async def test_empty_async_stream_retries_and_succeeds(mock_acompletion):
+    async def _stream(chunks: list[ModelResponseStream]):
+        for chunk in chunks:
+            yield chunk
+
+    chunks = _make_streaming_chunks()
+    mock_acompletion.side_effect = [_stream([]), _stream(chunks)]
+
+    llm = LLM(
+        usage_id="test-llm",
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        num_retries=2,
+        retry_multiplier=0,
+        retry_min_wait=0,
+        retry_max_wait=0,
+    )
+
+    received: list[ModelResponseStream] = []
+    response = await llm.acompletion(
+        messages=[Message(role="user", content=[TextContent(text="Hi")])],
+        stream=True,
+        on_token=received.append,
+    )
+
+    assert received == chunks
+    assert mock_acompletion.await_count == 2
+    assert response.message.role == "assistant"
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
 @patch("openhands.sdk.llm.llm.litellm.stream_chunk_builder")
 def test_streaming_accepts_plain_iterator(mock_stream_builder, mock_completion):
     """A sync iterator (no ``CustomStreamWrapper``) must still drive streaming.
