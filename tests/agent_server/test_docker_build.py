@@ -4,6 +4,7 @@ import os
 import subprocess
 import tarfile
 from pathlib import Path
+from typing import Literal
 from unittest.mock import patch
 
 import pytest
@@ -454,6 +455,29 @@ def test_all_tags_include_short_long_sha_and_branch():
     ]
 
 
+def test_lite_flavor_has_distinct_image_and_cache_tags():
+    from openhands.agent_server.docker.build import BuildOptions
+
+    opts = BuildOptions(
+        base_image="python:3.13",
+        custom_tags="python",
+        git_sha="abc1234567890fedcba",
+        git_ref="refs/heads/main",
+        image_flavor="lite",
+        include_base_tag=False,
+    )
+
+    assert opts.all_tags == [
+        "ghcr.io/openhands/agent-server:abc1234-python-lite",
+        "ghcr.io/openhands/agent-server:abc1234567890fedcba-python-lite",
+        "ghcr.io/openhands/agent-server:main-python-lite",
+    ]
+    assert opts.cache_tags == (
+        "buildcache-binary-python_tag_3.13-lite-main",
+        "buildcache-binary-python_tag_3.13-lite",
+    )
+
+
 def test_all_tags_includes_versioned_tags():
     """Test that all_tags includes bare semver aliases when enabled for a tag build."""
     from openhands.agent_server.docker.build import BuildOptions
@@ -802,6 +826,52 @@ def test_build_with_telemetry_returns_parsed_buildkit_fields(tmp_path: Path):
     assert result.telemetry.export_manifest_seconds == 3.7
     assert result.telemetry.cache_import_miss_count == 1
     assert result.telemetry.cached_step_count == 1
+
+
+@pytest.mark.parametrize(
+    ("image_flavor", "install_acp"), (("default", "1"), ("lite", "0"))
+)
+def test_image_flavor_controls_acp_build_arg(
+    tmp_path: Path,
+    image_flavor: Literal["default", "lite"],
+    install_acp: str,
+):
+    from openhands.agent_server.docker.build import (
+        BuildOptions,
+        _default_sdk_project_root,
+        build,
+    )
+
+    ctx = tmp_path / "ctx"
+    ctx.mkdir()
+    docker_calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], cwd: str | None = None):
+        if cmd[:3] == ["docker", "buildx", "inspect"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="Driver: docker\n")
+        docker_calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+    opts = BuildOptions(
+        custom_tags="python",
+        git_sha="abc1234567890",
+        git_ref="refs/heads/main",
+        image_flavor=image_flavor,
+        push=True,
+        sdk_project_root=_default_sdk_project_root(),
+    )
+
+    with (
+        patch(
+            "openhands.agent_server.docker.build._make_build_context",
+            return_value=ctx,
+        ),
+        patch("openhands.agent_server.docker.build._run", side_effect=fake_run),
+        patch("openhands.agent_server.docker.build.shutil.rmtree"),
+    ):
+        build(opts)
+
+    assert f"INSTALL_ACP={install_acp}" in docker_calls[0]
 
 
 def test_build_with_telemetry_preserves_telemetry_on_failure(tmp_path: Path):
