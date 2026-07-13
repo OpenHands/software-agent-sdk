@@ -262,7 +262,6 @@ class TestLoadAllSkills:
     def test_load_all_skills_registered_marketplaces_keep_legacy_public(
         self, tmp_path: Path
     ):
-        """Registered marketplaces load public-tier plugin skills additively."""
         marketplace_dir = _create_test_marketplace(tmp_path / "marketplace")
         user_skill = Skill(name="user-skill", content="user", trigger=None)
 
