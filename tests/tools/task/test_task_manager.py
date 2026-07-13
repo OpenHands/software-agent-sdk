@@ -1,7 +1,7 @@
 import uuid
 from pathlib import Path
 from typing import Any, cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import SecretStr
@@ -323,6 +323,33 @@ class TestTaskManager:
         assert not manager._persistence_dir.exists()
         assert len(manager._tasks) == 0
 
+    def test_interrupt_pauses_only_running_tasks(self, tmp_path):
+        manager, _ = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+        running = manager._create_task(
+            subagent_type="general-purpose",
+            description="running task",
+        )
+        completed = manager._create_task(
+            subagent_type="general-purpose",
+            description="completed task",
+        )
+        completed.set_result("done")
+        assert running.conversation is not None
+        assert completed.conversation is not None
+
+        manager.interrupt()
+        manager.interrupt()
+
+        assert (
+            running.conversation.state.execution_status
+            == ConversationExecutionStatus.PAUSED
+        )
+        assert (
+            completed.conversation.state.execution_status
+            == ConversationExecutionStatus.IDLE
+        )
+
     def test_returns_local_conversation(self, tmp_path):
         manager, _ = _manager_with_parent(tmp_path)
         register_builtins_agents()
@@ -397,7 +424,9 @@ class TestTaskManager:
 
 def _make_task_with_mock_conv(task_id: str, **conv_kwargs) -> Task:
     """Create a Task with a MagicMock conversation, bypassing Pydantic validation."""
+    arun_side_effect = conv_kwargs.pop("arun.side_effect", None)
     mock_conv = MagicMock(**conv_kwargs)
+    mock_conv.arun = AsyncMock(side_effect=arun_side_effect)
     # Default to a FINISHED run; a non-FINISHED status is now surfaced as an error,
     # so override state.execution_status to test stuck/paused paths.
     mock_conv.state.execution_status = ConversationExecutionStatus.FINISHED
@@ -453,7 +482,7 @@ class TestRunTask:
         conversation.send_message.assert_called_once_with(  # type: ignore[attr-defined]
             "do something", sender=None
         )
-        conversation.run.assert_called_once()  # type: ignore[attr-defined]
+        conversation.arun.assert_awaited_once()  # type: ignore[attr-defined]
 
     @patch(
         "openhands.tools.task.manager.get_agent_final_response",
@@ -480,7 +509,7 @@ class TestRunTask:
         manager, _ = _manager_with_parent(tmp_path)
 
         task = _make_task_with_mock_conv(
-            "task_00000001", **{"run.side_effect": RuntimeError("agent exploded")}
+            "task_00000001", **{"arun.side_effect": RuntimeError("agent exploded")}
         )
         manager._tasks[task.id] = task
 
@@ -514,7 +543,7 @@ class TestRunTask:
         manager, _ = _manager_with_parent(tmp_path)
 
         task = _make_task_with_mock_conv(
-            "task_00000001", **{"run.side_effect": RuntimeError("boom")}
+            "task_00000001", **{"arun.side_effect": RuntimeError("boom")}
         )
         mock_conv = task.conversation
         manager._tasks[task.id] = task

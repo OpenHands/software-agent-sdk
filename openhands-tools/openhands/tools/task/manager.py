@@ -10,6 +10,7 @@ a temporary directory, ensuring the state can be restored
 if the task is resumed for further work later.
 """
 
+import asyncio
 import shutil
 import tempfile
 import threading
@@ -400,7 +401,13 @@ class TaskManager:
         self, task_id: str, conversation: LocalConversation
     ) -> None:
         """Run a sub-agent conversation to completion, handling confirmations."""
-        conversation.run()
+        asyncio.run(self._arun_until_finished(task_id, conversation))
+
+    async def _arun_until_finished(
+        self, task_id: str, conversation: LocalConversation
+    ) -> None:
+        """Run a sub-agent asynchronously so in-flight work can be interrupted."""
+        await conversation.arun()
         while (
             conversation.state.execution_status
             == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
@@ -412,10 +419,10 @@ class TaskManager:
             if self._confirmation_handler is None or self._confirmation_handler(
                 task_id, pending
             ):
-                conversation.run()
+                await conversation.arun()
             else:
                 conversation.reject_pending_actions("User rejected the actions")
-                conversation.run()
+                await conversation.arun()
 
     def _set_confirmation_policy(
         self,
@@ -443,8 +450,24 @@ class TaskManager:
                 task.conversation.conversation_stats.get_combined_metrics()
             )
 
+    def interrupt(self) -> None:
+        """Interrupt all active sub-agent conversations."""
+        with self._tasks_lock:
+            active_tasks = tuple(
+                (task.id, task.conversation)
+                for task in self._tasks.values()
+                if task.status == TaskStatus.RUNNING and task.conversation is not None
+            )
+
+        for task_id, conversation in active_tasks:
+            try:
+                conversation.interrupt()
+            except Exception:
+                logger.warning("Error interrupting task '%s'", task_id, exc_info=True)
+
     def close(self) -> None:
         """Clean up temporary directory (if used) and remove all created tasks."""
+        self.interrupt()
         # Only clean up when using a temp dir (parent had no persistence).
         # When the parent persists, subagent data lives under its directory.
         parent_persists = (
