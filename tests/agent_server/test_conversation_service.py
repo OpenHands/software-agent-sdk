@@ -7,7 +7,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from litellm.types.utils import ChatCompletionMessageToolCall, Function
@@ -136,6 +136,21 @@ def conversation_service():
         # Initialize the _event_services dict to simulate an active service
         service._event_services = {}
         yield service
+
+
+@pytest.fixture
+async def persisted_conversation(tmp_path) -> tuple[Path, UUID]:
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        conversation_info, _ = await service.start_conversation(request)
+    return conversations_dir, conversation_info.id
 
 
 @pytest.mark.asyncio
@@ -597,6 +612,158 @@ async def test_concurrent_access_hydrates_conversation_once(tmp_path):
         assert start_event_service.await_count == 1
         assert services[0] is not None
         assert all(service is services[0] for service in services)
+
+
+@pytest.mark.asyncio
+async def test_status_filters_refresh_unloaded_shared_state(persisted_conversation):
+    conversations_dir, conversation_id = persisted_conversation
+
+    async with ConversationService(conversations_dir=conversations_dir) as primary:
+        primary_runtime = await primary.get_event_service(conversation_id)
+        assert primary_runtime is not None
+
+        async with ConversationService(conversations_dir=conversations_dir) as observer:
+            assert observer._event_services == {}
+            assert (
+                observer._conversation_records[conversation_id].execution_status
+                == ConversationExecutionStatus.IDLE
+            )
+
+            primary_state = await primary_runtime.get_state()
+            primary_state.execution_status = ConversationExecutionStatus.RUNNING
+            assert (
+                await observer.count_conversations(
+                    execution_status=ConversationExecutionStatus.RUNNING
+                )
+                == 1
+            )
+
+            primary_state.execution_status = ConversationExecutionStatus.PAUSED
+            page = await observer.search_conversations(
+                execution_status=ConversationExecutionStatus.PAUSED
+            )
+            assert [item.id for item in page.items] == [conversation_id]
+            assert observer._event_services == {}
+
+
+@pytest.mark.asyncio
+async def test_waiting_hydration_cannot_restore_deleted_conversation(
+    persisted_conversation,
+):
+    conversations_dir, conversation_id = persisted_conversation
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        record = service._conversation_records[conversation_id]
+        state = ConversationState(
+            id=conversation_id,
+            agent=record.stored.agent,
+            workspace=record.stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=record.stored.confirmation_policy,
+        )
+        deleting_runtime = AsyncMock(spec=EventService)
+        deleting_runtime.is_open.return_value = True
+        deleting_runtime.stored = record.stored
+        deleting_runtime.get_state.return_value = state
+        deleting_runtime.conversation_dir = conversations_dir / conversation_id.hex
+
+        replacement_runtime = AsyncMock(spec=EventService)
+        replacement_runtime.stored = record.stored
+
+        async def publish_replacement(_stored: StoredConversation) -> EventService:
+            assert service._event_services is not None
+            service._event_services[conversation_id] = replacement_runtime
+            service._conversation_records[conversation_id] = record
+            return replacement_runtime
+
+        with (
+            patch.object(
+                service,
+                "_start_event_service",
+                side_effect=publish_replacement,
+            ) as start_event_service,
+            patch("openhands.agent_server.conversation_service.safe_rmtree"),
+        ):
+            await service._lifecycle_lock.acquire()
+            try:
+                getter_task = asyncio.create_task(
+                    service.get_event_service(conversation_id)
+                )
+                await asyncio.sleep(0)
+                assert service._event_services is not None
+                service._event_services[conversation_id] = deleting_runtime
+                delete_task = asyncio.create_task(
+                    service.delete_conversation(conversation_id)
+                )
+                await asyncio.sleep(0)
+            finally:
+                service._lifecycle_lock.release()
+
+            getter_result, deleted = await asyncio.gather(getter_task, delete_task)
+
+        assert getter_result is deleting_runtime
+        assert deleted is True
+        start_event_service.assert_not_awaited()
+        assert service._event_services is not None
+        assert conversation_id not in service._event_services
+        assert conversation_id not in service._conversation_records
+
+
+@pytest.mark.asyncio
+async def test_shutdown_closes_runtime_from_in_flight_hydration(
+    persisted_conversation,
+):
+    conversations_dir, conversation_id = persisted_conversation
+    service = ConversationService(conversations_dir=conversations_dir)
+    await service.__aenter__()
+    record = service._conversation_records[conversation_id]
+    state = ConversationState(
+        id=conversation_id,
+        agent=record.stored.agent,
+        workspace=record.stored.workspace,
+        execution_status=ConversationExecutionStatus.IDLE,
+        confirmation_policy=record.stored.confirmation_policy,
+    )
+    startup_entered = asyncio.Event()
+    finish_startup = asyncio.Event()
+    runtime = AsyncMock(spec=EventService)
+    runtime.stored = record.stored
+    runtime.get_state.return_value = state
+
+    async def blocking_start() -> None:
+        startup_entered.set()
+        await finish_startup.wait()
+
+    async def close_on_exit(*_args) -> None:
+        await runtime.close()
+
+    runtime.start.side_effect = blocking_start
+    runtime.__aexit__.side_effect = close_on_exit
+
+    try:
+        with patch(
+            "openhands.agent_server.conversation_service.EventService",
+            return_value=runtime,
+        ):
+            hydration_task = asyncio.create_task(
+                service.get_event_service(conversation_id)
+            )
+            await asyncio.wait_for(startup_entered.wait(), timeout=1)
+            shutdown_task = asyncio.create_task(service.__aexit__(None, None, None))
+            await asyncio.sleep(0)
+            finish_startup.set()
+            hydrated_runtime, _ = await asyncio.wait_for(
+                asyncio.gather(hydration_task, shutdown_task), timeout=1
+            )
+    finally:
+        finish_startup.set()
+        if service._event_services is not None:
+            await service.__aexit__(None, None, None)
+
+    assert hydrated_runtime is runtime
+    assert service._event_services is None
+    assert service._conversation_records == {}
+    runtime.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio

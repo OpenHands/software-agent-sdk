@@ -505,7 +505,7 @@ class ConversationService:
     _conversation_records: dict[UUID, _ConversationRecord] = field(
         default_factory=dict, init=False
     )
-    _hydration_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+    _lifecycle_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     _conversation_webhook_subscribers: list["ConversationWebhookSubscriber"] = field(
         default_factory=list, init=False
     )
@@ -586,6 +586,12 @@ class ConversationService:
         if event_service is not None and event_service.is_open():
             state = await event_service.get_state()
             record.execution_status = state.execution_status
+        else:
+            state = await asyncio.to_thread(
+                self._load_persisted_state_sync, conversation_id
+            )
+            if state is not None:
+                record.execution_status = state.execution_status
         return record.execution_status
 
     async def _reconcile_active_records(self) -> None:
@@ -638,6 +644,12 @@ class ConversationService:
     async def _get_or_load_event_service(
         self, conversation_id: UUID
     ) -> EventService | None:
+        async with self._lifecycle_lock:
+            return await self._get_or_load_event_service_locked(conversation_id)
+
+    async def _get_or_load_event_service_locked(
+        self, conversation_id: UUID
+    ) -> EventService | None:
         event_services = self._event_services
         if event_services is None:
             raise ValueError("inactive_service")
@@ -650,26 +662,17 @@ class ConversationService:
         if record is None:
             return None
 
-        # A single lock keeps check-and-hydrate atomic. Hydration is rare and
-        # expensive, so serializing it also bounds transient memory pressure.
-        async with self._hydration_lock:
-            event_service = event_services.get(conversation_id)
-            if event_service is not None and event_service.is_open():
-                return event_service
-            if event_service is not None:
-                event_services.pop(conversation_id, None)
-
-            await asyncio.to_thread(self._prepare_persisted_runtime, record.stored)
-            try:
-                return await self._start_event_service(record.stored)
-            except ConversationLeaseHeldError as exc:
-                logger.debug(
-                    "Skipping active conversation %s owned by %s until %s",
-                    conversation_id,
-                    exc.owner_instance_id,
-                    exc.expires_at,
-                )
-                return None
+        await asyncio.to_thread(self._prepare_persisted_runtime, record.stored)
+        try:
+            return await self._start_event_service(record.stored)
+        except ConversationLeaseHeldError as exc:
+            logger.debug(
+                "Skipping active conversation %s owned by %s until %s",
+                conversation_id,
+                exc.owner_instance_id,
+                exc.expires_at,
+            )
+            return None
 
     async def get_conversation(self, conversation_id: UUID) -> ConversationInfo | None:
         if self._event_services is None:
@@ -1022,7 +1025,8 @@ class ConversationService:
                 launched_agent_profile=launched_agent_profile,
                 **request_data,
             )
-        event_service = await self._start_event_service(stored)
+        async with self._lifecycle_lock:
+            event_service = await self._start_event_service(stored)
         initial_message = request.initial_message
         if initial_message:
             message = Message(
@@ -1073,11 +1077,16 @@ class ConversationService:
         return bool(await self._get_or_load_event_service(conversation_id))
 
     async def delete_conversation(self, conversation_id: UUID) -> bool:
-        event_services = self._event_services
-        if event_services is None:
-            raise ValueError("inactive_service")
-        event_service = await self._get_or_load_event_service(conversation_id)
-        if event_service:
+        async with self._lifecycle_lock:
+            event_services = self._event_services
+            if event_services is None:
+                raise ValueError("inactive_service")
+            event_service = await self._get_or_load_event_service_locked(
+                conversation_id
+            )
+            if event_service is None:
+                return False
+
             event_services.pop(conversation_id, None)
             self._conversation_records.pop(conversation_id, None)
             # Notify conversation webhooks about the stopped conversation before closing
@@ -1114,7 +1123,6 @@ class ConversationService:
 
             logger.info(f"Successfully deleted conversation {conversation_id}")
             return True
-        return False
 
     async def update_conversation(
         self, conversation_id: UUID, request: UpdateConversationRequest
@@ -1284,7 +1292,8 @@ class ConversationService:
         # directory so we don't leave stale state on disk.
         fork_dir = self.conversations_dir / fork_conv_id.hex
         try:
-            fork_event_service = await self._start_event_service(fork_stored)
+            async with self._lifecycle_lock:
+                fork_event_service = await self._start_event_service(fork_stored)
         except Exception:
             safe_rmtree(fork_dir)
             raise
@@ -1382,11 +1391,12 @@ class ConversationService:
                 await self._lease_renewal_task
             self._lease_renewal_task = None
 
-        event_services = self._event_services
-        if event_services is None:
-            return
-        self._event_services = None
-        self._conversation_records = {}
+        async with self._lifecycle_lock:
+            event_services = self._event_services
+            if event_services is None:
+                return
+            self._event_services = None
+            self._conversation_records = {}
         # This stops conversations and saves meta
         await asyncio.gather(
             *[
@@ -1466,6 +1476,8 @@ class ConversationService:
             # Save metadata immediately after successful start to ensure persistence
             # even if the system is not shut down gracefully
             await event_service.save_meta()
+            if self._event_services is not event_services:
+                raise ValueError("inactive_service")
         except Exception:
             # Clean up the event service if startup fails
             await event_service.close()
