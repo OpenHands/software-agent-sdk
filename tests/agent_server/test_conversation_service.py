@@ -821,6 +821,73 @@ class TestConversationServiceSearchConversations:
         assert result.next_page_id is None
 
     @pytest.mark.asyncio
+    async def test_search_and_count_use_metadata_index(self, conversation_service):
+        services_by_id = {}
+        conversation_ids = []
+        statuses = [
+            ConversationExecutionStatus.IDLE,
+            ConversationExecutionStatus.RUNNING,
+            ConversationExecutionStatus.IDLE,
+            ConversationExecutionStatus.RUNNING,
+            ConversationExecutionStatus.IDLE,
+        ]
+        for i, status in enumerate(statuses):
+            stored_conv = StoredConversation(
+                id=uuid4(),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+                workspace=LocalWorkspace(working_dir="workspace/project"),
+                confirmation_policy=NeverConfirm(),
+                initial_message=None,
+                metrics=None,
+                created_at=datetime(2025, 1, 1, 12, i, 0, tzinfo=UTC),
+                updated_at=datetime(2025, 1, 1, 13, i, 0, tzinfo=UTC),
+            )
+            mock_service = AsyncMock(spec=EventService)
+            mock_service.stored = stored_conv
+            mock_service.get_state.return_value = ConversationState(
+                id=stored_conv.id,
+                agent=stored_conv.agent,
+                workspace=stored_conv.workspace,
+                execution_status=status,
+                confirmation_policy=stored_conv.confirmation_policy,
+            )
+            conversation_service._event_services[stored_conv.id] = mock_service
+            conversation_service._set_conversation_metadata_from_stored(
+                stored_conv, status
+            )
+            conversation_ids.append(stored_conv.id)
+            services_by_id[stored_conv.id] = mock_service
+
+        result = await conversation_service.search_conversations(limit=2)
+
+        assert [item.id for item in result.items] == [
+            conversation_ids[4],
+            conversation_ids[3],
+        ]
+        assert result.next_page_id == conversation_ids[2].hex
+        assert services_by_id[conversation_ids[4]].get_state.call_count == 1
+        assert services_by_id[conversation_ids[3]].get_state.call_count == 1
+        assert services_by_id[conversation_ids[2]].get_state.call_count == 0
+        assert services_by_id[conversation_ids[1]].get_state.call_count == 0
+        assert services_by_id[conversation_ids[0]].get_state.call_count == 0
+
+        call_counts = {
+            conversation_id: service.get_state.call_count
+            for conversation_id, service in services_by_id.items()
+        }
+        assert await conversation_service.count_conversations() == 5
+        assert (
+            await conversation_service.count_conversations(
+                ConversationExecutionStatus.IDLE
+            )
+            == 3
+        )
+        assert {
+            conversation_id: service.get_state.call_count
+            for conversation_id, service in services_by_id.items()
+        } == call_counts
+
+    @pytest.mark.asyncio
     async def test_search_conversations_combined_filter_and_sort(
         self, conversation_service
     ):
