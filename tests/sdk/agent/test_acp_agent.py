@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from concurrent.futures import Future
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -95,6 +95,11 @@ def _make_agent(**kwargs) -> ACPAgent:
         servers = mcp_config.get("mcpServers", mcp_config)
         kwargs["mcp_config"] = coerce_mcp_config(servers)
     return ACPAgent(acp_command=["echo", "test"], **kwargs)
+
+
+def _agent_conn(agent: ACPAgent) -> Any:
+    assert agent._conn is not None
+    return cast(Any, agent._conn)
 
 
 def _make_state(tmp_path) -> ConversationState:
@@ -1643,7 +1648,7 @@ class TestACPAgentStep:
         mock_client.get_turn_usage_update = MagicMock(return_value=object())
         agent._client = mock_client
         agent._conn = MagicMock()
-        agent._conn.prompt = AsyncMock(return_value=None)
+        _agent_conn(agent).prompt = AsyncMock(return_value=None)
         agent._session_id = "test-session"
 
         def _fake_run_async(coro_factory, **_kwargs):
@@ -1690,7 +1695,7 @@ class TestACPAgentStep:
 
         agent.step(conversation, on_event=lambda _: None)
 
-        prompt_call = agent._conn.prompt.await_args
+        prompt_call = _agent_conn(agent).prompt.await_args
         assert prompt_call is not None
         assert prompt_call.kwargs["session_id"] == "test-session"
         prompt_blocks = prompt_call.kwargs["prompt"]
@@ -1741,7 +1746,7 @@ class TestACPAgentStep:
 
         agent.step(conversation, on_event=lambda _: None)
 
-        prompt_call = agent._conn.prompt.await_args
+        prompt_call = _agent_conn(agent).prompt.await_args
         assert prompt_call is not None
         assert prompt_call.kwargs["session_id"] == "test-session"
         prompt_text = "\n\n".join(
@@ -1800,7 +1805,7 @@ class TestACPAgentStep:
 
         agent.step(conversation, on_event=lambda _: None)
 
-        prompt_call = agent._conn.prompt.await_args
+        prompt_call = _agent_conn(agent).prompt.await_args
         assert prompt_call is not None
         assert prompt_call.kwargs["session_id"] == "test-session"
         prompt_text = "\n\n".join(
@@ -1834,7 +1839,8 @@ class TestACPAgentStep:
 
         agent.step(conversation, on_event=lambda _: None)
 
-        prompt_call = agent._conn.prompt.await_args
+        prompt_call = _agent_conn(agent).prompt.await_args
+        assert prompt_call is not None
         assert prompt_call.kwargs["session_id"] == "test-session"
         prompt_text = "\n\n".join(
             b.text for b in prompt_call.kwargs["prompt"] if hasattr(b, "text")
@@ -2065,14 +2071,14 @@ class TestACPAgentAstep:
         agent._client = mock_client
         agent._conn = MagicMock()
 
-        async def _fake_prompt(prompt, session_id):  # noqa: ARG001
+        async def _fake_prompt(session_id, prompt):  # noqa: ARG001
             # Must execute on the portal loop's thread, not the caller's
             # — proves we actually crossed the loop boundary.
             prompt_thread_id.append(threading.get_ident())
             mock_client.accumulated_text.append("answer")
             return None
 
-        agent._conn.prompt = _fake_prompt
+        _agent_conn(agent).prompt = _fake_prompt
         agent._session_id = "test-session"
 
         executor = AsyncExecutor()
@@ -2121,11 +2127,11 @@ class TestACPAgentAstep:
         agent._session_id = "test-session"
         agent._restart_session_on_next_turn = True
 
-        async def _fake_prompt(prompt, session_id):  # noqa: ARG001
+        async def _fake_prompt(session_id, prompt):  # noqa: ARG001
             mock_client.accumulated_text.append("answer")
             return None
 
-        agent._conn.prompt = _fake_prompt
+        _agent_conn(agent).prompt = _fake_prompt
 
         executor = AsyncExecutor()
 
@@ -2191,7 +2197,7 @@ class TestACPAgentAstep:
         agent._conn = MagicMock()
         agent._session_id = "test-session"
 
-        async def _fake_prompt(prompt, session_id):  # noqa: ARG001
+        async def _fake_prompt(session_id, prompt):  # noqa: ARG001
             # ~0.5s total (> 0.3s idle window), one update every 0.02s so the
             # deadline keeps resetting; then complete the turn.
             for _ in range(25):
@@ -2202,7 +2208,7 @@ class TestACPAgentAstep:
                 await mock_client.session_update(session_id, chunk)
             return None
 
-        agent._conn.prompt = _fake_prompt
+        _agent_conn(agent).prompt = _fake_prompt
 
         executor = AsyncExecutor()
         try:
@@ -2245,10 +2251,10 @@ class TestACPAgentAstep:
         agent._conn = MagicMock()
         agent._session_id = "test-session"
 
-        async def _failing_prompt(prompt, session_id):  # noqa: ARG001
+        async def _failing_prompt(session_id, prompt):  # noqa: ARG001
             raise RuntimeError("simulated upstream failure")
 
-        agent._conn.prompt = _failing_prompt
+        _agent_conn(agent).prompt = _failing_prompt
 
         executor = AsyncExecutor()
         try:
@@ -2392,7 +2398,7 @@ class TestACPAgentAstep:
             prompt_released = threading.Event()
             caller_loop = asyncio.get_running_loop()
 
-            async def _fake_prompt(prompt, session_id):  # noqa: ARG001
+            async def _fake_prompt(session_id, prompt):  # noqa: ARG001
                 # Seed an in-flight tool call AFTER _reset_client_for_turn
                 # has run (which clears accumulated_tool_calls).  In
                 # production the bridge accumulates these inside
@@ -2423,8 +2429,8 @@ class TestACPAgentAstep:
                 assert session_id == "test-session"
                 caller_loop.call_soon_threadsafe(cancel_called.set)
 
-            agent._conn.prompt = _fake_prompt
-            agent._conn.cancel = _fake_cancel
+            _agent_conn(agent).prompt = _fake_prompt
+            _agent_conn(agent).cancel = _fake_cancel
             agent._session_id = "test-session"
 
             task = asyncio.create_task(
@@ -2493,7 +2499,7 @@ class TestACPAgentAstep:
             prompt_released = threading.Event()
             caller_loop = asyncio.get_running_loop()
 
-            async def _fake_prompt(prompt, session_id):  # noqa: ARG001
+            async def _fake_prompt(session_id, prompt):  # noqa: ARG001
                 caller_loop.call_soon_threadsafe(prompt_entered.set)
                 released = await asyncio.to_thread(prompt_released.wait, 10.0)
                 assert released
@@ -2511,8 +2517,8 @@ class TestACPAgentAstep:
                 caller_loop.call_soon_threadsafe(cancel_called.set)
                 prompt_released.set()
 
-            agent._conn.prompt = _fake_prompt
-            agent._conn.cancel = _fake_cancel
+            _agent_conn(agent).prompt = _fake_prompt
+            _agent_conn(agent).cancel = _fake_cancel
             agent._session_id = "test-session"
 
             task = asyncio.create_task(
@@ -2561,7 +2567,7 @@ class TestACPAgentAstep:
             prompt_released = threading.Event()
             caller_loop = asyncio.get_running_loop()
 
-            async def _fake_prompt(prompt, session_id):  # noqa: ARG001
+            async def _fake_prompt(session_id, prompt):  # noqa: ARG001
                 caller_loop.call_soon_threadsafe(prompt_entered.set)
                 released = await asyncio.to_thread(prompt_released.wait, 10.0)
                 assert released
@@ -2572,8 +2578,8 @@ class TestACPAgentAstep:
                 caller_loop.call_soon_threadsafe(cancel_called.set)
                 prompt_released.set()
 
-            agent._conn.prompt = _fake_prompt
-            agent._conn.cancel = _fake_cancel
+            _agent_conn(agent).prompt = _fake_prompt
+            _agent_conn(agent).cancel = _fake_cancel
             agent._session_id = "test-session"
 
             task = asyncio.create_task(
@@ -2622,7 +2628,7 @@ class TestACPAgentAstep:
             prompt_released = threading.Event()
             caller_loop = asyncio.get_running_loop()
 
-            async def _fake_prompt(prompt, session_id):  # noqa: ARG001
+            async def _fake_prompt(session_id, prompt):  # noqa: ARG001
                 caller_loop.call_soon_threadsafe(prompt_entered.set)
                 released = await asyncio.to_thread(prompt_released.wait, 10.0)
                 assert released
@@ -2636,8 +2642,8 @@ class TestACPAgentAstep:
                 assert not future.done()
                 raise asyncio.CancelledError
 
-            agent._conn.prompt = _fake_prompt
-            agent._conn.cancel = _fake_cancel
+            _agent_conn(agent).prompt = _fake_prompt
+            _agent_conn(agent).cancel = _fake_cancel
             agent._session_id = "test-session"
 
             with patch.object(
@@ -2683,7 +2689,7 @@ class TestACPAgentAstep:
             prompt_released = threading.Event()
             caller_loop = asyncio.get_running_loop()
 
-            async def _fake_prompt(prompt, session_id):  # noqa: ARG001
+            async def _fake_prompt(session_id, prompt):  # noqa: ARG001
                 caller_loop.call_soon_threadsafe(prompt_entered.set)
                 released = await asyncio.to_thread(prompt_released.wait, 10.0)
                 assert released
@@ -2692,7 +2698,7 @@ class TestACPAgentAstep:
             async def _raise_during_cancel_send(self):  # noqa: ARG001
                 raise asyncio.CancelledError
 
-            agent._conn.prompt = _fake_prompt
+            _agent_conn(agent).prompt = _fake_prompt
             agent._session_id = "test-session"
 
             with patch.object(
@@ -2780,7 +2786,7 @@ class TestACPAgentAstep:
             prompt_released = threading.Event()
             caller_loop = asyncio.get_running_loop()
 
-            async def _fake_prompt(prompt, session_id):  # noqa: ARG001
+            async def _fake_prompt(session_id, prompt):  # noqa: ARG001
                 caller_loop.call_soon_threadsafe(prompt_entered.set)
                 released = await asyncio.to_thread(prompt_released.wait, 10.0)
                 assert released
@@ -2789,8 +2795,8 @@ class TestACPAgentAstep:
             async def _fake_cancel(session_id):
                 assert session_id == "test-session"
 
-            agent._conn.prompt = _fake_prompt
-            agent._conn.cancel = _fake_cancel
+            _agent_conn(agent).prompt = _fake_prompt
+            _agent_conn(agent).cancel = _fake_cancel
             agent._session_id = "test-session"
 
             task = asyncio.create_task(
@@ -2850,11 +2856,11 @@ class TestACPAgentAstep:
         agent._client = mock_client
         agent._conn = MagicMock()
 
-        async def _fake_prompt(prompt, session_id):  # noqa: ARG001
+        async def _fake_prompt(session_id, prompt):  # noqa: ARG001
             mock_client.accumulated_text.append("done")
             return None
 
-        agent._conn.prompt = _fake_prompt
+        _agent_conn(agent).prompt = _fake_prompt
         agent._session_id = "test-session"
 
         executor = AsyncExecutor()
@@ -3193,7 +3199,7 @@ class TestACPAgentTelemetry:
         def _run_async(coro_fn, **_kwargs):
             loop = asyncio.new_event_loop()
             try:
-                agent._conn.prompt = _fake_prompt
+                _agent_conn(agent).prompt = _fake_prompt
                 return loop.run_until_complete(coro_fn())
             finally:
                 loop.close()
@@ -4082,8 +4088,10 @@ class TestACPAgentAskAgent:
             """Simulate the async execution synchronously."""
             loop = asyncio.new_event_loop()
             try:
-                agent._conn.fork_session = AsyncMock(return_value=mock_fork_response)
-                agent._conn.prompt = _fake_prompt
+                _agent_conn(agent).fork_session = AsyncMock(
+                    return_value=mock_fork_response
+                )
+                _agent_conn(agent).prompt = _fake_prompt
                 return loop.run_until_complete(coro_fn())
             finally:
                 loop.close()
@@ -4126,8 +4134,10 @@ class TestACPAgentAskAgent:
         def _fake_run_async(coro_fn, **_kwargs):
             loop = asyncio.new_event_loop()
             try:
-                agent._conn.fork_session = AsyncMock(return_value=mock_fork_response)
-                agent._conn.prompt = _fake_prompt
+                _agent_conn(agent).fork_session = AsyncMock(
+                    return_value=mock_fork_response
+                )
+                _agent_conn(agent).prompt = _fake_prompt
                 return loop.run_until_complete(coro_fn())
             finally:
                 loop.close()
@@ -4170,8 +4180,10 @@ class TestACPAgentAskAgent:
         def _fake_run_async(coro_fn, **_kwargs):
             loop = asyncio.new_event_loop()
             try:
-                agent._conn.fork_session = AsyncMock(return_value=mock_fork_response)
-                agent._conn.prompt = _fake_prompt
+                _agent_conn(agent).fork_session = AsyncMock(
+                    return_value=mock_fork_response
+                )
+                _agent_conn(agent).prompt = _fake_prompt
                 return loop.run_until_complete(coro_fn())
             finally:
                 loop.close()
@@ -4960,10 +4972,10 @@ class TestSetACPModel:
         # Default (models-capability) session ⇒ set_session_model, id as-is.
         agent = self._wire(_make_agent(), "codex-acp")
         agent.set_acp_model("gpt-5.5")
-        agent._conn.set_session_model.assert_awaited_once_with(
+        _agent_conn(agent).set_session_model.assert_awaited_once_with(
             model_id="gpt-5.5", session_id="sess-1"
         )
-        agent._conn.set_config_option.assert_not_called()
+        _agent_conn(agent).set_config_option.assert_not_called()
         agent._executor.run_async.assert_called_once()
         # Sentinel LLM + metrics reflect the live model for cost/token tracking.
         assert agent.llm.model == "gpt-5.5"
@@ -4974,17 +4986,17 @@ class TestSetACPModel:
         # `model` selection.
         agent = self._wire(_make_agent(), "codex-acp", via_config_option=True)
         agent.set_acp_model("gpt-5.5")
-        agent._conn.set_config_option.assert_awaited_once_with(
+        _agent_conn(agent).set_config_option.assert_awaited_once_with(
             config_id="model", value="gpt-5.5", session_id="sess-1"
         )
-        agent._conn.set_session_model.assert_not_called()
+        _agent_conn(agent).set_session_model.assert_not_called()
         assert agent.llm.model == "gpt-5.5"
         assert agent._current_model_id == "gpt-5.5"
 
     def test_switches_codex_via_config_option_splits_reasoning_effort(self):
         agent = self._wire(_make_agent(), "codex-acp", via_config_option=True)
         agent.set_acp_model("gpt-5.5/high")
-        agent._conn.set_config_option.assert_has_awaits(
+        _agent_conn(agent).set_config_option.assert_has_awaits(
             [
                 call(config_id="model", value="gpt-5.5", session_id="sess-1"),
                 call(
@@ -4994,8 +5006,8 @@ class TestSetACPModel:
                 ),
             ]
         )
-        assert agent._conn.set_config_option.await_count == 2
-        agent._conn.set_session_model.assert_not_called()
+        assert _agent_conn(agent).set_config_option.await_count == 2
+        _agent_conn(agent).set_session_model.assert_not_called()
         assert agent.llm.model == "gpt-5.5/high"
         assert agent._current_model_id == "gpt-5.5/high"
 
@@ -5003,7 +5015,7 @@ class TestSetACPModel:
         # A bare id (no `/`) applies as a single `model` selection — no effort.
         agent = self._wire(_make_agent(), "claude-agent-acp", via_config_option=True)
         agent.set_acp_model("sonnet")
-        agent._conn.set_config_option.assert_awaited_once_with(
+        _agent_conn(agent).set_config_option.assert_awaited_once_with(
             config_id="model", value="sonnet", session_id="sess-1"
         )
         assert agent._current_model_id == "sonnet"
@@ -5012,12 +5024,12 @@ class TestSetACPModel:
         # No cross-mechanism fallback: a -32601 surfaces as a ValueError naming
         # the advertised mechanism, and the other call is never attempted.
         agent = self._wire(_make_agent(), "codex-acp", via_config_option=False)
-        agent._conn.set_session_model.side_effect = ACPRequestError(
+        _agent_conn(agent).set_session_model.side_effect = ACPRequestError(
             code=-32601, message="Method not found"
         )
         with pytest.raises(ValueError, match="rejected set_session_model"):
             agent.set_acp_model("gpt-5.5")
-        agent._conn.set_config_option.assert_not_called()
+        _agent_conn(agent).set_config_option.assert_not_called()
         agent._executor.run_async.assert_called_once()
         # Mechanism + sentinel model are left unchanged on a failed switch.
         assert agent._model_via_config_option is False
@@ -5027,7 +5039,7 @@ class TestSetACPModel:
         # A -32602 invalid-params is a real client error, not a wrong-mechanism
         # signal: surface it as ValueError without a second call.
         agent = self._wire(_make_agent(), "codex-acp", via_config_option=True)
-        agent._conn.set_config_option.side_effect = ACPRequestError(
+        _agent_conn(agent).set_config_option.side_effect = ACPRequestError(
             code=-32602, message="Invalid params"
         )
         with pytest.raises(ValueError, match="rejected set_config_option"):
@@ -5037,7 +5049,7 @@ class TestSetACPModel:
     def test_claude_provider_supports_runtime_switch(self):
         agent = self._wire(_make_agent(), "claude-agent-acp")
         agent.set_acp_model("claude-haiku-4-5-20251001")
-        agent._conn.set_session_model.assert_called_once_with(
+        _agent_conn(agent).set_session_model.assert_called_once_with(
             model_id="claude-haiku-4-5-20251001", session_id="sess-1"
         )
 
@@ -5046,13 +5058,13 @@ class TestSetACPModel:
         # the call; the ACP layer errors if it isn't actually supported.
         agent = self._wire(_make_agent(), "some-custom-acp")
         agent.set_acp_model("whatever")
-        agent._conn.set_session_model.assert_called_once()
+        _agent_conn(agent).set_session_model.assert_called_once()
 
     def test_rejects_empty_model(self):
         agent = self._wire(_make_agent(), "codex-acp")
         with pytest.raises(ValueError, match="non-empty"):
             agent.set_acp_model("   ")
-        agent._conn.set_session_model.assert_not_called()
+        _agent_conn(agent).set_session_model.assert_not_called()
 
     def test_raises_before_session_initialized(self):
         agent = _make_agent()  # no _conn / _session_id / _executor
@@ -5081,7 +5093,7 @@ class TestSetACPModel:
         ):
             with pytest.raises(ValueError, match="does not support runtime"):
                 agent.set_acp_model("x")
-        agent._conn.set_session_model.assert_not_called()
+        _agent_conn(agent).set_session_model.assert_not_called()
 
     def test_translates_acp_request_error_to_value_error(self):
         # A protocol-level rejection (e.g. method-not-found on a custom server,
@@ -5090,7 +5102,7 @@ class TestSetACPModel:
         # The rejection is raised by the conn (driven through the real apply
         # coroutine), exercising set_acp_model's actual error path.
         agent = self._wire(_make_agent(), "codex-acp")
-        agent._conn.set_session_model.side_effect = ACPRequestError(
+        _agent_conn(agent).set_session_model.side_effect = ACPRequestError(
             code=-32601, message="method not found"
         )
         with pytest.raises(ValueError, match="rejected set_session_model"):
@@ -5104,7 +5116,7 @@ class TestSetACPModel:
         # than be mislabeled as a 400-class ValueError, mirroring the retriable
         # handling on the prompt path.
         agent = self._wire(_make_agent(), "codex-acp")
-        agent._conn.set_session_model.side_effect = ACPRequestError(
+        _agent_conn(agent).set_session_model.side_effect = ACPRequestError(
             code=-32603, message="internal error"
         )
         with pytest.raises(ACPRequestError):
@@ -8175,7 +8187,8 @@ class TestACPFileSecretMaterialisation:
         """No reserved secret present -> no data-dir env var is set."""
         agent = _make_agent()
         state = self._state(tmp_path)
-        env = self._run_start(agent, state, conn=self._make_conn())
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._run_start(agent, state, conn=self._make_conn())
         assert "CODEX_HOME" not in env
 
     def test_materialisation_oserror_fails_fast(self, tmp_path):
@@ -8288,7 +8301,8 @@ class TestACPFileSecretMaterialisation:
         state.secret_registry.update_secrets(
             {"CODEX_AUTH_JSON": StaticSecret(value=SecretStr("blob"))}
         )
-        env = self._run_start(agent, state, conn=self._make_conn())
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._run_start(agent, state, conn=self._make_conn())
 
         assert "CODEX_HOME" not in env
         # Not configured as a file-secret, so it flows through as a plain env var.

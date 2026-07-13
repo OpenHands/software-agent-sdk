@@ -8,7 +8,7 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
+exclude-newer = "2026-06-25T01:06:12.231807014Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -1181,11 +1181,11 @@ resolution-markers = [
     "python_full_version < '3.13'",
 ]
 dependencies = [
-    { name = "google-auth" },
-    { name = "googleapis-common-protos" },
-    { name = "proto-plus" },
-    { name = "protobuf" },
-    { name = "requests" },
+    { name = "google-auth", marker = "python_full_version < '3.13'" },
+    { name = "googleapis-common-protos", marker = "python_full_version < '3.13'" },
+    { name = "proto-plus", marker = "python_full_version < '3.13'" },
+    { name = "protobuf", marker = "python_full_version < '3.13'" },
+    { name = "requests", marker = "python_full_version < '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/32/ea/e7b6ac3c7b557b728c2d0181010548cbbdd338e9002513420c5a354fa8df/google_api_core-2.26.0.tar.gz", hash = "sha256:e6e6d78bd6cf757f4aee41dcc85b07f485fbb069d5daa3afb126defba1e91a62", size = 166369, upload-time = "2025-10-08T21:37:38.39Z" }
 wheels = [
@@ -1194,8 +1194,8 @@ wheels = [
 
 [package.optional-dependencies]
 grpc = [
-    { name = "grpcio" },
-    { name = "grpcio-status" },
+    { name = "grpcio", marker = "python_full_version < '3.13'" },
+    { name = "grpcio-status", marker = "python_full_version < '3.13'" },
 ]
 
 [[package]]
@@ -1207,11 +1207,11 @@ resolution-markers = [
     "python_full_version == '3.13.*'",
 ]
 dependencies = [
-    { name = "google-auth" },
-    { name = "googleapis-common-protos" },
-    { name = "proto-plus" },
-    { name = "protobuf" },
-    { name = "requests" },
+    { name = "google-auth", marker = "python_full_version >= '3.13'" },
+    { name = "googleapis-common-protos", marker = "python_full_version >= '3.13'" },
+    { name = "proto-plus", marker = "python_full_version >= '3.13'" },
+    { name = "protobuf", marker = "python_full_version >= '3.13'" },
+    { name = "requests", marker = "python_full_version >= '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c6/22/155cadf1d49272a9cf48f3168c0f3874fa13397297e611a5ea00cd093880/google_api_core-2.31.0.tar.gz", hash = "sha256:2be84ee0f584c48e6bde1b36766e23348b361fb7e55e56135fc76ce1c397f9c2", size = 176492, upload-time = "2026-06-03T14:52:17.257Z" }
 wheels = [
@@ -1220,8 +1220,8 @@ wheels = [
 
 [package.optional-dependencies]
 grpc = [
-    { name = "grpcio" },
-    { name = "grpcio-status" },
+    { name = "grpcio", marker = "python_full_version >= '3.13'" },
+    { name = "grpcio-status", marker = "python_full_version >= '3.13'" },
 ]
 
 [[package]]
@@ -1370,12 +1370,12 @@ resolution-markers = [
     "python_full_version < '3.13'",
 ]
 dependencies = [
-    { name = "google-api-core", version = "2.26.0", source = { registry = "https://pypi.org/simple" } },
-    { name = "google-auth" },
-    { name = "google-cloud-core" },
-    { name = "google-crc32c" },
-    { name = "google-resumable-media" },
-    { name = "requests" },
+    { name = "google-api-core", version = "2.26.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
+    { name = "google-auth", marker = "python_full_version < '3.13'" },
+    { name = "google-cloud-core", marker = "python_full_version < '3.13'" },
+    { name = "google-crc32c", marker = "python_full_version < '3.13'" },
+    { name = "google-resumable-media", marker = "python_full_version < '3.13'" },
+    { name = "requests", marker = "python_full_version < '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/bd/ef/7cefdca67a6c8b3af0ec38612f9e78e5a9f6179dd91352772ae1a9849246/google_cloud_storage-3.4.1.tar.gz", hash = "sha256:6f041a297e23a4b485fad8c305a7a6e6831855c208bcbe74d00332a909f82268", size = 17238203, upload-time = "2025-10-08T18:43:39.665Z" }
 wheels = [
@@ -1391,12 +1391,12 @@ resolution-markers = [
     "python_full_version == '3.13.*'",
 ]
 dependencies = [
-    { name = "google-api-core", version = "2.31.0", source = { registry = "https://pypi.org/simple" } },
-    { name = "google-auth" },
-    { name = "google-cloud-core" },
-    { name = "google-crc32c" },
-    { name = "google-resumable-media" },
-    { name = "requests" },
+    { name = "google-api-core", version = "2.31.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13'" },
+    { name = "google-auth", marker = "python_full_version >= '3.13'" },
+    { name = "google-cloud-core", marker = "python_full_version >= '3.13'" },
+    { name = "google-crc32c", marker = "python_full_version >= '3.13'" },
+    { name = "google-resumable-media", marker = "python_full_version >= '3.13'" },
+    { name = "requests", marker = "python_full_version >= '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/22/09/8953e2993e604c8882fd441b5b2de624a2dfe7e6144c6166d7b477509596/google_cloud_storage-3.11.0.tar.gz", hash = "sha256:498bf37c999028f69a245f586b5e50d89f59df1fafc0e3a93783ac56be2a456b", size = 17335639, upload-time = "2026-06-03T16:14:04.649Z" }
 wheels = [
@@ -2653,7 +2653,7 @@ wheels = [
 
 [[package]]
 name = "openhands-agent-server"
-version = "1.34.0"
+version = "1.35.0"
 source = { editable = "openhands-agent-server" }
 dependencies = [
     { name = "aiosqlite" },
@@ -2686,7 +2686,7 @@ requires-dist = [
 
 [[package]]
 name = "openhands-sdk"
-version = "1.34.0"
+version = "1.35.0"
 source = { editable = "openhands-sdk" }
 dependencies = [
     { name = "agent-client-protocol" },
@@ -2712,6 +2712,9 @@ dependencies = [
 boto3 = [
     { name = "boto3" },
 ]
+toolshield = [
+    { name = "toolshield" },
+]
 vertex = [
     { name = "google-cloud-aiplatform" },
 ]
@@ -2734,15 +2737,16 @@ requires-dist = [
     { name = "python-frontmatter", specifier = ">=1.1.0" },
     { name = "python-json-logger", specifier = ">=3.3.0" },
     { name = "tenacity", specifier = ">=9.1.2" },
+    { name = "toolshield", marker = "extra == 'toolshield'", specifier = ">=0.1.3,<0.2" },
     { name = "tree-sitter", specifier = ">=0.25" },
     { name = "tree-sitter-bash", specifier = ">=0.25" },
     { name = "websockets", specifier = ">=12" },
 ]
-provides-extras = ["boto3", "vertex"]
+provides-extras = ["boto3", "toolshield", "vertex"]
 
 [[package]]
 name = "openhands-tools"
-version = "1.34.0"
+version = "1.35.0"
 source = { editable = "openhands-tools" }
 dependencies = [
     { name = "binaryornot" },
@@ -2773,7 +2777,7 @@ requires-dist = [
 
 [[package]]
 name = "openhands-workspace"
-version = "1.34.0"
+version = "1.35.0"
 source = { editable = "openhands-workspace" }
 dependencies = [
     { name = "openhands-agent-server" },
@@ -7111,6 +7115,22 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/be/ba/1f744cdc819428fc6b5084ec34d9b30660f6f9daaf70eead706e3203ec3c/toml-0.10.2.tar.gz", hash = "sha256:b3bda1d108d5dd99f4a20d24d9c348e91c4db7ab1b749200bded2f839ccbe68f", size = 22253, upload-time = "2020-11-01T01:40:22.204Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/44/6f/7120676b6d73228c96e17f1f794d8ab046fc910d781c8d151120c3f1569e/toml-0.10.2-py2.py3-none-any.whl", hash = "sha256:806143ae5bfb6a3c6e736a764057db0e6a0e05e338b5630894a5f779cabb4f9b", size = 16588, upload-time = "2020-11-01T01:40:20.672Z" },
+]
+
+[[package]]
+name = "toolshield"
+version = "0.1.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "json-repair" },
+    { name = "openai" },
+    { name = "requests" },
+    { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/66/59/a002a9e3100635b57fdbd1e2af3a810239a24811f059283d48cfecebc402/toolshield-0.1.3.tar.gz", hash = "sha256:f680c20398aeb5f95820c25e70c9fdb97ff416b4e033422859f3173570cd3826", size = 9807528, upload-time = "2026-06-09T19:08:22.216Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/22/91/2c55455c01a4f7e303f22a4a03538a8630f37824f36cb6c1d9a0252dc34c/toolshield-0.1.3-py3-none-any.whl", hash = "sha256:aa52be93bbc2c552529254482dc0f6a7493325b8becc2b897b3cb80be4b23fd3", size = 84128, upload-time = "2026-06-09T19:08:21.207Z" },
 ]
 
 [[package]]
