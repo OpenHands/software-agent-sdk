@@ -345,7 +345,7 @@ def load_all_skills(
     marketplace_path: str | None = DEFAULT_MARKETPLACE_PATH,
     registered_marketplaces: list[MarketplaceRegistration] | None = None,
 ) -> SkillLoadResult:
-    """Load and merge skills in precedence order."""
+    """Merge skills: sandbox < marketplace < public < user < org < project."""
     sources: dict[str, int] = {}
     skill_lists: list[list[Skill]] = []
 
