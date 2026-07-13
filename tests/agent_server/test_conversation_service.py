@@ -532,11 +532,96 @@ async def test_restart_resumes_conversations_after_non_graceful_shutdown(tmp_pat
 
     async with ConversationService(conversations_dir=conversations_dir) as restarted:
         assert restarted._event_services is not None
-        # The conversation must be present in the restarted service.
-        assert conversation_id in restarted._event_services, (
-            "Restart failed to pick up an existing conversation whose lease "
-            "was left orphaned by a non-graceful shutdown."
+        assert conversation_id not in restarted._event_services
+        restarted_event_service = await restarted.get_event_service(conversation_id)
+        assert restarted_event_service is not None, (
+            "Lazy hydration failed to pick up an existing conversation whose "
+            "lease was left orphaned by a non-graceful shutdown."
         )
+
+
+@pytest.mark.asyncio
+async def test_startup_and_search_do_not_hydrate_idle_conversation(tmp_path):
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+    async with ConversationService(conversations_dir=conversations_dir) as primary:
+        conversation_info, _ = await primary.start_conversation(request)
+
+    restarted = ConversationService(conversations_dir=conversations_dir)
+    with patch.object(
+        restarted,
+        "_start_event_service",
+        side_effect=AssertionError("idle conversation should remain unloaded"),
+    ):
+        async with restarted:
+            assert restarted._event_services == {}
+            assert conversation_info.id in restarted._conversation_records
+
+            page = await restarted.search_conversations()
+            assert [item.id for item in page.items] == [conversation_info.id]
+            assert await restarted.count_conversations() == 1
+            assert restarted._event_services == {}
+
+
+@pytest.mark.asyncio
+async def test_concurrent_access_hydrates_conversation_once(tmp_path):
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+    async with ConversationService(conversations_dir=conversations_dir) as primary:
+        conversation_info, _ = await primary.start_conversation(request)
+
+    async with ConversationService(conversations_dir=conversations_dir) as restarted:
+        with patch.object(
+            restarted,
+            "_start_event_service",
+            wraps=restarted._start_event_service,
+        ) as start_event_service:
+            services = await asyncio.gather(
+                *[restarted.get_event_service(conversation_info.id) for _ in range(5)]
+            )
+
+        assert start_event_service.await_count == 1
+        assert services[0] is not None
+        assert all(service is services[0] for service in services)
+
+
+@pytest.mark.asyncio
+async def test_fork_rejects_id_of_unloaded_persisted_conversation(tmp_path):
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+    async with ConversationService(conversations_dir=conversations_dir) as primary:
+        source, _ = await primary.start_conversation(request)
+        target, _ = await primary.start_conversation(request)
+
+    target_meta = conversations_dir / target.id.hex / "meta.json"
+    original_meta = target_meta.read_text()
+    async with ConversationService(conversations_dir=conversations_dir) as restarted:
+        assert restarted._event_services == {}
+        with pytest.raises(ValueError, match="already exists"):
+            await restarted.fork_conversation(source.id, fork_id=target.id)
+
+    assert target_meta.read_text() == original_meta
 
 
 class TestConversationServiceSearchConversations:
