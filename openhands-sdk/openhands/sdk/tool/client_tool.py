@@ -11,7 +11,7 @@ This eliminates the need for Python tool code in JavaScript repos and the comple
 
 import copy
 import threading
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from typing import TYPE_CHECKING, Any, Self
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
@@ -439,14 +439,16 @@ def merge_client_tools(
     specs: Sequence[ClientToolSpec],
     agent_tools: Sequence["Tool"],
     *,
-    migrate_legacy: bool = False,
+    legacy_tool_names: Collection[str] = (),
 ) -> list["Tool"]:
     """Register and merge client tools into an agent tool list."""
     specs_by_name = {spec.name: spec for spec in specs}
     tools: list[Tool] = []
     for tool in agent_tools:
         spec = specs_by_name.get(tool.name)
-        embedded = _extract_client_tool_spec(tool, allow_legacy=migrate_legacy)
+        embedded = _extract_client_tool_spec(
+            tool, allow_legacy=tool.name in legacy_tool_names
+        )
         tools.append(
             _client_tool_spec(spec) if spec is not None and spec == embedded else tool
         )

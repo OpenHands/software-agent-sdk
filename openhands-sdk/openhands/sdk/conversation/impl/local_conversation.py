@@ -8,6 +8,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePath
 from typing import Any, Final, TypeGuard, cast
 
+from pydantic import ValidationError
+
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondenser
@@ -16,6 +18,7 @@ from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.cancellation import CancellationToken
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.exceptions import ConversationRunError
+from openhands.sdk.conversation.persistence_const import BASE_STATE
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
@@ -83,8 +86,13 @@ from openhands.sdk.subagent import (
 )
 from openhands.sdk.tool import ToolDefinition
 from openhands.sdk.tool.builtins import InvokeSkillTool
-from openhands.sdk.tool.client_tool import ClientToolSpec
+from openhands.sdk.tool.client_tool import (
+    ClientToolSpec,
+    extract_client_tool_specs,
+    merge_client_tools,
+)
 from openhands.sdk.tool.schema import Action, Observation
+from openhands.sdk.tool.spec import Tool
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -286,21 +294,26 @@ class LocalConversation(BaseConversation):
 
         # Recover persisted client specs before resolving the agent's tools.
         resolved_client_tools = list(client_tools or [])
-        migrate_legacy_client_tools = False
-        if not resolved_client_tools and persistence_dir is not None:
-            resolved_client_tools = self._recover_persisted_client_tools(
-                persistence_dir, desired_id
+        legacy_client_tool_names: set[str] = set()
+        if not resolved_client_tools and (
+            persistence_dir is not None or file_store is not None
+        ):
+            (
+                resolved_client_tools,
+                legacy_client_tool_names,
+            ) = self._recover_persisted_client_tools(
+                persistence_dir,
+                desired_id,
+                agent.tools,
+                file_store=file_store,
             )
-            migrate_legacy_client_tools = bool(resolved_client_tools)
         if resolved_client_tools:
-            from openhands.sdk.tool.client_tool import merge_client_tools
-
             agent = agent.model_copy(
                 update={
                     "tools": merge_client_tools(
                         resolved_client_tools,
                         agent.tools,
-                        migrate_legacy=migrate_legacy_client_tools,
+                        legacy_tool_names=legacy_client_tool_names,
                     )
                 }
             )
@@ -547,33 +560,23 @@ class LocalConversation(BaseConversation):
 
     def _recover_persisted_client_tools(
         self,
-        persistence_base_dir: str | Path,
+        persistence_base_dir: str | Path | None,
         conversation_id: ConversationID,
-    ) -> list[ClientToolSpec]:
-        """Recover client tool specs from a persisted conversation's base state.
-
-        When a persisted conversation is resumed in a fresh process, the dynamic
-        client tools are absent from the global registry and the caller may not
-        re-supply ``client_tools``. Without recovery, the persisted agent's
-        client tools would appear "removed" and resume would fail. We read the
-        persisted agent tool specs and pull out the embedded ``ClientToolSpec``s
-        so they can be re-registered and re-injected. Returns an empty list when
-        there is no persisted state yet (fresh conversation).
-        """
-        from pydantic import ValidationError
-
-        from openhands.sdk.conversation.persistence_const import BASE_STATE
-        from openhands.sdk.tool.client_tool import extract_client_tool_specs
-        from openhands.sdk.tool.spec import Tool
-
-        base_path = (
-            Path(self.get_persistence_dir(persistence_base_dir, conversation_id))
-            / BASE_STATE
-        )
+        runtime_tools: Sequence[Tool] = (),
+        *,
+        file_store: FileStore | None = None,
+    ) -> tuple[list[ClientToolSpec], set[str]]:
+        """Recover persisted client tool specs."""
+        if file_store is None:
+            if persistence_base_dir is None:
+                return [], set()
+            file_store = LocalFileStore(
+                self.get_persistence_dir(persistence_base_dir, conversation_id)
+            )
         try:
-            data = json.loads(base_path.read_text())
+            data = json.loads(file_store.read(BASE_STATE))
         except (FileNotFoundError, json.JSONDecodeError):
-            return []
+            return [], set()
         raw_tools = (data.get("agent") or {}).get("tools") or []
         tools: list[Tool] = []
         for raw_tool in raw_tools:
@@ -581,7 +584,20 @@ class LocalConversation(BaseConversation):
                 tools.append(Tool.model_validate(raw_tool))
             except ValidationError:
                 continue
-        return extract_client_tool_specs(tools, allow_legacy=True)
+
+        specs = extract_client_tool_specs(tools)
+        marked_names = {spec.name for spec in specs}
+        runtime_names = {tool.name for tool in runtime_tools}
+        legacy_tools = [
+            tool
+            for tool in tools
+            if tool.name not in marked_names and tool.name not in runtime_names
+        ]
+        legacy_specs = extract_client_tool_specs(legacy_tools, allow_legacy=True)
+        return [
+            *specs,
+            *legacy_specs,
+        ], {spec.name for spec in legacy_specs}
 
     @property
     def id(self) -> ConversationID:

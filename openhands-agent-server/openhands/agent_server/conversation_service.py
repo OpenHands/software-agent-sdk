@@ -1200,7 +1200,9 @@ class ConversationService:
                             "tools": merge_client_tools(
                                 stored.client_tools,
                                 stored.agent.tools,
-                                migrate_legacy=True,
+                                legacy_tool_names={
+                                    spec.name for spec in stored.client_tools
+                                },
                             )
                         }
                     )

@@ -6,7 +6,6 @@ import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -50,8 +49,20 @@ from openhands.sdk.mcp.config import dump_mcp_config
 from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.security.risk import SecurityRisk
+from openhands.sdk.tool import Tool
+from openhands.sdk.tool.client_tool import (
+    ClientTool,
+    ClientToolSpec,
+    extract_client_tool_specs,
+)
+from openhands.sdk.tool.registry import (
+    is_tool_registered_as,
+    register_tool,
+    resolve_tool,
+)
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
+from openhands.tools.terminal import TerminalTool
 from openhands.tools.terminal.definition import TerminalAction, TerminalObservation
 
 
@@ -144,18 +155,6 @@ async def test_start_conversation_registers_and_injects_client_tools(
     conversation_service, tmp_path
 ):
     """Persist and resolve a client tool beside another agent's server tool."""
-    from openhands.sdk.tool.client_tool import (
-        ClientTool,
-        ClientToolSpec,
-        extract_client_tool_specs,
-    )
-    from openhands.sdk.tool.registry import (
-        is_tool_registered_as,
-        register_tool,
-        resolve_tool,
-    )
-    from openhands.tools.terminal import TerminalTool
-
     workspace_dir = tmp_path / "workspace"
     workspace_dir.mkdir()
     register_tool("srv_show_dialog", TerminalTool)
@@ -205,7 +204,53 @@ async def test_start_conversation_registers_and_injects_client_tools(
     assert extract_client_tool_specs(stored.agent.tools) == stored.client_tools
     assert is_tool_registered_as("srv_show_dialog", TerminalTool)
     tool_spec = next(t for t in stored.agent.tools if t.name == "srv_show_dialog")
-    resolved = resolve_tool(tool_spec, cast(ConversationState, None))
+    resolved = resolve_tool(tool_spec, MagicMock(spec=ConversationState))
+    assert len(resolved) == 1
+    assert isinstance(resolved[0], ClientTool)
+
+
+@pytest.mark.asyncio
+async def test_resume_restores_legacy_client_tool_provenance(tmp_path):
+    spec = ClientToolSpec(name="legacy_resumed_client", description="client")
+    legacy_tool = Tool(name=spec.name, params={"spec": spec.model_dump()})
+    register_tool(spec.name, TerminalTool)
+
+    conversations_dir = tmp_path / "conversations"
+    stored = StoredConversation(
+        id=uuid4(),
+        agent=Agent(
+            llm=LLM(model="gpt-4o", usage_id="test-llm"),
+            tools=[legacy_tool],
+        ),
+        workspace=LocalWorkspace(working_dir=str(tmp_path / "workspace")),
+        confirmation_policy=NeverConfirm(),
+        client_tools=[spec],
+    )
+    conversation_dir = conversations_dir / stored.id.hex
+    conversation_dir.mkdir(parents=True)
+    (conversation_dir / "meta.json").write_text(stored.model_dump_json())
+
+    captured: dict[str, StoredConversation] = {}
+    service = ConversationService(conversations_dir=conversations_dir)
+
+    async def fake_start_event_service(stored: StoredConversation):
+        captured["stored"] = stored
+        event_service = AsyncMock(spec=EventService)
+        event_service.stored = stored
+        return event_service
+
+    with patch.object(
+        service,
+        "_start_event_service",
+        side_effect=fake_start_event_service,
+    ):
+        async with service:
+            pass
+
+    resumed = captured["stored"]
+    assert extract_client_tool_specs(resumed.agent.tools) == [spec]
+    assert is_tool_registered_as(spec.name, TerminalTool)
+    resolved = resolve_tool(resumed.agent.tools[0], MagicMock(spec=ConversationState))
     assert len(resolved) == 1
     assert isinstance(resolved[0], ClientTool)
 

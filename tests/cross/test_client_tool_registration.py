@@ -1,7 +1,8 @@
-from typing import Any, cast
+from unittest.mock import MagicMock
 
 import pytest
 
+from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.tool.client_tool import (
     ClientTool,
     ClientToolRegistrationError,
@@ -35,7 +36,7 @@ def test_client_tool_can_share_a_registry_name_across_agents() -> None:
 
     tool_specs = register_client_tools([spec], agent_tools=[])
 
-    resolved = resolve_tool(tool_specs[0], cast(Any, None))
+    resolved = resolve_tool(tool_specs[0], MagicMock(spec=ConversationState))
     assert len(resolved) == 1
     assert isinstance(resolved[0], ClientTool)
 
@@ -69,7 +70,7 @@ def test_server_tool_spec_params_are_not_resolved_as_a_client_tool() -> None:
     register_client_tools([spec], agent_tools=[])
     server_tool = Tool(name=spec.name, params={"spec": spec.model_dump()})
 
-    assert resolve_client_tool(server_tool, cast(Any, None)) is None
+    assert resolve_client_tool(server_tool, MagicMock(spec=ConversationState)) is None
 
 
 def test_client_tool_resolution_survives_a_registry_overwrite() -> None:
@@ -81,7 +82,7 @@ def test_client_tool_resolution_survives_a_registry_overwrite() -> None:
     register_tool(spec.name, TerminalTool)
 
     restored_tools = register_client_tools([spec], agent_tools=stored_tools)
-    resolved = resolve_tool(restored_tools[0], cast(Any, None))
+    resolved = resolve_tool(restored_tools[0], MagicMock(spec=ConversationState))
 
     assert len(resolved) == 1
     assert isinstance(resolved[0], ClientTool)

@@ -1,10 +1,12 @@
 """Tests for client-defined tools (ClientToolSpec / ClientTool)."""
 
-from typing import Any, cast
+from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from pydantic import ValidationError
 
+from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.event import ActionEvent
 from openhands.sdk.llm import TextContent
 from openhands.sdk.llm.message import MessageToolCall
@@ -464,7 +466,9 @@ def test_register_client_tools_allows_existing_client_tool_same_schema():
 
     assert [tool_spec.name for tool_spec in first_tool_specs] == [spec.name]
     assert [tool_spec.name for tool_spec in second_tool_specs] == [spec.name]
-    resolved_tools = resolve_tool(second_tool_specs[0], cast(Any, None))
+    resolved_tools = resolve_tool(
+        second_tool_specs[0], MagicMock(spec=ConversationState)
+    )
     assert len(resolved_tools) == 1
     assert isinstance(resolved_tools[0], ClientTool)
     assert resolved_tools[0].name == spec.name

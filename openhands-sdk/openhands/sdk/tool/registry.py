@@ -18,17 +18,6 @@ logger = get_logger(__name__)
 Resolver = Callable[[dict[str, Any], "ConversationState"], Sequence[ToolDefinition]]
 UsabilityChecker = Callable[[], bool]
 ToolFactory = ToolDefinition | type[ToolDefinition]
-"""A resolver produces ToolDefinition instances for given params.
-
-Args:
-    params: Arbitrary parameters passed to the resolver. These are typically
-        used to configure the ToolDefinition instances that are created.
-    conversation: Optional conversation state to get directories from.
-Returns: A sequence of ToolDefinition instances. Most of the time this will be a
-    single-item
-    sequence, but in some cases a ToolDefinition.create may produce multiple tools
-    (e.g., BrowserToolSet).
-"""
 
 _LOCK = RLock()
 
