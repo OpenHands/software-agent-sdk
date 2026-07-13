@@ -92,8 +92,7 @@ def test_persisted_client_tools_resume_without_respecifying(tmp_path: Path) -> N
     try:
         assert set(names) <= {t.name for t in resumed.agent.tools}
         assert extract_client_tool_specs(resumed.agent.tools) == specs
-        for n in names:
-            assert n in reg.list_registered_tools()
+        assert set(names).isdisjoint(reg.list_registered_tools())
     finally:
         resumed.close()
 

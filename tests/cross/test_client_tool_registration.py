@@ -10,7 +10,11 @@ from openhands.sdk.tool.client_tool import (
     register_client_tools,
     resolve_client_tool,
 )
-from openhands.sdk.tool.registry import register_tool, resolve_tool
+from openhands.sdk.tool.registry import (
+    list_registered_tools,
+    register_tool,
+    resolve_tool,
+)
 from openhands.sdk.tool.spec import Tool
 from openhands.tools.terminal import TerminalTool
 
@@ -36,6 +40,20 @@ def test_client_tool_can_share_a_registry_name_across_agents() -> None:
 
     tool_specs = register_client_tools([spec], agent_tools=[])
 
+    resolved = resolve_tool(tool_specs[0], MagicMock(spec=ConversationState))
+    assert len(resolved) == 1
+    assert isinstance(resolved[0], ClientTool)
+
+
+def test_scoped_client_tool_does_not_claim_a_registry_name() -> None:
+    spec = ClientToolSpec(
+        name="scoped_client_only_tool",
+        description="Client-only tool",
+    )
+
+    tool_specs = register_client_tools([spec], agent_tools=[])
+
+    assert spec.name not in list_registered_tools()
     resolved = resolve_tool(tool_specs[0], MagicMock(spec=ConversationState))
     assert len(resolved) == 1
     assert isinstance(resolved[0], ClientTool)

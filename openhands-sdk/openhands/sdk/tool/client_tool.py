@@ -428,7 +428,7 @@ def register_client_tools(
 
         for spec in specs:
             _get_client_action_type(spec.name, spec.parameters)
-            if spec.name not in already_registered:
+            if agent_tools is None and spec.name not in already_registered:
                 register_tool(spec.name, ClientTool)
                 already_registered.add(spec.name)
             tool_specs.append(_client_tool_spec(spec))
