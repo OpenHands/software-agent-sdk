@@ -225,8 +225,7 @@ def _proc_memory_kib(pid: int) -> dict[str, int]:
 
 def _lease_ids(conversations_dir: Path) -> list[str]:
     return sorted(
-        path.parent.name
-        for path in conversations_dir.glob("*/owner_lease.json")
+        path.parent.name for path in conversations_dir.glob("*/owner_lease.json")
     )
 
 
@@ -401,9 +400,7 @@ def probe_server(
                 {payload for _, payload in responses}
             ),
             "hydrated_conversation_id": hydrate_id,
-            "runtime_count_after_one_conversation_access": len(
-                after_hydration_leases
-            ),
+            "runtime_count_after_one_conversation_access": len(after_hydration_leases),
             "hydrated_target_resume_log_count": target_resume_logs,
             "memory_after_one_conversation_access_kib": after_hydration_memory,
             "duplicate_fork": {
@@ -459,9 +456,7 @@ def probe_running_recovery(
         error_status, error_count = _http_json(
             f"{base_url}/api/conversations/count?status=error"
         )
-        total_status, total_count = _http_json(
-            f"{base_url}/api/conversations/count"
-        )
+        total_status, total_count = _http_json(f"{base_url}/api/conversations/count")
         return {
             "label": label,
             "sha": sha,
