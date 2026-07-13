@@ -286,22 +286,24 @@ class LocalConversation(BaseConversation):
 
         # Recover persisted client specs before resolving the agent's tools.
         resolved_client_tools = list(client_tools or [])
+        migrate_legacy_client_tools = False
         if not resolved_client_tools and persistence_dir is not None:
             resolved_client_tools = self._recover_persisted_client_tools(
                 persistence_dir, desired_id
             )
+            migrate_legacy_client_tools = bool(resolved_client_tools)
         if resolved_client_tools:
-            from openhands.sdk.tool.client_tool import register_client_tools
+            from openhands.sdk.tool.client_tool import merge_client_tools
 
-            client_tool_specs = register_client_tools(
-                resolved_client_tools, agent_tools=agent.tools
+            agent = agent.model_copy(
+                update={
+                    "tools": merge_client_tools(
+                        resolved_client_tools,
+                        agent.tools,
+                        migrate_legacy=migrate_legacy_client_tools,
+                    )
+                }
             )
-            existing_names = {t.name for t in agent.tools}
-            new_tools = [
-                ts for ts in client_tool_specs if ts.name not in existing_names
-            ]
-            if new_tools:
-                agent = agent.model_copy(update={"tools": [*agent.tools, *new_tools]})
 
         self.agent = agent
         if isinstance(workspace, (str, Path)):
@@ -579,7 +581,7 @@ class LocalConversation(BaseConversation):
                 tools.append(Tool.model_validate(raw_tool))
             except ValidationError:
                 continue
-        return extract_client_tool_specs(tools)
+        return extract_client_tool_specs(tools, allow_legacy=True)
 
     @property
     def id(self) -> ConversationID:

@@ -50,7 +50,7 @@ from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.tool import BROWSER_TOOL_NAME, Tool, is_tool_usable
-from openhands.sdk.tool.client_tool import register_client_tools
+from openhands.sdk.tool.client_tool import merge_client_tools
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -775,18 +775,13 @@ class ConversationService:
 
         # Validate and inject self-contained client tool specs.
         if request.client_tools:
-            client_tool_specs = register_client_tools(
-                request.client_tools, agent_tools=request.agent.tools
+            request.agent = request.agent.model_copy(
+                update={
+                    "tools": merge_client_tools(
+                        request.client_tools, request.agent.tools
+                    )
+                }
             )
-            # Inject Tool specs into the agent so _initialize() resolves them
-            existing_names = {t.name for t in request.agent.tools}
-            new_tools = [
-                ts for ts in client_tool_specs if ts.name not in existing_names
-            ]
-            if new_tools:
-                request.agent = request.agent.model_copy(
-                    update={"tools": [*request.agent.tools, *new_tools]}
-                )
 
         # Register subagent definitions forwarded from the client
         if request.agent_definitions:
@@ -1200,8 +1195,14 @@ class ConversationService:
                         )
                 # Restore dynamic client action types from persisted specs.
                 if stored.client_tools:
-                    register_client_tools(
-                        stored.client_tools, agent_tools=stored.agent.tools
+                    stored.agent = stored.agent.model_copy(
+                        update={
+                            "tools": merge_client_tools(
+                                stored.client_tools,
+                                stored.agent.tools,
+                                migrate_legacy=True,
+                            )
+                        }
                     )
                 # Register agent definitions when resuming
                 if stored.agent_definitions:

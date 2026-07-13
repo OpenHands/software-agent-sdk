@@ -14,7 +14,7 @@ import threading
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Self
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.schema import Action, Observation, Schema
@@ -49,6 +49,7 @@ logger = get_logger(__name__)
 _client_action_types: dict[str, type[Action]] = {}
 _client_action_schemas: dict[str, dict[str, Any]] = {}
 _client_action_lock = threading.RLock()
+_CLIENT_TOOL_MARKER = "_openhands_client_tool"
 
 
 class ClientToolRegistrationError(ValueError):
@@ -323,45 +324,48 @@ class ClientTool(ToolDefinition[Action, ClientToolObservation]):
         )
 
 
-def extract_client_tool_specs(tools: "Sequence[Tool]") -> list[ClientToolSpec]:
-    """Recover :class:`ClientToolSpec`s embedded in persisted ``Tool`` specs.
+def _extract_client_tool_spec(
+    tool: "Tool", *, allow_legacy: bool = False
+) -> ClientToolSpec | None:
+    if not allow_legacy and tool.params.get(_CLIENT_TOOL_MARKER) is not True:
+        return None
+    raw = tool.params.get("spec")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        spec = ClientToolSpec.model_validate(raw)
+    except ValidationError:
+        return None
+    return spec if spec.name == tool.name else None
 
-    Client tools carry their full spec under ``Tool.params['spec']`` (see
-    :func:`register_client_tools`). When a conversation is resumed in a fresh
-    process, that spec is the only place the schema survives, so we use it to
-    re-register the dynamic tools. A persisted ``Tool`` is treated as a client
-    tool only when its ``params['spec']`` validates as a ``ClientToolSpec`` whose
-    ``name`` matches the tool name, which avoids misclassifying ordinary tools
-    that happen to use a ``spec`` param.
-    """
-    from pydantic import ValidationError
 
-    specs: list[ClientToolSpec] = []
-    for tool in tools:
-        raw = (tool.params or {}).get("spec")
-        if not isinstance(raw, dict):
-            continue
-        try:
-            spec = ClientToolSpec.model_validate(raw)
-        except ValidationError:
-            continue
-        if spec.name == tool.name:
-            specs.append(spec)
-    return specs
+def _client_tool_spec(spec: ClientToolSpec) -> "Tool":
+    from openhands.sdk.tool.spec import Tool
+
+    return Tool(
+        name=spec.name,
+        params={"spec": spec.model_dump(), _CLIENT_TOOL_MARKER: True},
+    )
+
+
+def extract_client_tool_specs(
+    tools: "Sequence[Tool]", *, allow_legacy: bool = False
+) -> list[ClientToolSpec]:
+    """Extract embedded client tool specs."""
+    return [
+        spec
+        for tool in tools
+        if (spec := _extract_client_tool_spec(tool, allow_legacy=allow_legacy))
+        is not None
+    ]
 
 
 def resolve_client_tool(
     tool: "Tool", conv_state: "ConversationState"
 ) -> Sequence[ToolDefinition] | None:
     """Resolve a registered client tool from its embedded spec."""
-    raw = (tool.params or {}).get("spec")
-    if not isinstance(raw, dict):
-        return None
-    try:
-        spec = ClientToolSpec.model_validate(raw)
-    except ValueError:
-        return None
-    if spec.name != tool.name:
+    spec = _extract_client_tool_spec(tool)
+    if spec is None:
         return None
     with _client_action_lock:
         if spec.name not in _client_action_types:
@@ -427,5 +431,27 @@ def register_client_tools(
             if spec.name not in already_registered:
                 register_tool(spec.name, ClientTool)
                 already_registered.add(spec.name)
-            tool_specs.append(Tool(name=spec.name, params={"spec": spec.model_dump()}))
+            tool_specs.append(_client_tool_spec(spec))
         return tool_specs
+
+
+def merge_client_tools(
+    specs: Sequence[ClientToolSpec],
+    agent_tools: Sequence["Tool"],
+    *,
+    migrate_legacy: bool = False,
+) -> list["Tool"]:
+    """Register and merge client tools into an agent tool list."""
+    specs_by_name = {spec.name: spec for spec in specs}
+    tools: list[Tool] = []
+    for tool in agent_tools:
+        spec = specs_by_name.get(tool.name)
+        embedded = _extract_client_tool_spec(tool, allow_legacy=migrate_legacy)
+        tools.append(
+            _client_tool_spec(spec) if spec is not None and spec == embedded else tool
+        )
+
+    client_tools = register_client_tools(specs, agent_tools=tools)
+    existing_names = {tool.name for tool in tools}
+    tools.extend(tool for tool in client_tools if tool.name not in existing_names)
+    return tools

@@ -1,3 +1,5 @@
+from typing import Any, cast
+
 import pytest
 
 from openhands.sdk.tool.client_tool import (
@@ -5,6 +7,7 @@ from openhands.sdk.tool.client_tool import (
     ClientToolRegistrationError,
     ClientToolSpec,
     register_client_tools,
+    resolve_client_tool,
 )
 from openhands.sdk.tool.registry import register_tool, resolve_tool
 from openhands.sdk.tool.spec import Tool
@@ -32,7 +35,7 @@ def test_client_tool_can_share_a_registry_name_across_agents() -> None:
 
     tool_specs = register_client_tools([spec], agent_tools=[])
 
-    resolved = resolve_tool(tool_specs[0], None)  # type: ignore[arg-type]
+    resolved = resolve_tool(tool_specs[0], cast(Any, None))
     assert len(resolved) == 1
     assert isinstance(resolved[0], ClientTool)
 
@@ -49,8 +52,24 @@ def test_client_tool_rejects_a_same_agent_name_collision() -> None:
     ):
         register_client_tools(
             [spec],
-            agent_tools=[Tool(name=TerminalTool.name, params={})],
+            agent_tools=[
+                Tool(
+                    name=TerminalTool.name,
+                    params={"spec": spec.model_dump()},
+                )
+            ],
         )
+
+
+def test_server_tool_spec_params_are_not_resolved_as_a_client_tool() -> None:
+    spec = ClientToolSpec(
+        name="server_tool_with_spec_params",
+        description="Server-owned tool",
+    )
+    register_client_tools([spec], agent_tools=[])
+    server_tool = Tool(name=spec.name, params={"spec": spec.model_dump()})
+
+    assert resolve_client_tool(server_tool, cast(Any, None)) is None
 
 
 def test_client_tool_resolution_survives_a_registry_overwrite() -> None:
@@ -62,7 +81,7 @@ def test_client_tool_resolution_survives_a_registry_overwrite() -> None:
     register_tool(spec.name, TerminalTool)
 
     restored_tools = register_client_tools([spec], agent_tools=stored_tools)
-    resolved = resolve_tool(restored_tools[0], None)  # type: ignore[arg-type]
+    resolved = resolve_tool(restored_tools[0], cast(Any, None))
 
     assert len(resolved) == 1
     assert isinstance(resolved[0], ClientTool)

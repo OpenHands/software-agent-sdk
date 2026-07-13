@@ -6,6 +6,7 @@ import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -143,7 +144,11 @@ async def test_start_conversation_registers_and_injects_client_tools(
     conversation_service, tmp_path
 ):
     """Persist and resolve a client tool beside another agent's server tool."""
-    from openhands.sdk.tool.client_tool import ClientTool, ClientToolSpec
+    from openhands.sdk.tool.client_tool import (
+        ClientTool,
+        ClientToolSpec,
+        extract_client_tool_specs,
+    )
     from openhands.sdk.tool.registry import (
         is_tool_registered_as,
         register_tool,
@@ -197,9 +202,10 @@ async def test_start_conversation_registers_and_injects_client_tools(
     stored = captured["stored"]
     assert "srv_show_dialog" in {t.name for t in stored.agent.tools}
     assert [s.name for s in stored.client_tools] == ["srv_show_dialog"]
+    assert extract_client_tool_specs(stored.agent.tools) == stored.client_tools
     assert is_tool_registered_as("srv_show_dialog", TerminalTool)
     tool_spec = next(t for t in stored.agent.tools if t.name == "srv_show_dialog")
-    resolved = resolve_tool(tool_spec, None)  # type: ignore[arg-type]
+    resolved = resolve_tool(tool_spec, cast(ConversationState, None))
     assert len(resolved) == 1
     assert isinstance(resolved[0], ClientTool)
 

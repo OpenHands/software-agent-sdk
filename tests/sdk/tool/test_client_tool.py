@@ -14,6 +14,7 @@ from openhands.sdk.tool.client_tool import (
     ClientToolObservation,
     ClientToolRegistrationError,
     ClientToolSpec,
+    extract_client_tool_specs,
     register_client_tools,
 )
 from openhands.sdk.tool.registry import list_registered_tools, resolve_tool
@@ -433,6 +434,7 @@ def test_register_client_tools_returns_tool_specs():
     assert ts.name == "reg_tool"
     assert ts.params["spec"]["name"] == "reg_tool"
     assert ts.params["spec"]["parameters"]["properties"]["q"]["type"] == "string"
+    assert extract_client_tool_specs([ts]) == [spec]
     # The ClientTool class is registered under the tool name
     assert "reg_tool" in list_registered_tools()
 

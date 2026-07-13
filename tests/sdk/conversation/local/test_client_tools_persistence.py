@@ -1,11 +1,16 @@
 """Persistence/resume behavior for client-defined tools on LocalConversation."""
 
+import json
 import uuid
 from pathlib import Path
 
 from openhands.sdk import LLM, Agent, Conversation
+from openhands.sdk.conversation.persistence_const import BASE_STATE
 from openhands.sdk.tool import Tool, client_tool as ct, registry as reg
-from openhands.sdk.tool.client_tool import ClientToolSpec
+from openhands.sdk.tool.client_tool import (
+    ClientToolSpec,
+    extract_client_tool_specs,
+)
 
 
 def _make_agent() -> Agent:
@@ -26,12 +31,7 @@ def _wipe_client_tool_globals(names: list[str]) -> None:
 
 
 def test_persisted_client_tools_resume_without_respecifying(tmp_path: Path) -> None:
-    """A persisted conversation re-registers/injects client tools on resume.
-
-    The caller does not pass ``client_tools`` on resume; the specs must be
-    recovered from persisted state so the agent keeps the tools and resume does
-    not fail with "tools were removed mid-conversation".
-    """
+    """Resume and migrate legacy persisted client tool specs."""
     specs = [
         ClientToolSpec(
             name="persist_show_notification",
@@ -66,11 +66,16 @@ def test_persisted_client_tools_resume_without_respecifying(tmp_path: Path) -> N
     assert set(names) <= {t.name for t in created.agent.tools}
     created.close()
 
-    # Fresh-process simulation: drop the global registrations.
+    base_state_path = persist_dir / cid.hex / BASE_STATE
+    base_state = json.loads(base_state_path.read_text())
+    for tool in base_state["agent"]["tools"]:
+        if tool["name"] in names:
+            tool["params"].pop("_openhands_client_tool")
+    base_state_path.write_text(json.dumps(base_state))
+
     _wipe_client_tool_globals(names)
     assert not any(n in reg.list_registered_tools() for n in names)
 
-    # Resume WITHOUT re-supplying client_tools.
     resumed = Conversation(
         agent=_make_agent(),
         workspace=str(ws_dir),
@@ -80,8 +85,7 @@ def test_persisted_client_tools_resume_without_respecifying(tmp_path: Path) -> N
     )
     try:
         assert set(names) <= {t.name for t in resumed.agent.tools}
-        # The dynamic action types are registered again so persisted
-        # ClientAction_* events could be deserialized.
+        assert extract_client_tool_specs(resumed.agent.tools) == specs
         for n in names:
             assert n in reg.list_registered_tools()
     finally:
