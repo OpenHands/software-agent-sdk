@@ -275,6 +275,7 @@ def test_make_llm_completion_with_completion_api(mock_llm, sample_messages):
         tools=[],
         add_security_risk_prediction=True,
         on_token=None,
+        call_context=None,
     )
     mock_llm.responses.assert_not_called()
 
@@ -299,6 +300,7 @@ def test_make_llm_completion_with_responses_api(mock_llm, sample_messages):
         store=False,
         add_security_risk_prediction=True,
         on_token=None,
+        call_context=None,
     )
     mock_llm.completion.assert_not_called()
 
@@ -323,6 +325,7 @@ def test_make_llm_completion_with_tools_completion_api(
         tools=sample_tools,
         add_security_risk_prediction=True,
         on_token=None,
+        call_context=None,
     )
 
 
@@ -348,6 +351,7 @@ def test_make_llm_completion_with_tools_responses_api(
         store=False,
         add_security_risk_prediction=True,
         on_token=None,
+        call_context=None,
     )
 
 
@@ -368,6 +372,7 @@ def test_make_llm_completion_with_none_tools(mock_llm, sample_messages):
         tools=[],
         add_security_risk_prediction=True,
         on_token=None,
+        call_context=None,
     )
 
 
@@ -388,6 +393,7 @@ def test_make_llm_completion_with_empty_tools_list(mock_llm, sample_messages):
         tools=[],
         add_security_risk_prediction=True,
         on_token=None,
+        call_context=None,
     )
 
 
@@ -408,6 +414,7 @@ def test_make_llm_completion_empty_messages(mock_llm):
         tools=[],
         add_security_risk_prediction=True,
         on_token=None,
+        call_context=None,
     )
 
 
@@ -441,6 +448,7 @@ def test_prepare_llm_messages_and_make_llm_completion_integration(
         tools=[],
         add_security_risk_prediction=True,
         on_token=None,
+        call_context=None,
     )
 
 
@@ -468,6 +476,7 @@ def test_make_llm_completion_api_selection():
         tools=[],
         add_security_risk_prediction=True,
         on_token=None,
+        call_context=None,
     )
     mock_llm.responses.assert_not_called()
 
@@ -487,5 +496,6 @@ def test_make_llm_completion_api_selection():
         store=False,
         add_security_risk_prediction=True,
         on_token=None,
+        call_context=None,
     )
     mock_llm.completion.assert_not_called()

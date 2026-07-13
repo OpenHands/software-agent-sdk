@@ -34,6 +34,7 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
+from openhands.agent_server.skills_service import discover_profile_skills
 from openhands.agent_server.utils import safe_rmtree, utc_now
 from openhands.sdk import LLM, AgentContext, Event, Message
 from openhands.sdk.agent.base import AgentBase
@@ -52,12 +53,15 @@ from openhands.sdk.event.conversation_state import (
 )
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
+from openhands.sdk.mcp.utils import MCPToolProvider
+from openhands.sdk.tool import BROWSER_TOOL_NAME, Tool, is_tool_usable
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 
 
 if TYPE_CHECKING:
+    from openhands.sdk.mcp.config import MCPServer
     from openhands.sdk.subagent.schema import AgentDefinition
 
 CONVERSATION_WORKTREE_ROOT = Path("/tmp/conversation-worktrees")
@@ -253,14 +257,14 @@ logger = logging.getLogger(__name__)
 def _resolve_agent_from_profile(
     profile_id: "UUID",
     cipher: "Cipher | None",
-    mcp_config: "Any",
+    mcp_config: "dict[str, MCPServer]",
 ) -> "tuple[AgentBase, LaunchedAgentProfile]":
     """Load and resolve an agent profile by id, returning the built agent + provenance.
 
     Runs synchronously (call via ``asyncio.to_thread`` from async context).
 
     Args:
-        mcp_config: Global MCP config already loaded by the caller using the
+        mcp_config: Global MCP servers already loaded by the caller using the
             server's cipher.  Passed explicitly so this free function never
             touches the settings-store singleton (which may not have been
             initialised with the correct cipher yet).
@@ -275,6 +279,7 @@ def _resolve_agent_from_profile(
         get_llm_profile_store,
     )
     from openhands.sdk.profiles.resolver import ProfileNotFound, resolve_agent_profile
+    from openhands.sdk.settings.model import OpenHandsAgentSettings
 
     store = get_agent_profile_store()
     profile_name = store.name_for_id(profile_id)
@@ -282,7 +287,7 @@ def _resolve_agent_from_profile(
         raise ProfileNotFound(f"Agent profile with id '{profile_id}' not found")
 
     try:
-        profile = store.load(profile_name, cipher=cipher)
+        profile = store.load(profile_name)
     except FileNotFoundError:
         raise ProfileNotFound(
             f"Agent profile '{profile_name}' (id={profile_id}) not found"
@@ -292,15 +297,53 @@ def _resolve_agent_from_profile(
             f"Failed to load agent profile '{profile_name}': {exc}"
         ) from exc
 
+    # OpenHands profiles get the discovered catalog minus their ``disabled_skills``
+    # deny-list; ACP profiles carry no user/public skills so discovery is skipped.
+    # A genuine discovery failure fails the launch loudly rather than silently
+    # producing a zero-skill agent.
+    available_skills = None
+    if profile.agent_kind == "openhands":
+        try:
+            available_skills = discover_profile_skills()
+        except Exception as exc:
+            raise ValueError(
+                f"Skill discovery failed for profile '{profile_name}': {exc}"
+            ) from exc
+
     llm_store = get_llm_profile_store()
     try:
         settings_config = resolve_agent_profile(
-            profile, llm_store=llm_store, mcp_config=mcp_config, cipher=cipher
+            profile,
+            llm_store=llm_store,
+            mcp_config=mcp_config,
+            available_skills=available_skills,
+            cipher=cipher,
         )
     except (TypeError, ValueError) as exc:
         raise ValueError(f"Profile '{profile_name}' failed to resolve: {exc}") from exc
 
+    if isinstance(settings_config, OpenHandsAgentSettings):
+        # Force streaming so this launch path wires on_token: a client can't set
+        # llm.stream on a profile's referenced LLM ahead of time. Safe at this
+        # layer (not the SDK resolver) because this server wires the token
+        # callback whenever any llm.stream is set; a headless resolver caller
+        # that never wires on_token is covered by LLM's graceful degradation.
+        settings_config = settings_config.model_copy(
+            update={"llm": settings_config.llm.model_copy(update={"stream": True})}
+        )
+
     agent = settings_config.create_agent()
+    # Browser is deliberately absent from the deterministic SDK default
+    # (environment-dependent); this server knows its runtime, so it injects
+    # browser when usable. An explicit profile.tools list is authoritative.
+    if (
+        profile.agent_kind == "openhands"
+        and profile.tools is None
+        and is_tool_usable(BROWSER_TOOL_NAME)
+    ):
+        agent = agent.model_copy(
+            update={"tools": [*agent.tools, Tool(name=BROWSER_TOOL_NAME)]}
+        )
     launched = LaunchedAgentProfile(
         agent_profile_id=profile.id,
         revision=profile.revision,
@@ -373,6 +416,8 @@ def _compose_conversation_info(
         metrics=stored.metrics,
         created_at=stored.created_at,
         updated_at=stored.updated_at,
+        forked_from_conversation_id=stored.forked_from_conversation_id,
+        forked_from_event_id=stored.forked_from_event_id,
         current_model_id=current_model_id,
         available_models=available_models,
         supports_runtime_model_switch=supports_runtime_model_switch,
@@ -485,6 +530,7 @@ class ConversationService:
     webhook_specs: list[WebhookSpec] = field(default_factory=list)
     session_api_key: str | None = field(default=None)
     cipher: Cipher | None = None
+    mcp_tool_provider: MCPToolProvider | None = None
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     max_concurrent_runs: int = 10
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
@@ -1164,16 +1210,22 @@ class ConversationService:
         title: str | None = None,
         tags: dict[str, str] | None = None,
         reset_metrics: bool = True,
+        from_event_id: str | None = None,
     ) -> ConversationInfo | None:
         """Fork an existing conversation, deep-copying its event history.
 
         The fork is persisted to disk and then loaded as a new EventService,
         so the forked conversation is fully independent from the source.
 
+        When *from_event_id* is set, only the branch up to and including that
+        event is copied and the fork's HEAD is set there; otherwise the whole
+        conversation is copied (today's behavior).
+
         Returns ``None`` when *source_id* does not exist.
 
         Raises:
             ValueError: If *fork_id* is already taken by an active
+                conversation, or if *from_event_id* is not in the source
                 conversation.
         """
         if self._event_services is None:
@@ -1197,6 +1249,7 @@ class ConversationService:
             title=title,
             tags=tags,
             reset_metrics=reset_metrics,
+            from_event_id=from_event_id,
         )
         # Extract the persisted data, then discard the temporary conversation.
         fork_conv_id = fork_conv.id
@@ -1219,6 +1272,8 @@ class ConversationService:
             "title": title,
             "created_at": utc_now(),
             "updated_at": utc_now(),
+            "forked_from_conversation_id": source_id,
+            "forked_from_event_id": from_event_id,
         }
         if reset_metrics:
             fork_overrides["metrics"] = None
@@ -1236,6 +1291,29 @@ class ConversationService:
 
         state = await fork_event_service.get_state()
         return _compose_conversation_info(fork_event_service.stored, state)
+
+    async def navigate_conversation(
+        self, conversation_id: UUID, *, event_id: str | None = None
+    ) -> ConversationInfo | None:
+        """Move a conversation's HEAD to an existing event (in-place re-root).
+
+        All branches stay on disk; only the active branch the agent runs on
+        changes. The new HEAD persists via the conversation's own state
+        autosave. Returns ``None`` when *conversation_id* does not exist.
+
+        Raises:
+            ValueError: If *event_id* is not ``None`` and not present in the
+                conversation.
+        """
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        event_service = self._event_services.get(conversation_id)
+        if event_service is None:
+            return None
+
+        await event_service.navigate_to(event_id)
+        state = await event_service.get_state()
+        return _compose_conversation_info(event_service.stored, state)
 
     async def __aenter__(self):
         self.conversations_dir.mkdir(parents=True, exist_ok=True)
@@ -1372,6 +1450,9 @@ class ConversationService:
     def get_instance(cls, config: Config) -> "ConversationService":
         # Initialise the settings-store singleton with the server cipher before
         # any conversation handler can call get_settings_store() without config.
+        from openhands.agent_server.mcp_oauth_store import (
+            create_settings_backed_mcp_tool_provider,
+        )
         from openhands.agent_server.persistence import get_settings_store
 
         get_settings_store(config)
@@ -1382,6 +1463,7 @@ class ConversationService:
                 config.session_api_keys[0] if config.session_api_keys else None
             ),
             cipher=config.cipher,
+            mcp_tool_provider=create_settings_backed_mcp_tool_provider(config),
             max_concurrent_runs=config.max_concurrent_runs,
             lease_ttl_seconds=config.lease_ttl_seconds,
         )
@@ -1395,6 +1477,7 @@ class ConversationService:
             stored=stored,
             conversations_dir=self.conversations_dir,
             cipher=self.cipher,
+            mcp_tool_provider=self.mcp_tool_provider,
             owner_instance_id=self.owner_instance_id,
             lease_ttl_seconds=self.lease_ttl_seconds,
         )

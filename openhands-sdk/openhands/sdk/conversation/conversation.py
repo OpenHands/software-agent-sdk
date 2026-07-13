@@ -20,6 +20,7 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.secret import SecretValue
 from openhands.sdk.tool.client_tool import ClientToolSpec
+from openhands.sdk.utils.redact import redact_url_credentials
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
 
@@ -174,7 +175,12 @@ class Conversation:
 
             # 2. Auto-generate plugins/skills tag from plugins parameter
             if plugins:
-                plugin_urls = [p.source_url for p in plugins if p.source_url]
+                # tags persist verbatim — mask inline creds (${VAR} refs survive).
+                plugin_urls = [
+                    redact_url_credentials(url, preserve_placeholders=True)
+                    for p in plugins
+                    if (url := p.source_url)
+                ]
                 if plugin_urls:
                     effective_tags["plugins"] = ",".join(plugin_urls)
                     logger.debug(f"Added plugins tag with {len(plugin_urls)} plugin(s)")

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import copy
-import json
 import os
 import re
 import sys
@@ -17,23 +15,19 @@ from pydantic import (
     ConfigDict,
     Field,
     PrivateAttr,
-    SecretStr,
-    SerializationInfo,
-    ValidationInfo,
-    model_serializer,
     model_validator,
 )
 
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.condenser import CondenserBase
-from openhands.sdk.context.prompts.presets import create_registry
+from openhands.sdk.context.prompts.presets import PromptPreset, create_registry
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.context.prompts.section import Platform, PromptContext
 from openhands.sdk.critic.base import CriticBase
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp import create_mcp_tools
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.tool import (
     BUILT_IN_TOOL_CLASSES,
     BUILT_IN_TOOLS,
@@ -42,8 +36,11 @@ from openhands.sdk.tool import (
     resolve_tool,
 )
 from openhands.sdk.tool.builtins import InvokeSkillTool
-from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
-from openhands.sdk.utils.models import DiscriminatedUnionMixin, get_handler_class_name
+from openhands.sdk.tool.builtins.vision_inspect import (
+    VisionInspectTool,
+    has_vision_profile_available,
+)
+from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
 
 if TYPE_CHECKING:
@@ -56,51 +53,6 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-def _decrypt_mcp_value_or_keep(cipher: Cipher, value: str) -> str:
-    if not value.startswith(FERNET_TOKEN_PREFIX):
-        return value
-    decrypted = cipher.try_decrypt_str(value)
-    if decrypted is None:
-        logger.warning(
-            "MCP env/headers value looks encrypted but could not be decrypted "
-            "(cipher mismatch or corruption); leaving the ciphertext in place."
-        )
-        return value
-    return decrypted
-
-
-def _decrypt_mcp_secret_values(
-    config: dict[str, Any], cipher: Cipher
-) -> dict[str, Any]:
-    config = copy.deepcopy(config)
-    if "mcpServers" not in config:
-        return config
-    servers = config["mcpServers"]
-    if not isinstance(servers, dict):
-        raise ValueError("mcp_config.mcpServers must be a dictionary when provided")
-    for server_name, server in servers.items():
-        if not isinstance(server, dict):
-            raise ValueError(
-                f"mcp_config.mcpServers[{server_name!r}] must be a dictionary"
-            )
-        for key in ("env", "headers"):
-            if key not in server:
-                continue
-            mapping = server[key]
-            if not isinstance(mapping, dict):
-                raise ValueError(
-                    f"mcp_config.mcpServers[{server_name!r}].{key} must be "
-                    "a dictionary when provided"
-                )
-            server[key] = {
-                name: _decrypt_mcp_value_or_keep(cipher, value)
-                if isinstance(value, str)
-                else value
-                for name, value in mapping.items()
-            }
-    return config
-
-
 # -- SOUL.md loader -------------------------------------------------------
 # SOUL.md is the agent's identity file (~/.openhands/SOUL.md).  When present
 # it replaces the default identity in the system prompt.
@@ -111,11 +63,20 @@ _DEFAULT_SOUL = (
     " with a computer to solve tasks."
 )
 
-# Built-in prompt dir. The registry only stands in for the default prompt here; a
-# subclass with its own prompts/system_prompt.j2 keeps the Jinja render path.
+# Built-in prompt dir. The registry only stands in for built-in prompts here; a
+# subclass with its own prompts/ keeps the Jinja render path.
 _BUILTIN_PROMPT_DIR = os.path.realpath(
     os.path.join(os.path.dirname(__file__), "prompts")
 )
+
+# Built-in ``system_prompt_filename`` values are back-compat sentinels (the .j2 files
+# were removed) that select a registry preset. ``system_prompt_planning.j2`` keeps its
+# historical name so ``get_planning_agent`` needs no change. Any other filename -- or a
+# subclass's own ``prompt_dir`` -- falls through to the Jinja escape hatch.
+_PRESET_BY_FILENAME: dict[str, PromptPreset] = {
+    "system_prompt.j2": PromptPreset.DEFAULT,
+    "system_prompt_planning.j2": PromptPreset.PLANNING,
+}
 
 
 def _load_soul_md() -> str:
@@ -168,12 +129,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             },
         ],
     )
-    mcp_config: dict[str, Any] = Field(
+    mcp_config: dict[str, MCPServer] = Field(
         default_factory=dict,
-        description="Optional MCP configuration dictionary to create MCP tools.",
-        examples=[
-            {"mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}}
-        ],
+        description="Optional MCP servers to expose as tools.",
+        examples=[{"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}],
     )
     filter_tools_regex: str | None = Field(
         default=None,
@@ -288,123 +247,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             )
         return data
 
-    @model_validator(mode="before")
-    @classmethod
-    def _decrypt_mcp_config(cls, data: Any, info: ValidationInfo) -> Any:
-        """Decrypt encrypted_mcp_config if present and cipher is in context.
-
-        Handles backward compatibility:
-        - If encrypted_mcp_config exists and cipher is present: decrypt and
-          set mcp_config
-        - If mcp_config exists directly: use it as-is (plaintext or
-          expose_secrets case)
-        - If neither exists: default empty dict will be used
-        """
-        if not isinstance(data, dict):
-            return data
-        cipher: Cipher | None = info.context.get("cipher") if info.context else None
-        data = dict(data)
-        has_encrypted_mcp_config = "encrypted_mcp_config" in data
-        encrypted = data.pop("encrypted_mcp_config", None)
-        if not has_encrypted_mcp_config:
-            mcp_config = data.get("mcp_config")
-            if mcp_config is not None and not isinstance(mcp_config, dict):
-                raise ValueError("mcp_config must be a dictionary when provided")
-            if isinstance(mcp_config, dict) and cipher is not None:
-                data["mcp_config"] = _decrypt_mcp_secret_values(mcp_config, cipher)
-            return data
-
-        if not isinstance(encrypted, str):
-            raise ValueError("encrypted_mcp_config must be a string when provided")
-
-        # If no cipher in context, we can't decrypt - the encrypted value is lost
-        if cipher is None:
-            logger.warning(
-                "Found encrypted_mcp_config but no cipher in context - "
-                "MCP configuration will be lost. Provide a cipher to preserve it."
-            )
-            return data
-
-        decrypted = cipher.decrypt(encrypted)
-        if decrypted is None:
-            logger.warning(
-                "Failed to decrypt mcp_config (cipher mismatch or corruption) - "
-                "MCP configuration will be lost."
-            )
-            return data
-
-        try:
-            mcp_config = json.loads(decrypted.get_secret_value())
-        except json.JSONDecodeError as e:
-            raise ValueError("encrypted_mcp_config must decrypt to valid JSON") from e
-        if not isinstance(mcp_config, dict):
-            raise ValueError("encrypted_mcp_config must decrypt to a JSON object")
-        data["mcp_config"] = mcp_config
-
-        return data
-
-    @model_serializer(mode="wrap")
-    def _serialize_with_mcp_handling(self, handler, info: SerializationInfo):
-        """Serialize the agent, handling mcp_config encryption/redaction.
-
-        This serializer handles:
-        1. Polymorphic serialization for subclasses (e.g., ACPAgent)
-        2. mcp_config encryption when cipher is in context
-        3. mcp_config redaction (omission) when neither cipher nor expose_secrets
-
-        The mcp_config handling is done here (not in a field_serializer) to avoid
-        changing the field's schema type, which would break REST API compatibility.
-        """
-        if isinstance(self, dict):
-            # Sometimes pydantic passes a dict in here.
-            return self
-
-        # Check if handler is for the current (actual) class
-        # See get_handler_class_name() for details on the fragile string parsing
-        handler_class = get_handler_class_name(handler)
-
-        if handler_class != self.__class__.__name__:
-            # Handler is for a base class, delegate to model_dump for proper
-            # subclass serialization (e.g., ACPAgent fields)
-            result = self.model_dump(
-                mode=info.mode,
-                context=info.context,
-                by_alias=info.by_alias,
-                exclude_unset=info.exclude_unset,
-                exclude_defaults=info.exclude_defaults,
-                exclude_none=info.exclude_none,
-                round_trip=info.round_trip,
-                serialize_as_any=info.serialize_as_any,
-            )
-        else:
-            result = handler(self)
-
-        # Handle mcp_config based on context:
-        # - Empty config: omit (nothing sensitive)
-        # - expose_secrets=True: keep as-is (explicitly requested)
-        # - cipher present: encrypt and store in encrypted_mcp_config, omit original
-        # - default: omit (redact sensitive data)
-        if not self.mcp_config:  # Only process non-empty configs
-            result.pop("mcp_config", None)
-            return result
-        elif info.context and info.context.get("cipher"):
-            # Encrypt and add encrypted_mcp_config
-            cipher: Cipher = info.context["cipher"]
-            json_str = json.dumps(self.mcp_config)
-            encrypted = cipher.encrypt(SecretStr(json_str))
-            if encrypted:
-                result["encrypted_mcp_config"] = encrypted
-            # Remove plaintext mcp_config
-            result.pop("mcp_config", None)
-            return result
-        elif info.context and info.context.get("expose_secrets"):
-            # Keep mcp_config as-is (already in result from handler)
-            return result
-        else:
-            # Default: redact by omitting
-            result.pop("mcp_config", None)
-            return result
-
     condenser: CondenserBase | None = Field(
         default=None,
         description="Optional condenser to use for condensing conversation history.",
@@ -462,6 +304,18 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         return self.__class__.__name__
 
     @property
+    def _prompt_preset(self) -> PromptPreset | None:
+        """The registry preset for this agent's built-in prompt.
+
+        ``None`` means "take the Jinja escape hatch": a subclass with its own
+        ``prompt_dir``, or a ``system_prompt_filename`` that is not a known built-in
+        sentinel (e.g. a custom relative name or an absolute path).
+        """
+        if os.path.realpath(self.prompt_dir) != _BUILTIN_PROMPT_DIR:
+            return None
+        return _PRESET_BY_FILENAME.get(self.system_prompt_filename)
+
+    @property
     def static_system_message(self) -> str:
         """Compute the static portion of the system message.
 
@@ -469,10 +323,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         per-conversation context. This static portion can be cached and reused
         across conversations for better prompt caching efficiency.
 
-        The default prompt is assembled from the typed section registry, which also
-        resolves a custom ``security_policy_filename``. Escape hatches keep the Jinja
-        path: an inline ``system_prompt`` is returned verbatim; a custom
-        ``system_prompt_filename`` or subclass ``prompt_dir`` renders its own template.
+        Built-in prompts (the ``default`` and ``planning`` presets) are assembled from
+        the typed section registry, which also resolves a custom
+        ``security_policy_filename``. Escape hatches keep the Jinja path: an inline
+        ``system_prompt`` is returned verbatim; a custom ``system_prompt_filename`` or
+        subclass ``prompt_dir`` renders its own template.
 
         Returns:
             The static system prompt without dynamic context.
@@ -482,17 +337,15 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         # Escape hatch: a custom filename or a subclass's own prompt_dir renders its
         # own Jinja template; everything else (incl. custom policies) uses the registry.
-        if (
-            self.system_prompt_filename != "system_prompt.j2"
-            or os.path.realpath(self.prompt_dir) != _BUILTIN_PROMPT_DIR
-        ):
+        preset = self._prompt_preset
+        if preset is None:
             return render_template(
                 prompt_dir=self.prompt_dir,
                 template_name=self.system_prompt_filename,
                 **self._resolved_template_kwargs(),
             )
 
-        return create_registry().build(self._build_prompt_context()).static
+        return create_registry(preset).build(self._build_prompt_context()).static
 
     def _resolved_template_kwargs(self) -> dict[str, object]:
         """Resolve the system-prompt template kwargs.
@@ -640,7 +493,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         """
         if not self.agent_context:
             return None
-        return create_registry().build(self._build_prompt_context()).dynamic
+        # The dynamic tier is preset-independent, so a custom Jinja template (preset
+        # None) still gets the default dynamic block, exactly as before.
+        preset = self._prompt_preset or PromptPreset.DEFAULT
+        return create_registry(preset).build(self._build_prompt_context()).dynamic
 
     def init_state(
         self,
@@ -656,11 +512,13 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         """
         self._initialize(state)
 
-    def _initialize(self, state: ConversationState):
+    def _initialize(
+        self,
+        state: ConversationState,
+    ):
         """Create an AgentBase instance from an AgentSpec."""
 
         if self._initialized:
-            logger.warning("Agent already initialized; skipping re-initialization.")
             return
 
         tools: list[ToolDefinition] = []
@@ -672,11 +530,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             # Submit tool resolution tasks
             for tool_spec in self.tools:
                 future = executor.submit(resolve_tool, tool_spec, state)
-                futures.append(future)
-
-            # Submit MCP tools creation if configured
-            if self.mcp_config:
-                future = executor.submit(create_mcp_tools, self.mcp_config, 30)
                 futures.append(future)
 
             # Collect results as they complete
@@ -710,6 +563,16 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             logger.debug(
                 "Auto-attached %s (invocable AgentSkills-format skill present)",
                 InvokeSkillTool.__name__,
+            )
+        if (
+            not self.llm.vision_is_active()
+            and VisionInspectTool.__name__ not in default_tool_names
+            and has_vision_profile_available()
+        ):
+            default_tool_names.append(VisionInspectTool.__name__)
+            logger.debug(
+                "Auto-attached %s (vision profile available for non-vision model)",
+                VisionInspectTool.__name__,
             )
 
         for tool_name in default_tool_names:
@@ -958,11 +821,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 name for name, count in Counter(tool_names).items() if count > 1
             }
             raise ValueError(f"Duplicate runtime tool names found: {duplicates}")
+        existing = set(self._tools) & set(tool_names)
+        if existing:
+            raise ValueError(f"Duplicate tool names found: {existing}")
 
         for tool in tools:
-            previous_tool = self._tools.get(tool.name)
-            if previous_tool is not None:
-                self._close_tool_executor(previous_tool)
             self._tools[tool.name] = tool
 
     @property
@@ -991,10 +854,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
     @property
     def supports_openhands_mcp(self) -> bool:
-        """``True`` if OpenHands can inject MCP servers into this agent.
+        """``True`` if OpenHands can create in-process MCP tools for this agent.
 
-        ``False`` for :class:`~openhands.sdk.agent.acp_agent.ACPAgent` — MCP
-        configuration is owned by the ACP subprocess.
+        ``False`` for :class:`~openhands.sdk.agent.acp_agent.ACPAgent` — ACP
+        agents pass configured MCP servers through to the ACP subprocess.
         """
         return True
 

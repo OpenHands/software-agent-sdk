@@ -1,5 +1,6 @@
+import contextlib
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Mapping
+from collections.abc import AsyncIterator, Iterable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, TypeVar, cast
 
@@ -12,6 +13,7 @@ from openhands.sdk.conversation.types import (
     ConversationTokenCallbackType,
     TraceMetadataValue,
 )
+from openhands.sdk.event.types import EventID
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.message import Message
 from openhands.sdk.observability.laminar import (
@@ -225,6 +227,14 @@ class BaseConversation(ABC):
         """
         self.run()
 
+    @contextlib.asynccontextmanager
+    async def _released_state_lock_during_io(self) -> AsyncIterator[None]:
+        """Release any run-loop state lock across an awaited LLM call.
+
+        No-op by default; :class:`LocalConversation` overrides it.
+        """
+        yield
+
     @abstractmethod
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
         """Set the confirmation policy for the conversation."""
@@ -384,6 +394,19 @@ class BaseConversation(ABC):
         """
         ...
 
+    def load_plugin(self, plugin_ref: str) -> None:
+        """Load a plugin from a registered marketplace.
+
+        Implementations that support marketplace-registered plugins resolve the
+        reference against the conversation agent's registered marketplaces and
+        merge the plugin's skills, hooks, and MCP configuration into the agent.
+
+        Args:
+            plugin_ref: Plugin reference, either ``plugin-name`` or
+                ``plugin-name@marketplace-name``.
+        """
+        raise NotImplementedError("This conversation does not support loading plugins")
+
     @abstractmethod
     def fork(
         self,
@@ -393,6 +416,7 @@ class BaseConversation(ABC):
         title: str | None = None,
         tags: dict[str, str] | None = None,
         reset_metrics: bool = True,
+        from_event_id: EventID | None = None,
     ) -> "BaseConversation":
         """Deep-copy this conversation with a new ID.
 
@@ -409,10 +433,29 @@ class BaseConversation(ABC):
             tags: Optional tags for the forked conversation.
             reset_metrics: If ``True`` (default), cost/token stats start
                 fresh on the fork.
+            from_event_id: If set, copy only the branch up to this event and set
+                the fork's HEAD there. If ``None`` (default), full copy.
 
         Returns:
             A new conversation that shares the same event history but has
             its own identity and independent state going forward.
+        """
+        ...
+
+    @abstractmethod
+    def navigate_to(self, event_id: EventID | None) -> None:
+        """Move the conversation HEAD to an existing event within this conversation.
+
+        Re-roots the active branch in place: the agent's next context becomes
+        ``path_to_root(event_id)``. All branches stay on disk; unlike
+        :meth:`fork`, no new conversation is created.
+
+        Args:
+            event_id: Event to make the new HEAD, or ``None`` for the empty tree.
+
+        Raises:
+            ValueError: If ``event_id`` is not ``None`` and not in this
+                conversation.
         """
         ...
 

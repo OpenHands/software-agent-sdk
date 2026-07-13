@@ -8,6 +8,7 @@ for the Cloud API's settings/secrets endpoints.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Any, TypedDict
 
 from pydantic import (
@@ -73,7 +74,7 @@ def _deep_merge(
       ``env`` / ``headers`` key) without round-tripping the whole map::
 
           {"agent_settings_diff":
-              {"mcp_config": {"mcpServers": {"svc": {"env": {"STALE_KEY": null}}}}}}
+              {"mcp_config": {"svc": {"env": {"STALE_KEY": null}}}}}
 
     - **At the top level** (a settings *field* like ``confirmation_mode``)
       a ``None`` is left as-is and flows to model
@@ -172,7 +173,12 @@ class PersistedSettings(BaseModel):
         )
         return bool(secret_value and secret_value.strip())
 
-    def update(self, payload: SettingsUpdatePayload) -> None:
+    def update(
+        self,
+        payload: SettingsUpdatePayload,
+        *,
+        context: Mapping[str, object] | None = None,
+    ) -> None:
         """Apply a batch of changes from a nested dict.
 
         Accepts ``agent_settings_diff``, ``conversation_settings_diff``,
@@ -215,7 +221,7 @@ class PersistedSettings(BaseModel):
             if isinstance(agent_update, dict):
                 try:
                     new_agent = apply_agent_settings_diff(
-                        self.agent_settings, agent_update
+                        self.agent_settings, agent_update, context=context
                     )
                 except Exception as e:
                     # Use 'from None' to break exception chain - the original

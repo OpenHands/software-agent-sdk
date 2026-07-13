@@ -2,18 +2,21 @@
 
 import json
 import logging
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
 from pydantic import SecretStr
 
-import openhands.sdk.conversation.impl.local_conversation as local_conversation_impl
 from openhands.sdk import LLM, Agent, AgentContext, Conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.hooks.config import HookDefinition, HookMatcher
 from openhands.sdk.marketplace import MarketplaceRegistration
+from openhands.sdk.mcp.client import MCPClient
+from openhands.sdk.mcp.config import MCPServer, dump_mcp_config
 from openhands.sdk.plugin import (
     PluginSource,
     discovery,
@@ -21,6 +24,32 @@ from openhands.sdk.plugin import (
     installed,
 )
 from openhands.sdk.tool.builtins import ThinkTool
+
+
+class EmptyMCPClient:
+    def __init__(self):
+        self.tools = []
+
+
+class RecordingMCPToolProvider:
+    def __init__(
+        self,
+        created: list[Any],
+        client: object | None = None,
+        state_locked: Callable[[], bool] | None = None,
+    ):
+        self.created = created
+        self.client = client or EmptyMCPClient()
+        self.state_locked = state_locked
+
+    def create_tools(
+        self, mcp_config: dict[str, MCPServer], timeout: float = 30.0
+    ) -> MCPClient:
+        if self.state_locked is None:
+            self.created.append(mcp_config)
+        else:
+            self.created.append((mcp_config, self.state_locked()))
+        return cast(MCPClient, self.client)
 
 
 @pytest.fixture
@@ -160,6 +189,54 @@ class TestLocalConversationPlugins:
         assert conversation.agent.agent_context is not None
         skill_names = [s.name for s in conversation.agent.agent_context.skills]
         assert "auto-skill" in skill_names
+        assert conversation.resolved_plugins is not None
+        assert len(conversation.resolved_plugins) == 1
+
+        conversation.close()
+
+    def test_auto_load_marketplace_plugin_list_selects_plugins(
+        self, tmp_path: Path, mock_llm
+    ):
+        marketplace_dir = create_test_marketplace(
+            tmp_path / "marketplace",
+            plugins=[
+                {
+                    "name": "formatter",
+                    "skills": [{"name": "formatter-skill", "content": "Format"}],
+                },
+                {
+                    "name": "linter",
+                    "skills": [{"name": "linter-skill", "content": "Lint"}],
+                },
+            ],
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        agent = Agent(
+            llm=mock_llm,
+            tools=[],
+            agent_context=AgentContext(
+                registered_marketplaces=[
+                    MarketplaceRegistration(
+                        name="selective",
+                        source=str(marketplace_dir),
+                        auto_load=["formatter"],
+                    )
+                ]
+            ),
+        )
+
+        conversation = LocalConversation(
+            agent=agent,
+            workspace=workspace,
+            visualizer=None,
+        )
+        conversation._ensure_plugins_loaded()
+
+        assert conversation.agent.agent_context is not None
+        assert [skill.name for skill in conversation.agent.agent_context.skills] == [
+            "formatter-skill"
+        ]
         assert conversation.resolved_plugins is not None
         assert len(conversation.resolved_plugins) == 1
 
@@ -556,7 +633,7 @@ class TestLocalConversationPlugins:
         conversation.close()
 
     def test_load_plugin_adds_runtime_tools_without_reinitializing_existing_tools(
-        self, tmp_path: Path, mock_llm, monkeypatch
+        self, tmp_path: Path, mock_llm
     ):
         mcp_tools_created = []
 
@@ -592,30 +669,28 @@ class TestLocalConversationPlugins:
             ),
         )
         conversation = LocalConversation(
-            agent=agent, workspace=workspace, visualizer=None
+            agent=agent,
+            workspace=workspace,
+            visualizer=None,
+            mcp_tool_provider=RecordingMCPToolProvider(
+                mcp_tools_created,
+                RuntimeMCPClient(),
+                state_locked=lambda: conversation.state.locked(),
+            ),
         )
         conversation._ensure_agent_ready()
         existing_tools = dict(conversation.agent.tools_map)
-
-        def mock_create_mcp_tools(config, timeout):
-            mcp_tools_created.append((config, conversation.state.locked()))
-            return RuntimeMCPClient()
-
-        monkeypatch.setattr(
-            local_conversation_impl, "create_mcp_tools", mock_create_mcp_tools
-        )
 
         conversation.load_plugin("mcp-plugin")
 
         for name, tool in existing_tools.items():
             assert conversation.agent.tools_map[name] is tool
         assert conversation.agent.tools_map[runtime_tool.name] is runtime_tool
-        assert conversation.agent.mcp_config is not None
-        assert "runtime-server" in conversation.agent.mcp_config["mcpServers"]
+        assert "runtime-server" in conversation.agent.mcp_config
         assert len(mcp_tools_created) == 1
         created_config, state_locked = mcp_tools_created[0]
         assert not state_locked
-        assert "runtime-server" in created_config["mcpServers"]
+        assert "runtime-server" in created_config
 
         conversation.close()
 
@@ -870,26 +945,15 @@ class TestLocalConversationPlugins:
 
         conversation.close()
 
-    def test_plugin_mcp_config_is_initialized(
-        self, tmp_path: Path, basic_agent, monkeypatch
-    ):
-        """Test that MCP config from plugins is properly initialized.
+    def test_plugin_mcp_config_are_initialized(self, tmp_path: Path, basic_agent):
+        """Test that MCP servers from plugins are properly initialized.
 
         This is a regression test for a bug where MCP tools from plugins were not
         being created because the agent was initialized before plugins were loaded.
         """
-        # Mock create_mcp_tools to avoid actually starting MCP servers in tests
+        # Inject an MCP provider to avoid actually starting MCP servers in tests
         mcp_tools_created = []
-
-        def mock_create_mcp_tools(config, timeout):
-            mcp_tools_created.append(config)
-            return []  # Return empty list for testing
-
-        import openhands.sdk.agent.base
-
-        monkeypatch.setattr(
-            openhands.sdk.agent.base, "create_mcp_tools", mock_create_mcp_tools
-        )
+        mcp_tool_provider = RecordingMCPToolProvider(mcp_tools_created)
 
         plugin_dir = create_test_plugin(
             tmp_path / "plugin",
@@ -904,26 +968,22 @@ class TestLocalConversationPlugins:
             workspace=workspace,
             plugins=[PluginSource(source=str(plugin_dir))],
             visualizer=None,
+            mcp_tool_provider=mcp_tool_provider,
         )
 
-        # Before loading plugins, no MCP config should exist
-        assert (
-            conversation.agent.mcp_config is None or conversation.agent.mcp_config == {}
-        )
+        # Before loading plugins, no MCP servers should exist
+        assert conversation.agent.mcp_config == {}
 
         # Trigger plugin loading and agent initialization
         conversation._ensure_agent_ready()
 
-        # After loading, MCP config should be merged
-        assert conversation.agent.mcp_config is not None
-        assert "mcpServers" in conversation.agent.mcp_config
-        assert "test-server" in conversation.agent.mcp_config["mcpServers"]
+        # After loading, MCP servers should be merged
+        assert "test-server" in conversation.agent.mcp_config
 
-        # The agent should have been initialized with the complete MCP config
-        # This verifies that create_mcp_tools was called with the plugin's MCP config
+        # The agent should have been initialized with the complete MCP servers
+        # This verifies that create_mcp_tools was called with the plugin's MCP servers
         assert len(mcp_tools_created) > 0
-        assert "mcpServers" in mcp_tools_created[-1]
-        assert "test-server" in mcp_tools_created[-1]["mcpServers"]
+        assert "test-server" in mcp_tools_created[-1]
 
         conversation.close()
 
@@ -1014,26 +1074,15 @@ class TestPluginMcpSecretsExpansion:
     See: https://github.com/OpenHands/software-agent-sdk/issues/2872
     """
 
-    def test_plugin_mcp_secrets_without_defaults(
-        self, tmp_path: Path, basic_agent, monkeypatch
-    ):
+    def test_plugin_mcp_secrets_without_defaults(self, tmp_path: Path, basic_agent):
         """Test that per-conversation secrets work for variables without defaults.
 
         This test verifies that ${VAR} placeholders (without defaults) are
         correctly expanded using secrets from SecretRegistry.
         """
-        # Mock create_mcp_tools to avoid actually starting MCP servers
+        # Inject an MCP provider to avoid actually starting MCP servers
         mcp_tools_created = []
-
-        def mock_create_mcp_tools(config, timeout):
-            mcp_tools_created.append(config)
-            return []
-
-        import openhands.sdk.agent.base
-
-        monkeypatch.setattr(
-            openhands.sdk.agent.base, "create_mcp_tools", mock_create_mcp_tools
-        )
+        mcp_tool_provider = RecordingMCPToolProvider(mcp_tools_created)
 
         # Create plugin with MCP config using ${VAR} WITHOUT default
         plugin_dir = create_test_plugin(
@@ -1056,6 +1105,7 @@ class TestPluginMcpSecretsExpansion:
             workspace=workspace,
             plugins=[PluginSource(source=str(plugin_dir))],
             visualizer=None,
+            mcp_tool_provider=mcp_tool_provider,
         )
 
         # Inject secret BEFORE triggering plugin loading
@@ -1064,20 +1114,19 @@ class TestPluginMcpSecretsExpansion:
         # Trigger plugin loading and agent initialization
         conversation._ensure_agent_ready()
 
-        # Verify the secret was expanded in the MCP config
-        assert conversation.agent.mcp_config is not None
-        auth_header = conversation.agent.mcp_config["mcpServers"]["test-server"][
+        # Verify the secret was expanded in the MCP servers
+        headers = dump_mcp_config(conversation.agent.mcp_config)["test-server"][
             "headers"
-        ]["Authorization"]
+        ]
+        assert isinstance(headers, dict)
+        auth_header = headers["Authorization"]
         assert auth_header == "Bearer my-actual-secret", (
             f"Expected 'Bearer my-actual-secret', got '{auth_header}'"
         )
 
         conversation.close()
 
-    def test_plugin_mcp_secrets_with_defaults(
-        self, tmp_path: Path, basic_agent, monkeypatch
-    ):
+    def test_plugin_mcp_secrets_with_defaults(self, tmp_path: Path, basic_agent):
         """Test that per-conversation secrets work with default values.
 
         This test verifies that ${VAR:-default} placeholders use the secret
@@ -1089,18 +1138,9 @@ class TestPluginMcpSecretsExpansion:
 
         Expected: Secret value should be used, not the default.
         """
-        # Mock create_mcp_tools to avoid actually starting MCP servers
+        # Inject an MCP provider to avoid actually starting MCP servers
         mcp_tools_created = []
-
-        def mock_create_mcp_tools(config, timeout):
-            mcp_tools_created.append(config)
-            return []
-
-        import openhands.sdk.agent.base
-
-        monkeypatch.setattr(
-            openhands.sdk.agent.base, "create_mcp_tools", mock_create_mcp_tools
-        )
+        mcp_tool_provider = RecordingMCPToolProvider(mcp_tools_created)
 
         # Create plugin with MCP config using ${VAR:-default} WITH default
         plugin_dir = create_test_plugin(
@@ -1125,6 +1165,7 @@ class TestPluginMcpSecretsExpansion:
             workspace=workspace,
             plugins=[PluginSource(source=str(plugin_dir))],
             visualizer=None,
+            mcp_tool_provider=mcp_tool_provider,
         )
 
         # Inject secret BEFORE triggering plugin loading
@@ -1134,10 +1175,11 @@ class TestPluginMcpSecretsExpansion:
         conversation._ensure_agent_ready()
 
         # CRITICAL: Verify the secret was used, NOT the default
-        assert conversation.agent.mcp_config is not None
-        auth_header = conversation.agent.mcp_config["mcpServers"]["test-server"][
+        headers = dump_mcp_config(conversation.agent.mcp_config)["test-server"][
             "headers"
-        ]["Authorization"]
+        ]
+        assert isinstance(headers, dict)
+        auth_header = headers["Authorization"]
 
         # This assertion will FAIL with double-expansion bug
         assert auth_header == "Bearer my-actual-secret", (
@@ -1149,25 +1191,16 @@ class TestPluginMcpSecretsExpansion:
         conversation.close()
 
     def test_plugin_mcp_secrets_fallback_to_default_when_no_secret(
-        self, tmp_path: Path, basic_agent, monkeypatch
+        self, tmp_path: Path, basic_agent
     ):
         """Test that default values work when no secret is provided.
 
         This test verifies that ${VAR:-default} correctly falls back to the
         default value when no secret is injected.
         """
-        # Mock create_mcp_tools to avoid actually starting MCP servers
+        # Inject an MCP provider to avoid actually starting MCP servers
         mcp_tools_created = []
-
-        def mock_create_mcp_tools(config, timeout):
-            mcp_tools_created.append(config)
-            return []
-
-        import openhands.sdk.agent.base
-
-        monkeypatch.setattr(
-            openhands.sdk.agent.base, "create_mcp_tools", mock_create_mcp_tools
-        )
+        mcp_tool_provider = RecordingMCPToolProvider(mcp_tools_created)
 
         # Create plugin with MCP config using ${VAR:-default}
         # Note: MCP config structure requires valid fields, so we use 'headers'
@@ -1194,6 +1227,7 @@ class TestPluginMcpSecretsExpansion:
             workspace=workspace,
             plugins=[PluginSource(source=str(plugin_dir))],
             visualizer=None,
+            mcp_tool_provider=mcp_tool_provider,
         )
 
         # Do NOT inject any secrets - should use defaults
@@ -1202,11 +1236,11 @@ class TestPluginMcpSecretsExpansion:
         conversation._ensure_agent_ready()
 
         # Verify defaults were used
-        assert conversation.agent.mcp_config is not None
-        url = conversation.agent.mcp_config["mcpServers"]["test-server"]["url"]
-        header = conversation.agent.mcp_config["mcpServers"]["test-server"]["headers"][
-            "X-Custom-Header"
-        ]
+        mcp_config = dump_mcp_config(conversation.agent.mcp_config)
+        url = mcp_config["test-server"]["url"]
+        headers = mcp_config["test-server"]["headers"]
+        assert isinstance(headers, dict)
+        header = headers["X-Custom-Header"]
 
         assert url == "https://default.example.com/mcp"
         assert header == "default-header-value"
@@ -1462,4 +1496,38 @@ class TestAmbientPluginAutoLoad:
         skill_names = [s.name for s in conversation.agent.agent_context.skills]
         assert "ambient-skill" in skill_names
         assert conversation.resolved_plugins is None
+        conversation.close()
+
+    def test_plugin_load_log_never_leaks_credentials(
+        self, tmp_path: Path, basic_agent, caplog: pytest.LogCaptureFixture
+    ):
+        """Plugin-load logs must never contain the source credential. A serializer
+        covers model dumps, not f-string log lines, so this guards against anyone
+        re-adding spec.source to that log (issue #3752)."""
+        plugin_dir = create_test_plugin(
+            tmp_path / "plugin",
+            name="test-plugin",
+            skills=[{"name": "s", "content": "c"}],
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        conversation = LocalConversation(
+            agent=basic_agent,
+            workspace=workspace,
+            plugins=[
+                PluginSource(source="https://oauth2:LEAKME@host.example.com/o/r.git")
+            ],
+            visualizer=None,
+        )
+        with (
+            caplog.at_level(logging.DEBUG),
+            patch(
+                "openhands.sdk.conversation.impl.local_conversation."
+                "fetch_plugin_with_resolution",
+                return_value=(plugin_dir, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
+            ),
+        ):
+            conversation._ensure_plugins_loaded()
+
+        assert "LEAKME" not in caplog.text
         conversation.close()

@@ -1344,6 +1344,32 @@ class TestEventServiceSendMessage:
                 None, conversation.send_message, system_message
             )
 
+    @pytest.mark.asyncio
+    async def test_load_plugin_delegates_to_conversation(self, event_service):
+        """Runtime plugin loads are delegated through the executor."""
+        conversation = MagicMock()
+        conversation.load_plugin = MagicMock()
+        event_service._conversation = conversation
+
+        with patch("asyncio.get_running_loop") as mock_get_loop:
+            mock_loop = MagicMock()
+            mock_get_loop.return_value = mock_loop
+            mock_loop.run_in_executor.side_effect = lambda *args: self._mock_executor()
+
+            await event_service.load_plugin("plugin@team")
+
+        mock_loop.run_in_executor.assert_called_once_with(
+            None, conversation.load_plugin, "plugin@team"
+        )
+
+    @pytest.mark.asyncio
+    async def test_load_plugin_inactive_service(self, event_service):
+        """Runtime plugin loads require an active conversation."""
+        event_service._conversation = None
+
+        with pytest.raises(ValueError, match="inactive_service"):
+            await event_service.load_plugin("plugin@team")
+
 
 class TestEventServiceRespondToConfirmation:
     """Test cases for confirmation responses and rejection handling."""
@@ -2241,6 +2267,25 @@ class TestEventServiceConcurrentSubscriptions:
             assert isinstance(events[0], ConversationStateUpdateEvent)
 
     @pytest.mark.asyncio
+    async def test_subscription_receives_state_when_conversation_not_open(
+        self, event_service
+    ):
+        """Inactive services still need an initial state event for WS readiness."""
+        received_events: list[Event] = []
+
+        class TestSubscriber(Subscriber[Event]):
+            async def __call__(self, event: Event):
+                received_events.append(event)
+
+        await event_service.subscribe_to_events(TestSubscriber())
+
+        assert len(received_events) == 1
+        event = received_events[0]
+        assert isinstance(event, ConversationStateUpdateEvent)
+        assert event.key == "execution_status"
+        assert event.value == ConversationExecutionStatus.IDLE
+
+    @pytest.mark.asyncio
     async def test_slow_subscriber_does_not_block_lock(
         self, event_service, mock_conversation_with_real_lock
     ):
@@ -2702,6 +2747,9 @@ class TestEventServiceClose:
 
             def fork(self, **kwargs):
                 return mock.fork(**kwargs)
+
+            def navigate_to(self, event_id):
+                return mock.navigate_to(event_id)
 
         conv = SyncOnlyConversation()
         event_service._conversation = conv  # type: ignore[assignment]

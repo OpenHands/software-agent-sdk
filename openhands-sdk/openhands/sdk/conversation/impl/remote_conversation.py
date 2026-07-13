@@ -5,13 +5,14 @@ import os
 import threading
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from queue import Empty, Queue
 from typing import TYPE_CHECKING, SupportsIndex, overload
 from urllib.parse import quote, urlparse
 
 import httpx
 import websockets
+from websockets.exceptions import ConnectionClosed
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.base import BaseConversation, ConversationStateProtocol
@@ -46,6 +47,7 @@ from openhands.sdk.event.conversation_state import (
     ConversationStateUpdateEvent,
 )
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
+from openhands.sdk.event.types import EventID
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.logger import DEBUG, get_logger
@@ -62,6 +64,7 @@ from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 logger = get_logger(__name__)
 
 LEGACY_CONVERSATIONS_PATH = "/api/conversations"
+FATAL_WS_CLOSE_CODES = frozenset({4001, 4004})
 
 
 def _agent_kind_mismatch_message(conversation_id: ConversationID) -> str:
@@ -77,6 +80,19 @@ def _validate_remote_agent(agent_data: dict) -> AgentBase:
 
         return ACPAgent.model_validate(agent_data)
     return AgentBase.model_validate(agent_data)
+
+
+def _websocket_close_code(exc: ConnectionClosed) -> int | None:
+    for close_frame in (exc.rcvd, exc.sent):
+        if close_frame is not None:
+            return close_frame.code
+    return None
+
+
+def _is_fatal_websocket_close(
+    exc: ConnectionClosed,
+) -> bool:
+    return _websocket_close_code(exc) in FATAL_WS_CLOSE_CODES
 
 
 def _send_request(
@@ -113,6 +129,7 @@ class WebSocketCallbackClient:
     host: str
     conversation_id: str
     callback: ConversationCallbackType
+    on_reconnect: Callable[[], object] | None
     api_key: str | None
     _thread: threading.Thread | None
     _stop: threading.Event
@@ -124,11 +141,13 @@ class WebSocketCallbackClient:
         conversation_id: str,
         callback: ConversationCallbackType,
         api_key: str | None = None,
+        on_reconnect: Callable[[], object] | None = None,
     ):
         self.host = host
         self.conversation_id = conversation_id
         self.callback = callback
         self.api_key = api_key
+        self.on_reconnect = on_reconnect
         self._thread = None
         self._stop = threading.Event()
         self._ready = threading.Event()
@@ -200,10 +219,12 @@ class WebSocketCallbackClient:
             ws_url += f"?session_api_key={quote(self.api_key, safe='')}"
 
         delay = 1.0
+        has_connected = False
         while not self._stop.is_set():
             try:
                 async with websockets.connect(ws_url) as ws:
                     delay = 1.0
+                    connection_ready = False
                     async for message in ws:
                         if self._stop.is_set():
                             break
@@ -214,21 +235,48 @@ class WebSocketCallbackClient:
                             # The server sends this immediately after subscription
                             if (
                                 isinstance(event, ConversationStateUpdateEvent)
-                                and not self._ready.is_set()
+                                and not connection_ready
                             ):
-                                self._ready.set()
+                                connection_ready = True
+                                if has_connected:
+                                    await self._handle_reconnect()
+                                else:
+                                    has_connected = True
+                                    self._ready.set()
 
                             self.callback(event)
                         except Exception:
                             logger.exception(
                                 "ws_event_processing_error", stack_info=True
                             )
-            except websockets.exceptions.ConnectionClosed:
-                break
+            except ConnectionClosed as exc:
+                if _is_fatal_websocket_close(exc):
+                    logger.debug("ws_connection_closed_fatal", exc_info=True)
+                    self._stop.set()
+                    break
+                logger.debug("ws_connection_closed_retry", exc_info=True)
+                await self._sleep_before_retry(delay)
+                delay = min(delay * 2, 30.0)
             except Exception:
                 logger.debug("ws_connect_retry", exc_info=True)
-                await asyncio.sleep(delay)
+                await self._sleep_before_retry(delay)
                 delay = min(delay * 2, 30.0)
+
+    async def _handle_reconnect(self) -> None:
+        if not self.on_reconnect:
+            return
+        try:
+            await asyncio.to_thread(self.on_reconnect)
+        except Exception:
+            logger.exception("ws_reconnect_callback_error", stack_info=True)
+
+    async def _sleep_before_retry(self, delay: float) -> None:
+        deadline = time.monotonic() + delay
+        while not self._stop.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            await asyncio.sleep(min(0.1, remaining))
 
 
 class RemoteEventsList(EventsListBase):
@@ -945,24 +993,39 @@ class RemoteConversation(BaseConversation):
             conversation_id=str(self._id),
             callback=composed_callback,
             api_key=self.workspace.api_key,
+            on_reconnect=self._state.events.reconcile,
         )
         self._ws_client.start()
 
         # Wait for WebSocket subscription to complete before allowing operations.
         # This ensures events emitted during send_message() are not missed.
         # The server sends a ConversationStateUpdateEvent after subscription.
-        ws_timeout = 30.0
+        ws_timeout = float(os.getenv("OPENHANDS_REMOTE_WS_READY_TIMEOUT", "30"))
         if not self._ws_client.wait_until_ready(timeout=ws_timeout):
-            try:
-                self._ws_client.stop()
-            except Exception:
-                pass
-            finally:
-                self._ws_client = None
-            raise WebSocketConnectionError(
-                conversation_id=self._id,
-                timeout=ws_timeout,
-            )
+            if os.getenv("OPENHANDS_REMOTE_WS_READY_REQUIRED", "true").lower() in (
+                "0",
+                "false",
+                "no",
+            ):
+                logger.warning(
+                    "WebSocket subscription did not become ready within %.1f "
+                    "seconds for conversation %s; continuing after REST "
+                    "reconciliation because OPENHANDS_REMOTE_WS_READY_REQUIRED "
+                    "is false.",
+                    ws_timeout,
+                    self._id,
+                )
+            else:
+                try:
+                    self._ws_client.stop()
+                except Exception:
+                    pass
+                finally:
+                    self._ws_client = None
+                raise WebSocketConnectionError(
+                    conversation_id=self._id,
+                    timeout=ws_timeout,
+                )
 
         # Reconcile events after WebSocket is ready to catch any events that
         # were emitted between the initial REST sync and WebSocket subscription.
@@ -1377,6 +1440,14 @@ class RemoteConversation(BaseConversation):
             f"{self._conversation_action_base_path}/{self._id}/interrupt",
         )
 
+    def load_plugin(self, plugin_ref: str) -> None:
+        _send_request(
+            self._client,
+            "POST",
+            f"{self._conversation_action_base_path}/{self._id}/load_plugin",
+            json={"plugin_ref": plugin_ref},
+        )
+
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None:
         from openhands.sdk.secret.secrets import SecretSource
 
@@ -1477,6 +1548,7 @@ class RemoteConversation(BaseConversation):
         title: str | None = None,
         tags: dict[str, str] | None = None,
         reset_metrics: bool = True,
+        from_event_id: EventID | None = None,
     ) -> "RemoteConversation":
         """Fork this conversation on the remote agent server.
 
@@ -1493,6 +1565,9 @@ class RemoteConversation(BaseConversation):
             tags: Optional tags for the forked conversation.
             reset_metrics: If ``True`` (default), cost/token stats start
                 fresh on the fork.
+            from_event_id: If set, fork only the branch up to and including this
+                event (``path_to_root``) and set the fork's HEAD there. If
+                ``None`` (default), copy the whole conversation.
 
         Returns:
             A new ``RemoteConversation`` backed by the forked server-side
@@ -1500,6 +1575,8 @@ class RemoteConversation(BaseConversation):
 
         Raises:
             NotImplementedError: If ``agent`` is provided.
+            httpx.HTTPStatusError: If the server rejects the request (e.g. 404
+                for an unknown ``from_event_id``).
         """
         if agent is not None:
             raise NotImplementedError(
@@ -1514,6 +1591,8 @@ class RemoteConversation(BaseConversation):
             body["title"] = title
         if tags is not None:
             body["tags"] = tags
+        if from_event_id is not None:
+            body["from_event_id"] = from_event_id
 
         resp = _send_request(
             self._client,
@@ -1541,6 +1620,29 @@ class RemoteConversation(BaseConversation):
             delete_on_close=self.delete_on_close,
             tags=server_tags,
         )
+
+    def navigate_to(self, event_id: EventID | None) -> None:
+        """Move the conversation HEAD to an existing event on the remote server.
+
+        Posts to the server's ``/navigate`` route, which re-roots the active
+        branch in place (no new conversation). The cached state is refreshed so
+        a subsequent ``state`` read reflects the new HEAD — ``leaf_event_id`` is
+        not broadcast over the WebSocket.
+
+        Args:
+            event_id: Event to make the new HEAD, or ``None`` for the empty tree.
+
+        Raises:
+            httpx.HTTPStatusError: If the server rejects the event id (e.g. 404
+                for an unknown event).
+        """
+        _send_request(
+            self._client,
+            "POST",
+            f"{self._conversation_action_base_path}/{self._id}/navigate",
+            json={"event_id": event_id},
+        )
+        self._state.refresh_from_server()
 
     def execute_tool(self, tool_name: str, action: "Action") -> "Observation":
         """Execute a tool directly without going through the agent loop.

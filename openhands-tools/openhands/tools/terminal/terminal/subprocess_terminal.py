@@ -9,6 +9,7 @@ import subprocess
 import threading
 import time
 from collections import deque
+from collections.abc import Mapping
 
 
 if platform.system() == "Windows":
@@ -22,11 +23,14 @@ import pty
 import select
 
 from openhands.sdk.logger import get_logger
-from openhands.sdk.utils import sanitized_env
 from openhands.tools.terminal.constants import (
     CMD_OUTPUT_PS1_BEGIN,
     CMD_OUTPUT_PS1_END,
     HISTORY_LIMIT,
+)
+from openhands.tools.terminal.env import (
+    build_terminal_env,
+    normalize_terminal_env,
 )
 from openhands.tools.terminal.metadata import CmdOutputMetadata
 from openhands.tools.terminal.terminal import TerminalInterface
@@ -84,6 +88,7 @@ class SubprocessTerminal(TerminalInterface):
         work_dir: str,
         username: str | None = None,
         shell_path: str | None = None,
+        env: Mapping[str, str] | None = None,
     ):
         super().__init__(work_dir, username)
         self.PS1 = CmdOutputMetadata.to_ps1_prompt()
@@ -96,6 +101,7 @@ class SubprocessTerminal(TerminalInterface):
         self.reader_thread = None
         self._current_command_running = False
         self.shell_path = shell_path
+        self._env = normalize_terminal_env(env)
 
     # ------------------------- Lifecycle -------------------------
 
@@ -136,7 +142,7 @@ class SubprocessTerminal(TerminalInterface):
         logger.info(f"Using shell: {resolved_shell_path}")
 
         # Inherit environment variables from the parent process
-        env = sanitized_env()
+        env = build_terminal_env(self._env)
         # Disable interactive pagers (git, man, systemctl, ...) so commands that
         # auto-launch `less` on a TTY don't capture the PTY and wedge the session.
         env.setdefault("GIT_PAGER", "cat")

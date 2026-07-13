@@ -110,7 +110,7 @@ llm = LLM(
 # 4. Start a local agent-server, connect, and run the conversation
 # ---------------------------------------------------------------------------
 
-with ManagedAPIServer(port=8001) as server:
+with ManagedAPIServer(port=8004) as server:
     workspace_dir = tempfile.mkdtemp(prefix="client_tools_demo_")
 
     from openhands.sdk import Workspace
