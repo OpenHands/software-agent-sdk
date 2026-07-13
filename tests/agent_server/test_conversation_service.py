@@ -45,6 +45,7 @@ from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.llm import MessageToolCall, TextContent
+from openhands.sdk.mcp.config import dump_mcp_config
 from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.security.risk import SecurityRisk
@@ -238,7 +239,7 @@ async def test_start_conversation_decrypts_encrypted_agent_settings_mcp_env(
         secrets_encrypted=True,
     )
     assert (
-        request.agent.mcp_config["mcpServers"]["github"]["env"][
+        dump_mcp_config(request.agent.mcp_config)["github"]["env"][
             "GITHUB_PERSONAL_ACCESS_TOKEN"
         ]
         == encrypted_mcp_token
@@ -270,7 +271,7 @@ async def test_start_conversation_decrypts_encrypted_agent_settings_mcp_env(
     assert isinstance(stored.agent.llm.api_key, SecretStr)
     assert stored.agent.llm.api_key.get_secret_value() == "sk-plaintext"
     assert (
-        stored.agent.mcp_config["mcpServers"]["github"]["env"][
+        dump_mcp_config(stored.agent.mcp_config)["github"]["env"][
             "GITHUB_PERSONAL_ACCESS_TOKEN"
         ]
         == "ghp-plaintext"
@@ -2525,7 +2526,7 @@ class TestAutoTitle:
         with patch(self._GENERATE_TITLE_PATH, return_value="✨ Generated Title"):
             subscriber = AutoTitleSubscriber(service=service)
             await subscriber(self._user_message_event())
-            await asyncio.sleep(0)
+            await self._drain_title_task(lambda: service.stored.title is not None)
 
         assert service.stored.title == "✨ Generated Title"
         service.save_meta.assert_called_once()
@@ -2932,6 +2933,22 @@ class TestACPActivityHeartbeatWiring:
         assert not hasattr(agent, "_on_activity")
 
 
+def _branch_events(conversation) -> list:
+    """Log events excluding async ``ConversationStateUpdateEvent`` artifacts.
+
+    Those state-sync artifacts are appended to the log asynchronously
+    (``EventService._emit_event_from_thread``), so their position in
+    ``_state.events`` relative to the synchronous message appends is racy.
+    Filtering them keeps positional indexing and length invariants deterministic
+    for the fork/navigate assertions below.
+    """
+    return [
+        e
+        for e in conversation._state.events
+        if not isinstance(e, ConversationStateUpdateEvent)
+    ]
+
+
 class TestConversationTreeForkAndNavigate:
     """Service-level coverage for fork-from-event lineage and navigation."""
 
@@ -2961,7 +2978,7 @@ class TestConversationTreeForkAndNavigate:
                 Message(role="user", content=[TextContent(text=text)]),
                 run=False,
             )
-        events = list(event_service.get_conversation()._state.events)
+        events = _branch_events(event_service.get_conversation())
         return info, event_service, events
 
     @pytest.mark.asyncio
@@ -2975,7 +2992,13 @@ class TestConversationTreeForkAndNavigate:
             info, source_service, events = await self._start_with_events(
                 svc, workspace_dir, ["first", "second", "third"]
             )
-            branch_point = events[1]
+            branch_point = next(e for e in events if isinstance(e, MessageEvent))
+            expected_branch_ids = [
+                e.id
+                for e in source_service.get_conversation()._state.events.path_to_root(
+                    branch_point.id
+                )
+            ]
 
             fork_info = await svc.fork_conversation(
                 info.id, from_event_id=branch_point.id
@@ -2992,14 +3015,14 @@ class TestConversationTreeForkAndNavigate:
 
             fork_service = await svc.get_event_service(fork_info.id)
             assert fork_service is not None
-            fork_events = list(fork_service.get_conversation()._state.events)
+            fork_events = _branch_events(fork_service.get_conversation())
             # Only path_to_root(branch_point) was copied — the active branch up
             # to and including the branch point, not the whole log.
-            assert [e.id for e in fork_events] == [events[0].id, events[1].id]
+            assert [e.id for e in fork_events] == expected_branch_ids
             assert len(fork_events) < len(events)
 
             # Source is untouched by the fork.
-            src_events = list(source_service.get_conversation()._state.events)
+            src_events = _branch_events(source_service.get_conversation())
             assert len(src_events) == len(events)
 
     @pytest.mark.asyncio
@@ -3021,7 +3044,7 @@ class TestConversationTreeForkAndNavigate:
             assert fork_info.forked_from_event_id is None
             fork_service = await svc.get_event_service(fork_info.id)
             assert fork_service is not None
-            fork_events = list(fork_service.get_conversation()._state.events)
+            fork_events = _branch_events(fork_service.get_conversation())
             assert len(fork_events) == len(events)
 
     @pytest.mark.asyncio
@@ -3059,9 +3082,7 @@ class TestConversationTreeForkAndNavigate:
             assert nav_info is not None
             assert nav_info.leaf_event_id == target
             # All branches stay on disk — nothing is pruned.
-            assert len(list(event_service.get_conversation()._state.events)) == len(
-                events
-            )
+            assert len(_branch_events(event_service.get_conversation())) == len(events)
 
     @pytest.mark.asyncio
     async def test_navigate_unknown_event_raises(self, tmp_path):

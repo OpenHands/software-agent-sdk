@@ -13,13 +13,11 @@ from typing import (
     ClassVar,
     Literal,
     TypeVar,
-    cast,
     get_args,
     get_origin,
 )
 from uuid import UUID
 
-from fastmcp.mcp_config import MCPConfig
 from pydantic import (
     BaseModel,
     Discriminator,
@@ -47,19 +45,17 @@ from openhands.sdk.llm.utils.openhands_provider import (
     canonicalize_openhands_llm_payload,
 )
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.config import (
+    MCPOAuthState,
+    MCPServer,
+)
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.tool import Tool
-from openhands.sdk.utils.cipher import Cipher
-from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import (
-    MissingCipherError,
-    decrypt_str_with_cipher_or_keep,
-    resolve_expose_mode,
     serialize_secret,
     validate_secret,
 )
-from openhands.sdk.utils.redact import sanitize_dict
 from openhands.sdk.workspace import LocalWorkspace
 
 from .acp_providers import (
@@ -85,100 +81,6 @@ if TYPE_CHECKING:
 
 
 logger = get_logger(__name__)
-
-
-def _walk_mcp_secret_values(
-    config: dict[str, Any],
-    transform: Callable[[str], str],
-) -> dict[str, Any]:
-    """Return a copy of ``config`` with ``transform`` applied to every string
-    value inside each MCP server's ``env`` / ``headers``. Does not mutate input."""
-    config = copy.deepcopy(config)
-    servers = config.get("mcpServers")
-    if not isinstance(servers, dict):
-        return config
-    for server in servers.values():
-        if not isinstance(server, dict):
-            continue
-        for key in ("env", "headers"):
-            mapping = server.get(key)
-            if not isinstance(mapping, dict):
-                continue
-            server[key] = {
-                k: (transform(v) if isinstance(v, str) else v)
-                for k, v in mapping.items()
-            }
-    return config
-
-
-def _decrypt_mcp_value_or_keep(cipher: Cipher, value: str) -> str:
-    """Decrypt a single MCP ``env`` / ``headers`` value when it is a
-    Fernet token. Thin local wrapper that binds the user-facing
-    log description; the leaf decryption lives in
-    :func:`decrypt_str_with_cipher_or_keep` and is shared with every
-    other dict-of-string secret-bearing field."""
-    return decrypt_str_with_cipher_or_keep(cipher, value, description="MCP env/headers")
-
-
-# ---------------------------------------------------------------------------
-# Shared ``mcp_config`` field (de)serialization, used verbatim by every
-# settings variant that exposes an ``mcp_config: MCPConfig | None`` field
-# (``OpenHandsAgentSettings`` and ``ACPAgentSettings``). Kept here as plain
-# functions so the per-class ``@field_validator`` / ``@field_serializer``
-# stubs — which pydantic requires to live on each model — stay one-liners and
-# the encrypt/decrypt logic has a single source of truth.
-# ---------------------------------------------------------------------------
-
-
-def normalize_empty_mcp_config(value: Any) -> Any:
-    """Coerce an empty/absent ``mcp_config`` to ``None`` (else pass through)."""
-    return None if value in (None, {}) else value
-
-
-def decrypt_mcp_config_secrets(value: Any, info: ValidationInfo) -> Any:
-    """Decrypt MCP ``env`` / ``headers`` values when a cipher is in context.
-
-    The on-disk load path. Values that aren't valid Fernet tokens pass through
-    as plaintext (e.g. migrating from a build that wrote them unencrypted).
-    Mirrors :func:`serialize_mcp_config`'s per-value encryption.
-    """
-    if not isinstance(value, dict):
-        return value
-    cipher: Cipher | None = info.context.get("cipher") if info.context else None
-    if cipher is None:
-        return value
-    return _walk_mcp_secret_values(
-        value, lambda v: _decrypt_mcp_value_or_keep(cipher, v)
-    )
-
-
-def serialize_mcp_config(
-    value: MCPConfig | None, info: SerializationInfo
-) -> dict[str, Any]:
-    """Serialize an ``mcp_config`` field, masking/encrypting env+headers per
-    the active expose mode (``plaintext`` / ``encrypted`` / redacted)."""
-    if value is None:
-        return {}
-    dumped = value.model_dump(exclude_none=True, exclude_defaults=True)
-    ctx = info.context or {}
-    mode = resolve_expose_mode(ctx)
-
-    if mode == "plaintext":
-        return dumped
-
-    if mode == "encrypted":
-        cipher: Cipher | None = ctx.get("cipher")
-        if cipher is None:
-            raise MissingCipherError(
-                "Cannot encrypt MCP env/headers: no cipher configured. "
-                "Set OH_SECRET_KEY environment variable."
-            )
-        # cipher.encrypt returns None only for None input; SecretStr(v) never is.
-        return _walk_mcp_secret_values(
-            dumped, lambda v: cast(str, cipher.encrypt(SecretStr(v)))
-        )
-
-    return sanitize_dict(dumped)
 
 
 SettingsValueType = Literal[
@@ -714,6 +616,297 @@ def _migrate_agent_settings_v3_to_v4(payload: dict[str, Any]) -> dict[str, Any]:
     return migrated
 
 
+_MCP_OAUTH_TOKEN_COLLECTION = "mcp-oauth-token"
+_MCP_OAUTH_CLIENT_INFO_COLLECTION = "mcp-oauth-client-info"
+_MCP_OAUTH_TOKEN_EXPIRY_COLLECTION = "mcp-oauth-token-expiry"
+_LINEAR_DEPRECATED_SSE_URL = "https://mcp.linear.app/sse"
+_LINEAR_SHTTP_URL = "https://mcp.linear.app/mcp"
+_MCP_SERVER_KNOWN_FIELDS = frozenset(MCPServer.model_fields)
+
+
+def _migrate_legacy_transport_field(server: Mapping[str, Any]) -> dict[str, Any]:
+    migrated = copy.deepcopy(dict(server))
+    typed_transport = migrated.pop("type", None)
+    if "transport" not in migrated and typed_transport is not None:
+        migrated["transport"] = (
+            "http" if typed_transport == "shttp" else typed_transport
+        )
+    return migrated
+
+
+def _is_deprecated_linear_sse(url: Any, transport: Any) -> bool:
+    if not isinstance(url, str) or transport != "sse":
+        return False
+    return url.split("?", 1)[0].rstrip("/") == _LINEAR_DEPRECATED_SSE_URL
+
+
+def _is_auto_mcp_server_key(name: Any, base: str) -> bool:
+    if not isinstance(name, str):
+        return False
+    if name == base:
+        return True
+    prefix = f"{base}_"
+    return name.startswith(prefix) and name[len(prefix) :].isdigit()
+
+
+def _reserve_mcp_server_key(name: str, servers: Mapping[str, Any]) -> str:
+    if name not in servers:
+        return name
+    index = 1
+    while f"{name}_{index}" in servers:
+        index += 1
+    return f"{name}_{index}"
+
+
+def _legacy_cache_entry_value(entry: Any) -> dict[str, Any] | None:
+    if not isinstance(entry, Mapping):
+        return None
+    value = entry.get("value")
+    if isinstance(value, Mapping):
+        return copy.deepcopy(dict(value))
+    return copy.deepcopy(dict(entry))
+
+
+def _legacy_oauth_bucket_value(
+    credentials: Mapping[str, Any],
+    collection: str,
+    key_suffix: str,
+) -> dict[str, Any] | None:
+    bucket = credentials.get(collection)
+    if not isinstance(bucket, Mapping):
+        return None
+    fallback: dict[str, Any] | None = None
+    for key, entry in bucket.items():
+        value = _legacy_cache_entry_value(entry)
+        if value is None:
+            continue
+        if isinstance(key, str) and key.endswith(key_suffix):
+            return value
+        if fallback is None:
+            fallback = value
+    return fallback
+
+
+def _migrate_legacy_oauth_credentials(
+    credentials: Any,
+) -> dict[str, Any]:
+    if not isinstance(credentials, Mapping):
+        return {}
+
+    state = MCPOAuthState()
+    tokens = _legacy_oauth_bucket_value(
+        credentials, _MCP_OAUTH_TOKEN_COLLECTION, "/tokens"
+    )
+    if tokens:
+        state = state.with_token_storage_value("tokens", tokens)
+
+    client_info = _legacy_oauth_bucket_value(
+        credentials, _MCP_OAUTH_CLIENT_INFO_COLLECTION, "/client_info"
+    )
+    if client_info:
+        state = state.with_token_storage_value("client_info", client_info)
+
+    token_expiry = _legacy_oauth_bucket_value(
+        credentials, _MCP_OAUTH_TOKEN_EXPIRY_COLLECTION, "/token_expiry"
+    )
+    if token_expiry:
+        state = state.with_token_storage_value("token_expires_at", token_expiry)
+
+    return state.to_plain_dict()
+
+
+def _merge_oauth_state(
+    existing_state: Any,
+    legacy_credentials: Any,
+) -> dict[str, Any] | None:
+    state = (
+        copy.deepcopy(dict(existing_state))
+        if isinstance(existing_state, Mapping)
+        else {}
+    )
+    for key, value in _migrate_legacy_oauth_credentials(legacy_credentials).items():
+        state.setdefault(key, value)
+    return state or None
+
+
+def _migrate_authorization_header(headers: dict[str, Any]) -> dict[str, Any] | None:
+    for key, value in list(headers.items()):
+        if key.lower() != "authorization" or not isinstance(value, str) or not value:
+            continue
+        headers.pop(key, None)
+        parts = value.split(None, 1)
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            return {"strategy": "bearer", "value": parts[1]}
+        return {"strategy": "header", "headers": {key: value}}
+    return None
+
+
+def _migrate_oauth_authentication(authentication: Any) -> Any:
+    if not isinstance(authentication, Mapping):
+        return authentication
+    migrated = copy.deepcopy(dict(authentication))
+    migrated.setdefault("type", "oauth")
+    return migrated
+
+
+def _finish_mcp_server_auth_migration(
+    server: dict[str, Any], *, drop_unknown_fields: bool
+) -> dict[str, Any]:
+    server = _migrate_legacy_transport_field(server)
+    if drop_unknown_fields:
+        return {
+            key: value
+            for key, value in server.items()
+            if key in _MCP_SERVER_KNOWN_FIELDS
+        }
+    return server
+
+
+def _migrate_mcp_server_auth(server: Any, *, drop_unknown_fields: bool = True) -> Any:
+    if not isinstance(server, Mapping):
+        return server
+
+    migrated = copy.deepcopy(dict(server))
+    authentication = migrated.pop("authentication", None)
+    oauth_credentials = migrated.pop("oauth_credentials", None)
+    api_key = migrated.pop("api_key", None)
+    auth = migrated.get("auth")
+
+    if isinstance(auth, Mapping):
+        auth = copy.deepcopy(dict(auth))
+        if auth.get("strategy") == "oauth2":
+            if authentication is not None and "authentication" not in auth:
+                auth["authentication"] = _migrate_oauth_authentication(authentication)
+            elif "authentication" in auth:
+                auth["authentication"] = _migrate_oauth_authentication(
+                    auth["authentication"]
+                )
+            state = _merge_oauth_state(
+                auth.get("state"),
+                auth.pop("credentials", None) or oauth_credentials,
+            )
+            if state is not None:
+                auth["state"] = state
+        migrated["auth"] = auth
+        return _finish_mcp_server_auth_migration(
+            migrated, drop_unknown_fields=drop_unknown_fields
+        )
+
+    if auth == "oauth":
+        oauth_auth: dict[str, Any] = {"strategy": "oauth2"}
+        if authentication is not None:
+            oauth_auth["authentication"] = _migrate_oauth_authentication(authentication)
+        state = _merge_oauth_state(None, oauth_credentials)
+        if state is not None:
+            oauth_auth["state"] = state
+        migrated["auth"] = oauth_auth
+        return _finish_mcp_server_auth_migration(
+            migrated, drop_unknown_fields=drop_unknown_fields
+        )
+
+    if isinstance(auth, str) and auth:
+        migrated["auth"] = {"strategy": "bearer", "value": auth}
+        return _finish_mcp_server_auth_migration(
+            migrated, drop_unknown_fields=drop_unknown_fields
+        )
+
+    if isinstance(api_key, str) and api_key:
+        migrated["auth"] = {"strategy": "api_key", "value": api_key}
+        return _finish_mcp_server_auth_migration(
+            migrated, drop_unknown_fields=drop_unknown_fields
+        )
+
+    headers = migrated.get("headers")
+    if isinstance(headers, Mapping):
+        headers = copy.deepcopy(dict(headers))
+        header_auth = _migrate_authorization_header(headers)
+        if header_auth is not None:
+            migrated["auth"] = header_auth
+            if headers:
+                migrated["headers"] = headers
+            else:
+                migrated.pop("headers", None)
+
+    return _finish_mcp_server_auth_migration(
+        migrated, drop_unknown_fields=drop_unknown_fields
+    )
+
+
+def _migrate_mcp_auth_shape(mcp_config: Any) -> Any:
+    if not isinstance(mcp_config, Mapping):
+        return mcp_config
+    servers = mcp_config.get("mcpServers")
+    if not isinstance(servers, Mapping):
+        return mcp_config
+
+    migrated = copy.deepcopy(dict(mcp_config))
+    migrated_servers: dict[str, Any] = {}
+    deferred_linear_servers: dict[str, Any] = {}
+    linear_shttp_exists = any(
+        isinstance(server, Mapping)
+        and isinstance(server.get("url"), str)
+        and server["url"].rstrip("/") == _LINEAR_SHTTP_URL
+        for server in servers.values()
+    )
+
+    for name, server in servers.items():
+        server = _migrate_mcp_server_auth(server)
+        if isinstance(server, Mapping) and _is_deprecated_linear_sse(
+            server.get("url"), server.get("transport")
+        ):
+            migrated_linear = copy.deepcopy(dict(server))
+            migrated_linear["url"] = _LINEAR_SHTTP_URL
+            migrated_linear.pop("transport", None)
+            if not linear_shttp_exists:
+                target_name = (
+                    "shttp" if _is_auto_mcp_server_key(name, "sse") else str(name)
+                )
+                deferred_linear_servers[
+                    _reserve_mcp_server_key(
+                        target_name,
+                        {**migrated_servers, **deferred_linear_servers},
+                    )
+                ] = migrated_linear
+                linear_shttp_exists = True
+            continue
+        migrated_servers[name] = server
+
+    migrated_servers.update(deferred_linear_servers)
+    migrated["mcpServers"] = migrated_servers
+    return migrated
+
+
+def _migrate_mcp_config_to_server_map(
+    mcp_config: Mapping[str, Any],
+) -> dict[str, Any]:
+    migrated = _migrate_mcp_auth_shape(mcp_config)
+    if not isinstance(migrated, Mapping):
+        return copy.deepcopy(dict(mcp_config))
+    server_map = migrated.get("mcpServers")
+    drop_unknown_fields = isinstance(server_map, Mapping)
+    if not drop_unknown_fields:
+        server_map = migrated
+
+    return {
+        str(name): _migrate_mcp_server_auth(
+            server, drop_unknown_fields=drop_unknown_fields
+        )
+        if isinstance(server, Mapping)
+        else server
+        for name, server in server_map.items()
+    }
+
+
+def _normalize_mcp_config_field(mcp_config: Any) -> Any:
+    """Accept legacy ``mcpServers`` wrappers without a settings schema bump."""
+
+    if mcp_config in (None, {}):
+        return {}
+    if isinstance(mcp_config, Mapping):
+        return _migrate_mcp_config_to_server_map(mcp_config)
+    return mcp_config
+
+
 def _migrate_conversation_settings_v0_to_v1(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1057,12 +1250,12 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         },
     )
 
-    mcp_config: MCPConfig | None = Field(
-        default=None,
-        description="MCP server configuration for the agent.",
+    mcp_config: dict[str, MCPServer] = Field(
+        default_factory=dict,
+        description="MCP servers available to the agent.",
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
-                label="MCP configuration",
+                label="MCP servers",
                 prominence=SettingProminence.MINOR,
                 variant="openhands",
             ).model_dump()
@@ -1095,8 +1288,6 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         },
     )
 
-    # ``mcp_config`` (de)serialization is shared with ACPAgentSettings via the
-    # module-level helpers — these stubs just bind them to the field.
     @field_validator("condenser", mode="before")
     @classmethod
     def _upgrade_base_condenser_settings(cls, value: Any) -> Any:
@@ -1106,19 +1297,8 @@ class OpenHandsAgentSettings(AgentSettingsBase):
 
     @field_validator("mcp_config", mode="before")
     @classmethod
-    def _normalize_empty_mcp_config(cls, value: Any) -> Any:
-        return normalize_empty_mcp_config(value)
-
-    @field_validator("mcp_config", mode="before")
-    @classmethod
-    def _decrypt_mcp_secret_values(cls, value: Any, info: ValidationInfo) -> Any:
-        return decrypt_mcp_config_secrets(value, info)
-
-    @field_serializer("mcp_config")
-    def _serialize_mcp_config(
-        self, value: MCPConfig | None, info: SerializationInfo
-    ) -> dict[str, Any]:
-        return serialize_mcp_config(value, info)
+    def _normalize_mcp_config(cls, value: Any) -> Any:
+        return _normalize_mcp_config_field(value)
 
     def create_agent(self) -> Agent:
         """Build an :class:`Agent` purely from these settings.
@@ -1144,12 +1324,6 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             else default_tool_specs(enable_sub_agents=self.enable_sub_agents)
         )
 
-        # Bypass ``_serialize_mcp_config``: MCP servers need real env/headers.
-        mcp_config = (
-            self.mcp_config.model_dump(exclude_none=True, exclude_defaults=True)
-            if self.mcp_config is not None
-            else {}
-        )
         include_default_tools = [tool.__name__ for tool in BUILT_IN_TOOLS]
         if self.enable_switch_llm_tool:
             include_default_tools.append(SwitchLLMTool.__name__)
@@ -1159,7 +1333,7 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         return Agent(
             llm=llm,
             tools=tools,
-            mcp_config=mcp_config,
+            mcp_config=self.mcp_config,
             include_default_tools=include_default_tools,
             agent_context=self.agent_context,
             condenser=condenser,
@@ -1228,13 +1402,12 @@ class ACPAgentSettings(AgentSettingsBase):
     tools, MCP, and (primary) LLM calls; those fields from
     :class:`OpenHandsAgentSettings` do not apply here.
 
-    The :attr:`llm` field is deprecated (removed in 1.33.0). ``ACPAgent``
-    uses it purely for cost/token attribution, never for LLM requests;
-    :attr:`acp_model` is the model identity. Credentials set on it
-    (``llm.api_key`` / ``llm.base_url``) are ignored — provider credentials
-    ride the conversation secrets channel (``request.secrets`` /
-    ``agent_context.secrets`` → ``state.secret_registry``) keyed by the
-    provider's env var name (:attr:`api_key_env_var`).
+    ``ACPAgent`` uses the :attr:`llm` field purely for cost/token attribution,
+    never for LLM requests; :attr:`acp_model` is the model identity. Any
+    credentials set on it (``llm.api_key`` / ``llm.base_url``) are ignored —
+    provider credentials ride the conversation secrets channel
+    (``request.secrets`` / ``agent_context.secrets`` → ``state.secret_registry``)
+    keyed by the provider's env var name (:attr:`api_key_env_var`).
     """
 
     agent_kind: Literal["acp"] = Field(
@@ -1361,8 +1534,8 @@ class ACPAgentSettings(AgentSettingsBase):
             ).model_dump(),
         },
     )
-    mcp_config: MCPConfig | None = Field(
-        default=None,
+    mcp_config: dict[str, MCPServer] = Field(
+        default_factory=dict,
         description=(
             "MCP servers to make available to the ACP subprocess. Unlike the "
             "OpenHands agent — where these become in-process MCP tools — the "
@@ -1373,29 +1546,17 @@ class ACPAgentSettings(AgentSettingsBase):
         ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
-                label="MCP configuration",
+                label="MCP servers",
                 prominence=SettingProminence.MINOR,
                 variant="acp",
             ).model_dump(),
         },
     )
 
-    # Same shared ``mcp_config`` (de)serialization as OpenHandsAgentSettings.
     @field_validator("mcp_config", mode="before")
     @classmethod
-    def _normalize_empty_mcp_config(cls, value: Any) -> Any:
-        return normalize_empty_mcp_config(value)
-
-    @field_validator("mcp_config", mode="before")
-    @classmethod
-    def _decrypt_mcp_secret_values(cls, value: Any, info: ValidationInfo) -> Any:
-        return decrypt_mcp_config_secrets(value, info)
-
-    @field_serializer("mcp_config")
-    def _serialize_mcp_config(
-        self, value: MCPConfig | None, info: SerializationInfo
-    ) -> dict[str, Any]:
-        return serialize_mcp_config(value, info)
+    def _normalize_mcp_config(cls, value: Any) -> Any:
+        return _normalize_mcp_config_field(value)
 
     # Programmatic / downstream-facing knob, deliberately NOT surfaced in the
     # settings-form UI (no SETTINGS_METADATA_KEY): the deploying application sets
@@ -1485,52 +1646,6 @@ class ACPAgentSettings(AgentSettingsBase):
         """
         info = self.provider_info
         return info.base_url_env_var if info is not None else None
-
-    def resolve_provider_env(self) -> dict[str, str]:
-        """Derive provider-native env vars from the attribution LLM settings.
-
-        Built-in ACP providers read credentials and optional base URLs from
-        provider-specific env var names. This helper translates the generic
-        :attr:`llm` settings into that provider-native subprocess environment.
-        Custom servers return an empty mapping.
-
-        .. deprecated:: 1.28.0
-            Removed in 1.33.0 together with :attr:`llm`. ``create_agent()``
-            no longer reads ``llm.api_key`` / ``llm.base_url``; supply
-            provider credentials as conversation secrets keyed by
-            :attr:`api_key_env_var` (e.g. ``ANTHROPIC_API_KEY``) instead.
-        """
-        warn_deprecated(
-            "ACPAgentSettings.resolve_provider_env",
-            deprecated_in="1.28.0",
-            removed_in="1.33.0",
-            details=(
-                "Supply ACP provider credentials as conversation secrets "
-                "(agent_context.secrets / StartConversationRequest.secrets, "
-                "which route through state.secret_registry) keyed by the "
-                "provider's env var name instead of ACPAgentSettings.llm."
-            ),
-        )
-        env: dict[str, str] = {}
-
-        api_key = self.llm.api_key
-        if api_key is not None and self.api_key_env_var:
-            key_value = (
-                api_key.get_secret_value()
-                if isinstance(api_key, SecretStr)
-                else str(api_key)
-            )
-            key_value = key_value.strip()
-            if key_value:
-                env[self.api_key_env_var] = key_value
-
-        base_url = self.llm.base_url
-        if base_url is not None and self.base_url_env_var:
-            base_url_value = str(base_url).strip()
-            if base_url_value:
-                env[self.base_url_env_var] = base_url_value
-
-        return env
 
     def resolve_acp_command(self) -> list[str]:
         """Return the effective subprocess command for this settings block.
@@ -1644,35 +1759,10 @@ class ACPAgentSettings(AgentSettingsBase):
         """
         from openhands.sdk.agent import ACPAgent
 
-        # llm.api_key/base_url used to be folded into agent_context.secrets
-        # here. Both production clients route credentials via request.secrets
-        # already (canvas never sends llm; OpenHands strips the credentials
-        # before create_agent), so the fold only fired for direct-SDK callers
-        # — warn them toward the secrets channel instead of silently leaking
-        # a profile base_url into the subprocess (#3632).
-        if self.llm.api_key is not None or self.llm.base_url is not None:
-            warn_deprecated(
-                "ACPAgentSettings.llm",
-                deprecated_in="1.28.0",
-                removed_in="1.33.0",
-                details=(
-                    "create_agent() ignores its api_key/base_url. Supply ACP "
-                    "provider credentials as conversation secrets "
-                    "(agent_context.secrets / StartConversationRequest."
-                    "secrets, which route through state.secret_registry) "
-                    "keyed by the provider's env var name (e.g. "
-                    "ANTHROPIC_API_KEY); use acp_model for model identity."
-                ),
-            )
-
-        # Bypass ``_serialize_mcp_config``: the subprocess needs real
-        # env/headers, not the masked/encrypted on-disk form.
-        mcp_config = (
-            self.mcp_config.model_dump(exclude_none=True, exclude_defaults=True)
-            if self.mcp_config is not None
-            else {}
-        )
-
+        # Credentials on ``llm`` (api_key / base_url) are intentionally not read:
+        # provider credentials ride the conversation secrets channel keyed by the
+        # provider's env var name (#3632). ``llm`` is kept only for cost/token
+        # attribution; ``acp_model`` is the model identity.
         return ACPAgent(
             llm=self.llm,
             acp_command=self.resolve_acp_command(),
@@ -1688,7 +1778,7 @@ class ACPAgentSettings(AgentSettingsBase):
             acp_isolate_data_dir=self.acp_isolate_data_dir,
             acp_file_secrets=list(self.acp_file_secrets),
             agent_context=self.agent_context,
-            mcp_config=mcp_config,
+            mcp_config=self.mcp_config,
         )
 
 

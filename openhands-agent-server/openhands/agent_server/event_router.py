@@ -4,7 +4,7 @@ Local Event router for OpenHands SDK.
 
 import logging
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Any, cast
 
 from fastapi import (
     APIRouter,
@@ -13,12 +13,13 @@ from fastapi import (
     Query,
     status,
 )
+from starlette.responses import JSONResponse
 
 from openhands.agent_server.dependencies import get_event_service
+from openhands.agent_server.event_compat import event_transport_dump
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
-    EventPage,
     EventSortOrder,
     SendMessageRequest,
     Success,
@@ -99,7 +100,7 @@ async def search_conversation_events(
         Query(title="Filter: event timestamp < this datetime"),
     ] = None,
     event_service: EventService = Depends(get_event_service),
-) -> EventPage:
+) -> JSONResponse:
     """Search / List local events"""
     assert limit > 0
     assert limit <= 100
@@ -114,8 +115,20 @@ async def search_conversation_events(
         normalize_datetime_to_server_timezone(timestamp__lt) if timestamp__lt else None
     )
 
-    return await event_service.search_events(
+    page = await event_service.search_events(
         page_id, limit, kind, source, body, sort_order, normalized_gte, normalized_lt
+    )
+    if isinstance(page, dict):
+        items = cast(list[Any], page.get("items", []))
+        next_page_id = cast(str | None, page.get("next_page_id"))
+    else:
+        items = page.items
+        next_page_id = page.next_page_id
+    return JSONResponse(
+        {
+            "items": [event_transport_dump(event) for event in items],
+            "next_page_id": next_page_id,
+        }
     )
 
 

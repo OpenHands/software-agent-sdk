@@ -51,7 +51,6 @@ from openhands.sdk.marketplace.registry import (
 from openhands.sdk.plugin import PluginFetchError
 from openhands.sdk.profiles.resolver import (
     DanglingMcpServerRef,
-    DanglingSkillRef,
     ProfileNotFound,
 )
 from openhands.sdk.tool.client_tool import ClientToolRegistrationError
@@ -216,11 +215,6 @@ async def start_conversation(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={"message": str(e), "dangling_mcp_server_refs": e.missing},
-        ) from e
-    except DanglingSkillRef as e:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={"message": str(e), "dangling_skill_refs": e.missing},
         ) from e
     except ClientToolRegistrationError as e:
         raise HTTPException(

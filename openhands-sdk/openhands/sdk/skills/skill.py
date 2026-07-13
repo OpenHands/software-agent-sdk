@@ -4,34 +4,38 @@ import os
 import re
 import threading
 import time
-from collections.abc import Iterable
-from pathlib import Path
-from typing import Annotated, ClassVar, Literal, Union
+from collections.abc import Iterable, Mapping
+from functools import lru_cache
+from pathlib import Path, PurePosixPath
+from typing import Annotated, Any, ClassVar, Final, Literal, Union
 from xml.sax.saxutils import escape as xml_escape
 
 import frontmatter
 import yaml
-from fastmcp.mcp_config import MCPConfig
 from pydantic import (
     BaseModel,
     Field,
     SerializationInfo,
+    ValidationInfo,
     field_serializer,
     field_validator,
     model_validator,
 )
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config, dump_mcp_config
 from openhands.sdk.skills.exceptions import SkillError, SkillValidationError
 from openhands.sdk.skills.execute import render_content_with_commands
 from openhands.sdk.skills.trigger import (
     KeywordTrigger,
+    PathTrigger,
     TaskTrigger,
 )
 from openhands.sdk.skills.types import InputMetadata
 from openhands.sdk.skills.utils import (
     discover_skill_resources,
     find_mcp_config,
+    find_nested_third_party_files,
     find_regular_md_files,
     find_skill_md_directories,
     find_third_party_files,
@@ -47,6 +51,47 @@ from openhands.sdk.utils.path import to_posix_path
 
 
 logger = get_logger(__name__)
+
+
+# One glob token per match; longest operator first so `**/` and `**` beat `*`.
+_GLOB_TOKENS: Final[re.Pattern[str]] = re.compile(r"\*\*/|\*\*|\*|\?|[^*?]+")
+_GLOB_TO_REGEX: Final[dict[str, str]] = {
+    "**/": "(?:.*/)?",  # any number of leading path segments (including zero)
+    "**": ".*",  # anything, crossing `/` separators
+    "*": "[^/]*",  # any run within a single segment
+    "?": "[^/]",  # a single non-separator character
+}
+
+
+@lru_cache(maxsize=512)
+def _compile_path_glob(pattern: str) -> re.Pattern[str]:
+    """Compile a gitignore-style path glob into an anchored regex.
+
+    Supported syntax (matched against a POSIX path):
+    - ``**`` matches any number of path segments (including zero).
+    - ``*`` matches any run of characters within a single segment.
+    - ``?`` matches a single non-separator character.
+    - A pattern without a ``/`` matches the basename at any depth, e.g.
+      ``*.py`` behaves like ``**/*.py`` (gitignore semantics).
+
+    Matching is case-sensitive. Results are cached per pattern string.
+    """
+    # A slash-less pattern matches at any depth.
+    if "/" not in pattern:
+        pattern = "**/" + pattern
+    tokens: list[str] = _GLOB_TOKENS.findall(pattern)
+    body = "".join(_GLOB_TO_REGEX.get(t, re.escape(t)) for t in tokens)
+    return re.compile(f"(?s:{body})\\Z")
+
+
+def path_matches_glob(file_path: str, pattern: str) -> bool:
+    """Return True if ``file_path`` matches the gitignore-style glob ``pattern``.
+
+    ``file_path`` is expected to be a POSIX path (typically workspace-relative).
+    """
+    if not pattern:
+        return False
+    return _compile_path_glob(pattern).fullmatch(file_path) is not None
 
 
 class SkillInfo(BaseModel):
@@ -111,9 +156,23 @@ class SkillResources(BaseModel):
 
 # Union type for all trigger types
 TriggerType = Annotated[
-    KeywordTrigger | TaskTrigger,
+    KeywordTrigger | TaskTrigger | PathTrigger,
     Field(discriminator="type"),
 ]
+
+
+def _keyword_matches(keyword: str, message_lower: str) -> bool:
+    """Return True if ``keyword`` appears as a whole token in ``message_lower``.
+
+    Uses alphanumeric boundaries (not ``\\b``) so ``git`` does not fire on
+    ``github`` while slash-prefixed keywords like ``/linear`` still match.
+    ``message_lower`` is expected to be lowercased by the caller.
+    """
+    keyword_lower = keyword.lower()
+    if not keyword_lower:
+        return False
+    pattern = rf"(?<![a-z0-9]){re.escape(keyword_lower)}(?![a-z0-9])"
+    return re.search(pattern, message_lower) is not None
 
 
 class Skill(BaseModel):
@@ -153,13 +212,9 @@ class Skill(BaseModel):
             "When it is None, it is treated as a programmatically defined skill."
         ),
     )
-    mcp_tools: dict | None = Field(
+    mcp_tools: dict[str, MCPServer] | None = Field(
         default=None,
-        description=(
-            "MCP tools configuration for the skill (repo skills only). "
-            "It should conform to the MCPConfig schema: "
-            "https://gofastmcp.com/clients/client#configuration-format"
-        ),
+        description=("MCP servers for the skill (repo skills only)."),
     )
     inputs: list[InputMetadata] = Field(
         default_factory=list,
@@ -263,37 +318,30 @@ class Skill(BaseModel):
             return {str(k): str(val) for k, val in v.items()}
         raise SkillValidationError("metadata must be a dictionary")
 
-    @field_validator("mcp_tools")
+    @field_validator("mcp_tools", mode="before")
     @classmethod
-    def _validate_mcp_tools(cls, v: dict | None, _info):
-        """Validate mcp_tools conforms to MCPConfig schema."""
+    def _validate_mcp_tools(
+        cls, v: object, info: ValidationInfo
+    ) -> dict[str, MCPServer] | None:
+        """Validate skill MCP tools as native MCP server models."""
         if v is None:
-            return v
-        if isinstance(v, dict):
-            try:
-                MCPConfig.model_validate(v)
-            except Exception as e:
-                raise SkillValidationError(f"Invalid MCPConfig dictionary: {e}") from e
-        return v
+            return None
+        if not isinstance(v, Mapping):
+            raise SkillValidationError("mcp_tools must be a dictionary or None")
+        try:
+            return coerce_mcp_config(v, context=info.context)
+        except Exception as e:
+            raise SkillValidationError(f"Invalid MCP config dictionary: {e}") from e
 
     @field_serializer("mcp_tools")
     def _serialize_mcp_tools(
-        self, value: dict | None, info: SerializationInfo
-    ) -> dict | None:
-        """Mask credentials in ``mcp_tools`` (``mcpServers.*.env``/``headers``).
-
-        ``mcp_tools`` is an unmodeled ``dict``, so it would otherwise dump its
-        MCP server secrets in plaintext wherever a ``Skill`` is serialized.
-        Route it through the same ``serialize_mcp_config`` as settings
-        ``mcp_config``: redacted by default, plaintext under ``expose_secrets``,
-        encrypted under a cipher. Imported lazily to avoid the
-        settings.model -> agent_context -> skills import cycle.
-        """
+        self, value: dict[str, MCPServer] | None, info: SerializationInfo
+    ) -> dict[str, dict[str, Any]] | None:
+        if value is None:
+            return None
         if not value:
-            return value
-        from openhands.sdk.settings.model import serialize_mcp_config
-
-        return serialize_mcp_config(MCPConfig.model_validate(value), info)
+            return {}
+        return dump_mcp_config(value, context=info.context or {})
 
     PATH_TO_THIRD_PARTY_SKILL_NAME: ClassVar[dict[str, str]] = {
         ".cursorrules": "cursorrules",
@@ -309,6 +357,7 @@ class Skill(BaseModel):
         path: str | Path,
         skill_base_dir: Path | None = None,
         strict: bool = True,
+        skip_mcp: bool = False,
     ) -> "Skill":
         """Load a skill from a markdown file with frontmatter.
 
@@ -323,6 +372,9 @@ class Skill(BaseModel):
             skill_base_dir: Base directory for skills (used to derive relative names).
             strict: If True, enforce strict AgentSkills name validation.
                 If False, allow relaxed naming (e.g., for plugin compatibility).
+            skip_mcp: If True, skip loading MCP configuration from .mcp.json.
+                Used when loading root plugin skills where MCP config is already
+                loaded at the plugin level to avoid double-loading.
         """
         path = Path(path) if isinstance(path, str) else path
 
@@ -330,13 +382,15 @@ class Skill(BaseModel):
             file_content = f.read()
 
         if path.name.lower() == "skill.md":
-            return cls._load_agentskills_skill(path, file_content, strict=strict)
+            return cls._load_agentskills_skill(
+                path, file_content, strict=strict, skip_mcp=skip_mcp
+            )
         else:
             return cls._load_legacy_openhands_skill(path, file_content, skill_base_dir)
 
     @classmethod
     def _load_agentskills_skill(
-        cls, path: Path, file_content: str, strict: bool = True
+        cls, path: Path, file_content: str, strict: bool = True, skip_mcp: bool = False
     ) -> "Skill":
         """Load a skill from an AgentSkills-format SKILL.md file.
 
@@ -344,6 +398,7 @@ class Skill(BaseModel):
             path: Path to the SKILL.md file.
             file_content: Content of the file.
             strict: If True, enforce strict AgentSkills name validation.
+            skip_mcp: If True, skip loading MCP configuration from .mcp.json.
         """
         # For SKILL.md files, use parent directory name as the skill name
         directory_name = path.parent.name
@@ -366,10 +421,12 @@ class Skill(BaseModel):
                 )
 
         # Load MCP configuration from .mcp.json (agent_skills ONLY use .mcp.json)
-        mcp_tools: dict | None = None
-        mcp_json_path = find_mcp_config(skill_root)
-        if mcp_json_path:
-            mcp_tools = load_mcp_config(mcp_json_path, skill_root)
+        mcp_tools: dict[str, MCPServer] | None = None
+        if not skip_mcp:
+            mcp_json_path = find_mcp_config(skill_root)
+            if mcp_json_path:
+                mcp_config = load_mcp_config(mcp_json_path, skill_root)
+                mcp_tools = coerce_mcp_config(mcp_config.get("mcpServers", {}))
 
         # Discover resource directories
         resources: SkillResources | None = None
@@ -423,10 +480,23 @@ class Skill(BaseModel):
         mcp_tools = metadata_dict.get("mcp_tools")
         if mcp_tools is not None and not isinstance(mcp_tools, dict):
             raise SkillValidationError("mcp_tools must be a dictionary or None")
+        mcp_tools = coerce_mcp_config(mcp_tools) if mcp_tools is not None else None
 
         return cls._create_skill_from_metadata(
             agent_name, content, path, metadata_dict, mcp_tools
         )
+
+    @staticmethod
+    def _parse_paths(v: object) -> list[str] | None:
+        """Parse ``paths`` frontmatter (comma-separated string or list) into a
+        non-empty list of globs, or None. Mirrors Claude Code / AgentSkills."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v = v.split(",")
+        elif not isinstance(v, list):
+            raise SkillValidationError("paths must be a string or list")
+        return [s for p in v if (s := str(p).strip())] or None
 
     @classmethod
     def _create_skill_from_metadata(
@@ -434,8 +504,8 @@ class Skill(BaseModel):
         agent_name: str,
         content: str,
         path: Path,
-        metadata_dict: dict,
-        mcp_tools: dict | None = None,
+        metadata_dict: dict[str, object],
+        mcp_tools: dict[str, MCPServer] | None = None,
         resources: SkillResources | None = None,
         is_agentskills_format: bool = False,
     ) -> "Skill":
@@ -477,11 +547,44 @@ class Skill(BaseModel):
         if not isinstance(keywords, list):
             raise SkillValidationError("Triggers must be a list of strings")
 
+        # Parse path globs ("rules"): a comma-separated string or a YAML list.
+        paths = cls._parse_paths(metadata_dict.get("paths"))
+
         # Infer the trigger type:
-        # 1. If inputs exist -> TaskTrigger
-        # 2. If keywords exist -> KeywordTrigger
-        # 3. Else (no keywords) -> None (always active)
-        if "inputs" in metadata_dict:
+        # 1. If paths exist -> PathTrigger (deterministic file-touch injection)
+        # 2. If inputs exist -> TaskTrigger
+        # 3. If keywords exist -> KeywordTrigger
+        # 4. Else (no keywords) -> None (always active)
+        if paths:
+            # A skill is either path-triggered OR model-invocable, not both:
+            # `paths:` wins and any `triggers:`/`inputs:` are ignored. Warn so the
+            # dropped fields are discoverable instead of silently disappearing.
+            ignored = []
+            if keywords:
+                ignored.append(f"'triggers': {keywords}")
+            if "inputs" in metadata_dict:
+                ignored.append("'inputs'")
+            if ignored:
+                logger.warning(
+                    "Skill '%s' declares 'paths:' together with %s; 'paths:' "
+                    "takes precedence (path-triggered rule) and %s will be "
+                    "ignored. A skill can be either path-triggered OR "
+                    "model-invocable, not both.",
+                    agent_name,
+                    " and ".join(ignored),
+                    " and ".join(ignored),
+                )
+            return Skill(
+                name=agent_name,
+                content=content,
+                source=to_posix_path(path),
+                trigger=PathTrigger(paths=paths),
+                mcp_tools=mcp_tools,
+                resources=resources,
+                is_agentskills_format=is_agentskills_format,
+                **agentskills_fields,
+            )
+        elif "inputs" in metadata_dict:
             # Add a trigger for the agent name if not already present
             trigger_keyword = f"/{agent_name}"
             if trigger_keyword not in keywords:
@@ -547,6 +650,26 @@ class Skill(BaseModel):
 
         return None
 
+    @classmethod
+    def _handle_nested_third_party(
+        cls, path: Path, file_content: str, rel_dir: PurePosixPath
+    ) -> Union["Skill", None]:
+        """Build a ``PathTrigger`` rule scoped to ``rel_dir`` from a nested
+        third-party file, so its guidance is injected only when a file under that
+        directory is touched. ``rel_dir`` is workspace-relative (the matcher's
+        base)."""
+        skill_name = cls.PATH_TO_THIRD_PARTY_SKILL_NAME.get(path.name.lower())
+        if skill_name is None:
+            return None
+        # Encode the directory in the name so multiple nested files (all mapping
+        # to e.g. "agents") stay distinct for dedup and activation tracking.
+        return Skill(
+            name=f"{skill_name}:{rel_dir.as_posix()}",
+            content=file_content,
+            source=to_posix_path(path),
+            trigger=PathTrigger(paths=[f"{rel_dir.as_posix()}/**"]),
+        )
+
     @model_validator(mode="after")
     def _truncate_long_description(self):
         """Truncate description to MAX_DESCRIPTION_LENGTH via maybe_truncate.
@@ -597,22 +720,47 @@ class Skill(BaseModel):
 
         return self
 
+    @model_validator(mode="after")
+    def _path_rules_are_trigger_only(self):
+        """Force ``disable_model_invocation`` for path rules: they inject only on
+        file-touch, so every consumer of that flag (catalog, invoke_skill,
+        tool-attach) keeps them unadvertised and non-invocable."""
+        if isinstance(self.trigger, PathTrigger):
+            self.disable_model_invocation = True
+        return self
+
     def match_trigger(self, message: str) -> str | None:
         """Match a trigger in the message.
 
         Returns the first trigger that matches the message, or None if no match.
         Only applies to KeywordTrigger and TaskTrigger types.
+
+        Matching is whole-token and case-insensitive: a keyword only fires when
+        it appears bounded by non-alphanumeric characters, so ``git`` does not
+        match ``github`` and ``issue`` does not match ``tissue``. See
+        :func:`_keyword_matches` for details.
         """
         if isinstance(self.trigger, KeywordTrigger):
-            message_lower = message.lower()
-            for keyword in self.trigger.keywords:
-                if keyword.lower() in message_lower:
-                    return keyword
+            keywords = self.trigger.keywords
         elif isinstance(self.trigger, TaskTrigger):
-            message_lower = message.lower()
-            for trigger_str in self.trigger.triggers:
-                if trigger_str.lower() in message_lower:
-                    return trigger_str
+            keywords = self.trigger.triggers
+        else:
+            return None
+
+        message_lower = message.lower()
+        for keyword in keywords:
+            if _keyword_matches(keyword, message_lower):
+                return keyword
+        return None
+
+    def match_path_trigger(self, file_path: str) -> str | None:
+        """Return the first PathTrigger glob matching ``file_path`` (a POSIX,
+        typically workspace-relative, path), or None. Inert for non-PathTrigger
+        skills."""
+        if isinstance(self.trigger, PathTrigger):
+            for pattern in self.trigger.paths:
+                if path_matches_glob(file_path, pattern):
+                    return pattern
         return None
 
     def extract_variables(self, content: str) -> list[str]:
@@ -934,6 +1082,21 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
                     logger.debug(f"Loaded third-party skill: {skill.name} from {path}")
             except (SkillError, OSError, yaml.YAMLError) as e:
                 logger.warning(f"Failed to load third-party skill from {path}: {e}")
+
+    # Load nested third-party files (e.g. server/AGENTS.md) as directory-scoped
+    # path rules, keyed off work_dir (the matcher's base).
+    for path, rel_dir in find_nested_third_party_files(
+        work_dir, Skill.PATH_TO_THIRD_PARTY_SKILL_NAME
+    ):
+        try:
+            content = path.read_text(encoding="utf-8")
+            rule = Skill._handle_nested_third_party(path, content, rel_dir)
+            if rule is not None and rule.name not in seen_names:
+                all_skills.append(rule)
+                seen_names.add(rule.name)
+                logger.debug(f"Loaded nested path rule: {rule.name} from {path}")
+        except (SkillError, OSError, UnicodeDecodeError, yaml.YAMLError) as e:
+            logger.warning(f"Failed to load nested third-party file {path}: {e}")
 
     # Load project-specific skills from .agents/skills, .openhands/skills,
     # and legacy microagents (priority order; first wins for duplicates)
