@@ -261,6 +261,48 @@ class TestGetSkillsEndpoint:
         assert data["sources"]["sdk_base"] == 1
         assert mock_load_available.call_args_list[0].kwargs["include_public"] is True
 
+    def test_get_skills_auto_load_marketplace_keeps_public_skills(self, client):
+        public_skill = Skill(name="public-skill", content="public", trigger=None)
+        marketplace_skill = Skill(
+            name="marketplace-skill", content="marketplace", trigger=None
+        )
+
+        with (
+            patch(
+                "openhands.agent_server.skills_service.load_registered_marketplace_skills",
+                return_value=[marketplace_skill],
+            ),
+            patch(
+                "openhands.agent_server.skills_service.load_available_skills",
+                side_effect=[{"public-skill": public_skill}, {}],
+            ) as mock_load_available,
+        ):
+            response = client.post(
+                "/api/skills",
+                json={
+                    "load_user": False,
+                    "load_project": False,
+                    "load_org": False,
+                    "registered_marketplaces": [
+                        {
+                            "name": "team",
+                            "source": "https://github.com/org/marketplace",
+                            "auto_load": True,
+                        }
+                    ],
+                },
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert [skill["name"] for skill in data["skills"]] == [
+            "marketplace-skill",
+            "public-skill",
+        ]
+        assert data["sources"]["registered_marketplaces"] == 1
+        assert data["sources"]["sdk_base"] == 1
+        assert mock_load_available.call_args_list[0].kwargs["include_public"] is True
+
     def test_get_skills_request_marketplace_overrides_server_default(self):
         """Request registrations override same-named server defaults."""
         config = Config(

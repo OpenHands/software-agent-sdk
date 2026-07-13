@@ -397,14 +397,14 @@ def load_all_skills(
     skill_lists.append(marketplace_skills)
 
     # 2-3. Load legacy public + user skills via helper (no project yet — org sits
-    # between). Auto-load registered marketplaces replace legacy public skills,
-    # while user skills keep their existing precedence above the public marketplace
+    # between). Auto-load registered marketplaces extend public skills, while
+    # user skills keep their existing precedence above the public marketplace
     # tier.
     sdk_base = load_available_skills(
         work_dir=None,
         include_user=load_user,
         include_project=False,
-        include_public=load_public and not auto_load_registrations,
+        include_public=load_public,
         marketplace_path=marketplace_path,
     )
     sources["sdk_base"] = len(sdk_base)
