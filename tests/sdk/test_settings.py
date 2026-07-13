@@ -1265,7 +1265,12 @@ def test_acp_resolve_command_rewrites_explicit_npx_command(
     monkeypatch.setattr(shutil, "which", _which_returning("codex-acp"))
     settings = ACPAgentSettings(
         acp_server="codex",
-        acp_command=["npx", "-y", "@zed-industries/codex-acp", "--verbose"],
+        acp_command=[
+            "npx",
+            "-y",
+            "@agentclientprotocol/codex-acp",
+            "--verbose",
+        ],
     )
     assert settings.resolve_acp_command() == ["codex-acp", "--verbose"]
 
@@ -1279,9 +1284,8 @@ def test_acp_resolve_command_rewrites_versioned_npx_to_pinned_binary(
     the reviewed binary in for the provider's package."""
     monkeypatch.setattr(shutil, "which", _which_returning("codex-acp"))
     for pkg in (
-        "@zed-industries/codex-acp",
-        "@zed-industries/codex-acp@0.16.0",
-        "@zed-industries/codex-acp@0.11.1",
+        "@agentclientprotocol/codex-acp",
+        "@agentclientprotocol/codex-acp@1.1.2",
     ):
         settings = ACPAgentSettings(
             acp_server="codex",
@@ -1303,7 +1307,7 @@ def test_acp_resolve_command_keeps_npx_when_binary_absent(
     assert settings.resolve_acp_command() == [
         "npx",
         "-y",
-        "@zed-industries/codex-acp@0.16.0",
+        "@agentclientprotocol/codex-acp@1.1.2",
     ]
 
 
@@ -1341,12 +1345,12 @@ def test_acp_resolve_command_custom_server_never_rewritten(
     monkeypatch.setattr(shutil, "which", _which_returning("codex-acp", "gemini"))
     settings = ACPAgentSettings(
         acp_server="custom",
-        acp_command=["npx", "-y", "@zed-industries/codex-acp"],
+        acp_command=["npx", "-y", "@agentclientprotocol/codex-acp"],
     )
     assert settings.resolve_acp_command() == [
         "npx",
         "-y",
-        "@zed-industries/codex-acp",
+        "@agentclientprotocol/codex-acp",
     ]
 
 
@@ -1386,50 +1390,11 @@ def test_acp_api_key_env_var_maps_known_servers() -> None:
     )
 
 
-def test_acp_resolve_provider_env_from_llm_credentials() -> None:
-    # Deprecated (removed in 1.33.0 with the llm field): still functional for
-    # the deprecation window, but warns callers toward the secrets channel.
-    settings = ACPAgentSettings(
-        acp_server="gemini-cli",
-        llm=LLM(
-            model="gemini-2.5-pro",
-            api_key=SecretStr("sk-test-gemini"),
-            base_url="https://gemini-proxy.example.com",
-        ),
-    )
-
-    with pytest.warns(
-        DeprecationWarning, match=r"ACPAgentSettings\.resolve_provider_env"
-    ):
-        assert settings.resolve_provider_env() == {
-            "GEMINI_API_KEY": "sk-test-gemini",
-            "GEMINI_BASE_URL": "https://gemini-proxy.example.com",
-        }
-
-
-def test_acp_resolve_provider_env_custom_server_empty() -> None:
-    settings = ACPAgentSettings(
-        acp_server="custom",
-        acp_command=["custom-acp"],
-        llm=LLM(
-            model="custom-model",
-            api_key=SecretStr("sk-test"),
-            base_url="https://proxy.example.com",
-        ),
-    )
-
-    with pytest.warns(
-        DeprecationWarning, match=r"ACPAgentSettings\.resolve_provider_env"
-    ):
-        assert settings.resolve_provider_env() == {}
-
-
 def test_acp_create_agent_ignores_llm_credentials() -> None:
-    # llm.api_key/base_url are deprecated (llm is removed in 1.33.0) and no
-    # longer folded into agent_context.secrets: an LLM-profile base_url would
-    # leak into the subprocess and silently re-route its API calls (#3632).
-    # create_agent warns and ignores them; provider credentials ride the
-    # conversation secrets channel keyed by the provider's env var name.
+    # llm.api_key/base_url are never read: an LLM-profile base_url would leak
+    # into the subprocess and silently re-route its API calls (#3632). Provider
+    # credentials ride the conversation secrets channel keyed by the provider's
+    # env var name; the caller's secrets pass through untouched.
     context = AgentContext(secrets={"GITHUB_TOKEN": "ghp_test"})
     settings = ACPAgentSettings(
         acp_server="codex",
@@ -1441,41 +1406,23 @@ def test_acp_create_agent_ignores_llm_credentials() -> None:
         agent_context=context,
     )
 
-    with pytest.warns(DeprecationWarning, match=r"ACPAgentSettings\.llm is deprecated"):
-        agent = settings.create_agent()
+    agent = settings.create_agent()
 
     # The caller's secrets pass through untouched; no provider creds appear.
     assert agent.agent_context is not None
     assert dict(agent.agent_context.secrets or {}) == {"GITHUB_TOKEN": "ghp_test"}
 
 
-def test_acp_create_agent_credentials_warn_even_without_context() -> None:
+def test_acp_create_agent_ignores_credentials_without_context() -> None:
     # No caller agent_context: nothing is synthesized for the ignored creds —
-    # the context stays None and the deprecation warning is the only signal.
+    # the context stays None.
     settings = ACPAgentSettings(
         acp_server="claude-code",
         llm=LLM(model="claude-opus-4-6", api_key=SecretStr("sk-ui-key")),
     )
 
-    with pytest.warns(DeprecationWarning, match=r"ACPAgentSettings\.llm is deprecated"):
-        agent = settings.create_agent()
+    agent = settings.create_agent()
 
-    assert agent.agent_context is None
-
-
-def test_acp_create_agent_without_llm_credentials_does_not_warn() -> None:
-    import warnings
-
-    settings = ACPAgentSettings(
-        acp_server="claude-code",
-        llm=LLM(model="claude-opus-4-6"),
-    )
-
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        agent = settings.create_agent()
-
-    assert not [w for w in caught if "ACPAgentSettings.llm" in str(w.message)]
     assert agent.agent_context is None
 
 
@@ -2026,7 +1973,7 @@ def test_llm_subscription_fields_roundtrip() -> None:
     settings = validate_agent_settings(
         {
             "llm": {
-                "model": "gpt-5.2-codex",
+                "model": "gpt-5.6",
                 "auth_type": "subscription",
                 "subscription_vendor": "openai",
             }
@@ -2046,11 +1993,11 @@ def test_llm_create_agent_resolves_subscription_llm(monkeypatch) -> None:
     from openhands.sdk.llm.auth import openai
 
     original_llm = LLM(
-        model="gpt-5.2-codex",
+        model="gpt-5.6",
         auth_type="subscription",
         subscription_vendor="openai",
     )
-    runtime_llm = LLM(model="openai/gpt-5.2-codex")
+    runtime_llm = LLM(model="openai/gpt-5.6")
     runtime_llm._is_subscription = True
 
     def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
@@ -2072,7 +2019,7 @@ def test_llm_create_agent_resolves_subscription_llm(monkeypatch) -> None:
 def test_llm_from_persisted_rehydrates_subscription_runtime(monkeypatch) -> None:
     from openhands.sdk.llm.auth import openai
 
-    runtime_llm = LLM(model="openai/gpt-5.2-codex", auth_type="subscription")
+    runtime_llm = LLM(model="openai/gpt-5.6", auth_type="subscription")
     runtime_llm._is_subscription = True
 
     def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
@@ -2088,7 +2035,7 @@ def test_llm_from_persisted_rehydrates_subscription_runtime(monkeypatch) -> None
 
     loaded = LLM.from_persisted(
         {
-            "model": "gpt-5.2-codex",
+            "model": "gpt-5.6",
             "auth_type": "subscription",
             "subscription_vendor": "openai",
             "schema_version": 1,
@@ -2102,16 +2049,16 @@ def test_llm_from_persisted_rehydrates_subscription_runtime(monkeypatch) -> None
 def test_llm_load_from_env_rehydrates_subscription_runtime(monkeypatch) -> None:
     from openhands.sdk.llm.auth import openai
 
-    runtime_llm = LLM(model="openai/gpt-5.2-codex", auth_type="subscription")
+    runtime_llm = LLM(model="openai/gpt-5.6", auth_type="subscription")
     runtime_llm._is_subscription = True
 
     def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
         assert llm.auth_type == "subscription"
         assert llm.subscription_vendor == "openai"
-        assert llm.model == "gpt-5.2-codex"
+        assert llm.model == "gpt-5.6"
         return runtime_llm
 
-    monkeypatch.setenv("LLM_MODEL", "gpt-5.2-codex")
+    monkeypatch.setenv("LLM_MODEL", "gpt-5.6")
     monkeypatch.setenv("LLM_AUTH_TYPE", "subscription")
     monkeypatch.setenv("LLM_SUBSCRIPTION_VENDOR", "openai")
     monkeypatch.setattr(
@@ -2135,7 +2082,7 @@ def test_create_subscription_llm_from_config_preserves_runtime_llm(monkeypatch) 
 
     monkeypatch.setattr(openai_auth, "OpenAISubscriptionAuth", UnexpectedAuth)
     runtime_llm = LLM(
-        model="openai/gpt-5.2-codex",
+        model="openai/gpt-5.6",
         auth_type="subscription",
         subscription_vendor="openai",
     )
@@ -2172,7 +2119,7 @@ async def test_async_subscription_api_key_uses_async_refresh(monkeypatch) -> Non
 
     monkeypatch.setattr(openai_auth, "OpenAISubscriptionAuth", FakeAuth)
     llm = LLM(
-        model="openai/gpt-5.2-codex",
+        model="openai/gpt-5.6",
         auth_type="subscription",
         subscription_vendor="openai",
     )
@@ -2210,7 +2157,7 @@ def test_sync_subscription_api_key_uses_valid_runtime_credentials(
 
     monkeypatch.setattr(openai_auth, "OpenAISubscriptionAuth", FakeAuth)
     llm = LLM(
-        model="openai/gpt-5.2-codex",
+        model="openai/gpt-5.6",
         auth_type="subscription",
         subscription_vendor="openai",
     )
@@ -2233,7 +2180,7 @@ def test_openai_subscription_create_llm_serializes_subscription_auth(
     monkeypatch.setattr(openai_auth, "_extract_chatgpt_account_id", lambda _: None)
 
     llm = OpenAISubscriptionAuth().create_llm(
-        model="gpt-5.2-codex",
+        model="gpt-5.6",
         credentials=OAuthCredentials(
             vendor="openai",
             access_token="access-token",
@@ -2281,7 +2228,7 @@ def test_create_subscription_llm_from_config_preserves_non_auth_options(
 
     monkeypatch.setattr(openai_auth, "OpenAISubscriptionAuth", FakeAuth)
     source = LLM(
-        model="gpt-5.2-codex",
+        model="gpt-5.6",
         auth_type="subscription",
         subscription_vendor="openai",
         usage_id="profile:test",

@@ -5,13 +5,14 @@ import os
 import threading
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from queue import Empty, Queue
 from typing import TYPE_CHECKING, SupportsIndex, overload
 from urllib.parse import quote, urlparse
 
 import httpx
 import websockets
+from websockets.exceptions import ConnectionClosed
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.base import BaseConversation, ConversationStateProtocol
@@ -63,6 +64,7 @@ from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 logger = get_logger(__name__)
 
 LEGACY_CONVERSATIONS_PATH = "/api/conversations"
+FATAL_WS_CLOSE_CODES = frozenset({4001, 4004})
 
 
 def _agent_kind_mismatch_message(conversation_id: ConversationID) -> str:
@@ -78,6 +80,19 @@ def _validate_remote_agent(agent_data: dict) -> AgentBase:
 
         return ACPAgent.model_validate(agent_data)
     return AgentBase.model_validate(agent_data)
+
+
+def _websocket_close_code(exc: ConnectionClosed) -> int | None:
+    for close_frame in (exc.rcvd, exc.sent):
+        if close_frame is not None:
+            return close_frame.code
+    return None
+
+
+def _is_fatal_websocket_close(
+    exc: ConnectionClosed,
+) -> bool:
+    return _websocket_close_code(exc) in FATAL_WS_CLOSE_CODES
 
 
 def _send_request(
@@ -114,6 +129,7 @@ class WebSocketCallbackClient:
     host: str
     conversation_id: str
     callback: ConversationCallbackType
+    on_reconnect: Callable[[], object] | None
     api_key: str | None
     _thread: threading.Thread | None
     _stop: threading.Event
@@ -125,11 +141,13 @@ class WebSocketCallbackClient:
         conversation_id: str,
         callback: ConversationCallbackType,
         api_key: str | None = None,
+        on_reconnect: Callable[[], object] | None = None,
     ):
         self.host = host
         self.conversation_id = conversation_id
         self.callback = callback
         self.api_key = api_key
+        self.on_reconnect = on_reconnect
         self._thread = None
         self._stop = threading.Event()
         self._ready = threading.Event()
@@ -201,10 +219,12 @@ class WebSocketCallbackClient:
             ws_url += f"?session_api_key={quote(self.api_key, safe='')}"
 
         delay = 1.0
+        has_connected = False
         while not self._stop.is_set():
             try:
                 async with websockets.connect(ws_url) as ws:
                     delay = 1.0
+                    connection_ready = False
                     async for message in ws:
                         if self._stop.is_set():
                             break
@@ -215,21 +235,48 @@ class WebSocketCallbackClient:
                             # The server sends this immediately after subscription
                             if (
                                 isinstance(event, ConversationStateUpdateEvent)
-                                and not self._ready.is_set()
+                                and not connection_ready
                             ):
-                                self._ready.set()
+                                connection_ready = True
+                                if has_connected:
+                                    await self._handle_reconnect()
+                                else:
+                                    has_connected = True
+                                    self._ready.set()
 
                             self.callback(event)
                         except Exception:
                             logger.exception(
                                 "ws_event_processing_error", stack_info=True
                             )
-            except websockets.exceptions.ConnectionClosed:
-                break
+            except ConnectionClosed as exc:
+                if _is_fatal_websocket_close(exc):
+                    logger.debug("ws_connection_closed_fatal", exc_info=True)
+                    self._stop.set()
+                    break
+                logger.debug("ws_connection_closed_retry", exc_info=True)
+                await self._sleep_before_retry(delay)
+                delay = min(delay * 2, 30.0)
             except Exception:
                 logger.debug("ws_connect_retry", exc_info=True)
-                await asyncio.sleep(delay)
+                await self._sleep_before_retry(delay)
                 delay = min(delay * 2, 30.0)
+
+    async def _handle_reconnect(self) -> None:
+        if not self.on_reconnect:
+            return
+        try:
+            await asyncio.to_thread(self.on_reconnect)
+        except Exception:
+            logger.exception("ws_reconnect_callback_error", stack_info=True)
+
+    async def _sleep_before_retry(self, delay: float) -> None:
+        deadline = time.monotonic() + delay
+        while not self._stop.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            await asyncio.sleep(min(0.1, remaining))
 
 
 class RemoteEventsList(EventsListBase):
@@ -946,6 +993,7 @@ class RemoteConversation(BaseConversation):
             conversation_id=str(self._id),
             callback=composed_callback,
             api_key=self.workspace.api_key,
+            on_reconnect=self._state.events.reconcile,
         )
         self._ws_client.start()
 

@@ -5,7 +5,7 @@ import copy
 import json
 import uuid
 from collections.abc import Mapping, Sequence
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, Final, TypeGuard, cast
 
 from openhands.sdk.agent.acp_agent import ACPAgent
@@ -384,7 +384,7 @@ class LocalConversation(BaseConversation):
         # This runs on first run()/send_message() call and handles both
         # explicit hooks and plugin hooks in one place
         self._hook_processor = None
-        self._on_event = self._tree_stamping(base_callback)
+        self._on_event = self._tree_stamping(self._rules_injecting(base_callback))
         self._on_token = (
             BaseConversation.compose_callbacks(token_callbacks)
             if token_callbacks
@@ -472,6 +472,84 @@ class LocalConversation(BaseConversation):
             inner(self._state._stamp_parent_id(event))
 
         return cast(ConversationCallbackType, wrapped)
+
+    def _rules_injecting(
+        self, inner: ConversationCallbackType
+    ) -> ConversationCallbackType:
+        """Wrap a callback so path rules are injected on file-touch, mirroring
+        the skill injection in :meth:`send_message`. Runs under the state lock
+        (see the run loop), so mutating the dedup set is safe."""
+
+        def wrapped(event: Event) -> None:
+            inner(self._maybe_inject_path_rules(event))
+
+        return cast(ConversationCallbackType, wrapped)
+
+    def _maybe_inject_path_rules(self, event: Event) -> Event:
+        """Return ``event`` with matching path-rule content, or unchanged.
+
+        Only ``ObservationEvent``s carrying a file path are considered. Matching
+        rules already injected in this conversation are skipped via
+        ``state.activated_path_rules``.
+        """
+        if not isinstance(event, ObservationEvent):
+            return event
+
+        if (agent_context := self.agent.agent_context) is None:
+            return event
+
+        if (file_path := self._touched_rule_path(event)) is None:
+            return event
+
+        result = agent_context.get_tool_use_suffix(
+            file_path=file_path,
+            skip_skill_names=self._state.activated_path_rules,
+        )
+        if result is None:
+            return event
+
+        content, activated_rule_names = result
+        self._state.activated_path_rules.extend(activated_rule_names)
+        return event.model_copy(
+            update={"extended_content": list(event.extended_content) + [content]}
+        )
+
+    def _touched_rule_path(self, event: ObservationEvent) -> str | None:
+        """Return the workspace-relative POSIX path a tool observation touched.
+
+        Correlates the observation to its ``ActionEvent`` and reads the action's
+        ``path`` field generically (no dependency on the tools package). Returns
+        None when the action has no file ``path`` or the path is outside the
+        workspace.
+        """
+        action_event: Event | None = None
+        with contextlib.suppress(KeyError):
+            idx = self._state.events.get_index(event.action_id)
+            action_event = self._state.events[idx]
+        if not isinstance(action_event, ActionEvent) or action_event.action is None:
+            return None
+        # Read the field directly rather than model_dump(): avoids copying large
+        # edit payloads (file_text/old_str/new_str) just to read the path.
+        raw_path = getattr(action_event.action, "path", None)
+        if not isinstance(raw_path, str) or not raw_path:
+            return None
+
+        # Use the native path flavour so Windows drive paths (e.g. ``D:\\...``) are
+        # recognized as absolute; emit a POSIX string for glob matching.
+        raw = PurePath(raw_path)
+        if not raw.is_absolute():
+            return raw.as_posix()
+        root = PurePath(self.workspace.working_dir)
+        with contextlib.suppress(ValueError):
+            return raw.relative_to(root).as_posix()
+        # Fall back to filesystem resolution so a symlinked workspace root (e.g.
+        # macOS /tmp -> /private/tmp) still matches; strict=False keeps a
+        # not-yet-created leaf.
+        with contextlib.suppress(ValueError, OSError):
+            resolved = Path(raw_path).resolve()
+            resolved_root = Path(self.workspace.working_dir).resolve()
+            return resolved.relative_to(resolved_root).as_posix()
+        return None  # touched a file outside the workspace; rules are repo-scoped
 
     def _recover_persisted_client_tools(
         self,
@@ -693,6 +771,9 @@ class LocalConversation(BaseConversation):
             # agent_state can hold arbitrary mutable values, so deep-copy it.
             fork_conv._state.activated_knowledge_skills = list(
                 self._state.activated_knowledge_skills
+            )
+            fork_conv._state.activated_path_rules = list(
+                self._state.activated_path_rules
             )
             fork_conv._state.agent_state = copy.deepcopy(self._state.agent_state)
 
@@ -941,6 +1022,12 @@ class LocalConversation(BaseConversation):
                 merged_skills = merge_skills_by_name(
                     project_skills.values(), merged_context.skills
                 )
+                # Honor the context deny-list here too: model_copy below bypasses
+                # AgentContext's validator, and a project skill can match a
+                # disabled name (absent name => harmless no-op).
+                if merged_context.disabled_skills:
+                    disabled = set(merged_context.disabled_skills)
+                    merged_skills = [s for s in merged_skills if s.name not in disabled]
                 merged_context = merged_context.model_copy(
                     update={"skills": merged_skills}
                 )
@@ -1025,7 +1112,7 @@ class LocalConversation(BaseConversation):
                 visualizer=self._visualizer,
                 conversation_stats=self._state.stats,
             )
-            self._on_event = self._tree_stamping(raw_on_event)
+            self._on_event = self._tree_stamping(self._rules_injecting(raw_on_event))
             self._hook_processor.set_conversation_state(self._state)
             self._hook_processor.run_session_start()
 
@@ -1098,7 +1185,7 @@ class LocalConversation(BaseConversation):
             visualizer=self._visualizer,
             conversation_stats=self._state.stats,
         )
-        self._on_event = self._tree_stamping(raw_on_event)
+        self._on_event = self._tree_stamping(self._rules_injecting(raw_on_event))
         self._hook_processor.set_conversation_state(self._state)
         self._hook_processor.run_session_start()
 
@@ -1620,6 +1707,31 @@ class LocalConversation(BaseConversation):
         """Emit an event while holding the conversation state lock."""
         with self._state:
             self._on_event(event)
+
+    @contextlib.asynccontextmanager
+    async def _released_state_lock_during_io(self):
+        """Release the run loop's state lock across an awaited LLM network call.
+
+        ``arun()`` holds the state lock across the whole step; releasing it for
+        just the network wait keeps ``send_message()`` and state snapshots
+        responsive. No-op unless this thread holds the lock, so direct ``astep``
+        calls are unaffected. Deadlock-safe: ``arun`` is the only holder across
+        an ``await``; every other holder takes it only briefly.
+        """
+        lock = self._state._lock
+        if not lock.owned():
+            yield
+            return
+        held_flag = self._step_holds_state_lock
+        depth = lock.release_all()
+        # Keep the flag honest while released so a concurrent switch_llm (on the
+        # event-loop thread) takes the now-free lock instead of racing mutators.
+        self._step_holds_state_lock = False
+        try:
+            yield
+        finally:
+            lock.reacquire(depth)
+            self._step_holds_state_lock = held_flag
 
     @observe(name="conversation.run")
     def run(self) -> None:

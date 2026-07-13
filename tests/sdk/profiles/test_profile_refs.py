@@ -5,11 +5,9 @@ import json
 from pathlib import Path
 
 import pytest
-from pydantic import SecretStr
 
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
-from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles import (
     ACPAgentProfile,
     AgentProfileStore,
@@ -20,8 +18,6 @@ from openhands.sdk.profiles import (
     find_referrers,
     rename_llm_profile,
 )
-from openhands.sdk.skills import Skill
-from openhands.sdk.utils.cipher import Cipher
 
 
 @pytest.fixture
@@ -90,37 +86,25 @@ def test_cascade_rename_no_match_is_noop(agent_store: AgentProfileStore) -> None
     assert _ref(agent_store, "a") == "other"
 
 
-def test_cascade_rename_preserves_id_and_encrypted_secret(
+def test_cascade_rename_preserves_id_and_other_fields(
     agent_store: AgentProfileStore,
 ) -> None:
-    cipher = Cipher(secret_key="test-key")
-    secret = "ghp_DO_NOT_LEAK"
+    """The surgical raw-JSON edit (``set_llm_profile_ref``) only touches the
+    ref field — id, mcp_server_refs, and everything else survive untouched.
+    No cipher is involved: the profile is secret-free at rest (#4017)."""
     profile = OpenHandsAgentProfile(
-        name="a",
-        llm_profile_ref="default",
-        skills=[
-            Skill(
-                name="s",
-                content="x",
-                mcp_tools={
-                    "svc": MCPServer(command="run", env={"K": SecretStr(secret)})
-                },
-            )
-        ],
+        name="a", llm_profile_ref="default", mcp_server_refs=["fetch"], revision=3
     )
-    agent_store.save(profile, cipher=cipher)
+    agent_store.save(profile)
 
     cascade_rename(agent_store, "default", "renamed")
 
     raw = (agent_store.base_dir / "a.json").read_text()
-    assert secret not in raw  # encrypted token survives the surgical edit
     data = json.loads(raw)
     assert data["id"] == str(profile.id)
     assert data["llm_profile_ref"] == "renamed"
-    token = data["skills"][0]["mcp_tools"]["svc"]["env"]["K"]
-    decrypted = cipher.decrypt(token)
-    assert decrypted is not None
-    assert decrypted.get_secret_value() == secret
+    assert data["mcp_server_refs"] == ["fetch"]
+    assert data["revision"] == 3
 
 
 def test_cascade_rename_invalid_new_name_raises(
