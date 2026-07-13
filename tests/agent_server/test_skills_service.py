@@ -263,10 +263,15 @@ class TestLoadAllSkills:
         self, tmp_path: Path
     ):
         marketplace_dir = _create_test_marketplace(tmp_path / "marketplace")
+        public_skill = Skill(name="public-skill", content="public", trigger=None)
         user_skill = Skill(name="user-skill", content="user", trigger=None)
 
         with patch(
-            self._PATCH_TARGET, side_effect=[{"user-skill": user_skill}, {}]
+            self._PATCH_TARGET,
+            side_effect=[
+                {"public-skill": public_skill, "user-skill": user_skill},
+                {},
+            ],
         ) as mock_avail:
             result = load_all_skills(
                 load_public=True,
@@ -285,8 +290,10 @@ class TestLoadAllSkills:
         skill_names = {skill.name for skill in result.skills}
         assert "auto-skill" in skill_names
         assert "manual-skill" in skill_names
+        assert "public-skill" in skill_names
         assert "user-skill" in skill_names
         assert result.sources["registered_marketplaces"] == 2
+        assert result.sources["sdk_base"] == 2
         assert mock_avail.call_args_list[0].kwargs["include_public"] is True
 
     def test_load_all_skills_non_auto_registered_marketplaces_keep_legacy_public(
