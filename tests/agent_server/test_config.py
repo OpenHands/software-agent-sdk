@@ -30,12 +30,3 @@ def test_load_config_reads_registered_marketplaces_from_env(monkeypatch, tmp_pat
     assert registration.ref == "main"
     assert registration.repo_path == "marketplace"
     assert registration.auto_load is True
-
-
-def test_load_config_reads_extra_default_tools_from_env(monkeypatch, tmp_path):
-    monkeypatch.setenv(CONFIG_PATH_ENV, str(tmp_path / "missing.json"))
-    monkeypatch.setenv("OH_EXTRA_DEFAULT_TOOLS", '["canvas_ui"]')
-
-    config = load_config()
-
-    assert config.extra_default_tools == ["canvas_ui"]

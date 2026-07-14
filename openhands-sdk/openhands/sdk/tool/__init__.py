@@ -20,6 +20,7 @@ from openhands.sdk.tool.defaults import (
 from openhands.sdk.tool.registry import (
     is_tool_usable,
     list_registered_tools,
+    list_usable_default_tools,
     register_tool,
     resolve_tool,
 )
@@ -63,4 +64,5 @@ __all__ = [
     "register_tool",
     "resolve_tool",
     "list_registered_tools",
+    "list_usable_default_tools",
 ]

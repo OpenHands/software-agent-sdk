@@ -32,6 +32,7 @@ _LOCK = RLock()
 _REG: dict[str, Resolver] = {}
 _USABILITY_REG: dict[str, UsabilityChecker] = {}
 _MODULE_QUALNAMES: dict[str, str] = {}  # Maps tool name to module qualname
+_DEFAULT_TOOL_NAMES: set[str] = set()
 
 
 def _resolver_from_instance(name: str, tool: ToolDefinition) -> Resolver:
@@ -113,6 +114,8 @@ def _check_tool_usable(name: str, checker: UsabilityChecker) -> bool:
 def register_tool(
     name: str,
     factory: ToolDefinition | type[ToolDefinition],
+    *,
+    default: bool = False,
 ) -> None:
     if not isinstance(name, str) or not name.strip():
         raise ValueError("ToolDefinition name must be a non-empty string")
@@ -144,6 +147,10 @@ def register_tool(
         _USABILITY_REG[name] = usability_checker
         if module_qualname:
             _MODULE_QUALNAMES[name] = module_qualname
+        if default:
+            _DEFAULT_TOOL_NAMES.add(name)
+        else:
+            _DEFAULT_TOOL_NAMES.discard(name)
 
 
 def resolve_tool(
@@ -179,6 +186,19 @@ def is_tool_usable(name: str) -> bool:
 def list_usable_tools() -> list[str]:
     with _LOCK:
         tool_names = list(_REG.keys())
+        usability_checkers = dict(_USABILITY_REG)
+
+    return [
+        name
+        for name in tool_names
+        if _check_tool_usable(name, usability_checkers.get(name, lambda: True))
+    ]
+
+
+def list_usable_default_tools() -> list[str]:
+    """Return registered default tools whose usability checks pass."""
+    with _LOCK:
+        tool_names = [name for name in _REG if name in _DEFAULT_TOOL_NAMES]
         usability_checkers = dict(_USABILITY_REG)
 
     return [

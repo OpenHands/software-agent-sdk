@@ -215,13 +215,6 @@ class Config(BaseModel):
         default=True,
         description="Whether to preload tools",
     )
-    extra_default_tools: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Registered runtime tools added to the standard OpenHands tool set "
-            "when an agent profile inherits server defaults."
-        ),
-    )
     max_concurrent_runs: int = Field(
         default=10,
         ge=1,

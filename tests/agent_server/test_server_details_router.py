@@ -76,11 +76,11 @@ def test_server_info_reports_usable_tools(client, monkeypatch: pytest.MonkeyPatc
 def test_server_info_reports_resolved_default_tools(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    app = create_app(Config(static_files_path=None, extra_default_tools=["canvas_ui"]))
+    app = create_app(Config(static_files_path=None))
     monkeypatch.setattr(
         sdr,
         "resolve_default_tools",
-        lambda extra: [Tool(name=name) for name in extra],
+        lambda: [Tool(name="canvas_ui")],
     )
 
     response = TestClient(app).get("/server_info")

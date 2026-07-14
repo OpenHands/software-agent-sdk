@@ -305,10 +305,9 @@ class TestResolveAgentFromProfile:
                 profile.id,
                 cipher=None,
                 mcp_config={},
-                extra_default_tools=["canvas_ui"],
             )
 
-        MockDefaults.assert_called_once_with(["canvas_ui"], enable_sub_agents=False)
+        MockDefaults.assert_called_once_with(enable_sub_agents=False)
         assert [tool.name for tool in result_agent.tools] == [
             "browser_tool_set",
             "canvas_ui",
@@ -344,7 +343,6 @@ class TestResolveAgentFromProfile:
                 profile.id,
                 cipher=None,
                 mcp_config={},
-                extra_default_tools=["canvas_ui"],
             )
 
         MockDefaults.assert_not_called()
@@ -380,7 +378,6 @@ class TestResolveAgentFromProfile:
                 profile.id,
                 cipher=None,
                 mcp_config={},
-                extra_default_tools=["canvas_ui"],
             )
 
         MockDefaults.assert_not_called()
@@ -411,7 +408,6 @@ class TestResolveAgentFromProfile:
                 profile.id,
                 cipher=None,
                 mcp_config={},
-                extra_default_tools=["canvas_ui"],
             )
 
         MockDefaults.assert_not_called()
@@ -535,10 +531,7 @@ class TestConversationServiceStartFromProfile:
             "openhands.agent_server.conversation_service._resolve_agent_from_profile",
             return_value=(agent, launched_agent_profile),
         ) as mock_resolve:
-            service = ConversationService(
-                conversations_dir=tmp_path,
-                extra_default_tools=["canvas_ui"],
-            )
+            service = ConversationService(conversations_dir=tmp_path)
             service._event_services = {}
 
             with patch.object(
@@ -565,7 +558,7 @@ class TestConversationServiceStartFromProfile:
 
                 info, is_new = await service.start_conversation(request)
 
-        assert mock_resolve.call_args.args[3] == ["canvas_ui"]
+        assert len(mock_resolve.call_args.args) == 3
         stored = captured.get("stored")
         assert stored is not None, "StoredConversation was not captured"
         assert stored.launched_agent_profile is not None

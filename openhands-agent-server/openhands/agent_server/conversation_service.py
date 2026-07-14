@@ -1,7 +1,7 @@
 import asyncio
 import importlib
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -257,7 +257,6 @@ def _resolve_agent_from_profile(
     profile_id: "UUID",
     cipher: "Cipher | None",
     mcp_config: "dict[str, MCPServer]",
-    extra_default_tools: Sequence[str] = (),
 ) -> "tuple[AgentBase, LaunchedAgentProfile]":
     """Load and resolve an agent profile by id, returning the built agent + provenance.
 
@@ -333,7 +332,6 @@ def _resolve_agent_from_profile(
         }
         if profile.agent_kind == "openhands" and profile.tools is None:
             updates["tools"] = resolve_default_tools(
-                extra_default_tools,
                 enable_sub_agents=settings_config.enable_sub_agents,
             )
         settings_config = settings_config.model_copy(update=updates)
@@ -492,7 +490,6 @@ class ConversationService:
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     max_concurrent_runs: int = 10
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
-    extra_default_tools: list[str] = field(default_factory=list)
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_webhook_subscribers: list["ConversationWebhookSubscriber"] = field(
         default_factory=list, init=False
@@ -743,7 +740,6 @@ class ConversationService:
                 request.agent_profile_id,
                 self.cipher,
                 mcp_config,
-                self.extra_default_tools,
             )
             request = request.model_copy(update={"agent": resolved_agent})
 
@@ -1304,7 +1300,6 @@ class ConversationService:
             mcp_tool_provider=create_settings_backed_mcp_tool_provider(config),
             max_concurrent_runs=config.max_concurrent_runs,
             lease_ttl_seconds=config.lease_ttl_seconds,
-            extra_default_tools=config.extra_default_tools,
         )
 
     async def _start_event_service(self, stored: StoredConversation) -> EventService:

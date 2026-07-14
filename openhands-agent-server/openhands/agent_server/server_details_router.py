@@ -4,10 +4,9 @@ import sys
 import time
 from importlib.metadata import version
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Response
 from pydantic import BaseModel, Field
 
-from openhands.agent_server.config import Config
 from openhands.agent_server.default_tools import resolve_default_tools
 from openhands.sdk.tool.registry import list_usable_tools
 from openhands.tools.terminal.timeout_policy import (
@@ -111,13 +110,10 @@ async def ready(response: Response) -> dict[str, str]:
 
 
 @server_details_router.get("/server_info")
-async def get_server_info(request: Request) -> ServerInfo:
+async def get_server_info() -> ServerInfo:
     now = time.time()
-    config: Config = request.app.state.config
     return ServerInfo(
         uptime=int(now - _start_time),
         idle_time=int(now - _last_event_time),
-        default_tools=[
-            tool.name for tool in resolve_default_tools(config.extra_default_tools)
-        ],
+        default_tools=[tool.name for tool in resolve_default_tools()],
     )
