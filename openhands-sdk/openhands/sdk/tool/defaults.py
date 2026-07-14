@@ -25,8 +25,7 @@ BROWSER_TOOL_NAME = "browser_tool_set"
 """Name of the browser tool set.
 
 Not part of the deterministic default: browser is an environment-dependent
-capability. Its implementation declares it as a runtime default, and serving
-layers add it only where the Chromium stack is usable.
+capability, so serving layers add it only where the Chromium stack is usable.
 """
 
 SUB_AGENT_TOOL_NAME = "task_tool_set"

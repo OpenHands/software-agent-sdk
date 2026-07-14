@@ -157,7 +157,7 @@ async def test_launch_additions_apply_after_agent_resolution(profile_launch, tmp
     assert stored.client_tools == []
     assert stored.tool_module_qualnames == {"canvas_ui": "canvas_ui_tool"}
     import_module.assert_called_once_with("canvas_ui_tool")
-    assert call_order == (["import", "resolve"] if profile_launch else ["import"])
+    assert call_order == (["resolve", "import"] if profile_launch else ["import"])
 
     restored = StoredConversation.model_validate(stored.model_dump(mode="json"))
     assert restored.agent.agent_context is not None

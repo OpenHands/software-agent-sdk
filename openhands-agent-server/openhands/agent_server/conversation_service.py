@@ -1,7 +1,7 @@
 import asyncio
 import importlib
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -17,6 +17,7 @@ from openhands.agent_server.conversation_lease import (
     DEFAULT_LEASE_TTL_SECONDS,
     ConversationLeaseHeldError,
 )
+from openhands.agent_server.default_tools import resolve_default_tools
 from openhands.agent_server.event_service import (
     LEASE_RENEW_INTERVAL_SECONDS,
     EventService,
@@ -49,9 +50,7 @@ from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.mcp.utils import MCPToolProvider
-from openhands.sdk.tool import Tool
 from openhands.sdk.tool.client_tool import register_client_tools
-from openhands.sdk.tool.registry import list_usable_runtime_default_tools
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -258,6 +257,7 @@ def _resolve_agent_from_profile(
     profile_id: "UUID",
     cipher: "Cipher | None",
     mcp_config: "dict[str, MCPServer]",
+    extra_default_tools: Sequence[str] = (),
 ) -> "tuple[AgentBase, LaunchedAgentProfile]":
     """Load and resolve an agent profile by id, returning the built agent + provenance.
 
@@ -328,22 +328,17 @@ def _resolve_agent_from_profile(
         # layer (not the SDK resolver) because this server wires the token
         # callback whenever any llm.stream is set; a headless resolver caller
         # that never wires on_token is covered by LLM's graceful degradation.
-        settings_config = settings_config.model_copy(
-            update={"llm": settings_config.llm.model_copy(update={"stream": True})}
-        )
+        updates: dict[str, Any] = {
+            "llm": settings_config.llm.model_copy(update={"stream": True})
+        }
+        if profile.agent_kind == "openhands" and profile.tools is None:
+            updates["tools"] = resolve_default_tools(
+                extra_default_tools,
+                enable_sub_agents=settings_config.enable_sub_agents,
+            )
+        settings_config = settings_config.model_copy(update=updates)
 
     agent = settings_config.create_agent()
-    if profile.agent_kind == "openhands" and profile.tools is None:
-        existing_names = {tool.name for tool in agent.tools}
-        runtime_defaults = [
-            Tool(name=name)
-            for name in list_usable_runtime_default_tools()
-            if name not in existing_names
-        ]
-        if runtime_defaults:
-            agent = agent.model_copy(
-                update={"tools": [*agent.tools, *runtime_defaults]}
-            )
     launched = LaunchedAgentProfile(
         agent_profile_id=profile.id,
         revision=profile.revision,
@@ -497,6 +492,7 @@ class ConversationService:
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     max_concurrent_runs: int = 10
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
+    extra_default_tools: list[str] = field(default_factory=list)
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_webhook_subscribers: list["ConversationWebhookSubscriber"] = field(
         default_factory=list, init=False
@@ -728,24 +724,6 @@ class ConversationService:
             )
             return conversation_info, False
 
-        if request.tool_module_qualnames:
-            for tool_name, module_qualname in request.tool_module_qualnames.items():
-                try:
-                    importlib.import_module(module_qualname)
-                    logger.debug(
-                        f"Tool '{tool_name}' registered via module '{module_qualname}'"
-                    )
-                except ImportError as e:
-                    logger.warning(
-                        f"Failed to import module '{module_qualname}' for tool "
-                        f"'{tool_name}': {e}. Tool will not be available."
-                    )
-            logger.info(
-                "Dynamically registered %d tools for conversation %s",
-                len(request.tool_module_qualnames),
-                conversation_id,
-            )
-
         # Profile resolution must happen before _prepare_request_workspace (which
         # asserts request.agent is not None) and before model_dump so the resolved
         # agent is captured in request_data.
@@ -765,6 +743,7 @@ class ConversationService:
                 request.agent_profile_id,
                 self.cipher,
                 mcp_config,
+                self.extra_default_tools,
             )
             request = request.model_copy(update={"agent": resolved_agent})
 
@@ -780,6 +759,24 @@ class ConversationService:
             )
 
         request = _prepare_request_workspace(request, conversation_id)
+
+        if request.tool_module_qualnames:
+            for tool_name, module_qualname in request.tool_module_qualnames.items():
+                try:
+                    importlib.import_module(module_qualname)
+                    logger.debug(
+                        f"Tool '{tool_name}' registered via module '{module_qualname}'"
+                    )
+                except ImportError as e:
+                    logger.warning(
+                        f"Failed to import module '{module_qualname}' for tool "
+                        f"'{tool_name}': {e}. Tool will not be available."
+                    )
+            logger.info(
+                "Dynamically registered %d tools for conversation %s",
+                len(request.tool_module_qualnames),
+                conversation_id,
+            )
 
         # Register client-defined tools (JSON specs, no Python code). The
         # ClientTool *class* is registered statelessly; each tool's schema
@@ -1307,6 +1304,7 @@ class ConversationService:
             mcp_tool_provider=create_settings_backed_mcp_tool_provider(config),
             max_concurrent_runs=config.max_concurrent_runs,
             lease_ttl_seconds=config.lease_ttl_seconds,
+            extra_default_tools=config.extra_default_tools,
         )
 
     async def _start_event_service(self, stored: StoredConversation) -> EventService:

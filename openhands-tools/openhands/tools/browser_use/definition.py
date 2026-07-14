@@ -783,8 +783,6 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
     when created and automatically installs it if missing.
     """
 
-    runtime_default: ClassVar[bool] = True
-
     # Shared executor: reuse a single Chromium/CDP instance across parent
     # and subagents to avoid CDP port conflicts in sandbox containers.
     _shared_executor: ClassVar["BrowserToolExecutor | None"] = None

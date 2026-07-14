@@ -7,11 +7,7 @@ from openhands.sdk import register_tool
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.llm.message import ImageContent, TextContent
 from openhands.sdk.tool import ToolDefinition
-from openhands.sdk.tool.registry import (
-    list_usable_runtime_default_tools,
-    list_usable_tools,
-    resolve_tool,
-)
+from openhands.sdk.tool.registry import list_usable_tools, resolve_tool
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.tool.spec import Tool
 from openhands.sdk.tool.tool import ToolExecutor
@@ -93,14 +89,6 @@ class _UnavailableHelloTool(_SimpleHelloTool):
         return False
 
 
-class _RuntimeDefaultHelloTool(_SimpleHelloTool):
-    runtime_default = True
-
-
-class _UnavailableRuntimeDefaultHelloTool(_UnavailableHelloTool):
-    runtime_default = True
-
-
 def _hello_tool_factory(conv_state=None, **params) -> list[ToolDefinition]:
     return list(_SimpleHelloTool.create(conv_state, **params))
 
@@ -117,16 +105,6 @@ def test_register_tool_type_respects_is_usable():
     register_tool("say_hello_unusable", _UnavailableHelloTool)
 
     assert "say_hello_unusable" not in list_usable_tools()
-
-
-def test_runtime_defaults_respect_registration_and_usability():
-    register_tool("runtime_default_hello", _RuntimeDefaultHelloTool)
-    register_tool("runtime_default_hello_unusable", _UnavailableRuntimeDefaultHelloTool)
-
-    runtime_defaults = list_usable_runtime_default_tools()
-
-    assert "runtime_default_hello" in runtime_defaults
-    assert "runtime_default_hello_unusable" not in runtime_defaults
 
 
 def test_register_tool_instance_rejects_params():

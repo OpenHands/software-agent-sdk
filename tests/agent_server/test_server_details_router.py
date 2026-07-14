@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 import openhands.agent_server.server_details_router as sdr
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
+from openhands.sdk.tool import Tool
 
 
 @pytest.fixture(autouse=True)
@@ -70,6 +71,22 @@ def test_server_info_reports_usable_tools(client, monkeypatch: pytest.MonkeyPatc
 
     assert response.status_code == 200
     assert response.json()["usable_tools"] == ["terminal", "file_editor"]
+
+
+def test_server_info_reports_resolved_default_tools(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    app = create_app(Config(static_files_path=None, extra_default_tools=["canvas_ui"]))
+    monkeypatch.setattr(
+        sdr,
+        "resolve_default_tools",
+        lambda extra: [Tool(name=name) for name in extra],
+    )
+
+    response = TestClient(app).get("/server_info")
+
+    assert response.status_code == 200
+    assert response.json()["default_tools"] == ["canvas_ui"]
 
 
 def test_server_info_reports_runtime_timeout_cap(
