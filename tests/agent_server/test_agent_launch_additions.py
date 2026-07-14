@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from openhands.agent_server.conversation_service import (
+    AgentLaunchToolConflictError,
     ConversationService,
     _append_agent_tools,
     _append_system_message_suffix,
@@ -95,7 +96,9 @@ def test_launch_tools_append_without_changing_existing_resolution():
 
     assert [tool.name for tool in updated.tools] == ["terminal", "canvas_ui"]
     assert _append_agent_tools(updated, [Tool(name="canvas_ui")]) is updated
-    with pytest.raises(ValueError, match="conflicts with the resolved agent"):
+    with pytest.raises(
+        AgentLaunchToolConflictError, match="conflicts with the resolved agent"
+    ):
         _append_agent_tools(updated, [Tool(name="canvas_ui", params={"v": 2})])
 
 

@@ -62,6 +62,10 @@ if TYPE_CHECKING:
 CONVERSATION_WORKTREE_ROOT = Path("/tmp/conversation-worktrees")
 
 
+class AgentLaunchToolConflictError(ValueError):
+    pass
+
+
 def _build_worktree_guidance(
     *,
     source_workspace: Path,
@@ -113,7 +117,7 @@ def _append_agent_tools(agent: AgentBase, additions: list[Tool]) -> AgentBase:
         existing = tools_by_name.get(tool.name)
         if existing is not None:
             if existing != tool:
-                raise ValueError(
+                raise AgentLaunchToolConflictError(
                     f"Launch tool '{tool.name}' conflicts with the resolved agent"
                 )
             continue
