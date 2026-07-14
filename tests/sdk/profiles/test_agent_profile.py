@@ -73,16 +73,12 @@ def test_openhands_profile_new_field_defaults() -> None:
     assert reloaded.disabled_skills == []
 
 
-def test_legacy_seeded_default_profile_inherits_standard_tools() -> None:
-    legacy = OpenHandsAgentProfile(name="default", llm_profile_ref="default", tools=[])
-    edited = OpenHandsAgentProfile(
-        name="default", llm_profile_ref="default", revision=1, tools=[]
+def test_default_profile_preserves_explicit_empty_tools() -> None:
+    profile = OpenHandsAgentProfile(
+        name="default", llm_profile_ref="default", revision=0, tools=[]
     )
-    custom = OpenHandsAgentProfile(name="bare", llm_profile_ref="default", tools=[])
 
-    assert legacy.tools is None
-    assert edited.tools == []
-    assert custom.tools == []
+    assert profile.tools == []
 
 
 def test_disabled_skills_round_trips() -> None:

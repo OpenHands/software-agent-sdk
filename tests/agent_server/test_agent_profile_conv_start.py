@@ -320,7 +320,12 @@ class TestResolveAgentFromProfile:
         )
         from openhands.sdk.settings.model import OpenHandsAgentSettings
 
-        profile = _make_openhands_profile().model_copy(update={"tools": []})
+        profile = OpenHandsAgentProfile(
+            name="default",
+            revision=0,
+            llm_profile_ref="default",
+            tools=[],
+        )
         resolved_settings = OpenHandsAgentSettings(
             llm=LLM(model="gpt-4o", usage_id="agent"), tools=[]
         )
@@ -344,6 +349,42 @@ class TestResolveAgentFromProfile:
 
         MockDefaults.assert_not_called()
         assert result_agent.tools == []
+
+    def test_openhands_specific_tools_never_amended(self):
+        from openhands.agent_server.conversation_service import (
+            _resolve_agent_from_profile,
+        )
+        from openhands.sdk.settings.model import OpenHandsAgentSettings
+
+        tools = [Tool(name="terminal")]
+        profile = OpenHandsAgentProfile(
+            name="specific",
+            llm_profile_ref="default",
+            tools=tools,
+        )
+        resolved_settings = OpenHandsAgentSettings(
+            llm=LLM(model="gpt-4o", usage_id="agent"), tools=tools
+        )
+
+        with (
+            patch(_STORE_PATH) as MockStore,
+            patch(_LLM_STORE_PATH),
+            patch(_RESOLVE_PATH, return_value=resolved_settings),
+            patch(_DEFAULTS_PATH) as MockDefaults,
+        ):
+            store_inst = MockStore.return_value
+            store_inst.name_for_id.return_value = profile.name
+            store_inst.load.return_value = profile
+
+            result_agent, _ = _resolve_agent_from_profile(
+                profile.id,
+                cipher=None,
+                mcp_config={},
+                extra_default_tools=["canvas_ui"],
+            )
+
+        MockDefaults.assert_not_called()
+        assert result_agent.tools == tools
 
     def test_acp_profile_never_gets_server_defaults(self):
         from openhands.agent_server.conversation_service import (
