@@ -49,7 +49,14 @@ from openhands.sdk.event import (
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.io import FileStore, LocalFileStore
-from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
+from openhands.sdk.llm import (
+    LLM,
+    BaseContent,
+    MaterializedRef,
+    Message,
+    TextContent,
+    content_to_str,
+)
 from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
 from openhands.sdk.llm.llm import LLMCallContext
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
@@ -380,7 +387,12 @@ class LocalConversation(BaseConversation):
         # This runs on first run()/send_message() call and handles both
         # explicit hooks and plugin hooks in one place
         self._hook_processor = None
-        self._on_event = self._tree_stamping(self._rules_injecting(base_callback))
+        # In-memory dedup of events whose content has already been materialized,
+        # so re-emitting the same event (e.g. on replay) does not re-run writes.
+        self._materialized_event_ids: set[EventID] = set()
+        self._on_event = self._tree_stamping(
+            self._rules_injecting(self._materializing(base_callback))
+        )
         self._on_token = (
             BaseConversation.compose_callbacks(token_callbacks)
             if token_callbacks
@@ -546,6 +558,90 @@ class LocalConversation(BaseConversation):
             resolved_root = Path(self.workspace.working_dir).resolve()
             return resolved.relative_to(resolved_root).as_posix()
         return None  # touched a file outside the workspace; rules are repo-scoped
+
+    def _materializing(
+        self, inner: ConversationCallbackType
+    ) -> ConversationCallbackType:
+        """Wrap a callback so non-inline content is materialized to the workspace.
+
+        Mirrors :meth:`_rules_injecting`: intercept each event as it enters,
+        enrich it, and pass it on — under the state lock, before persistence.
+        Because it dispatches on the polymorphic ``BaseContent.materialize()``
+        contract and runs for every event flowing through ``_on_event`` (user
+        messages *and* tool/MCP observations), it is both source- and
+        type-agnostic; a new content type is supported by implementing
+        ``materialize()`` on that type, with no change here.
+        """
+
+        def wrapped(event: Event) -> None:
+            inner(self._maybe_materialize_content(event))
+
+        return cast(ConversationCallbackType, wrapped)
+
+    def _maybe_materialize_content(self, event: Event) -> Event:
+        """Return ``event`` with materialized-path pointers injected, or unchanged.
+
+        Walks the content parts an event carries, calls ``materialize()`` on each
+        (polymorphic; a no-op for text), writes any bytes into the workspace, and
+        appends a lightweight ``TextContent`` pointer to ``extended_content`` so
+        the agent is told where each file landed. Materialization is deduped per
+        event id (in memory) and is content-addressed on disk, so replaying an
+        event never writes duplicates.
+        """
+        # Only these two event shapes carry externally-sourced content parts;
+        # both expose ``extended_content`` for the injected pointer.
+        if not isinstance(event, (MessageEvent, ObservationEvent)):
+            return event
+
+        content_parts = self._event_content_parts(event)
+        if not content_parts:
+            return event
+
+        if event.id in self._materialized_event_ids:
+            return event
+
+        refs: list[MaterializedRef] = []
+        for part in content_parts:
+            refs.extend(part.materialize(self.workspace))
+
+        self._materialized_event_ids.add(event.id)
+
+        if not refs:
+            return event
+
+        pointer = self._format_materialized_pointer(refs)
+        return event.model_copy(
+            update={
+                "extended_content": list(event.extended_content) + [pointer],
+            }
+        )
+
+    @staticmethod
+    def _event_content_parts(
+        event: "MessageEvent | ObservationEvent",
+    ) -> list[BaseContent]:
+        """Return the materializable content parts carried by ``event``.
+
+        ``MessageEvent`` carries user/agent message content; ``ObservationEvent``
+        carries tool/MCP results.
+        """
+        if isinstance(event, MessageEvent):
+            return list(event.llm_message.content)
+        return list(event.observation.to_llm_content)
+
+    @staticmethod
+    def _format_materialized_pointer(refs: list[MaterializedRef]) -> TextContent:
+        """Build the pointer text telling the agent where files were written."""
+        lines = [
+            "The following attached content has been saved to the workspace "
+            "filesystem so you can operate on it with your tools:"
+        ]
+        for ref in refs:
+            detail = ref.path
+            if ref.mime_type:
+                detail += f" ({ref.mime_type})"
+            lines.append(f"- {detail}")
+        return TextContent(text="\n".join(lines))
 
     def _recover_persisted_client_tools(
         self,
@@ -1108,7 +1204,9 @@ class LocalConversation(BaseConversation):
                 visualizer=self._visualizer,
                 conversation_stats=self._state.stats,
             )
-            self._on_event = self._tree_stamping(self._rules_injecting(raw_on_event))
+            self._on_event = self._tree_stamping(
+                self._rules_injecting(self._materializing(raw_on_event))
+            )
             self._hook_processor.set_conversation_state(self._state)
             self._hook_processor.run_session_start()
 
@@ -1181,7 +1279,9 @@ class LocalConversation(BaseConversation):
             visualizer=self._visualizer,
             conversation_stats=self._state.stats,
         )
-        self._on_event = self._tree_stamping(self._rules_injecting(raw_on_event))
+        self._on_event = self._tree_stamping(
+            self._rules_injecting(self._materializing(raw_on_event))
+        )
         self._hook_processor.set_conversation_state(self._state)
         self._hook_processor.run_session_start()
 
