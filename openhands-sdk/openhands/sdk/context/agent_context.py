@@ -231,9 +231,7 @@ class AgentContext(BaseModel):
     @model_validator(mode="after")
     def _load_auto_skills(self):
         """Load user/legacy-public skills if enabled, then apply ``disabled_skills``."""
-        # Any marketplace registration opts the context out of the legacy
-        # public-skills path, even when the registration is resolution-only.
-        include_public = self.load_public_skills and not self.registered_marketplaces
+        include_public = self.load_public_skills
         if self.load_user_skills or include_public:
             auto_skills = load_available_skills(
                 work_dir=None,
