@@ -2747,7 +2747,7 @@ class TestEventServiceClose:
             def conversation_stats(self):
                 return mock.conversation_stats
 
-            def send_message(self, message, sender=None):
+            def send_message(self, message, sender=None, *, client_context=None):
                 pass
 
             def run(self):
