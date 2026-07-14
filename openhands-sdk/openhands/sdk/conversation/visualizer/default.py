@@ -26,6 +26,7 @@ from openhands.sdk.event import (
 )
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.condenser import Condensation, CondensationRequest
+from openhands.sdk.llm.utils.metrics import TokenUsage
 
 
 logger = logging.getLogger(__name__)
@@ -355,7 +356,7 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
         title_color = config.color(event) if callable(config.color) else config.color
 
         # Build subtitle if needed
-        subtitle = self._format_metrics_subtitle() if config.show_metrics else None
+        subtitle = self._format_metrics_subtitle(event) if config.show_metrics else None
 
         return build_event_block(
             content=content,
@@ -364,7 +365,33 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
             subtitle=subtitle,
         )
 
-    def _format_metrics_subtitle(self) -> str | None:
+    def _find_request_usage(self, event: Event | None) -> TokenUsage | None:
+        """Find the TokenUsage for the LLM request that produced ``event``.
+
+        Matches on ``TokenUsage.response_id``, not on list position: telemetry
+        records ``TokenUsage.response_id = resp.id`` and events carry
+        ``llm_response_id = llm_response.id``, so these ids correspond
+        one-to-one. We deliberately do NOT use
+        ``get_combined_metrics().token_usages[-1]`` because that list merges
+        usages across every usage id (agent, condenser, ...) and is not
+        chronological across them.
+        """
+        response_id = getattr(event, "llm_response_id", None)
+        if not response_id:
+            return None
+
+        stats = self.conversation_stats
+        if not stats:
+            return None
+
+        for metrics in stats.usage_to_metrics.values():
+            for usage in reversed(metrics.token_usages):
+                if usage.response_id == response_id:
+                    return usage
+
+        return None
+
+    def _format_metrics_subtitle(self, event: Event | None = None) -> str | None:
         """Format LLM metrics as a visually appealing subtitle string with icons,
         colors, and k/m abbreviations using conversation stats."""
         stats = self.conversation_stats
@@ -391,8 +418,19 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
                 return str(n)
             return f"{val:.2f}".rstrip("0").rstrip(".") + suffix
 
-        input_tokens = abbr(usage.prompt_tokens or 0)
-        output_tokens = abbr(usage.completion_tokens or 0)
+        request_usage = self._find_request_usage(event)
+        if request_usage is not None:
+            input_str = (
+                f"↑ input {abbr(request_usage.prompt_tokens or 0)} "
+                f"(total {abbr(usage.prompt_tokens or 0)})"
+            )
+            output_str = (
+                f"↓ output {abbr(request_usage.completion_tokens or 0)} "
+                f"(total {abbr(usage.completion_tokens or 0)})"
+            )
+        else:
+            input_str = f"↑ input {abbr(usage.prompt_tokens or 0)}"
+            output_str = f"↓ output {abbr(usage.completion_tokens or 0)}"
 
         # Cache hit rate is derived on Metrics; the visualizer just formats it.
         rate = combined_metrics.cache_hit_rate
@@ -404,11 +442,11 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
 
         # Build with fixed color scheme
         parts: list[str] = []
-        parts.append(f"[cyan]↑ input {input_tokens}[/cyan]")
+        parts.append(f"[cyan]{input_str}[/cyan]")
         parts.append(f"[magenta]cache hit {cache_rate}[/magenta]")
         if reasoning_tokens > 0:
             parts.append(f"[yellow] reasoning {abbr(reasoning_tokens)}[/yellow]")
-        parts.append(f"[blue]↓ output {output_tokens}[/blue]")
+        parts.append(f"[blue]{output_str}[/blue]")
         parts.append(f"[green]$ {cost_str}[/green]")
 
         return "Tokens: " + " • ".join(parts)

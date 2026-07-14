@@ -609,6 +609,157 @@ def test_metrics_abbreviation_formatting():
         )
 
 
+def test_metrics_subtitle_shows_per_request_and_cumulative():
+    """Two sequential requests on the same LLM: the subtitle for the latest
+    event should show both the per-request usage and the running cumulative
+    total, not just the total (#4105)."""
+    stats = ConversationStats()
+    metrics = Metrics(model_name="test-model")
+    metrics.add_token_usage(
+        prompt_tokens=4390,
+        completion_tokens=144,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        reasoning_tokens=0,
+        context_window=8000,
+        response_id="response_1",
+    )
+    metrics.add_token_usage(
+        prompt_tokens=4630,
+        completion_tokens=114,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        reasoning_tokens=0,
+        context_window=8000,
+        response_id="response_2",
+    )
+    stats.usage_to_metrics["agent"] = metrics
+
+    visualizer = DefaultConversationVisualizer()
+    mock_state = MagicMock()
+    mock_state.stats = stats
+    visualizer.initialize(mock_state)
+
+    tool_call = create_tool_call("call_1", "test", {})
+    event = ActionEvent(
+        thought=[TextContent(text="Testing")],
+        action=VisualizerMockAction(command="test"),
+        tool_name="test",
+        tool_call_id="call_1",
+        tool_call=tool_call,
+        llm_response_id="response_2",
+    )
+
+    subtitle = visualizer._format_metrics_subtitle(event)
+    assert subtitle is not None
+    # Per-request usage (the second request only).
+    assert "4.63K" in subtitle
+    assert "114" in subtitle
+    # Cumulative usage (both requests combined).
+    assert "9.02K" in subtitle
+    assert "258" in subtitle
+
+
+def test_metrics_subtitle_matches_by_response_id_not_last_index():
+    """Regression: get_combined_metrics().token_usages[-1] merges usages
+    across every usage id (agent, condenser, ...) and is not chronological
+    across them. Per-request usage must be looked up by response_id, which
+    telemetry sets to the same id events carry as llm_response_id (#4105)."""
+    stats = ConversationStats()
+
+    # Condenser usage id is inserted first...
+    condenser_metrics = Metrics(model_name="test-model")
+    condenser_metrics.add_token_usage(
+        prompt_tokens=2000,
+        completion_tokens=50,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        reasoning_tokens=0,
+        context_window=8000,
+        response_id="condenser_response",
+    )
+    stats.usage_to_metrics["condenser"] = condenser_metrics
+
+    # ...then the agent usage id, which lands last in the merged list.
+    agent_metrics = Metrics(model_name="test-model")
+    agent_metrics.add_token_usage(
+        prompt_tokens=999,
+        completion_tokens=9,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        reasoning_tokens=0,
+        context_window=8000,
+        response_id="agent_response",
+    )
+    stats.usage_to_metrics["agent"] = agent_metrics
+
+    # Sanity check: naive token_usages[-1] would return the agent usage, not
+    # the condenser usage this test looks up.
+    combined = stats.get_combined_metrics()
+    assert combined.token_usages[-1].response_id == "agent_response"
+
+    visualizer = DefaultConversationVisualizer()
+    mock_state = MagicMock()
+    mock_state.stats = stats
+    visualizer.initialize(mock_state)
+
+    tool_call = create_tool_call("call_1", "test", {})
+    event = ActionEvent(
+        thought=[TextContent(text="Testing")],
+        action=VisualizerMockAction(command="test"),
+        tool_name="test",
+        tool_call_id="call_1",
+        tool_call=tool_call,
+        llm_response_id="condenser_response",
+    )
+
+    request_usage = visualizer._find_request_usage(event)
+    assert request_usage is not None
+    assert request_usage.prompt_tokens == 2000
+    assert request_usage.completion_tokens == 50
+
+
+def test_metrics_subtitle_fallback_without_request_match():
+    """No event, or an event whose response_id is unknown, keeps the exact
+    totals-only format (#4105)."""
+    stats = ConversationStats()
+    metrics = Metrics(model_name="test-model")
+    metrics.add_token_usage(
+        prompt_tokens=1000,
+        completion_tokens=100,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        reasoning_tokens=0,
+        context_window=8000,
+        response_id="response_1",
+    )
+    stats.usage_to_metrics["agent"] = metrics
+
+    visualizer = DefaultConversationVisualizer()
+    mock_state = MagicMock()
+    mock_state.stats = stats
+    visualizer.initialize(mock_state)
+
+    # No event at all.
+    subtitle_no_event = visualizer._format_metrics_subtitle()
+    assert subtitle_no_event is not None
+    assert "(total" not in subtitle_no_event
+
+    # Event carries a response_id that doesn't match any recorded usage.
+    tool_call = create_tool_call("call_1", "test", {})
+    event = ActionEvent(
+        thought=[TextContent(text="Testing")],
+        action=VisualizerMockAction(command="test"),
+        tool_name="test",
+        tool_call_id="call_1",
+        tool_call=tool_call,
+        llm_response_id="unknown_response",
+    )
+    subtitle_unknown = visualizer._format_metrics_subtitle(event)
+    assert subtitle_unknown is not None
+    assert "(total" not in subtitle_unknown
+
+
 def test_event_base_fallback_visualize():
     """Test that Event provides fallback visualization."""
     event = _UnknownEventForVisualizerTest()
