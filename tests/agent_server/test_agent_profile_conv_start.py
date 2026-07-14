@@ -190,8 +190,9 @@ class TestResolveAgentFromProfile:
             # injected iff the host has chromium (covered by the dedicated
             # injection tests below); this test is about resolution plumbing.
             patch(
-                "openhands.agent_server.conversation_service.is_tool_usable",
-                return_value=False,
+                "openhands.agent_server.conversation_service."
+                "list_usable_runtime_default_tools",
+                return_value=[],
             ),
         ):
             store_inst = MockStore.return_value
@@ -236,8 +237,9 @@ class TestResolveAgentFromProfile:
             patch(_LLM_STORE_PATH),
             patch(_RESOLVE_PATH, return_value=resolved_settings),
             patch(
-                "openhands.agent_server.conversation_service.is_tool_usable",
-                return_value=False,
+                "openhands.agent_server.conversation_service."
+                "list_usable_runtime_default_tools",
+                return_value=[],
             ),
         ):
             store_inst = MockStore.return_value
@@ -284,10 +286,7 @@ class TestResolveAgentFromProfile:
         # resolved settings object.
         mock_config.model_copy.assert_not_called()
 
-    def test_openhands_default_tools_get_browser_when_usable(self):
-        """A default-toolset (tools=None) OpenHands profile launch injects the
-        browser tool set when this server's runtime can run it — the
-        serving-layer counterpart of the SDK's deterministic default (#3978)."""
+    def test_openhands_default_tools_get_runtime_defaults(self):
         from openhands.agent_server.conversation_service import (
             _resolve_agent_from_profile,
         )
@@ -301,9 +300,10 @@ class TestResolveAgentFromProfile:
             patch(_LLM_STORE_PATH),
             patch(_RESOLVE_PATH) as MockResolve,
             patch(
-                "openhands.agent_server.conversation_service.is_tool_usable",
-                return_value=True,
-            ) as MockUsable,
+                "openhands.agent_server.conversation_service."
+                "list_usable_runtime_default_tools",
+                return_value=["browser_tool_set", "canvas_ui"],
+            ) as MockRuntimeDefaults,
         ):
             store_inst = MockStore.return_value
             store_inst.name_for_id.return_value = profile.name
@@ -316,10 +316,13 @@ class TestResolveAgentFromProfile:
                 profile.id, cipher=None, mcp_config={}
             )
 
-        MockUsable.assert_called_once_with("browser_tool_set")
-        assert [tool.name for tool in result_agent.tools] == ["browser_tool_set"]
+        MockRuntimeDefaults.assert_called_once_with()
+        assert [tool.name for tool in result_agent.tools] == [
+            "browser_tool_set",
+            "canvas_ui",
+        ]
 
-    def test_openhands_default_tools_skip_browser_when_unusable(self):
+    def test_openhands_default_tools_skip_unavailable_runtime_defaults(self):
         from openhands.agent_server.conversation_service import (
             _resolve_agent_from_profile,
         )
@@ -332,8 +335,9 @@ class TestResolveAgentFromProfile:
             patch(_LLM_STORE_PATH),
             patch(_RESOLVE_PATH) as MockResolve,
             patch(
-                "openhands.agent_server.conversation_service.is_tool_usable",
-                return_value=False,
+                "openhands.agent_server.conversation_service."
+                "list_usable_runtime_default_tools",
+                return_value=[],
             ),
         ):
             store_inst = MockStore.return_value
@@ -350,8 +354,6 @@ class TestResolveAgentFromProfile:
         assert result_agent is agent
 
     def test_openhands_explicit_tools_never_amended(self):
-        """An explicit profile tools list ([] included) is authoritative: the
-        serving layer must not inject browser on top of it."""
         from openhands.agent_server.conversation_service import (
             _resolve_agent_from_profile,
         )
@@ -364,9 +366,10 @@ class TestResolveAgentFromProfile:
             patch(_LLM_STORE_PATH),
             patch(_RESOLVE_PATH) as MockResolve,
             patch(
-                "openhands.agent_server.conversation_service.is_tool_usable",
-                return_value=True,
-            ) as MockUsable,
+                "openhands.agent_server.conversation_service."
+                "list_usable_runtime_default_tools",
+                return_value=["browser_tool_set", "canvas_ui"],
+            ) as MockRuntimeDefaults,
         ):
             store_inst = MockStore.return_value
             store_inst.name_for_id.return_value = profile.name
@@ -379,11 +382,10 @@ class TestResolveAgentFromProfile:
                 profile.id, cipher=None, mcp_config={}
             )
 
-        MockUsable.assert_not_called()
+        MockRuntimeDefaults.assert_not_called()
         assert result_agent is agent
 
-    def test_acp_profile_never_gets_browser_injection(self):
-        """ACP agents own their tooling — the injection is OpenHands-only."""
+    def test_acp_profile_never_gets_runtime_defaults(self):
         from openhands.agent_server.conversation_service import (
             _resolve_agent_from_profile,
         )
@@ -396,9 +398,10 @@ class TestResolveAgentFromProfile:
             patch(_LLM_STORE_PATH),
             patch(_RESOLVE_PATH) as MockResolve,
             patch(
-                "openhands.agent_server.conversation_service.is_tool_usable",
-                return_value=True,
-            ) as MockUsable,
+                "openhands.agent_server.conversation_service."
+                "list_usable_runtime_default_tools",
+                return_value=["browser_tool_set", "canvas_ui"],
+            ) as MockRuntimeDefaults,
         ):
             store_inst = MockStore.return_value
             store_inst.name_for_id.return_value = profile.name
@@ -411,7 +414,7 @@ class TestResolveAgentFromProfile:
                 profile.id, cipher=None, mcp_config={}
             )
 
-        MockUsable.assert_not_called()
+        MockRuntimeDefaults.assert_not_called()
         assert result_agent is agent
 
     def test_openhands_default_profile_triggers_discovery(self):

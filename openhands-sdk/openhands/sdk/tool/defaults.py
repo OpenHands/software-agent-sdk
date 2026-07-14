@@ -25,10 +25,8 @@ BROWSER_TOOL_NAME = "browser_tool_set"
 """Name of the browser tool set.
 
 Not part of the deterministic default: browser is an environment-dependent
-capability, so the serving layer that knows its runtime injects it — the
-agent-server appends it on profile launches when ``is_tool_usable`` says the
-chromium stack is present, and the cloud conversation-builder does its own
-injection. Clients (canvas) add it themselves on the settings launch path.
+capability. Its implementation declares it as a runtime default, and serving
+layers add it only where the Chromium stack is usable.
 """
 
 SUB_AGENT_TOOL_NAME = "task_tool_set"

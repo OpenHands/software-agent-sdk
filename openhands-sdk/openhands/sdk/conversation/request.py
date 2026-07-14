@@ -41,7 +41,6 @@ from openhands.sdk.security.confirmation_policy import (
 )
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.tool.client_tool import ClientToolSpec
-from openhands.sdk.tool.spec import Tool
 from openhands.sdk.utils.models import kind_of
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -77,7 +76,7 @@ class SendMessageRequest(BaseModel):
 
 
 class AgentLaunchAdditions(BaseModel):
-    """Add deployment context and tools after agent resolution."""
+    """Add deployment context after agent resolution."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -88,10 +87,6 @@ class AgentLaunchAdditions(BaseModel):
             "Deployment-controlled text appended to the resolved agent's "
             "system-message suffix."
         ),
-    )
-    tools_append: list[Tool] = Field(
-        default_factory=list,
-        description="Deployment tools appended to the resolved agent.",
     )
 
 
@@ -185,7 +180,7 @@ class StartConversationRequest(BaseModel):
     agent_launch_additions: AgentLaunchAdditions | None = Field(
         default=None,
         description=(
-            "Deployment additions applied after agent or Agent Profile "
+            "Deployment context applied after agent or Agent Profile "
             "resolution. The stored Agent Profile is not modified."
         ),
     )

@@ -32,6 +32,7 @@ _LOCK = RLock()
 _REG: dict[str, Resolver] = {}
 _USABILITY_REG: dict[str, UsabilityChecker] = {}
 _MODULE_QUALNAMES: dict[str, str] = {}  # Maps tool name to module qualname
+_RUNTIME_DEFAULTS: set[str] = set()
 
 
 def _resolver_from_instance(name: str, tool: ToolDefinition) -> Resolver:
@@ -142,6 +143,10 @@ def register_tool(
             logger.warning(f"Duplicate tool name registerd {name}")
         _REG[name] = resolver
         _USABILITY_REG[name] = usability_checker
+        if factory.runtime_default:
+            _RUNTIME_DEFAULTS.add(name)
+        else:
+            _RUNTIME_DEFAULTS.discard(name)
         if module_qualname:
             _MODULE_QUALNAMES[name] = module_qualname
 
@@ -179,6 +184,18 @@ def is_tool_usable(name: str) -> bool:
 def list_usable_tools() -> list[str]:
     with _LOCK:
         tool_names = list(_REG.keys())
+        usability_checkers = dict(_USABILITY_REG)
+
+    return [
+        name
+        for name in tool_names
+        if _check_tool_usable(name, usability_checkers.get(name, lambda: True))
+    ]
+
+
+def list_usable_runtime_default_tools() -> list[str]:
+    with _LOCK:
+        tool_names = [name for name in _REG if name in _RUNTIME_DEFAULTS]
         usability_checkers = dict(_USABILITY_REG)
 
     return [

@@ -49,8 +49,9 @@ from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.mcp.utils import MCPToolProvider
-from openhands.sdk.tool import BROWSER_TOOL_NAME, Tool, is_tool_usable
+from openhands.sdk.tool import Tool
 from openhands.sdk.tool.client_tool import register_client_tools
+from openhands.sdk.tool.registry import list_usable_runtime_default_tools
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -60,10 +61,6 @@ if TYPE_CHECKING:
     from openhands.sdk.subagent.schema import AgentDefinition
 
 CONVERSATION_WORKTREE_ROOT = Path("/tmp/conversation-worktrees")
-
-
-class AgentLaunchToolConflictError(ValueError):
-    pass
 
 
 def _build_worktree_guidance(
@@ -108,24 +105,6 @@ def _append_system_message_suffix(agent: AgentBase, addition: str) -> AgentBase:
     suffix = f"{existing_suffix}\n\n{addition}" if existing_suffix else addition
     updated_context = context.model_copy(update={"system_message_suffix": suffix})
     return agent.model_copy(update={"agent_context": updated_context})
-
-
-def _append_agent_tools(agent: AgentBase, additions: list[Tool]) -> AgentBase:
-    tools_by_name = {tool.name: tool for tool in agent.tools}
-    new_tools: list[Tool] = []
-    for tool in additions:
-        existing = tools_by_name.get(tool.name)
-        if existing is not None:
-            if existing != tool:
-                raise AgentLaunchToolConflictError(
-                    f"Launch tool '{tool.name}' conflicts with the resolved agent"
-                )
-            continue
-        tools_by_name[tool.name] = tool
-        new_tools.append(tool)
-    if not new_tools:
-        return agent
-    return agent.model_copy(update={"tools": [*agent.tools, *new_tools]})
 
 
 def _has_git_remote(repo_root: Path, remote: str = "origin") -> bool:
@@ -354,17 +333,17 @@ def _resolve_agent_from_profile(
         )
 
     agent = settings_config.create_agent()
-    # Browser is deliberately absent from the deterministic SDK default
-    # (environment-dependent); this server knows its runtime, so it injects
-    # browser when usable. An explicit profile.tools list is authoritative.
-    if (
-        profile.agent_kind == "openhands"
-        and profile.tools is None
-        and is_tool_usable(BROWSER_TOOL_NAME)
-    ):
-        agent = agent.model_copy(
-            update={"tools": [*agent.tools, Tool(name=BROWSER_TOOL_NAME)]}
-        )
+    if profile.agent_kind == "openhands" and profile.tools is None:
+        existing_names = {tool.name for tool in agent.tools}
+        runtime_defaults = [
+            Tool(name=name)
+            for name in list_usable_runtime_default_tools()
+            if name not in existing_names
+        ]
+        if runtime_defaults:
+            agent = agent.model_copy(
+                update={"tools": [*agent.tools, *runtime_defaults]}
+            )
     launched = LaunchedAgentProfile(
         agent_profile_id=profile.id,
         revision=profile.revision,
@@ -749,6 +728,24 @@ class ConversationService:
             )
             return conversation_info, False
 
+        if request.tool_module_qualnames:
+            for tool_name, module_qualname in request.tool_module_qualnames.items():
+                try:
+                    importlib.import_module(module_qualname)
+                    logger.debug(
+                        f"Tool '{tool_name}' registered via module '{module_qualname}'"
+                    )
+                except ImportError as e:
+                    logger.warning(
+                        f"Failed to import module '{module_qualname}' for tool "
+                        f"'{tool_name}': {e}. Tool will not be available."
+                    )
+            logger.info(
+                "Dynamically registered %d tools for conversation %s",
+                len(request.tool_module_qualnames),
+                conversation_id,
+            )
+
         # Profile resolution must happen before _prepare_request_workspace (which
         # asserts request.agent is not None) and before model_dump so the resolved
         # agent is captured in request_data.
@@ -781,40 +778,8 @@ class ConversationService:
             request = request.model_copy(
                 update={"agent": _append_system_message_suffix(request.agent, suffix)}
             )
-        if additions and additions.tools_append:
-            request = request.model_copy(
-                update={
-                    "agent": _append_agent_tools(request.agent, additions.tools_append)
-                }
-            )
 
         request = _prepare_request_workspace(request, conversation_id)
-
-        # Dynamically register tools from client's registry
-        if request.tool_module_qualnames:
-            import importlib
-
-            for tool_name, module_qualname in request.tool_module_qualnames.items():
-                try:
-                    # Import the module to trigger tool auto-registration
-                    importlib.import_module(module_qualname)
-                    logger.debug(
-                        f"Tool '{tool_name}' registered via module '{module_qualname}'"
-                    )
-                except ImportError as e:
-                    logger.warning(
-                        f"Failed to import module '{module_qualname}' for tool "
-                        f"'{tool_name}': {e}. Tool will not be available."
-                    )
-                    # Continue even if some tools fail to register
-                    # The agent will fail gracefully if it tries to use unregistered
-                    # tools
-            if request.tool_module_qualnames:
-                logger.info(
-                    "Dynamically registered %d tools for conversation %s",
-                    len(request.tool_module_qualnames),
-                    conversation_id,
-                )
 
         # Register client-defined tools (JSON specs, no Python code). The
         # ClientTool *class* is registered statelessly; each tool's schema

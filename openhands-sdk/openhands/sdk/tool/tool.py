@@ -232,6 +232,7 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
 
     # Automatic tool naming - set by __init_subclass__
     name: ClassVar[str] = ""
+    runtime_default: ClassVar[bool] = False
 
     def __init_subclass__(cls, **kwargs):
         """Automatically set name from class name when subclass is created."""

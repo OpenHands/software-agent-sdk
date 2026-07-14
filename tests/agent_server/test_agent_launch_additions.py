@@ -7,14 +7,12 @@ import pytest
 from pydantic import ValidationError
 
 from openhands.agent_server.conversation_service import (
-    AgentLaunchToolConflictError,
     ConversationService,
-    _append_agent_tools,
     _append_system_message_suffix,
 )
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import LaunchedAgentProfile, StoredConversation
-from openhands.sdk import LLM, Agent, AgentContext, Tool
+from openhands.sdk import LLM, Agent, AgentContext
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.request import (
     AgentLaunchAdditions,
@@ -55,13 +53,12 @@ def _mock_event_service(state: ConversationState) -> AsyncMock:
     return event_service
 
 
-def test_launch_additions_are_additive_and_forbid_unknown_fields():
+def test_launch_additions_accept_context_and_forbid_unknown_fields():
     request = StartConversationRequest(
         agent_profile_id=uuid4(),
         workspace=LocalWorkspace(working_dir="/tmp"),
         agent_launch_additions=AgentLaunchAdditions(
             system_message_suffix_append=_RUNTIME_SERVICES,
-            tools_append=[Tool(name="canvas_ui")],
         ),
     )
 
@@ -70,9 +67,8 @@ def test_launch_additions_are_additive_and_forbid_unknown_fields():
     assert (
         request.agent_launch_additions.system_message_suffix_append == _RUNTIME_SERVICES
     )
-    assert request.agent_launch_additions.tools_append == [Tool(name="canvas_ui")]
     with pytest.raises(ValidationError, match="Extra inputs"):
-        AgentLaunchAdditions.model_validate({"replacement": "unsafe"})
+        AgentLaunchAdditions.model_validate({"tools_append": []})
 
 
 def test_launch_addition_uses_existing_acp_prompt_path():
@@ -89,19 +85,6 @@ def test_launch_addition_uses_existing_acp_prompt_path():
     assert "PROFILE_BASELINE" in suffix
 
 
-def test_launch_tools_append_without_changing_existing_resolution():
-    agent = _agent().model_copy(update={"tools": [Tool(name="terminal")]})
-
-    updated = _append_agent_tools(agent, [Tool(name="canvas_ui")])
-
-    assert [tool.name for tool in updated.tools] == ["terminal", "canvas_ui"]
-    assert _append_agent_tools(updated, [Tool(name="canvas_ui")]) is updated
-    with pytest.raises(
-        AgentLaunchToolConflictError, match="conflicts with the resolved agent"
-    ):
-        _append_agent_tools(updated, [Tool(name="canvas_ui", params={"v": 2})])
-
-
 @pytest.mark.parametrize("profile_launch", [False, True])
 @pytest.mark.asyncio
 async def test_launch_additions_apply_after_agent_resolution(profile_launch, tmp_path):
@@ -110,7 +93,6 @@ async def test_launch_additions_apply_after_agent_resolution(profile_launch, tmp
     launched = LaunchedAgentProfile(agent_profile_id=profile_id, revision=5)
     additions = AgentLaunchAdditions(
         system_message_suffix_append=f"  {_RUNTIME_SERVICES}  ",
-        tools_append=[Tool(name="canvas_ui")],
     )
     request = (
         StartConversationRequest(
@@ -136,15 +118,23 @@ async def test_launch_additions_apply_after_agent_resolution(profile_launch, tmp
     captured: dict[str, Any] = {}
     service = ConversationService(conversations_dir=tmp_path)
     service._event_services = {}
+    call_order: list[str] = []
 
     async def capture_start(stored):
         captured["stored"] = stored
         return _mock_event_service(state)
 
+    def resolve_profile(*_args):
+        call_order.append("resolve")
+        return resolved_agent, launched
+
+    def import_tool_module(_module_name):
+        call_order.append("import")
+
     with (
         patch(
             "openhands.agent_server.conversation_service._resolve_agent_from_profile",
-            return_value=(resolved_agent, launched),
+            side_effect=resolve_profile,
         ),
         patch.object(
             service,
@@ -152,7 +142,9 @@ async def test_launch_additions_apply_after_agent_resolution(profile_launch, tmp
             new_callable=AsyncMock,
             side_effect=capture_start,
         ),
-        patch("importlib.import_module") as import_module,
+        patch(
+            "importlib.import_module", side_effect=import_tool_module
+        ) as import_module,
     ):
         await service.start_conversation(request)
 
@@ -160,15 +152,16 @@ async def test_launch_additions_apply_after_agent_resolution(profile_launch, tmp
     assert stored.agent.agent_context is not None
     suffix = stored.agent.agent_context.system_message_suffix
     assert suffix == f"PROFILE_BASELINE\n\n{_RUNTIME_SERVICES}"
-    assert [tool.name for tool in stored.agent.tools] == ["canvas_ui"]
+    assert stored.agent.tools == []
     assert stored.agent_launch_additions is None
     assert stored.client_tools == []
     assert stored.tool_module_qualnames == {"canvas_ui": "canvas_ui_tool"}
     import_module.assert_called_once_with("canvas_ui_tool")
+    assert call_order == (["import", "resolve"] if profile_launch else ["import"])
 
     restored = StoredConversation.model_validate(stored.model_dump(mode="json"))
     assert restored.agent.agent_context is not None
     restored_suffix = restored.agent.agent_context.system_message_suffix
     assert restored_suffix is not None
     assert restored_suffix.count("<RUNTIME_SERVICES>") == 1
-    assert [tool.name for tool in restored.agent.tools] == ["canvas_ui"]
+    assert restored.agent.tools == []
