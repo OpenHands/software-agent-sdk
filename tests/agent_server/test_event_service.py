@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import json
 import shutil
 import threading
 import time
@@ -1972,6 +1973,84 @@ class TestEventServiceStartWithRunningStatus:
             assert error_event.tool_call_id == "call_1"
             assert "restart occurred" in error_event.error
             assert "fatal memory error" in error_event.error
+
+    @pytest.mark.asyncio
+    async def test_start_recovers_when_an_event_is_unreadable(
+        self, event_service, tmp_path
+    ):
+        """Crash recovery must survive an event it cannot deserialize (#4080).
+
+        The RUNNING scan reads the whole log. Reading it strictly would raise on an
+        unregistered kind, and the startup scan drops the conversation on any
+        exception, so one unknown event would 404 a conversation whose other events
+        are all intact.
+        """
+        from openhands.sdk.event import AgentErrorEvent
+        from openhands.sdk.event.llm_convertible import ActionEvent
+        from openhands.sdk.llm import MessageToolCall, TextContent
+        from openhands.tools.terminal import TerminalAction
+
+        event_service.conversations_dir = tmp_path
+        conv_dir = tmp_path / event_service.stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+        event_service.stored.workspace = LocalWorkspace(working_dir=str(tmp_path))
+
+        unmatched_action = ActionEvent(
+            id="00000000-0000-0000-0000-000000000001",
+            source="agent",
+            thought=[TextContent(text="I need to run ls command")],
+            action=TerminalAction(command="ls"),
+            tool_name="terminal",
+            tool_call_id="call_1",
+            tool_call=MessageToolCall(
+                id="call_1",
+                name="terminal",
+                arguments='{"command": "ls"}',
+                origin="completion",
+            ),
+            llm_response_id="response_1",
+        )
+        # A real log: the pending action, then an event whose kind is not registered.
+        fs = InMemoryFileStore()
+        fs.write(
+            f"events/event-00000-{unmatched_action.id}.json",
+            unmatched_action.model_dump_json(exclude_none=True),
+        )
+        fs.write(
+            "events/event-00001-00000000-0000-0000-0000-000000000002.json",
+            json.dumps({"kind": "CanvasUIObservation", "result": "x"}),
+        )
+
+        with patch(
+            "openhands.agent_server.event_service.LocalConversation"
+        ) as MockConversation:
+            mock_conv = MagicMock()
+            mock_state = MagicMock()
+            mock_agent = MagicMock()
+
+            mock_state.execution_status = ConversationExecutionStatus.RUNNING
+            mock_state.events = EventLog(fs)
+            mock_state.stats = MagicMock()
+            mock_agent.get_all_llms.return_value = []
+
+            mock_conv._state = mock_state
+            mock_conv.state = mock_state
+            mock_conv.agent = mock_agent
+            mock_conv._on_event = MagicMock()
+            MockConversation.return_value = mock_conv
+
+            # Must not raise: the unreadable event is skipped, not fatal.
+            await event_service.start()
+
+            assert mock_state.execution_status == ConversationExecutionStatus.ERROR
+            # The pending action is still recovered, past the unreadable event.
+            error_events = [
+                call[0][0]
+                for call in mock_conv._on_event.call_args_list
+                if isinstance(call[0][0], AgentErrorEvent)
+            ]
+            assert len(error_events) == 1
+            assert error_events[0].tool_call_id == "call_1"
 
     @pytest.mark.asyncio
     async def test_start_does_not_add_error_event_when_no_unmatched_actions(
