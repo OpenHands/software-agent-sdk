@@ -8,14 +8,15 @@ from pydantic import ValidationError
 
 from openhands.agent_server.conversation_service import (
     ConversationService,
+    _append_agent_tools,
     _append_system_message_suffix,
 )
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import LaunchedAgentProfile, StoredConversation
-from openhands.sdk import LLM, Agent, AgentContext
+from openhands.sdk import LLM, Agent, AgentContext, Tool
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.request import (
-    AgentLaunchOverrides,
+    AgentLaunchAdditions,
     StartConversationRequest,
 )
 from openhands.sdk.conversation.state import (
@@ -53,25 +54,27 @@ def _mock_event_service(state: ConversationState) -> AsyncMock:
     return event_service
 
 
-def test_launch_overrides_are_additive_and_forbid_unknown_fields():
+def test_launch_additions_are_additive_and_forbid_unknown_fields():
     request = StartConversationRequest(
         agent_profile_id=uuid4(),
         workspace=LocalWorkspace(working_dir="/tmp"),
-        agent_launch_overrides=AgentLaunchOverrides(
-            system_message_suffix_append=_RUNTIME_SERVICES
+        agent_launch_additions=AgentLaunchAdditions(
+            system_message_suffix_append=_RUNTIME_SERVICES,
+            tools_append=[Tool(name="canvas_ui")],
         ),
     )
 
     assert request.agent is None
-    assert request.agent_launch_overrides is not None
+    assert request.agent_launch_additions is not None
     assert (
-        request.agent_launch_overrides.system_message_suffix_append == _RUNTIME_SERVICES
+        request.agent_launch_additions.system_message_suffix_append == _RUNTIME_SERVICES
     )
+    assert request.agent_launch_additions.tools_append == [Tool(name="canvas_ui")]
     with pytest.raises(ValidationError, match="Extra inputs"):
-        AgentLaunchOverrides.model_validate({"replacement": "unsafe"})
+        AgentLaunchAdditions.model_validate({"replacement": "unsafe"})
 
 
-def test_launch_override_uses_existing_acp_prompt_path():
+def test_launch_addition_uses_existing_acp_prompt_path():
     agent = ACPAgent(
         acp_command=["echo", "test"],
         agent_context=AgentContext(system_message_suffix="PROFILE_BASELINE"),
@@ -85,26 +88,40 @@ def test_launch_override_uses_existing_acp_prompt_path():
     assert "PROFILE_BASELINE" in suffix
 
 
+def test_launch_tools_append_without_changing_existing_resolution():
+    agent = _agent().model_copy(update={"tools": [Tool(name="terminal")]})
+
+    updated = _append_agent_tools(agent, [Tool(name="canvas_ui")])
+
+    assert [tool.name for tool in updated.tools] == ["terminal", "canvas_ui"]
+    assert _append_agent_tools(updated, [Tool(name="canvas_ui")]) is updated
+    with pytest.raises(ValueError, match="conflicts with the resolved agent"):
+        _append_agent_tools(updated, [Tool(name="canvas_ui", params={"v": 2})])
+
+
 @pytest.mark.parametrize("profile_launch", [False, True])
 @pytest.mark.asyncio
-async def test_launch_override_applies_after_agent_resolution(profile_launch, tmp_path):
+async def test_launch_additions_apply_after_agent_resolution(profile_launch, tmp_path):
     profile_id = uuid4()
     resolved_agent = _agent("PROFILE_BASELINE")
     launched = LaunchedAgentProfile(agent_profile_id=profile_id, revision=5)
-    overrides = AgentLaunchOverrides(
-        system_message_suffix_append=f"  {_RUNTIME_SERVICES}  "
+    additions = AgentLaunchAdditions(
+        system_message_suffix_append=f"  {_RUNTIME_SERVICES}  ",
+        tools_append=[Tool(name="canvas_ui")],
     )
     request = (
         StartConversationRequest(
             agent_profile_id=profile_id,
             workspace=LocalWorkspace(working_dir=str(tmp_path)),
-            agent_launch_overrides=overrides,
+            agent_launch_additions=additions,
+            tool_module_qualnames={"canvas_ui": "canvas_ui_tool"},
         )
         if profile_launch
         else StartConversationRequest(
             agent=resolved_agent,
             workspace=LocalWorkspace(working_dir=str(tmp_path)),
-            agent_launch_overrides=overrides,
+            agent_launch_additions=additions,
+            tool_module_qualnames={"canvas_ui": "canvas_ui_tool"},
         )
     )
     state = ConversationState(
@@ -132,6 +149,7 @@ async def test_launch_override_applies_after_agent_resolution(profile_launch, tm
             new_callable=AsyncMock,
             side_effect=capture_start,
         ),
+        patch("importlib.import_module") as import_module,
     ):
         await service.start_conversation(request)
 
@@ -139,10 +157,15 @@ async def test_launch_override_applies_after_agent_resolution(profile_launch, tm
     assert stored.agent.agent_context is not None
     suffix = stored.agent.agent_context.system_message_suffix
     assert suffix == f"PROFILE_BASELINE\n\n{_RUNTIME_SERVICES}"
-    assert stored.agent_launch_overrides is None
+    assert [tool.name for tool in stored.agent.tools] == ["canvas_ui"]
+    assert stored.agent_launch_additions is None
+    assert stored.client_tools == []
+    assert stored.tool_module_qualnames == {"canvas_ui": "canvas_ui_tool"}
+    import_module.assert_called_once_with("canvas_ui_tool")
 
     restored = StoredConversation.model_validate(stored.model_dump(mode="json"))
     assert restored.agent.agent_context is not None
     restored_suffix = restored.agent.agent_context.system_message_suffix
     assert restored_suffix is not None
     assert restored_suffix.count("<RUNTIME_SERVICES>") == 1
+    assert [tool.name for tool in restored.agent.tools] == ["canvas_ui"]

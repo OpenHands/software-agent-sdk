@@ -21,6 +21,7 @@ from pydantic import (
     Tag,
     TypeAdapter,
     ValidationError,
+    model_validator,
 )
 
 from openhands.sdk.settings.model import (
@@ -159,6 +160,13 @@ class OpenHandsAgentProfile(AgentProfileBase):
             "non-empty list is used exactly as given."
         ),
     )
+
+    @model_validator(mode="after")
+    def _upgrade_legacy_default_tools(self) -> OpenHandsAgentProfile:
+        if self.name == "default" and self.revision == 0 and self.tools == []:
+            self.tools = None
+        return self
+
     system_message_suffix: str | None = Field(
         default=None,
         description="Optional suffix appended to the system prompt.",

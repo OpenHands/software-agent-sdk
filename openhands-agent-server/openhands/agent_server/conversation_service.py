@@ -106,6 +106,24 @@ def _append_system_message_suffix(agent: AgentBase, addition: str) -> AgentBase:
     return agent.model_copy(update={"agent_context": updated_context})
 
 
+def _append_agent_tools(agent: AgentBase, additions: list[Tool]) -> AgentBase:
+    tools_by_name = {tool.name: tool for tool in agent.tools}
+    new_tools: list[Tool] = []
+    for tool in additions:
+        existing = tools_by_name.get(tool.name)
+        if existing is not None:
+            if existing != tool:
+                raise ValueError(
+                    f"Launch tool '{tool.name}' conflicts with the resolved agent"
+                )
+            continue
+        tools_by_name[tool.name] = tool
+        new_tools.append(tool)
+    if not new_tools:
+        return agent
+    return agent.model_copy(update={"tools": [*agent.tools, *new_tools]})
+
+
 def _has_git_remote(repo_root: Path, remote: str = "origin") -> bool:
     try:
         run_git_command(["git", "remote", "get-url", remote], repo_root)
@@ -749,15 +767,21 @@ class ConversationService:
             )
             request = request.model_copy(update={"agent": resolved_agent})
 
-        addition = (
-            request.agent_launch_overrides.system_message_suffix_append.strip()
-            if request.agent_launch_overrides
-            and request.agent_launch_overrides.system_message_suffix_append
+        additions = request.agent_launch_additions
+        suffix = (
+            additions.system_message_suffix_append.strip()
+            if additions and additions.system_message_suffix_append
             else ""
         )
-        if addition:
+        if suffix:
             request = request.model_copy(
-                update={"agent": _append_system_message_suffix(request.agent, addition)}
+                update={"agent": _append_system_message_suffix(request.agent, suffix)}
+            )
+        if additions and additions.tools_append:
+            request = request.model_copy(
+                update={
+                    "agent": _append_agent_tools(request.agent, additions.tools_append)
+                }
             )
 
         request = _prepare_request_workspace(request, conversation_id)
@@ -826,7 +850,7 @@ class ConversationService:
         request_data = request.model_dump(
             mode="json",
             context={"expose_secrets": True},
-            exclude={"agent_profile_id", "agent_launch_overrides"},
+            exclude={"agent_profile_id", "agent_launch_additions"},
         )
 
         # If secrets_encrypted=True, the agent's secrets (e.g., LLM api_key) are
