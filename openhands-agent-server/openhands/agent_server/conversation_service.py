@@ -91,15 +91,19 @@ def _append_worktree_guidance(
     workspace_dir: Path,
     branch: str,
 ) -> AgentBase:
-    context = agent.agent_context or AgentContext()
     guidance = _build_worktree_guidance(
         source_workspace=source_workspace,
         worktree_root=worktree_root,
         workspace_dir=workspace_dir,
         branch=branch,
     )
+    return _append_system_message_suffix(agent, guidance)
+
+
+def _append_system_message_suffix(agent: AgentBase, addition: str) -> AgentBase:
+    context = agent.agent_context or AgentContext()
     existing_suffix = (context.system_message_suffix or "").strip()
-    suffix = f"{existing_suffix}\n\n{guidance}" if existing_suffix else guidance
+    suffix = f"{existing_suffix}\n\n{addition}" if existing_suffix else addition
     updated_context = context.model_copy(update={"system_message_suffix": suffix})
     return agent.model_copy(update={"agent_context": updated_context})
 
@@ -928,6 +932,17 @@ class ConversationService:
             )
             request = request.model_copy(update={"agent": resolved_agent})
 
+        additions = request.agent_launch_additions
+        suffix = (
+            additions.system_message_suffix_append.strip()
+            if additions and additions.system_message_suffix_append
+            else ""
+        )
+        if suffix:
+            request = request.model_copy(
+                update={"agent": _append_system_message_suffix(request.agent, suffix)}
+            )
+
         request = _prepare_request_workspace(request, conversation_id)
 
         # Dynamically register tools from client's registry
@@ -990,12 +1005,11 @@ class ConversationService:
         # serialize to plain strings. Pass expose_secrets=True so StaticSecret values
         # are preserved through the round-trip; the dict is only used in-process to
         # construct StoredConversation, not sent over the network.
-        # agent_profile_id is excluded: it was resolved into `launched_agent_profile`
-        # above and must not re-trigger the mutual-exclusivity validator.
+        # Launch-only fields are already folded into stored conversation state.
         request_data = request.model_dump(
             mode="json",
             context={"expose_secrets": True},
-            exclude={"agent_profile_id"},
+            exclude={"agent_profile_id", "agent_launch_additions"},
         )
 
         # If secrets_encrypted=True, the agent's secrets (e.g., LLM api_key) are
