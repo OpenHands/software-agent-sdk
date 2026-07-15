@@ -30,7 +30,6 @@ from openhands.sdk.agent.acp_agent import (
     _classify_acp_turn_error,
     _codex_auth_file,
     _codex_model_config_options,
-    _CodexCredentialConflictError,
     _CodexCredentialSyncError,
     _CodexNeedsReauthError,
     _estimate_cost_from_tokens,
@@ -8204,6 +8203,38 @@ class TestACPFileSecretMaterialisation:
         )
         assert response.raise_for_status.call_count == 3
 
+    def test_lookup_source_configures_brokered_codex_refresh(self, tmp_path):
+        credential = '{"tokens":{"refresh_token":"refresh-r0"}}'
+        source = LookupSecret(
+            url="https://cloud/codex-auth",
+            headers={
+                "X-Session-API-Key": "session-a",
+                "X-Codex-Auth-Token": "scoped.jwt.token",
+            },
+        )
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets({"CODEX_AUTH_JSON": source})
+
+        with (
+            patch.object(LookupSecret, "get_value", return_value=credential),
+            patch.object(acp_agent_module, "_release_codex_auth_source"),
+        ):
+            env: dict[str, str] = {}
+            agent._materialise_file_secrets(state, env)
+            refresh_url = "https://session-a:scoped.jwt.token@cloud/codex-auth/refresh"
+            assert env["CODEX_REFRESH_TOKEN_URL_OVERRIDE"] == refresh_url
+            assert state.secret_registry.mask_secrets_in_output(refresh_url) == (
+                "<secret-hidden>"
+            )
+            assert (
+                state.secret_registry.mask_secrets_in_output(
+                    "session-a scoped.jwt.token"
+                )
+                == "<secret-hidden> <secret-hidden>"
+            )
+            agent._release_codex_auth()
+
     def test_lookup_secret_overwrites_stale_working_copy(self, tmp_path):
         authoritative = '{"tokens":{"refresh_token":"current"}}'
         stale = '{"tokens":{"refresh_token":"stale"}}'
@@ -8292,9 +8323,10 @@ class TestACPFileSecretMaterialisation:
 
         assert update_value.call_count == 2
 
-    def test_digest_conflict_is_typed_and_never_overwrites(self, tmp_path):
+    def test_digest_conflict_adopts_authoritative_cloud_value(self, tmp_path):
         original = '{"tokens":{"refresh_token":"r0"}}'
         rotated = '{"tokens":{"refresh_token":"r1"}}'
+        authoritative = '{"tokens":{"refresh_token":"newer"}}'
         agent = _make_agent()
         state = self._state(tmp_path)
         state.secret_registry.update_secrets(
@@ -8308,7 +8340,9 @@ class TestACPFileSecretMaterialisation:
         )
 
         with (
-            patch.object(LookupSecret, "get_value", return_value=original),
+            patch.object(
+                LookupSecret, "get_value", side_effect=[original, authoritative]
+            ),
             patch.object(
                 acp_agent_module, "_update_codex_auth_source", side_effect=conflict
             ) as update_value,
@@ -8316,16 +8350,42 @@ class TestACPFileSecretMaterialisation:
         ):
             env: dict[str, str] = {}
             agent._materialise_file_secrets(state, env)
-            (Path(env["CODEX_HOME"]) / "auth.json").write_text(rotated)
-            with pytest.raises(_CodexCredentialConflictError) as exc_info:
-                agent._sync_codex_auth()
-            assert _classify_acp_turn_error(exc_info.value) == (
-                "credential_update_conflict"
-            )
+            auth_path = Path(env["CODEX_HOME"]) / "auth.json"
+            auth_path.write_text(rotated)
+            agent._sync_codex_auth()
+            assert auth_path.read_text() == authoritative
             agent._release_codex_auth()
 
         update_value.assert_called_once()
         release.assert_called_once()
+
+    def test_remote_digest_change_updates_unchanged_working_copy(self, tmp_path):
+        original = '{"tokens":{"refresh_token":"r0"}}'
+        authoritative = '{"tokens":{"refresh_token":"r1"}}'
+        remote_digest = hashlib.sha256(authoritative.encode()).hexdigest()
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": LookupSecret(url="https://cloud/codex-auth")}
+        )
+
+        with (
+            patch.object(
+                LookupSecret, "get_value", side_effect=[original, authoritative]
+            ),
+            patch.object(
+                acp_agent_module,
+                "_touch_codex_auth_source",
+                return_value=remote_digest,
+            ),
+            patch.object(acp_agent_module, "_release_codex_auth_source"),
+        ):
+            env: dict[str, str] = {}
+            agent._materialise_file_secrets(state, env)
+            auth_path = Path(env["CODEX_HOME"]) / "auth.json"
+            agent._sync_codex_auth()
+            assert auth_path.read_text() == authoritative
+            agent._release_codex_auth()
 
     def test_chatgpt_auth_failure_becomes_needs_reauth(self, tmp_path):
         credential = '{"tokens":{"refresh_token":"never-log-this"}}'

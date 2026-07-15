@@ -129,6 +129,8 @@ _ACP_CANCEL_DRAIN_TIMEOUT: float = float(
 
 _ACP_PROMPT_RETRY_DELAYS: tuple[float, ...] = (5.0, 15.0, 30.0)  # seconds
 _CODEX_AUTH_SYNC_DELAYS: tuple[float, ...] = (0.1, 0.5)
+_CODEX_AUTH_DIGEST_HEADER = "X-Codex-Auth-Digest"
+_CODEX_REFRESH_TOKEN_URL_ENV = "CODEX_REFRESH_TOKEN_URL_OVERRIDE"
 
 # Exception types that indicate transient connection issues worth retrying
 _RETRIABLE_CONNECTION_ERRORS = (OSError, ConnectionError, BrokenPipeError, EOFError)
@@ -943,14 +945,6 @@ class _CodexNeedsReauthError(RuntimeError):
     pass
 
 
-class _CodexCredentialInUseError(RuntimeError):
-    pass
-
-
-class _CodexCredentialConflictError(RuntimeError):
-    pass
-
-
 class _CodexCredentialSyncError(RuntimeError):
     pass
 
@@ -967,14 +961,41 @@ def _update_codex_auth_source(
     response.raise_for_status()
 
 
-def _touch_codex_auth_source(source: LookupSecret) -> None:
+def _touch_codex_auth_source(source: LookupSecret) -> str | None:
     response = httpx.head(source.url, headers=source.headers, timeout=30.0)
     response.raise_for_status()
+    digest = response.headers.get(_CODEX_AUTH_DIGEST_HEADER)
+    return (
+        digest
+        if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest)
+        else None
+    )
 
 
 def _release_codex_auth_source(source: LookupSecret) -> None:
     response = httpx.delete(source.url, headers=source.headers, timeout=30.0)
     response.raise_for_status()
+
+
+def _codex_auth_refresh_url(source: LookupSecret) -> str | None:
+    headers = {name.lower(): value for name, value in source.headers.items()}
+    session_api_key = headers.get("x-session-api-key")
+    codex_auth_token = headers.get("x-codex-auth-token")
+    if session_api_key is None and codex_auth_token is None:
+        return None
+    if not session_api_key or not codex_auth_token:
+        raise _CodexCredentialSyncError(
+            "Codex credential refresh authorization is incomplete."
+        )
+    url = httpx.URL(source.url)
+    refresh_path = f"{url.path.rstrip('/')}/refresh"
+    return str(
+        url.copy_with(
+            path=refresh_path,
+            username=session_api_key,
+            password=codex_auth_token,
+        )
+    )
 
 
 def _stringify_acp_error_data(data: Any) -> str:
@@ -1073,10 +1094,6 @@ def _classify_acp_init_error(exc: BaseException) -> str:
     """
     if isinstance(exc, _CodexNeedsReauthError):
         return "needs_reauth"
-    if isinstance(exc, _CodexCredentialInUseError):
-        return "credential_in_use"
-    if isinstance(exc, _CodexCredentialConflictError):
-        return "credential_update_conflict"
     if isinstance(exc, _CodexCredentialSyncError):
         return "credential_sync_failed"
     if _acp_error_indicates_auth(exc):
@@ -1095,10 +1112,6 @@ def _classify_acp_turn_error(exc: BaseException) -> str:
     """
     if isinstance(exc, _CodexNeedsReauthError):
         return "needs_reauth"
-    if isinstance(exc, _CodexCredentialInUseError):
-        return "credential_in_use"
-    if isinstance(exc, _CodexCredentialConflictError):
-        return "credential_update_conflict"
     if isinstance(exc, _CodexCredentialSyncError):
         return "credential_sync_failed"
     text = _acp_error_text(exc)
@@ -1774,7 +1787,6 @@ class ACPAgent(AgentBase):
     _codex_auth_source: LookupSecret | None = PrivateAttr(default=None)
     _codex_auth_expected_digest: str | None = PrivateAttr(default=None)
     _codex_auth_synced_digest: str | None = PrivateAttr(default=None)
-    _codex_auth_lease_acquired: bool = PrivateAttr(default=False)
     _codex_auth_registry: SecretRegistry | None = PrivateAttr(default=None)
     _codex_auth_lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
 
@@ -2051,7 +2063,7 @@ class ACPAgent(AgentBase):
             try:
                 self._release_codex_auth()
             except _CodexCredentialSyncError:
-                logger.warning("Failed to release Codex credential ownership")
+                logger.warning("Failed to release Codex credential source")
             self._cleanup()
             # init_state runs *outside* run()/arun()'s try-block (it is reached
             # via _ensure_agent_ready() before the loop starts), so a cold-start
@@ -2314,11 +2326,6 @@ class ACPAgent(AgentBase):
                 try:
                     value = source.get_value()
                 except httpx.HTTPStatusError as exc:
-                    if exc.response.status_code == 409:
-                        raise _CodexCredentialInUseError(
-                            "ChatGPT subscription credentials are already in use "
-                            "by another Codex conversation."
-                        ) from exc
                     if exc.response.status_code == 422:
                         raise _CodexNeedsReauthError(
                             "ChatGPT authentication needs to be refreshed."
@@ -2333,7 +2340,10 @@ class ACPAgent(AgentBase):
                 self._codex_auth_registry = state.secret_registry
                 self._track_codex_auth_values(value)
                 self._codex_auth_source = source
-                self._codex_auth_lease_acquired = True
+                refresh_url = _codex_auth_refresh_url(source)
+                if refresh_url is not None:
+                    env[_CODEX_REFRESH_TOKEN_URL_ENV] = refresh_url
+                    self._track_codex_auth_transport(source, refresh_url)
             else:
                 value = state.secret_registry.get_secret_value(name)
             if not value:
@@ -2416,6 +2426,20 @@ class ACPAgent(AgentBase):
             if isinstance(token, str) and token:
                 registry._exported_values[f"{mask_name}.{name}"] = token
 
+    def _track_codex_auth_transport(
+        self, source: LookupSecret, refresh_url: str
+    ) -> None:
+        registry = self._codex_auth_registry
+        if registry is None:
+            return
+        registry._exported_values[f"{_CODEX_AUTH_SECRET_NAME}.refresh_url"] = (
+            refresh_url
+        )
+        for name, value in source.headers.items():
+            registry._exported_values[
+                f"{_CODEX_AUTH_SECRET_NAME}.header.{name.lower()}"
+            ] = value
+
     def _sync_codex_auth(self) -> None:
         """Persist a changed Codex credential working copy."""
         with self._codex_auth_lock:
@@ -2443,24 +2467,26 @@ class ACPAgent(AgentBase):
                 if changed:
                     _update_codex_auth_source(source, text_value, expected_digest)
                 else:
-                    _touch_codex_auth_source(source)
+                    remote_digest = _touch_codex_auth_source(source)
+                    if (
+                        isinstance(remote_digest, str)
+                        and remote_digest != expected_digest
+                    ):
+                        remote_value = source.get_value()
+                        self._adopt_codex_auth_value(path, remote_value)
+                        return
             except httpx.HTTPStatusError as exc:
-                if exc.response.status_code == 409:
-                    remote_matches = False
-                    if changed:
-                        try:
-                            remote_value = source.get_value()
-                            remote_digest = hashlib.sha256(
-                                remote_value.encode()
-                            ).hexdigest()
-                            remote_matches = remote_digest == digest
-                        except Exception:
-                            pass
-                    if remote_matches:
-                        break
-                    raise _CodexCredentialConflictError(
-                        "Codex credentials changed in another conversation."
-                    ) from exc
+                if changed and exc.response.status_code == 409:
+                    try:
+                        remote_value = source.get_value()
+                        self._adopt_codex_auth_value(path, remote_value)
+                    except Exception as remote_exc:
+                        if attempt == attempts - 1:
+                            raise _CodexCredentialSyncError(
+                                "Codex credentials could not be reconciled with Cloud."
+                            ) from remote_exc
+                    else:
+                        return
                 if attempt == attempts - 1:
                     raise _CodexCredentialSyncError(
                         "Codex credentials could not be saved to Cloud."
@@ -2479,22 +2505,33 @@ class ACPAgent(AgentBase):
             self._codex_auth_expected_digest = digest
             self._codex_auth_synced_digest = digest
 
+    def _adopt_codex_auth_value(self, path: Path, value: str) -> None:
+        try:
+            _write_secret_file(path, value)
+        except OSError as exc:
+            raise _CodexCredentialSyncError(
+                "Codex credentials could not be reconciled with Cloud."
+            ) from exc
+        digest = hashlib.sha256(value.encode()).hexdigest()
+        self._track_codex_auth_values(value)
+        self._codex_auth_expected_digest = digest
+        self._codex_auth_synced_digest = digest
+
     def _release_codex_auth(self) -> None:
-        """Release the Codex credential ownership lease."""
+        """Release the scoped Codex credential source."""
         with self._codex_auth_lock:
             self._release_codex_auth_locked()
 
     def _release_codex_auth_locked(self) -> None:
         source = self._codex_auth_source
-        if source is None or not self._codex_auth_lease_acquired:
+        if source is None:
             return
         try:
             _release_codex_auth_source(source)
         except Exception as exc:
             raise _CodexCredentialSyncError(
-                "Codex credential ownership could not be released."
+                "Codex credential source could not be released."
             ) from exc
-        self._codex_auth_lease_acquired = False
         self._codex_auth_path = None
         self._codex_auth_source = None
         self._codex_auth_expected_digest = None
