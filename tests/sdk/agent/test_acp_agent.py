@@ -2495,6 +2495,7 @@ class TestACPAgentAstep:
         mock_client.get_turn_usage_update = MagicMock(return_value=object())
         agent._client = mock_client
         agent._conn = MagicMock()
+        agent._codex_auth_path = tmp_path / "auth.json"
 
         executor = AsyncExecutor()
 
@@ -2526,13 +2527,22 @@ class TestACPAgentAstep:
             _agent_conn(agent).cancel = _fake_cancel
             agent._session_id = "test-session"
 
-            task = asyncio.create_task(
-                agent.astep(conversation, on_event=emitted.append)
-            )
-            await asyncio.wait_for(prompt_entered.wait(), timeout=5.0)
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
+            with (
+                patch.object(
+                    ACPAgent,
+                    "_sync_codex_auth",
+                    autospec=True,
+                    side_effect=lambda _agent: threading.Event().wait(0.05),
+                ),
+                patch.object(acp_agent_module, "_ACP_CANCEL_DRAIN_TIMEOUT", 0.01),
+            ):
+                task = asyncio.create_task(
+                    agent.astep(conversation, on_event=emitted.append)
+                )
+                await asyncio.wait_for(prompt_entered.wait(), timeout=5.0)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
             await asyncio.wait_for(cancel_called.wait(), timeout=5.0)
 
         try:
@@ -2550,6 +2560,7 @@ class TestACPAgentAstep:
             and e.action.message == "done"
             for e in emitted
         )
+        assert agent._restart_session_on_next_turn is False
 
     def test_astep_cancelled_prompt_error_pauses_without_turn_error(self, tmp_path):
         """Explicit cancellation should not emit stale prompt errors."""
@@ -8280,12 +8291,9 @@ class TestACPFileSecretMaterialisation:
     def test_lookup_secret_preserves_unsynced_working_copy(self, tmp_path):
         remote = '{"tokens":{"refresh_token":"stale"}}'
         local = '{"tokens":{"refresh_token":"current"}}'
-        agent = _make_agent()
         state = self._state(tmp_path)
         assert state.persistence_dir is not None
         auth_path = Path(state.persistence_dir) / "acp" / "codex" / "auth.json"
-        auth_path.parent.mkdir(parents=True)
-        auth_path.write_text(local)
         state.secret_registry.update_secrets(
             {"CODEX_AUTH_JSON": _brokered_codex_source()}
         )
@@ -8295,15 +8303,53 @@ class TestACPFileSecretMaterialisation:
             patch.object(acp_agent_module, "_update_codex_auth_source") as update_value,
             patch.object(acp_agent_module, "_release_codex_auth_source"),
         ):
-            agent._materialise_file_secrets(state, {})
+            first_agent = _make_agent()
+            first_agent._materialise_file_secrets(state, {})
+            auth_path.write_text(local)
+            first_agent._release_codex_auth()
+
+            resumed_agent = _make_agent()
+            resumed_agent._materialise_file_secrets(state, {})
             assert auth_path.read_text() == local
-            agent._sync_codex_auth()
-            agent._release_codex_auth()
+            resumed_agent._sync_codex_auth()
+            resumed_agent._release_codex_auth()
 
         assert update_value.call_args.args[1:] == (
             local,
             hashlib.sha256(remote.encode()).hexdigest(),
         )
+
+    def test_lookup_secret_replaces_stale_working_copy(self, tmp_path):
+        stale = '{"tokens":{"refresh_token":"stale"}}'
+        authoritative = '{"tokens":{"refresh_token":"authoritative"}}'
+        state = self._state(tmp_path)
+        assert state.persistence_dir is not None
+        auth_path = Path(state.persistence_dir) / "acp" / "codex" / "auth.json"
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": _brokered_codex_source()}
+        )
+
+        with (
+            patch.object(LookupSecret, "get_value", side_effect=[stale, authoritative]),
+            patch.object(acp_agent_module, "_update_codex_auth_source") as update_value,
+            patch.object(
+                acp_agent_module,
+                "_touch_codex_auth_source",
+                return_value=hashlib.sha256(authoritative.encode()).hexdigest(),
+            ),
+            patch.object(acp_agent_module, "_release_codex_auth_source"),
+        ):
+            first_agent = _make_agent()
+            first_agent._materialise_file_secrets(state, {})
+            first_agent._release_codex_auth()
+
+            resumed_agent = _make_agent()
+            resumed_agent._materialise_file_secrets(state, {})
+            assert auth_path.read_text() == authoritative
+            resumed_agent._sync_codex_auth()
+            resumed_agent._release_codex_auth()
+
+        update_value.assert_not_called()
 
     def test_lookup_secret_tokens_are_masked_after_rotation(self, tmp_path):
         original = (
@@ -8551,6 +8597,7 @@ class TestACPFileSecretMaterialisation:
 
             conn.prompt = AsyncMock(side_effect=rotate_during_turn)
             asyncio.run(agent._do_acp_prompt([]))
+            agent._sync_codex_auth_best_effort_blocking()
             assert update_value.call_args.args[1:] == (
                 after_turn,
                 hashlib.sha256(original.encode()).hexdigest(),
@@ -8566,26 +8613,16 @@ class TestACPFileSecretMaterialisation:
         assert update_value.call_count == 2
         release.assert_called_once()
 
-    def test_successful_turn_survives_sync_failure(self, tmp_path):
+    def test_best_effort_sync_survives_failure(self, tmp_path):
         agent = _make_agent()
-        client = MagicMock()
-        client.get_turn_usage_update.return_value = object()
-        agent._client = client
-        agent._session_id = "session"
         agent._codex_auth_path = tmp_path / "auth.json"
-        response = MagicMock()
-        conn = MagicMock()
-        conn.prompt = AsyncMock(return_value=response)
-        agent._conn = conn
 
         with patch.object(
             ACPAgent,
             "_sync_codex_auth",
             side_effect=_CodexCredentialSyncError("unavailable"),
         ):
-            result = asyncio.run(agent._do_acp_prompt([]))
-
-        assert result is response
+            agent._sync_codex_auth_best_effort_blocking()
 
     def test_successful_fork_survives_sync_failure(self, tmp_path):
         from openhands.sdk.utils.async_executor import AsyncExecutor
@@ -8658,6 +8695,35 @@ class TestACPFileSecretMaterialisation:
             agent.close()
 
         release.assert_called_once()
+
+    def test_materialisation_failure_releases_brokered_source(self, tmp_path):
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        source = _brokered_codex_source()
+        state.secret_registry.update_secrets({"CODEX_AUTH_JSON": source})
+
+        def materialise(current_agent, current_state):
+            current_agent._materialise_file_secrets(current_state, {})
+
+        with (
+            patch.object(LookupSecret, "get_value", return_value='{"tokens": {}}'),
+            patch.object(
+                ACPAgent,
+                "_start_acp_server",
+                autospec=True,
+                side_effect=materialise,
+            ),
+            patch.object(
+                acp_agent_module,
+                "_write_secret_file",
+                side_effect=OSError("disk full"),
+            ),
+            patch.object(acp_agent_module, "_release_codex_auth_source") as release,
+            pytest.raises(OSError, match="disk full"),
+        ):
+            agent.init_state(state, lambda _event: None)
+
+        release.assert_called_once_with(source)
 
     def test_init_failure_syncs_before_releasing_authenticated_source(self, tmp_path):
         agent = _make_agent()

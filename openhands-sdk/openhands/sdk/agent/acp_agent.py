@@ -423,6 +423,21 @@ def _write_secret_file(path: Path, value: str) -> None:
         f.write(value)
 
 
+def _codex_auth_ancestor_file(path: Path) -> Path:
+    return path.with_name(f".{path.name}.cloud-digest")
+
+
+def _read_codex_auth_ancestor(path: Path) -> str | None:
+    try:
+        return _codex_auth_ancestor_file(path).read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return None
+
+
+def _write_codex_auth_ancestor(path: Path, digest: str) -> None:
+    _write_secret_file(_codex_auth_ancestor_file(path), digest)
+
+
 # Session config-option id that selects the model on ACP servers that drive
 # model selection through ``configOptions`` / ``session/set_config_option``
 # (codex-acp, claude-agent-acp 0.44+) rather than the UNSTABLE ``models``
@@ -2338,8 +2353,11 @@ class ACPAgent(AgentBase):
         for spec in self.acp_file_secrets:
             name = spec.secret_name
             source = state.secret_registry.secret_sources.get(name)
+            directory = self._acp_file_secret_dir(state, spec.subdir)
+            target = directory / spec.filename
             refresh_url: str | None = None
             brokered_source: LookupSecret | None = None
+            remote_digest: str | None = None
             if name == _CODEX_AUTH_SECRET_NAME and isinstance(source, LookupSecret):
                 refresh_url = _codex_auth_refresh_url(source)
                 if refresh_url is not None:
@@ -2361,14 +2379,17 @@ class ACPAgent(AgentBase):
                         "Codex credentials could not be loaded from Cloud."
                     ) from exc
                 self._codex_auth_registry = state.secret_registry
+                self._codex_auth_path = target
+                self._codex_auth_source = brokered_source
+                remote_digest = hashlib.sha256(value.encode()).hexdigest()
+                self._codex_auth_expected_digest = remote_digest
+                self._codex_auth_synced_digest = remote_digest
                 env[_CODEX_REFRESH_TOKEN_URL_ENV] = refresh_url
                 self._track_codex_auth_transport(brokered_source, refresh_url)
             else:
                 value = state.secret_registry.get_secret_value(name)
             if not value:
                 continue
-            directory = self._acp_file_secret_dir(state, spec.subdir)
-            target = directory / spec.filename
             try:
                 directory.mkdir(mode=0o700, parents=True, exist_ok=True)
                 # Tighten the SDK-owned per-conversation dir in case it
@@ -2379,7 +2400,14 @@ class ACPAgent(AgentBase):
                 # (e.g. 0o755); the leaf chmod above only covers <subdir>.
                 # Stop at `acp/` — its parent is the persistence layer's.
                 directory.parent.chmod(0o700)
-                if target.is_file() and target.stat().st_size > 0:
+                preserve_existing = target.is_file() and target.stat().st_size > 0
+                if brokered_source is not None:
+                    assert remote_digest is not None
+                    preserve_existing = (
+                        preserve_existing
+                        and _read_codex_auth_ancestor(target) == remote_digest
+                    )
+                if preserve_existing:
                     # Seed-if-absent: keep the (possibly CLI-refreshed) contents,
                     # but still clamp perms — a pre-existing credential file may
                     # be world-readable (e.g. 0644 from another tool/restore).
@@ -2393,6 +2421,9 @@ class ACPAgent(AgentBase):
                 else:
                     _write_secret_file(target, value)
                     logger.info("Materialised ACP file-secret %r -> %s", name, target)
+                if brokered_source is not None:
+                    assert remote_digest is not None
+                    _write_codex_auth_ancestor(target, remote_digest)
                 local_value = (
                     target.read_text(encoding="utf-8")
                     if brokered_source is not None
@@ -2416,15 +2447,11 @@ class ACPAgent(AgentBase):
             )
             if brokered_source is not None:
                 assert local_value is not None
-                remote_digest = hashlib.sha256(value.encode()).hexdigest()
+                assert remote_digest is not None
                 local_digest = hashlib.sha256(local_value.encode()).hexdigest()
                 self._track_codex_auth_values(value, remote_digest)
                 if local_digest != remote_digest:
                     self._track_codex_auth_values(local_value, local_digest)
-                self._codex_auth_path = target
-                self._codex_auth_source = brokered_source
-                self._codex_auth_expected_digest = remote_digest
-                self._codex_auth_synced_digest = remote_digest
             for companion in spec.warn_if_unset:
                 if not env.get(companion):
                     logger.warning(
@@ -2472,8 +2499,11 @@ class ACPAgent(AgentBase):
     async def _sync_codex_auth_best_effort(self) -> None:
         if self._codex_auth_path is None:
             return
+        await asyncio.to_thread(self._sync_codex_auth_best_effort_blocking)
+
+    def _sync_codex_auth_best_effort_blocking(self) -> None:
         try:
-            await asyncio.to_thread(self._sync_codex_auth)
+            self._sync_codex_auth()
         except Exception:
             logger.warning("Failed to sync Codex credentials", exc_info=True)
 
@@ -2533,18 +2563,25 @@ class ACPAgent(AgentBase):
             if attempt < attempts - 1:
                 time.sleep(_CODEX_AUTH_SYNC_DELAYS[attempt])
         if changed:
+            try:
+                _write_codex_auth_ancestor(path, digest)
+            except OSError as exc:
+                raise _CodexCredentialSyncError(
+                    "Codex credentials could not be saved to Cloud."
+                ) from exc
             self._track_codex_auth_values(text_value, digest)
             self._codex_auth_expected_digest = digest
             self._codex_auth_synced_digest = digest
 
     def _adopt_codex_auth_value(self, path: Path, value: str) -> None:
+        digest = hashlib.sha256(value.encode()).hexdigest()
         try:
             _write_secret_file(path, value)
+            _write_codex_auth_ancestor(path, digest)
         except OSError as exc:
             raise _CodexCredentialSyncError(
                 "Codex credentials could not be reconciled with Cloud."
             ) from exc
-        digest = hashlib.sha256(value.encode()).hexdigest()
         self._track_codex_auth_values(value, digest)
         self._codex_auth_expected_digest = digest
         self._codex_auth_synced_digest = digest
@@ -3249,23 +3286,18 @@ class ACPAgent(AgentBase):
             raise RuntimeError(msg)
         conn = self._conn
         session_id = self._session_id
-        try:
-            usage_sync = self._client.prepare_usage_sync(session_id)
-            response = await conn.prompt(session_id=session_id, prompt=prompt_blocks)
-            if self._client.get_turn_usage_update(session_id) is None:
-                try:
-                    await asyncio.wait_for(
-                        usage_sync.wait(), timeout=_USAGE_UPDATE_TIMEOUT
-                    )
-                except TimeoutError:
-                    logger.warning(
-                        "UsageUpdate not received within %.1fs for session %s",
-                        _USAGE_UPDATE_TIMEOUT,
-                        _fingerprint_session_id(session_id),
-                    )
-            return response
-        finally:
-            await self._sync_codex_auth_best_effort()
+        usage_sync = self._client.prepare_usage_sync(session_id)
+        response = await conn.prompt(session_id=session_id, prompt=prompt_blocks)
+        if self._client.get_turn_usage_update(session_id) is None:
+            try:
+                await asyncio.wait_for(usage_sync.wait(), timeout=_USAGE_UPDATE_TIMEOUT)
+            except TimeoutError:
+                logger.warning(
+                    "UsageUpdate not received within %.1fs for session %s",
+                    _USAGE_UPDATE_TIMEOUT,
+                    _fingerprint_session_id(session_id),
+                )
+        return response
 
     def _idle_timeout_message(self) -> str:
         return (
@@ -3636,6 +3668,7 @@ class ACPAgent(AgentBase):
             raise
         finally:
             self._clear_turn_callbacks()
+            self._sync_codex_auth_best_effort_blocking()
 
     @observe(name="acp_agent.astep", ignore_inputs=["conversation", "on_event"])
     async def astep(
@@ -3851,6 +3884,7 @@ class ACPAgent(AgentBase):
             raise
         finally:
             self._clear_turn_callbacks()
+            await self._sync_codex_auth_best_effort()
 
     def ask_agent(self, question: str) -> str | None:
         """Fork the ACP session, prompt the fork, and return the response."""
