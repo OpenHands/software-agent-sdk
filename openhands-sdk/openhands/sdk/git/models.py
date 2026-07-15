@@ -25,3 +25,17 @@ class GitChange(BaseModel):
 class GitDiff(BaseModel):
     modified: str | None
     original: str | None
+
+
+class GitCommit(BaseModel):
+    sha: str
+    short_sha: str
+    subject: str
+    author: str
+    # ISO 8601 author date with UTC offset (git log format %aI).
+    timestamp: str
+
+
+class GitCommitsPage(BaseModel):
+    commits: list[GitCommit]
+    has_more: bool

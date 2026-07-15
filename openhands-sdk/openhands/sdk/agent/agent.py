@@ -876,13 +876,17 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         )
 
         try:
-            llm_response = await amake_llm_completion(
-                self.llm,
-                _messages,
-                tools=list(self.tools_map.values()),
-                on_token=on_token,
-                call_context=call_context,
-            )
+            # Release the state lock for just the network wait so send_message()
+            # and state snapshots aren't blocked for the whole response. No-op
+            # unless the run loop holds the lock (e.g. direct astep() in tests).
+            async with conversation._released_state_lock_during_io():
+                llm_response = await amake_llm_completion(
+                    self.llm,
+                    _messages,
+                    tools=list(self.tools_map.values()),
+                    on_token=on_token,
+                    call_context=call_context,
+                )
         except FunctionCallValidationError as e:
             logger.warning(f"LLM generated malformed function call: {e}")
             error_message = MessageEvent(

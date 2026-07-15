@@ -10,9 +10,8 @@ import json
 from uuid import UUID, uuid4
 
 import pytest
-from pydantic import SecretStr, TypeAdapter, ValidationError
+from pydantic import TypeAdapter, ValidationError
 
-from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles import (
     AGENT_PROFILE_SCHEMA_VERSION,
     ACPAgentProfile,
@@ -20,7 +19,6 @@ from openhands.sdk.profiles import (
     OpenHandsAgentProfile,
     validate_agent_profile,
 )
-from openhands.sdk.skills import Skill
 
 
 _ADAPTER: TypeAdapter[OpenHandsAgentProfile | ACPAgentProfile] = TypeAdapter(
@@ -39,7 +37,7 @@ def test_openhands_profile_round_trips() -> None:
         llm_profile_ref="default",
         revision=3,
         mcp_server_refs=["fetch"],
-        skill_refs=["pdf-tools"],
+        disabled_skills=["pdf-tools"],
         system_message_suffix="be terse",
         enable_sub_agents=True,
         enable_switch_llm_tool=False,
@@ -54,70 +52,56 @@ def test_openhands_profile_round_trips() -> None:
     assert reloaded.llm_profile_ref == "default"
     assert reloaded.revision == 3
     assert reloaded.mcp_server_refs == ["fetch"]
-    assert reloaded.skill_refs == ["pdf-tools"]
+    assert reloaded.disabled_skills == ["pdf-tools"]
     assert reloaded.enable_switch_llm_tool is False
     assert reloaded.tool_concurrency_limit == 4
 
 
 def test_openhands_profile_new_field_defaults() -> None:
-    """``enable_switch_llm_tool`` defaults True (global parity); ``skill_refs``
-    defaults [] (none) — NOT None. A missing field must not silently inject the
-    whole discovered catalog. ``None`` (all discovered) stays an explicit opt-in,
-    reachable only when the field is present as ``null`` (see
-    ``test_skill_refs_empty_vs_null_are_distinct``)."""
+    """``enable_switch_llm_tool`` defaults True (global parity); ``disabled_skills``
+    defaults ``[]`` — the deny-list starts empty, so an unset field means "all
+    discovered skills" (#4017). Skills are selected by exclusion, never an
+    allow-list of names that could dangle."""
     profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default")
     assert profile.enable_switch_llm_tool is True
-    assert profile.skill_refs == []
-    # An older persisted payload without the fields still validates and adopts
-    # the safe defaults — critically, an absent ``skill_refs`` resolves to [],
-    # so a profile persisted before the field existed does not start pulling the
-    # discovered catalog on load.
+    assert profile.disabled_skills == []
     reloaded = validate_agent_profile(
         {"agent_kind": "openhands", "name": "oh", "llm_profile_ref": "default"}
     )
     assert isinstance(reloaded, OpenHandsAgentProfile)
     assert reloaded.enable_switch_llm_tool is True
-    assert reloaded.skill_refs == []
+    assert reloaded.disabled_skills == []
 
 
-def test_skill_refs_empty_vs_null_are_distinct() -> None:
-    """``[]`` (none) and ``None`` (all discovered) must survive round-trip
-    distinctly, mirroring ``mcp_server_refs``."""
-    none_ref = validate_agent_profile(
+def test_disabled_skills_round_trips() -> None:
+    """A non-empty deny-list survives the JSON round-trip verbatim."""
+    profile = validate_agent_profile(
         OpenHandsAgentProfile(
-            name="oh", llm_profile_ref="default", skill_refs=None
+            name="oh", llm_profile_ref="default", disabled_skills=["a", "b"]
         ).model_dump(mode="json")
     )
-    empty_ref = validate_agent_profile(
-        OpenHandsAgentProfile(
-            name="oh", llm_profile_ref="default", skill_refs=[]
-        ).model_dump(mode="json")
-    )
-    assert isinstance(none_ref, OpenHandsAgentProfile)
-    assert isinstance(empty_ref, OpenHandsAgentProfile)
-    assert none_ref.skill_refs is None
-    assert empty_ref.skill_refs == []
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert profile.disabled_skills == ["a", "b"]
 
 
-def test_acp_profile_skill_refs_defaults_empty() -> None:
-    """ACP profiles default ``skill_refs=[]`` (they own their tooling), inheriting
-    the safe base default shared with OpenHands. A payload without the field —
-    incl. one persisted before the field existed — adopts the [] default rather
-    than injecting the catalog."""
+def test_acp_profile_has_no_skill_field() -> None:
+    """ACP profiles carry no skill-selection field at all — the subprocess owns
+    its tooling and prompt context (#4017). ``extra="forbid"`` rejects a stray
+    ``skill_refs``/``disabled_skills`` on an ACP payload."""
     from openhands.sdk.profiles import ACPAgentProfile
 
     profile = ACPAgentProfile(name="acp", acp_server="claude-code")
-    assert profile.skill_refs == []
-    reloaded = validate_agent_profile(
-        {"agent_kind": "acp", "name": "acp", "acp_server": "claude-code"}
-    )
-    assert isinstance(reloaded, ACPAgentProfile)
-    assert reloaded.skill_refs == []
-    # null stays an explicit opt-in (all discovered), distinct from the default.
-    explicit_null = ACPAgentProfile(
-        name="acp", acp_server="claude-code", skill_refs=None
-    )
-    assert explicit_null.skill_refs is None
+    assert not hasattr(profile, "skill_refs")
+    assert not hasattr(profile, "disabled_skills")
+    with pytest.raises(ValidationError):
+        validate_agent_profile(
+            {
+                "agent_kind": "acp",
+                "name": "acp",
+                "acp_server": "claude-code",
+                "disabled_skills": ["x"],
+            }
+        )
 
 
 def test_acp_profile_round_trips() -> None:
@@ -130,7 +114,6 @@ def test_acp_profile_round_trips() -> None:
         acp_command="codex-acp",
         acp_args=["--flag"],
         mcp_server_refs=None,
-        skill_refs=["pdf-tools"],
     )
     reloaded = validate_agent_profile(profile.model_dump(mode="json"))
 
@@ -142,8 +125,6 @@ def test_acp_profile_round_trips() -> None:
     assert reloaded.acp_command == "codex-acp"
     assert reloaded.acp_args == ["--flag"]
     assert reloaded.mcp_server_refs is None
-    # skill_refs lives on the shared base, so ACP profiles round-trip it too.
-    assert reloaded.skill_refs == ["pdf-tools"]
 
 
 def test_acp_profile_minimal_defaults() -> None:
@@ -394,46 +375,71 @@ def test_verification_field_cannot_carry_a_secret() -> None:
     assert "sk-real-secret-value" not in json.dumps(exposed)
 
 
-def _skill_with_mcp_secret() -> Skill:
-    return Skill(
-        name="leaky",
-        content="do stuff",
-        mcp_tools={
-            "svc": MCPServer(
-                url="https://x.test",
-                headers={"Authorization": SecretStr("Bearer sk-HEADER-SECRET")},
-                env={"API_KEY": SecretStr("env-SECRET")},
-            )
-        },
+def test_openhands_profile_has_no_embedded_skills_field() -> None:
+    """Profiles no longer carry embedded ``skills`` (#4017): the field is gone,
+    and ``extra="forbid"`` rejects a stray one rather than silently accepting
+    or dropping it. This is what makes the profile genuinely secret-free at
+    rest — the only field that could ever carry a secret (``skills[].mcp_tools``)
+    is gone."""
+    with pytest.raises(ValidationError):
+        validate_agent_profile(
+            {
+                "agent_kind": "openhands",
+                "name": "oh",
+                "llm_profile_ref": "default",
+                "schema_version": AGENT_PROFILE_SCHEMA_VERSION,
+                "skills": [],
+            }
+        )
+
+
+# ---------------------------------------------------------------------------
+# clean v1 baseline: nothing ever shipped, so the removed ``skills`` /
+# ``skill_refs`` fields are rejected (``extra="forbid"``), not migrated (#4017)
+# ---------------------------------------------------------------------------
+
+
+def test_removed_skills_field_is_rejected() -> None:
+    """The embedded ``skills`` field never shipped, so a payload carrying it is a
+    genuine ``extra="forbid"`` violation — there is no migration to drop it."""
+    with pytest.raises(ValidationError):
+        validate_agent_profile(
+            {
+                "schema_version": 1,
+                "agent_kind": "openhands",
+                "name": "oh",
+                "llm_profile_ref": "default",
+                "skills": [{"name": "old-skill", "content": "do stuff"}],
+            }
+        )
+
+
+def test_removed_skill_refs_field_is_rejected() -> None:
+    """The allow-list ``skill_refs`` was replaced by the ``disabled_skills``
+    deny-list and never shipped, so a payload carrying it is rejected."""
+    with pytest.raises(ValidationError):
+        validate_agent_profile(
+            {
+                "schema_version": 1,
+                "agent_kind": "openhands",
+                "name": "oh",
+                "llm_profile_ref": "default",
+                "skill_refs": ["pdf-tools"],
+            }
+        )
+
+
+def test_payload_without_disabled_skills_adopts_empty_default() -> None:
+    """A payload that omits ``disabled_skills`` picks up the model default —
+    ``[]`` (all discovered skills)."""
+    profile = validate_agent_profile(
+        {
+            "schema_version": 1,
+            "agent_kind": "openhands",
+            "name": "oh",
+            "llm_profile_ref": "default",
+        }
     )
-
-
-def test_skills_mcp_tools_credentials_are_masked_at_rest() -> None:
-    """``Skill.mcp_tools`` can carry an MCP server credential in ``env`` /
-    ``headers``; the profile must mask it at rest like
-    ``OpenHandsAgentSettings.mcp_config`` does — not dump it in plaintext."""
-    profile = OpenHandsAgentProfile(
-        name="oh", llm_profile_ref="default", skills=[_skill_with_mcp_secret()]
-    )
-
-    default_dump = json.dumps(profile.model_dump(mode="json"))
-    assert "sk-HEADER-SECRET" not in default_dump
-    assert "env-SECRET" not in default_dump
-
-    # Opt-in exposure surfaces the real values (parity with mcp_config).
-    exposed = json.dumps(
-        profile.model_dump(mode="json", context={"expose_secrets": True})
-    )
-    assert "sk-HEADER-SECRET" in exposed
-    assert "env-SECRET" in exposed
-
-
-def test_skills_without_secrets_round_trip() -> None:
-    """A plain skill (no mcp_tools secrets) still round-trips unchanged."""
-    profile = OpenHandsAgentProfile(
-        name="oh",
-        llm_profile_ref="default",
-        skills=[Skill(name="clean", content="hello")],
-    )
-    reloaded = validate_agent_profile(profile.model_dump(mode="json"))
-    assert reloaded == profile
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert profile.disabled_skills == []
+    assert profile.disabled_skills == []

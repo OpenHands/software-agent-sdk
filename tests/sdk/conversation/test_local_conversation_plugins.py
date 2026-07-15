@@ -23,6 +23,8 @@ from openhands.sdk.plugin import (
     install_plugin,
     installed,
 )
+from openhands.sdk.skills import Skill
+from openhands.sdk.skills.skill import DEFAULT_MARKETPLACE_PATH
 from openhands.sdk.tool.builtins import ThinkTool
 
 
@@ -153,7 +155,6 @@ class TestLocalConversationPlugins:
     """
 
     def test_auto_load_marketplace_plugins(self, tmp_path: Path, mock_llm):
-        """Test marketplace registrations auto-load plugins at startup."""
         marketplace_dir = create_test_marketplace(
             tmp_path / "marketplace",
             plugins=[
@@ -165,18 +166,32 @@ class TestLocalConversationPlugins:
         )
         workspace = tmp_path / "workspace"
         workspace.mkdir()
-        agent = Agent(
-            llm=mock_llm,
-            tools=[],
-            agent_context=AgentContext(
-                registered_marketplaces=[
-                    MarketplaceRegistration(
-                        name="auto",
-                        source=str(marketplace_dir),
-                        auto_load=True,
-                    )
-                ]
-            ),
+        public_skill = Skill(name="public-skill", content="Public", trigger=None)
+        with patch(
+            "openhands.sdk.context.agent_context.load_available_skills",
+            return_value={"public-skill": public_skill},
+        ) as load_available_skills:
+            agent = Agent(
+                llm=mock_llm,
+                tools=[],
+                agent_context=AgentContext(
+                    load_public_skills=True,
+                    registered_marketplaces=[
+                        MarketplaceRegistration(
+                            name="auto",
+                            source=str(marketplace_dir),
+                            auto_load=True,
+                        )
+                    ],
+                ),
+            )
+
+        load_available_skills.assert_called_with(
+            work_dir=None,
+            include_user=False,
+            include_project=False,
+            include_public=True,
+            marketplace_path=DEFAULT_MARKETPLACE_PATH,
         )
 
         conversation = LocalConversation(
@@ -189,6 +204,7 @@ class TestLocalConversationPlugins:
         assert conversation.agent.agent_context is not None
         skill_names = [s.name for s in conversation.agent.agent_context.skills]
         assert "auto-skill" in skill_names
+        assert "public-skill" in skill_names
         assert conversation.resolved_plugins is not None
         assert len(conversation.resolved_plugins) == 1
 
@@ -476,12 +492,10 @@ class TestLocalConversationPlugins:
 
         conversation.close()
 
-    def test_registered_marketplaces_skip_legacy_public_skill_loading(
-        self, tmp_path: Path
-    ):
-        """Test registered marketplaces suppress legacy public skill loading."""
+    def test_registered_marketplaces_keep_public_skill_loading(self, tmp_path: Path):
         with patch(
-            "openhands.sdk.context.agent_context.load_available_skills"
+            "openhands.sdk.context.agent_context.load_available_skills",
+            return_value={},
         ) as mock_load_available_skills:
             AgentContext(
                 load_public_skills=True,
@@ -494,7 +508,13 @@ class TestLocalConversationPlugins:
                 ],
             )
 
-        mock_load_available_skills.assert_not_called()
+        mock_load_available_skills.assert_called_with(
+            work_dir=None,
+            include_user=False,
+            include_project=False,
+            include_public=True,
+            marketplace_path=DEFAULT_MARKETPLACE_PATH,
+        )
 
     def test_create_conversation_with_plugins(self, tmp_path: Path, basic_agent):
         """Test creating LocalConversation with plugins parameter."""
