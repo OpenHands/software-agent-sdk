@@ -7971,6 +7971,16 @@ class TestACPMcpForwarding:
 # ---------------------------------------------------------------------------
 
 
+def _brokered_codex_source() -> LookupSecret:
+    return LookupSecret(
+        url="https://cloud/codex-auth",
+        headers={
+            "X-OH-Sandbox": "session-a",
+            "X-OH-Codex": "scoped.jwt.token",
+        },
+    )
+
+
 class TestACPFileSecretMaterialisation:
     """Codex auth.json / Gemini Vertex SA JSON materialise to the durable
     per-conversation root, with the right data-dir env var, seed-if-absent.
@@ -8125,7 +8135,7 @@ class TestACPFileSecretMaterialisation:
             first_agent = _make_agent()
             first_state = self._state(first_root)
             first_state.secret_registry.update_secrets(
-                {"CODEX_AUTH_JSON": LookupSecret(url="https://cloud/codex-auth")}
+                {"CODEX_AUTH_JSON": _brokered_codex_source()}
             )
             assert first_state.persistence_dir is not None
             first_auth_path = (
@@ -8146,7 +8156,7 @@ class TestACPFileSecretMaterialisation:
             second_agent = _make_agent()
             second_state = self._state(second_root)
             second_state.secret_registry.update_secrets(
-                {"CODEX_AUTH_JSON": LookupSecret(url="https://cloud/codex-auth")}
+                {"CODEX_AUTH_JSON": _brokered_codex_source()}
             )
             second_env = self._run_start(
                 second_agent,
@@ -8208,8 +8218,8 @@ class TestACPFileSecretMaterialisation:
         source = LookupSecret(
             url="https://cloud/codex-auth",
             headers={
-                "X-Session-API-Key": "session-a",
-                "X-Codex-Auth-Token": "scoped.jwt.token",
+                "X-OH-Sandbox": "session-a",
+                "X-OH-Codex": "scoped.jwt.token",
             },
         )
         agent = _make_agent()
@@ -8235,26 +8245,65 @@ class TestACPFileSecretMaterialisation:
             )
             agent._release_codex_auth()
 
-    def test_lookup_secret_overwrites_stale_working_copy(self, tmp_path):
-        authoritative = '{"tokens":{"refresh_token":"current"}}'
-        stale = '{"tokens":{"refresh_token":"stale"}}'
+    def test_generic_lookup_secret_remains_get_only(self, tmp_path):
+        remote = '{"tokens":{"refresh_token":"remote"}}'
+        local = '{"tokens":{"refresh_token":"local"}}'
+        source = LookupSecret(
+            url="https://vault.example/codex-auth",
+            headers={"Authorization": "Bearer read-only"},
+        )
         agent = _make_agent()
         state = self._state(tmp_path)
         assert state.persistence_dir is not None
         auth_path = Path(state.persistence_dir) / "acp" / "codex" / "auth.json"
         auth_path.parent.mkdir(parents=True)
-        auth_path.write_text(stale)
+        auth_path.write_text(local)
+        state.secret_registry.update_secrets({"CODEX_AUTH_JSON": source})
+
+        with (
+            patch.object(LookupSecret, "get_value", return_value=remote),
+            patch.object(acp_agent_module, "_update_codex_auth_source") as update,
+            patch.object(acp_agent_module, "_touch_codex_auth_source") as touch,
+            patch.object(acp_agent_module, "_release_codex_auth_source") as release,
+        ):
+            env: dict[str, str] = {}
+            agent._materialise_file_secrets(state, env)
+            agent._sync_codex_auth()
+            agent._release_codex_auth()
+
+        assert auth_path.read_text() == local
+        assert "CODEX_REFRESH_TOKEN_URL_OVERRIDE" not in env
+        update.assert_not_called()
+        touch.assert_not_called()
+        release.assert_not_called()
+
+    def test_lookup_secret_preserves_unsynced_working_copy(self, tmp_path):
+        remote = '{"tokens":{"refresh_token":"stale"}}'
+        local = '{"tokens":{"refresh_token":"current"}}'
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        assert state.persistence_dir is not None
+        auth_path = Path(state.persistence_dir) / "acp" / "codex" / "auth.json"
+        auth_path.parent.mkdir(parents=True)
+        auth_path.write_text(local)
         state.secret_registry.update_secrets(
-            {"CODEX_AUTH_JSON": LookupSecret(url="https://cloud/codex-auth")}
+            {"CODEX_AUTH_JSON": _brokered_codex_source()}
         )
 
         with (
-            patch.object(LookupSecret, "get_value", return_value=authoritative),
+            patch.object(LookupSecret, "get_value", return_value=remote),
+            patch.object(acp_agent_module, "_update_codex_auth_source") as update_value,
             patch.object(acp_agent_module, "_release_codex_auth_source"),
         ):
             agent._materialise_file_secrets(state, {})
-            assert auth_path.read_text() == authoritative
+            assert auth_path.read_text() == local
+            agent._sync_codex_auth()
             agent._release_codex_auth()
+
+        assert update_value.call_args.args[1:] == (
+            local,
+            hashlib.sha256(remote.encode()).hexdigest(),
+        )
 
     def test_lookup_secret_tokens_are_masked_after_rotation(self, tmp_path):
         original = (
@@ -8264,7 +8313,7 @@ class TestACPFileSecretMaterialisation:
         agent = _make_agent()
         state = self._state(tmp_path)
         state.secret_registry.update_secrets(
-            {"CODEX_AUTH_JSON": LookupSecret(url="https://cloud/codex-auth")}
+            {"CODEX_AUTH_JSON": _brokered_codex_source()}
         )
 
         with (
@@ -8297,7 +8346,7 @@ class TestACPFileSecretMaterialisation:
         agent = _make_agent()
         state = self._state(tmp_path)
         state.secret_registry.update_secrets(
-            {"CODEX_AUTH_JSON": LookupSecret(url="https://cloud/codex-auth")}
+            {"CODEX_AUTH_JSON": _brokered_codex_source()}
         )
         response = httpx.Response(
             409, request=httpx.Request("PUT", "https://cloud/codex-auth")
@@ -8330,7 +8379,7 @@ class TestACPFileSecretMaterialisation:
         agent = _make_agent()
         state = self._state(tmp_path)
         state.secret_registry.update_secrets(
-            {"CODEX_AUTH_JSON": LookupSecret(url="https://cloud/codex-auth")}
+            {"CODEX_AUTH_JSON": _brokered_codex_source()}
         )
         response = httpx.Response(
             409, request=httpx.Request("PUT", "https://cloud/codex-auth")
@@ -8366,7 +8415,7 @@ class TestACPFileSecretMaterialisation:
         agent = _make_agent()
         state = self._state(tmp_path)
         state.secret_registry.update_secrets(
-            {"CODEX_AUTH_JSON": LookupSecret(url="https://cloud/codex-auth")}
+            {"CODEX_AUTH_JSON": _brokered_codex_source()}
         )
 
         with (
@@ -8392,16 +8441,16 @@ class TestACPFileSecretMaterialisation:
         agent = _make_agent()
         state = self._state(tmp_path)
         state.secret_registry.update_secrets(
-            {"CODEX_AUTH_JSON": LookupSecret(url="https://cloud/codex-auth")}
+            {"CODEX_AUTH_JSON": _brokered_codex_source()}
         )
         conn = self._make_conn(auth_method="chat-gpt")
         conn.authenticate.side_effect = ACPRequestError(
-            -32602, f"Invalid params: {credential}"
+            -32602, f"Authentication required: {credential}"
         )
 
         with (
             patch.object(LookupSecret, "get_value", return_value=credential),
-            patch.object(acp_agent_module, "_touch_codex_auth_source"),
+            patch.object(acp_agent_module, "_touch_codex_auth_source") as touch_source,
             patch.object(acp_agent_module, "_release_codex_auth_source"),
         ):
             with pytest.raises(_CodexNeedsReauthError) as exc_info:
@@ -8410,7 +8459,28 @@ class TestACPFileSecretMaterialisation:
             assert credential not in _acp_error_detail(
                 exc_info.value, state.secret_registry
             )
+            touch_source.assert_not_called()
             agent.close()
+
+    def test_chatgpt_transport_failure_preserves_original_error(self, tmp_path):
+        credential = '{"tokens":{"refresh_token":"r0"}}'
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": _brokered_codex_source()}
+        )
+        conn = self._make_conn(auth_method="chat-gpt")
+        conn.authenticate.side_effect = BrokenPipeError("connection closed")
+
+        with (
+            patch.object(LookupSecret, "get_value", return_value=credential),
+            patch.object(acp_agent_module, "_update_codex_auth_source") as update,
+            pytest.raises(BrokenPipeError, match="connection closed"),
+        ):
+            self._run_start(agent, state, conn=conn)
+
+        update.assert_not_called()
+        agent._cleanup()
 
     def test_sync_failure_retries_and_is_typed(self, tmp_path):
         original = '{"tokens":{"refresh_token":"r0"}}'
@@ -8418,7 +8488,7 @@ class TestACPFileSecretMaterialisation:
         agent = _make_agent()
         state = self._state(tmp_path)
         state.secret_registry.update_secrets(
-            {"CODEX_AUTH_JSON": LookupSecret(url="https://cloud/codex-auth")}
+            {"CODEX_AUTH_JSON": _brokered_codex_source()}
         )
         response = httpx.Response(
             503, request=httpx.Request("PUT", "https://cloud/codex-auth")
@@ -8457,7 +8527,7 @@ class TestACPFileSecretMaterialisation:
         agent = _make_agent()
         state = self._state(tmp_path)
         state.secret_registry.update_secrets(
-            {"CODEX_AUTH_JSON": LookupSecret(url="https://cloud/codex-auth")}
+            {"CODEX_AUTH_JSON": _brokered_codex_source()}
         )
         client = MagicMock()
         client.get_turn_usage_update.return_value = object()
@@ -8495,6 +8565,143 @@ class TestACPFileSecretMaterialisation:
         )
         assert update_value.call_count == 2
         release.assert_called_once()
+
+    def test_successful_turn_survives_sync_failure(self, tmp_path):
+        agent = _make_agent()
+        client = MagicMock()
+        client.get_turn_usage_update.return_value = object()
+        agent._client = client
+        agent._session_id = "session"
+        agent._codex_auth_path = tmp_path / "auth.json"
+        response = MagicMock()
+        conn = MagicMock()
+        conn.prompt = AsyncMock(return_value=response)
+        agent._conn = conn
+
+        with patch.object(
+            ACPAgent,
+            "_sync_codex_auth",
+            side_effect=_CodexCredentialSyncError("unavailable"),
+        ):
+            result = asyncio.run(agent._do_acp_prompt([]))
+
+        assert result is response
+
+    def test_successful_fork_survives_sync_failure(self, tmp_path):
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        client = MagicMock()
+        client._fork_lock = threading.Lock()
+        client._fork_accumulated_text = []
+        client.get_turn_usage_update.return_value = object()
+        client.pop_turn_usage_update.return_value = None
+        client._mask_value.side_effect = lambda value: value
+        agent._client = client
+        agent._session_id = "session"
+        agent._working_dir = str(tmp_path)
+        agent._codex_auth_path = tmp_path / "auth.json"
+        agent._executor = AsyncExecutor()
+        conn = MagicMock()
+        conn.fork_session = AsyncMock(
+            return_value=SimpleNamespace(session_id="fork-session")
+        )
+
+        async def prompt(**_kwargs):
+            client._fork_accumulated_text.append("answer")
+            return MagicMock()
+
+        conn.prompt = AsyncMock(side_effect=prompt)
+        conn.close = AsyncMock()
+        agent._conn = conn
+
+        with (
+            patch.object(ACPAgent, "_record_usage"),
+            patch.object(
+                ACPAgent,
+                "_sync_codex_auth",
+                side_effect=_CodexCredentialSyncError("unavailable"),
+            ),
+        ):
+            result = agent.ask_agent("question")
+
+        assert result == "answer"
+        agent._cleanup()
+
+    def test_close_keeps_source_when_sync_fails(self, tmp_path):
+        original = '{"tokens":{"refresh_token":"r0"}}'
+        rotated = '{"tokens":{"refresh_token":"r1"}}'
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": _brokered_codex_source()}
+        )
+
+        with (
+            patch.object(LookupSecret, "get_value", return_value=original),
+            patch.object(
+                acp_agent_module,
+                "_update_codex_auth_source",
+                side_effect=[OSError("offline")] * 3 + [None],
+            ),
+            patch.object(acp_agent_module, "_release_codex_auth_source") as release,
+        ):
+            env: dict[str, str] = {}
+            agent._materialise_file_secrets(state, env)
+            (Path(env["CODEX_HOME"]) / "auth.json").write_text(rotated)
+
+            with pytest.raises(_CodexCredentialSyncError):
+                agent.close()
+            release.assert_not_called()
+            assert agent._closed is False
+
+            agent.close()
+
+        release.assert_called_once()
+
+    def test_init_failure_syncs_before_releasing_authenticated_source(self, tmp_path):
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        order: list[str] = []
+
+        def fail_after_authentication(current_agent, _state):
+            current_agent._codex_auth_authenticated = True
+            current_agent._codex_auth_path = tmp_path / "auth.json"
+            current_agent._codex_auth_source = _brokered_codex_source()
+            raise RuntimeError("session creation failed")
+
+        def record_sync(current_agent):
+            if current_agent is agent:
+                order.append("sync")
+
+        def record_release(current_agent):
+            if current_agent is agent:
+                order.append("release")
+
+        with (
+            patch.object(
+                ACPAgent,
+                "_start_acp_server",
+                autospec=True,
+                side_effect=fail_after_authentication,
+            ),
+            patch.object(
+                ACPAgent,
+                "_sync_codex_auth",
+                autospec=True,
+                side_effect=record_sync,
+            ),
+            patch.object(
+                ACPAgent,
+                "_release_codex_auth",
+                autospec=True,
+                side_effect=record_release,
+            ),
+            pytest.raises(RuntimeError, match="session creation failed"),
+        ):
+            agent.init_state(state, lambda _event: None)
+
+        assert order == ["sync", "release"]
 
     def test_gemini_vertex_sa_materialises_and_points_at_file(self, tmp_path):
         from openhands.sdk.secret import StaticSecret

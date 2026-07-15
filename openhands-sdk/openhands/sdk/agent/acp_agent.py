@@ -130,6 +130,8 @@ _ACP_CANCEL_DRAIN_TIMEOUT: float = float(
 _ACP_PROMPT_RETRY_DELAYS: tuple[float, ...] = (5.0, 15.0, 30.0)  # seconds
 _CODEX_AUTH_SYNC_DELAYS: tuple[float, ...] = (0.1, 0.5)
 _CODEX_AUTH_DIGEST_HEADER = "X-Codex-Auth-Digest"
+_CODEX_AUTH_SANDBOX_HEADER = "X-OH-Sandbox"
+_CODEX_AUTH_SCOPE_HEADER = "X-OH-Codex"
 _CODEX_REFRESH_TOKEN_URL_ENV = "CODEX_REFRESH_TOKEN_URL_OVERRIDE"
 
 # Exception types that indicate transient connection issues worth retrying
@@ -979,14 +981,10 @@ def _release_codex_auth_source(source: LookupSecret) -> None:
 
 def _codex_auth_refresh_url(source: LookupSecret) -> str | None:
     headers = {name.lower(): value for name, value in source.headers.items()}
-    session_api_key = headers.get("x-session-api-key")
-    codex_auth_token = headers.get("x-codex-auth-token")
-    if session_api_key is None and codex_auth_token is None:
-        return None
+    session_api_key = headers.get(_CODEX_AUTH_SANDBOX_HEADER.lower())
+    codex_auth_token = headers.get(_CODEX_AUTH_SCOPE_HEADER.lower())
     if not session_api_key or not codex_auth_token:
-        raise _CodexCredentialSyncError(
-            "Codex credential refresh authorization is incomplete."
-        )
+        return None
     url = httpx.URL(source.url)
     refresh_path = f"{url.path.rstrip('/')}/refresh"
     return str(
@@ -1788,6 +1786,7 @@ class ACPAgent(AgentBase):
     _codex_auth_expected_digest: str | None = PrivateAttr(default=None)
     _codex_auth_synced_digest: str | None = PrivateAttr(default=None)
     _codex_auth_registry: SecretRegistry | None = PrivateAttr(default=None)
+    _codex_auth_authenticated: bool = PrivateAttr(default=False)
     _codex_auth_lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
 
     # -- Helpers -----------------------------------------------------------
@@ -2060,10 +2059,21 @@ class ACPAgent(AgentBase):
             self._start_acp_server(state)
         except Exception as e:
             logger.error("Failed to start ACP server: %s", e)
-            try:
-                self._release_codex_auth()
-            except _CodexCredentialSyncError:
-                logger.warning("Failed to release Codex credential source")
+            release_codex_auth = True
+            if self._codex_auth_authenticated:
+                try:
+                    self._sync_codex_auth()
+                except Exception:
+                    release_codex_auth = False
+                    logger.warning(
+                        "Failed to sync Codex credentials during cleanup",
+                        exc_info=True,
+                    )
+            if release_codex_auth:
+                try:
+                    self._release_codex_auth()
+                except _CodexCredentialSyncError:
+                    logger.warning("Failed to release Codex credential source")
             self._cleanup()
             # init_state runs *outside* run()/arun()'s try-block (it is reached
             # via _ensure_agent_ready() before the loop starts), so a cold-start
@@ -2319,12 +2329,25 @@ class ACPAgent(AgentBase):
         self, state: ConversationState, env: dict[str, str]
     ) -> None:
         """Materialize reserved file credentials and configure their paths."""
+        with self._codex_auth_lock:
+            self._materialise_file_secrets_locked(state, env)
+
+    def _materialise_file_secrets_locked(
+        self, state: ConversationState, env: dict[str, str]
+    ) -> None:
         for spec in self.acp_file_secrets:
             name = spec.secret_name
             source = state.secret_registry.secret_sources.get(name)
+            refresh_url: str | None = None
+            brokered_source: LookupSecret | None = None
             if name == _CODEX_AUTH_SECRET_NAME and isinstance(source, LookupSecret):
+                refresh_url = _codex_auth_refresh_url(source)
+                if refresh_url is not None:
+                    brokered_source = source
+            if brokered_source is not None:
+                assert refresh_url is not None
                 try:
-                    value = source.get_value()
+                    value = brokered_source.get_value()
                 except httpx.HTTPStatusError as exc:
                     if exc.response.status_code == 422:
                         raise _CodexNeedsReauthError(
@@ -2338,12 +2361,8 @@ class ACPAgent(AgentBase):
                         "Codex credentials could not be loaded from Cloud."
                     ) from exc
                 self._codex_auth_registry = state.secret_registry
-                self._track_codex_auth_values(value)
-                self._codex_auth_source = source
-                refresh_url = _codex_auth_refresh_url(source)
-                if refresh_url is not None:
-                    env[_CODEX_REFRESH_TOKEN_URL_ENV] = refresh_url
-                    self._track_codex_auth_transport(source, refresh_url)
+                env[_CODEX_REFRESH_TOKEN_URL_ENV] = refresh_url
+                self._track_codex_auth_transport(brokered_source, refresh_url)
             else:
                 value = state.secret_registry.get_secret_value(name)
             if not value:
@@ -2360,10 +2379,7 @@ class ACPAgent(AgentBase):
                 # (e.g. 0o755); the leaf chmod above only covers <subdir>.
                 # Stop at `acp/` — its parent is the persistence layer's.
                 directory.parent.chmod(0o700)
-                if name == _CODEX_AUTH_SECRET_NAME and isinstance(source, LookupSecret):
-                    _write_secret_file(target, value)
-                    logger.info("Materialised ACP file-secret %r -> %s", name, target)
-                elif target.is_file() and target.stat().st_size > 0:
+                if target.is_file() and target.stat().st_size > 0:
                     # Seed-if-absent: keep the (possibly CLI-refreshed) contents,
                     # but still clamp perms — a pre-existing credential file may
                     # be world-readable (e.g. 0644 from another tool/restore).
@@ -2377,7 +2393,12 @@ class ACPAgent(AgentBase):
                 else:
                     _write_secret_file(target, value)
                     logger.info("Materialised ACP file-secret %r -> %s", name, target)
-            except OSError:
+                local_value = (
+                    target.read_text(encoding="utf-8")
+                    if brokered_source is not None
+                    else None
+                )
+            except (OSError, UnicodeError):
                 # Fail fast rather than swallowing: if the credential the caller
                 # supplied can't be written (read-only/full workspace mount, etc.)
                 # its data-dir env var would never be set and the subprocess would
@@ -2393,12 +2414,17 @@ class ACPAgent(AgentBase):
             env[spec.env_var] = str(
                 directory if spec.env_points_to == "dir" else target
             )
-            if name == _CODEX_AUTH_SECRET_NAME and isinstance(source, LookupSecret):
-                digest = hashlib.sha256(value.encode()).hexdigest()
+            if brokered_source is not None:
+                assert local_value is not None
+                remote_digest = hashlib.sha256(value.encode()).hexdigest()
+                local_digest = hashlib.sha256(local_value.encode()).hexdigest()
+                self._track_codex_auth_values(value, remote_digest)
+                if local_digest != remote_digest:
+                    self._track_codex_auth_values(local_value, local_digest)
                 self._codex_auth_path = target
-                self._codex_auth_source = source
-                self._codex_auth_expected_digest = digest
-                self._codex_auth_synced_digest = digest
+                self._codex_auth_source = brokered_source
+                self._codex_auth_expected_digest = remote_digest
+                self._codex_auth_synced_digest = remote_digest
             for companion in spec.warn_if_unset:
                 if not env.get(companion):
                     logger.warning(
@@ -2408,23 +2434,22 @@ class ACPAgent(AgentBase):
                         companion,
                     )
 
-    def _track_codex_auth_values(self, value: str) -> None:
+    def _track_codex_auth_values(self, value: str, value_digest: str) -> None:
         """Track Codex token values for event masking."""
         registry = self._codex_auth_registry
         if registry is None:
             return
-        value_digest = hashlib.sha256(value.encode()).hexdigest()
         mask_name = f"{_CODEX_AUTH_SECRET_NAME}.{value_digest}"
-        registry._exported_values[mask_name] = value
+        exported_values = {mask_name: value}
         try:
             tokens = json.loads(value).get("tokens", {})
         except (AttributeError, TypeError, ValueError):
-            return
-        if not isinstance(tokens, dict):
-            return
-        for name, token in tokens.items():
-            if isinstance(token, str) and token:
-                registry._exported_values[f"{mask_name}.{name}"] = token
+            tokens = None
+        if isinstance(tokens, dict):
+            for name, token in tokens.items():
+                if isinstance(token, str) and token:
+                    exported_values[f"{mask_name}.{name}"] = token
+        registry.track_exported_values(exported_values)
 
     def _track_codex_auth_transport(
         self, source: LookupSecret, refresh_url: str
@@ -2432,18 +2457,25 @@ class ACPAgent(AgentBase):
         registry = self._codex_auth_registry
         if registry is None:
             return
-        registry._exported_values[f"{_CODEX_AUTH_SECRET_NAME}.refresh_url"] = (
-            refresh_url
-        )
+        exported_values = {
+            f"{_CODEX_AUTH_SECRET_NAME}.refresh_url": refresh_url,
+        }
         for name, value in source.headers.items():
-            registry._exported_values[
-                f"{_CODEX_AUTH_SECRET_NAME}.header.{name.lower()}"
-            ] = value
+            exported_values[f"{_CODEX_AUTH_SECRET_NAME}.header.{name.lower()}"] = value
+        registry.track_exported_values(exported_values)
 
     def _sync_codex_auth(self) -> None:
         """Persist a changed Codex credential working copy."""
         with self._codex_auth_lock:
             self._sync_codex_auth_locked()
+
+    async def _sync_codex_auth_best_effort(self) -> None:
+        if self._codex_auth_path is None:
+            return
+        try:
+            await asyncio.to_thread(self._sync_codex_auth)
+        except Exception:
+            logger.warning("Failed to sync Codex credentials", exc_info=True)
 
     def _sync_codex_auth_locked(self) -> None:
         path = self._codex_auth_path
@@ -2501,7 +2533,7 @@ class ACPAgent(AgentBase):
             if attempt < attempts - 1:
                 time.sleep(_CODEX_AUTH_SYNC_DELAYS[attempt])
         if changed:
-            self._track_codex_auth_values(text_value)
+            self._track_codex_auth_values(text_value, digest)
             self._codex_auth_expected_digest = digest
             self._codex_auth_synced_digest = digest
 
@@ -2513,7 +2545,7 @@ class ACPAgent(AgentBase):
                 "Codex credentials could not be reconciled with Cloud."
             ) from exc
         digest = hashlib.sha256(value.encode()).hexdigest()
-        self._track_codex_auth_values(value)
+        self._track_codex_auth_values(value, digest)
         self._codex_auth_expected_digest = digest
         self._codex_auth_synced_digest = digest
 
@@ -2537,6 +2569,7 @@ class ACPAgent(AgentBase):
         self._codex_auth_expected_digest = None
         self._codex_auth_synced_digest = None
         self._codex_auth_registry = None
+        self._codex_auth_authenticated = False
 
     def _start_acp_server(self, state: ConversationState) -> None:
         """Start the ACP subprocess and initialize the session."""
@@ -2759,15 +2792,18 @@ class ACPAgent(AgentBase):
                                 auth_kwargs["gateway"] = {"baseUrl": base_url}
                     try:
                         await conn.authenticate(method_id=method_id, **auth_kwargs)
-                    except Exception:
-                        if method_id != "chat-gpt":
+                    except Exception as exc:
+                        if method_id != "chat-gpt" or not _acp_error_indicates_auth(
+                            exc
+                        ):
                             raise
-                        await asyncio.to_thread(self._sync_codex_auth)
                         raise _CodexNeedsReauthError(
                             "ChatGPT authentication needs to be refreshed."
-                        ) from None
+                        ) from exc
                     if method_id == "chat-gpt":
-                        await asyncio.to_thread(self._sync_codex_auth)
+                        self._codex_auth_authenticated = True
+                        if self._codex_auth_path is not None:
+                            await asyncio.to_thread(self._sync_codex_auth)
                 else:
                     logger.warning(
                         "ACP server offers auth methods %s but no matching "
@@ -2922,6 +2958,8 @@ class ACPAgent(AgentBase):
             self._model_override_applied,
         ) = self._executor.run_async(_init)
         self._working_dir = working_dir
+        if self._codex_auth_source is not None:
+            self._codex_auth_authenticated = True
 
     def _reset_client_for_turn(
         self,
@@ -3227,7 +3265,7 @@ class ACPAgent(AgentBase):
                     )
             return response
         finally:
-            await asyncio.to_thread(self._sync_codex_auth)
+            await self._sync_codex_auth_best_effort()
 
     def _idle_timeout_message(self) -> str:
         return (
@@ -3870,7 +3908,7 @@ class ACPAgent(AgentBase):
                 return result
             finally:
                 try:
-                    await asyncio.to_thread(self._sync_codex_auth)
+                    await self._sync_codex_auth_best_effort()
                 finally:
                     client._fork_session_id = None
                     client._fork_accumulated_text.clear()
@@ -4019,14 +4057,18 @@ class ACPAgent(AgentBase):
             self._sync_codex_auth()
         except Exception as exc:
             error = exc
+        else:
+            try:
+                self._release_codex_auth()
+            except Exception as exc:
+                error = exc
         try:
-            self._release_codex_auth()
+            self._cleanup()
         except Exception as exc:
             if error is None:
                 error = exc
-        finally:
-            self._cleanup()
         if error is not None:
+            self._closed = False
             raise error
 
     def _cleanup(self) -> None:

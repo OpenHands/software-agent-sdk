@@ -1,6 +1,7 @@
 """Secrets manager for handling sensitive data in conversations."""
 
 from collections.abc import Collection, Mapping
+from threading import RLock
 
 from pydantic import Field, PrivateAttr, SecretStr
 
@@ -32,6 +33,12 @@ class SecretRegistry(OpenHandsModel):
 
     secret_sources: dict[str, SecretSource] = Field(default_factory=dict)
     _exported_values: dict[str, str] = PrivateAttr(default_factory=dict)
+    _exported_values_lock: RLock = PrivateAttr(default_factory=RLock)
+
+    def track_exported_values(self, values: Mapping[str, str]) -> None:
+        """Track values for output masking."""
+        with self._exported_values_lock:
+            self._exported_values.update(values)
 
     def update_secrets(
         self,
@@ -84,8 +91,7 @@ class SecretRegistry(OpenHandsModel):
                 value = source.get_value()
                 if value:
                     env_vars[key] = value
-                    # Track successfully exported values for masking
-                    self._exported_values[key] = value
+                    self.track_exported_values({key: value})
             except Exception as e:
                 logger.error(f"Failed to retrieve secret for key '{key}': {e}")
                 continue
@@ -145,8 +151,9 @@ class SecretRegistry(OpenHandsModel):
 
         masked_text = text
 
-        # First, mask using currently exported values (always available)
-        for value in self._exported_values.values():
+        with self._exported_values_lock:
+            exported_values = tuple(self._exported_values.values())
+        for value in exported_values:
             masked_text = masked_text.replace(value, "<secret-hidden>")
 
         return masked_text
@@ -193,8 +200,7 @@ class SecretRegistry(OpenHandsModel):
         try:
             value = source.get_value()
             if value:
-                # Track retrieved value for output masking
-                self._exported_values[name] = value
+                self.track_exported_values({name: value})
             return value
         except (OSError, TimeoutError) as e:
             # Network/IO errors - likely transient, log and return None
