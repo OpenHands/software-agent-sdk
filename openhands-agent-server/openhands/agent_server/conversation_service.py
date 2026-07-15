@@ -17,7 +17,6 @@ from openhands.agent_server.conversation_lease import (
     DEFAULT_LEASE_TTL_SECONDS,
     ConversationLeaseHeldError,
 )
-from openhands.agent_server.default_tools import resolve_default_tools
 from openhands.agent_server.event_service import (
     LEASE_RENEW_INTERVAL_SECONDS,
     EventService,
@@ -50,6 +49,7 @@ from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.mcp.utils import MCPToolProvider
+from openhands.sdk.tool import BROWSER_TOOL_NAME, Tool, is_tool_usable
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
@@ -327,16 +327,22 @@ def _resolve_agent_from_profile(
         # layer (not the SDK resolver) because this server wires the token
         # callback whenever any llm.stream is set; a headless resolver caller
         # that never wires on_token is covered by LLM's graceful degradation.
-        updates: dict[str, Any] = {
-            "llm": settings_config.llm.model_copy(update={"stream": True})
-        }
-        if profile.agent_kind == "openhands" and profile.tools is None:
-            updates["tools"] = resolve_default_tools(
-                enable_sub_agents=settings_config.enable_sub_agents,
-            )
-        settings_config = settings_config.model_copy(update=updates)
+        settings_config = settings_config.model_copy(
+            update={"llm": settings_config.llm.model_copy(update={"stream": True})}
+        )
 
     agent = settings_config.create_agent()
+    # Browser is deliberately absent from the deterministic SDK default
+    # (environment-dependent); this server knows its runtime, so it injects
+    # browser when usable. An explicit profile.tools list is authoritative.
+    if (
+        profile.agent_kind == "openhands"
+        and profile.tools is None
+        and is_tool_usable(BROWSER_TOOL_NAME)
+    ):
+        agent = agent.model_copy(
+            update={"tools": [*agent.tools, Tool(name=BROWSER_TOOL_NAME)]}
+        )
     launched = LaunchedAgentProfile(
         agent_profile_id=profile.id,
         revision=profile.revision,
@@ -756,9 +762,13 @@ class ConversationService:
 
         request = _prepare_request_workspace(request, conversation_id)
 
+        # Dynamically register tools from client's registry
         if request.tool_module_qualnames:
+            import importlib
+
             for tool_name, module_qualname in request.tool_module_qualnames.items():
                 try:
+                    # Import the module to trigger tool auto-registration
                     importlib.import_module(module_qualname)
                     logger.debug(
                         f"Tool '{tool_name}' registered via module '{module_qualname}'"
@@ -768,11 +778,15 @@ class ConversationService:
                         f"Failed to import module '{module_qualname}' for tool "
                         f"'{tool_name}': {e}. Tool will not be available."
                     )
-            logger.info(
-                "Dynamically registered %d tools for conversation %s",
-                len(request.tool_module_qualnames),
-                conversation_id,
-            )
+                    # Continue even if some tools fail to register
+                    # The agent will fail gracefully if it tries to use unregistered
+                    # tools
+            if request.tool_module_qualnames:
+                logger.info(
+                    "Dynamically registered %d tools for conversation %s",
+                    len(request.tool_module_qualnames),
+                    conversation_id,
+                )
 
         # Register client-defined tools (JSON specs, no Python code). The
         # ClientTool *class* is registered statelessly; each tool's schema
