@@ -6,10 +6,11 @@ import asyncio
 import json
 import threading
 import uuid
+from collections.abc import Mapping
 from concurrent.futures import Future
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -25,7 +26,6 @@ from openhands.sdk.agent.acp_agent import (
     _classify_acp_init_error,
     _classify_acp_turn_error,
     _codex_auth_file,
-    _codex_base_url_overrides,
     _codex_model_config_options,
     _estimate_cost_from_tokens,
     _extract_session_models,
@@ -40,6 +40,7 @@ from openhands.sdk.agent.acp_agent import (
     _serialize_tool_content,
     _stringify_acp_error_data,
     _strip_inherited_npm_env,
+    _with_codex_base_url,
 )
 from openhands.sdk.agent.acp_models import ACPModelInfo
 from openhands.sdk.agent.base import AgentBase
@@ -57,6 +58,7 @@ from openhands.sdk.event import (
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import ImageContent, Message, TextContent
+from openhands.sdk.mcp.config import coerce_mcp_config
 from openhands.sdk.secret import SecretSource
 from openhands.sdk.skills import KeywordTrigger, Skill
 from openhands.sdk.tool.builtins.finish import FinishAction
@@ -88,7 +90,16 @@ class _FakeLookupSecret(SecretSource):
 
 
 def _make_agent(**kwargs) -> ACPAgent:
+    if isinstance(kwargs.get("mcp_config"), dict):
+        mcp_config = kwargs["mcp_config"]
+        servers = mcp_config.get("mcpServers", mcp_config)
+        kwargs["mcp_config"] = coerce_mcp_config(servers)
     return ACPAgent(acp_command=["echo", "test"], **kwargs)
+
+
+def _agent_conn(agent: ACPAgent) -> Any:
+    assert agent._conn is not None
+    return cast(Any, agent._conn)
 
 
 def _make_state(tmp_path) -> ConversationState:
@@ -254,12 +265,12 @@ class TestACPAgentValidation:
         """
         agent = ACPAgent(
             acp_command=["echo"],
-            mcp_config={"mcpServers": {"test": {"command": "echo"}}},
+            mcp_config=coerce_mcp_config({"test": {"command": "echo"}}),
         )
-        # Should not raise; supports_openhands_mcp stays False (no in-process
-        # tools — the ACP server owns the connection).
+        # Should not raise; ACP receives MCP servers at session creation instead
+        # of OpenHands creating in-process runtime MCP tools.
         self._init_with_patches(agent, tmp_path)
-        assert agent.supports_openhands_mcp is False
+        assert agent.supports_openhands_tools is False
 
     def test_allows_agent_context_for_prompt_extensions(self, tmp_path):
         agent = ACPAgent(
@@ -1637,7 +1648,7 @@ class TestACPAgentStep:
         mock_client.get_turn_usage_update = MagicMock(return_value=object())
         agent._client = mock_client
         agent._conn = MagicMock()
-        agent._conn.prompt = AsyncMock(return_value=None)
+        _agent_conn(agent).prompt = AsyncMock(return_value=None)
         agent._session_id = "test-session"
 
         def _fake_run_async(coro_factory, **_kwargs):
@@ -1684,9 +1695,10 @@ class TestACPAgentStep:
 
         agent.step(conversation, on_event=lambda _: None)
 
-        prompt_call = agent._conn.prompt.await_args
+        prompt_call = _agent_conn(agent).prompt.await_args
         assert prompt_call is not None
-        prompt_blocks = prompt_call.args[0]
+        assert prompt_call.kwargs["session_id"] == "test-session"
+        prompt_blocks = prompt_call.kwargs["prompt"]
         prompt_text = "\n\n".join(b.text for b in prompt_blocks if hasattr(b, "text"))
         assert "Review this PR." in prompt_text
         assert "<name>review</name>" in prompt_text
@@ -1734,10 +1746,11 @@ class TestACPAgentStep:
 
         agent.step(conversation, on_event=lambda _: None)
 
-        prompt_call = agent._conn.prompt.await_args
+        prompt_call = _agent_conn(agent).prompt.await_args
         assert prompt_call is not None
+        assert prompt_call.kwargs["session_id"] == "test-session"
         prompt_text = "\n\n".join(
-            b.text for b in prompt_call.args[0] if hasattr(b, "text")
+            b.text for b in prompt_call.kwargs["prompt"] if hasattr(b, "text")
         )
         assert "Review this PR." in prompt_text
         assert "<REPO_CONTEXT>" in prompt_text
@@ -1792,10 +1805,11 @@ class TestACPAgentStep:
 
         agent.step(conversation, on_event=lambda _: None)
 
-        prompt_call = agent._conn.prompt.await_args
+        prompt_call = _agent_conn(agent).prompt.await_args
         assert prompt_call is not None
+        assert prompt_call.kwargs["session_id"] == "test-session"
         prompt_text = "\n\n".join(
-            b.text for b in prompt_call.args[0] if hasattr(b, "text")
+            b.text for b in prompt_call.kwargs["prompt"] if hasattr(b, "text")
         )
         assert "Legacy triggered review instructions." in prompt_text
         assert "AgentSkills triggered review instructions." in prompt_text
@@ -1825,8 +1839,11 @@ class TestACPAgentStep:
 
         agent.step(conversation, on_event=lambda _: None)
 
+        prompt_call = _agent_conn(agent).prompt.await_args
+        assert prompt_call is not None
+        assert prompt_call.kwargs["session_id"] == "test-session"
         prompt_text = "\n\n".join(
-            b.text for b in agent._conn.prompt.await_args.args[0] if hasattr(b, "text")
+            b.text for b in prompt_call.kwargs["prompt"] if hasattr(b, "text")
         )
         assert "Team rules." not in prompt_text
 
@@ -2054,14 +2071,14 @@ class TestACPAgentAstep:
         agent._client = mock_client
         agent._conn = MagicMock()
 
-        async def _fake_prompt(prompt_blocks, session_id):
+        async def _fake_prompt(session_id, prompt):  # noqa: ARG001
             # Must execute on the portal loop's thread, not the caller's
             # — proves we actually crossed the loop boundary.
             prompt_thread_id.append(threading.get_ident())
             mock_client.accumulated_text.append("answer")
             return None
 
-        agent._conn.prompt = _fake_prompt
+        _agent_conn(agent).prompt = _fake_prompt
         agent._session_id = "test-session"
 
         executor = AsyncExecutor()
@@ -2110,11 +2127,11 @@ class TestACPAgentAstep:
         agent._session_id = "test-session"
         agent._restart_session_on_next_turn = True
 
-        async def _fake_prompt(prompt_blocks, session_id):  # noqa: ARG001
+        async def _fake_prompt(session_id, prompt):  # noqa: ARG001
             mock_client.accumulated_text.append("answer")
             return None
 
-        agent._conn.prompt = _fake_prompt
+        _agent_conn(agent).prompt = _fake_prompt
 
         executor = AsyncExecutor()
 
@@ -2180,7 +2197,7 @@ class TestACPAgentAstep:
         agent._conn = MagicMock()
         agent._session_id = "test-session"
 
-        async def _fake_prompt(prompt_blocks, session_id):  # noqa: ARG001
+        async def _fake_prompt(session_id, prompt):  # noqa: ARG001
             # ~0.5s total (> 0.3s idle window), one update every 0.02s so the
             # deadline keeps resetting; then complete the turn.
             for _ in range(25):
@@ -2191,7 +2208,7 @@ class TestACPAgentAstep:
                 await mock_client.session_update(session_id, chunk)
             return None
 
-        agent._conn.prompt = _fake_prompt
+        _agent_conn(agent).prompt = _fake_prompt
 
         executor = AsyncExecutor()
         try:
@@ -2234,10 +2251,10 @@ class TestACPAgentAstep:
         agent._conn = MagicMock()
         agent._session_id = "test-session"
 
-        async def _failing_prompt(prompt_blocks, session_id):
+        async def _failing_prompt(session_id, prompt):  # noqa: ARG001
             raise RuntimeError("simulated upstream failure")
 
-        agent._conn.prompt = _failing_prompt
+        _agent_conn(agent).prompt = _failing_prompt
 
         executor = AsyncExecutor()
         try:
@@ -2381,7 +2398,7 @@ class TestACPAgentAstep:
             prompt_released = threading.Event()
             caller_loop = asyncio.get_running_loop()
 
-            async def _fake_prompt(prompt_blocks, session_id):
+            async def _fake_prompt(session_id, prompt):  # noqa: ARG001
                 # Seed an in-flight tool call AFTER _reset_client_for_turn
                 # has run (which clears accumulated_tool_calls).  In
                 # production the bridge accumulates these inside
@@ -2412,8 +2429,8 @@ class TestACPAgentAstep:
                 assert session_id == "test-session"
                 caller_loop.call_soon_threadsafe(cancel_called.set)
 
-            agent._conn.prompt = _fake_prompt
-            agent._conn.cancel = _fake_cancel
+            _agent_conn(agent).prompt = _fake_prompt
+            _agent_conn(agent).cancel = _fake_cancel
             agent._session_id = "test-session"
 
             task = asyncio.create_task(
@@ -2482,7 +2499,7 @@ class TestACPAgentAstep:
             prompt_released = threading.Event()
             caller_loop = asyncio.get_running_loop()
 
-            async def _fake_prompt(prompt_blocks, session_id):  # noqa: ARG001
+            async def _fake_prompt(session_id, prompt):  # noqa: ARG001
                 caller_loop.call_soon_threadsafe(prompt_entered.set)
                 released = await asyncio.to_thread(prompt_released.wait, 10.0)
                 assert released
@@ -2500,8 +2517,8 @@ class TestACPAgentAstep:
                 caller_loop.call_soon_threadsafe(cancel_called.set)
                 prompt_released.set()
 
-            agent._conn.prompt = _fake_prompt
-            agent._conn.cancel = _fake_cancel
+            _agent_conn(agent).prompt = _fake_prompt
+            _agent_conn(agent).cancel = _fake_cancel
             agent._session_id = "test-session"
 
             task = asyncio.create_task(
@@ -2550,7 +2567,7 @@ class TestACPAgentAstep:
             prompt_released = threading.Event()
             caller_loop = asyncio.get_running_loop()
 
-            async def _fake_prompt(prompt_blocks, session_id):  # noqa: ARG001
+            async def _fake_prompt(session_id, prompt):  # noqa: ARG001
                 caller_loop.call_soon_threadsafe(prompt_entered.set)
                 released = await asyncio.to_thread(prompt_released.wait, 10.0)
                 assert released
@@ -2561,8 +2578,8 @@ class TestACPAgentAstep:
                 caller_loop.call_soon_threadsafe(cancel_called.set)
                 prompt_released.set()
 
-            agent._conn.prompt = _fake_prompt
-            agent._conn.cancel = _fake_cancel
+            _agent_conn(agent).prompt = _fake_prompt
+            _agent_conn(agent).cancel = _fake_cancel
             agent._session_id = "test-session"
 
             task = asyncio.create_task(
@@ -2611,7 +2628,7 @@ class TestACPAgentAstep:
             prompt_released = threading.Event()
             caller_loop = asyncio.get_running_loop()
 
-            async def _fake_prompt(prompt_blocks, session_id):  # noqa: ARG001
+            async def _fake_prompt(session_id, prompt):  # noqa: ARG001
                 caller_loop.call_soon_threadsafe(prompt_entered.set)
                 released = await asyncio.to_thread(prompt_released.wait, 10.0)
                 assert released
@@ -2625,8 +2642,8 @@ class TestACPAgentAstep:
                 assert not future.done()
                 raise asyncio.CancelledError
 
-            agent._conn.prompt = _fake_prompt
-            agent._conn.cancel = _fake_cancel
+            _agent_conn(agent).prompt = _fake_prompt
+            _agent_conn(agent).cancel = _fake_cancel
             agent._session_id = "test-session"
 
             with patch.object(
@@ -2672,7 +2689,7 @@ class TestACPAgentAstep:
             prompt_released = threading.Event()
             caller_loop = asyncio.get_running_loop()
 
-            async def _fake_prompt(prompt_blocks, session_id):  # noqa: ARG001
+            async def _fake_prompt(session_id, prompt):  # noqa: ARG001
                 caller_loop.call_soon_threadsafe(prompt_entered.set)
                 released = await asyncio.to_thread(prompt_released.wait, 10.0)
                 assert released
@@ -2681,7 +2698,7 @@ class TestACPAgentAstep:
             async def _raise_during_cancel_send(self):  # noqa: ARG001
                 raise asyncio.CancelledError
 
-            agent._conn.prompt = _fake_prompt
+            _agent_conn(agent).prompt = _fake_prompt
             agent._session_id = "test-session"
 
             with patch.object(
@@ -2769,7 +2786,7 @@ class TestACPAgentAstep:
             prompt_released = threading.Event()
             caller_loop = asyncio.get_running_loop()
 
-            async def _fake_prompt(prompt_blocks, session_id):
+            async def _fake_prompt(session_id, prompt):  # noqa: ARG001
                 caller_loop.call_soon_threadsafe(prompt_entered.set)
                 released = await asyncio.to_thread(prompt_released.wait, 10.0)
                 assert released
@@ -2778,8 +2795,8 @@ class TestACPAgentAstep:
             async def _fake_cancel(session_id):
                 assert session_id == "test-session"
 
-            agent._conn.prompt = _fake_prompt
-            agent._conn.cancel = _fake_cancel
+            _agent_conn(agent).prompt = _fake_prompt
+            _agent_conn(agent).cancel = _fake_cancel
             agent._session_id = "test-session"
 
             task = asyncio.create_task(
@@ -2839,11 +2856,11 @@ class TestACPAgentAstep:
         agent._client = mock_client
         agent._conn = MagicMock()
 
-        async def _fake_prompt(prompt_blocks, session_id):
+        async def _fake_prompt(session_id, prompt):  # noqa: ARG001
             mock_client.accumulated_text.append("done")
             return None
 
-        agent._conn.prompt = _fake_prompt
+        _agent_conn(agent).prompt = _fake_prompt
         agent._session_id = "test-session"
 
         executor = AsyncExecutor()
@@ -3182,7 +3199,7 @@ class TestACPAgentTelemetry:
         def _run_async(coro_fn, **_kwargs):
             loop = asyncio.new_event_loop()
             try:
-                agent._conn.prompt = _fake_prompt
+                _agent_conn(agent).prompt = _fake_prompt
                 return loop.run_until_complete(coro_fn())
             finally:
                 loop.close()
@@ -4071,8 +4088,10 @@ class TestACPAgentAskAgent:
             """Simulate the async execution synchronously."""
             loop = asyncio.new_event_loop()
             try:
-                agent._conn.fork_session = AsyncMock(return_value=mock_fork_response)
-                agent._conn.prompt = _fake_prompt
+                _agent_conn(agent).fork_session = AsyncMock(
+                    return_value=mock_fork_response
+                )
+                _agent_conn(agent).prompt = _fake_prompt
                 return loop.run_until_complete(coro_fn())
             finally:
                 loop.close()
@@ -4115,8 +4134,10 @@ class TestACPAgentAskAgent:
         def _fake_run_async(coro_fn, **_kwargs):
             loop = asyncio.new_event_loop()
             try:
-                agent._conn.fork_session = AsyncMock(return_value=mock_fork_response)
-                agent._conn.prompt = _fake_prompt
+                _agent_conn(agent).fork_session = AsyncMock(
+                    return_value=mock_fork_response
+                )
+                _agent_conn(agent).prompt = _fake_prompt
                 return loop.run_until_complete(coro_fn())
             finally:
                 loop.close()
@@ -4159,8 +4180,10 @@ class TestACPAgentAskAgent:
         def _fake_run_async(coro_fn, **_kwargs):
             loop = asyncio.new_event_loop()
             try:
-                agent._conn.fork_session = AsyncMock(return_value=mock_fork_response)
-                agent._conn.prompt = _fake_prompt
+                _agent_conn(agent).fork_session = AsyncMock(
+                    return_value=mock_fork_response
+                )
+                _agent_conn(agent).prompt = _fake_prompt
                 return loop.run_until_complete(coro_fn())
             finally:
                 loop.close()
@@ -4260,27 +4283,20 @@ class TestSelectAuthMethod:
         return m
 
     def test_openai_api_key(self):
-        methods = [
-            self._make_auth_method("codex-api-key"),
-            self._make_auth_method("openai-api-key"),
-        ]
+        methods = [self._make_auth_method("api-key")]
         env = {"OPENAI_API_KEY": "sk-test"}
-        assert _select_auth_method(methods, env) == "openai-api-key"
+        assert _select_auth_method(methods, env) == "api-key"
 
-    def test_codex_api_key_preferred_over_openai(self):
-        """CODEX_API_KEY is checked first (appears first in the map)."""
-        methods = [
-            self._make_auth_method("codex-api-key"),
-            self._make_auth_method("openai-api-key"),
-        ]
-        env = {"CODEX_API_KEY": "key1", "OPENAI_API_KEY": "key2"}
-        assert _select_auth_method(methods, env) == "codex-api-key"
+    def test_codex_api_key(self):
+        methods = [self._make_auth_method("api-key")]
+        env = {"CODEX_API_KEY": "key1"}
+        assert _select_auth_method(methods, env) == "api-key"
 
     def test_chatgpt_preferred_over_api_key(self, tmp_path):
         """ChatGPT subscription login takes precedence over API keys."""
         methods = [
-            self._make_auth_method("chatgpt"),
-            self._make_auth_method("openai-api-key"),
+            self._make_auth_method("chat-gpt"),
+            self._make_auth_method("api-key"),
         ]
         auth_dir = tmp_path / ".codex"
         auth_dir.mkdir()
@@ -4288,35 +4304,35 @@ class TestSelectAuthMethod:
 
         env = {"OPENAI_API_KEY": "sk-test"}
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
-            assert _select_auth_method(methods, env) == "chatgpt"
+            assert _select_auth_method(methods, env) == "chat-gpt"
 
     def test_api_key_fallback_when_no_chatgpt_file(self, tmp_path):
         """Falls back to API key when chatgpt is offered but auth file absent."""
         methods = [
-            self._make_auth_method("chatgpt"),
-            self._make_auth_method("openai-api-key"),
+            self._make_auth_method("chat-gpt"),
+            self._make_auth_method("api-key"),
         ]
         env = {"OPENAI_API_KEY": "sk-test"}
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
-            assert _select_auth_method(methods, env) == "openai-api-key"
+            assert _select_auth_method(methods, env) == "api-key"
 
     def test_no_matching_credentials(self, tmp_path):
         methods = [
-            self._make_auth_method("chatgpt"),
-            self._make_auth_method("openai-api-key"),
+            self._make_auth_method("chat-gpt"),
+            self._make_auth_method("api-key"),
         ]
         env = {"UNRELATED": "value"}
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
             assert _select_auth_method(methods, env) is None
 
     def test_chatgpt_auth_file(self, tmp_path):
-        methods = [self._make_auth_method("chatgpt")]
+        methods = [self._make_auth_method("chat-gpt")]
         auth_dir = tmp_path / ".codex"
         auth_dir.mkdir()
         (auth_dir / "auth.json").write_text(_CHATGPT_AUTH_JSON, encoding="utf-8")
 
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
-            assert _select_auth_method(methods, {}) == "chatgpt"
+            assert _select_auth_method(methods, {}) == "chat-gpt"
 
     def test_gemini_oauth_personal_when_creds_file_present(self, tmp_path):
         """gemini-cli's OAuth login is selected when ~/.gemini/oauth_creds.json
@@ -4371,7 +4387,7 @@ class TestSelectAuthMethod:
 
     def test_method_not_in_server_list(self, tmp_path):
         """Even if env var is set, method must be offered by server."""
-        methods = [self._make_auth_method("chatgpt")]
+        methods = [self._make_auth_method("chat-gpt")]
         env = {"OPENAI_API_KEY": "sk-test"}
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
             assert _select_auth_method(methods, env) is None
@@ -4384,13 +4400,13 @@ class TestSelectAuthMethod:
         codex_home = tmp_path / "conv" / "acp" / "codex"
         codex_home.mkdir(parents=True)
         (codex_home / "auth.json").write_text(_CHATGPT_AUTH_JSON, encoding="utf-8")
-        methods = [self._make_auth_method("chatgpt")]
+        methods = [self._make_auth_method("chat-gpt")]
         empty_home = tmp_path / "home"
         empty_home.mkdir()
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=empty_home):
             assert (
                 _select_auth_method(methods, {"CODEX_HOME": str(codex_home)})
-                == "chatgpt"
+                == "chat-gpt"
             )
 
     def test_codex_home_without_auth_file_falls_back(self, tmp_path):
@@ -4399,14 +4415,14 @@ class TestSelectAuthMethod:
         codex_home = tmp_path / "empty_codex_home"
         codex_home.mkdir()
         methods = [
-            self._make_auth_method("chatgpt"),
-            self._make_auth_method("openai-api-key"),
+            self._make_auth_method("chat-gpt"),
+            self._make_auth_method("api-key"),
         ]
         env = {"CODEX_HOME": str(codex_home), "OPENAI_API_KEY": "sk-test"}
         empty_home = tmp_path / "home"
         empty_home.mkdir()
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=empty_home):
-            assert _select_auth_method(methods, env) == "openai-api-key"
+            assert _select_auth_method(methods, env) == "api-key"
 
     def test_codex_auth_file_honors_codex_home(self, tmp_path):
         """_codex_auth_file points at $CODEX_HOME/auth.json when set, else
@@ -4432,14 +4448,14 @@ class TestSelectAuthMethod:
             encoding="utf-8",
         )
         methods = [
-            self._make_auth_method("chatgpt"),
-            self._make_auth_method("openai-api-key"),
+            self._make_auth_method("chat-gpt"),
+            self._make_auth_method("api-key"),
         ]
         env = {"CODEX_HOME": str(codex_home), "OPENAI_API_KEY": "sk-test"}
         empty_home = tmp_path / "home"
         empty_home.mkdir()
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=empty_home):
-            assert _select_auth_method(methods, env) == "openai-api-key"
+            assert _select_auth_method(methods, env) == "api-key"
 
     def test_malformed_auth_file_falls_back_to_api_key(self, tmp_path):
         """A non-JSON / unreadable auth.json must not trip chatgpt selection."""
@@ -4447,14 +4463,14 @@ class TestSelectAuthMethod:
         codex_home.mkdir()
         (codex_home / "auth.json").write_text("not-json{", encoding="utf-8")
         methods = [
-            self._make_auth_method("chatgpt"),
-            self._make_auth_method("openai-api-key"),
+            self._make_auth_method("chat-gpt"),
+            self._make_auth_method("api-key"),
         ]
         env = {"CODEX_HOME": str(codex_home), "OPENAI_API_KEY": "sk-test"}
         empty_home = tmp_path / "home"
         empty_home.mkdir()
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=empty_home):
-            assert _select_auth_method(methods, env) == "openai-api-key"
+            assert _select_auth_method(methods, env) == "api-key"
 
     # -- Gemini Vertex AI service-account detection (issue #1020) ----------
 
@@ -4501,55 +4517,96 @@ class TestSelectAuthMethod:
 
 
 # ---------------------------------------------------------------------------
-# _codex_base_url_overrides (codex ignores OPENAI_BASE_URL)
+# _with_codex_base_url
 # ---------------------------------------------------------------------------
 
 
-class TestCodexBaseUrlOverrides:
-    def test_pins_base_url_for_codex(self):
-        # The documented one-liner: override the built-in openai provider's URL.
-        ov = _codex_base_url_overrides(
-            "codex-acp", [], {"OPENAI_BASE_URL": "https://proxy.example"}
-        )
-        assert ov == ["-c", 'openai_base_url="https://proxy.example"']
-
-    def test_detects_codex_in_any_token(self):
-        # e.g. launched via npx with the scoped package name
-        ov = _codex_base_url_overrides(
+class TestWithCodexBaseUrl:
+    def test_current_adapter_uses_child_config_without_mutating_input(self):
+        env = {
+            "OPENAI_BASE_URL": "https://proxy.example",
+            "OPENAI_API_KEY": "sk-test",
+        }
+        original = env.copy()
+        result = _with_codex_base_url(
             "npx",
-            ["-y", "@zed-industries/codex-acp@0.15.0"],
-            {"OPENAI_BASE_URL": "https://p"},
+            ["-y", "@agentclientprotocol/codex-acp@1.1.2"],
+            env,
         )
-        assert ov == ["-c", 'openai_base_url="https://p"']
+        assert json.loads(result["CODEX_CONFIG"]) == {
+            "openai_base_url": "https://proxy.example"
+        }
+        assert env == original
+        assert "CODEX_CONFIG" not in env
+
+    def test_preinstalled_current_adapter_uses_child_config(self):
+        env = {"OPENAI_BASE_URL": "https://proxy.example"}
+        result = _with_codex_base_url("codex-acp", [], env)
+        assert json.loads(result["CODEX_CONFIG"])["openai_base_url"] == (
+            "https://proxy.example"
+        )
+
+    def test_existing_codex_config_is_merged_in_returned_mapping(self):
+        env = {
+            "OPENAI_BASE_URL": "https://proxy.example",
+            "CODEX_CONFIG": json.dumps({"model": "gpt-5.5"}),
+        }
+        original = env.copy()
+        result = _with_codex_base_url("codex-acp", [], env)
+        assert json.loads(result["CODEX_CONFIG"]) == {
+            "model": "gpt-5.5",
+            "openai_base_url": "https://proxy.example",
+        }
+        assert env == original
+
+    def test_current_adapter_preserves_explicit_codex_base_url(self):
+        env = {
+            "OPENAI_BASE_URL": "https://proxy.example",
+            "CODEX_CONFIG": json.dumps({"openai_base_url": "https://explicit"}),
+        }
+        result = _with_codex_base_url(
+            "npx",
+            ["-y", "@agentclientprotocol/codex-acp@1.1.2"],
+            env,
+        )
+        assert json.loads(result["CODEX_CONFIG"])["openai_base_url"] == (
+            "https://explicit"
+        )
+        assert result == env
+
+    def test_invalid_codex_config_is_left_to_adapter(self):
+        env = {
+            "OPENAI_BASE_URL": "https://proxy.example",
+            "CODEX_CONFIG": "not-json",
+        }
+        result = _with_codex_base_url(
+            "npx",
+            ["-y", "@agentclientprotocol/codex-acp@1.1.2"],
+            env,
+        )
+        assert result == env
 
     def test_noop_for_non_codex(self):
-        assert (
-            _codex_base_url_overrides(
-                "claude-agent-acp", [], {"OPENAI_BASE_URL": "https://p"}
-            )
-            == []
-        )
+        env = {"OPENAI_BASE_URL": "https://p"}
+        assert _with_codex_base_url("claude-agent-acp", [], env) == env
 
     def test_noop_when_no_base_url(self):
-        assert _codex_base_url_overrides("codex-acp", [], {}) == []
+        env: dict[str, str] = {}
+        assert _with_codex_base_url("codex-acp", [], env) == env
 
-    def test_noop_when_caller_already_set_base_url(self):
-        args = ["-c", 'openai_base_url="https://other"']
-        assert (
-            _codex_base_url_overrides(
-                "codex-acp", args, {"OPENAI_BASE_URL": "https://p"}
-            )
-            == []
-        )
+    def test_noop_when_model_provider_is_explicit(self):
+        env = {
+            "OPENAI_BASE_URL": "https://p",
+            "MODEL_PROVIDER": "custom",
+        }
+        assert _with_codex_base_url("codex-acp", [], env) == env
 
-    def test_noop_when_caller_already_set_provider(self):
-        args = ["-c", 'model_provider="custom"']
-        assert (
-            _codex_base_url_overrides(
-                "codex-acp", args, {"OPENAI_BASE_URL": "https://p"}
-            )
-            == []
-        )
+    def test_noop_when_config_model_provider_is_explicit(self):
+        env = {
+            "OPENAI_BASE_URL": "https://p",
+            "CODEX_CONFIG": json.dumps({"model_provider": "custom"}),
+        }
+        assert _with_codex_base_url("codex-acp", [], env) == env
 
 
 class TestCodexModelConfigOptions:
@@ -4574,8 +4631,8 @@ class TestCodexModelConfigOptions:
 class TestMaybeSetSessionModel:
     @pytest.mark.asyncio
     async def test_set_session_model_mechanism(self):
-        # ``via_config_option=False`` (gemini-cli, older codex/claude with the
-        # ``models`` capability) applies the model via ``set_session_model``.
+        # ``via_config_option=False`` (gemini-cli's ``models`` capability)
+        # applies the model via ``set_session_model``.
         conn = AsyncMock()
         applied = await _maybe_set_session_model(
             conn, "codex-acp", "session-1", "gpt-5.4", via_config_option=False
@@ -4590,7 +4647,7 @@ class TestMaybeSetSessionModel:
 
     @pytest.mark.asyncio
     async def test_set_config_option_mechanism(self):
-        # ``via_config_option=True`` (codex-acp 0.16+, claude-agent-acp 0.44+)
+        # ``via_config_option=True`` (codex-acp and claude-agent-acp)
         # applies the model via ``set_config_option(configId="model")``.
         conn = AsyncMock()
         applied = await _maybe_set_session_model(
@@ -4610,8 +4667,8 @@ class TestMaybeSetSessionModel:
 
     @pytest.mark.asyncio
     async def test_codex_config_option_splits_reasoning_effort(self):
-        # Canvas may persist Codex ids as ``model/effort``; codex-acp 0.16
-        # exposes effort as its own config option.
+        # Canvas may persist Codex ids as ``model/effort``; codex-acp exposes
+        # effort as its own config option.
         conn = AsyncMock()
         applied = await _maybe_set_session_model(
             conn, "codex-acp", "session-1", "gpt-5.4/low", via_config_option=True
@@ -4722,7 +4779,7 @@ class TestReapplySessionModelOnResume:
 
     @pytest.mark.asyncio
     async def test_reapply_via_set_config_option_mechanism(self):
-        # codex-acp 0.16+/claude-agent-acp 0.44+ reapply via
+        # codex-acp/claude-agent-acp 0.44+ reapply via
         # ``set_config_option(configId="model")`` with the bare preset id.
         conn = AsyncMock()
         applied = await _reapply_session_model_on_resume(
@@ -4915,31 +4972,31 @@ class TestSetACPModel:
         # Default (models-capability) session ⇒ set_session_model, id as-is.
         agent = self._wire(_make_agent(), "codex-acp")
         agent.set_acp_model("gpt-5.5")
-        agent._conn.set_session_model.assert_awaited_once_with(
+        _agent_conn(agent).set_session_model.assert_awaited_once_with(
             model_id="gpt-5.5", session_id="sess-1"
         )
-        agent._conn.set_config_option.assert_not_called()
+        _agent_conn(agent).set_config_option.assert_not_called()
         agent._executor.run_async.assert_called_once()
         # Sentinel LLM + metrics reflect the live model for cost/token tracking.
         assert agent.llm.model == "gpt-5.5"
         assert agent.llm.metrics.model_name == "gpt-5.5"
 
     def test_switches_codex_via_config_option_single_call(self):
-        # codex-acp 0.16 configOptions: the bare preset id applies as a single
+        # codex-acp configOptions: the bare preset id applies as a single
         # `model` selection.
         agent = self._wire(_make_agent(), "codex-acp", via_config_option=True)
         agent.set_acp_model("gpt-5.5")
-        agent._conn.set_config_option.assert_awaited_once_with(
+        _agent_conn(agent).set_config_option.assert_awaited_once_with(
             config_id="model", value="gpt-5.5", session_id="sess-1"
         )
-        agent._conn.set_session_model.assert_not_called()
+        _agent_conn(agent).set_session_model.assert_not_called()
         assert agent.llm.model == "gpt-5.5"
         assert agent._current_model_id == "gpt-5.5"
 
     def test_switches_codex_via_config_option_splits_reasoning_effort(self):
         agent = self._wire(_make_agent(), "codex-acp", via_config_option=True)
         agent.set_acp_model("gpt-5.5/high")
-        agent._conn.set_config_option.assert_has_awaits(
+        _agent_conn(agent).set_config_option.assert_has_awaits(
             [
                 call(config_id="model", value="gpt-5.5", session_id="sess-1"),
                 call(
@@ -4949,8 +5006,8 @@ class TestSetACPModel:
                 ),
             ]
         )
-        assert agent._conn.set_config_option.await_count == 2
-        agent._conn.set_session_model.assert_not_called()
+        assert _agent_conn(agent).set_config_option.await_count == 2
+        _agent_conn(agent).set_session_model.assert_not_called()
         assert agent.llm.model == "gpt-5.5/high"
         assert agent._current_model_id == "gpt-5.5/high"
 
@@ -4958,7 +5015,7 @@ class TestSetACPModel:
         # A bare id (no `/`) applies as a single `model` selection — no effort.
         agent = self._wire(_make_agent(), "claude-agent-acp", via_config_option=True)
         agent.set_acp_model("sonnet")
-        agent._conn.set_config_option.assert_awaited_once_with(
+        _agent_conn(agent).set_config_option.assert_awaited_once_with(
             config_id="model", value="sonnet", session_id="sess-1"
         )
         assert agent._current_model_id == "sonnet"
@@ -4967,12 +5024,12 @@ class TestSetACPModel:
         # No cross-mechanism fallback: a -32601 surfaces as a ValueError naming
         # the advertised mechanism, and the other call is never attempted.
         agent = self._wire(_make_agent(), "codex-acp", via_config_option=False)
-        agent._conn.set_session_model.side_effect = ACPRequestError(
+        _agent_conn(agent).set_session_model.side_effect = ACPRequestError(
             code=-32601, message="Method not found"
         )
         with pytest.raises(ValueError, match="rejected set_session_model"):
             agent.set_acp_model("gpt-5.5")
-        agent._conn.set_config_option.assert_not_called()
+        _agent_conn(agent).set_config_option.assert_not_called()
         agent._executor.run_async.assert_called_once()
         # Mechanism + sentinel model are left unchanged on a failed switch.
         assert agent._model_via_config_option is False
@@ -4982,7 +5039,7 @@ class TestSetACPModel:
         # A -32602 invalid-params is a real client error, not a wrong-mechanism
         # signal: surface it as ValueError without a second call.
         agent = self._wire(_make_agent(), "codex-acp", via_config_option=True)
-        agent._conn.set_config_option.side_effect = ACPRequestError(
+        _agent_conn(agent).set_config_option.side_effect = ACPRequestError(
             code=-32602, message="Invalid params"
         )
         with pytest.raises(ValueError, match="rejected set_config_option"):
@@ -4992,7 +5049,7 @@ class TestSetACPModel:
     def test_claude_provider_supports_runtime_switch(self):
         agent = self._wire(_make_agent(), "claude-agent-acp")
         agent.set_acp_model("claude-haiku-4-5-20251001")
-        agent._conn.set_session_model.assert_called_once_with(
+        _agent_conn(agent).set_session_model.assert_called_once_with(
             model_id="claude-haiku-4-5-20251001", session_id="sess-1"
         )
 
@@ -5001,13 +5058,13 @@ class TestSetACPModel:
         # the call; the ACP layer errors if it isn't actually supported.
         agent = self._wire(_make_agent(), "some-custom-acp")
         agent.set_acp_model("whatever")
-        agent._conn.set_session_model.assert_called_once()
+        _agent_conn(agent).set_session_model.assert_called_once()
 
     def test_rejects_empty_model(self):
         agent = self._wire(_make_agent(), "codex-acp")
         with pytest.raises(ValueError, match="non-empty"):
             agent.set_acp_model("   ")
-        agent._conn.set_session_model.assert_not_called()
+        _agent_conn(agent).set_session_model.assert_not_called()
 
     def test_raises_before_session_initialized(self):
         agent = _make_agent()  # no _conn / _session_id / _executor
@@ -5036,7 +5093,7 @@ class TestSetACPModel:
         ):
             with pytest.raises(ValueError, match="does not support runtime"):
                 agent.set_acp_model("x")
-        agent._conn.set_session_model.assert_not_called()
+        _agent_conn(agent).set_session_model.assert_not_called()
 
     def test_translates_acp_request_error_to_value_error(self):
         # A protocol-level rejection (e.g. method-not-found on a custom server,
@@ -5045,7 +5102,7 @@ class TestSetACPModel:
         # The rejection is raised by the conn (driven through the real apply
         # coroutine), exercising set_acp_model's actual error path.
         agent = self._wire(_make_agent(), "codex-acp")
-        agent._conn.set_session_model.side_effect = ACPRequestError(
+        _agent_conn(agent).set_session_model.side_effect = ACPRequestError(
             code=-32601, message="method not found"
         )
         with pytest.raises(ValueError, match="rejected set_session_model"):
@@ -5059,7 +5116,7 @@ class TestSetACPModel:
         # than be mislabeled as a 400-class ValueError, mirroring the retriable
         # handling on the prompt path.
         agent = self._wire(_make_agent(), "codex-acp")
-        agent._conn.set_session_model.side_effect = ACPRequestError(
+        _agent_conn(agent).set_session_model.side_effect = ACPRequestError(
             code=-32603, message="internal error"
         )
         with pytest.raises(ACPRequestError):
@@ -5409,6 +5466,12 @@ class TestExtractTokenUsage:
         response = MagicMock()
         response.usage = None
         response.field_meta = {"quota": {}}
+        assert _extract_token_usage(response) == (0, 0, 0, 0, 0)
+
+    def test_missing_quota_token_count(self):
+        response = MagicMock()
+        response.usage = None
+        response.field_meta = {"quota": {"token_count": None}}
         assert _extract_token_usage(response) == (0, 0, 0, 0, 0)
 
 
@@ -6331,10 +6394,10 @@ class TestACPSessionIdPersistence:
             "acp_session_id": "stored-sess",
             "acp_session_cwd": str(tmp_path),
         }
-        # Named "codex-acp"; any built-in provider routes acp_model through
-        # conn.set_session_model on this path.
+        # The maintained Codex adapter reports its scoped package name; provider
+        # detection still routes acp_model through conn.set_session_model.
         conn = self._make_conn()
-        conn.initialize.return_value.agent_info.name = "codex-acp"
+        conn.initialize.return_value.agent_info.name = "@agentclientprotocol/codex-acp"
         conn.initialize.return_value.auth_methods = []
 
         self._patched_start_acp_server(agent, state, conn=conn)
@@ -6346,7 +6409,7 @@ class TestACPSessionIdPersistence:
             session_id="stored-sess",
         )
         conn.set_session_mode.assert_awaited_once_with(
-            mode_id="full-access",
+            mode_id="agent-full-access",
             session_id="stored-sess",
         )
 
@@ -7121,8 +7184,7 @@ class TestACPAgentCurrentModelIdProperty:
 
         Mirrors the resolution logic in ``_init``: a caller-provided
         ``acp_model`` takes precedence over whatever the server happens to
-        report — both for the ``set_session_model`` path (Codex / Gemini)
-        and the ``session _meta`` path (Claude Code).
+        report, regardless of which protocol model-selection mechanism applies.
         """
         agent = _make_agent(acp_model="gpt-5")
         agent._current_model_id = agent.acp_model or "fallback-from-server"
@@ -7264,8 +7326,7 @@ class TestExtractSessionModelsNormalization:
 class TestConfigOptionModelMechanism:
     """Model selection via the ``model`` ``configOptions`` select.
 
-    codex-acp 0.16+ and claude-agent-acp 0.44+ dropped the UNSTABLE ``models``
-    capability + ``session/set_model`` in favour of a ``model`` config-option
+    Current codex-acp and claude-agent-acp expose a ``model`` config-option
     select driven by ``session/set_config_option``. ``_extract_session_models``
     reads that select and reports the apply mechanism as its third return value
     (``via_config_option``) in the same scan.
@@ -7328,8 +7389,8 @@ class TestConfigOptionModelMechanism:
         assert avail is not None
         assert [m.model_id for m in avail] == ["opus[1m]", "sonnet"]
 
-    def test_models_capability_wins_over_config_option(self):
-        # If a server somehow carries both, the ``models`` capability is used.
+    def test_config_option_wins_over_models_capability(self):
+        # Current codex-acp carries both; use the standard config-option path.
         models = MagicMock()
         models.current_model_id = "from-models"
         models.available_models = []
@@ -7342,9 +7403,11 @@ class TestConfigOptionModelMechanism:
             ],
         )
         cur, avail, via = _extract_session_models(response)
-        assert cur == "from-models"
-        assert avail == []
-        assert via is False
+        assert cur == "from-config"
+        assert avail == [
+            ACPModelInfo(model_id="from-config", name="X", description=None)
+        ]
+        assert via is True
 
     def test_detects_config_option_mechanism(self):
         response = self._response(
@@ -7442,15 +7505,25 @@ _CLAUDE_046_SESSION = {
         _select_dict("effort", "xhigh", ["xhigh", "low"]),
     ],
 }
-_CODEX_016_SESSION = {
+_CODEX_112_SESSION = {
     "sessionId": "sess-codex",
-    "models": None,
+    "models": {
+        "currentModelId": "gpt-5.6-sol[xhigh]",
+        "availableModels": [
+            {"modelId": "gpt-5.6-sol[xhigh]", "name": "GPT-5.6-Sol (xhigh)"},
+            {"modelId": "gpt-5.5[xhigh]", "name": "GPT-5.5 (xhigh)"},
+        ],
+    },
     "configOptions": [
-        _select_dict("mode", "read-only", ["read-only", "full-access"]),
+        _select_dict(
+            "mode",
+            "agent-full-access",
+            ["read-only", "agent", "agent-full-access"],
+        ),
         _select_dict(
             "model",
-            "gpt-5.5",
-            ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"],
+            "gpt-5.6-sol",
+            ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"],
             category="model",
         ),
         _select_dict("reasoning_effort", "xhigh", ["xhigh", "low"]),
@@ -7499,13 +7572,18 @@ class TestDetectionAgainstRealSessionResponses:
         assert avail is not None
         assert [m.model_id for m in avail] == ["default", "opus[1m]", "sonnet", "haiku"]
 
-    def test_codex_016_uses_config_option(self):
-        resp = NewSessionResponse.model_validate(_CODEX_016_SESSION)
+    def test_codex_112_prefers_config_option_over_legacy_models(self):
+        resp = NewSessionResponse.model_validate(_CODEX_112_SESSION)
         cur, avail, via = _extract_session_models(resp)
         assert via is True
-        assert cur == "gpt-5.5"
+        assert cur == "gpt-5.6-sol"
         assert avail is not None
-        assert [m.model_id for m in avail] == ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]
+        assert [m.model_id for m in avail] == [
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-5.5",
+        ]
 
     def test_gemini_046_uses_set_session_model(self):
         resp = NewSessionResponse.model_validate(_GEMINI_046_SESSION)
@@ -7688,6 +7766,11 @@ class TestMcpConfigToAcpServers:
 
         return McpCapabilities(http=http, sse=sse)
 
+    @staticmethod
+    def _config(config: Mapping[str, object]):
+        servers = config.get("mcpServers", config)
+        return coerce_mcp_config(servers)
+
     def test_stdio_always_forwarded(self):
         from acp.schema import McpServerStdio
 
@@ -7701,7 +7784,9 @@ class TestMcpConfigToAcpServers:
             }
         }
         # Even with no advertised remote capabilities, stdio is forwarded.
-        out = _mcp_config_to_acp_servers(cfg, self._caps(http=False, sse=False))
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=False, sse=False)
+        )
         assert len(out) == 1
         srv = out[0]
         assert isinstance(srv, McpServerStdio)
@@ -7722,9 +7807,16 @@ class TestMcpConfigToAcpServers:
             }
         }
         # Dropped when the server doesn't advertise http.
-        assert _mcp_config_to_acp_servers(cfg, self._caps(http=False, sse=False)) == []
+        assert (
+            _mcp_config_to_acp_servers(
+                self._config(cfg), self._caps(http=False, sse=False)
+            )
+            == []
+        )
         # Forwarded when advertised.
-        out = _mcp_config_to_acp_servers(cfg, self._caps(http=True, sse=False))
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=False)
+        )
         assert len(out) == 1
         assert isinstance(out[0], HttpMcpServer)
         assert out[0].type == "http"
@@ -7740,28 +7832,34 @@ class TestMcpConfigToAcpServers:
             "mcpServers": {
                 "remote": {
                     "url": "https://h/mcp",
-                    "auth": "token-y",
+                    "auth": {"strategy": "bearer", "value": "token-y"},
                 }
             }
         }
-        out = _mcp_config_to_acp_servers(cfg, self._caps(http=True, sse=False))
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=False)
+        )
         assert len(out) == 1
         assert isinstance(out[0], HttpMcpServer)
         assert [(h.name, h.value) for h in out[0].headers] == [
             ("Authorization", "Bearer token-y")
         ]
 
-    def test_http_auth_does_not_override_authorization_header(self):
+    def test_http_header_auth_forwards_authorization_header(self):
         cfg = {
             "mcpServers": {
                 "remote": {
                     "url": "https://h/mcp",
-                    "headers": {"authorization": "Bearer explicit"},
-                    "auth": "token-y",
+                    "auth": {
+                        "strategy": "header",
+                        "headers": {"authorization": "Bearer explicit"},
+                    },
                 }
             }
         }
-        out = _mcp_config_to_acp_servers(cfg, self._caps(http=True, sse=False))
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=False)
+        )
         assert [(h.name, h.value) for h in out[0].headers] == [
             ("authorization", "Bearer explicit")
         ]
@@ -7770,8 +7868,15 @@ class TestMcpConfigToAcpServers:
         from acp.schema import SseMcpServer
 
         cfg = {"mcpServers": {"s": {"url": "https://s/sse", "transport": "sse"}}}
-        assert _mcp_config_to_acp_servers(cfg, self._caps(http=True, sse=False)) == []
-        out = _mcp_config_to_acp_servers(cfg, self._caps(http=True, sse=True))
+        assert (
+            _mcp_config_to_acp_servers(
+                self._config(cfg), self._caps(http=True, sse=False)
+            )
+            == []
+        )
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=True)
+        )
         assert len(out) == 1
         assert isinstance(out[0], SseMcpServer)
         assert out[0].type == "sse"
@@ -7784,18 +7889,16 @@ class TestMcpConfigToAcpServers:
                 "s": {"url": "https://h/mcp", "transport": "streamable-http"}
             }
         }
-        out = _mcp_config_to_acp_servers(cfg, self._caps(http=True, sse=True))
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=True)
+        )
         assert len(out) == 1
         assert isinstance(out[0], HttpMcpServer)
 
-    def test_empty_and_malformed_configs(self):
+    def test_empty_configs(self):
         caps = self._caps(http=True, sse=True)
         assert _mcp_config_to_acp_servers({}, caps) == []
-        assert _mcp_config_to_acp_servers({"mcpServers": {}}, caps) == []
-        # Not a dict -> skipped, no crash.
-        assert _mcp_config_to_acp_servers({"mcpServers": {"bad": 123}}, caps) == []
-        # No command and no url -> skipped.
-        assert _mcp_config_to_acp_servers({"mcpServers": {"x": {}}}, caps) == []
+        assert _mcp_config_to_acp_servers(self._config({"mcpServers": {}}), caps) == []
 
     def test_none_capabilities_drops_remote_keeps_stdio(self):
         from acp.schema import McpServerStdio
@@ -7806,7 +7909,7 @@ class TestMcpConfigToAcpServers:
                 "remote": {"url": "https://h/mcp"},
             }
         }
-        out = _mcp_config_to_acp_servers(cfg, None)
+        out = _mcp_config_to_acp_servers(self._config(cfg), None)
         assert [type(s).__name__ for s in out] == [McpServerStdio.__name__]
 
 
@@ -7821,8 +7924,8 @@ class TestACPMcpForwarding:
         )
         return conn
 
-    def test_new_session_receives_mcp_servers(self, tmp_path):
-        agent = _make_agent(mcp_config={"mcpServers": {"fetch": {"command": "echo"}}})
+    def test_new_session_receives_acp_mcp_servers(self, tmp_path):
+        agent = _make_agent(mcp_config={"fetch": {"command": "echo"}})
         state = _make_state(tmp_path)
         conn = self._conn_with_caps()
 
@@ -7832,10 +7935,10 @@ class TestACPMcpForwarding:
         servers = conn.new_session.call_args.kwargs["mcp_servers"]
         assert [s.name for s in servers] == ["fetch"]
 
-    def test_resume_load_session_receives_mcp_servers(self, tmp_path):
+    def test_resume_load_session_receives_acp_mcp_servers(self, tmp_path):
         """The key correctness point: resume must re-pass MCP servers, since
         load_session does not persist them server-side."""
-        agent = _make_agent(mcp_config={"mcpServers": {"fetch": {"command": "echo"}}})
+        agent = _make_agent(mcp_config={"fetch": {"command": "echo"}})
         state = _make_state(tmp_path)
         state.agent_state = {**state.agent_state, "acp_session_id": "stored-sess"}
         conn = self._conn_with_caps()
@@ -7847,7 +7950,7 @@ class TestACPMcpForwarding:
         assert [s.name for s in servers] == ["fetch"]
         conn.new_session.assert_not_awaited()
 
-    def test_no_mcp_config_forwards_empty_list(self, tmp_path):
+    def test_no_mcp_config_forwards_empty_acp_mcp_servers_list(self, tmp_path):
         agent = _make_agent()
         state = _make_state(tmp_path)
         conn = self._conn_with_caps()
@@ -8084,7 +8187,8 @@ class TestACPFileSecretMaterialisation:
         """No reserved secret present -> no data-dir env var is set."""
         agent = _make_agent()
         state = self._state(tmp_path)
-        env = self._run_start(agent, state, conn=self._make_conn())
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._run_start(agent, state, conn=self._make_conn())
         assert "CODEX_HOME" not in env
 
     def test_materialisation_oserror_fails_fast(self, tmp_path):
@@ -8197,7 +8301,8 @@ class TestACPFileSecretMaterialisation:
         state.secret_registry.update_secrets(
             {"CODEX_AUTH_JSON": StaticSecret(value=SecretStr("blob"))}
         )
-        env = self._run_start(agent, state, conn=self._make_conn())
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._run_start(agent, state, conn=self._make_conn())
 
         assert "CODEX_HOME" not in env
         # Not configured as a file-secret, so it flows through as a plain env var.

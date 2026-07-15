@@ -2,8 +2,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from litellm.types.llms.openai import (
+    OutputTextDeltaEvent,
     ResponseAPIUsage,
+    ResponseCompletedEvent,
     ResponsesAPIResponse,
+    ResponsesAPIStreamEvents,
 )
 from openai.types.responses.response_function_tool_call import ResponseFunctionToolCall
 from openai.types.responses.response_output_message import ResponseOutputMessage
@@ -448,3 +451,129 @@ async def test_aresponses_retries_without_caching_on_prompt_cache_too_small(
     second_kwargs = mock_aresponses.call_args_list[1].kwargs
     assert second_kwargs.get("store") is False
     assert second_kwargs.get("metadata") == {"trace_id": "abc-123"}
+
+
+def _make_wrapped_response_stream_events(text: str = "Hello wrapped stream"):
+    msg = build_responses_message_output([text])
+    usage = ResponseAPIUsage(input_tokens=1, output_tokens=1, total_tokens=2)
+    response = ResponsesAPIResponse(
+        id="resp-wrapped-stream",
+        created_at=0,
+        output=[msg],
+        parallel_tool_calls=False,
+        tool_choice="auto",
+        top_p=None,
+        tools=[],
+        usage=usage,
+        instructions="",
+        status="completed",
+    )
+    events = [
+        OutputTextDeltaEvent(
+            type=ResponsesAPIStreamEvents.OUTPUT_TEXT_DELTA,
+            item_id="m1",
+            output_index=0,
+            content_index=0,
+            delta=text,
+        ),
+        ResponseCompletedEvent(
+            type=ResponsesAPIStreamEvents.RESPONSE_COMPLETED,
+            response=response,
+        ),
+    ]
+    return events, response
+
+
+@patch("openhands.sdk.llm.llm.litellm_responses")
+def test_responses_streaming_accepts_wrapped_iterable(mock_responses):
+    """Responses streaming must not require LiteLLM's concrete iterator class."""
+    events, completed_response = _make_wrapped_response_stream_events()
+    mock_responses.return_value = iter(events)
+
+    llm = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        usage_id="test-llm",
+        num_retries=2,
+        retry_min_wait=1,
+        retry_max_wait=2,
+    )
+
+    received = []
+    response = llm.responses(
+        [Message(role="user", content=[TextContent(text="Hello")])],
+        stream=True,
+        on_token=received.append,
+    )
+
+    assert response.raw_response is completed_response
+    assert [chunk.choices[0].delta.content for chunk in received] == [
+        "Hello wrapped stream"
+    ]
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.litellm_aresponses", new_callable=AsyncMock)
+async def test_aresponses_streaming_accepts_sync_generator(mock_aresponses):
+    """Async Responses streaming must also tolerate sync iterable wrappers."""
+    events, completed_response = _make_wrapped_response_stream_events()
+
+    def _return_sync_generator(*args, **kwargs):
+        return (event for event in events)
+
+    mock_aresponses.side_effect = _return_sync_generator
+
+    llm = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        usage_id="test-llm",
+        num_retries=2,
+        retry_min_wait=1,
+        retry_max_wait=2,
+    )
+
+    received = []
+    response = await llm.aresponses(
+        [Message(role="user", content=[TextContent(text="Hello")])],
+        stream=True,
+        on_token=received.append,
+    )
+
+    assert response.raw_response is completed_response
+    assert [chunk.choices[0].delta.content for chunk in received] == [
+        "Hello wrapped stream"
+    ]
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.litellm_aresponses", new_callable=AsyncMock)
+async def test_aresponses_streaming_accepts_async_generator(mock_aresponses):
+    """Regression for lmnr 0.7.47 returning an async_generator wrapper."""
+    events, completed_response = _make_wrapped_response_stream_events()
+
+    async def _events():
+        for event in events:
+            yield event
+
+    mock_aresponses.return_value = _events()
+
+    llm = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        usage_id="test-llm",
+        num_retries=2,
+        retry_min_wait=1,
+        retry_max_wait=2,
+    )
+
+    received = []
+    response = await llm.aresponses(
+        [Message(role="user", content=[TextContent(text="Hello")])],
+        stream=True,
+        on_token=received.append,
+    )
+
+    assert response.raw_response is completed_response
+    assert [chunk.choices[0].delta.content for chunk in received] == [
+        "Hello wrapped stream"
+    ]

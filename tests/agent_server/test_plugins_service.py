@@ -186,6 +186,79 @@ def test_catalog_marks_installed_plugins(tmp_path: Path, monkeypatch):
     assert installed_by_name["available-plugin"] is False
 
 
+def test_catalog_enriches_local_plugin_entries_with_contents(
+    tmp_path: Path, monkeypatch
+):
+    # Arrange: the catalog entry's ./plugins/ source exists inside the repo
+    # clone, with a bundled skill and a docs file.
+    repo = _write_marketplace(
+        tmp_path / "ext",
+        [{"name": "local-plugin", "source": "./plugins/local-plugin"}],
+    )
+    plugin_dir = _make_installable_plugin(
+        repo / "plugins" / "local-plugin", "local-plugin"
+    )
+    skill_dir = plugin_dir / "skills" / "hello"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: hello\ndescription: Say hello politely\n---\nGreet the user."
+    )
+    (plugin_dir / "README.md").write_text("# Local plugin")
+    monkeypatch.setattr(
+        plugins_service, "update_skills_repository", lambda *a, **k: repo
+    )
+    installed = tmp_path / "installed"
+    installed.mkdir()
+
+    # Act
+    catalog = service_get_plugins_marketplace_catalog(installed_dir=installed)
+
+    # Assert: the entry carries its locally-loadable contents.
+    entry = catalog[0]
+    assert entry.path is not None
+    assert entry.path.endswith("plugins/local-plugin")
+    assert [(s.name, s.description) for s in entry.skills or []] == [
+        ("hello", "Say hello politely")
+    ]
+    assert entry.files == [
+        ".plugin/plugin.json",
+        "README.md",
+        "skills/hello/SKILL.md",
+    ]
+
+
+def test_catalog_leaves_contents_unset_for_remote_sources(tmp_path: Path, monkeypatch):
+    # Arrange: a structured github source — the plugin lives in another
+    # repository, so there is no local copy to load contents from.
+    repo = _write_marketplace(
+        tmp_path / "ext",
+        [
+            {
+                "name": "gh-plugin",
+                "source": {
+                    "source": "github",
+                    "repo": "owner/repo",
+                    "ref": "v1.0.0",
+                    "path": "plugins/gh-plugin",
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        plugins_service, "update_skills_repository", lambda *a, **k: repo
+    )
+    installed = tmp_path / "installed"
+    installed.mkdir()
+
+    # Act
+    catalog = service_get_plugins_marketplace_catalog(installed_dir=installed)
+
+    # Assert
+    assert catalog[0].path is None
+    assert catalog[0].skills is None
+    assert catalog[0].files is None
+
+
 class TestPluginsMarketplaceRoute:
     def test_marketplace_route_returns_plugins_payload(self, monkeypatch):
         # Arrange
@@ -222,6 +295,9 @@ class TestPluginsMarketplaceRoute:
                     "ref": "v1",
                     "repo_path": "plugins/p",
                     "installed": True,
+                    "path": None,
+                    "skills": None,
+                    "files": None,
                 }
             ]
         }

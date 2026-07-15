@@ -1,4 +1,4 @@
-"""Tests for MCP config secrets serialization security.
+"""Tests for MCP server secrets serialization security.
 
 These tests verify that secrets expanded into mcp_config do NOT leak through
 serialization pathways (persistence, WebSocket events, API responses).
@@ -16,6 +16,7 @@ from openhands.sdk.agent.agent import Agent
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.llm import LLM
+from openhands.sdk.mcp.config import coerce_mcp_config, dump_mcp_config
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -32,19 +33,17 @@ def agent_with_secret_in_mcp_config():
     """
     llm = LLM(model="test-model", api_key=SecretStr("test-key"))
     mcp_config = {
-        "mcpServers": {
-            "github": {
-                "command": "uvx",
-                "args": ["mcp-server-github"],
-                "env": {
-                    # This is the expanded secret - what would be in mcp_config
-                    # after expand_mcp_variables() resolves ${GITHUB_TOKEN}
-                    "GITHUB_TOKEN": SECRET_VALUE
-                },
-            }
+        "github": {
+            "command": "uvx",
+            "args": ["mcp-server-github"],
+            "env": {
+                # This is the expanded secret - what would be in mcp_config
+                # after expand_mcp_variables() resolves ${GITHUB_TOKEN}
+                "GITHUB_TOKEN": SECRET_VALUE
+            },
         }
     }
-    return Agent(llm=llm, mcp_config=mcp_config)
+    return Agent(llm=llm, mcp_config=coerce_mcp_config(mcp_config))
 
 
 class TestMcpSecretsDoNotLeakToPersistence:
@@ -236,7 +235,7 @@ class TestMcpSecretsDoNotLeakToAPI:
 
 
 class TestMcpConfigPreservation:
-    """Tests that verify mcp_config functionality is preserved while being secure."""
+    """Tests that verify mcp_config functionality is preserved while secure."""
 
     def test_mcp_config_still_accessible_in_memory(
         self, agent_with_secret_in_mcp_config
@@ -247,21 +246,18 @@ class TestMcpConfigPreservation:
         should retain the secrets for actual MCP server initialization.
         """
         # The secret should be accessible in memory for actual use
-        env_config = agent_with_secret_in_mcp_config.mcp_config["mcpServers"]["github"][
-            "env"
-        ]
+        env_config = dump_mcp_config(agent_with_secret_in_mcp_config.mcp_config)[
+            "github"
+        ]["env"]
         assert env_config["GITHUB_TOKEN"] == SECRET_VALUE, (
             "mcp_config should retain secrets in memory for runtime use"
         )
 
-    def test_non_secret_mcp_config_values_persist_with_cipher(self, tmp_path):
+    def test_non_secret_mcp_server_values_persist_with_cipher(self, tmp_path):
         """Verify that mcp_config is preserved when using cipher for persistence.
 
         When a cipher is provided (the production flow), mcp_config should be
         encrypted on save and decrypted on restore, preserving all values.
-
-        Without a cipher, mcp_config is fully redacted (None) to prevent
-        accidental secret leakage to API responses and WebSocket events.
         """
         from openhands.sdk.utils.cipher import Cipher
 
@@ -271,10 +267,14 @@ class TestMcpConfigPreservation:
                 "fetch": {
                     "command": "uvx",
                     "args": ["mcp-server-fetch"],
+                    "env": {"API_KEY": "sk-mcp-secret"},
                 }
             }
         }
-        agent = Agent(llm=llm, mcp_config=mcp_config)
+        agent = Agent(
+            llm=llm,
+            mcp_config=coerce_mcp_config(mcp_config["mcpServers"]),
+        )
         cipher = Cipher(secret_key="test-encryption-key")
 
         workspace = LocalWorkspace(working_dir=str(tmp_path / "workspace"))
@@ -293,12 +293,13 @@ class TestMcpConfigPreservation:
 
         agent_data = persisted_json.get("agent", {})
 
-        # With cipher, mcp_config should be encrypted (not plaintext, not None)
-        assert "encrypted_mcp_config" in agent_data, (
-            "mcp_config should be encrypted when cipher is provided"
-        )
-        assert agent_data.get("mcp_config") is None or "mcp_config" not in agent_data, (
-            "plaintext mcp_config should not be present when encrypted"
+        encrypted_key = agent_data["mcp_config"]["fetch"]["env"]["API_KEY"]
+        assert encrypted_key != "sk-mcp-secret"
+        decrypted_key = cipher.decrypt(encrypted_key)
+        assert decrypted_key is not None
+        assert decrypted_key.get_secret_value() == "sk-mcp-secret"
+        assert "sk-mcp-secret" not in json.dumps(agent_data), (
+            "plaintext mcp_config secrets should not be present when encrypted"
         )
 
         # Verify roundtrip: restore with same cipher should get original config
@@ -310,4 +311,6 @@ class TestMcpConfigPreservation:
             cipher=cipher,
         )
         # The runtime agent is used, but the decryption should work
-        assert restored_state.agent.mcp_config == mcp_config
+        assert (
+            dump_mcp_config(restored_state.agent.mcp_config) == mcp_config["mcpServers"]
+        )

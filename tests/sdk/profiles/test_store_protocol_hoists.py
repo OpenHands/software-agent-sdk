@@ -71,7 +71,7 @@ class InMemoryAgentProfileStore:
             )
         return out
 
-    def save(self, profile, *, cipher=None, max_profiles=None) -> None:
+    def save(self, profile, *, max_profiles=None) -> None:
         if (
             max_profiles is not None
             and profile.name not in self._profiles
@@ -80,7 +80,7 @@ class InMemoryAgentProfileStore:
             raise ProfileLimitExceeded(f"Profile limit reached ({max_profiles}).")
         self._profiles[profile.name] = profile
 
-    def load(self, name, *, cipher=None):
+    def load(self, name):
         if name not in self._profiles:
             raise FileNotFoundError(name)
         return self._profiles[name]
@@ -243,6 +243,11 @@ def test_build_seed_profile_openhands_branch():
     assert profile.name == SEED_PROFILE_NAME
     assert profile.llm_profile_ref == "my-llm"
     assert profile.mcp_server_refs is None
+    # Default settings carry tools=None -> the seed inherits the server default.
+    assert profile.tools is None
+    # The seed disables nothing -> the default profile launches with all
+    # discovered skills (deny-list model; nothing frozen, nothing can dangle).
+    assert profile.disabled_skills == []
     # Secret-free verification projection (no critic_api_key on the profile type).
     assert "critic_api_key" not in type(profile.verification).model_fields
 
@@ -250,6 +255,44 @@ def test_build_seed_profile_openhands_branch():
     fallback = build_seed_profile(settings, active_llm_profile=None)
     assert isinstance(fallback, OpenHandsAgentProfile)
     assert fallback.llm_profile_ref == SEED_PROFILE_NAME
+
+
+def test_build_seed_profile_disables_nothing_even_with_inline_global_skills():
+    """The seed never freezes the global's skills by name — it sets an empty
+    deny-list, so the migrated default profile launches with all discovered
+    skills. Freezing by name was the #4017 launch-break: an inline global skill
+    absent from the launch catalog would have dangled. See the seed->resolve
+    regression in test_resolver.py."""
+    settings = validate_agent_settings(
+        {
+            "agent_kind": "openhands",
+            "agent_context": {
+                "skills": [
+                    {"name": "alpha", "content": "x"},
+                    {"name": "beta", "content": "y"},
+                ]
+            },
+        }
+    )
+    profile = build_seed_profile(settings, active_llm_profile="my-llm")
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert profile.disabled_skills == []
+
+
+def test_build_seed_profile_copies_explicit_tools():
+    """A global config with an explicit toolset (e.g. browser) seeds a
+    behavior-preserving profile — the tools are copied verbatim, not reset to
+    the server default (#3978)."""
+    settings = validate_agent_settings(
+        {
+            "agent_kind": "openhands",
+            "tools": [{"name": "terminal"}, {"name": "browser_use"}],
+        }
+    )
+    profile = build_seed_profile(settings, active_llm_profile="my-llm")
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert profile.tools is not None
+    assert [t.name for t in profile.tools] == ["terminal", "browser_use"]
 
 
 def test_build_seed_profile_acp_branch():
@@ -261,6 +304,9 @@ def test_build_seed_profile_acp_branch():
     assert profile.name == SEED_PROFILE_NAME
     assert profile.acp_server == "claude-code"
     assert profile.mcp_server_refs is None
+    # ACP profiles have no skill-selection field — they own their tooling.
+    assert not hasattr(profile, "skill_refs")
+    assert not hasattr(profile, "disabled_skills")
     assert not hasattr(profile, "llm_profile_ref")
 
 
@@ -278,18 +324,21 @@ def test_build_profile_verification_drops_critic_api_key():
     assert "critic_api_key" not in ProfileVerificationSettings.model_fields
 
 
-def test_safe_validation_error_detail_is_secret_safe():
+def test_safe_validation_error_detail_surfaces_msg_without_input():
     secret = "sk-super-secret-value"
     with pytest.raises(Exception) as exc_info:
-        # extra=forbid -> the unexpected key (carrying a secret) triggers a
-        # ValidationError that embeds the input in msg/input.
+        # extra=forbid -> the unexpected key (carrying a value) triggers a
+        # ValidationError whose ``input`` echoes the rejected value.
         validate_agent_profile({"name": "p", "llm_profile_ref": "gpt", "leak": secret})
     from pydantic import ValidationError
 
     assert isinstance(exc_info.value, ValidationError)
     detail = safe_validation_error_detail(exc_info.value)
     assert detail, "expected at least one error entry"
+    # loc/type/msg are surfaced so a client can see *why* the save failed;
+    # ``input`` (which echoes the whole rejected payload) is dropped.
     for entry in detail:
-        assert set(entry.keys()) == {"loc", "type"}
-    # The secret never appears in the redacted detail.
+        assert set(entry.keys()) == {"loc", "type", "msg"}
+    # The rejected value lived in ``input``, which is dropped — so a value passed
+    # in an unexpected field never appears in the detail.
     assert secret not in repr(detail)

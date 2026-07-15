@@ -28,7 +28,6 @@ from openhands.sdk.profiles.profile_refs import (
 from openhands.sdk.profiles.resolver import (
     AgentProfileDiagnostics,
     DanglingMcpServerRef,
-    DanglingSkillRef,
     ProfileNotFound,
     resolve_agent_profile,
     resolve_agent_profile_dry_run,
@@ -48,7 +47,6 @@ __all__ = [
     "AgentProfileStore",
     "AgentProfileStoreProtocol",
     "DanglingMcpServerRef",
-    "DanglingSkillRef",
     "LaunchedAgentProfile",
     "OpenHandsAgentProfile",
     "ProfileLimitExceeded",
