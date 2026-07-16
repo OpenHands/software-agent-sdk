@@ -1,4 +1,5 @@
 import asyncio
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
@@ -67,6 +68,11 @@ LEASE_RENEW_INTERVAL_SECONDS = 15.0
 # Bounds initial-state push so subscribe_to_events does not stall on a
 # subscriber whose __call__ blocks (e.g. WS with a full TCP send buffer).
 INITIAL_STATE_PUSH_TIMEOUT_SECONDS = 0.5
+# How long a lingering _run_task may stay not-done while execution_status
+# reports non-RUNNING before run() reaps it and starts fresh (#3842). Must
+# comfortably exceed the legitimate wrap-up tail (wait_for_pending is bounded
+# at 30s) so a normal finishing run is never cancelled.
+STALE_RUN_TASK_REAP_SECONDS = 120.0
 
 
 logger = get_logger(__name__)
@@ -90,6 +96,15 @@ class EventService:
         default_factory=lambda: PubSub[Event](max_subscribers=50), init=False
     )
     _run_task: asyncio.Task | None = field(default=None, init=False)
+    # Stale run-task detection (#3842): a _run_task that never completes while
+    # execution_status reports non-RUNNING wedges the conversation forever -
+    # every run() raises conversation_already_running and there is no
+    # self-heal. Track the first time run() observed a given lingering task so
+    # a later attempt can reap it once it has been stale beyond the grace
+    # period (which comfortably exceeds the legitimate wrap-up tail:
+    # wait_for_pending is bounded at 30s).
+    _stale_run_task_ref: asyncio.Task | None = field(default=None, init=False)
+    _stale_run_first_seen: float | None = field(default=None, init=False)
     # Set when a send_message(run=True) is rejected because a run is still
     # wrapping up; consumed by _run_and_publish to re-run the stranded message.
     _rerun_requested: bool = field(default=False, init=False)
@@ -902,6 +917,45 @@ class EventService:
         # Publish initial state update
         await self._publish_state_update()
 
+    def _maybe_reap_stale_run_task(self) -> bool:
+        """Reap a wedged ``_run_task`` so the conversation can run again (#3842).
+
+        Called (with ``_run_lock`` held) when ``run()`` finds a live task while
+        ``execution_status`` reports non-RUNNING. A legitimately finishing run
+        clears its task reference within seconds (``wait_for_pending`` is
+        bounded at 30s), so the same task object still lingering on a second
+        observation ``STALE_RUN_TASK_REAP_SECONDS`` later is wedged: cancel it,
+        clear the reference, and let the caller start a fresh run.
+
+        Returns True when a stale task was reaped and the caller may proceed.
+        """
+        task = self._run_task
+        if task is None:
+            return True
+        now = time.monotonic()
+        if self._stale_run_task_ref is not task:
+            # First observation of this lingering task: start the clock.
+            self._stale_run_task_ref = task
+            self._stale_run_first_seen = now
+            return False
+        if (
+            self._stale_run_first_seen is None
+            or now - self._stale_run_first_seen < STALE_RUN_TASK_REAP_SECONDS
+        ):
+            return False
+        logger.warning(
+            "Reaping stale _run_task for conversation %s: task still not done "
+            "%.0fs after execution_status first reported non-RUNNING; "
+            "cancelling it so the conversation can run again.",
+            self.stored.id,
+            now - self._stale_run_first_seen,
+        )
+        task.cancel()
+        self._run_task = None
+        self._stale_run_task_ref = None
+        self._stale_run_first_seen = None
+        return True
+
     async def run(self, acp_internal_rerun_generation: int | None = None):
         """Run the conversation asynchronously in the background.
 
@@ -934,9 +988,14 @@ class EventService:
             ):
                 return
 
-            # Check if there's already a running task
+            # Check if there's already a running task. execution_status is
+            # non-RUNNING at this point (checked above), so a live task here
+            # is either a run wrapping up (transient, seconds) or the #3842
+            # wedge: a task that never completes, leaving the conversation
+            # permanently answering 409 with no self-heal. Reap the latter.
             if self._run_task is not None and not self._run_task.done():
-                raise ValueError("conversation_already_running")
+                if not self._maybe_reap_stale_run_task():
+                    raise ValueError("conversation_already_running")
 
             # Capture conversation reference for the closure
             conversation = self._conversation
@@ -992,8 +1051,12 @@ class EventService:
                             None, self._callback_wrapper.wait_for_pending, 30.0
                         )
 
-                    # Clear task reference and publish state update
-                    self._run_task = None
+                    # Clear task reference and publish state update. Only
+                    # clear our own reference: a task reaped as stale (#3842)
+                    # may reach this finally after a replacement run has
+                    # already been started, and must not clobber it.
+                    if self._run_task is asyncio.current_task():
+                        self._run_task = None
                     await self._publish_state_update()
 
                     # Re-arm a run for input stranded while this task was
@@ -1050,6 +1113,9 @@ class EventService:
 
             # Create task but don't await it - runs in background
             self._run_task = asyncio.create_task(_run_and_publish())
+            # A fresh, healthy run: forget any stale-task observation.
+            self._stale_run_task_ref = None
+            self._stale_run_first_seen = None
 
     async def start_goal_loop(
         self,
