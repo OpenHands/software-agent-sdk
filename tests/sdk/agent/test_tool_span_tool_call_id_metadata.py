@@ -1,14 +1,12 @@
-"""Regression test: the TOOL span created for a tool execution must carry the
-originating `tool_call.id` as span metadata.
+"""Regression test: a tool execution's TOOL span must identify its events.
 
 Before this fix, `_execute_action_event`'s `observe(name=tool_name,
-span_type="TOOL")` call never forwarded `action_event.tool_call.id`, even though
-it was in scope, so nothing correlated a TOOL span back to the specific
-`tool_calls[]` entry that triggered it (ambiguous whenever an LLM turn issues more
-than one tool call, e.g. under `ParallelToolExecutor`).
+span_type="TOOL")` call did not forward the persisted `ActionEvent.id`, so the
+span could not be resolved to the action/observation pair in the event log.
 """
 
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Self
 from unittest.mock import patch
 
@@ -23,6 +21,7 @@ from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
+from openhands.sdk.event import ActionEvent, Event, ObservationEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.tool import Action, Observation, Tool, ToolExecutor, register_tool
 from openhands.sdk.tool.tool import ToolDefinition
@@ -92,7 +91,7 @@ def _mock_response_with_tool_call(call_id: str) -> ModelResponse:
     )
 
 
-def test_tool_span_metadata_carries_tool_call_id():
+def test_tool_span_metadata_carries_tool_call_and_action_event_ids(tmp_path: Path):
     llm = LLM(
         usage_id="test-llm",
         model="test-model",
@@ -100,7 +99,14 @@ def test_tool_span_metadata_carries_tool_call_id():
         base_url="http://test",
     )
     agent = Agent(llm=llm, tools=[Tool(name="EchoTool")])
-    conversation = Conversation(agent=agent, callbacks=[])
+    emitted_events: list[Event] = []
+    conversation = Conversation(
+        agent=agent,
+        workspace=tmp_path / "workspace",
+        persistence_dir=tmp_path / "state",
+        callbacks=[emitted_events.append],
+        max_iteration_per_run=1,
+    )
 
     with (
         patch(
@@ -113,6 +119,10 @@ def test_tool_span_metadata_carries_tool_call_id():
             "openhands.sdk.agent.agent.should_enable_observability", return_value=True
         ),
         patch(
+            "openhands.sdk.agent.base.has_vision_profile_available",
+            return_value=False,
+        ),
+        patch(
             "openhands.sdk.agent.agent.observe",
             side_effect=lambda **kwargs: (lambda f: f),
         ) as mock_observe,
@@ -120,7 +130,21 @@ def test_tool_span_metadata_carries_tool_call_id():
         conversation.send_message(
             Message(role="user", content=[TextContent(text="please echo hi")])
         )
-        agent.step(conversation, on_event=lambda e: None)
+        conversation.run()
+
+    persisted_events = conversation.state.events
+    persisted_action = next(
+        event for event in persisted_events if isinstance(event, ActionEvent)
+    )
+    emitted_action = next(
+        event for event in emitted_events if isinstance(event, ActionEvent)
+    )
+    emitted_observation = next(
+        event for event in emitted_events if isinstance(event, ObservationEvent)
+    )
+    linked_action = persisted_events[
+        persisted_events.get_index(emitted_observation.action_id)
+    ]
 
     tool_span_calls = [
         call
@@ -128,4 +152,10 @@ def test_tool_span_metadata_carries_tool_call_id():
         if call.kwargs.get("span_type") == "TOOL"
     ]
     assert len(tool_span_calls) == 1
-    assert tool_span_calls[0].kwargs["metadata"] == {"tool_call_id": "call_abc123"}
+    assert tool_span_calls[0].kwargs["metadata"] == {
+        "tool_call_id": "call_abc123",
+        "action_event_id": persisted_action.id,
+    }
+    assert emitted_action.id == persisted_action.id
+    assert emitted_observation.action_id == persisted_action.id
+    assert linked_action == persisted_action
