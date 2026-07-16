@@ -17,6 +17,14 @@ export { VSCodeClient } from './client/vscode-client';
 export { DesktopClient } from './client/desktop-client';
 export { SharedClient } from './client/shared-client';
 export { WorkspacesClient } from './client/workspaces-client';
+export { AgentServerClient, OpenHandsClient } from './client/openhands-client';
+export { CloudClient } from './client/cloud-client';
+export {
+  DeviceFlowError,
+  isOpenHandsCloudHost,
+  pollForToken,
+  startDeviceFlow,
+} from './client/device-flow-client';
 export {
   AGENT_SERVER_VERSION_ERROR_CODE,
   AgentServerFeatureRequirements,
@@ -73,3 +81,43 @@ export type {
   WorkspaceParentItem,
 } from './client/workspaces-client';
 export type { AgentServerFeatureRequirement } from './client/agent-server-compatibility';
+export type {
+  OpenHandsClientKind,
+  OpenHandsClientOptions,
+  OpenHandsRequestAuthMode,
+  OpenHandsRequestMethod,
+  OpenHandsRequestOptions,
+} from './client/openhands-client';
+export type {
+  CloudApiKeyMetadata,
+  CloudAppConversation,
+  CloudBranchPage,
+  CloudClientOptions,
+  CloudConversationPage,
+  CloudConversationStartRequest,
+  CloudConversationStartTask,
+  CloudGitBranch,
+  CloudGitRepository,
+  CloudInstallationPage,
+  CloudOrganization,
+  CloudOrganizationMe,
+  CloudOrganizationsResponse,
+  CloudOrganizationsResult,
+  CloudPage,
+  CloudProxyOptions,
+  CloudRepositoryPage,
+  CloudRequestOptions,
+  CloudSandboxInfo,
+  CloudSecret,
+  CloudSecretWithoutValue,
+  CloudSettingsResponse,
+  CloudSettingsValue,
+  CloudSkillInfo,
+  CloudSuggestedTask,
+  SaveCloudSettingsRequest,
+} from './client/cloud-client';
+export type {
+  DeviceAuthorizationResponse,
+  DeviceTokenResponse,
+  PollDeviceTokenOptions,
+} from './client/device-flow-client';

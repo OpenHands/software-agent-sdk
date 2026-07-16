@@ -9,6 +9,8 @@ const KNOWN_EXTENSIONS = new Set(['.js', '.mjs', '.cjs', '.json', '.node']);
 const TARGET_SUFFIXES = ['.js', '.d.ts', '.d.mts', '.d.cts'];
 
 const hasKnownExtension = (specifier) => KNOWN_EXTENSIONS.has(path.posix.extname(specifier));
+const isJsonImport = (prefix, specifier, filePath) =>
+  filePath.endsWith('.js') && prefix.startsWith('from') && specifier.endsWith('.json');
 
 const normalizeRelativeSpecifier = (specifier, filePath) => {
   if (!specifier.startsWith('.') || hasKnownExtension(specifier)) {
@@ -46,7 +48,10 @@ const rewriteFile = async (filePath) => {
     IMPORT_EXPORT_SPECIFIER_PATTERN,
     (_fullMatch, prefix, quote, specifier) => {
       const normalizedSpecifier = normalizeRelativeSpecifier(specifier, filePath);
-      return `${prefix}${quote}${normalizedSpecifier}${quote}`;
+      const rewrittenSpecifier = `${prefix}${quote}${normalizedSpecifier}${quote}`;
+      return isJsonImport(prefix, normalizedSpecifier, filePath)
+        ? `${rewrittenSpecifier} with { type: 'json' }`
+        : rewrittenSpecifier;
     }
   );
 

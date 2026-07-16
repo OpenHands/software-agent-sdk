@@ -170,6 +170,49 @@ If you need the lower-level endpoint-specific clients directly, import them from
 import { ServerClient, BashClient } from '@openhands/typescript-client/clients';
 ```
 
+### Aggregate Agent Server and Cloud Clients
+
+The `/clients` entrypoint also exposes aggregate clients. `AgentServerClient` bundles every agent-server endpoint client behind namespaces, and `CloudClient` covers the OpenHands Cloud app API (bearer auth, org scoping, and an optional proxy for runtime-sandbox calls):
+
+```typescript
+import { AgentServerClient, CloudClient } from '@openhands/typescript-client/clients';
+
+const agentServer = new AgentServerClient({
+  host: 'http://localhost:3000',
+  apiKey: 'your-session-api-key',
+});
+const health = await agentServer.server.getHealth();
+const conversations = await agentServer.conversations.searchConversations();
+
+const cloud = new CloudClient({
+  host: 'https://app.all-hands.dev',
+  apiKey: 'your-cloud-api-key',
+  orgId: 'optional-org-id', // sent as X-Org-Id on every request
+  // Optional: requests with `hostOverride` (runtime-sandbox calls) are
+  // routed through this agent-server's /api/cloud-proxy endpoint instead
+  // of being sent to the host directly.
+  proxy: { host: 'http://localhost:3000', apiKey: 'your-session-api-key' },
+});
+const orgs = await cloud.getOrganizations();
+const created = await cloud.createConversation({ initial_message: 'Fix the bug' });
+```
+
+To obtain a Cloud API key interactively, use the device-flow helpers:
+
+```typescript
+import { startDeviceFlow, pollForToken } from '@openhands/typescript-client/clients';
+
+const auth = await startDeviceFlow('https://app.all-hands.dev');
+console.log(`Approve this device at ${auth.verification_uri_complete}`);
+const token = await pollForToken('https://app.all-hands.dev', auth.device_code, {
+  interval: auth.interval,
+});
+const cloud = new CloudClient({
+  host: 'https://app.all-hands.dev',
+  apiKey: token.access_token,
+});
+```
+
 ### Working with Events
 
 ```typescript

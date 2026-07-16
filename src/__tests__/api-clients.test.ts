@@ -11,14 +11,18 @@ import {
 } from '../index';
 import {
   AgentProfilesClient,
+  AgentServerClient,
   AgentServerVersionError,
   BashClient,
   clearAgentServerInfoCache,
+  CloudClient,
   compareAgentServerVersions,
   ConversationClient,
+  DeviceFlowError,
   FileClient,
   HooksClient,
   isAgentServerVersionError,
+  isOpenHandsCloudHost,
   LLMMetadataClient,
   MCPClient,
   MetaProfilesClient,
@@ -103,6 +107,116 @@ describe('Auxiliary API clients', () => {
     expect(manager.shared).toBeInstanceOf(SharedClient);
     expect(manager.hooks).toBeInstanceOf(HooksClient);
     expect(manager.mcp).toBeInstanceOf(MCPClient);
+  });
+
+  describe('Aggregate clients', () => {
+    it('AgentServerClient preserves the existing endpoint clients behind namespaces', async () => {
+      global.fetch = jest.fn().mockResolvedValue(
+        new Response(JSON.stringify({ status: 'ok' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      ) as typeof fetch;
+
+      const client = new AgentServerClient({ host: 'http://example.com/', apiKey: 'secret' });
+
+      expect(client.kind).toBe('agent-server');
+      expect(client.server).toBeInstanceOf(ServerClient);
+      expect(client.conversations).toBeInstanceOf(ConversationClient);
+      expect(client.settings).toBeInstanceOf(SettingsClient);
+      expect(client.host).toBe('http://example.com');
+
+      await client.request({ method: 'GET', path: '/health' });
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        'http://example.com/health',
+        expect.objectContaining({
+          method: 'GET',
+          headers: expect.objectContaining({
+            'X-Session-API-Key': 'secret',
+          }),
+        })
+      );
+    });
+
+    it('CloudClient sends bearer auth and X-Org-Id for cloud app-host requests', async () => {
+      global.fetch = jest.fn().mockResolvedValue(
+        new Response(JSON.stringify({ items: [], current_org_id: 'org-1' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      ) as typeof fetch;
+
+      const client = new CloudClient({
+        host: 'https://app.all-hands.dev/',
+        apiKey: 'cloud-key',
+        orgId: 'org-1',
+      });
+      const result = await client.getOrganizations();
+
+      expect(result).toEqual({ items: [], currentOrgId: 'org-1' });
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://app.all-hands.dev/api/organizations',
+        expect.objectContaining({
+          method: 'GET',
+          headers: expect.objectContaining({
+            Authorization: 'Bearer cloud-key',
+            'X-Org-Id': 'org-1',
+          }),
+        })
+      );
+    });
+
+    it('CloudClient routes hostOverride requests through the configured proxy', async () => {
+      global.fetch = jest.fn().mockResolvedValue(
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      ) as typeof fetch;
+
+      const client = new CloudClient({
+        host: 'https://app.all-hands.dev',
+        apiKey: 'cloud-key',
+        proxy: {
+          host: 'http://localhost:8001',
+          apiKey: 'local-key',
+        },
+      });
+
+      await client.request({
+        method: 'POST',
+        hostOverride: 'https://runtime.example.com',
+        path: '/api/conversations/c1/events',
+        body: { role: 'user' },
+        authMode: 'session-api-key',
+        sessionApiKey: 'runtime-key',
+      });
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        'http://localhost:8001/api/cloud-proxy',
+        expect.objectContaining({
+          method: 'POST',
+          headers: expect.objectContaining({
+            'X-Session-API-Key': 'local-key',
+          }),
+        })
+      );
+      const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body as string);
+      expect(body).toEqual({
+        host: 'https://runtime.example.com',
+        method: 'POST',
+        path: '/api/conversations/c1/events',
+        headers: { 'X-Session-API-Key': 'runtime-key' },
+        body: { role: 'user' },
+      });
+    });
+
+    it('exports cloud device-flow helpers from the clients entrypoint', () => {
+      expect(isOpenHandsCloudHost('https://app.all-hands.dev')).toBe(true);
+      expect(isOpenHandsCloudHost('https://all-hands.dev.evil.example')).toBe(false);
+      expect(new DeviceFlowError('denied', 'access_denied').code).toBe('access_denied');
+    });
   });
 
   describe('AgentProfilesClient', () => {
