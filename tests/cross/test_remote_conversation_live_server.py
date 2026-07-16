@@ -2294,3 +2294,83 @@ def test_interrupt_endpoint_cancels_running_conversation(
         assert events_resp.status_code == 200
         items = events_resp.json()["items"]
         assert len(items) >= 1, f"Expected at least one InterruptEvent, got: {items}"
+
+
+def test_image_content_materialized_over_real_server(server_env, patched_llm):
+    """End-to-end: an image in a user message is materialized to the workspace.
+
+    Exercises the full ``_on_event`` seam (not the helper directly) against a
+    real agent server: sending a ``Message`` carrying an ``ImageContent`` data
+    URL must (1) write the decoded bytes into the server-side workspace under
+    ``.materialized/`` via the real ``file_upload`` path, and (2) inject a
+    path pointer into the persisted user ``MessageEvent``'s ``extended_content``.
+
+    Pointing the ``RemoteWorkspace`` at ``server_env['workspace_path']`` means
+    the server's ``LocalWorkspace`` writes to a directory the test can inspect
+    directly on disk.
+    """
+    import base64
+
+    from openhands.sdk import Message, TextContent
+    from openhands.sdk.llm import ImageContent
+    from openhands.sdk.llm.utils.content_materialize import MATERIALIZE_SUBDIR
+
+    png_bytes = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9"
+        "awAAAABJRU5ErkJggg=="
+    )
+    data_url = f"data:image/png;base64,{base64.b64encode(png_bytes).decode()}"
+
+    workspace_dir = server_env["workspace_path"]
+
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+    agent = Agent(llm=llm, tools=[])
+    workspace = RemoteWorkspace(host=server_env["host"], working_dir=str(workspace_dir))
+    conv: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+
+    try:
+        conv.send_message(
+            Message(
+                role="user",
+                content=[
+                    TextContent(text="here is an attachment"),
+                    ImageContent(image_urls=[data_url]),
+                ],
+            )
+        )
+        conv.run()
+
+        # 1. The decoded bytes landed in the server-side workspace, content-addressed.
+        materialized_dir = workspace_dir / MATERIALIZE_SUBDIR
+        written: list[Path] = []
+        for _ in range(50):  # up to ~5s for the server to flush the write
+            if materialized_dir.exists():
+                written = list(materialized_dir.iterdir())
+                if written:
+                    break
+            time.sleep(0.1)
+        assert len(written) == 1, (
+            f"Expected exactly one materialized file, found: {written}"
+        )
+        assert written[0].read_bytes() == png_bytes
+
+        # 2. The persisted user MessageEvent gained a path pointer.
+        found_pointer = False
+        for _ in range(50):
+            for e in conv.state.events:
+                if (
+                    isinstance(e, MessageEvent)
+                    and e.source == "user"
+                    and any(MATERIALIZE_SUBDIR in c.text for c in e.extended_content)
+                ):
+                    found_pointer = True
+                    break
+            if found_pointer:
+                break
+            time.sleep(0.1)
+        assert found_pointer, (
+            "Expected the user MessageEvent's extended_content to carry a "
+            "materialized-path pointer"
+        )
+    finally:
+        conv.close()
