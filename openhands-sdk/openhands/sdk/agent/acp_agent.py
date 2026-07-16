@@ -1011,6 +1011,16 @@ def _codex_auth_refresh_url(source: LookupSecret) -> str | None:
     )
 
 
+def _is_valid_codex_auth_value(value: object) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    try:
+        payload = json.loads(value)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(payload, dict) and bool(payload)
+
+
 def _stringify_acp_error_data(data: Any) -> str:
     """Render an ACP ``RequestError.data`` payload as a compact string.
 
@@ -1105,10 +1115,8 @@ def _classify_acp_init_error(exc: BaseException) -> str:
       creation (timeouts, transport drops, unexpected protocol errors, cwd
       mismatch surfaced by the server).
     """
-    if isinstance(exc, _CodexNeedsReauthError):
-        return "needs_reauth"
-    if isinstance(exc, _CodexCredentialSyncError):
-        return "credential_sync_failed"
+    if isinstance(exc, (_CodexNeedsReauthError, _CodexCredentialSyncError)):
+        return "ACPAuthRequired"
     if _acp_error_indicates_auth(exc):
         return "ACPAuthRequired"
     if isinstance(exc, (FileNotFoundError, PermissionError)):
@@ -1123,10 +1131,8 @@ def _classify_acp_turn_error(exc: BaseException) -> str:
     policy refusals get their own code, credential failures map to ``ACPAuthRequired``
     (so the client can offer re-auth), everything else is a generic ``ACPPromptError``.
     """
-    if isinstance(exc, _CodexNeedsReauthError):
-        return "needs_reauth"
-    if isinstance(exc, _CodexCredentialSyncError):
-        return "credential_sync_failed"
+    if isinstance(exc, (_CodexNeedsReauthError, _CodexCredentialSyncError)):
+        return "ACPAuthRequired"
     text = _acp_error_text(exc)
     if "usage policy" in text or "content policy" in text:
         return "UsagePolicyRefusal"
@@ -2367,10 +2373,13 @@ class ACPAgent(AgentBase):
                 try:
                     value = brokered_source.get_value()
                 except httpx.HTTPStatusError as exc:
-                    if exc.response.status_code == 422:
-                        raise _CodexNeedsReauthError(
-                            "ChatGPT authentication needs to be refreshed."
-                        ) from exc
+                    if exc.response.status_code in (404, 422):
+                        detail = (
+                            "ChatGPT authentication was not found in Cloud."
+                            if exc.response.status_code == 404
+                            else "ChatGPT authentication needs to be refreshed."
+                        )
+                        raise _CodexNeedsReauthError(detail) from exc
                     raise _CodexCredentialSyncError(
                         "Codex credentials could not be loaded from Cloud."
                     ) from exc
@@ -2378,18 +2387,24 @@ class ACPAgent(AgentBase):
                     raise _CodexCredentialSyncError(
                         "Codex credentials could not be loaded from Cloud."
                     ) from exc
+            else:
+                value = state.secret_registry.get_secret_value(name)
+            if not value:
+                continue
+            if brokered_source is not None:
+                if not _is_valid_codex_auth_value(value):
+                    raise _CodexCredentialSyncError(
+                        "Cloud returned invalid Codex credentials."
+                    )
                 self._codex_auth_registry = state.secret_registry
                 self._codex_auth_path = target
                 self._codex_auth_source = brokered_source
                 remote_digest = hashlib.sha256(value.encode()).hexdigest()
                 self._codex_auth_expected_digest = remote_digest
                 self._codex_auth_synced_digest = remote_digest
+                assert refresh_url is not None
                 env[_CODEX_REFRESH_TOKEN_URL_ENV] = refresh_url
                 self._track_codex_auth_transport(brokered_source, refresh_url)
-            else:
-                value = state.secret_registry.get_secret_value(name)
-            if not value:
-                continue
             try:
                 directory.mkdir(mode=0o700, parents=True, exist_ok=True)
                 # Tighten the SDK-owned per-conversation dir in case it
@@ -2403,9 +2418,10 @@ class ACPAgent(AgentBase):
                 preserve_existing = target.is_file() and target.stat().st_size > 0
                 if brokered_source is not None:
                     assert remote_digest is not None
-                    preserve_existing = (
-                        preserve_existing
-                        and _read_codex_auth_ancestor(target) == remote_digest
+                    ancestor_digest = _read_codex_auth_ancestor(target)
+                    preserve_existing = preserve_existing and ancestor_digest in (
+                        None,
+                        remote_digest,
                     )
                 if preserve_existing:
                     # Seed-if-absent: keep the (possibly CLI-refreshed) contents,
@@ -2449,9 +2465,9 @@ class ACPAgent(AgentBase):
                 assert local_value is not None
                 assert remote_digest is not None
                 local_digest = hashlib.sha256(local_value.encode()).hexdigest()
-                self._track_codex_auth_values(value, remote_digest)
+                self._track_codex_auth_values(value)
                 if local_digest != remote_digest:
-                    self._track_codex_auth_values(local_value, local_digest)
+                    self._track_codex_auth_values(local_value)
             for companion in spec.warn_if_unset:
                 if not env.get(companion):
                     logger.warning(
@@ -2461,12 +2477,12 @@ class ACPAgent(AgentBase):
                         companion,
                     )
 
-    def _track_codex_auth_values(self, value: str, value_digest: str) -> None:
+    def _track_codex_auth_values(self, value: str) -> None:
         """Track Codex token values for event masking."""
         registry = self._codex_auth_registry
         if registry is None:
             return
-        mask_name = f"{_CODEX_AUTH_SECRET_NAME}.{value_digest}"
+        mask_name = _CODEX_AUTH_SECRET_NAME
         exported_values = {mask_name: value}
         try:
             tokens = json.loads(value).get("tokens", {})
@@ -2475,7 +2491,7 @@ class ACPAgent(AgentBase):
         if isinstance(tokens, dict):
             for name, token in tokens.items():
                 if isinstance(token, str) and token:
-                    exported_values[f"{mask_name}.{name}"] = token
+                    exported_values[f"{mask_name}.tokens.{name}"] = token
         registry.track_exported_values(exported_values)
 
     def _track_codex_auth_transport(
@@ -2569,11 +2585,16 @@ class ACPAgent(AgentBase):
                 raise _CodexCredentialSyncError(
                     "Codex credentials could not be saved to Cloud."
                 ) from exc
-            self._track_codex_auth_values(text_value, digest)
+            self._track_codex_auth_values(text_value)
             self._codex_auth_expected_digest = digest
             self._codex_auth_synced_digest = digest
 
     def _adopt_codex_auth_value(self, path: Path, value: str) -> None:
+        if not _is_valid_codex_auth_value(value):
+            raise _CodexCredentialSyncError(
+                "Cloud returned invalid Codex credentials; "
+                "the local copy was preserved."
+            )
         digest = hashlib.sha256(value.encode()).hexdigest()
         try:
             _write_secret_file(path, value)
@@ -2582,7 +2603,7 @@ class ACPAgent(AgentBase):
             raise _CodexCredentialSyncError(
                 "Codex credentials could not be reconciled with Cloud."
             ) from exc
-        self._track_codex_auth_values(value, digest)
+        self._track_codex_auth_values(value)
         self._codex_auth_expected_digest = digest
         self._codex_auth_synced_digest = digest
 
@@ -2601,6 +2622,9 @@ class ACPAgent(AgentBase):
             raise _CodexCredentialSyncError(
                 "Codex credential source could not be released."
             ) from exc
+        self._clear_codex_auth_state()
+
+    def _clear_codex_auth_state(self) -> None:
         self._codex_auth_path = None
         self._codex_auth_source = None
         self._codex_auth_expected_digest = None
@@ -2839,8 +2863,7 @@ class ACPAgent(AgentBase):
                         ) from exc
                     if method_id == "chat-gpt":
                         self._codex_auth_authenticated = True
-                        if self._codex_auth_path is not None:
-                            await asyncio.to_thread(self._sync_codex_auth)
+                        await self._sync_codex_auth_best_effort()
                 else:
                     logger.warning(
                         "ACP server offers auth methods %s but no matching "
@@ -4152,10 +4175,21 @@ class ACPAgent(AgentBase):
 
         See :meth:`LocalConversation.switch_acp_model`.
         """
+        with self._codex_auth_lock:
+            self._clear_codex_auth_state()
         self._closed = True
 
     def __del__(self) -> None:
         try:
-            self.close()
+            if self._closed:
+                return
+            self._closed = True
+            if self._codex_auth_path is not None:
+                logger.warning(
+                    "Skipping Codex credential sync during ACPAgent finalization; "
+                    "the durable working copy remains at %s",
+                    self._codex_auth_path,
+                )
+            self._cleanup()
         except Exception:
-            pass
+            logger.warning("Failed to finalize ACPAgent resources", exc_info=True)
