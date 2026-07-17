@@ -8309,6 +8309,32 @@ class TestACPFileSecretMaterialisation:
             )
             agent._release_file_credentials()
 
+    def test_local_lookup_source_configures_brokered_codex_refresh(self, tmp_path):
+        credential = '{"tokens":{"refresh_token":"refresh-r0"}}'
+        source = LookupSecret(
+            url="http://agent/api/conversations/123/codex-auth",
+            headers={"X-OH-Codex-Token": "local-capability"},
+        )
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets({"CODEX_AUTH_JSON": source})
+
+        with (
+            patch.object(LookupSecret, "get_value", return_value=credential),
+            patch.object(acp_file_credentials_module, "_release_codex_auth_source"),
+        ):
+            env: dict[str, str] = {}
+            agent._materialise_file_secrets(state, env)
+            refresh_url = (
+                "http://codex:local-capability@agent/api/conversations/123/"
+                "codex-auth/refresh"
+            )
+            assert env["CODEX_REFRESH_TOKEN_URL_OVERRIDE"] == refresh_url
+            assert state.secret_registry.mask_secrets_in_output(refresh_url) == (
+                "<secret-hidden>"
+            )
+            agent._release_file_credentials()
+
     def test_empty_broker_value_does_not_commit_sync_state(self, tmp_path):
         agent = _make_agent()
         state = self._state(tmp_path)

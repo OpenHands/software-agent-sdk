@@ -23,6 +23,7 @@ from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelRespons
 from pydantic import SecretStr
 
 from openhands.agent_server.__main__ import preload_modules
+from openhands.agent_server.codex_auth import CODEX_AUTH_SECRET_NAME
 from openhands.sdk import LLM, Agent, AgentContext, Conversation
 from openhands.sdk.conversation import RemoteConversation
 from openhands.sdk.event import (
@@ -39,6 +40,7 @@ from openhands.sdk.event import (
     SystemPromptEvent,
 )
 from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher
+from openhands.sdk.secret import LookupSecret
 from openhands.sdk.skills import Skill
 from openhands.sdk.subagent import AgentDefinition
 from openhands.sdk.subagent.registry import (
@@ -169,6 +171,72 @@ def test_health_endpoints_return_ok_json(server_env):
             response = client.get(f"{server_env['host']}{endpoint}", timeout=1.0)
             assert response.status_code == 200
             assert response.json() == {"status": "ok"}
+
+
+def test_local_codex_auth_broker_over_live_server(server_env):
+    credential = json.dumps(
+        {
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "id_token": "id-r0",
+                "access_token": "access-r0",
+                "refresh_token": "refresh-r0",
+            },
+        }
+    )
+    agent = Agent(
+        llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
+        tools=[],
+        include_default_tools=[],
+    )
+    source = LookupSecret(
+        url=(f"{server_env['host']}/api/settings/secrets/{CODEX_AUTH_SECRET_NAME}"),
+        headers={"X-Session-API-Key": "broad-key"},
+    )
+    payload = {
+        "agent": agent.model_dump(mode="json", context={"expose_secrets": True}),
+        "workspace": {"working_dir": str(server_env["workspace_path"])},
+        "secrets": {
+            CODEX_AUTH_SECRET_NAME: source.model_dump(
+                mode="json", context={"expose_secrets": True}
+            )
+        },
+    }
+
+    with httpx.Client(base_url=server_env["host"], timeout=10.0) as client:
+        secret_response = client.put(
+            "/api/settings/secrets",
+            json={"name": CODEX_AUTH_SECRET_NAME, "value": credential},
+        )
+        assert secret_response.status_code == 200
+
+        create_response = client.post("/api/conversations", json=payload)
+        assert create_response.status_code == 201, create_response.text
+        conversation_id = UUID(create_response.json()["id"])
+        event_service = server_env["conversation_service"]._event_services[
+            conversation_id
+        ]
+        brokered_source = event_service.stored.secrets[CODEX_AUTH_SECRET_NAME]
+        assert isinstance(brokered_source, LookupSecret)
+        token = brokered_source.headers["X-OH-Codex-Token"]
+        assert "broad-key" not in brokered_source.headers.values()
+        assert token not in create_response.text
+
+        broker_response = client.get(
+            brokered_source.url,
+            headers={"X-OH-Codex-Token": token},
+        )
+        assert broker_response.status_code == 200
+        assert broker_response.text == credential
+        assert broker_response.headers["cache-control"] == "no-store"
+
+        delete_response = client.delete(f"/api/conversations/{conversation_id}")
+        assert delete_response.status_code == 200
+        revoked_response = client.get(
+            brokered_source.url,
+            headers={"X-OH-Codex-Token": token},
+        )
+        assert revoked_response.status_code == 401
 
 
 @pytest.fixture

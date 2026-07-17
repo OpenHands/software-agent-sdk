@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 import httpx
 from pydantic import BaseModel
 
+from openhands.agent_server.codex_auth import CODEX_AUTH_SECRET_NAME, CodexAuthBroker
 from openhands.agent_server.config import Config, WebhookSpec
 from openhands.agent_server.conversation_lease import (
     DEFAULT_LEASE_TTL_SECONDS,
@@ -51,6 +52,7 @@ from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.mcp.utils import MCPToolProvider
+from openhands.sdk.secret import LookupSecret
 from openhands.sdk.tool import BROWSER_TOOL_NAME, Tool, is_tool_usable
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.utils.cipher import Cipher
@@ -502,6 +504,7 @@ class ConversationService:
     session_api_key: str | None = field(default=None)
     cipher: Cipher | None = None
     mcp_tool_provider: MCPToolProvider | None = None
+    codex_auth_broker: CodexAuthBroker | None = None
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     max_concurrent_runs: int = 10
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
@@ -1126,6 +1129,8 @@ class ConversationService:
                     f"Failed to close event service for conversation "
                     f"{conversation_id}: {e}"
                 )
+            if self.codex_auth_broker is not None:
+                self.codex_auth_broker.revoke(conversation_id)
 
             # Safely remove only the conversation directory (workspace is preserved).
             # This operation may fail due to permission issues, but we don't want that
@@ -1408,19 +1413,25 @@ class ConversationService:
         async with self._lifecycle_lock:
             event_services = self._event_services
             if event_services is None:
+                if self.codex_auth_broker is not None:
+                    self.codex_auth_broker.clear()
                 return
             self._event_services = None
             self._conversation_records = {}
         # This stops conversations and saves meta
-        await asyncio.gather(
-            *[
-                event_service.__aexit__(exc_type, exc_value, traceback)
-                for event_service in event_services.values()
-            ]
-        )
-        if self._run_executor is not None:
-            self._run_executor.shutdown(wait=False)
-            self._run_executor = None
+        try:
+            await asyncio.gather(
+                *[
+                    event_service.__aexit__(exc_type, exc_value, traceback)
+                    for event_service in event_services.values()
+                ]
+            )
+        finally:
+            if self.codex_auth_broker is not None:
+                self.codex_auth_broker.clear()
+            if self._run_executor is not None:
+                self._run_executor.shutdown(wait=False)
+                self._run_executor = None
 
     @classmethod
     def get_instance(cls, config: Config) -> "ConversationService":
@@ -1429,9 +1440,13 @@ class ConversationService:
         from openhands.agent_server.mcp_oauth_store import (
             create_settings_backed_mcp_tool_provider,
         )
-        from openhands.agent_server.persistence import get_settings_store
+        from openhands.agent_server.persistence import (
+            get_secrets_store,
+            get_settings_store,
+        )
 
         get_settings_store(config)
+        codex_auth_broker = CodexAuthBroker(get_secrets_store(config))
         return ConversationService(
             conversations_dir=config.conversations_path,
             webhook_specs=config.webhooks,
@@ -1440,6 +1455,7 @@ class ConversationService:
             ),
             cipher=config.cipher,
             mcp_tool_provider=create_settings_backed_mcp_tool_provider(config),
+            codex_auth_broker=codex_auth_broker,
             max_concurrent_runs=config.max_concurrent_runs,
             lease_ttl_seconds=config.lease_ttl_seconds,
         )
@@ -1448,6 +1464,20 @@ class ConversationService:
         event_services = self._event_services
         if event_services is None:
             raise ValueError("inactive_service")
+
+        broker = self.codex_auth_broker
+        source = stored.secrets.get(CODEX_AUTH_SECRET_NAME)
+        if broker is not None and isinstance(source, LookupSecret):
+            brokered_source = broker.ensure_brokered_source(stored.id, source)
+            if brokered_source is not source:
+                stored = stored.model_copy(
+                    update={
+                        "secrets": {
+                            **stored.secrets,
+                            CODEX_AUTH_SECRET_NAME: brokered_source,
+                        }
+                    }
+                )
 
         event_service = EventService(
             stored=stored,
@@ -1494,7 +1524,11 @@ class ConversationService:
                 raise ValueError("inactive_service")
         except Exception:
             # Clean up the event service if startup fails
-            await event_service.close()
+            try:
+                await event_service.close()
+            finally:
+                if broker is not None:
+                    broker.revoke(stored.id)
             raise
 
         event_services[stored.id] = event_service

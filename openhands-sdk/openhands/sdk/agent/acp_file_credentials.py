@@ -29,6 +29,8 @@ _CODEX_AUTH_REMOTE_CHECK_INTERVAL = 60.0
 _CODEX_AUTH_DIGEST_HEADER = "X-Codex-Auth-Digest"
 _CODEX_AUTH_SANDBOX_HEADER = "X-OH-Sandbox"
 _CODEX_AUTH_SCOPE_HEADER = "X-OH-Codex"
+_CODEX_LOCAL_AUTH_SCOPE_HEADER = "X-OH-Codex-Token"
+_CODEX_LOCAL_REFRESH_USERNAME = "codex"
 _CODEX_REFRESH_TOKEN_URL_ENV = "CODEX_REFRESH_TOKEN_URL_OVERRIDE"
 _CHATGPT_AUTH_PATH = Path(".codex") / "auth.json"
 
@@ -180,15 +182,17 @@ def _release_codex_auth_source(source: LookupSecret) -> None:
 def _codex_auth_refresh_url(source: LookupSecret) -> str | None:
     headers = {name.lower(): value for name, value in source.headers.items()}
     session_api_key = headers.get(_CODEX_AUTH_SANDBOX_HEADER.lower())
-    codex_auth_token = headers.get(_CODEX_AUTH_SCOPE_HEADER.lower())
-    if not session_api_key or not codex_auth_token:
+    codex_auth_token = headers.get(
+        _CODEX_LOCAL_AUTH_SCOPE_HEADER.lower()
+    ) or headers.get(_CODEX_AUTH_SCOPE_HEADER.lower())
+    if not codex_auth_token:
         return None
     url = httpx.URL(source.url)
     refresh_path = f"{url.path.rstrip('/')}/refresh"
     return str(
         url.copy_with(
             path=refresh_path,
-            username=session_api_key,
+            username=session_api_key or _CODEX_LOCAL_REFRESH_USERNAME,
             password=codex_auth_token,
         )
     )

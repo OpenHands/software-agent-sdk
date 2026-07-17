@@ -8,6 +8,8 @@ File locking uses fcntl on Unix and msvcrt on Windows.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import stat
@@ -596,6 +598,34 @@ class FileSecretsStore(SecretsStore):
                 return False
 
             new_secrets = {k: v for k, v in secrets.custom_secrets.items() if k != name}
+            self.save(Secrets(custom_secrets=new_secrets))
+            return True
+
+    def compare_and_swap_secret(
+        self, name: str, expected_digest: str, value: str
+    ) -> bool:
+        """Replace a secret when its digest matches."""
+        with _file_lock(self._lock_path):
+            secrets = self.load()
+            if secrets is None:
+                if self._path.exists():
+                    raise RuntimeError(
+                        f"Cannot load secrets from {self._path}. "
+                        "File may be corrupted or encrypted with a different key. "
+                        "Refusing to modify to prevent data loss."
+                    )
+                raise KeyError(name)
+
+            current = secrets.custom_secrets.get(name)
+            if current is None or current.secret is None:
+                raise KeyError(name)
+            current_value = current.secret.get_secret_value()
+            current_digest = hashlib.sha256(current_value.encode()).hexdigest()
+            if not hmac.compare_digest(current_digest, expected_digest):
+                return False
+
+            new_secrets = dict(secrets.custom_secrets)
+            new_secrets[name] = current.model_copy(update={"secret": SecretStr(value)})
             self.save(Secrets(custom_secrets=new_secrets))
             return True
 
