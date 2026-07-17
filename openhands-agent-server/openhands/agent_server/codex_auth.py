@@ -28,16 +28,12 @@ CODEX_AUTH_ROUTE_PREFIX = "/api/conversations"
 CODEX_AUTH_ROUTE = "/{conversation_id}/codex-auth"
 
 _CODEX_AUTH_HEADER = "X-OH-Codex-Token"
-_CODEX_SANDBOX_HEADER = "X-OH-Sandbox"
 _LOCAL_SECRET_PATH = "/api/settings/secrets/CODEX_AUTH_JSON"
 _REFRESH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 _REFRESH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 _REFRESH_USERNAME = "codex"
 _MAX_SECRET_VALUE_LENGTH = 64 * 1024
 _DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
-_LOCAL_BROKER_PATH_PATTERN = re.compile(
-    r"/api/conversations/[0-9a-fA-F-]{36}/codex-auth$"
-)
 
 
 def codex_auth_path(conversation_id: UUID) -> str:
@@ -74,30 +70,16 @@ class CodexAuthBroker:
     def ensure_brokered_source(
         self, conversation_id: UUID, source: LookupSecret
     ) -> LookupSecret:
-        headers = {name.lower(): value for name, value in source.headers.items()}
-        if headers.get(_CODEX_SANDBOX_HEADER.lower()):
-            return source
-
         parsed_url = urlsplit(source.url)
         path = parsed_url.path.rstrip("/")
-        broker_path = codex_auth_path(conversation_id)
-        is_local_secret = path.endswith(_LOCAL_SECRET_PATH)
-        is_local_broker = _LOCAL_BROKER_PATH_PATTERN.search(path) is not None
-        if not is_local_secret and not is_local_broker:
-            return source
-
-        token = headers.get(_CODEX_AUTH_HEADER.lower())
-        if (
-            path.endswith(broker_path)
-            and token
-            and self.is_authorized(conversation_id, token)
-        ):
+        if path != _LOCAL_SECRET_PATH:
             return source
 
         token = secrets.token_urlsafe(32)
         token_digest = hashlib.sha256(token.encode()).digest()
         with self._capability_lock:
             self._capability_digests[conversation_id] = token_digest
+        broker_path = codex_auth_path(conversation_id)
         return LookupSecret(
             url=parsed_url._replace(path=broker_path, query="", fragment="").geturl(),
             headers={_CODEX_AUTH_HEADER: token},

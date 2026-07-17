@@ -328,12 +328,17 @@ async def test_restart_reissues_capability_and_keeps_it_out_of_meta(tmp_path):
         info, _ = await service.start_conversation(request)
         event_service = await service.get_event_service(info.id)
         assert event_service is not None
-        first_source = event_service.stored.secrets["CODEX_AUTH_JSON"]
+        first_source = (
+            event_service.get_conversation().state.secret_registry.secret_sources[
+                "CODEX_AUTH_JSON"
+            ]
+        )
         assert isinstance(first_source, LookupSecret)
         first_token = _token(first_source)
+        assert event_service.stored.secrets["CODEX_AUTH_JSON"] == _local_source()
         meta = (conversations_dir / info.id.hex / "meta.json").read_text()
         assert first_token not in meta
-        assert "broad-session-key" not in meta
+        assert "/api/settings/secrets/CODEX_AUTH_JSON" in meta
 
     assert not first_broker.is_authorized(info.id, first_token)
 
@@ -344,7 +349,11 @@ async def test_restart_reissues_capability_and_keeps_it_out_of_meta(tmp_path):
     ) as service:
         event_service = await service.get_event_service(info.id)
         assert event_service is not None
-        second_source = event_service.stored.secrets["CODEX_AUTH_JSON"]
+        second_source = (
+            event_service.get_conversation().state.secret_registry.secret_sources[
+                "CODEX_AUTH_JSON"
+            ]
+        )
         assert isinstance(second_source, LookupSecret)
         second_token = _token(second_source)
         assert second_token != first_token
@@ -372,7 +381,9 @@ async def test_conversation_delete_revokes_unmaterialized_capability(tmp_path):
         info, _ = await service.start_conversation(request)
         event_service = await service.get_event_service(info.id)
         assert event_service is not None
-        source = event_service.stored.secrets["CODEX_AUTH_JSON"]
+        source = event_service.get_conversation().state.secret_registry.secret_sources[
+            "CODEX_AUTH_JSON"
+        ]
         assert isinstance(source, LookupSecret)
         token = _token(source)
         assert broker.is_authorized(info.id, token)

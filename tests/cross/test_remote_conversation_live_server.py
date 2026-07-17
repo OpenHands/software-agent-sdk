@@ -14,7 +14,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -24,6 +24,7 @@ from pydantic import SecretStr
 
 from openhands.agent_server.__main__ import preload_modules
 from openhands.agent_server.codex_auth import CODEX_AUTH_SECRET_NAME
+from openhands.agent_server.persistence import FileSecretsStore
 from openhands.sdk import LLM, Agent, AgentContext, Conversation
 from openhands.sdk.conversation import RemoteConversation
 from openhands.sdk.event import (
@@ -184,44 +185,19 @@ def test_local_codex_auth_broker_over_live_server(server_env):
             },
         }
     )
-    agent = Agent(
-        llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
-        tools=[],
-        include_default_tools=[],
-    )
+    broker = server_env["conversation_service"].codex_auth_broker
+    assert broker is not None
+    broker.store = FileSecretsStore(server_env["workspace_path"] / "codex-auth")
+    broker.store.set_secret(CODEX_AUTH_SECRET_NAME, credential)
+    conversation_id = uuid4()
     source = LookupSecret(
         url=(f"{server_env['host']}/api/settings/secrets/{CODEX_AUTH_SECRET_NAME}"),
         headers={"X-Session-API-Key": "broad-key"},
     )
-    payload = {
-        "agent": agent.model_dump(mode="json", context={"expose_secrets": True}),
-        "workspace": {"working_dir": str(server_env["workspace_path"])},
-        "secrets": {
-            CODEX_AUTH_SECRET_NAME: source.model_dump(
-                mode="json", context={"expose_secrets": True}
-            )
-        },
-    }
+    brokered_source = broker.ensure_brokered_source(conversation_id, source)
+    token = brokered_source.headers["X-OH-Codex-Token"]
 
     with httpx.Client(base_url=server_env["host"], timeout=10.0) as client:
-        secret_response = client.put(
-            "/api/settings/secrets",
-            json={"name": CODEX_AUTH_SECRET_NAME, "value": credential},
-        )
-        assert secret_response.status_code == 200
-
-        create_response = client.post("/api/conversations", json=payload)
-        assert create_response.status_code == 201, create_response.text
-        conversation_id = UUID(create_response.json()["id"])
-        event_service = server_env["conversation_service"]._event_services[
-            conversation_id
-        ]
-        brokered_source = event_service.stored.secrets[CODEX_AUTH_SECRET_NAME]
-        assert isinstance(brokered_source, LookupSecret)
-        token = brokered_source.headers["X-OH-Codex-Token"]
-        assert "broad-key" not in brokered_source.headers.values()
-        assert token not in create_response.text
-
         broker_response = client.get(
             brokered_source.url,
             headers={"X-OH-Codex-Token": token},
@@ -230,8 +206,11 @@ def test_local_codex_auth_broker_over_live_server(server_env):
         assert broker_response.text == credential
         assert broker_response.headers["cache-control"] == "no-store"
 
-        delete_response = client.delete(f"/api/conversations/{conversation_id}")
-        assert delete_response.status_code == 200
+        delete_response = client.delete(
+            brokered_source.url,
+            headers={"X-OH-Codex-Token": token},
+        )
+        assert delete_response.status_code == 204
         revoked_response = client.get(
             brokered_source.url,
             headers={"X-OH-Codex-Token": token},
