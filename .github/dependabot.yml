@@ -2,8 +2,22 @@
 # Dependabot configuration for automated dependency updates
 # See: https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
 #
-# Note: Python (pip) ecosystem is not configured here because Dependabot does not
-# fully support uv workspaces yet. See issue #2510 for tracking.
+# Note: Python (`pip`/`uv`) ecosystems are NOT configured here because Dependabot
+# does not yet fully support uv workspaces (this repo is a multi-package monorepo
+# with a single root `uv.lock`). Enabling it would produce incomplete or broken
+# update PRs. See issue #2510 for tracking.
+#
+# Last recheck: July 2026. Upstream blockers still open / unfixed:
+#   - dependabot-core#14004  Dependabot resolves workspace members on PyPI
+#                            instead of treating them as local packages (OPEN)
+#   - dependabot-core#14103  Member-package deps ignored (closed, but the fix
+#                            in PR #14627 does not work in practice; not reopened)
+#   - dependabot-core#13202  No `dependency-type` grouping for uv (OPEN)
+#   - dependabot-core#14665  Grouped security updates silently drop packages due
+#                            to case-sensitivity vs PEP 503 names (OPEN)
+#   - dependabot-core#14119  Version updates fail with
+#                            `dependency_file_content_not_changed` on casing
+#                            mismatch between `pyproject.toml` and `uv.lock` (OPEN)
 
 version: 2
 
