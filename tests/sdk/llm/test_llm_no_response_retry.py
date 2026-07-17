@@ -114,6 +114,35 @@ def test_no_response_retry_bumps_temperature(mock_completion, base_llm: LLM) -> 
     assert second_kwargs.get("temperature") == 1.0
 
 
+@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm.stream_chunk_builder")
+def test_empty_stream_retries_then_succeeds(
+    mock_stream_builder, mock_completion
+) -> None:
+    streaming_llm = LLM(
+        usage_id="test-empty-stream-sync",
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        num_retries=2,
+        retry_min_wait=0,
+        retry_max_wait=0,
+        temperature=0.0,
+        stream=True,
+    )
+    mock_completion.side_effect = [iter(()), iter(())]
+    mock_stream_builder.side_effect = [None, create_mock_response("success")]
+
+    resp = streaming_llm.completion(
+        messages=[Message(role="user", content=[TextContent(text="hi")])],
+        on_token=lambda _chunk: None,
+    )
+
+    assert isinstance(resp, LLMResponse)
+    assert mock_completion.call_count == 2
+    _, second_kwargs = mock_completion.call_args_list[1]
+    assert second_kwargs.get("temperature") == 1.0
+
+
 # ------------------------------------------------------------------
 # Async acompletion tests
 # ------------------------------------------------------------------
@@ -186,6 +215,46 @@ async def test_async_no_response_exhausts_retries(
         )
 
     assert mock_acompletion.call_count == base_llm.num_retries
+
+
+@pytest.mark.asyncio
+@patch(
+    "openhands.sdk.llm.llm.litellm_acompletion",
+    new_callable=AsyncMock,
+)
+@patch("openhands.sdk.llm.llm.litellm.stream_chunk_builder")
+async def test_async_empty_stream_retries_then_succeeds(
+    mock_stream_builder, mock_acompletion: AsyncMock
+) -> None:
+    class _EmptyAsyncStream:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    streaming_llm = LLM(
+        usage_id="test-empty-stream-async",
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        num_retries=2,
+        retry_min_wait=0,
+        retry_max_wait=0,
+        temperature=0.0,
+        stream=True,
+    )
+    mock_acompletion.side_effect = [_EmptyAsyncStream(), _EmptyAsyncStream()]
+    mock_stream_builder.side_effect = [None, create_mock_response("success")]
+
+    resp = await streaming_llm.acompletion(
+        messages=[Message(role="user", content=[TextContent(text="hi")])],
+        on_token=lambda _chunk: None,
+    )
+
+    assert isinstance(resp, LLMResponse)
+    assert mock_acompletion.call_count == 2
+    _, second_kwargs = mock_acompletion.call_args_list[1]
+    assert second_kwargs.get("temperature") == 1.0
 
 
 # ------------------------------------------------------------------
