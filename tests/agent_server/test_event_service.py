@@ -184,6 +184,62 @@ def _attach_event_log(event_service, event_log: EventLog) -> None:
     event_service._conversation = conversation
 
 
+@pytest.mark.asyncio
+async def test_publish_state_update_times_out_wedged_subscriber(
+    event_service, monkeypatch
+):
+    class _RecordingSubscriber(Subscriber[Event]):
+        def __init__(self) -> None:
+            self.events: list[Event] = []
+
+        async def __call__(self, event: Event) -> None:
+            self.events.append(event)
+
+    class _BlockingSubscriber(Subscriber[Event]):
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.cancelled = asyncio.Event()
+
+        async def __call__(self, event: Event) -> None:  # noqa: ARG002
+            self.started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                self.cancelled.set()
+
+    event_service._conversation = MagicMock()
+    state_update_event = ConversationStateUpdateEvent(
+        key="execution_status",
+        value=ConversationExecutionStatus.IDLE,
+    )
+    event_service._create_state_update_event = AsyncMock(
+        return_value=state_update_event
+    )
+
+    recording_subscriber = _RecordingSubscriber()
+    blocking_subscriber = _BlockingSubscriber()
+    event_service._pub_sub.subscribe(recording_subscriber)
+    event_service._pub_sub.subscribe(blocking_subscriber)
+    monkeypatch.setattr(
+        "openhands.agent_server.event_service.STATE_UPDATE_PUSH_TIMEOUT_SECONDS",
+        0.01,
+    )
+
+    with patch("openhands.agent_server.event_service.logger") as mock_logger:
+        await asyncio.wait_for(
+            event_service._publish_state_update(),
+            timeout=0.2,
+        )
+
+    assert recording_subscriber.events == [state_update_event]
+    assert blocking_subscriber.started.is_set()
+    assert blocking_subscriber.cancelled.is_set()
+    mock_logger.warning.assert_called_once_with(
+        f"State update publish for conversation {event_service.stored.id} timed "
+        "out after 0.01s."
+    )
+
+
 class TestEventServiceSearchEvents:
     """Test cases for EventService.search_events method."""
 

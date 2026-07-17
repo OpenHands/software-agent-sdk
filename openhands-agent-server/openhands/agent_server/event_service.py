@@ -64,9 +64,9 @@ from openhands.sdk.workspace import LocalWorkspace
 
 
 LEASE_RENEW_INTERVAL_SECONDS = 15.0
-# Bounds initial-state push so subscribe_to_events does not stall on a
+# Bounds state pushes so subscription and lifecycle operations cannot stall on a
 # subscriber whose __call__ blocks (e.g. WS with a full TCP send buffer).
-INITIAL_STATE_PUSH_TIMEOUT_SECONDS = 0.5
+STATE_UPDATE_PUSH_TIMEOUT_SECONDS = 0.5
 
 
 logger = get_logger(__name__)
@@ -590,15 +590,14 @@ class EventService:
         try:
             await asyncio.wait_for(
                 subscriber(state_update_event),
-                timeout=INITIAL_STATE_PUSH_TIMEOUT_SECONDS,
+                timeout=STATE_UPDATE_PUSH_TIMEOUT_SECONDS,
             )
         except TimeoutError:
-            # Subscriber stays registered; only the initial-state push is
-            # dropped. Subsequent publishes go through pub_sub and may
-            # still block there if the subscriber remains wedged.
+            # Subscriber stays registered; only this state push is dropped.
+            # Later publishes get their own timeout.
             logger.warning(
                 f"Initial state push to subscriber {subscriber_id} timed "
-                f"out after {INITIAL_STATE_PUSH_TIMEOUT_SECONDS}s."
+                f"out after {STATE_UPDATE_PUSH_TIMEOUT_SECONDS}s."
             )
         # Non-timeout errors propagate to caller (e.g. webhook failures).
 
@@ -1567,10 +1566,16 @@ class EventService:
             return
 
         state_update_event = await self._create_state_update_event()
-        # Note: _pub_sub iterates through subscribers sequentially. If any subscriber
-        # is slow, it will delay subsequent subscribers. For high-throughput scenarios,
-        # consider using asyncio.gather() for concurrent notification in the future.
-        await self._pub_sub(state_update_event)
+        try:
+            await asyncio.wait_for(
+                self._pub_sub(state_update_event),
+                timeout=STATE_UPDATE_PUSH_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning(
+                f"State update publish for conversation {self.stored.id} timed "
+                f"out after {STATE_UPDATE_PUSH_TIMEOUT_SECONDS}s."
+            )
 
     async def __aenter__(self):
         await self.start()
