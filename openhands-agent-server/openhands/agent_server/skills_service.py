@@ -345,33 +345,7 @@ def load_all_skills(
     marketplace_path: str | None = DEFAULT_MARKETPLACE_PATH,
     registered_marketplaces: list[MarketplaceRegistration] | None = None,
 ) -> SkillLoadResult:
-    """Load and merge skills from all configured sources.
-
-    Skills are loaded from multiple sources and merged with the following
-    precedence (later overrides earlier for duplicate names):
-    1. Sandbox skills (lowest) - Exposed URLs from sandbox
-    2. Registered marketplace skills or public skills legacy fallback
-    3. User skills - From ~/.openhands/skills/
-    4. Organization skills - From {org}/.openhands or equivalent
-    5. Project skills (highest) - From {workspace}/.openhands/skills/
-
-    Args:
-        load_public: Whether to load public skills from OpenHands/extensions repo.
-        load_user: Whether to load user skills from ~/.openhands/skills/.
-        load_project: Whether to load project skills from workspace.
-        load_org: Whether to load organization-level skills.
-        project_dir: Workspace directory path for project skills.
-        org_repos: Pre-authenticated (Git URL, org name) pairs for org skills.
-            All repos are loaded and merged into the single org tier.
-        sandbox_exposed_urls: List of exposed URLs from sandbox.
-        marketplace_path: Relative marketplace JSON path for public skills.
-            Pass None to load all public skills without marketplace filtering.
-        registered_marketplaces: Marketplace registrations whose auto-load plugins
-            replace legacy public skills when provided.
-
-    Returns:
-        SkillLoadResult containing merged skills and source counts.
-    """
+    """Merge skills: sandbox < marketplace < public < user < org < project."""
     sources: dict[str, int] = {}
     skill_lists: list[list[Skill]] = []
 
@@ -396,15 +370,11 @@ def load_all_skills(
     sources["registered_marketplaces"] = len(marketplace_skills)
     skill_lists.append(marketplace_skills)
 
-    # 2-3. Load legacy public + user skills via helper (no project yet — org sits
-    # between). Auto-load registered marketplaces replace legacy public skills,
-    # while user skills keep their existing precedence above the public marketplace
-    # tier.
     sdk_base = load_available_skills(
         work_dir=None,
         include_user=load_user,
         include_project=False,
-        include_public=load_public and not auto_load_registrations,
+        include_public=load_public,
         marketplace_path=marketplace_path,
     )
     sources["sdk_base"] = len(sdk_base)

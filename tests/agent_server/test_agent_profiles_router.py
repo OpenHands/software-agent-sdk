@@ -493,9 +493,7 @@ def test_save_missing_required_ref_returns_422(client):
 
 
 def test_save_schemaless_body_with_stray_skills_key_rejected(client):
-    """A body with no ``schema_version`` canonicalizes to the clean v1 baseline;
-    the removed ``skills`` field never shipped, so it is a genuine extra='forbid'
-    violation (422) — there is no migration to silently drop it (#4017)."""
+    """Reject a removed ``skills`` field from an unversioned request."""
     response = client.post(
         "/api/agent-profiles/legacy",
         json={
