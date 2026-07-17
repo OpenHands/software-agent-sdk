@@ -278,6 +278,72 @@ def test_concurrent_refresh_rotates_upstream_once(broker_client, monkeypatch):
     assert calls == 1
 
 
+@pytest.mark.asyncio
+async def test_update_waits_for_in_flight_refresh(tmp_path, monkeypatch):
+    store = FileSecretsStore(tmp_path)
+    original = _auth_value()
+    store.set_secret("CODEX_AUTH_JSON", original)
+    broker = CodexAuthBroker(store)
+    app = FastAPI()
+    app.include_router(router)
+    app.state.conversation_service = SimpleNamespace(codex_auth_broker=broker)
+    source = broker.ensure_brokered_source(uuid4(), _local_source())
+    refresh_started = asyncio.Event()
+    continue_refresh = asyncio.Event()
+
+    async def refresh(_refresh_token: str) -> httpx.Response:
+        refresh_started.set()
+        await continue_refresh.wait()
+        return httpx.Response(
+            200,
+            json={"access_token": "access-r1", "refresh_token": "refresh-r1"},
+            request=httpx.Request("POST", "https://auth.openai.com/oauth/token"),
+        )
+
+    monkeypatch.setattr(codex_auth_module, "_request_token_refresh", refresh)
+    path = urlsplit(source.url).path
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        refresh_task = asyncio.create_task(
+            client.post(
+                f"{path}/refresh",
+                headers={"Authorization": _refresh_authorization(source)},
+                json={
+                    "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
+                    "grant_type": "refresh_token",
+                    "refresh_token": "refresh-r0",
+                },
+            )
+        )
+        await asyncio.wait_for(refresh_started.wait(), timeout=1)
+        update_task = asyncio.create_task(
+            client.put(
+                path,
+                headers=source.headers,
+                json={
+                    "expected_digest": hashlib.sha256(original.encode()).hexdigest(),
+                    "value": _auth_value(
+                        access_token="local", refresh_token="refresh-r0"
+                    ),
+                },
+            )
+        )
+        await asyncio.sleep(0.01)
+        assert not update_task.done()
+        continue_refresh.set()
+        refresh_response, update_response = await asyncio.gather(
+            refresh_task, update_task
+        )
+
+    assert refresh_response.status_code == 200
+    assert update_response.status_code == 409
+    assert json.loads(store.get_secret("CODEX_AUTH_JSON") or "{}")["tokens"] == {
+        "id_token": "id-r0",
+        "access_token": "access-r1",
+        "refresh_token": "refresh-r1",
+    }
+
+
 def test_failed_refresh_preserves_authoritative_secret(broker_client, monkeypatch):
     client, broker, store = broker_client
     conversation_id = uuid4()

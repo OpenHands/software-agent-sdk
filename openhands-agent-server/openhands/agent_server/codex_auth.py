@@ -117,7 +117,7 @@ class CodexAuthBroker:
         )
 
     @asynccontextmanager
-    async def serialized_refresh(self) -> AsyncIterator[None]:
+    async def serialized_update(self) -> AsyncIterator[None]:
         async with self._refresh_lock:
             yield
 
@@ -350,12 +350,14 @@ async def update_codex_auth(
 ) -> Response:
     broker = _authorize(request, conversation_id, x_oh_codex_token)
     expected_digest, value = await _parse_update(request)
-    try:
-        updated = broker.compare_and_swap(expected_digest, value)
-    except KeyError as exc:
-        raise HTTPException(
-            status.HTTP_404_NOT_FOUND, detail="Codex credentials were not found"
-        ) from exc
+    async with broker.serialized_update():
+        _authorize(request, conversation_id, x_oh_codex_token)
+        try:
+            updated = broker.compare_and_swap(expected_digest, value)
+        except KeyError as exc:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND, detail="Codex credentials were not found"
+            ) from exc
     if not updated:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
@@ -373,7 +375,7 @@ async def refresh_codex_auth(
     token = _decode_refresh_authorization(authorization)
     broker = _authorize(request, conversation_id, token)
     submitted_refresh_token = await _parse_refresh_request(request)
-    async with broker.serialized_refresh():
+    async with broker.serialized_update():
         _authorize(request, conversation_id, token)
         current = broker.get_value()
         if current is None:
