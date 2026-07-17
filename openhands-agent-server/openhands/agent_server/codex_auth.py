@@ -115,12 +115,18 @@ class CodexAuthBroker:
         with self._capability_lock:
             self._capability_digests.clear()
 
-    def get_value(self) -> str | None:
-        return self.store.get_secret(CODEX_AUTH_SECRET_NAME)
+    async def get_value(self) -> str | None:
+        return await asyncio.to_thread(
+            self.store.get_secret,
+            CODEX_AUTH_SECRET_NAME,
+        )
 
-    def compare_and_swap(self, expected_digest: str, value: str) -> bool:
-        return self.store.compare_and_swap_secret(
-            CODEX_AUTH_SECRET_NAME, expected_digest, value
+    async def compare_and_swap(self, expected_digest: str, value: str) -> bool:
+        return await asyncio.to_thread(
+            self.store.compare_and_swap_secret,
+            CODEX_AUTH_SECRET_NAME,
+            expected_digest,
+            value,
         )
 
     @asynccontextmanager
@@ -313,7 +319,7 @@ async def get_codex_auth(
     x_oh_codex_token: str | None = Header(None),
 ) -> Response:
     broker = _authorize(request, conversation_id, x_oh_codex_token)
-    value = broker.get_value()
+    value = await broker.get_value()
     if value is None:
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, detail="Codex credentials were not found"
@@ -337,7 +343,7 @@ async def touch_codex_auth(
     x_oh_codex_token: str | None = Header(None),
 ) -> Response:
     broker = _authorize(request, conversation_id, x_oh_codex_token)
-    value = broker.get_value()
+    value = await broker.get_value()
     if value is None:
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, detail="Codex credentials were not found"
@@ -360,7 +366,7 @@ async def update_codex_auth(
     async with broker.serialized_update():
         _authorize(request, conversation_id, x_oh_codex_token)
         try:
-            updated = broker.compare_and_swap(expected_digest, value)
+            updated = await broker.compare_and_swap(expected_digest, value)
         except KeyError as exc:
             raise HTTPException(
                 status.HTTP_404_NOT_FOUND, detail="Codex credentials were not found"
@@ -384,7 +390,7 @@ async def refresh_codex_auth(
     submitted_refresh_token = await _parse_refresh_request(request)
     async with broker.serialized_update():
         _authorize(request, conversation_id, token)
-        current = broker.get_value()
+        current = await broker.get_value()
         if current is None:
             raise HTTPException(
                 status.HTTP_404_NOT_FOUND, detail="Codex credentials were not found"
@@ -432,7 +438,7 @@ async def refresh_codex_auth(
         updated_value = _merge_refresh(current, refresh)
         current_digest = hashlib.sha256(current.encode()).hexdigest()
         try:
-            updated = broker.compare_and_swap(current_digest, updated_value)
+            updated = await broker.compare_and_swap(current_digest, updated_value)
         except KeyError as exc:
             raise HTTPException(
                 status.HTTP_404_NOT_FOUND, detail="Codex credentials were not found"

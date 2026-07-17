@@ -2,6 +2,8 @@ import asyncio
 import base64
 import hashlib
 import json
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from urllib.parse import urlsplit
@@ -127,6 +129,49 @@ def test_file_store_compare_and_swap_rejects_concurrent_loser(tmp_path):
     assert stored is not None
     assert stored.custom_secrets["CODEX_AUTH_JSON"].description == "Codex auth"
     assert store.get_secret("CODEX_AUTH_JSON") in candidates
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["get", "compare_and_swap"])
+async def test_broker_store_io_does_not_block_event_loop(
+    tmp_path, monkeypatch, operation
+):
+    store = FileSecretsStore(tmp_path)
+    value = _auth_value()
+    store.set_secret(CODEX_AUTH_SECRET_NAME, value)
+    broker = CodexAuthBroker(store)
+    started = threading.Event()
+    release = threading.Event()
+
+    if operation == "get":
+
+        def blocking_get(_name):
+            started.set()
+            release.wait(2)
+            return value
+
+        monkeypatch.setattr(store, "get_secret", blocking_get)
+    else:
+
+        def blocking_compare(_name, _digest, _value):
+            started.set()
+            release.wait(2)
+            return True
+
+        monkeypatch.setattr(store, "compare_and_swap_secret", blocking_compare)
+
+    async def run_operation() -> object:
+        if operation == "get":
+            return await broker.get_value()
+        return await broker.compare_and_swap("digest", value)
+
+    task = asyncio.create_task(run_operation())
+    start = time.monotonic()
+    while not started.is_set():
+        await asyncio.sleep(0)
+    assert time.monotonic() - start < 1
+    release.set()
+    assert await asyncio.wait_for(task, timeout=1) in (value, True)
 
 
 def test_broker_get_update_and_release_are_capability_scoped(broker_client):
