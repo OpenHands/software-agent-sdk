@@ -11,7 +11,7 @@ RESET := \033[0m
 UNDERLINE := \033[4m
 
 # Required uv version
-REQUIRED_UV_VERSION := 0.8.13
+REQUIRED_UV_VERSION := 0.11.29
 PKGS ?= openhands-sdk openhands-tools openhands-workspace openhands-agent-server
 
 .PHONY: build format lint clean help check-uv-version
