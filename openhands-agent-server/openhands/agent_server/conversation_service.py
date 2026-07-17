@@ -1429,9 +1429,9 @@ class ConversationService:
         finally:
             if self.codex_auth_broker is not None:
                 self.codex_auth_broker.clear()
-            if self._run_executor is not None:
-                self._run_executor.shutdown(wait=False)
-                self._run_executor = None
+        if self._run_executor is not None:
+            self._run_executor.shutdown(wait=False)
+            self._run_executor = None
 
     @classmethod
     def get_instance(cls, config: Config) -> "ConversationService":
@@ -1466,11 +1466,12 @@ class ConversationService:
             raise ValueError("inactive_service")
 
         broker = self.codex_auth_broker
+        runtime_stored = stored
         source = stored.secrets.get(CODEX_AUTH_SECRET_NAME)
         if broker is not None and isinstance(source, LookupSecret):
             brokered_source = broker.ensure_brokered_source(stored.id, source)
             if brokered_source is not source:
-                stored = stored.model_copy(
+                runtime_stored = stored.model_copy(
                     update={
                         "secrets": {
                             **stored.secrets,
@@ -1480,7 +1481,7 @@ class ConversationService:
                 )
 
         event_service = EventService(
-            stored=stored,
+            stored=runtime_stored,
             conversations_dir=self.conversations_dir,
             cipher=self.cipher,
             mcp_tool_provider=self.mcp_tool_provider,
@@ -1494,6 +1495,7 @@ class ConversationService:
 
         try:
             await event_service.start()
+            event_service.stored = stored
             # Register subscribers after start() so subscribe_to_events runs
             # its initial-state push synchronously and any failure surfaces to
             # the caller instead of being silently logged on a later publish.
