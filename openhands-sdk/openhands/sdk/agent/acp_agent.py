@@ -968,11 +968,6 @@ class _ACPFileCredentialSyncError(RuntimeError):
     pass
 
 
-# Compatibility aliases for the current Codex-specific error classification.
-_CodexNeedsReauthError = _ACPFileCredentialNeedsReauthError
-_CodexCredentialSyncError = _ACPFileCredentialSyncError
-
-
 def _update_codex_auth_source(
     source: LookupSecret, value: str, expected_digest: str
 ) -> None:
@@ -1047,7 +1042,12 @@ def _is_valid_codex_auth_value(value: object) -> bool:
 
 
 class _ACPFileCredentialLifecycle(Protocol):
-    """Lifecycle boundary for a brokered ACP file credential."""
+    """Lifecycle boundary for a brokered ACP file credential.
+
+    Implementations translate expected I/O and broker failures into the
+    provider-neutral credential errors above. Unexpected exceptions are treated
+    as implementation defects and intentionally propagate through orchestration.
+    """
 
     secret_name: str
     path: Path | None
@@ -1100,7 +1100,7 @@ class _CodexAuthLifecycle:
             raise _ACPFileCredentialSyncError(
                 "Codex credentials could not be loaded from Cloud."
             ) from exc
-        except Exception as exc:
+        except httpx.RequestError as exc:
             raise _ACPFileCredentialSyncError(
                 "Codex credentials could not be loaded from Cloud."
             ) from exc
@@ -1203,7 +1203,10 @@ class _CodexAuthLifecycle:
                 if changed and exc.response.status_code == 409:
                     try:
                         self._adopt(_get_codex_auth_source(self.source))
-                    except Exception as remote_exc:
+                    except (
+                        httpx.HTTPError,
+                        _ACPFileCredentialSyncError,
+                    ) as remote_exc:
                         if attempt == attempts - 1:
                             raise _ACPFileCredentialSyncError(
                                 "Codex credentials could not be reconciled with Cloud."
@@ -1214,7 +1217,7 @@ class _CodexAuthLifecycle:
                     raise _ACPFileCredentialSyncError(
                         "Codex credentials could not be saved to Cloud."
                     ) from exc
-            except Exception as exc:
+            except httpx.RequestError as exc:
                 if attempt == attempts - 1:
                     raise _ACPFileCredentialSyncError(
                         "Codex credentials could not be saved to Cloud."
@@ -1255,7 +1258,12 @@ class _CodexAuthLifecycle:
         self.last_remote_check = time.monotonic()
 
     def release(self) -> None:
-        _release_codex_auth_source(self.source)
+        try:
+            _release_codex_auth_source(self.source)
+        except httpx.HTTPError as exc:
+            raise _ACPFileCredentialSyncError(
+                "Codex credential source could not be released."
+            ) from exc
         self.clear()
 
     def clear(self) -> None:
@@ -1383,7 +1391,9 @@ def _classify_acp_init_error(exc: BaseException) -> str:
       creation (timeouts, transport drops, unexpected protocol errors, cwd
       mismatch surfaced by the server).
     """
-    if isinstance(exc, (_CodexNeedsReauthError, _CodexCredentialSyncError)):
+    if isinstance(
+        exc, (_ACPFileCredentialNeedsReauthError, _ACPFileCredentialSyncError)
+    ):
         return "ACPAuthRequired"
     if _acp_error_indicates_auth(exc):
         return "ACPAuthRequired"
@@ -1399,7 +1409,9 @@ def _classify_acp_turn_error(exc: BaseException) -> str:
     policy refusals get their own code, credential failures map to ``ACPAuthRequired``
     (so the client can offer re-auth), everything else is a generic ``ACPPromptError``.
     """
-    if isinstance(exc, (_CodexNeedsReauthError, _CodexCredentialSyncError)):
+    if isinstance(
+        exc, (_ACPFileCredentialNeedsReauthError, _ACPFileCredentialSyncError)
+    ):
         return "ACPAuthRequired"
     text = _acp_error_text(exc)
     if "usage policy" in text or "content policy" in text:
@@ -2352,7 +2364,7 @@ class ACPAgent(AgentBase):
             ):
                 try:
                     self._sync_file_credentials()
-                except Exception:
+                except _ACPFileCredentialSyncError:
                     release_file_credentials = False
                     logger.warning(
                         "Failed to sync ACP file credentials during cleanup",
@@ -2716,7 +2728,7 @@ class ACPAgent(AgentBase):
     def _sync_file_credentials_best_effort_blocking(self) -> None:
         try:
             self._sync_file_credentials()
-        except Exception:
+        except _ACPFileCredentialSyncError:
             logger.warning("Failed to sync ACP file credentials", exc_info=True)
 
     def _release_file_credentials(self) -> None:
@@ -2726,7 +2738,7 @@ class ACPAgent(AgentBase):
             for name, lifecycle in list(self._file_credential_lifecycles.items()):
                 try:
                     lifecycle.release()
-                except Exception as exc:
+                except _ACPFileCredentialSyncError as exc:
                     if first_error is None:
                         first_error = exc
                 else:
@@ -2961,12 +2973,12 @@ class ACPAgent(AgentBase):
                                 auth_kwargs["gateway"] = {"baseUrl": base_url}
                     try:
                         await conn.authenticate(method_id=method_id, **auth_kwargs)
-                    except Exception as exc:
+                    except ACPRequestError as exc:
                         if method_id != "chat-gpt" or not _acp_error_indicates_auth(
                             exc
                         ):
                             raise
-                        raise _CodexNeedsReauthError(
+                        raise _ACPFileCredentialNeedsReauthError(
                             "ChatGPT authentication needs to be refreshed."
                         ) from exc
                     if method_id == "chat-gpt":

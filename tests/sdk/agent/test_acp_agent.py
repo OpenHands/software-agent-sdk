@@ -26,13 +26,13 @@ from openhands.sdk.agent.acp_agent import (
     ACPAgent,
     _acp_error_detail,
     _acp_error_indicates_auth,
+    _ACPFileCredentialNeedsReauthError,
+    _ACPFileCredentialSyncError,
     _apply_acp_model,
     _classify_acp_init_error,
     _classify_acp_turn_error,
     _codex_auth_file,
     _codex_model_config_options,
-    _CodexCredentialSyncError,
-    _CodexNeedsReauthError,
     _estimate_cost_from_tokens,
     _extract_session_models,
     _extract_token_usage,
@@ -8310,11 +8310,30 @@ class TestACPFileSecretMaterialisation:
 
         with (
             patch.object(LookupSecret, "get_value", side_effect=missing),
-            pytest.raises(_CodexNeedsReauthError, match="not found") as exc_info,
+            pytest.raises(
+                _ACPFileCredentialNeedsReauthError, match="not found"
+            ) as exc_info,
         ):
             agent._materialise_file_secrets(state, {})
 
         assert _classify_acp_init_error(exc_info.value) == "ACPAuthRequired"
+
+    def test_broker_load_programming_error_propagates(self, tmp_path):
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": _brokered_codex_source()}
+        )
+
+        with (
+            patch.object(
+                LookupSecret,
+                "get_value",
+                side_effect=RuntimeError("credential loader bug"),
+            ),
+            pytest.raises(RuntimeError, match="credential loader bug"),
+        ):
+            agent._materialise_file_secrets(state, {})
 
     def test_generic_lookup_secret_remains_get_only(self, tmp_path):
         remote = '{"tokens":{"refresh_token":"remote"}}'
@@ -8576,7 +8595,9 @@ class TestACPFileSecretMaterialisation:
         )
         lifecycle.path = auth_path
 
-        with pytest.raises(_CodexCredentialSyncError, match="local copy was preserved"):
+        with pytest.raises(
+            _ACPFileCredentialSyncError, match="local copy was preserved"
+        ):
             lifecycle._adopt("")
 
         assert auth_path.read_text() == local
@@ -8654,7 +8675,7 @@ class TestACPFileSecretMaterialisation:
             patch.object(acp_agent_module, "_touch_codex_auth_source") as touch_source,
             patch.object(acp_agent_module, "_release_codex_auth_source"),
         ):
-            with pytest.raises(_CodexNeedsReauthError) as exc_info:
+            with pytest.raises(_ACPFileCredentialNeedsReauthError) as exc_info:
                 self._run_start(agent, state, conn=conn)
             assert _classify_acp_init_error(exc_info.value) == "ACPAuthRequired"
             assert credential not in _acp_error_detail(
@@ -8662,6 +8683,24 @@ class TestACPFileSecretMaterialisation:
             )
             touch_source.assert_not_called()
             agent.close()
+
+    def test_chatgpt_auth_programming_error_is_not_reclassified(self, tmp_path):
+        credential = '{"tokens":{"refresh_token":"r0"}}'
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": _brokered_codex_source()}
+        )
+        conn = self._make_conn(auth_method="chat-gpt")
+        conn.authenticate.side_effect = RuntimeError("credential parser bug")
+
+        with (
+            patch.object(LookupSecret, "get_value", return_value=credential),
+            pytest.raises(RuntimeError, match="credential parser bug"),
+        ):
+            self._run_start(agent, state, conn=conn)
+
+        agent._cleanup()
 
     def test_post_auth_sync_failure_does_not_abort_session_start(self, tmp_path):
         credential = '{"tokens":{"refresh_token":"r0"}}'
@@ -8677,7 +8716,7 @@ class TestACPFileSecretMaterialisation:
             patch.object(
                 ACPAgent,
                 "_sync_file_credentials",
-                side_effect=_CodexCredentialSyncError("unavailable"),
+                side_effect=_ACPFileCredentialSyncError("unavailable"),
             ),
         ):
             self._run_start(agent, state, conn=conn)
@@ -8733,13 +8772,40 @@ class TestACPFileSecretMaterialisation:
             env: dict[str, str] = {}
             agent._materialise_file_secrets(state, env)
             (Path(env["CODEX_HOME"]) / "auth.json").write_text(rotated)
-            with pytest.raises(_CodexCredentialSyncError) as exc_info:
+            with pytest.raises(_ACPFileCredentialSyncError) as exc_info:
                 agent._sync_file_credentials()
             assert _classify_acp_turn_error(exc_info.value) == "ACPAuthRequired"
             assert rotated not in str(exc_info.value)
             agent._release_file_credentials()
 
         assert update_value.call_count == 3
+
+    def test_sync_programming_error_is_not_retried_or_wrapped(self, tmp_path):
+        original = '{"tokens":{"refresh_token":"r0"}}'
+        rotated = '{"tokens":{"refresh_token":"r1"}}'
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": _brokered_codex_source()}
+        )
+
+        with (
+            patch.object(LookupSecret, "get_value", return_value=original),
+            patch.object(
+                acp_agent_module,
+                "_update_codex_auth_source",
+                side_effect=RuntimeError("credential sync bug"),
+            ) as update_value,
+            patch.object(acp_agent_module, "_release_codex_auth_source"),
+        ):
+            env: dict[str, str] = {}
+            agent._materialise_file_secrets(state, env)
+            (Path(env["CODEX_HOME"]) / "auth.json").write_text(rotated)
+            with pytest.raises(RuntimeError, match="credential sync bug"):
+                agent._sync_file_credentials()
+            agent._release_file_credentials()
+
+        update_value.assert_called_once()
 
     def test_turn_and_shutdown_sync_rotated_credentials(self, tmp_path):
         original = '{"tokens":{"refresh_token":"r0"}}'
@@ -8814,10 +8880,36 @@ class TestACPFileSecretMaterialisation:
         with patch.object(
             ACPAgent,
             "_sync_file_credentials",
-            side_effect=_CodexCredentialSyncError("unavailable"),
+            side_effect=_ACPFileCredentialSyncError("unavailable"),
         ):
             agent._sync_file_credentials_best_effort_blocking()
         agent.release_runtime()
+
+    def test_best_effort_sync_propagates_programming_error(self, tmp_path):
+        agent = _make_agent()
+        _attach_file_credential_lifecycle(agent, tmp_path / "auth.json")
+
+        with (
+            patch.object(
+                ACPAgent,
+                "_sync_file_credentials",
+                side_effect=RuntimeError("credential sync bug"),
+            ),
+            pytest.raises(RuntimeError, match="credential sync bug"),
+        ):
+            agent._sync_file_credentials_best_effort_blocking()
+
+        agent.release_runtime()
+
+    def test_release_propagates_lifecycle_programming_error(self, tmp_path):
+        agent = _make_agent()
+        lifecycle = _attach_file_credential_lifecycle(agent, tmp_path / "auth.json")
+        lifecycle.release.side_effect = RuntimeError("credential release bug")
+
+        with pytest.raises(RuntimeError, match="credential release bug"):
+            agent._release_file_credentials()
+
+        assert agent._file_credential_lifecycles == {"TEST_AUTH_JSON": lifecycle}
 
     def test_successful_fork_survives_sync_failure(self, tmp_path):
         from openhands.sdk.utils.async_executor import AsyncExecutor
@@ -8852,7 +8944,7 @@ class TestACPFileSecretMaterialisation:
             patch.object(
                 ACPAgent,
                 "_sync_file_credentials",
-                side_effect=_CodexCredentialSyncError("unavailable"),
+                side_effect=_ACPFileCredentialSyncError("unavailable"),
             ),
         ):
             result = agent.ask_agent("question")
@@ -8875,7 +8967,7 @@ class TestACPFileSecretMaterialisation:
             patch.object(
                 acp_agent_module,
                 "_update_codex_auth_source",
-                side_effect=[OSError("offline")] * 3,
+                side_effect=[httpx.ReadTimeout("offline")] * 3,
             ),
             patch.object(acp_agent_module, "_release_codex_auth_source") as release,
         ):
@@ -8883,7 +8975,7 @@ class TestACPFileSecretMaterialisation:
             agent._materialise_file_secrets(state, env)
             (Path(env["CODEX_HOME"]) / "auth.json").write_text(rotated)
 
-            with pytest.raises(_CodexCredentialSyncError):
+            with pytest.raises(_ACPFileCredentialSyncError):
                 agent.close()
             release.assert_called_once()
             assert agent._closed is True
