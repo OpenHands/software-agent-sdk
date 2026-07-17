@@ -7,7 +7,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping
 from queue import Empty, Queue
-from typing import TYPE_CHECKING, Final, SupportsIndex, overload
+from typing import TYPE_CHECKING, Final, Protocol, SupportsIndex, overload
 from urllib.parse import urlparse
 
 import httpx
@@ -284,6 +284,18 @@ class WebSocketCallbackClient:
             if remaining <= 0:
                 return
             await asyncio.sleep(min(0.1, remaining))
+
+
+class WebSocketClientFactory(Protocol):
+    def __call__(
+        self,
+        *,
+        host: str,
+        conversation_id: str,
+        callback: ConversationCallbackType,
+        api_key: str | None,
+        on_reconnect: Callable[[], object] | None,
+    ) -> WebSocketCallbackClient: ...
 
 
 class RemoteEventsList(EventsListBase):
@@ -720,6 +732,7 @@ class RemoteConversation(BaseConversation):
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
+        websocket_client_factory: WebSocketClientFactory | None = None,
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
@@ -757,6 +770,8 @@ class RemoteConversation(BaseConversation):
             observability_tags: Optional root span tags for observability backends.
             observability_span_name: Optional child span name for observability
                       backends. The root span remains named "conversation".
+            websocket_client_factory: Optional callback-client factory. Uses the
+                      default WebSocket callback client when omitted.
         """
         super().__init__()  # Initialize base class with span tracking
         self.agent = agent
@@ -983,7 +998,8 @@ class RemoteConversation(BaseConversation):
         composed_callback = BaseConversation.compose_callbacks(all_callbacks)
 
         # Initialize WebSocket client for callbacks
-        self._ws_client = WebSocketCallbackClient(
+        factory = websocket_client_factory or WebSocketCallbackClient
+        self._ws_client = factory(
             host=self.workspace.host,
             conversation_id=str(self._id),
             callback=composed_callback,
