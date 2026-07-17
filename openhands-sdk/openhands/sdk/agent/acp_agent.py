@@ -127,6 +127,8 @@ _ACP_CANCEL_DRAIN_TIMEOUT: float = float(
     os.environ.get("ACP_CANCEL_DRAIN_TIMEOUT", "2.0")
 )
 
+_ACP_AUTH_TIMEOUT: float = float(os.environ.get("ACP_AUTH_TIMEOUT", "30.0"))
+
 _ACP_PROMPT_RETRY_DELAYS: tuple[float, ...] = (5.0, 15.0, 30.0)  # seconds
 _CODEX_AUTH_SYNC_DELAYS: tuple[float, ...] = (0.1, 0.5)
 _CODEX_AUTH_HTTP_TIMEOUT = 5.0
@@ -2972,7 +2974,20 @@ class ACPAgent(AgentBase):
                             if base_url:
                                 auth_kwargs["gateway"] = {"baseUrl": base_url}
                     try:
-                        await conn.authenticate(method_id=method_id, **auth_kwargs)
+                        await asyncio.wait_for(
+                            conn.authenticate(method_id=method_id, **auth_kwargs),
+                            timeout=_ACP_AUTH_TIMEOUT,
+                        )
+                    except TimeoutError as exc:
+                        if method_id == "chat-gpt":
+                            raise _ACPFileCredentialNeedsReauthError(
+                                "ChatGPT authentication did not complete in time. "
+                                "Please sign in again."
+                            ) from exc
+                        raise TimeoutError(
+                            f"ACP authentication with {method_id!r} timed out after "
+                            f"{_ACP_AUTH_TIMEOUT:g}s."
+                        ) from exc
                     except ACPRequestError as exc:
                         if method_id != "chat-gpt" or not _acp_error_indicates_auth(
                             exc

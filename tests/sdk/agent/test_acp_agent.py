@@ -8684,6 +8684,40 @@ class TestACPFileSecretMaterialisation:
             touch_source.assert_not_called()
             agent.close()
 
+    def test_chatgpt_auth_timeout_becomes_auth_required(self, tmp_path):
+        credential = '{"tokens":{"refresh_token":"never-log-this"}}'
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": _brokered_codex_source()}
+        )
+        conn = self._make_conn(auth_method="chat-gpt")
+        cancelled = threading.Event()
+
+        async def hang_until_cancelled(*_args, **_kwargs):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        conn.authenticate.side_effect = hang_until_cancelled
+
+        with (
+            patch.object(LookupSecret, "get_value", return_value=credential),
+            patch.object(acp_agent_module, "_ACP_AUTH_TIMEOUT", 0.01),
+            pytest.raises(_ACPFileCredentialNeedsReauthError) as exc_info,
+        ):
+            self._run_start(agent, state, conn=conn)
+
+        assert cancelled.is_set()
+        assert _classify_acp_init_error(exc_info.value) == "ACPAuthRequired"
+        assert "did not complete in time" in str(exc_info.value)
+        assert credential not in _acp_error_detail(
+            exc_info.value, state.secret_registry
+        )
+        agent._cleanup()
+
     def test_chatgpt_auth_programming_error_is_not_reclassified(self, tmp_path):
         credential = '{"tokens":{"refresh_token":"r0"}}'
         agent = _make_agent()
