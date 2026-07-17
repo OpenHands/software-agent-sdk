@@ -13,7 +13,7 @@ from uuid import UUID, uuid4
 import httpx
 from pydantic import BaseModel
 
-from openhands.agent_server.codex_auth import CODEX_AUTH_SECRET_NAME, CodexAuthBroker
+from openhands.agent_server.codex_auth import CodexAuthBroker
 from openhands.agent_server.config import Config, WebhookSpec
 from openhands.agent_server.conversation_lease import (
     DEFAULT_LEASE_TTL_SECONDS,
@@ -52,7 +52,6 @@ from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.mcp.utils import MCPToolProvider
-from openhands.sdk.secret import LookupSecret
 from openhands.sdk.tool import BROWSER_TOOL_NAME, Tool, is_tool_usable
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.utils.cipher import Cipher
@@ -1465,26 +1464,12 @@ class ConversationService:
         if event_services is None:
             raise ValueError("inactive_service")
 
-        broker = self.codex_auth_broker
-        runtime_stored = stored
-        source = stored.secrets.get(CODEX_AUTH_SECRET_NAME)
-        if broker is not None and isinstance(source, LookupSecret):
-            brokered_source = broker.ensure_brokered_source(stored.id, source)
-            if brokered_source is not source:
-                runtime_stored = stored.model_copy(
-                    update={
-                        "secrets": {
-                            **stored.secrets,
-                            CODEX_AUTH_SECRET_NAME: brokered_source,
-                        }
-                    }
-                )
-
         event_service = EventService(
-            stored=runtime_stored,
+            stored=stored,
             conversations_dir=self.conversations_dir,
             cipher=self.cipher,
             mcp_tool_provider=self.mcp_tool_provider,
+            codex_auth_broker=self.codex_auth_broker,
             owner_instance_id=self.owner_instance_id,
             lease_ttl_seconds=self.lease_ttl_seconds,
         )
@@ -1529,8 +1514,8 @@ class ConversationService:
             try:
                 await event_service.close()
             finally:
-                if broker is not None:
-                    broker.revoke(stored.id)
+                if self.codex_auth_broker is not None:
+                    self.codex_auth_broker.revoke(stored.id)
             raise
 
         event_services[stored.id] = event_service
