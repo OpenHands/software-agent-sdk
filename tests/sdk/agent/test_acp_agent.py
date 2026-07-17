@@ -2496,7 +2496,7 @@ class TestACPAgentAstep:
         mock_client.get_turn_usage_update = MagicMock(return_value=object())
         agent._client = mock_client
         agent._conn = MagicMock()
-        agent._codex_auth_path = tmp_path / "auth.json"
+        _attach_file_credential_lifecycle(agent, tmp_path / "auth.json")
 
         executor = AsyncExecutor()
 
@@ -2531,7 +2531,7 @@ class TestACPAgentAstep:
             with (
                 patch.object(
                     ACPAgent,
-                    "_sync_codex_auth",
+                    "_sync_file_credentials",
                     autospec=True,
                     side_effect=lambda _agent: threading.Event().wait(0.05),
                 ),
@@ -7993,6 +7993,21 @@ def _brokered_codex_source() -> LookupSecret:
     )
 
 
+def _codex_lifecycle(agent: ACPAgent) -> acp_agent_module._CodexAuthLifecycle:
+    return cast(
+        acp_agent_module._CodexAuthLifecycle,
+        agent._file_credential_lifecycles["CODEX_AUTH_JSON"],
+    )
+
+
+def _attach_file_credential_lifecycle(agent: ACPAgent, path: Path) -> MagicMock:
+    lifecycle = MagicMock()
+    lifecycle.path = path
+    lifecycle.authenticated = False
+    agent._file_credential_lifecycles["TEST_AUTH_JSON"] = lifecycle
+    return lifecycle
+
+
 class TestACPFileSecretMaterialisation:
     """Codex auth.json / Gemini Vertex SA JSON materialise to the durable
     per-conversation root, with the right data-dir env var, seed-if-absent.
@@ -8264,7 +8279,7 @@ class TestACPFileSecretMaterialisation:
                 )
                 == "<secret-hidden> <secret-hidden>"
             )
-            agent._release_codex_auth()
+            agent._release_file_credentials()
 
     def test_empty_broker_value_does_not_commit_sync_state(self, tmp_path):
         agent = _make_agent()
@@ -8278,9 +8293,7 @@ class TestACPFileSecretMaterialisation:
             agent._materialise_file_secrets(state, env)
 
         assert "CODEX_REFRESH_TOKEN_URL_OVERRIDE" not in env
-        assert agent._codex_auth_path is None
-        assert agent._codex_auth_source is None
-        assert agent._codex_auth_expected_digest is None
+        assert agent._file_credential_lifecycles == {}
 
     def test_missing_broker_value_requests_reauthentication(self, tmp_path):
         agent = _make_agent()
@@ -8326,8 +8339,8 @@ class TestACPFileSecretMaterialisation:
         ):
             env: dict[str, str] = {}
             agent._materialise_file_secrets(state, env)
-            agent._sync_codex_auth()
-            agent._release_codex_auth()
+            agent._sync_file_credentials()
+            agent._release_file_credentials()
 
         assert auth_path.read_text() == local
         assert "CODEX_REFRESH_TOKEN_URL_OVERRIDE" not in env
@@ -8353,13 +8366,13 @@ class TestACPFileSecretMaterialisation:
             first_agent = _make_agent()
             first_agent._materialise_file_secrets(state, {})
             auth_path.write_text(local)
-            first_agent._release_codex_auth()
+            first_agent._release_file_credentials()
 
             resumed_agent = _make_agent()
             resumed_agent._materialise_file_secrets(state, {})
             assert auth_path.read_text() == local
-            resumed_agent._sync_codex_auth()
-            resumed_agent._release_codex_auth()
+            resumed_agent._sync_file_credentials()
+            resumed_agent._release_file_credentials()
 
         assert update_value.call_args.args[1:] == (
             local,
@@ -8388,8 +8401,8 @@ class TestACPFileSecretMaterialisation:
         ):
             agent._materialise_file_secrets(state, {})
             assert auth_path.read_text() == remote
-            agent._sync_codex_auth()
-            agent._release_codex_auth()
+            agent._sync_file_credentials()
+            agent._release_file_credentials()
 
         update.assert_not_called()
 
@@ -8415,13 +8428,13 @@ class TestACPFileSecretMaterialisation:
         ):
             first_agent = _make_agent()
             first_agent._materialise_file_secrets(state, {})
-            first_agent._release_codex_auth()
+            first_agent._release_file_credentials()
 
             resumed_agent = _make_agent()
             resumed_agent._materialise_file_secrets(state, {})
             assert auth_path.read_text() == authoritative
-            resumed_agent._sync_codex_auth()
-            resumed_agent._release_codex_auth()
+            resumed_agent._sync_file_credentials()
+            resumed_agent._release_file_credentials()
 
         update_value.assert_not_called()
 
@@ -8456,7 +8469,7 @@ class TestACPFileSecretMaterialisation:
                 auth_path,
                 ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
             )
-            agent._sync_codex_auth()
+            agent._sync_file_credentials()
             assert (
                 state.secret_registry.mask_secrets_in_output("access-r1 refresh-r1")
                 == "<secret-hidden> <secret-hidden>"
@@ -8477,7 +8490,7 @@ class TestACPFileSecretMaterialisation:
                 "CODEX_AUTH_JSON.header.x-oh-sandbox",
                 "CODEX_AUTH_JSON.header.x-oh-codex",
             }
-            agent._release_codex_auth()
+            agent._release_file_credentials()
 
     def test_lost_update_response_reconciles_matching_remote_value(self, tmp_path):
         original = '{"tokens":{"refresh_token":"r0"}}'
@@ -8509,8 +8522,8 @@ class TestACPFileSecretMaterialisation:
             env: dict[str, str] = {}
             agent._materialise_file_secrets(state, env)
             (Path(env["CODEX_HOME"]) / "auth.json").write_text(rotated)
-            agent._sync_codex_auth()
-            agent._release_codex_auth()
+            agent._sync_file_credentials()
+            agent._release_file_credentials()
 
         assert update_value.call_count == 2
 
@@ -8546,21 +8559,25 @@ class TestACPFileSecretMaterialisation:
             agent._materialise_file_secrets(state, env)
             auth_path = Path(env["CODEX_HOME"]) / "auth.json"
             auth_path.write_text(rotated)
-            agent._sync_codex_auth()
+            agent._sync_file_credentials()
             assert auth_path.read_text() == authoritative
-            agent._release_codex_auth()
+            agent._release_file_credentials()
 
         update_value.assert_called_once()
         release.assert_called_once()
 
     def test_empty_conflict_value_preserves_working_copy(self, tmp_path):
         local = '{"tokens":{"refresh_token":"local"}}'
-        agent = _make_agent()
         auth_path = tmp_path / "auth.json"
         auth_path.write_text(local)
+        lifecycle = acp_agent_module._CodexAuthLifecycle(
+            _brokered_codex_source(),
+            "https://session-a:scoped.jwt.token@cloud/codex-auth/refresh",
+        )
+        lifecycle.path = auth_path
 
         with pytest.raises(_CodexCredentialSyncError, match="local copy was preserved"):
-            agent._adopt_codex_auth_value(auth_path, "")
+            lifecycle._adopt("")
 
         assert auth_path.read_text() == local
 
@@ -8592,10 +8609,10 @@ class TestACPFileSecretMaterialisation:
             env: dict[str, str] = {}
             agent._materialise_file_secrets(state, env)
             auth_path = Path(env["CODEX_HOME"]) / "auth.json"
-            agent._codex_auth_last_remote_check = 0.0
-            agent._sync_codex_auth()
+            _codex_lifecycle(agent).last_remote_check = 0.0
+            agent._sync_file_credentials()
             assert auth_path.read_text() == authoritative
-            agent._release_codex_auth()
+            agent._release_file_credentials()
 
     def test_unchanged_auth_checks_remote_periodically(self, tmp_path):
         original = '{"tokens":{"refresh_token":"r0"}}'
@@ -8612,13 +8629,13 @@ class TestACPFileSecretMaterialisation:
             patch.object(acp_agent_module, "_release_codex_auth_source"),
         ):
             agent._materialise_file_secrets(state, {})
-            agent._sync_codex_auth()
+            agent._sync_file_credentials()
             touch.assert_not_called()
 
-            agent._codex_auth_last_remote_check = 0.0
-            agent._sync_codex_auth()
+            _codex_lifecycle(agent).last_remote_check = 0.0
+            agent._sync_file_credentials()
             touch.assert_called_once()
-            agent._release_codex_auth()
+            agent._release_file_credentials()
 
     def test_chatgpt_auth_failure_becomes_auth_required(self, tmp_path):
         credential = '{"tokens":{"refresh_token":"never-log-this"}}'
@@ -8659,7 +8676,7 @@ class TestACPFileSecretMaterialisation:
             patch.object(LookupSecret, "get_value", return_value=credential),
             patch.object(
                 ACPAgent,
-                "_sync_codex_auth",
+                "_sync_file_credentials",
                 side_effect=_CodexCredentialSyncError("unavailable"),
             ),
         ):
@@ -8717,10 +8734,10 @@ class TestACPFileSecretMaterialisation:
             agent._materialise_file_secrets(state, env)
             (Path(env["CODEX_HOME"]) / "auth.json").write_text(rotated)
             with pytest.raises(_CodexCredentialSyncError) as exc_info:
-                agent._sync_codex_auth()
+                agent._sync_file_credentials()
             assert _classify_acp_turn_error(exc_info.value) == "ACPAuthRequired"
             assert rotated not in str(exc_info.value)
-            agent._release_codex_auth()
+            agent._release_file_credentials()
 
         assert update_value.call_count == 3
 
@@ -8756,7 +8773,7 @@ class TestACPFileSecretMaterialisation:
 
             conn.prompt = AsyncMock(side_effect=rotate_during_turn)
             asyncio.run(agent._do_acp_prompt([]))
-            agent._sync_codex_auth_best_effort_blocking()
+            agent._sync_file_credentials_best_effort_blocking()
             assert update_value.call_args.args[1:] == (
                 after_turn,
                 hashlib.sha256(original.encode()).hexdigest(),
@@ -8774,11 +8791,13 @@ class TestACPFileSecretMaterialisation:
 
     def test_finalizer_skips_network_sync(self, tmp_path):
         agent = _make_agent()
-        agent._codex_auth_path = tmp_path / "auth.json"
+        _attach_file_credential_lifecycle(agent, tmp_path / "auth.json")
 
         with (
-            patch.object(ACPAgent, "_sync_codex_auth", autospec=True) as sync,
-            patch.object(ACPAgent, "_release_codex_auth", autospec=True) as release,
+            patch.object(ACPAgent, "_sync_file_credentials", autospec=True) as sync,
+            patch.object(
+                ACPAgent, "_release_file_credentials", autospec=True
+            ) as release,
             patch.object(ACPAgent, "_cleanup", autospec=True) as cleanup,
         ):
             agent.__del__()
@@ -8790,14 +8809,14 @@ class TestACPFileSecretMaterialisation:
 
     def test_best_effort_sync_survives_failure(self, tmp_path):
         agent = _make_agent()
-        agent._codex_auth_path = tmp_path / "auth.json"
+        _attach_file_credential_lifecycle(agent, tmp_path / "auth.json")
 
         with patch.object(
             ACPAgent,
-            "_sync_codex_auth",
+            "_sync_file_credentials",
             side_effect=_CodexCredentialSyncError("unavailable"),
         ):
-            agent._sync_codex_auth_best_effort_blocking()
+            agent._sync_file_credentials_best_effort_blocking()
         agent.release_runtime()
 
     def test_successful_fork_survives_sync_failure(self, tmp_path):
@@ -8813,7 +8832,7 @@ class TestACPFileSecretMaterialisation:
         agent._client = client
         agent._session_id = "session"
         agent._working_dir = str(tmp_path)
-        agent._codex_auth_path = tmp_path / "auth.json"
+        _attach_file_credential_lifecycle(agent, tmp_path / "auth.json")
         agent._executor = AsyncExecutor()
         conn = MagicMock()
         conn.fork_session = AsyncMock(
@@ -8832,7 +8851,7 @@ class TestACPFileSecretMaterialisation:
             patch.object(ACPAgent, "_record_usage"),
             patch.object(
                 ACPAgent,
-                "_sync_codex_auth",
+                "_sync_file_credentials",
                 side_effect=_CodexCredentialSyncError("unavailable"),
             ),
         ):
@@ -8869,7 +8888,7 @@ class TestACPFileSecretMaterialisation:
             release.assert_called_once()
             assert agent._closed is True
 
-        assert agent._codex_auth_source is None
+        assert agent._file_credential_lifecycles == {}
 
     def test_materialisation_failure_releases_brokered_source(self, tmp_path):
         agent = _make_agent()
@@ -8906,9 +8925,10 @@ class TestACPFileSecretMaterialisation:
         order: list[str] = []
 
         def fail_after_authentication(current_agent, _state):
-            current_agent._codex_auth_authenticated = True
-            current_agent._codex_auth_path = tmp_path / "auth.json"
-            current_agent._codex_auth_source = _brokered_codex_source()
+            lifecycle = _attach_file_credential_lifecycle(
+                current_agent, tmp_path / "auth.json"
+            )
+            lifecycle.authenticated = True
             raise RuntimeError("session creation failed")
 
         def record_sync(current_agent):
@@ -8928,13 +8948,13 @@ class TestACPFileSecretMaterialisation:
             ),
             patch.object(
                 ACPAgent,
-                "_sync_codex_auth",
+                "_sync_file_credentials",
                 autospec=True,
                 side_effect=record_sync,
             ),
             patch.object(
                 ACPAgent,
-                "_release_codex_auth",
+                "_release_file_credentials",
                 autospec=True,
                 side_effect=record_release,
             ),
@@ -9150,6 +9170,50 @@ class TestACPFileSecretMaterialisation:
         # The built-in Codex/Gemini specs were replaced, so their secrets would
         # NOT be materialised by this agent.
         assert agent._present_file_secret_names(state) == {"MYCLI_TOKEN_JSON"}
+
+    def test_registered_custom_file_credential_lifecycle_is_used(self, tmp_path):
+        from openhands.sdk import ACPFileSecretSpec
+
+        custom = ACPFileSecretSpec(
+            secret_name="MYCLI_TOKEN_JSON",
+            filename="token.json",
+            env_var="MYCLI_HOME",
+            subdir="mycli",
+            env_points_to="dir",
+        )
+        source = LookupSecret(url="https://broker.example/mycli")
+        lifecycle = MagicMock()
+        lifecycle.load.return_value = '{"token":"current"}'
+        lifecycle.should_preserve_existing.return_value = False
+        lifecycle.authenticated = False
+        factory = MagicMock(return_value=lifecycle)
+        agent = _make_agent(acp_file_secrets=[custom])
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets({"MYCLI_TOKEN_JSON": source})
+
+        with patch.dict(
+            acp_agent_module._ACP_FILE_CREDENTIAL_LIFECYCLE_FACTORIES,
+            {"MYCLI_TOKEN_JSON": factory},
+        ):
+            env: dict[str, str] = {}
+            agent._materialise_file_secrets(state, env)
+            agent._sync_file_credentials()
+            agent._release_file_credentials()
+
+        target = Path(env["MYCLI_HOME"]) / "token.json"
+        factory.assert_called_once_with(source)
+        lifecycle.bind.assert_called_once_with(
+            target,
+            state.secret_registry,
+            '{"token":"current"}',
+            env,
+        )
+        lifecycle.record_materialized.assert_called_once_with(
+            '{"token":"current"}', '{"token":"current"}'
+        )
+        lifecycle.sync.assert_called_once_with()
+        lifecycle.release.assert_called_once_with()
+        assert agent._file_credential_lifecycles == {}
 
     def test_empty_specs_disables_materialisation(self, tmp_path):
         """With acp_file_secrets=[], a CODEX_AUTH_JSON secret is treated as an

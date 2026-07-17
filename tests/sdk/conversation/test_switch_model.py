@@ -19,7 +19,6 @@ from openhands.sdk.conversation.state import (
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm import Message, MessageToolCall, TextContent, llm_profile_store
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
-from openhands.sdk.secret import LookupSecret
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.utils.cipher import Cipher
 from tests.conftest import create_mock_litellm_response
@@ -214,14 +213,11 @@ def test_switch_acp_model_disarms_discarded_agent_finalizer(tmp_path):
     conv, old_agent = _make_acp_conversation(tmp_path)
     live_conn = old_agent._conn
     live_executor = old_agent._executor
-    source = LookupSecret(url="https://cloud/codex-auth", headers={})
-    old_agent._codex_auth_path = tmp_path / "auth.json"
-    old_agent._codex_auth_source = source
-    old_agent._codex_auth_expected_digest = "expected"
-    old_agent._codex_auth_last_remote_check = 42.0
-    old_agent._codex_auth_registry = conv.state.secret_registry
-    old_agent._codex_auth_authenticated = True
-    codex_auth_lock = old_agent._codex_auth_lock
+    lifecycle = MagicMock()
+    lifecycle.path = tmp_path / "auth.json"
+    lifecycle.authenticated = True
+    old_agent._file_credential_lifecycles["CODEX_AUTH_JSON"] = lifecycle
+    credential_lock = old_agent._file_credential_lock
 
     conv.switch_acp_model("model-b")
 
@@ -230,13 +226,8 @@ def test_switch_acp_model_disarms_discarded_agent_finalizer(tmp_path):
     assert isinstance(switched, ACPAgent)
     assert switched._conn is live_conn
     assert switched._executor is live_executor
-    assert switched._codex_auth_path == tmp_path / "auth.json"
-    assert switched._codex_auth_source is source
-    assert switched._codex_auth_expected_digest == "expected"
-    assert switched._codex_auth_last_remote_check == 42.0
-    assert switched._codex_auth_registry is conv.state.secret_registry
-    assert switched._codex_auth_authenticated is True
-    assert switched._codex_auth_lock is codex_auth_lock
+    assert switched._file_credential_lifecycles == {"CODEX_AUTH_JSON": lifecycle}
+    assert switched._file_credential_lock is credential_lock
 
     # ...and the discarded agent's finalizer was disarmed (marked closed)
     # WITHOUT clearing its runtime references — an in-flight ask_agent()/fork
@@ -244,12 +235,7 @@ def test_switch_acp_model_disarms_discarded_agent_finalizer(tmp_path):
     assert old_agent._closed is True
     assert old_agent._conn is live_conn
     assert old_agent._executor is live_executor
-    assert old_agent._codex_auth_path is None
-    assert old_agent._codex_auth_source is None
-    assert old_agent._codex_auth_expected_digest is None
-    assert old_agent._codex_auth_last_remote_check == 0.0
-    assert old_agent._codex_auth_registry is None
-    assert old_agent._codex_auth_authenticated is False
+    assert old_agent._file_credential_lifecycles == {}
 
     # Simulating GC (__del__ -> close()) on the disarmed old agent is a no-op:
     # the copy's shared connection/executor are left intact.
