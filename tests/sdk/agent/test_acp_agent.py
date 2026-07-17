@@ -8179,7 +8179,7 @@ class TestACPFileSecretMaterialisation:
 
         assert get_value.call_count == 2
         update_value.assert_called_once()
-        assert touch.call_count >= 2
+        touch.assert_not_called()
         assert release.call_count == 2
 
     def test_lookup_source_uses_scoped_write_through_requests(self):
@@ -8194,6 +8194,9 @@ class TestACPFileSecretMaterialisation:
                 acp_agent_module.httpx, "put", return_value=response
             ) as mock_put,
             patch.object(
+                acp_agent_module.httpx, "get", return_value=response
+            ) as mock_get,
+            patch.object(
                 acp_agent_module.httpx, "head", return_value=response
             ) as mock_head,
             patch.object(
@@ -8203,6 +8206,7 @@ class TestACPFileSecretMaterialisation:
             acp_agent_module._update_codex_auth_source(
                 source, "rotated", "original-digest"
             )
+            acp_agent_module._get_codex_auth_source(source)
             acp_agent_module._touch_codex_auth_source(source)
             acp_agent_module._release_codex_auth_source(source)
 
@@ -8210,19 +8214,24 @@ class TestACPFileSecretMaterialisation:
             "https://cloud/codex-auth",
             headers={"Authorization": "Bearer scoped"},
             json={"expected_digest": "original-digest", "value": "rotated"},
-            timeout=30.0,
+            timeout=acp_agent_module._CODEX_AUTH_HTTP_TIMEOUT,
+        )
+        mock_get.assert_called_once_with(
+            "https://cloud/codex-auth",
+            headers={"Authorization": "Bearer scoped"},
+            timeout=acp_agent_module._CODEX_AUTH_HTTP_TIMEOUT,
         )
         mock_head.assert_called_once_with(
             "https://cloud/codex-auth",
             headers={"Authorization": "Bearer scoped"},
-            timeout=30.0,
+            timeout=acp_agent_module._CODEX_AUTH_HTTP_TIMEOUT,
         )
         mock_delete.assert_called_once_with(
             "https://cloud/codex-auth",
             headers={"Authorization": "Bearer scoped"},
-            timeout=30.0,
+            timeout=acp_agent_module._CODEX_AUTH_HTTP_TIMEOUT,
         )
-        assert response.raise_for_status.call_count == 3
+        assert response.raise_for_status.call_count == 4
 
     def test_lookup_source_configures_brokered_codex_refresh(self, tmp_path):
         credential = '{"tokens":{"refresh_token":"refresh-r0"}}'
@@ -8271,7 +8280,7 @@ class TestACPFileSecretMaterialisation:
         assert agent._codex_auth_path is None
         assert agent._codex_auth_source is None
         assert agent._codex_auth_expected_digest is None
-        assert agent._codex_auth_synced_digest is None
+        assert agent._codex_auth_file_signature is None
 
     def test_missing_broker_value_requests_reauthentication(self, tmp_path):
         agent = _make_agent()
@@ -8357,7 +8366,7 @@ class TestACPFileSecretMaterialisation:
             hashlib.sha256(remote.encode()).hexdigest(),
         )
 
-    def test_first_brokered_materialisation_preserves_static_working_copy(
+    def test_first_brokered_materialisation_replaces_untracked_working_copy(
         self, tmp_path
     ):
         remote = '{"tokens":{"refresh_token":"remote"}}'
@@ -8378,12 +8387,11 @@ class TestACPFileSecretMaterialisation:
             patch.object(acp_agent_module, "_release_codex_auth_source"),
         ):
             agent._materialise_file_secrets(state, {})
-            assert auth_path.read_text() == local
+            assert auth_path.read_text() == remote
             agent._sync_codex_auth()
             agent._release_codex_auth()
 
-        remote_digest = hashlib.sha256(remote.encode()).hexdigest()
-        update.assert_called_once_with(_brokered_codex_source(), local, remote_digest)
+        update.assert_not_called()
 
     def test_lookup_secret_replaces_stale_working_copy(self, tmp_path):
         stale = '{"tokens":{"refresh_token":"stale"}}'
@@ -8480,7 +8488,10 @@ class TestACPFileSecretMaterialisation:
         )
 
         with (
-            patch.object(LookupSecret, "get_value", side_effect=[original, rotated]),
+            patch.object(LookupSecret, "get_value", return_value=original),
+            patch.object(
+                acp_agent_module, "_get_codex_auth_source", return_value=rotated
+            ),
             patch.object(
                 acp_agent_module,
                 "_update_codex_auth_source",
@@ -8513,8 +8524,11 @@ class TestACPFileSecretMaterialisation:
         )
 
         with (
+            patch.object(LookupSecret, "get_value", return_value=original),
             patch.object(
-                LookupSecret, "get_value", side_effect=[original, authoritative]
+                acp_agent_module,
+                "_get_codex_auth_source",
+                return_value=authoritative,
             ),
             patch.object(
                 acp_agent_module, "_update_codex_auth_source", side_effect=conflict
@@ -8554,8 +8568,11 @@ class TestACPFileSecretMaterialisation:
         )
 
         with (
+            patch.object(LookupSecret, "get_value", return_value=original),
             patch.object(
-                LookupSecret, "get_value", side_effect=[original, authoritative]
+                acp_agent_module,
+                "_get_codex_auth_source",
+                return_value=authoritative,
             ),
             patch.object(
                 acp_agent_module,
@@ -8567,8 +8584,31 @@ class TestACPFileSecretMaterialisation:
             env: dict[str, str] = {}
             agent._materialise_file_secrets(state, env)
             auth_path = Path(env["CODEX_HOME"]) / "auth.json"
+            agent._codex_auth_last_remote_check = 0.0
             agent._sync_codex_auth()
             assert auth_path.read_text() == authoritative
+            agent._release_codex_auth()
+
+    def test_unchanged_auth_checks_remote_periodically(self, tmp_path):
+        original = '{"tokens":{"refresh_token":"r0"}}'
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": _brokered_codex_source()}
+        )
+
+        with (
+            patch.object(LookupSecret, "get_value", return_value=original),
+            patch.object(acp_agent_module, "_touch_codex_auth_source") as touch,
+            patch.object(acp_agent_module, "_release_codex_auth_source"),
+        ):
+            agent._materialise_file_secrets(state, {})
+            agent._sync_codex_auth()
+            touch.assert_not_called()
+
+            agent._codex_auth_last_remote_check = 0.0
+            agent._sync_codex_auth()
+            touch.assert_called_once()
             agent._release_codex_auth()
 
     def test_chatgpt_auth_failure_becomes_auth_required(self, tmp_path):
@@ -8793,7 +8833,7 @@ class TestACPFileSecretMaterialisation:
         agent._cleanup()
         agent.release_runtime()
 
-    def test_close_keeps_source_when_sync_fails(self, tmp_path):
+    def test_close_releases_source_and_stays_closed_when_sync_fails(self, tmp_path):
         original = '{"tokens":{"refresh_token":"r0"}}'
         rotated = '{"tokens":{"refresh_token":"r1"}}'
         agent = _make_agent()
@@ -8807,7 +8847,7 @@ class TestACPFileSecretMaterialisation:
             patch.object(
                 acp_agent_module,
                 "_update_codex_auth_source",
-                side_effect=[OSError("offline")] * 3 + [None],
+                side_effect=[OSError("offline")] * 3,
             ),
             patch.object(acp_agent_module, "_release_codex_auth_source") as release,
         ):
@@ -8817,12 +8857,10 @@ class TestACPFileSecretMaterialisation:
 
             with pytest.raises(_CodexCredentialSyncError):
                 agent.close()
-            release.assert_not_called()
-            assert agent._closed is False
+            release.assert_called_once()
+            assert agent._closed is True
 
-            agent.close()
-
-        release.assert_called_once()
+        assert agent._codex_auth_source is None
 
     def test_materialisation_failure_releases_brokered_source(self, tmp_path):
         agent = _make_agent()

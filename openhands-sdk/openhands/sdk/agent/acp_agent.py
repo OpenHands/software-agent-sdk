@@ -129,6 +129,8 @@ _ACP_CANCEL_DRAIN_TIMEOUT: float = float(
 
 _ACP_PROMPT_RETRY_DELAYS: tuple[float, ...] = (5.0, 15.0, 30.0)  # seconds
 _CODEX_AUTH_SYNC_DELAYS: tuple[float, ...] = (0.1, 0.5)
+_CODEX_AUTH_HTTP_TIMEOUT = 5.0
+_CODEX_AUTH_REMOTE_CHECK_INTERVAL = 60.0
 _CODEX_AUTH_DIGEST_HEADER = "X-Codex-Auth-Digest"
 _CODEX_AUTH_SANDBOX_HEADER = "X-OH-Sandbox"
 _CODEX_AUTH_SCOPE_HEADER = "X-OH-Codex"
@@ -973,13 +975,27 @@ def _update_codex_auth_source(
         source.url,
         headers=source.headers,
         json={"expected_digest": expected_digest, "value": value},
-        timeout=30.0,
+        timeout=_CODEX_AUTH_HTTP_TIMEOUT,
     )
     response.raise_for_status()
 
 
+def _get_codex_auth_source(source: LookupSecret) -> str:
+    response = httpx.get(
+        source.url,
+        headers=source.headers,
+        timeout=_CODEX_AUTH_HTTP_TIMEOUT,
+    )
+    response.raise_for_status()
+    return response.text
+
+
 def _touch_codex_auth_source(source: LookupSecret) -> str | None:
-    response = httpx.head(source.url, headers=source.headers, timeout=30.0)
+    response = httpx.head(
+        source.url,
+        headers=source.headers,
+        timeout=_CODEX_AUTH_HTTP_TIMEOUT,
+    )
     response.raise_for_status()
     digest = response.headers.get(_CODEX_AUTH_DIGEST_HEADER)
     return (
@@ -990,7 +1006,11 @@ def _touch_codex_auth_source(source: LookupSecret) -> str | None:
 
 
 def _release_codex_auth_source(source: LookupSecret) -> None:
-    response = httpx.delete(source.url, headers=source.headers, timeout=30.0)
+    response = httpx.delete(
+        source.url,
+        headers=source.headers,
+        timeout=_CODEX_AUTH_HTTP_TIMEOUT,
+    )
     response.raise_for_status()
 
 
@@ -1805,7 +1825,8 @@ class ACPAgent(AgentBase):
     _codex_auth_path: Path | None = PrivateAttr(default=None)
     _codex_auth_source: LookupSecret | None = PrivateAttr(default=None)
     _codex_auth_expected_digest: str | None = PrivateAttr(default=None)
-    _codex_auth_synced_digest: str | None = PrivateAttr(default=None)
+    _codex_auth_file_signature: tuple[int, int] | None = PrivateAttr(default=None)
+    _codex_auth_last_remote_check: float = PrivateAttr(default=0.0)
     _codex_auth_registry: SecretRegistry | None = PrivateAttr(default=None)
     _codex_auth_authenticated: bool = PrivateAttr(default=False)
     _codex_auth_lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
@@ -2401,7 +2422,6 @@ class ACPAgent(AgentBase):
                 self._codex_auth_source = brokered_source
                 remote_digest = hashlib.sha256(value.encode()).hexdigest()
                 self._codex_auth_expected_digest = remote_digest
-                self._codex_auth_synced_digest = remote_digest
                 assert refresh_url is not None
                 env[_CODEX_REFRESH_TOKEN_URL_ENV] = refresh_url
                 self._track_codex_auth_transport(brokered_source, refresh_url)
@@ -2419,9 +2439,8 @@ class ACPAgent(AgentBase):
                 if brokered_source is not None:
                     assert remote_digest is not None
                     ancestor_digest = _read_codex_auth_ancestor(target)
-                    preserve_existing = preserve_existing and ancestor_digest in (
-                        None,
-                        remote_digest,
+                    preserve_existing = (
+                        preserve_existing and ancestor_digest == remote_digest
                     )
                 if preserve_existing:
                     # Seed-if-absent: keep the (possibly CLI-refreshed) contents,
@@ -2465,6 +2484,16 @@ class ACPAgent(AgentBase):
                 assert local_value is not None
                 assert remote_digest is not None
                 local_digest = hashlib.sha256(local_value.encode()).hexdigest()
+                if local_digest == remote_digest:
+                    stat = target.stat()
+                    self._codex_auth_file_signature = (
+                        stat.st_size,
+                        stat.st_mtime_ns,
+                    )
+                    self._codex_auth_last_remote_check = time.monotonic()
+                else:
+                    self._codex_auth_file_signature = None
+                    self._codex_auth_last_remote_check = 0.0
                 self._track_codex_auth_values(value)
                 if local_digest != remote_digest:
                     self._track_codex_auth_values(local_value)
@@ -2527,10 +2556,18 @@ class ACPAgent(AgentBase):
         path = self._codex_auth_path
         source = self._codex_auth_source
         expected_digest = self._codex_auth_expected_digest
-        synced_digest = self._codex_auth_synced_digest
         if path is None or source is None or expected_digest is None:
             return
         try:
+            stat = path.stat()
+            file_signature = (stat.st_size, stat.st_mtime_ns)
+            now = time.monotonic()
+            if (
+                file_signature == self._codex_auth_file_signature
+                and now - self._codex_auth_last_remote_check
+                < _CODEX_AUTH_REMOTE_CHECK_INTERVAL
+            ):
+                return
             value = path.read_bytes()
             text_value = value.decode()
         except (OSError, UnicodeError) as exc:
@@ -2538,7 +2575,7 @@ class ACPAgent(AgentBase):
                 "Codex credentials could not be saved to Cloud."
             ) from exc
         digest = hashlib.sha256(value).hexdigest()
-        changed = digest != synced_digest
+        changed = digest != expected_digest
         attempts = len(_CODEX_AUTH_SYNC_DELAYS) + 1
         for attempt in range(attempts):
             try:
@@ -2550,13 +2587,13 @@ class ACPAgent(AgentBase):
                         isinstance(remote_digest, str)
                         and remote_digest != expected_digest
                     ):
-                        remote_value = source.get_value()
+                        remote_value = _get_codex_auth_source(source)
                         self._adopt_codex_auth_value(path, remote_value)
                         return
             except httpx.HTTPStatusError as exc:
                 if changed and exc.response.status_code == 409:
                     try:
-                        remote_value = source.get_value()
+                        remote_value = _get_codex_auth_source(source)
                         self._adopt_codex_auth_value(path, remote_value)
                     except Exception as remote_exc:
                         if attempt == attempts - 1:
@@ -2587,7 +2624,8 @@ class ACPAgent(AgentBase):
                 ) from exc
             self._track_codex_auth_values(text_value)
             self._codex_auth_expected_digest = digest
-            self._codex_auth_synced_digest = digest
+        self._codex_auth_file_signature = file_signature
+        self._codex_auth_last_remote_check = now
 
     def _adopt_codex_auth_value(self, path: Path, value: str) -> None:
         if not _is_valid_codex_auth_value(value):
@@ -2605,7 +2643,9 @@ class ACPAgent(AgentBase):
             ) from exc
         self._track_codex_auth_values(value)
         self._codex_auth_expected_digest = digest
-        self._codex_auth_synced_digest = digest
+        stat = path.stat()
+        self._codex_auth_file_signature = (stat.st_size, stat.st_mtime_ns)
+        self._codex_auth_last_remote_check = time.monotonic()
 
     def _release_codex_auth(self) -> None:
         """Release the scoped Codex credential source."""
@@ -2628,7 +2668,8 @@ class ACPAgent(AgentBase):
         self._codex_auth_path = None
         self._codex_auth_source = None
         self._codex_auth_expected_digest = None
-        self._codex_auth_synced_digest = None
+        self._codex_auth_file_signature = None
+        self._codex_auth_last_remote_check = 0.0
         self._codex_auth_registry = None
         self._codex_auth_authenticated = False
 
@@ -4114,10 +4155,10 @@ class ACPAgent(AgentBase):
             self._sync_codex_auth()
         except Exception as exc:
             error = exc
-        else:
-            try:
-                self._release_codex_auth()
-            except Exception as exc:
+        try:
+            self._release_codex_auth()
+        except Exception as exc:
+            if error is None:
                 error = exc
         try:
             self._cleanup()
@@ -4125,7 +4166,6 @@ class ACPAgent(AgentBase):
             if error is None:
                 error = exc
         if error is not None:
-            self._closed = False
             raise error
 
     def _cleanup(self) -> None:
