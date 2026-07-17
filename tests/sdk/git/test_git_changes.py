@@ -81,18 +81,19 @@ def test_get_changes_in_repo_modified_files():
 
         changes = get_changes_in_repo(temp_dir)
 
-        # The function compares against empty tree for new repos without remote
-        # So modified files appear as ADDED since there's no remote origin
+        # Repos without a remote (sitting on their default branch) compare
+        # against HEAD, so modified files appear as UPDATED — not as a
+        # whole-repo ADDED list against the empty tree.
         assert len(changes) == 2
 
         # Sort by path for consistent testing
         changes.sort(key=lambda x: str(x.path))
 
         assert changes[0].path == Path("file1.txt")
-        assert changes[0].status == GitChangeStatus.ADDED
+        assert changes[0].status == GitChangeStatus.UPDATED
 
         assert changes[1].path == Path("file2.py")
-        assert changes[1].status == GitChangeStatus.ADDED
+        assert changes[1].status == GitChangeStatus.UPDATED
 
 
 def test_get_changes_in_repo_deleted_files():
@@ -113,9 +114,17 @@ def test_get_changes_in_repo_deleted_files():
 
         changes = get_changes_in_repo(temp_dir)
 
-        # For repos without remote, deleted files don't show up in diff against empty tree  # noqa: E501
-        # This is expected behavior - the function compares against empty tree
-        assert len(changes) == 0
+        # Repos without a remote compare against HEAD, so deletions of
+        # committed files are visible.
+        assert len(changes) == 2
+
+        changes.sort(key=lambda x: str(x.path))
+
+        assert changes[0].path == Path("file1.txt")
+        assert changes[0].status == GitChangeStatus.DELETED
+
+        assert changes[1].path == Path("file2.py")
+        assert changes[1].status == GitChangeStatus.DELETED
 
 
 def test_get_changes_in_repo_mixed_changes():
@@ -138,16 +147,17 @@ def test_get_changes_in_repo_mixed_changes():
 
         changes = get_changes_in_repo(temp_dir)
 
-        # For repos without remote, all files (existing, new, modified) show up as ADDED
-        # when comparing against empty tree. Deleted files don't appear.
+        # Repos without a remote compare against HEAD: untouched committed
+        # files (existing.txt) are not listed, and each kind of change gets
+        # its real status.
         assert len(changes) == 3
 
         # Convert to dict for easier testing
         changes_dict = {str(change.path): change.status for change in changes}
 
-        assert changes_dict["existing.txt"] == GitChangeStatus.ADDED
         assert changes_dict["new_file.txt"] == GitChangeStatus.ADDED
-        assert changes_dict["to_modify.py"] == GitChangeStatus.ADDED
+        assert changes_dict["to_modify.py"] == GitChangeStatus.UPDATED
+        assert changes_dict["to_delete.md"] == GitChangeStatus.DELETED
 
 
 def test_get_changes_in_repo_nested_directories():
@@ -204,8 +214,9 @@ def test_get_changes_in_repo_staged_and_unstaged():
         # Convert to dict for easier testing
         changes_dict = {str(change.path): change.status for change in changes}
 
-        # All files appear as ADDED when comparing against empty tree
-        assert changes_dict["file.txt"] == GitChangeStatus.ADDED
+        # Comparing against HEAD: the committed-then-modified file is
+        # UPDATED; the staged and untracked new files are ADDED.
+        assert changes_dict["file.txt"] == GitChangeStatus.UPDATED
         assert changes_dict["staged.txt"] == GitChangeStatus.ADDED
         assert changes_dict["unstaged.txt"] == GitChangeStatus.ADDED
 
@@ -564,3 +575,146 @@ def test_get_git_changes_propagates_ref():
         changes = get_git_changes(temp_dir, ref="HEAD")
         paths = {str(c.path) for c in changes}
         assert paths == {"b.txt"}
+
+
+def setup_cloned_repo(root: str) -> Path:
+    """Bare origin (default branch ``main``) with one committed README, plus
+    a configured clone of it — mirroring a real conversation workspace where
+    tracking refs and ``origin/HEAD`` exist."""
+    origin = Path(root) / "origin.git"
+    run_bash_command(f"git init --bare -b main {origin}", root)
+
+    seed = Path(root) / "seed"
+    seed.mkdir()
+    run_bash_command("git init -b main", str(seed))
+    run_bash_command("git config user.name 'Test User'", str(seed))
+    run_bash_command("git config user.email 'test@example.com'", str(seed))
+    (seed / "README.md").write_text("base")
+    run_bash_command("git add .", str(seed))
+    run_bash_command("git commit -m 'base'", str(seed))
+    run_bash_command(f"git remote add origin {origin}", str(seed))
+    run_bash_command("git push -u origin main", str(seed))
+
+    clone = Path(root) / "clone"
+    run_bash_command(f"git clone {origin} {clone}", root)
+    run_bash_command("git config user.name 'Test User'", str(clone))
+    run_bash_command("git config user.email 'test@example.com'", str(clone))
+    return clone
+
+
+def push_agent_branch(repo: Path) -> None:
+    """Create ``openhands/pr-branch`` with one committed file and push it,
+    leaving the branch in sync with its upstream (the post-PR state)."""
+    run_bash_command("git checkout -b openhands/pr-branch", str(repo))
+    (repo / "new.txt").write_text("pr change")
+    run_bash_command("git add .", str(repo))
+    run_bash_command("git commit -m 'agent pr work'", str(repo))
+    run_bash_command("git push -u origin openhands/pr-branch", str(repo))
+
+
+def test_get_changes_in_repo_committed_changes_stay_visible():
+    """Committed-but-unpushed work must stay visible — the Diff view used to
+    go blank the moment the agent ran ``git commit`` (APP-2205)."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Arrange
+        repo = setup_cloned_repo(temp_dir)
+        (repo / "README.md").write_text("changed by agent")
+        run_bash_command("git commit -am 'agent work'", str(repo))
+
+        # Act
+        changes = get_changes_in_repo(repo)
+
+        # Assert
+        assert changes == [
+            GitChange(status=GitChangeStatus.UPDATED, path=Path("README.md"))
+        ]
+
+
+def test_get_changes_in_repo_pushed_branch_shows_pr_diff():
+    """A branch fully pushed to its upstream (the PR flow) must diff against
+    the fork point — comparing it against its own upstream would render the
+    whole PR as "no changes"."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Arrange
+        repo = setup_cloned_repo(temp_dir)
+        push_agent_branch(repo)
+
+        # Act
+        changes = get_changes_in_repo(repo)
+
+        # Assert
+        assert changes == [
+            GitChange(status=GitChangeStatus.ADDED, path=Path("new.txt"))
+        ]
+
+
+def test_get_changes_in_repo_pushed_branch_with_tracked_edit_shows_only_edit():
+    """A tracked working-tree edit keeps the branch comparing against its own
+    upstream, so a pre-existing attached branch shows only the new edit
+    rather than its whole history."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Arrange
+        repo = setup_cloned_repo(temp_dir)
+        push_agent_branch(repo)
+        (repo / "README.md").write_text("post-push edit")
+
+        # Act
+        changes = get_changes_in_repo(repo)
+
+        # Assert — new.txt is already in the upstream, so only the edit shows.
+        assert changes == [
+            GitChange(status=GitChangeStatus.UPDATED, path=Path("README.md"))
+        ]
+
+
+def test_get_changes_in_repo_untracked_file_does_not_hide_pushed_branch_diff():
+    """Untracked files never appear in ``git diff <ref>``, so they must not
+    count as "dirty" for base selection — a stray scratch file must not
+    re-hide a fully-pushed branch's work."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Arrange
+        repo = setup_cloned_repo(temp_dir)
+        push_agent_branch(repo)
+        (repo / "scratch.log").write_text("junk")
+
+        # Act
+        changes = get_changes_in_repo(repo)
+
+        # Assert — the branch's committed work is still diffed against the
+        # fork point; the untracked file itself surfaces as an addition.
+        changes_dict = {str(change.path): change.status for change in changes}
+        assert changes_dict == {
+            "new.txt": GitChangeStatus.ADDED,
+            "scratch.log": GitChangeStatus.ADDED,
+        }
+
+
+def test_get_changes_in_repo_no_remote_worktree_shows_committed_changes():
+    """The GUI's default local flow: a worktree branch forked off local
+    ``main`` in a repo without a remote. Committed work must stay visible
+    instead of degrading to a whole-repo empty-tree comparison."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Arrange
+        repo = Path(temp_dir) / "repo"
+        repo.mkdir()
+        run_bash_command("git init -b main", str(repo))
+        run_bash_command("git config user.name 'Test User'", str(repo))
+        run_bash_command("git config user.email 'test@example.com'", str(repo))
+        (repo / "app.txt").write_text("base")
+        run_bash_command("git add .", str(repo))
+        run_bash_command("git commit -m 'base'", str(repo))
+
+        worktree = Path(temp_dir) / "worktree"
+        run_bash_command(
+            f"git worktree add -b openhands/conv1 {worktree} main", str(repo)
+        )
+        (worktree / "app.txt").write_text("changed by agent")
+        run_bash_command("git commit -am 'agent work'", str(worktree))
+
+        # Act
+        changes = get_changes_in_repo(worktree)
+
+        # Assert
+        assert changes == [
+            GitChange(status=GitChangeStatus.UPDATED, path=Path("app.txt"))
+        ]

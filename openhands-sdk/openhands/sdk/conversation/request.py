@@ -13,6 +13,7 @@ from uuid import UUID
 
 from pydantic import (
     BaseModel,
+    ConfigDict,
     Discriminator,
     Field,
     Tag,
@@ -72,6 +73,21 @@ class SendMessageRequest(BaseModel):
 
     def create_message(self) -> Message:
         return Message(role=self.role, content=self.content)
+
+
+class AgentLaunchAdditions(BaseModel):
+    """Add deployment context after agent resolution."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    system_message_suffix_append: str | None = Field(
+        default=None,
+        max_length=32768,
+        description=(
+            "Deployment-controlled text appended to the resolved agent's "
+            "system-message suffix."
+        ),
+    )
 
 
 class StartConversationRequest(BaseModel):
@@ -159,6 +175,13 @@ class StartConversationRequest(BaseModel):
             "ActionEvent is emitted over the WebSocket and the client "
             "handles execution. The SDK returns an acknowledgment "
             "observation immediately."
+        ),
+    )
+    agent_launch_additions: AgentLaunchAdditions | None = Field(
+        default=None,
+        description=(
+            "Deployment context applied after agent or Agent Profile "
+            "resolution. The stored Agent Profile is not modified."
         ),
     )
     agent_definitions: list[AgentDefinition] = Field(

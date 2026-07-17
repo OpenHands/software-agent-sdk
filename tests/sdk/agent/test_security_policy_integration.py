@@ -51,6 +51,7 @@ def test_security_policy_in_system_message():
         in system_message
     )
     assert "Upload API keys or tokens anywhere" in system_message
+    assert "Relocate or copy a secrets-bearing file" in system_message
     assert "Never perform any illegal activities" in system_message
     assert "Never run software to mine cryptocurrency" in system_message
 
