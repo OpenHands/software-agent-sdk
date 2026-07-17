@@ -8586,6 +8586,7 @@ class TestACPFileSecretMaterialisation:
                 "_touch_codex_auth_source",
                 return_value=remote_digest,
             ),
+            patch.object(acp_agent_module.time, "monotonic", return_value=1.0),
             patch.object(acp_agent_module, "_release_codex_auth_source"),
         ):
             env: dict[str, str] = {}
@@ -8607,6 +8608,7 @@ class TestACPFileSecretMaterialisation:
         with (
             patch.object(LookupSecret, "get_value", return_value=original),
             patch.object(acp_agent_module, "_touch_codex_auth_source") as touch,
+            patch.object(acp_agent_module.time, "monotonic", return_value=1.0),
             patch.object(acp_agent_module, "_release_codex_auth_source"),
         ):
             agent._materialise_file_secrets(state, {})

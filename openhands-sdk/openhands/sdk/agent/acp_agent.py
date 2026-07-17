@@ -2563,6 +2563,7 @@ class ACPAgent(AgentBase):
         now = time.monotonic()
         if (
             not changed
+            and self._codex_auth_last_remote_check > 0
             and now - self._codex_auth_last_remote_check
             < _CODEX_AUTH_REMOTE_CHECK_INTERVAL
         ):

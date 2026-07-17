@@ -218,7 +218,6 @@ def test_switch_acp_model_disarms_discarded_agent_finalizer(tmp_path):
     old_agent._codex_auth_path = tmp_path / "auth.json"
     old_agent._codex_auth_source = source
     old_agent._codex_auth_expected_digest = "expected"
-    old_agent._codex_auth_file_signature = (123, 456)
     old_agent._codex_auth_last_remote_check = 42.0
     old_agent._codex_auth_registry = conv.state.secret_registry
     old_agent._codex_auth_authenticated = True
@@ -234,7 +233,6 @@ def test_switch_acp_model_disarms_discarded_agent_finalizer(tmp_path):
     assert switched._codex_auth_path == tmp_path / "auth.json"
     assert switched._codex_auth_source is source
     assert switched._codex_auth_expected_digest == "expected"
-    assert switched._codex_auth_file_signature == (123, 456)
     assert switched._codex_auth_last_remote_check == 42.0
     assert switched._codex_auth_registry is conv.state.secret_registry
     assert switched._codex_auth_authenticated is True
@@ -249,7 +247,6 @@ def test_switch_acp_model_disarms_discarded_agent_finalizer(tmp_path):
     assert old_agent._codex_auth_path is None
     assert old_agent._codex_auth_source is None
     assert old_agent._codex_auth_expected_digest is None
-    assert old_agent._codex_auth_file_signature is None
     assert old_agent._codex_auth_last_remote_check == 0.0
     assert old_agent._codex_auth_registry is None
     assert old_agent._codex_auth_authenticated is False
