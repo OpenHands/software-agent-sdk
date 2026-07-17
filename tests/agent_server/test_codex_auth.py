@@ -14,12 +14,16 @@ from fastapi.testclient import TestClient
 
 from openhands.agent_server import codex_auth as codex_auth_module
 from openhands.agent_server.api import create_app
-from openhands.agent_server.codex_auth import CodexAuthBroker, router
+from openhands.agent_server.codex_auth import (
+    CODEX_AUTH_SECRET_NAME,
+    CodexAuthBroker,
+    router,
+)
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.models import StartConversationRequest
 from openhands.agent_server.persistence import FileSecretsStore
-from openhands.sdk import LLM, Agent
+from openhands.sdk import LLM, Agent, AgentContext
 from openhands.sdk.secret import LookupSecret
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -425,6 +429,83 @@ async def test_restart_reissues_capability_and_keeps_it_out_of_meta(tmp_path):
         assert second_token != first_token
         assert second_broker.is_authorized(info.id, second_token)
         assert not second_broker.is_authorized(info.id, first_token)
+
+
+@pytest.mark.asyncio
+async def test_agent_context_secret_is_brokered_after_registry_initialization(tmp_path):
+    store = FileSecretsStore(tmp_path / "settings")
+    store.set_secret(CODEX_AUTH_SECRET_NAME, _auth_value())
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=Agent(
+            llm=LLM(model="gpt-4o", usage_id="test"),
+            tools=[],
+            agent_context=AgentContext(
+                secrets={CODEX_AUTH_SECRET_NAME: _local_source()}
+            ),
+        ),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+    )
+    broker = CodexAuthBroker(store)
+
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations",
+        codex_auth_broker=broker,
+    ) as service:
+        info, _ = await service.start_conversation(request)
+        event_service = await service.get_event_service(info.id)
+        assert event_service is not None
+        source = event_service.get_conversation().state.secret_registry.secret_sources[
+            CODEX_AUTH_SECRET_NAME
+        ]
+        assert isinstance(source, LookupSecret)
+        assert source != _local_source()
+        first_token = _token(source)
+        assert broker.is_authorized(info.id, first_token)
+
+    second_broker = CodexAuthBroker(store)
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations",
+        codex_auth_broker=second_broker,
+    ) as service:
+        event_service = await service.get_event_service(info.id)
+        assert event_service is not None
+        source = event_service.get_conversation().state.secret_registry.secret_sources[
+            CODEX_AUTH_SECRET_NAME
+        ]
+        assert isinstance(source, LookupSecret)
+        second_token = _token(source)
+        assert second_token != first_token
+        assert second_broker.is_authorized(info.id, second_token)
+
+
+@pytest.mark.asyncio
+async def test_late_codex_auth_secret_update_is_brokered(tmp_path):
+    store = FileSecretsStore(tmp_path / "settings")
+    store.set_secret(CODEX_AUTH_SECRET_NAME, _auth_value())
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+    )
+    broker = CodexAuthBroker(store)
+
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations",
+        codex_auth_broker=broker,
+    ) as service:
+        info, _ = await service.start_conversation(request)
+        event_service = await service.get_event_service(info.id)
+        assert event_service is not None
+        await event_service.update_secrets({CODEX_AUTH_SECRET_NAME: _local_source()})
+        source = event_service.get_conversation().state.secret_registry.secret_sources[
+            CODEX_AUTH_SECRET_NAME
+        ]
+        assert isinstance(source, LookupSecret)
+        assert source != _local_source()
+        assert broker.is_authorized(info.id, _token(source))
 
 
 @pytest.mark.asyncio

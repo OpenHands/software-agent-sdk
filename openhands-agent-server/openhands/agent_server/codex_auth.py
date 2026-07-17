@@ -72,14 +72,21 @@ class CodexAuthBroker:
     ) -> LookupSecret:
         parsed_url = urlsplit(source.url)
         path = parsed_url.path.rstrip("/")
-        if path != _LOCAL_SECRET_PATH:
+        broker_path = codex_auth_path(conversation_id)
+        if path not in {_LOCAL_SECRET_PATH, broker_path}:
+            return source
+
+        if (
+            path == broker_path
+            and (token := source.headers.get(_CODEX_AUTH_HEADER))
+            and self.is_authorized(conversation_id, token)
+        ):
             return source
 
         token = secrets.token_urlsafe(32)
         token_digest = hashlib.sha256(token.encode()).digest()
         with self._capability_lock:
             self._capability_digests[conversation_id] = token_digest
-        broker_path = codex_auth_path(conversation_id)
         return LookupSecret(
             url=parsed_url._replace(path=broker_path, query="", fragment="").geturl(),
             headers={_CODEX_AUTH_HEADER: token},
