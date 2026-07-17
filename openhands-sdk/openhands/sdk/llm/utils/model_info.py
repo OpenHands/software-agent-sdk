@@ -36,7 +36,10 @@ def _get_model_info_from_litellm_proxy(
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
-        response = httpx.get(f"{base_url}/v1/model/info", headers=headers)
+        normalized_base_url = base_url.rstrip("/")
+        if normalized_base_url.endswith("/v1"):
+            normalized_base_url = normalized_base_url[:-3]
+        response = httpx.get(f"{normalized_base_url}/v1/model/info", headers=headers)
         data = response.json().get("data", [])
         # Match against either the public alias (`model_name`) or the
         # underlying provider/model_name form (`litellm_params.model`). The proxy itself
