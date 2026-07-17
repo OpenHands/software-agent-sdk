@@ -7,10 +7,19 @@ from litellm.types.utils import ModelInfo
 from litellm.utils import get_model_info
 from pydantic import SecretStr
 
-from openhands.sdk.llm.utils.openhands_provider import litellm_call_kwargs
+from openhands.sdk.llm.utils.openhands_provider import (
+    is_openhands_proxy_base_url,
+    litellm_call_kwargs,
+)
 
 
 logger = getLogger(__name__)
+
+
+def _get_api_key_value(secret_api_key: SecretStr | str | None) -> str | None:
+    if isinstance(secret_api_key, SecretStr):
+        return secret_api_key.get_secret_value()
+    return secret_api_key
 
 
 @lru_cache
@@ -23,10 +32,9 @@ def _get_model_info_from_litellm_proxy(
     logger.debug(f"Get model_info_from_litellm_proxy:{cache_key}")
     try:
         headers = {}
-        if isinstance(secret_api_key, SecretStr):
-            secret_api_key = secret_api_key.get_secret_value()
-        if secret_api_key:
-            headers["Authorization"] = f"Bearer {secret_api_key}"
+        api_key = _get_api_key_value(secret_api_key)
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
 
         response = httpx.get(f"{base_url}/v1/model/info", headers=headers)
         data = response.json().get("data", [])
@@ -65,6 +73,7 @@ def get_litellm_model_info(
     call_kwargs = litellm_call_kwargs(model, base_url)
     model = call_kwargs["model"]
     base_url = call_kwargs["api_base"]
+    api_key = _get_api_key_value(secret_api_key)
 
     # Try to get model info via openrouter or litellm proxy first
     try:
@@ -76,17 +85,23 @@ def get_litellm_model_info(
         logger.debug(f"get_model_info(openrouter) failed: {e}")
 
     if model.startswith("litellm_proxy/") and base_url:
-        # Use the current hour as a cache key - only refresh hourly
-        cache_key = int(time.time() / 3600)
+        if is_openhands_proxy_base_url(base_url) and not api_key:
+            logger.debug(
+                "Skipping unauthenticated model-info lookup for managed "
+                "OpenHands proxy"
+            )
+        else:
+            # Use the current hour as a cache key - only refresh hourly
+            cache_key = int(time.time() / 3600)
 
-        model_info = _get_model_info_from_litellm_proxy(
-            secret_api_key=secret_api_key,
-            base_url=base_url,
-            model=model,
-            cache_key=cache_key,
-        )
-        if model_info:
-            return model_info
+            model_info = _get_model_info_from_litellm_proxy(
+                secret_api_key=api_key,
+                base_url=base_url,
+                model=model,
+                cache_key=cache_key,
+            )
+            if model_info:
+                return model_info
 
     # Fallbacks: try base name variants
     try:
