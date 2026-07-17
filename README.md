@@ -202,10 +202,14 @@ To obtain a Cloud API key interactively, use the device-flow helpers:
 ```typescript
 import { startDeviceFlow, pollForToken } from '@openhands/typescript-client/clients';
 
-const auth = await startDeviceFlow('https://app.all-hands.dev');
+const requestMetadata = {
+  headers: { 'X-My-Client': 'my-client-name' },
+};
+const auth = await startDeviceFlow('https://app.all-hands.dev', requestMetadata);
 console.log(`Approve this device at ${auth.verification_uri_complete}`);
 const token = await pollForToken('https://app.all-hands.dev', auth.device_code, {
   interval: auth.interval,
+  ...requestMetadata,
 });
 const cloud = new CloudClient({
   host: 'https://app.all-hands.dev',

@@ -38,9 +38,10 @@ try {
       [
         "import { ServerClient } from '@openhands/typescript-client/clients';",
         "import { HttpClient } from '@openhands/typescript-client/client/http-client';",
+        "import { isOpenHandsCloudHost } from '@openhands/typescript-client/client/device-flow-client';",
         "import { RemoteEventsList } from '@openhands/typescript-client/events/remote-events-list';",
         "import { RemoteWorkspace } from '@openhands/typescript-client/workspace/remote-workspace';",
-        'console.log(typeof ServerClient, typeof HttpClient, typeof RemoteEventsList, typeof RemoteWorkspace);',
+        'console.log(typeof ServerClient, typeof HttpClient, typeof isOpenHandsCloudHost, typeof RemoteEventsList, typeof RemoteWorkspace);',
       ].join('\n'),
     ],
     {

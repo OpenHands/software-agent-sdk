@@ -22,6 +22,11 @@
       "import": "./dist/client/http-client.js",
       "default": "./dist/client/http-client.js"
     },
+    "./client/device-flow-client": {
+      "types": "./dist/client/device-flow-client.d.ts",
+      "import": "./dist/client/device-flow-client.js",
+      "default": "./dist/client/device-flow-client.js"
+    },
     "./events/remote-events-list": {
       "types": "./dist/events/remote-events-list.d.ts",
       "import": "./dist/events/remote-events-list.js",

@@ -118,6 +118,7 @@ export type {
 } from './client/cloud-client';
 export type {
   DeviceAuthorizationResponse,
+  DeviceFlowRequestOptions,
   DeviceTokenResponse,
   PollDeviceTokenOptions,
 } from './client/device-flow-client';

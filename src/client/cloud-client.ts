@@ -8,6 +8,7 @@ import {
   pollForToken,
   startDeviceFlow,
   type DeviceAuthorizationResponse,
+  type DeviceFlowRequestOptions,
   type DeviceTokenResponse,
   type PollDeviceTokenOptions,
 } from './device-flow-client';
@@ -265,8 +266,8 @@ export class CloudClient extends OpenHandsClient {
       : this.requestDirect<TResponse>(options);
   }
 
-  startDeviceFlow(): Promise<DeviceAuthorizationResponse> {
-    return startDeviceFlow(this.host);
+  startDeviceFlow(options: DeviceFlowRequestOptions = {}): Promise<DeviceAuthorizationResponse> {
+    return startDeviceFlow(this.host, options);
   }
 
   pollForToken(deviceCode: string, options: PollDeviceTokenOptions): Promise<DeviceTokenResponse> {
