@@ -7,7 +7,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from litellm.types.utils import ChatCompletionMessageToolCall, Function
@@ -45,6 +45,7 @@ from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.llm import MessageToolCall, TextContent
+from openhands.sdk.mcp.config import dump_mcp_config
 from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.security.risk import SecurityRisk
@@ -135,6 +136,21 @@ def conversation_service():
         # Initialize the _event_services dict to simulate an active service
         service._event_services = {}
         yield service
+
+
+@pytest.fixture
+async def persisted_conversation(tmp_path) -> tuple[Path, UUID]:
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        conversation_info, _ = await service.start_conversation(request)
+    return conversations_dir, conversation_info.id
 
 
 @pytest.mark.asyncio
@@ -238,7 +254,7 @@ async def test_start_conversation_decrypts_encrypted_agent_settings_mcp_env(
         secrets_encrypted=True,
     )
     assert (
-        request.agent.mcp_config["mcpServers"]["github"]["env"][
+        dump_mcp_config(request.agent.mcp_config)["github"]["env"][
             "GITHUB_PERSONAL_ACCESS_TOKEN"
         ]
         == encrypted_mcp_token
@@ -270,7 +286,7 @@ async def test_start_conversation_decrypts_encrypted_agent_settings_mcp_env(
     assert isinstance(stored.agent.llm.api_key, SecretStr)
     assert stored.agent.llm.api_key.get_secret_value() == "sk-plaintext"
     assert (
-        stored.agent.mcp_config["mcpServers"]["github"]["env"][
+        dump_mcp_config(stored.agent.mcp_config)["github"]["env"][
             "GITHUB_PERSONAL_ACCESS_TOKEN"
         ]
         == "ghp-plaintext"
@@ -531,11 +547,248 @@ async def test_restart_resumes_conversations_after_non_graceful_shutdown(tmp_pat
 
     async with ConversationService(conversations_dir=conversations_dir) as restarted:
         assert restarted._event_services is not None
-        # The conversation must be present in the restarted service.
-        assert conversation_id in restarted._event_services, (
-            "Restart failed to pick up an existing conversation whose lease "
-            "was left orphaned by a non-graceful shutdown."
+        assert conversation_id not in restarted._event_services
+        restarted_event_service = await restarted.get_event_service(conversation_id)
+        assert restarted_event_service is not None, (
+            "Lazy hydration failed to pick up an existing conversation whose "
+            "lease was left orphaned by a non-graceful shutdown."
         )
+
+
+@pytest.mark.asyncio
+async def test_startup_and_search_do_not_hydrate_idle_conversation(tmp_path):
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+    async with ConversationService(conversations_dir=conversations_dir) as primary:
+        conversation_info, _ = await primary.start_conversation(request)
+
+    restarted = ConversationService(conversations_dir=conversations_dir)
+    with patch.object(
+        restarted,
+        "_start_event_service",
+        side_effect=AssertionError("idle conversation should remain unloaded"),
+    ):
+        async with restarted:
+            assert restarted._event_services == {}
+            assert conversation_info.id in restarted._conversation_records
+
+            page = await restarted.search_conversations()
+            assert [item.id for item in page.items] == [conversation_info.id]
+            assert await restarted.count_conversations() == 1
+            assert restarted._event_services == {}
+
+
+@pytest.mark.asyncio
+async def test_concurrent_access_hydrates_conversation_once(tmp_path):
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+    async with ConversationService(conversations_dir=conversations_dir) as primary:
+        conversation_info, _ = await primary.start_conversation(request)
+
+    async with ConversationService(conversations_dir=conversations_dir) as restarted:
+        with patch.object(
+            restarted,
+            "_start_event_service",
+            wraps=restarted._start_event_service,
+        ) as start_event_service:
+            services = await asyncio.gather(
+                *[restarted.get_event_service(conversation_info.id) for _ in range(5)]
+            )
+
+        assert start_event_service.await_count == 1
+        assert services[0] is not None
+        assert all(service is services[0] for service in services)
+
+
+@pytest.mark.asyncio
+async def test_status_filters_refresh_unloaded_shared_state(persisted_conversation):
+    conversations_dir, conversation_id = persisted_conversation
+
+    async with ConversationService(conversations_dir=conversations_dir) as primary:
+        primary_runtime = await primary.get_event_service(conversation_id)
+        assert primary_runtime is not None
+
+        async with ConversationService(conversations_dir=conversations_dir) as observer:
+            assert observer._event_services == {}
+            assert (
+                observer._conversation_records[conversation_id].execution_status
+                == ConversationExecutionStatus.IDLE
+            )
+
+            primary_state = await primary_runtime.get_state()
+            primary_state.execution_status = ConversationExecutionStatus.RUNNING
+            assert (
+                await observer.count_conversations(
+                    execution_status=ConversationExecutionStatus.RUNNING
+                )
+                == 1
+            )
+
+            primary_state.execution_status = ConversationExecutionStatus.PAUSED
+            page = await observer.search_conversations(
+                execution_status=ConversationExecutionStatus.PAUSED
+            )
+            assert [item.id for item in page.items] == [conversation_id]
+            assert observer._event_services == {}
+
+
+@pytest.mark.asyncio
+async def test_waiting_hydration_cannot_restore_deleted_conversation(
+    persisted_conversation,
+):
+    conversations_dir, conversation_id = persisted_conversation
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        record = service._conversation_records[conversation_id]
+        state = ConversationState(
+            id=conversation_id,
+            agent=record.stored.agent,
+            workspace=record.stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=record.stored.confirmation_policy,
+        )
+        deleting_runtime = AsyncMock(spec=EventService)
+        deleting_runtime.is_open.return_value = True
+        deleting_runtime.stored = record.stored
+        deleting_runtime.get_state.return_value = state
+        deleting_runtime.conversation_dir = conversations_dir / conversation_id.hex
+
+        replacement_runtime = AsyncMock(spec=EventService)
+        replacement_runtime.stored = record.stored
+
+        async def publish_replacement(_stored: StoredConversation) -> EventService:
+            assert service._event_services is not None
+            service._event_services[conversation_id] = replacement_runtime
+            service._conversation_records[conversation_id] = record
+            return replacement_runtime
+
+        with (
+            patch.object(
+                service,
+                "_start_event_service",
+                side_effect=publish_replacement,
+            ) as start_event_service,
+            patch("openhands.agent_server.conversation_service.safe_rmtree"),
+        ):
+            await service._lifecycle_lock.acquire()
+            try:
+                getter_task = asyncio.create_task(
+                    service.get_event_service(conversation_id)
+                )
+                await asyncio.sleep(0)
+                assert service._event_services is not None
+                service._event_services[conversation_id] = deleting_runtime
+                delete_task = asyncio.create_task(
+                    service.delete_conversation(conversation_id)
+                )
+                await asyncio.sleep(0)
+            finally:
+                service._lifecycle_lock.release()
+
+            getter_result, deleted = await asyncio.gather(getter_task, delete_task)
+
+        assert getter_result is deleting_runtime
+        assert deleted is True
+        start_event_service.assert_not_awaited()
+        assert service._event_services is not None
+        assert conversation_id not in service._event_services
+        assert conversation_id not in service._conversation_records
+
+
+@pytest.mark.asyncio
+async def test_shutdown_closes_runtime_from_in_flight_hydration(
+    persisted_conversation,
+):
+    conversations_dir, conversation_id = persisted_conversation
+    service = ConversationService(conversations_dir=conversations_dir)
+    await service.__aenter__()
+    record = service._conversation_records[conversation_id]
+    state = ConversationState(
+        id=conversation_id,
+        agent=record.stored.agent,
+        workspace=record.stored.workspace,
+        execution_status=ConversationExecutionStatus.IDLE,
+        confirmation_policy=record.stored.confirmation_policy,
+    )
+    startup_entered = asyncio.Event()
+    finish_startup = asyncio.Event()
+    runtime = AsyncMock(spec=EventService)
+    runtime.stored = record.stored
+    runtime.get_state.return_value = state
+
+    async def blocking_start() -> None:
+        startup_entered.set()
+        await finish_startup.wait()
+
+    async def close_on_exit(*_args) -> None:
+        await runtime.close()
+
+    runtime.start.side_effect = blocking_start
+    runtime.__aexit__.side_effect = close_on_exit
+
+    try:
+        with patch(
+            "openhands.agent_server.conversation_service.EventService",
+            return_value=runtime,
+        ):
+            hydration_task = asyncio.create_task(
+                service.get_event_service(conversation_id)
+            )
+            await asyncio.wait_for(startup_entered.wait(), timeout=1)
+            shutdown_task = asyncio.create_task(service.__aexit__(None, None, None))
+            await asyncio.sleep(0)
+            finish_startup.set()
+            hydrated_runtime, _ = await asyncio.wait_for(
+                asyncio.gather(hydration_task, shutdown_task), timeout=1
+            )
+    finally:
+        finish_startup.set()
+        if service._event_services is not None:
+            await service.__aexit__(None, None, None)
+
+    assert hydrated_runtime is runtime
+    assert service._event_services is None
+    assert service._conversation_records == {}
+    runtime.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_fork_rejects_id_of_unloaded_persisted_conversation(tmp_path):
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+    async with ConversationService(conversations_dir=conversations_dir) as primary:
+        source, _ = await primary.start_conversation(request)
+        target, _ = await primary.start_conversation(request)
+
+    target_meta = conversations_dir / target.id.hex / "meta.json"
+    original_meta = target_meta.read_text()
+    async with ConversationService(conversations_dir=conversations_dir) as restarted:
+        assert restarted._event_services == {}
+        with pytest.raises(ValueError, match="already exists"):
+            await restarted.fork_conversation(source.id, fork_id=target.id)
+
+    assert target_meta.read_text() == original_meta
 
 
 class TestConversationServiceSearchConversations:
@@ -2525,7 +2778,7 @@ class TestAutoTitle:
         with patch(self._GENERATE_TITLE_PATH, return_value="✨ Generated Title"):
             subscriber = AutoTitleSubscriber(service=service)
             await subscriber(self._user_message_event())
-            await asyncio.sleep(0)
+            await self._drain_title_task(lambda: service.stored.title is not None)
 
         assert service.stored.title == "✨ Generated Title"
         service.save_meta.assert_called_once()
@@ -2930,3 +3183,208 @@ class TestACPActivityHeartbeatWiring:
         # Should not raise and should not set any attribute
         EventService._setup_acp_activity_heartbeat(service, agent)
         assert not hasattr(agent, "_on_activity")
+
+
+def _branch_events(conversation) -> list:
+    """Log events excluding async ``ConversationStateUpdateEvent`` artifacts.
+
+    Those state-sync artifacts are appended to the log asynchronously
+    (``EventService._emit_event_from_thread``), so their position in
+    ``_state.events`` relative to the synchronous message appends is racy.
+    Filtering them keeps positional indexing and length invariants deterministic
+    for the fork/navigate assertions below.
+    """
+    return [
+        e
+        for e in conversation._state.events
+        if not isinstance(e, ConversationStateUpdateEvent)
+    ]
+
+
+class TestConversationTreeForkAndNavigate:
+    """Service-level coverage for fork-from-event lineage and navigation."""
+
+    async def _start_with_events(self, svc, workspace_dir, texts):
+        """Start a conversation and append ``texts`` as user messages (no run)."""
+        from openhands.sdk.testing import TestLLM
+        from tests.agent_server.stress.scripts import (
+            start_conversation_with_test_llm,
+        )
+
+        parent_llm = TestLLM(
+            usage_id="test-llm",
+            model="openai/gpt-4o",
+            api_key=SecretStr("unused"),
+        )
+        info = await start_conversation_with_test_llm(
+            svc,
+            parent_llm=parent_llm,
+            workspace_dir=str(workspace_dir),
+            usage_id="test-llm",
+            initial_text=texts[0],
+        )
+        event_service = await svc.get_event_service(info.id)
+        assert event_service is not None
+        for text in texts[1:]:
+            await event_service.send_message(
+                Message(role="user", content=[TextContent(text=text)]),
+                run=False,
+            )
+        events = _branch_events(event_service.get_conversation())
+        return info, event_service, events
+
+    @pytest.mark.asyncio
+    async def test_fork_from_event_slices_branch_and_records_lineage(self, tmp_path):
+        """fork(from_event_id) copies only the branch and stamps lineage."""
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        async with ConversationService(
+            conversations_dir=tmp_path / "conversations"
+        ) as svc:
+            info, source_service, events = await self._start_with_events(
+                svc, workspace_dir, ["first", "second", "third"]
+            )
+            branch_point = next(e for e in events if isinstance(e, MessageEvent))
+            expected_branch_ids = [
+                e.id
+                for e in source_service.get_conversation()._state.events.path_to_root(
+                    branch_point.id
+                )
+            ]
+
+            fork_info = await svc.fork_conversation(
+                info.id, from_event_id=branch_point.id
+            )
+
+            assert fork_info is not None
+            assert fork_info.forked_from_conversation_id == info.id
+            assert fork_info.forked_from_event_id == branch_point.id
+            assert fork_info.leaf_event_id == branch_point.id
+            # forked_from_conversation_id must JSON-serialize in the same (dashed)
+            # shape as ``id`` so clients can correlate the two over the wire.
+            dumped = fork_info.model_dump(mode="json")
+            assert dumped["forked_from_conversation_id"] == str(info.id)
+
+            fork_service = await svc.get_event_service(fork_info.id)
+            assert fork_service is not None
+            fork_events = _branch_events(fork_service.get_conversation())
+            # Only path_to_root(branch_point) was copied — the active branch up
+            # to and including the branch point, not the whole log.
+            assert [e.id for e in fork_events] == expected_branch_ids
+            assert len(fork_events) < len(events)
+
+            # Source is untouched by the fork.
+            src_events = _branch_events(source_service.get_conversation())
+            assert len(src_events) == len(events)
+
+    @pytest.mark.asyncio
+    async def test_whole_conversation_fork_has_no_branch_point(self, tmp_path):
+        """fork() without from_event_id copies everything; lineage event is None."""
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        async with ConversationService(
+            conversations_dir=tmp_path / "conversations"
+        ) as svc:
+            info, _, events = await self._start_with_events(
+                svc, workspace_dir, ["first", "second"]
+            )
+
+            fork_info = await svc.fork_conversation(info.id)
+
+            assert fork_info is not None
+            assert fork_info.forked_from_conversation_id == info.id
+            assert fork_info.forked_from_event_id is None
+            fork_service = await svc.get_event_service(fork_info.id)
+            assert fork_service is not None
+            fork_events = _branch_events(fork_service.get_conversation())
+            assert len(fork_events) == len(events)
+
+    @pytest.mark.asyncio
+    async def test_fork_unknown_event_raises_without_leaking_dir(self, tmp_path):
+        """fork(from_event_id) with an unknown id raises and leaves no orphan dir."""
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        conversations_dir = tmp_path / "conversations"
+        async with ConversationService(conversations_dir=conversations_dir) as svc:
+            info, _, _ = await self._start_with_events(svc, workspace_dir, ["first"])
+            before = {p.name for p in conversations_dir.iterdir()}
+            with pytest.raises(ValueError, match="from_event_id"):
+                await svc.fork_conversation(info.id, from_event_id="evt-missing")
+            # Validation must fail-fast before any fork dir is written to disk.
+            assert {p.name for p in conversations_dir.iterdir()} == before
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "navigate_to_none", [False, True], ids=["to_event", "to_empty_tree"]
+    )
+    async def test_navigate_moves_head_in_place(self, tmp_path, navigate_to_none):
+        """navigate moves HEAD (to an event or empty tree), pruning no events."""
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        async with ConversationService(
+            conversations_dir=tmp_path / "conversations"
+        ) as svc:
+            info, event_service, events = await self._start_with_events(
+                svc, workspace_dir, ["first", "second", "third"]
+            )
+            target = None if navigate_to_none else events[0].id
+
+            nav_info = await svc.navigate_conversation(info.id, event_id=target)
+
+            assert nav_info is not None
+            assert nav_info.leaf_event_id == target
+            # All branches stay on disk — nothing is pruned.
+            assert len(_branch_events(event_service.get_conversation())) == len(events)
+
+    @pytest.mark.asyncio
+    async def test_navigate_unknown_event_raises(self, tmp_path):
+        """navigate to an unknown event raises ValueError."""
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        async with ConversationService(
+            conversations_dir=tmp_path / "conversations"
+        ) as svc:
+            info, _, _ = await self._start_with_events(svc, workspace_dir, ["first"])
+            with pytest.raises(ValueError, match="event_id"):
+                await svc.navigate_conversation(info.id, event_id="evt-missing")
+
+    @pytest.mark.asyncio
+    async def test_navigate_missing_conversation_returns_none(self, tmp_path):
+        """navigate on an unknown conversation returns None (router maps to 404)."""
+        async with ConversationService(
+            conversations_dir=tmp_path / "conversations"
+        ) as svc:
+            assert await svc.navigate_conversation(uuid4(), event_id=None) is None
+
+    @pytest.mark.asyncio
+    async def test_lineage_and_navigated_head_persist_across_restart(self, tmp_path):
+        """Fork lineage (meta.json) and a navigated HEAD (base_state.json) survive
+        a server restart — navigate deliberately skips save_meta and relies on the
+        conversation state's own autosave."""
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        conversations_dir = tmp_path / "conversations"
+
+        async with ConversationService(conversations_dir=conversations_dir) as svc:
+            info, _, events = await self._start_with_events(
+                svc, workspace_dir, ["first", "second", "third"]
+            )
+            src_id = info.id
+            branch_point = events[1].id
+            target_leaf = events[0].id
+
+            fork_info = await svc.fork_conversation(src_id, from_event_id=branch_point)
+            assert fork_info is not None
+            fork_id = fork_info.id
+            await svc.navigate_conversation(src_id, event_id=target_leaf)
+
+        # Fresh service over the same dir = a process restart.
+        async with ConversationService(conversations_dir=conversations_dir) as svc2:
+            reloaded_src = await svc2.get_conversation(src_id)
+            reloaded_fork = await svc2.get_conversation(fork_id)
+
+            assert reloaded_src is not None
+            assert reloaded_src.leaf_event_id == target_leaf
+            assert reloaded_fork is not None
+            assert reloaded_fork.forked_from_conversation_id == src_id
+            assert reloaded_fork.forked_from_event_id == branch_point

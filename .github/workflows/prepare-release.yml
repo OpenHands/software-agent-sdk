@@ -98,6 +98,7 @@ jobs:
                   - [ ] Integration tests pass (tagged with `integration-test`)
                   - [ ] Behavior tests pass (tagged with `behavior-test`)
                   - [ ] Example tests pass (tagged with `test-examples`)
+                  - [ ] Security scan passes (tagged with `security-scan`)
                   - [ ] Evaluation on OpenHands Index
                   - [ ] Confirm any `release-note-required` PRs are accurately called out in the final release notes
 
@@ -117,7 +118,8 @@ jobs:
                     --head "$BRANCH_NAME" \
                     --label "integration-test" \
                     --label "behavior-test" \
-                    --label "test-examples"
+                    --label "test-examples" \
+                    --label "security-scan"
 
                   rm pr_body.txt
                   echo "✅ Pull request created successfully!"
@@ -161,5 +163,5 @@ jobs:
                   echo "" >> $GITHUB_STEP_SUMMARY
                   echo "### Next Steps:" >> $GITHUB_STEP_SUMMARY
                   echo "1. Review the PR and address any deprecation deadlines" >> $GITHUB_STEP_SUMMARY
-                  echo "2. Wait for integration, behavior, and example tests to pass" >> $GITHUB_STEP_SUMMARY
+                  echo "2. Wait for integration, behavior, example tests, and security scan to pass" >> $GITHUB_STEP_SUMMARY
                   echo "3. Merge the PR — a GitHub release and PyPI publish will happen automatically" >> $GITHUB_STEP_SUMMARY
