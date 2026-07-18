@@ -213,14 +213,14 @@ def _run_single_step(
     conversation._ensure_agent_ready()
     if seed_events is not None:
         for event in seed_events:
-            conversation.state.events.append(event)
+            conversation.state.append_event(event)
 
     events: list[Event] = []
 
     def on_event(e: Event) -> None:
         events.append(e)
         if record_emitted_events_in_state:
-            conversation.state.events.append(e)
+            conversation.state.append_event(e)
 
     agent.step(conversation, on_event=on_event)
     return events, conversation
