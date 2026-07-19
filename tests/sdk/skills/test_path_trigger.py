@@ -505,3 +505,20 @@ def test_nested_symlink_deduped_by_real_path(
         tmp_path, Skill.PATH_TO_THIRD_PARTY_SKILL_NAME
     )
     assert len(found) == 1
+
+
+def test_find_nested_prunes_automation_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _force_walk_fallback(monkeypatch)
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "AGENTS.md").write_text("a")
+    auto_run = tmp_path / "automation-runs" / "run-1"
+    auto_run.mkdir(parents=True)
+    (auto_run / "AGENTS.md").write_text("automation")
+
+    found = skills_utils.find_nested_third_party_files(
+        tmp_path, Skill.PATH_TO_THIRD_PARTY_SKILL_NAME
+    )
+    rel_dirs = {rel_dir.as_posix() for _path, rel_dir in found}
+    assert rel_dirs == {"a"}

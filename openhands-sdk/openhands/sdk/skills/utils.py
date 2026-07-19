@@ -421,6 +421,8 @@ def find_nested_third_party_files(
     results: list[tuple[Path, PurePosixPath]] = []
     seen_real_paths: set[Path] = set()
     for rel in rel_paths:
+        if "automation-runs" in rel.parts:
+            continue
         if rel.name.lower() not in target_names:
             continue
         rel_dir = rel.parent
