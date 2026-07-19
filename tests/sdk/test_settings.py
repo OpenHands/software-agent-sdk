@@ -1265,7 +1265,12 @@ def test_acp_resolve_command_rewrites_explicit_npx_command(
     monkeypatch.setattr(shutil, "which", _which_returning("codex-acp"))
     settings = ACPAgentSettings(
         acp_server="codex",
-        acp_command=["npx", "-y", "@zed-industries/codex-acp", "--verbose"],
+        acp_command=[
+            "npx",
+            "-y",
+            "@agentclientprotocol/codex-acp",
+            "--verbose",
+        ],
     )
     assert settings.resolve_acp_command() == ["codex-acp", "--verbose"]
 
@@ -1279,9 +1284,8 @@ def test_acp_resolve_command_rewrites_versioned_npx_to_pinned_binary(
     the reviewed binary in for the provider's package."""
     monkeypatch.setattr(shutil, "which", _which_returning("codex-acp"))
     for pkg in (
-        "@zed-industries/codex-acp",
-        "@zed-industries/codex-acp@0.16.0",
-        "@zed-industries/codex-acp@0.11.1",
+        "@agentclientprotocol/codex-acp",
+        "@agentclientprotocol/codex-acp@1.1.2",
     ):
         settings = ACPAgentSettings(
             acp_server="codex",
@@ -1303,7 +1307,7 @@ def test_acp_resolve_command_keeps_npx_when_binary_absent(
     assert settings.resolve_acp_command() == [
         "npx",
         "-y",
-        "@zed-industries/codex-acp@0.16.0",
+        "@agentclientprotocol/codex-acp@1.1.2",
     ]
 
 
@@ -1341,12 +1345,12 @@ def test_acp_resolve_command_custom_server_never_rewritten(
     monkeypatch.setattr(shutil, "which", _which_returning("codex-acp", "gemini"))
     settings = ACPAgentSettings(
         acp_server="custom",
-        acp_command=["npx", "-y", "@zed-industries/codex-acp"],
+        acp_command=["npx", "-y", "@agentclientprotocol/codex-acp"],
     )
     assert settings.resolve_acp_command() == [
         "npx",
         "-y",
-        "@zed-industries/codex-acp",
+        "@agentclientprotocol/codex-acp",
     ]
 
 
@@ -1969,7 +1973,7 @@ def test_llm_subscription_fields_roundtrip() -> None:
     settings = validate_agent_settings(
         {
             "llm": {
-                "model": "gpt-5.2-codex",
+                "model": "gpt-5.6",
                 "auth_type": "subscription",
                 "subscription_vendor": "openai",
             }
@@ -1989,11 +1993,11 @@ def test_llm_create_agent_resolves_subscription_llm(monkeypatch) -> None:
     from openhands.sdk.llm.auth import openai
 
     original_llm = LLM(
-        model="gpt-5.2-codex",
+        model="gpt-5.6",
         auth_type="subscription",
         subscription_vendor="openai",
     )
-    runtime_llm = LLM(model="openai/gpt-5.2-codex")
+    runtime_llm = LLM(model="openai/gpt-5.6")
     runtime_llm._is_subscription = True
 
     def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
@@ -2015,7 +2019,7 @@ def test_llm_create_agent_resolves_subscription_llm(monkeypatch) -> None:
 def test_llm_from_persisted_rehydrates_subscription_runtime(monkeypatch) -> None:
     from openhands.sdk.llm.auth import openai
 
-    runtime_llm = LLM(model="openai/gpt-5.2-codex", auth_type="subscription")
+    runtime_llm = LLM(model="openai/gpt-5.6", auth_type="subscription")
     runtime_llm._is_subscription = True
 
     def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
@@ -2031,7 +2035,7 @@ def test_llm_from_persisted_rehydrates_subscription_runtime(monkeypatch) -> None
 
     loaded = LLM.from_persisted(
         {
-            "model": "gpt-5.2-codex",
+            "model": "gpt-5.6",
             "auth_type": "subscription",
             "subscription_vendor": "openai",
             "schema_version": 1,
@@ -2045,16 +2049,16 @@ def test_llm_from_persisted_rehydrates_subscription_runtime(monkeypatch) -> None
 def test_llm_load_from_env_rehydrates_subscription_runtime(monkeypatch) -> None:
     from openhands.sdk.llm.auth import openai
 
-    runtime_llm = LLM(model="openai/gpt-5.2-codex", auth_type="subscription")
+    runtime_llm = LLM(model="openai/gpt-5.6", auth_type="subscription")
     runtime_llm._is_subscription = True
 
     def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
         assert llm.auth_type == "subscription"
         assert llm.subscription_vendor == "openai"
-        assert llm.model == "gpt-5.2-codex"
+        assert llm.model == "gpt-5.6"
         return runtime_llm
 
-    monkeypatch.setenv("LLM_MODEL", "gpt-5.2-codex")
+    monkeypatch.setenv("LLM_MODEL", "gpt-5.6")
     monkeypatch.setenv("LLM_AUTH_TYPE", "subscription")
     monkeypatch.setenv("LLM_SUBSCRIPTION_VENDOR", "openai")
     monkeypatch.setattr(
@@ -2071,6 +2075,7 @@ def test_llm_load_from_env_rehydrates_subscription_runtime(monkeypatch) -> None:
 
 def test_create_subscription_llm_from_config_preserves_runtime_llm(monkeypatch) -> None:
     import openhands.sdk.llm.auth.openai as openai_auth
+    from openhands.sdk.llm.auth.credentials import OAuthCredentials
 
     class UnexpectedAuth:
         def __init__(self, *args, **kwargs):
@@ -2078,13 +2083,61 @@ def test_create_subscription_llm_from_config_preserves_runtime_llm(monkeypatch) 
 
     monkeypatch.setattr(openai_auth, "OpenAISubscriptionAuth", UnexpectedAuth)
     runtime_llm = LLM(
-        model="openai/gpt-5.2-codex",
+        model="openai/gpt-5.6",
         auth_type="subscription",
         subscription_vendor="openai",
     )
     runtime_llm._is_subscription = True
+    runtime_llm._subscription_credentials = OAuthCredentials(
+        vendor="openai",
+        access_token="access-token",
+        refresh_token="refresh-token",
+        expires_at=4_102_444_800_000,
+    )
 
     assert openai_auth.create_subscription_llm_from_config(runtime_llm) is runtime_llm
+
+
+def test_llm_from_persisted_rebuilds_serialized_subscription_runtime(
+    monkeypatch,
+) -> None:
+    import openhands.sdk.llm.auth.openai as openai_auth
+    from openhands.sdk.llm.auth.credentials import OAuthCredentials
+    from openhands.sdk.llm.auth.openai import OpenAISubscriptionAuth
+
+    credentials = OAuthCredentials(
+        vendor="openai",
+        access_token="access-token",
+        refresh_token="refresh-token",
+        expires_at=4_102_444_800_000,
+    )
+    monkeypatch.setattr(openai_auth, "_extract_chatgpt_account_id", lambda _: None)
+    monkeypatch.setattr(
+        OpenAISubscriptionAuth,
+        "refresh_if_needed_sync",
+        lambda self: credentials,
+    )
+
+    source = OpenAISubscriptionAuth().create_llm(
+        model="gpt-5.6",
+        credentials=credentials,
+    )
+    persisted = source.to_persisted()
+
+    assert persisted["is_subscription"] is True
+    assert "base_url" not in persisted
+
+    loaded = LLM.from_persisted(persisted)
+
+    assert loaded is not source
+    assert loaded.model == "openai/gpt-5.6"
+    assert loaded.base_url == "https://chatgpt.com/backend-api/codex"
+    assert loaded.is_subscription is True
+    assert loaded.extra_headers is not None
+    assert loaded.extra_headers["originator"] == "codex_cli_rs"
+    assert loaded.extra_headers["OpenAI-Beta"] == "responses=experimental"
+    assert loaded._subscription_credentials is credentials
+    assert loaded._get_litellm_api_key_value() == "access-token"
 
 
 @pytest.mark.asyncio
@@ -2115,7 +2168,7 @@ async def test_async_subscription_api_key_uses_async_refresh(monkeypatch) -> Non
 
     monkeypatch.setattr(openai_auth, "OpenAISubscriptionAuth", FakeAuth)
     llm = LLM(
-        model="openai/gpt-5.2-codex",
+        model="openai/gpt-5.6",
         auth_type="subscription",
         subscription_vendor="openai",
     )
@@ -2153,7 +2206,7 @@ def test_sync_subscription_api_key_uses_valid_runtime_credentials(
 
     monkeypatch.setattr(openai_auth, "OpenAISubscriptionAuth", FakeAuth)
     llm = LLM(
-        model="openai/gpt-5.2-codex",
+        model="openai/gpt-5.6",
         auth_type="subscription",
         subscription_vendor="openai",
     )
@@ -2176,7 +2229,7 @@ def test_openai_subscription_create_llm_serializes_subscription_auth(
     monkeypatch.setattr(openai_auth, "_extract_chatgpt_account_id", lambda _: None)
 
     llm = OpenAISubscriptionAuth().create_llm(
-        model="gpt-5.2-codex",
+        model="gpt-5.6",
         credentials=OAuthCredentials(
             vendor="openai",
             access_token="access-token",
@@ -2224,7 +2277,7 @@ def test_create_subscription_llm_from_config_preserves_non_auth_options(
 
     monkeypatch.setattr(openai_auth, "OpenAISubscriptionAuth", FakeAuth)
     source = LLM(
-        model="gpt-5.2-codex",
+        model="gpt-5.6",
         auth_type="subscription",
         subscription_vendor="openai",
         usage_id="profile:test",
@@ -2239,3 +2292,4 @@ def test_create_subscription_llm_from_config_preserves_non_auth_options(
     assert captured["timeout"] == 123
     assert "api_key" not in captured
     assert "base_url" not in captured
+    assert "is_subscription" not in captured

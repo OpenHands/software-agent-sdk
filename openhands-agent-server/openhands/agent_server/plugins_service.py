@@ -14,6 +14,7 @@ counterparts (``skills_service.py``) so the router stays focused on HTTP:
 """
 
 import json
+import os
 from pathlib import Path
 from time import monotonic
 
@@ -128,6 +129,73 @@ def service_list_available_plugins(
 
 
 # ---------------------------------------------------------------------------
+# Plugin contents (bundled skills + file listing)
+# ---------------------------------------------------------------------------
+
+# Directories never listed in a plugin's file tree. Whole-repo installs copy
+# the fetched clone verbatim (including ``.git``), which would flood the
+# listing with repository internals.
+_PLUGIN_FILES_EXCLUDED_DIRS = {".git"}
+# Upper bound on listed files so a pathological plugin (e.g. a whole-repo
+# install of a large repository) cannot bloat API payloads.
+_PLUGIN_FILES_LIMIT = 2000
+
+
+class PluginSkillSummary(BaseModel):
+    """Summary of a skill bundled in a plugin."""
+
+    name: str
+    description: str | None = None
+
+
+def _list_plugin_files(root: Path) -> list[str]:
+    """List a plugin directory's files as sorted, POSIX, root-relative paths.
+
+    Uses ``os.walk`` so excluded directories are pruned before being descended
+    into, and symlinked directories are never followed (real plugins ship
+    manifest-dir symlinks such as ``.claude-plugin -> .plugin``).
+    """
+    files: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in _PLUGIN_FILES_EXCLUDED_DIRS]
+        for filename in filenames:
+            files.append((Path(dirpath) / filename).relative_to(root).as_posix())
+    files.sort()
+    return files[:_PLUGIN_FILES_LIMIT]
+
+
+def service_plugin_contents(
+    plugin: Plugin,
+) -> tuple[list[PluginSkillSummary], list[str]]:
+    """Contents of an already-loaded plugin: bundled skills + file listing.
+
+    Skills include command-derived ones (``<plugin>:<command>``), matching what
+    the plugin actually contributes to a conversation.
+    """
+    skills = [
+        PluginSkillSummary(name=skill.name, description=skill.description)
+        for skill in plugin.get_all_skills()
+    ]
+    return skills, _list_plugin_files(Path(plugin.path))
+
+
+def service_load_plugin_contents(
+    plugin_dir: str | Path,
+) -> tuple[list[PluginSkillSummary], list[str]] | None:
+    """Load a plugin directory's contents, or None if it cannot be loaded.
+
+    Never raises: a corrupt or vanished plugin directory must not break the
+    listings that embed these contents.
+    """
+    try:
+        plugin = Plugin.load(plugin_dir)
+    except Exception as e:
+        logger.warning(f"Failed to load plugin contents from {plugin_dir}: {e}")
+        return None
+    return service_plugin_contents(plugin)
+
+
+# ---------------------------------------------------------------------------
 # Plugins-only marketplace catalog
 # ---------------------------------------------------------------------------
 
@@ -151,6 +219,12 @@ class MarketplacePluginInfo(BaseModel):
     ref: str | None = None
     repo_path: str | None = None
     installed: bool
+    # Local contents — populated when the entry resolves to a directory in the
+    # local marketplace clone; None when contents are not locally available
+    # (e.g. a structured source pointing at another repository).
+    path: str | None = None
+    skills: list[PluginSkillSummary] | None = None
+    files: list[str] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -163,9 +237,13 @@ class MarketplacePluginInfo(BaseModel):
 # transient fetch failure) is NOT cached, so one flaky fetch does not blank the
 # catalog for the whole TTL.
 #
-# Type: (timestamp, list-of-(name, description, source, ref, repo_path)) or None
-_PluginCatalogEntry = tuple[str, str | None, str, str | None, str | None]
-_plugin_catalog_cache: tuple[float, list[_PluginCatalogEntry]] | None = None
+# Cached entries are full MarketplacePluginInfo objects (including contents)
+# stored with ``installed=False``; serving stamps the fresh installed flag via
+# a shallow ``model_copy``, so the ``skills``/``files`` lists are shared across
+# requests — they are never mutated after construction.
+#
+# Type: (timestamp, catalog entries with installed=False) or None
+_plugin_catalog_cache: tuple[float, list[MarketplacePluginInfo]] | None = None
 _PLUGIN_CATALOG_TTL_SECONDS = 300  # 5 minutes
 
 
@@ -211,15 +289,8 @@ def service_get_plugins_marketplace_catalog(
         p.name for p in list_installed_plugins(installed_dir=installed_dir)
     }
     return [
-        MarketplacePluginInfo(
-            name=name,
-            description=desc,
-            source=src,
-            ref=ref,
-            repo_path=repo_path,
-            installed=name in installed_names,
-        )
-        for name, desc, src, ref, repo_path in entries
+        entry.model_copy(update={"installed": entry.name in installed_names})
+        for entry in entries
     ]
 
 
@@ -238,12 +309,15 @@ def _is_true_plugin(raw_source: object) -> bool:
     return subpath.startswith(_PLUGINS_SUBPATH_PREFIX)
 
 
-def _fetch_plugin_catalog_entries(marketplace_path: str) -> list[_PluginCatalogEntry]:
+def _fetch_plugin_catalog_entries(
+    marketplace_path: str,
+) -> list[MarketplacePluginInfo]:
     """Fetch the marketplace and keep only true plugins.
 
-    Slow path: git fetch + read the marketplace JSON. Returns
-    ``(name, description, source, ref, repo_path)`` tuples, or an empty list on
-    error.
+    Slow path: git fetch + read the marketplace JSON. Returns catalog entries
+    with ``installed=False`` (the caller stamps the fresh value), enriched with
+    local contents (``path``/``skills``/``files``) when an entry resolves to a
+    directory inside the local clone. Returns an empty list on error.
     """
     cache_dir = get_skills_cache_dir()
     repo_path = update_skills_repository(
@@ -282,7 +356,7 @@ def _fetch_plugin_catalog_entries(marketplace_path: str) -> list[_PluginCatalogE
             logger.warning(f"Failed to load marketplace: {e}, {e2}")
             return []
 
-    entries: list[_PluginCatalogEntry] = []
+    entries: list[MarketplacePluginInfo] = []
     for plugin in marketplace.plugins:
         if not _is_true_plugin(plugin.source):
             continue
@@ -290,6 +364,29 @@ def _fetch_plugin_catalog_entries(marketplace_path: str) -> list[_PluginCatalogE
         # this yields an absolute path with ref/repo_path None; structured
         # github/url sources yield their ref + subpath.
         source, ref, repo_path = marketplace.resolve_plugin_source(plugin)
-        entries.append((plugin.name, plugin.description, source, ref, repo_path))
+        entry = MarketplacePluginInfo(
+            name=plugin.name,
+            description=plugin.description,
+            source=source,
+            ref=ref,
+            repo_path=repo_path,
+            installed=False,
+        )
+        # A local ./plugins/<name> entry resolves to a directory inside the
+        # cached clone, so its contents can be loaded from disk. Structured
+        # github/url sources may point at other repositories — no local copy,
+        # so their contents stay None.
+        if ref is None and repo_path is None and Path(source).is_dir():
+            contents = service_load_plugin_contents(source)
+            if contents is not None:
+                skills, files = contents
+                entry = entry.model_copy(
+                    update={
+                        "path": to_posix_path(source),
+                        "skills": skills,
+                        "files": files,
+                    }
+                )
+        entries.append(entry)
 
     return entries
