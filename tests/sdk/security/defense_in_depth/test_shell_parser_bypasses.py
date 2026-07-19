@@ -44,7 +44,7 @@ breadth, payloads past ``_EXTRACT_HARD_CAP``) are documented in
 
 Sources
 -------
-- @VascoSch92's bypass catalog in the issue body of #2721 (quoted segment).
+- The bypass catalog in the issue body of #2721 (quoted segment).
 - Adversarial source review against the PR #2718 working tree (command
   substitution, ANSI-C quoting).
 """
@@ -82,7 +82,23 @@ def make_action(command: str, tool_name: str = "bash") -> ActionEvent:
 # ---------------------------------------------------------------------------
 
 
-class TestCommandSubstitution:
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Regex sees literal substitution syntax, not the runtime name."
+        " Closes with #2721 Phase 2b under fail-closed OR"
+        " substitution-body-walk policy in command-name position."
+    ),
+)
+@pytest.mark.parametrize(
+    "command",
+    [
+        "$(echo rm) -rf /",
+        "`echo rm` -rf /",
+    ],
+    ids=["dollar_paren", "backtick"],
+)
+def test_command_substitution_is_high(command: str):
     """Command name produced by substitution at runtime.
 
     The actor places the command name inside ``$(...)`` or backticks. The
@@ -103,32 +119,30 @@ class TestCommandSubstitution:
     Either policy lands this test.
     """
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Regex sees literal substitution syntax, not the runtime name."
-            " Closes with #2721 Phase 2b under fail-closed OR"
-            " substitution-body-walk policy in command-name position."
-        ),
-    )
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "$(echo rm) -rf /",
-            "`echo rm` -rf /",
-        ],
-        ids=["dollar_paren", "backtick"],
-    )
-    def test_command_substitution_is_high(self, command: str):
-        analyzer = PatternSecurityAnalyzer()
-        risk = analyzer.security_risk(make_action(command))
-        assert risk == SecurityRisk.HIGH
+    analyzer = PatternSecurityAnalyzer()
+    risk = analyzer.security_risk(make_action(command))
+    assert risk == SecurityRisk.HIGH
 
 
-class TestQuotedSegment:
+@pytest.mark.parametrize(
+    "command",
+    [
+        'r"m" -rf /',
+        "r''m -rf /",
+        "'rm' -rf /",
+        'r"m" --recursive --force /',
+    ],
+    ids=[
+        "double_quoted_concat",
+        "empty_single_concat",
+        "fully_quoted",
+        "quoted_long_flags",
+    ],
+)
+def test_quoted_segment_is_high(command: str):
     """Quoting splits the command lexeme so ``\\brm\\s+`` boundary fails.
 
-    Vasco's #2721 catalog names ``r"m" -rf /``: the closing quote ends
+    The #2721 catalog names ``r"m" -rf /``: the closing quote ends
     the word at a non-whitespace character, so ``\\brm\\s+`` cannot
     anchor the destructive command. Empty single-quote concatenation
     (``r''m``) and fully quoted (``'rm'``) variants evade by the same
@@ -138,30 +152,30 @@ class TestQuotedSegment:
     and emits the post-expansion command name as a single string.
     """
 
-    @pytest.mark.parametrize(
-        "command",
-        [
-            'r"m" -rf /',
-            "r''m -rf /",
-            "'rm' -rf /",
-            'r"m" --recursive --force /',
-        ],
-        ids=[
-            "double_quoted_concat",
-            "empty_single_concat",
-            "fully_quoted",
-            "quoted_long_flags",
-        ],
-    )
-    def test_quoted_segment_is_high(self, command: str):
-        # Closed by #2721 Phase 2b: AST-backed command-name resolution
-        # de-quotes the name before the recursive-force-delete check.
-        analyzer = PatternSecurityAnalyzer()
-        risk = analyzer.security_risk(make_action(command))
-        assert risk == SecurityRisk.HIGH
+    # Closed by #2721 Phase 2b: AST-backed command-name resolution
+    # de-quotes the name before the recursive-force-delete check.
+    analyzer = PatternSecurityAnalyzer()
+    risk = analyzer.security_risk(make_action(command))
+    assert risk == SecurityRisk.HIGH
 
 
-class TestAnsiCQuoting:
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "ANSI-C quoting expands to 'rm' only at runtime."
+        " Closes with #2721 Phase 2b under decode OR fail-closed policy"
+        " on ansi_c_string in command-name position."
+    ),
+)
+@pytest.mark.parametrize(
+    "command",
+    [
+        r"$'\x72m' -rf /",
+        r"$'\162\155' -rf /",
+    ],
+    ids=["hex_escape", "octal_escape"],
+)
+def test_ansi_c_quoting_is_high(command: str):
     """ANSI-C quoting (``$'\\xNN'``) expands to literals only at shell runtime.
 
     The detector sees the literal ``$'...'`` token. The shell would
@@ -179,26 +193,9 @@ class TestAnsiCQuoting:
     Either policy lands this test.
     """
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "ANSI-C quoting expands to 'rm' only at runtime."
-            " Closes with #2721 Phase 2b under decode OR fail-closed policy"
-            " on ansi_c_string in command-name position."
-        ),
-    )
-    @pytest.mark.parametrize(
-        "command",
-        [
-            r"$'\x72m' -rf /",
-            r"$'\162\155' -rf /",
-        ],
-        ids=["hex_escape", "octal_escape"],
-    )
-    def test_ansi_c_quoting_is_high(self, command: str):
-        analyzer = PatternSecurityAnalyzer()
-        risk = analyzer.security_risk(make_action(command))
-        assert risk == SecurityRisk.HIGH
+    analyzer = PatternSecurityAnalyzer()
+    risk = analyzer.security_risk(make_action(command))
+    assert risk == SecurityRisk.HIGH
 
 
 # Destructive-command fragments assembled at runtime. Kept out of a single
@@ -214,10 +211,27 @@ _DEL_LONG = _RM + " " + _LONG + " /"
 _DEL_QUOTED = "r" + '"m" ' + _RF + " /"
 
 
-class TestPathQualifiedCommand:
+@pytest.mark.parametrize(
+    "command",
+    [
+        "/bin/" + _DEL_SHORT,
+        "/usr/bin/" + _DEL_SHORT,
+        "/bin/" + '"' + _RM + '" ' + _RF + " /",
+        '"/bin/' + _RM + '" ' + _RF + " /",
+        "/bin/" + _DEL_LONG,
+    ],
+    ids=[
+        "bin_rm",
+        "usr_bin_rm",
+        "path_quoted_basename",
+        "fully_quoted_path",
+        "path_long_flags",
+    ],
+)
+def test_path_qualified_is_high(command: str):
     """Path-qualified command name breaks the ``\\brm\\s+`` anchor.
 
-    Vasco's #2721 catalog names the path-qualified delete: the directory
+    The #2721 catalog names the path-qualified delete: the directory
     prefix means the destructive basename is not at a word boundary the
     regex can anchor. The regex incidentally still matches the bare-path
     form because ``/rm `` contains a boundary, but the class is only robustly
@@ -229,35 +243,34 @@ class TestPathQualifiedCommand:
     combination collapses to the same verb.
     """
 
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "/bin/" + _DEL_SHORT,
-            "/usr/bin/" + _DEL_SHORT,
-            "/bin/" + '"' + _RM + '" ' + _RF + " /",
-            '"/bin/' + _RM + '" ' + _RF + " /",
-            "/bin/" + _DEL_LONG,
-        ],
-        ids=[
-            "bin_rm",
-            "usr_bin_rm",
-            "path_quoted_basename",
-            "fully_quoted_path",
-            "path_long_flags",
-        ],
-    )
-    def test_path_qualified_is_high(self, command: str):
-        # Closed by #2721 Phase 2b: command-name resolution takes the POSIX
-        # basename after de-quoting, so path prefixes no longer hide the verb.
-        analyzer = PatternSecurityAnalyzer()
-        risk = analyzer.security_risk(make_action(command))
-        assert risk == SecurityRisk.HIGH
+    # Closed by #2721 Phase 2b: command-name resolution takes the POSIX
+    # basename after de-quoting, so path prefixes no longer hide the verb.
+    analyzer = PatternSecurityAnalyzer()
+    risk = analyzer.security_risk(make_action(command))
+    assert risk == SecurityRisk.HIGH
 
 
-class TestNestedCommandString:
+@pytest.mark.parametrize(
+    "command",
+    [
+        "bash -c '" + _DEL_SHORT + "'",
+        "sh -c '" + _DEL_SHORT + "'",
+        'bash -c "' + _DEL_SHORT + '"',
+        "bash -c 'r" + '"m" ' + _RF + " /'",
+        "sh -c '" + _DEL_LONG + "'",
+    ],
+    ids=[
+        "bash_c_single",
+        "sh_c_single",
+        "bash_c_double",
+        "nested_quoted_verb",
+        "nested_long_flags",
+    ],
+)
+def test_nested_command_string_is_high(command: str):
     """Destructive command hidden inside a shell runner's ``-c`` argument.
 
-    Vasco's #2721 catalog names the runner-wrapped delete: the destructive
+    The #2721 catalog names the runner-wrapped delete: the destructive
     verb lives inside the ``-c`` script operand. The regex incidentally
     matches the simplest form because the flattened text still contains the
     verb, but the class is only robustly closed structurally -- quoting the
@@ -268,29 +281,11 @@ class TestNestedCommandString:
     recursively, so inner quoting no longer helps.
     """
 
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "bash -c '" + _DEL_SHORT + "'",
-            "sh -c '" + _DEL_SHORT + "'",
-            'bash -c "' + _DEL_SHORT + '"',
-            "bash -c 'r" + '"m" ' + _RF + " /'",
-            "sh -c '" + _DEL_LONG + "'",
-        ],
-        ids=[
-            "bash_c_single",
-            "sh_c_single",
-            "bash_c_double",
-            "nested_quoted_verb",
-            "nested_long_flags",
-        ],
-    )
-    def test_nested_command_string_is_high(self, command: str):
-        # Closed by #2721 Phase 2b: a shell-runner ``-c`` operand is
-        # re-parsed and scanned recursively for the destructive family.
-        analyzer = PatternSecurityAnalyzer()
-        risk = analyzer.security_risk(make_action(command))
-        assert risk == SecurityRisk.HIGH
+    # Closed by #2721 Phase 2b: a shell-runner ``-c`` operand is
+    # re-parsed and scanned recursively for the destructive family.
+    analyzer = PatternSecurityAnalyzer()
+    risk = analyzer.security_risk(make_action(command))
+    assert risk == SecurityRisk.HIGH
 
 
 class TestRunnerArgvOptionParsing:

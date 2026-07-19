@@ -118,6 +118,27 @@ class ShellScanResult:
     uncertain: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class SignalOutput:
+    """Outcome of scanning one program or command for a destructive verb.
+
+    ``matched`` is True once a recursive force delete is resolved concretely.
+    ``uncertain`` is True when the scan saw a destructive shape it could not
+    vouch for, which the caller turns into ``UNKNOWN`` rather than ``LOW``.
+
+    A concrete match always outranks uncertainty, so ``matched`` and
+    ``uncertain`` are never both True.
+    """
+
+    matched: bool
+    uncertain: bool
+
+
+_NO_SIGNAL: Final[SignalOutput] = SignalOutput(matched=False, uncertain=False)
+_MATCH_SIGNAL: Final[SignalOutput] = SignalOutput(matched=True, uncertain=False)
+_UNCERTAIN_SIGNAL: Final[SignalOutput] = SignalOutput(matched=False, uncertain=True)
+
+
 def scan_shell_command(command: str, rm_detector_id: str) -> ShellScanResult:
     """Scan ``command`` for AST-resolvable destructive shell commands.
 
@@ -140,10 +161,10 @@ def scan_shell_command(command: str, rm_detector_id: str) -> ShellScanResult:
         # scanned the flattened text; report neither match nor uncertainty.
         return ShellScanResult(matched=False)
 
-    matched, uncertain = _program_signal(program, depth=0)
-    if matched:
+    signal = _program_signal(program, depth=0)
+    if signal.matched:
         return ShellScanResult(matched=True, detector_id=rm_detector_id)
-    return ShellScanResult(matched=False, uncertain=uncertain)
+    return ShellScanResult(matched=False, uncertain=signal.uncertain)
 
 
 def _safe_parse(command: str) -> ShellProgram | None:
@@ -153,8 +174,8 @@ def _safe_parse(command: str) -> ShellProgram | None:
         return None
 
 
-def _program_signal(program: ShellProgram, depth: int) -> tuple[bool, bool]:
-    """Return ``(matched, uncertain)`` for a parsed program.
+def _program_signal(program: ShellProgram, depth: int) -> SignalOutput:
+    """Return the scan signal for a parsed program.
 
     ``matched`` is True when a recursive force delete is resolved. ``uncertain``
     is True when the destructive flag shape is present on a command whose verb
@@ -165,7 +186,7 @@ def _program_signal(program: ShellProgram, depth: int) -> tuple[bool, bool]:
         resolved = _resolve_command_basename(command)
         if _has_recursive_force_flags(command):
             if resolved == _RM_BASENAME:
-                return True, False
+                return _MATCH_SIGNAL
             if resolved is None or command.has_error:
                 # Dangerous flag shape on a verb we cannot vouch for:
                 # either the name is unresolvable, or an ERROR/MISSING
@@ -173,11 +194,11 @@ def _program_signal(program: ShellProgram, depth: int) -> tuple[bool, bool]:
                 # may not be the verb the shell would run. Keep scanning
                 # for a concrete match first.
                 uncertain = True
-        nested_matched, nested_uncertain = _nested_signal(command, resolved, depth)
-        if nested_matched:
-            return True, False
-        uncertain = uncertain or nested_uncertain
-    return False, uncertain
+        nested = _nested_signal(command, resolved, depth)
+        if nested.matched:
+            return _MATCH_SIGNAL
+        uncertain = uncertain or nested.uncertain
+    return SignalOutput(matched=False, uncertain=uncertain)
 
 
 def _has_recursive_force_flags(command: ShellCommand) -> bool:
@@ -210,11 +231,11 @@ def _nested_signal(
     command: ShellCommand,
     resolved_name: str | None,
     depth: int,
-) -> tuple[bool, bool]:
+) -> SignalOutput:
     """Descend into a shell runner script operand and re-parse it.
 
     Closes the nested-runner bypass class, including quoted verbs inside the
-    script that no outer pattern can see. Returns ``(matched, uncertain)``.
+    script that no outer pattern can see.
 
     Fail-safe ordering: the operand scan runs first so a concrete match
     always wins; only when no match is found does a parse error on the
@@ -224,20 +245,18 @@ def _nested_signal(
     something never actually seen.
     """
     if resolved_name not in _SHELL_RUNNERS:
-        return False, False
+        return _NO_SIGNAL
 
-    matched, uncertain = _scan_script_operand(command, depth)
-    if matched:
-        return True, False
+    operand = _scan_script_operand(command, depth)
+    if operand.matched:
+        return _MATCH_SIGNAL
     if command.has_error:
-        return False, True
-    return False, uncertain
+        return _UNCERTAIN_SIGNAL
+    return operand
 
 
-def _scan_script_operand(command: ShellCommand, depth: int) -> tuple[bool, bool]:
+def _scan_script_operand(command: ShellCommand, depth: int) -> SignalOutput:
     """Extract, bound-check, and recursively scan a runner script operand.
-
-    Returns ``(matched, uncertain)``.
 
     A dynamic (unresolvable) script operand is deliberately NOT treated as
     uncertain: passing a shell variable as the script is ordinary benign
@@ -247,18 +266,18 @@ def _scan_script_operand(command: ShellCommand, depth: int) -> tuple[bool, bool]
     """
     has_flag, inner = _extract_script_operand(command)
     if not has_flag or inner is None:
-        return False, False
+        return _NO_SIGNAL
 
     if depth >= _MAX_NESTING_DEPTH:
         # Depth bound hit with a real script operand still unscanned: we
         # refused to look, so we cannot vouch. Surface uncertainty (the
         # analyzer emits UNKNOWN) rather than a silent LOW that would hand
         # attackers a constructive bypass one nesting level past the bound.
-        return False, True
+        return _UNCERTAIN_SIGNAL
 
     inner_program = _safe_parse(inner)
     if inner_program is None:
-        return False, False
+        return _NO_SIGNAL
     return _program_signal(inner_program, depth + 1)
 
 
@@ -287,7 +306,7 @@ def _extract_script_operand(
     words = command.words
     index = 0
     while index < len(words):
-        literal = _resolve_word_literal(words[index])
+        literal = _resolve_node_literal(words[index].node)
         if literal is None:
             # A dynamic argv word cannot be classified as option or operand
             # at analysis time. Treat it as the first operand: a dynamic
@@ -360,11 +379,6 @@ def _resolve_command_basename(command: ShellCommand) -> str | None:
     return _posix_basename(literal)
 
 
-def _resolve_word_literal(word: ShellWord) -> str | None:
-    """Resolve an argument word to its literal text, seeing through quotes."""
-    return _resolve_node_literal(word.node)
-
-
 def _resolve_node_literal(node: Node) -> str | None:
     """Concatenate literal text from a name/word node, or None if dynamic.
 
@@ -373,58 +387,54 @@ def _resolve_node_literal(node: Node) -> str | None:
     child (substitution, expansion, ANSI-C string) makes the value
     unresolvable at analysis time and yields None.
     """
-    parts: list[str] = []
-    if not _collect_literal_parts(node, parts):
+    parts = _collect_literal_parts(node)
+    if parts is None:
         return None
     return "".join(parts)
 
 
-def _collect_literal_parts(node: Node, parts: list[str]) -> bool:
-    """Append literal fragments from ``node``; return False if dynamic.
+def _collect_literal_parts(node: Node) -> list[str] | None:
+    """Return the literal fragments of ``node``, or None if it is dynamic.
 
-    Returns True when the whole subtree is statically resolvable. Fragments
-    are escape-normalized to the effective literal the shell would produce
-    after quote removal: tree-sitter keeps backslash escapes inline in
-    ``word`` and ``string_content`` text, so comparing raw text would let
-    ``r\\m`` (which the shell runs as ``rm``) slip past the basename check.
+    None means the subtree is not statically resolvable. Fragments are
+    escape-normalized to the effective literal the shell would produce after
+    quote removal: tree-sitter keeps backslash escapes inline in ``word`` and
+    ``string_content`` text, so comparing raw text would let ``r\\m`` (which
+    the shell runs as ``rm``) slip past the basename check.
     """
-    node_type = node.type
+    if node.type in _DYNAMIC_NAME_NODE_TYPES:
+        return None
 
-    if node_type in _DYNAMIC_NAME_NODE_TYPES:
-        return False
+    match node.type:
+        case "word":
+            return [_unescape_unquoted(_decode(node.text))]
 
-    if node_type == "word":
-        parts.append(_unescape_unquoted(_decode(node.text)))
-        return True
+        case "raw_string":
+            # Single-quoted operand: strip the quotes; contents are literal
+            # and backslash has no special meaning inside single quotes.
+            text = _decode(node.text)
+            return [text[1:-1] if len(text) >= 2 else ""]
 
-    if node_type == "raw_string":
-        # Single-quoted operand: strip the quotes; contents are literal
-        # and backslash has no special meaning inside single quotes.
-        text = _decode(node.text)
-        parts.append(text[1:-1] if len(text) >= 2 else "")
-        return True
+        case "string_content":
+            return [_unescape_double_quoted(_decode(node.text))]
 
-    if node_type == "string_content":
-        parts.append(_unescape_double_quoted(_decode(node.text)))
-        return True
+        # "string" is the double-quoted case: recursing catches an embedded
+        # expansion as dynamic while string_content fragments contribute
+        # literally. command_name and concatenation recurse for the same
+        # reason, so all three share one branch.
+        case "string" | "command_name" | "concatenation":
+            parts: list[str] = []
+            for child in node.named_children:
+                child_parts = _collect_literal_parts(child)
+                if child_parts is None:
+                    return None
+                parts.extend(child_parts)
+            return parts
 
-    if node_type == "string":
-        # Double-quoted: recurse so an embedded expansion is caught as
-        # dynamic, while string_content fragments contribute literally.
-        for child in node.named_children:
-            if not _collect_literal_parts(child, parts):
-                return False
-        return True
-
-    if node_type in {"command_name", "concatenation"}:
-        for child in node.named_children:
-            if not _collect_literal_parts(child, parts):
-                return False
-        return True
-
-    # Unknown / unhandled node type in a name position: treat as dynamic so
-    # we never fabricate a resolved name we are not sure about.
-    return False
+        # Unknown / unhandled node type in a name position: treat as dynamic
+        # so we never fabricate a resolved name we are not sure about.
+        case _:
+            return None
 
 
 def _unescape_unquoted(text: str) -> str:
