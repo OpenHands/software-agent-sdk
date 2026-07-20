@@ -45,6 +45,9 @@ ConfirmationHandler = Callable[[str, list["ActionEvent"]], bool]
 logger = get_logger(__name__)
 
 _SUBAGENTS_DIR: Final[str] = "subagents"
+_INTERRUPTED_BEFORE_START_ERROR: Final[str] = (
+    "Sub-agent task was interrupted before it started."
+)
 
 
 class TaskStatus(StrEnum):
@@ -103,6 +106,7 @@ class TaskManager:
 
         self._tasks: dict[str, Task] = {}
         self._tasks_lock = threading.Lock()
+        self._interrupt_generation = 0
 
         # Set once in _ensure_parent: uses the parent's subagents dir
         # when the parent persists, otherwise a temporary directory.
@@ -180,6 +184,7 @@ class TaskManager:
         Returns:
             TaskState with the final result.
         """
+        interrupt_generation = self._get_interrupt_generation()
         if conversation:
             self._ensure_parent(conversation)
 
@@ -197,7 +202,16 @@ class TaskManager:
         return self._run_task(
             task=task,
             prompt=prompt,
+            interrupt_generation=interrupt_generation,
         )
+
+    def _get_interrupt_generation(self) -> int:
+        with self._tasks_lock:
+            return self._interrupt_generation
+
+    def _was_interrupted(self, generation: int) -> bool:
+        with self._tasks_lock:
+            return generation != self._interrupt_generation
 
     def _resume_task(self, resume: str, subagent_type: str) -> Task:
         """Resume a sub-agent task."""
@@ -344,8 +358,15 @@ class TaskManager:
         )
         return sub_agent
 
-    def _run_task(self, task: Task, prompt: str) -> Task:
+    def _run_task(
+        self,
+        task: Task,
+        prompt: str,
+        interrupt_generation: int | None = None,
+    ) -> Task:
         """Run a task synchronously."""
+        if interrupt_generation is None:
+            interrupt_generation = self._get_interrupt_generation()
         if task.conversation is None:
             raise RuntimeError(f"Task '{task.id}' has no conversation to run.")
         # Get parent name for sender info
@@ -355,6 +376,11 @@ class TaskManager:
             parent_name = getattr(parent._visualizer, "_name", None)
 
         try:
+            if self._was_interrupted(interrupt_generation):
+                task.set_error(_INTERRUPTED_BEFORE_START_ERROR)
+                logger.info("Task '%s' was interrupted before it started.", task.id)
+                return task
+
             task.conversation.send_message(prompt, sender=parent_name)
             self._run_until_finished(task.id, task.conversation)
             status = task.conversation.state.execution_status
@@ -453,6 +479,7 @@ class TaskManager:
     def interrupt(self) -> None:
         """Interrupt all active sub-agent conversations."""
         with self._tasks_lock:
+            self._interrupt_generation += 1
             active_tasks = tuple(
                 (task.id, task.conversation)
                 for task in self._tasks.values()
