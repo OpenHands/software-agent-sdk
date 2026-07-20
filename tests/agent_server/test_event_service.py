@@ -46,7 +46,10 @@ from openhands.sdk.event.llm_convertible import (
 from openhands.sdk.io.local import LocalFileStore
 from openhands.sdk.io.memory import InMemoryFileStore
 from openhands.sdk.llm import MessageToolCall, TextContent
+from openhands.sdk.mcp.config import coerce_mcp_config
 from openhands.sdk.security.confirmation_policy import NeverConfirm
+from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal import TerminalAction, TerminalObservation
 from tests.agent_server.stress.scripts import (
@@ -1775,6 +1778,45 @@ class TestEventServiceSaveMeta:
         meta_file = conv_dir / "meta.json"
         loaded = StoredConversation.model_validate_json(meta_file.read_text())
         assert loaded.updated_at == original_updated_at
+
+    @pytest.mark.asyncio
+    async def test_save_meta_round_trips_agent_definition_mcp_secrets(
+        self, sample_stored_conversation, tmp_path
+    ):
+        cipher = Cipher("stored-conversation-mcp-secret")
+        sample_stored_conversation.agent_definitions = [
+            AgentDefinition(
+                name="web-researcher",
+                mcp_config=coerce_mcp_config(
+                    {
+                        "tavily": {
+                            "command": "npx",
+                            "args": ["-y", "tavily-mcp@0.2.1"],
+                            "env": {"TAVILY_API_KEY": "${TAVILY_API_KEY}"},
+                        }
+                    }
+                ),
+            )
+        ]
+        service = EventService(
+            stored=sample_stored_conversation,
+            conversations_dir=tmp_path,
+            cipher=cipher,
+        )
+        service.conversation_dir.mkdir(parents=True)
+
+        await service.save_meta()
+
+        payload = (service.conversation_dir / "meta.json").read_text()
+        assert "${TAVILY_API_KEY}" not in payload
+        loaded = StoredConversation.model_validate_json(
+            payload,
+            context={"cipher": cipher},
+        )
+        assert loaded.agent_definitions[0].mcp_config is not None
+        env = loaded.agent_definitions[0].mcp_config["tavily"].env
+        assert env is not None
+        assert env["TAVILY_API_KEY"].get_secret_value() == "${TAVILY_API_KEY}"
 
     @pytest.mark.asyncio
     async def test_switch_acp_model_persists_to_meta(self, tmp_path):

@@ -33,7 +33,7 @@ from openhands.sdk.settings.model import (
 from openhands.sdk.tool import Tool
 
 
-AGENT_PROFILE_SCHEMA_VERSION = 1
+AGENT_PROFILE_SCHEMA_VERSION = 2
 
 
 class ProfileVerificationSettings(BaseModel):
@@ -159,6 +159,7 @@ class OpenHandsAgentProfile(AgentProfileBase):
             "non-empty list is used exactly as given."
         ),
     )
+
     system_message_suffix: str | None = Field(
         default=None,
         description="Optional suffix appended to the system prompt.",
@@ -314,31 +315,30 @@ validate/construct instances from raw payloads.
 PersistedProfileMigrator = Callable[[dict[str, Any]], dict[str, Any]]
 
 
-# No migrations: the profile model has never shipped to prod or any client, so
-# v1 is a clean baseline — embedded ``skills`` and the allow-list ``skill_refs``
-# never existed in a released profile, so there is nothing to migrate. This
-# registry is the home for the first *real* post-ship schema change; until then
-# ``_apply_persisted_migrations`` is a validating no-op and a stray removed key
-# (``skills`` / ``skill_refs``) is rejected by ``extra="forbid"`` at validation
-# rather than silently dropped. Register migrators here (keyed by source version)
-# when the first shipped schema needs to evolve.
-_AGENT_PROFILE_MIGRATIONS: dict[int, PersistedProfileMigrator] = {}
+def _migrate_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
+    if (
+        payload.get("agent_kind", "openhands") == "openhands"
+        and payload.get("name") == "default"
+        and payload.get("revision", 0) == 0
+        and payload.get("tools") == []
+    ):
+        payload["tools"] = None
+    payload["schema_version"] = 2
+    return payload
+
+
+_AGENT_PROFILE_MIGRATIONS: dict[int, PersistedProfileMigrator] = {
+    1: _migrate_v1_to_v2,
+}
 
 
 def _apply_persisted_migrations(payload: dict[str, Any]) -> dict[str, Any]:
-    """Bring a persisted ``AgentProfile`` payload up to the current schema.
-
-    A payload missing ``schema_version`` predates versioning (or is a freshly
-    authored dict); canonicalize it by stamping the field to ``1``. Otherwise
-    the version is validated and walked forward through
-    :data:`_AGENT_PROFILE_MIGRATIONS`. Mirrors the migration dispatcher in
-    ``settings/model.py``.
-    """
+    """Bring an ``AgentProfile`` payload up to the current schema."""
     migrated = dict(payload)
     version_raw = migrated.get("schema_version")
     if version_raw is None:
-        migrated["schema_version"] = 1
-        version = 1
+        migrated["schema_version"] = AGENT_PROFILE_SCHEMA_VERSION
+        version = AGENT_PROFILE_SCHEMA_VERSION
     elif isinstance(version_raw, int) and not isinstance(version_raw, bool):
         version = version_raw
     else:

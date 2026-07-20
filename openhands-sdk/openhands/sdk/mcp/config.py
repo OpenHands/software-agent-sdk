@@ -31,10 +31,10 @@ from openhands.sdk.utils.pydantic_secrets import (
 )
 
 
-def _validate_optional_secret(value: object, info: ValidationInfo) -> object:
-    if isinstance(value, str | SecretStr):
-        return validate_secret(value, info)
-    return value
+def _validate_optional_secret(
+    value: SecretStr | None, info: ValidationInfo
+) -> SecretStr | None:
+    return validate_secret(value, info)
 
 
 def _serialize_optional_secret(
@@ -45,17 +45,14 @@ def _serialize_optional_secret(
     return cast(str | None, serialize_secret(value, info))
 
 
-def _validate_secret_map(value: object, info: ValidationInfo) -> object:
-    if not isinstance(value, dict):
-        return value
-    validated = {}
+def _validate_secret_map(
+    value: dict[str, SecretStr], info: ValidationInfo
+) -> dict[str, SecretStr]:
+    validated: dict[str, SecretStr] = {}
     for key, item in value.items():
-        if isinstance(item, str | SecretStr):
-            secret = validate_secret(item, info)
-            if secret is not None:
-                validated[key] = secret
-        else:
-            validated[key] = item
+        secret = validate_secret(item, info)
+        if secret is not None:
+            validated[key] = secret
     return validated
 
 
@@ -111,9 +108,11 @@ class MCPApiKeyAuthCredential(_MCPBaseModel):
     value: SecretStr | None = None
     header_name: str | None = None
 
-    @field_validator("value", mode="before")
+    @field_validator("value", mode="after")
     @classmethod
-    def _validate_value(cls, value: object, info: ValidationInfo) -> object:
+    def _validate_value(
+        cls, value: SecretStr | None, info: ValidationInfo
+    ) -> SecretStr | None:
         return _validate_optional_secret(value, info)
 
     @field_serializer("value", when_used="always")
@@ -135,9 +134,11 @@ class MCPBearerAuthCredential(_MCPBaseModel):
     strategy: Literal["bearer"]
     value: SecretStr | None = None
 
-    @field_validator("value", mode="before")
+    @field_validator("value", mode="after")
     @classmethod
-    def _validate_value(cls, value: object, info: ValidationInfo) -> object:
+    def _validate_value(
+        cls, value: SecretStr | None, info: ValidationInfo
+    ) -> SecretStr | None:
         return _validate_optional_secret(value, info)
 
     @field_serializer("value", when_used="always")
@@ -157,9 +158,11 @@ class MCPBasicAuthCredential(_MCPBaseModel):
     username: str
     password: SecretStr | None = None
 
-    @field_validator("password", mode="before")
+    @field_validator("password", mode="after")
     @classmethod
-    def _validate_password(cls, value: object, info: ValidationInfo) -> object:
+    def _validate_password(
+        cls, value: SecretStr | None, info: ValidationInfo
+    ) -> SecretStr | None:
         return _validate_optional_secret(value, info)
 
     @field_serializer("password", when_used="always")
@@ -183,9 +186,11 @@ class MCPHeaderAuthCredential(_MCPBaseModel):
     strategy: Literal["header"]
     headers: dict[str, SecretStr] = Field(default_factory=dict)
 
-    @field_validator("headers", mode="before")
+    @field_validator("headers", mode="after")
     @classmethod
-    def _validate_headers(cls, value: object, info: ValidationInfo) -> object:
+    def _validate_headers(
+        cls, value: dict[str, SecretStr], info: ValidationInfo
+    ) -> dict[str, SecretStr]:
         return _validate_secret_map(value, info)
 
     @field_serializer("headers", when_used="always")
@@ -204,9 +209,11 @@ class MCPOAuthTokenState(_MCPBaseModel):
     access_token: SecretStr | None = None
     refresh_token: SecretStr | None = None
 
-    @field_validator("access_token", "refresh_token", mode="before")
+    @field_validator("access_token", "refresh_token", mode="after")
     @classmethod
-    def _validate_secret(cls, value: object, info: ValidationInfo) -> object:
+    def _validate_secret(
+        cls, value: SecretStr | None, info: ValidationInfo
+    ) -> SecretStr | None:
         return _validate_optional_secret(value, info)
 
     @field_serializer("access_token", "refresh_token", when_used="always")
@@ -221,9 +228,11 @@ class MCPOAuthClientInfoState(_MCPBaseModel):
 
     client_secret: SecretStr | None = None
 
-    @field_validator("client_secret", mode="before")
+    @field_validator("client_secret", mode="after")
     @classmethod
-    def _validate_client_secret(cls, value: object, info: ValidationInfo) -> object:
+    def _validate_client_secret(
+        cls, value: SecretStr | None, info: ValidationInfo
+    ) -> SecretStr | None:
         return _validate_optional_secret(value, info)
 
     @field_serializer("client_secret", when_used="always")
@@ -257,9 +266,11 @@ class MCPOAuthAuthentication(_MCPBaseModel):
     client_secret: SecretStr | None = None
     additional_client_metadata: dict[str, Any] | None = None
 
-    @field_validator("client_secret", mode="before")
+    @field_validator("client_secret", mode="after")
     @classmethod
-    def _validate_client_secret(cls, value: object, info: ValidationInfo) -> object:
+    def _validate_client_secret(
+        cls, value: SecretStr | None, info: ValidationInfo
+    ) -> SecretStr | None:
         return _validate_optional_secret(value, info)
 
     @field_serializer("client_secret", when_used="always")
@@ -431,10 +442,14 @@ class MCPServer(_MCPBaseModel):
     headers: dict[str, SecretStr] | None = None
     auth: MCPAuthCredential | None = None
 
-    @field_validator("env", "headers", mode="before")
+    @field_validator("env", "headers", mode="after")
     @classmethod
-    def _validate_secret_mapping(cls, value: object, info: ValidationInfo) -> object:
-        return _validate_secret_map(value, info)
+    def _validate_secret_mapping(
+        cls,
+        value: dict[str, SecretStr] | None,
+        info: ValidationInfo,
+    ) -> dict[str, SecretStr] | None:
+        return _validate_secret_map(value, info) if value is not None else None
 
     @field_serializer("env", "headers", when_used="always")
     def _serialize_secret_mapping(
