@@ -26,8 +26,8 @@ _CODEX_AUTH_SYNC_DELAYS: tuple[float, ...] = (0.1, 0.5)
 _CODEX_AUTH_HTTP_TIMEOUT = 5.0
 _CODEX_AUTH_REMOTE_CHECK_INTERVAL = 60.0
 _CODEX_AUTH_DIGEST_HEADER = "X-Codex-Auth-Digest"
-_CODEX_AUTH_SANDBOX_HEADER = "X-OH-Sandbox"
-_CODEX_AUTH_SCOPE_HEADER = "X-OH-Codex"
+_CODEX_AUTH_SANDBOX_HEADER = "X-OH-Sandbox-Key"
+_CODEX_AUTH_SCOPE_HEADER = "X-OH-Codex-Token"
 _CODEX_LOCAL_AUTH_SCOPE_HEADER = "X-OH-Codex-Token"
 _CODEX_LOCAL_REFRESH_USERNAME = "codex"
 _CODEX_REFRESH_TOKEN_URL_ENV = "CODEX_REFRESH_TOKEN_URL_OVERRIDE"
@@ -68,6 +68,8 @@ class ACPFileCredentialLifecycle(Protocol):
     def on_auth_succeeded(self, method_id: str) -> None: ...
 
     def on_session_started(self) -> None: ...
+
+    def track_current(self) -> None: ...
 
     def sync(self) -> None: ...
 
@@ -208,6 +210,7 @@ class _CodexAuthLifecycle:
         self.last_remote_check = 0.0
         self.registry: SecretRegistry | None = None
         self._may_have_changed = False
+        self._tracked_local_digest: str | None = None
 
     @property
     def may_have_changed(self) -> bool:
@@ -267,6 +270,7 @@ class _CodexAuthLifecycle:
         self._track_values(remote_value, expected_digest)
         if local_digest != expected_digest:
             self._track_values(local_value, local_digest)
+        self._tracked_local_digest = local_digest
 
     def on_auth_succeeded(self, method_id: str) -> None:
         if method_id == "chat-gpt":
@@ -302,6 +306,20 @@ class _CodexAuthLifecycle:
         for name, value in self.source.headers.items():
             exported_values[f"{self.secret_name}.header.{name.lower()}"] = value
         registry.track_exported_values(exported_values)
+
+    def track_current(self) -> None:
+        path = self.path
+        if path is None:
+            return
+        value = path.read_bytes()
+        digest = hashlib.sha256(value).hexdigest()
+        if digest == self._tracked_local_digest:
+            return
+        text_value = value.decode()
+        self._track_values(text_value, digest)
+        self._tracked_local_digest = digest
+        if digest != self.expected_digest:
+            self._may_have_changed = True
 
     def sync(self) -> None:
         path = self.path
@@ -375,6 +393,7 @@ class _CodexAuthLifecycle:
                 ) from exc
             self._track_values(text_value)
             self.expected_digest = digest
+            self._tracked_local_digest = digest
         self.last_remote_check = now
 
     def _adopt(self, value: str) -> None:
@@ -395,6 +414,7 @@ class _CodexAuthLifecycle:
             ) from exc
         self._track_values(value)
         self.expected_digest = digest
+        self._tracked_local_digest = digest
         self.last_remote_check = time.monotonic()
 
     def release(self) -> None:
@@ -412,6 +432,7 @@ class _CodexAuthLifecycle:
         self.last_remote_check = 0.0
         self.registry = None
         self._may_have_changed = False
+        self._tracked_local_digest = None
 
 
 def _create_codex_auth_lifecycle(

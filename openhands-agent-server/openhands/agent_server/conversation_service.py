@@ -13,7 +13,7 @@ from uuid import UUID, uuid4
 import httpx
 from pydantic import BaseModel
 
-from openhands.agent_server.codex_auth import CodexAuthBroker
+from openhands.agent_server.codex_auth import CODEX_AUTH_SECRET_NAME, CodexAuthBroker
 from openhands.agent_server.config import Config, WebhookSpec
 from openhands.agent_server.conversation_lease import (
     DEFAULT_LEASE_TTL_SECONDS,
@@ -52,9 +52,11 @@ from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.mcp.utils import MCPToolProvider
+from openhands.sdk.secret import LookupSecret
 from openhands.sdk.tool import BROWSER_TOOL_NAME, Tool, is_tool_usable
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.files import atomic_write_text
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -561,6 +563,37 @@ class ConversationService:
             base_state_file.read_text(), context=context
         )
 
+    def _rebind_persisted_codex_auth_sync(
+        self, record: _ConversationRecord, source: LookupSecret
+    ) -> bool:
+        conversation_dir = self.conversations_dir / record.stored.id.hex
+        base_state_file = conversation_dir / BASE_STATE
+        if not base_state_file.exists():
+            return False
+        context = {"cipher": self.cipher}
+        state = ConversationState.model_validate_json(
+            base_state_file.read_text(), context=context
+        )
+        state.secret_registry.update_secrets({CODEX_AUTH_SECRET_NAME: source})
+        stored = record.stored.model_copy(
+            update={
+                "secrets": {
+                    **record.stored.secrets,
+                    CODEX_AUTH_SECRET_NAME: source,
+                }
+            }
+        )
+        atomic_write_text(
+            conversation_dir / "meta.json",
+            stored.model_dump_json(context=context),
+        )
+        atomic_write_text(
+            base_state_file,
+            state.model_dump_json(exclude_none=True, context=context),
+        )
+        record.stored = stored
+        return True
+
     async def _conversation_info(
         self, conversation_id: UUID, record: _ConversationRecord
     ) -> ConversationInfo | None:
@@ -903,9 +936,34 @@ class ConversationService:
             )
         existing_record = self._conversation_records.get(conversation_id)
         if existing_record is not None:
-            conversation_info = await self._conversation_info(
-                conversation_id, existing_record
-            )
+            async with self._lifecycle_lock:
+                existing_event_service = self._event_services.get(conversation_id)
+                if (
+                    existing_event_service is not None
+                    and existing_event_service.is_open()
+                ):
+                    state = await existing_event_service.get_state()
+                    return (
+                        _compose_conversation_info(
+                            existing_event_service.stored, state
+                        ),
+                        False,
+                    )
+                source = request.secrets.get(CODEX_AUTH_SECRET_NAME)
+                if isinstance(source, LookupSecret):
+                    rebound = await asyncio.to_thread(
+                        self._rebind_persisted_codex_auth_sync,
+                        existing_record,
+                        source,
+                    )
+                    if not rebound:
+                        raise ValueError(
+                            f"Persisted conversation {conversation_id} "
+                            "has no base state"
+                        )
+                conversation_info = await self._conversation_info(
+                    conversation_id, existing_record
+                )
             if conversation_info is None:
                 raise ValueError(
                     f"Persisted conversation {conversation_id} has no base state"

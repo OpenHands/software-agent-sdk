@@ -27,6 +27,7 @@ from openhands.agent_server.models import StartConversationRequest
 from openhands.agent_server.persistence import FileSecretsStore
 from openhands.sdk import LLM, Agent, AgentContext
 from openhands.sdk.secret import LookupSecret
+from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -109,7 +110,10 @@ def test_broker_leaves_saas_source_unchanged(tmp_path):
     broker = CodexAuthBroker(FileSecretsStore(tmp_path))
     source = LookupSecret(
         url="https://cloud/api/internal/conversations/123/codex-auth",
-        headers={"X-OH-Sandbox": "sandbox-key", "X-OH-Codex": "cloud-token"},
+        headers={
+            "X-OH-Sandbox-Key": "sandbox-key",
+            "X-OH-Codex-Token": "cloud-token",
+        },
     )
 
     assert broker.ensure_brokered_source(uuid4(), source) is source
@@ -485,6 +489,69 @@ async def test_restart_reissues_capability_and_keeps_it_out_of_meta(tmp_path):
         assert second_token != first_token
         assert second_broker.is_authorized(info.id, second_token)
         assert not second_broker.is_authorized(info.id, first_token)
+
+
+@pytest.mark.asyncio
+async def test_cold_resume_rebinds_encrypted_cloud_capability_before_load(tmp_path):
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    cipher = Cipher("conversation-secret")
+    stale = LookupSecret(
+        url="https://cloud/api/internal/conversations/123/codex-auth",
+        headers={
+            "X-OH-Sandbox-Key": "stale-sandbox-key",
+            "X-OH-Codex-Token": "stale-codex-token",
+        },
+    )
+    fresh = LookupSecret(
+        url=stale.url,
+        headers={
+            "X-OH-Sandbox-Key": "fresh-sandbox-key",
+            "X-OH-Codex-Token": "fresh-codex-token",
+        },
+    )
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        secrets={CODEX_AUTH_SECRET_NAME: stale},
+    )
+
+    async with ConversationService(
+        conversations_dir=conversations_dir, cipher=cipher
+    ) as service:
+        info, _ = await service.start_conversation(request)
+
+    async with ConversationService(
+        conversations_dir=conversations_dir, cipher=cipher
+    ) as service:
+        _, is_new = await service.start_conversation(
+            request.model_copy(
+                update={
+                    "conversation_id": info.id,
+                    "secrets": {CODEX_AUTH_SECRET_NAME: fresh},
+                }
+            )
+        )
+        assert is_new is False
+        conversation_dir = conversations_dir / info.id.hex
+        persisted = (conversation_dir / "meta.json").read_text() + (
+            conversation_dir / "base_state.json"
+        ).read_text()
+        for plaintext in (
+            "stale-sandbox-key",
+            "stale-codex-token",
+            "fresh-sandbox-key",
+            "fresh-codex-token",
+        ):
+            assert plaintext not in persisted
+
+        event_service = await service.get_event_service(info.id)
+        assert event_service is not None
+        source = event_service.get_conversation().state.secret_registry.secret_sources[
+            CODEX_AUTH_SECRET_NAME
+        ]
+        assert source == fresh
 
 
 @pytest.mark.asyncio

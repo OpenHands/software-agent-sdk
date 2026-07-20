@@ -8051,8 +8051,8 @@ def _brokered_codex_source() -> LookupSecret:
     return LookupSecret(
         url="https://cloud/codex-auth",
         headers={
-            "X-OH-Sandbox": "session-a",
-            "X-OH-Codex": "scoped.jwt.token",
+            "X-OH-Sandbox-Key": "session-a",
+            "X-OH-Codex-Token": "scoped.jwt.token",
         },
     )
 
@@ -8343,8 +8343,8 @@ class TestACPFileSecretMaterialisation:
         source = LookupSecret(
             url="https://cloud/codex-auth",
             headers={
-                "X-OH-Sandbox": "session-a",
-                "X-OH-Codex": "scoped.jwt.token",
+                "X-OH-Sandbox-Key": "session-a",
+                "X-OH-Codex-Token": "scoped.jwt.token",
             },
         )
         agent = _make_agent()
@@ -8672,8 +8672,8 @@ class TestACPFileSecretMaterialisation:
             }
             expected_keys = {
                 "CODEX_AUTH_JSON.refresh_url",
-                "CODEX_AUTH_JSON.header.x-oh-sandbox",
-                "CODEX_AUTH_JSON.header.x-oh-codex",
+                "CODEX_AUTH_JSON.header.x-oh-sandbox-key",
+                "CODEX_AUTH_JSON.header.x-oh-codex-token",
             }
             for value_digest in value_digests:
                 mask_name = f"CODEX_AUTH_JSON.{value_digest}"
@@ -10009,6 +10009,43 @@ class TestACPBridgeMasking:
         assert (
             client.accumulated_tool_calls[0]["raw_output"] == "result: <secret-hidden>"
         )
+
+    @pytest.mark.asyncio
+    async def test_rotated_file_credential_is_tracked_before_tool_output_masking(
+        self, tmp_path
+    ):
+        from acp.schema import ToolCallStart
+
+        original = '{"tokens":{"refresh_token":"refresh-r0"}}'
+        rotated = '{"tokens":{"refresh_token":"refresh-r1"}}'
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": _brokered_codex_source()}
+        )
+        with patch.object(LookupSecret, "get_value", return_value=original):
+            env: dict[str, str] = {}
+            agent._materialise_file_secrets(state, env)
+
+        client = _OpenHandsACPBridge()
+        client.mask = state.secret_registry.mask_secrets_in_output
+        client.before_mask = agent._track_file_credentials_for_masking
+        events: list = []
+        client.on_event = events.append
+        (Path(env["CODEX_HOME"]) / "auth.json").write_text(rotated)
+
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Run"
+        start.kind = "execute"
+        start.status = "completed"
+        start.raw_input = None
+        start.raw_output = "rotated token: refresh-r1"
+        start.content = None
+        await client.session_update("sess-1", start)
+
+        assert events[-1].raw_output == "rotated token: <secret-hidden>"
+        assert _codex_lifecycle(agent).may_have_changed is True
 
     @pytest.mark.asyncio
     async def test_no_masking_when_mask_unset(self):

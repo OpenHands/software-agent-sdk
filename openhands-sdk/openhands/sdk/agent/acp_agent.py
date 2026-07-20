@@ -1086,6 +1086,7 @@ class _OpenHandsACPBridge:
         # injected credential never lands in the (persisted, network-relayed)
         # event stream in cleartext. ``None`` ⇒ no-op (bridge used standalone).
         self.mask: Callable[[str], str] | None = None
+        self.before_mask: Callable[[], None] | None = None
         self._last_activity_signal: float = float("-inf")
         # Monotonic timestamp of the most recent ``session_update``. Unlike the
         # throttled ``_last_activity_signal``, updated on *every* update so the
@@ -1165,6 +1166,8 @@ class _OpenHandsACPBridge:
         if self.mask is None:
             return value
         try:
+            if self.before_mask is not None:
+                self.before_mask()
             return _mask_json_value(value, self.mask)
         except Exception:
             logger.debug("secret masking failed", exc_info=True)
@@ -1970,6 +1973,7 @@ class ACPAgent(AgentBase):
             self._start_acp_server(state)
         except Exception as e:
             logger.error("Failed to start ACP server: %s", e)
+            self._track_file_credentials_for_masking()
             sync_failures = self._sync_file_credentials_collect(changed_only=True)
             self._log_file_credential_failures("sync", sync_failures)
             release_failures = self._release_file_credentials_collect(
@@ -2381,6 +2385,16 @@ class ACPAgent(AgentBase):
         failures = self._sync_file_credentials_collect()
         self._raise_first_file_credential_failure("sync", failures)
 
+    def _track_file_credentials_for_masking(self) -> None:
+        with self._file_credential_lock:
+            for name, lifecycle in self._file_credential_lifecycles.items():
+                try:
+                    lifecycle.track_current()
+                except Exception:
+                    logger.debug(
+                        "Failed to track ACP file credential %r", name, exc_info=True
+                    )
+
     async def _sync_file_credentials_best_effort(
         self, *, changed_only: bool = False
     ) -> None:
@@ -2462,6 +2476,7 @@ class ACPAgent(AgentBase):
         # session updates AND for ask_agent() forks, which run on the shared
         # client and may fire while no step()/astep() turn is active.
         client.mask = state.secret_registry.mask_secrets_in_output
+        client.before_mask = self._track_file_credentials_for_masking
 
         # Build the subprocess environment. Precedence, highest first:
         #   state.secret_registry > os.environ > default_environment
@@ -3259,6 +3274,7 @@ class ACPAgent(AgentBase):
         # already masked individually as they streamed, but a secret split
         # across two chunks only reassembles in the join, so this is where it
         # gets caught before landing in the persisted event stream.
+        self._track_file_credentials_for_masking()
         mask = state.secret_registry.mask_secrets_in_output
         response_text = mask("".join(self._client.accumulated_text))
         thought_text = mask("".join(self._client.accumulated_thoughts))
@@ -3341,6 +3357,7 @@ class ACPAgent(AgentBase):
         # Rich, secret-free detail: for an ACPRequestError this keeps the JSON-RPC
         # code + data (the real cause) instead of the bare "Internal error" that
         # str(exc) yields — see _acp_error_detail.
+        self._track_file_credentials_for_masking()
         error_detail = _acp_error_detail(exc, state.secret_registry)
         # Close any tool cards left in flight before surfacing the error.
         self._cancel_inflight_tool_calls()
