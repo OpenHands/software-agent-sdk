@@ -26,7 +26,7 @@ from openhands.sdk.event import (
 )
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.condenser import Condensation, CondensationRequest
-from openhands.sdk.llm.utils.metrics import TokenUsage
+from openhands.sdk.llm.utils.metrics import MetricsSnapshot, TokenUsage
 
 
 logger = logging.getLogger(__name__)
@@ -370,26 +370,29 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
 
         Matches on ``TokenUsage.response_id``, not on list position: telemetry
         records ``TokenUsage.response_id = resp.id`` and events carry
-        ``llm_response_id = llm_response.id``, so these ids correspond
-        one-to-one. We deliberately do NOT use
+        ``llm_response_id = llm_response.id``, which line up for most LLM
+        paths. That correspondence isn't guaranteed everywhere though -- the
+        ACP path records one ``response_id`` per session rather than per
+        request, so it never matches here and the caller falls back to the
+        cumulative-only format. We deliberately do NOT use
         ``get_combined_metrics().token_usages[-1]`` because that list merges
         usages across every usage id (agent, condenser, ...) and is not
         chronological across them.
         """
-        response_id = getattr(event, "llm_response_id", None)
+        if not isinstance(event, (ActionEvent, MessageEvent, Condensation)):
+            return None
+
+        response_id = event.llm_response_id
         if not response_id:
             return None
 
-        stats = self.conversation_stats
-        if not stats:
+        if not (stats := self.conversation_stats):
             return None
 
         for metrics in stats.usage_to_metrics.values():
             for usage in reversed(metrics.token_usages):
                 if usage.response_id == response_id:
                     return usage
-
-        return None
 
     def _format_metrics_subtitle(self, event: Event | None = None) -> str | None:
         """Format LLM metrics as a visually appealing subtitle string with icons,
@@ -418,6 +421,10 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
                 return str(n)
             return f"{val:.2f}".rstrip("0").rstrip(".") + suffix
 
+        # Cache hit rate is derived on Metrics; the visualizer just formats it.
+        def fmt_rate(rate: float | None) -> str:
+            return f"{rate * 100:.2f}%" if rate is not None else "N/A"
+
         request_usage = self._find_request_usage(event)
         if request_usage is not None:
             input_str = (
@@ -428,14 +435,27 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
                 f"↓ output {abbr(request_usage.completion_tokens or 0)} "
                 f"(total {abbr(usage.completion_tokens or 0)})"
             )
+            request_rate = MetricsSnapshot(
+                accumulated_token_usage=request_usage
+            ).cache_hit_rate
+            cache_rate = (
+                f"{fmt_rate(request_rate)} "
+                f"(total {fmt_rate(combined_metrics.cache_hit_rate)})"
+            )
+            request_reasoning_tokens = request_usage.reasoning_tokens or 0
+            total_reasoning_tokens = usage.reasoning_tokens or 0
+            show_reasoning = request_reasoning_tokens > 0 or total_reasoning_tokens > 0
+            reasoning_str = (
+                f"reasoning {abbr(request_reasoning_tokens)} "
+                f"(total {abbr(total_reasoning_tokens)})"
+            )
         else:
             input_str = f"↑ input {abbr(usage.prompt_tokens or 0)}"
             output_str = f"↓ output {abbr(usage.completion_tokens or 0)}"
-
-        # Cache hit rate is derived on Metrics; the visualizer just formats it.
-        rate = combined_metrics.cache_hit_rate
-        cache_rate = f"{rate * 100:.2f}%" if rate is not None else "N/A"
-        reasoning_tokens = usage.reasoning_tokens or 0
+            cache_rate = fmt_rate(combined_metrics.cache_hit_rate)
+            total_reasoning_tokens = usage.reasoning_tokens or 0
+            show_reasoning = total_reasoning_tokens > 0
+            reasoning_str = f"reasoning {abbr(total_reasoning_tokens)}"
 
         # Cost
         cost_str = f"{cost:.4f}" if cost > 0 else "0.00"
@@ -444,8 +464,8 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
         parts: list[str] = []
         parts.append(f"[cyan]{input_str}[/cyan]")
         parts.append(f"[magenta]cache hit {cache_rate}[/magenta]")
-        if reasoning_tokens > 0:
-            parts.append(f"[yellow] reasoning {abbr(reasoning_tokens)}[/yellow]")
+        if show_reasoning:
+            parts.append(f"[yellow] {reasoning_str}[/yellow]")
         parts.append(f"[blue]{output_str}[/blue]")
         parts.append(f"[green]$ {cost_str}[/green]")
 

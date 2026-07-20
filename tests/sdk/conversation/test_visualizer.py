@@ -651,13 +651,66 @@ def test_metrics_subtitle_shows_per_request_and_cumulative():
     )
 
     subtitle = visualizer._format_metrics_subtitle(event)
+    # Full-string assertion pins down which number is per-request vs.
+    # cumulative -- individual `in subtitle` checks can't tell "input 4.63K
+    # (total 9.02K)" apart from the numbers swapped.
+    assert subtitle == (
+        "Tokens: [cyan]↑ input 4.63K (total 9.02K)[/cyan] • "
+        "[magenta]cache hit 0.00% (total 0.00%)[/magenta] • "
+        "[blue]↓ output 114 (total 258)[/blue] • "
+        "[green]$ 0.00[/green]"
+    )
+
+
+def test_metrics_subtitle_reasoning_and_cache_hit_are_per_request():
+    """Regression: reasoning tokens and cache hit rate must get the same
+    per-request "X (total Y)" treatment as input/output tokens. Showing the
+    cumulative reasoning count unlabeled next to per-request input/output
+    numbers reads as per-request too, which is the exact confusion #4105 set
+    out to fix."""
+    stats = ConversationStats()
+    metrics = Metrics(model_name="test-model")
+    metrics.add_token_usage(
+        prompt_tokens=1000,
+        completion_tokens=100,
+        cache_read_tokens=100,
+        cache_write_tokens=0,
+        reasoning_tokens=200,
+        context_window=8000,
+        response_id="response_1",
+    )
+    metrics.add_token_usage(
+        prompt_tokens=2000,
+        completion_tokens=200,
+        cache_read_tokens=1000,
+        cache_write_tokens=0,
+        reasoning_tokens=50,
+        context_window=8000,
+        response_id="response_2",
+    )
+    stats.usage_to_metrics["agent"] = metrics
+
+    visualizer = DefaultConversationVisualizer()
+    mock_state = MagicMock()
+    mock_state.stats = stats
+    visualizer.initialize(mock_state)
+
+    tool_call = create_tool_call("call_1", "test", {})
+    event = ActionEvent(
+        thought=[TextContent(text="Testing")],
+        action=VisualizerMockAction(command="test"),
+        tool_name="test",
+        tool_call_id="call_1",
+        tool_call=tool_call,
+        llm_response_id="response_2",
+    )
+
+    subtitle = visualizer._format_metrics_subtitle(event)
     assert subtitle is not None
-    # Per-request usage (the second request only).
-    assert "4.63K" in subtitle
-    assert "114" in subtitle
-    # Cumulative usage (both requests combined).
-    assert "9.02K" in subtitle
-    assert "258" in subtitle
+    # Per-request reasoning (response_2 only: 50), not the cumulative 250.
+    assert "reasoning 50 (total 250)" in subtitle
+    # Per-request cache hit rate (1000 / 2000), not the cumulative rate.
+    assert "cache hit 50.00% (total 36.67%)" in subtitle
 
 
 def test_metrics_subtitle_matches_by_response_id_not_last_index():

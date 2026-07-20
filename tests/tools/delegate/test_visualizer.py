@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.event import ActionEvent, MessageEvent, ObservationEvent
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
+from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.tool import Action, Observation
 from openhands.tools.delegate import DelegationVisualizer
 
@@ -186,6 +187,60 @@ def test_delegation_visualizer_action_event():
     assert block is not None
     # The block contains the Rule as the first element with the title
     assert "Lodging Expert Agent Action" in str(block.renderables[0])
+
+
+def test_delegation_visualizer_action_event_shows_per_request_usage():
+    """Regression: DelegationVisualizer overrides _create_event_block and must
+    forward the event into _format_metrics_subtitle. Without it, ActionEvent
+    subtitles silently stay cumulative-only while Condensation/AgentErrorEvent
+    (handled by the parent class) show per-request numbers, mixing formats
+    within a single delegate transcript (#4105)."""
+    stats = ConversationStats()
+    metrics = Metrics(model_name="test-model")
+    metrics.add_token_usage(
+        prompt_tokens=1000,
+        completion_tokens=100,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        reasoning_tokens=0,
+        context_window=8000,
+        response_id="response_1",
+    )
+    metrics.add_token_usage(
+        prompt_tokens=2000,
+        completion_tokens=200,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        reasoning_tokens=0,
+        context_window=8000,
+        response_id="response_2",
+    )
+    stats.usage_to_metrics["agent"] = metrics
+
+    visualizer = DelegationVisualizer(name="lodging_expert")
+    mock_state = MagicMock()
+    mock_state.stats = stats
+    mock_state.events = []
+    visualizer.initialize(mock_state)
+
+    action = MockDelegateAction(command="search hotels")
+    tool_call = create_tool_call("call_123", "search", {"command": "search hotels"})
+    action_event = ActionEvent(
+        thought=[TextContent(text="Searching for hotels")],
+        action=action,
+        tool_name="search",
+        tool_call_id="call_123",
+        tool_call=tool_call,
+        llm_response_id="response_2",
+    )
+
+    block = visualizer._create_event_block(action_event)
+
+    assert block is not None
+    rendered = "".join(str(r) for r in block.renderables)
+    # Per-request usage for response_2, not just the running cumulative total.
+    assert "input 2K (total 3K)" in rendered
+    assert "output 200 (total 300)" in rendered
 
 
 def test_delegation_visualizer_observation_event():
