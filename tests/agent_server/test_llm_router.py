@@ -324,6 +324,229 @@ async def test_openai_subscription_device_poll_failure_keeps_pending_login(
     assert "opaque-token" not in llm_router._IN_FLIGHT_OPENAI_DEVICE_LOGINS
 
 
+OPENROUTER_KEY_PAYLOAD = {
+    "data": {
+        "label": "sk-or-v1-abc...def",
+        "limit": 25.0,
+        "limit_remaining": 18.5,
+        "limit_reset": None,
+        "usage": 6.5,
+        "usage_daily": 0.5,
+        "usage_weekly": 2.0,
+        "usage_monthly": 6.5,
+        "is_free_tier": False,
+    }
+}
+
+
+@pytest.fixture
+def openrouter_settings(monkeypatch):
+    """Point the router's settings store at an in-memory OpenRouter config."""
+    import httpx
+
+    from openhands.agent_server import llm_router
+    from openhands.agent_server.persistence import PersistedSettings
+    from openhands.sdk.llm import LLM
+
+    def set_llm(llm: LLM) -> None:
+        settings = PersistedSettings()
+        settings.agent_settings = settings.agent_settings.model_copy(
+            update={"llm": llm}
+        )
+
+        class FakeSettingsStore:
+            def load(self):
+                return settings
+
+        monkeypatch.setattr(
+            llm_router, "get_settings_store", lambda config: FakeSettingsStore()
+        )
+
+    def set_upstream(handler) -> None:
+        real_async_client = httpx.AsyncClient
+
+        def fake_async_client(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return real_async_client(*args, **kwargs)
+
+        monkeypatch.setattr(httpx, "AsyncClient", fake_async_client)
+
+    return set_llm, set_upstream
+
+
+def test_balance_endpoint_openrouter_success(client, openrouter_settings):
+    """Balance endpoint returns OpenRouter credit info without leaking the key."""
+    import httpx
+
+    from openhands.sdk.llm import LLM
+
+    set_llm, set_upstream = openrouter_settings
+    set_llm(LLM(model="openrouter/moonshotai/kimi-k3", api_key="sk-or-test-key"))
+
+    seen_requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_requests.append(request)
+        return httpx.Response(200, json=OPENROUTER_KEY_PAYLOAD)
+
+    set_upstream(handler)
+
+    response = client.get("/api/llm/balance")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "provider": "openrouter",
+        "limit": 25.0,
+        "limit_remaining": 18.5,
+        "usage": 6.5,
+        "usage_daily": 0.5,
+        "usage_weekly": 2.0,
+        "usage_monthly": 6.5,
+        "is_free_tier": False,
+    }
+    assert "sk-or-test-key" not in response.text
+    assert len(seen_requests) == 1
+    assert str(seen_requests[0].url) == "https://openrouter.ai/api/v1/key"
+    assert seen_requests[0].headers["Authorization"] == "Bearer sk-or-test-key"
+
+
+def test_balance_endpoint_detects_openrouter_by_base_url(client, openrouter_settings):
+    """OpenRouter is detected from base_url even without a model prefix."""
+    import httpx
+
+    from openhands.sdk.llm import LLM
+
+    set_llm, set_upstream = openrouter_settings
+    set_llm(
+        LLM(
+            model="moonshotai/kimi-k3",
+            base_url="https://openrouter.ai/api/v1",
+            api_key="sk-or-test-key",
+        )
+    )
+    set_upstream(lambda request: httpx.Response(200, json=OPENROUTER_KEY_PAYLOAD))
+
+    response = client.get("/api/llm/balance")
+
+    assert response.status_code == 200
+    assert response.json()["provider"] == "openrouter"
+
+
+def test_balance_endpoint_unsupported_provider(client, openrouter_settings):
+    """Non-OpenRouter providers return 404 with a clear message."""
+    from openhands.sdk.llm import LLM
+
+    set_llm, _ = openrouter_settings
+    set_llm(LLM(model="gpt-4o", api_key="sk-test"))
+
+    response = client.get("/api/llm/balance")
+
+    assert response.status_code == 404
+    assert "not supported" in response.json()["detail"]
+
+
+def test_balance_endpoint_missing_api_key(client, openrouter_settings):
+    """An OpenRouter config without an API key returns 404."""
+    from openhands.sdk.llm import LLM
+
+    set_llm, _ = openrouter_settings
+    set_llm(LLM(model="openrouter/moonshotai/kimi-k3"))
+
+    response = client.get("/api/llm/balance")
+
+    assert response.status_code == 404
+    assert "No API key" in response.json()["detail"]
+
+
+def test_balance_endpoint_upstream_error(client, openrouter_settings):
+    """Upstream OpenRouter failures surface as 502."""
+    import httpx
+
+    from openhands.sdk.llm import LLM
+
+    set_llm, set_upstream = openrouter_settings
+    set_llm(LLM(model="openrouter/moonshotai/kimi-k3", api_key="sk-or-test-key"))
+    set_upstream(lambda request: httpx.Response(401, json={"error": "bad key"}))
+
+    response = client.get("/api/llm/balance")
+
+    assert response.status_code == 502
+    # 5xx details are masked by the app-level handler; the raised exception
+    # string still carries the upstream status.
+    assert "401" in response.json()["exception"]
+
+
+def test_balance_endpoint_upstream_network_error(client, openrouter_settings):
+    """Network-level failures (e.g. timeouts) surface as 502."""
+    import httpx
+
+    from openhands.sdk.llm import LLM
+
+    set_llm, set_upstream = openrouter_settings
+    set_llm(LLM(model="openrouter/moonshotai/kimi-k3", api_key="sk-or-test-key"))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("connection timed out")
+
+    set_upstream(handler)
+
+    response = client.get("/api/llm/balance")
+
+    assert response.status_code == 502
+    assert "failed" in response.json()["exception"]
+
+
+def test_balance_endpoint_with_profile(client, monkeypatch, openrouter_settings):
+    """The profile query param loads the named profile's LLM."""
+    import tempfile
+    from pathlib import Path
+
+    import httpx
+
+    from openhands.agent_server import llm_router
+    from openhands.sdk.llm import LLM
+    from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+
+    _, set_upstream = openrouter_settings
+    set_upstream(lambda request: httpx.Response(200, json=OPENROUTER_KEY_PAYLOAD))
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = LLMProfileStore(base_dir=Path(tmpdir))
+        store.save(
+            "my-openrouter",
+            LLM(model="openrouter/moonshotai/kimi-k3", api_key="sk-or-test-key"),
+            include_secrets=True,
+        )
+        monkeypatch.setattr(llm_router, "get_llm_profile_store", lambda: store)
+
+        response = client.get("/api/llm/balance?profile=my-openrouter")
+
+    assert response.status_code == 200
+    assert response.json()["provider"] == "openrouter"
+    assert "sk-or-test-key" not in response.text
+
+
+def test_balance_endpoint_profile_not_found(client, monkeypatch):
+    """An unknown profile name returns 404."""
+    import tempfile
+    from pathlib import Path
+
+    from openhands.agent_server import llm_router
+    from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        monkeypatch.setattr(
+            llm_router,
+            "get_llm_profile_store",
+            lambda: LLMProfileStore(base_dir=Path(tmpdir)),
+        )
+
+        response = client.get("/api/llm/balance?profile=nope")
+
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"]
+
+
 def test_openai_subscription_logout_endpoint(client, monkeypatch):
     """Logout removes credentials and returns disconnected status."""
     from openhands.agent_server import llm_router
