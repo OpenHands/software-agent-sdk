@@ -157,6 +157,47 @@ def test_local_conversation_constructor_with_empty_secrets():
         assert env_vars == {}
 
 
+def test_update_secrets_persists_to_base_state():
+    """`update_secrets` must persist the registry immediately.
+
+    It mutated the registry in place, which does not touch any state *field* and
+    so never triggered autosave — the secret was only written if some later,
+    unrelated field change happened to save the state.
+    """
+    from openhands.sdk.conversation.persistence_const import BASE_STATE
+
+    agent = create_test_agent()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        conv = Conversation(agent=agent, workspace=tmpdir, persistence_dir=tmpdir)
+        assert isinstance(conv, LocalConversation)
+
+        conv.update_secrets({"MY_TOKEN": "tok"})
+
+        # Persisted immediately, with no intervening unrelated state mutation.
+        persisted = conv.state._fs.read(BASE_STATE)
+        assert "MY_TOKEN" in persisted
+        assert "MY_TOKEN" in conv.state.secret_registry.secret_sources
+
+
+def test_constructor_secrets_persist_to_base_state():
+    """Secrets seeded via the constructor route through `update_secrets`, so they
+    must be persisted too (not just held in memory)."""
+    from openhands.sdk.conversation.persistence_const import BASE_STATE
+
+    agent = create_test_agent()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        conv = Conversation(
+            agent=agent,
+            workspace=tmpdir,
+            persistence_dir=tmpdir,
+            secrets={"SEED_TOKEN": "seed"},
+        )
+        assert isinstance(conv, LocalConversation)
+
+        persisted = conv.state._fs.read(BASE_STATE)
+        assert "SEED_TOKEN" in persisted
+
+
 @pytest.mark.parametrize("api_key", [None, "test-api-key"])
 def test_remote_conversation_constructor_with_secrets(api_key):
     """Test RemoteConversation constructor accepts and initializes secrets."""
