@@ -5,14 +5,20 @@ should not inherit stale per-conversation state (prompt_cache_key,
 x-litellm-session-id).
 """
 
+import asyncio
 import tempfile
 
+import pytest
 from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.llm import LLM
-from openhands.sdk.llm.llm import LLMCallContext
+from openhands.sdk.llm.call_context import (
+    LLMCallContext,
+    llm_call_context_scope,
+)
 from openhands.sdk.llm.options.chat_options import select_chat_options
 from openhands.sdk.llm.options.responses_options import select_responses_options
 
@@ -65,6 +71,49 @@ def test_call_context_shallow_copied_by_model_copy():
     child = llm.model_copy(update={"usage_id": "child"})
     assert child._call_context.prompt_cache_key == "parent"
     assert child._call_context.session_id == "parent-sess"
+
+
+def test_scoped_context_precedes_private_fallback():
+    llm = _llm()
+    llm._call_context = LLMCallContext(session_id="fallback")
+
+    with llm_call_context_scope(LLMCallContext(session_id="scoped")):
+        scoped = select_chat_options(llm, user_kwargs={}, has_tools=False)
+
+    fallback = select_chat_options(llm, user_kwargs={}, has_tools=False)
+
+    assert scoped["extra_headers"]["x-litellm-session-id"] == "scoped"
+    assert fallback["extra_headers"]["x-litellm-session-id"] == "fallback"
+
+
+def test_explicit_context_precedes_scoped_context():
+    llm = _llm()
+
+    with llm_call_context_scope(LLMCallContext(session_id="scoped")):
+        out = select_chat_options(
+            llm,
+            user_kwargs={},
+            has_tools=False,
+            call_context=LLMCallContext(session_id="explicit"),
+        )
+
+    assert out["extra_headers"]["x-litellm-session-id"] == "explicit"
+
+
+@pytest.mark.asyncio
+async def test_scoped_context_is_isolated_between_async_tasks():
+    llm = _llm()
+
+    async def select_in_scope(session_id: str) -> str:
+        with llm_call_context_scope(LLMCallContext(session_id=session_id)):
+            await asyncio.sleep(0)
+            out = select_chat_options(llm, user_kwargs={}, has_tools=False)
+            return out["extra_headers"]["x-litellm-session-id"]
+
+    assert await asyncio.gather(
+        select_in_scope("first"),
+        select_in_scope("second"),
+    ) == ["first", "second"]
 
 
 # ── select_chat_options injection tests ────────────────────────────────
@@ -163,6 +212,16 @@ def test_conversation_binds_context_to_shared_agent():
     assert ctx.session_id == str(conv.id)
 
 
+def test_conversation_owns_one_immutable_context():
+    conv = Conversation(agent=_agent())
+
+    first = conv.get_llm_call_context()
+    second = conv.get_llm_call_context()
+
+    assert first is second
+    assert first.session_id == str(conv.id)
+
+
 def test_sequential_conversations_rebind_both_fields():
     """Sequential conversations from the same agent rebind both fields.
 
@@ -179,13 +238,33 @@ def test_sequential_conversations_rebind_both_fields():
 
     conv2 = Conversation(agent=agent)
     conv2_id = str(conv2.id)
-    # PrivateAttr reflects the latest conversation — this is expected.
-    # Agent.step() builds a fresh LLMCallContext from the calling
-    # conversation and threads it explicitly, so the step path never
-    # reads llm._call_context; it exists only as a fallback for callers
-    # that don't thread context (e.g. condenser).
+    # PrivateAttr reflects the latest conversation — this is expected. Internal
+    # execution uses the calling conversation's explicit or scoped context, so
+    # this binding is only a compatibility fallback for direct LLM calls.
     assert agent.llm._call_context.prompt_cache_key == conv2_id
     assert agent.llm._call_context.session_id == conv2_id
+
+
+def test_run_scopes_unthreaded_llm_calls_on_shared_agent(monkeypatch):
+    seen_session_ids: list[str] = []
+
+    def step(self, conversation, on_event, on_token=None):
+        options = select_chat_options(self.llm, user_kwargs={}, has_tools=False)
+        seen_session_ids.append(options["extra_headers"]["x-litellm-session-id"])
+        conversation.state.execution_status = ConversationExecutionStatus.FINISHED
+
+    agent = _agent()
+    conv1 = Conversation(agent=agent)
+    conv1.send_message("first")
+    conv2 = Conversation(agent=agent)
+    conv2.send_message("second")
+    assert agent.llm._call_context.session_id == str(conv2.id)
+
+    monkeypatch.setattr(Agent, "step", step)
+    conv1.run()
+    conv2.run()
+
+    assert seen_session_ids == [str(conv1.id), str(conv2.id)]
 
 
 def test_extra_headers_not_polluted_by_session_id():

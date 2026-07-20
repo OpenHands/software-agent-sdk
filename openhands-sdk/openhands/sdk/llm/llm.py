@@ -10,7 +10,6 @@ import warnings
 from collections.abc import AsyncIterable, Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
 
 from pydantic import (
@@ -26,6 +25,7 @@ from pydantic import (
 )
 from pydantic.json_schema import SkipJsonSchema
 
+from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.utils.model_info import get_litellm_model_info
 from openhands.sdk.settings.metadata import SettingProminence, field_meta
@@ -179,27 +179,6 @@ LLM_SECRET_FIELDS: Final[tuple[str, ...]] = (
 )
 
 LLM_PROFILE_SCHEMA_VERSION: Final[int] = 1
-
-
-@dataclass(frozen=True)
-class LLMCallContext:
-    """Per-conversation state threaded through the completion call chain.
-
-    The primary path threads this explicitly:
-    ``Agent.step()`` → ``make_llm_completion()`` → ``llm.completion(call_context=...)``
-    → ``select_chat_options(call_context=...)``.
-
-    A fallback copy is also stored as a ``PrivateAttr`` on :class:`LLM`
-    (via ``_bind_conversation_context``) for callers that don't thread
-    context explicitly (e.g. the condenser's dedicated LLM).  The
-    PrivateAttr is:
-    * dropped on ``model_dump()`` / ``model_validate()`` round-trips,
-    * shallow-copied by ``model_copy()`` (sub-agent),
-    * never serialised into user-visible config.
-    """
-
-    prompt_cache_key: str | None = None
-    session_id: str | None = None
 
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):

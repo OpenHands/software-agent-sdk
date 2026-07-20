@@ -13,6 +13,7 @@ from openhands.sdk.hooks.config import HookDefinition, HookType
 from openhands.sdk.hooks.executor import HookExecutor
 from openhands.sdk.hooks.types import HookDecision, HookEvent, HookEventType
 from openhands.sdk.llm import LLM
+from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.llm.utils.metrics import Metrics
 from tests.command_utils import python_command
 
@@ -693,6 +694,29 @@ class TestAgentHookExecution:
         assert hook_llm is not None
         assert hook_llm.timeout == 7
         assert executor.llm.timeout == parent_timeout
+
+    def test_agent_hook_inherits_llm_call_context(
+        self, tmp_path, mock_llm, sample_event
+    ):
+        context = LLMCallContext(
+            prompt_cache_key="parent-cache",
+            session_id="parent-session",
+        )
+        executor = HookExecutor(
+            working_dir=str(tmp_path),
+            llm=mock_llm,
+            llm_call_context=context,
+        )
+
+        with (
+            patch(self._AGENT_PATH),
+            patch(self._CONV_PATH, side_effect=RuntimeError("stop early")) as mock_conv,
+        ):
+            executor._execute_agent_hook(
+                HookDefinition(type=HookType.AGENT), sample_event
+            )
+
+        assert mock_conv.call_args.kwargs["parent_llm_call_context"] is context
 
     def test_hook_metrics_under_usage_id(self, executor, sample_event):
         """Hook LLM uses per-hook usage_id and an isolated Metrics object."""
