@@ -144,6 +144,35 @@ def test_end_to_end_caching_flow(tmp_path, dynamic_context, expect_dynamic):
     assert messages[1].content[-1].cache_prompt is True
 
 
+def test_apply_prompt_caching_skips_empty_content_trailing_message():
+    """REGRESSION: an empty-content trailing user/tool message (e.g. a tool
+    observation that produced no text/image) must not crash prompt caching.
+
+    Marking ``content[-1]`` on an empty content list raised IndexError and
+    aborted the whole completion. The breakpoint should instead fall through to
+    the previous non-empty user/tool message.
+    """
+    llm = LLM(
+        model="claude-sonnet-4-20250514",
+        api_key=SecretStr("fake-key"),
+        usage_id="test",
+    )
+
+    messages = [
+        Message(role="system", content=[TextContent(text="System prompt")]),
+        Message(role="user", content=[TextContent(text="Hello")]),
+        Message(role="tool", content=[]),  # empty tool observation
+    ]
+
+    # Must not raise IndexError.
+    llm._apply_prompt_caching(messages)
+
+    # The empty trailing message has no block to mark; the breakpoint falls back
+    # to the last non-empty user/tool message.
+    assert messages[1].content[-1].cache_prompt is True
+    assert messages[2].content == []
+
+
 def test_gemini_prompt_caching_emits_no_markers():
     """REGRESSION: Gemini must not emit explicit cache_control markers.
 
