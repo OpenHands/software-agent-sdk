@@ -8703,7 +8703,7 @@ class TestACPFileSecretMaterialisation:
             auth_path.write_text("truncated")
 
             with pytest.raises(
-                ACPFileCredentialSyncError, match="Cloud copy was preserved"
+                ACPFileCredentialSyncError, match="brokered copy was preserved"
             ):
                 agent._sync_file_credentials()
 

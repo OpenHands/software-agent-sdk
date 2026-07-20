@@ -232,17 +232,17 @@ class _CodexAuthLifecycle:
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code in (404, 422):
                 detail = (
-                    "ChatGPT authentication was not found in Cloud."
+                    "ChatGPT authentication was not found in the credential broker."
                     if exc.response.status_code == 404
                     else "ChatGPT authentication needs to be refreshed."
                 )
                 raise ACPFileCredentialNeedsReauthError(detail) from exc
             raise ACPFileCredentialSyncError(
-                "Codex credentials could not be loaded from Cloud."
+                "Codex credentials could not be loaded from the credential broker."
             ) from exc
         except httpx.RequestError as exc:
             raise ACPFileCredentialSyncError(
-                "Codex credentials could not be loaded from Cloud."
+                "Codex credentials could not be loaded from the credential broker."
             ) from exc
 
     def bind(
@@ -254,7 +254,7 @@ class _CodexAuthLifecycle:
     ) -> None:
         if not _is_valid_codex_auth_value(remote_value):
             raise ACPFileCredentialSyncError(
-                "Cloud returned invalid Codex credentials."
+                "The credential broker returned invalid Codex credentials."
             )
         self.path = path
         self.registry = registry
@@ -324,11 +324,11 @@ class _CodexAuthLifecycle:
             text_value = value.decode()
         except (OSError, UnicodeError) as exc:
             raise ACPFileCredentialSyncError(
-                "Codex credentials could not be saved to Cloud."
+                "Codex credentials could not be saved to the credential broker."
             ) from exc
         if not _is_valid_codex_auth_value(text_value):
             raise ACPFileCredentialSyncError(
-                "Local Codex credentials are invalid; the Cloud copy was preserved."
+                "Local Codex credentials are invalid; the brokered copy was preserved."
             )
         digest = hashlib.sha256(value).hexdigest()
         changed = digest != expected_digest
@@ -359,18 +359,19 @@ class _CodexAuthLifecycle:
                     except (httpx.HTTPError, ACPFileCredentialSyncError) as remote_exc:
                         if attempt == attempts - 1:
                             raise ACPFileCredentialSyncError(
-                                "Codex credentials could not be reconciled with Cloud."
+                                "Codex credentials could not be reconciled with "
+                                "the credential broker."
                             ) from remote_exc
                     else:
                         return
                 if attempt == attempts - 1:
                     raise ACPFileCredentialSyncError(
-                        "Codex credentials could not be saved to Cloud."
+                        "Codex credentials could not be saved to the credential broker."
                     ) from exc
             except httpx.RequestError as exc:
                 if attempt == attempts - 1:
                     raise ACPFileCredentialSyncError(
-                        "Codex credentials could not be saved to Cloud."
+                        "Codex credentials could not be saved to the credential broker."
                     ) from exc
             else:
                 break
@@ -381,7 +382,7 @@ class _CodexAuthLifecycle:
                 _write_codex_auth_ancestor(path, digest)
             except OSError as exc:
                 raise ACPFileCredentialSyncError(
-                    "Codex credentials could not be saved to Cloud."
+                    "Codex credentials could not be saved to the credential broker."
                 ) from exc
             self._track_values(text_value)
             self.expected_digest = digest
@@ -392,7 +393,7 @@ class _CodexAuthLifecycle:
         assert path is not None
         if not _is_valid_codex_auth_value(value):
             raise ACPFileCredentialSyncError(
-                "Cloud returned invalid Codex credentials; "
+                "The credential broker returned invalid Codex credentials; "
                 "the local copy was preserved."
             )
         digest = hashlib.sha256(value.encode()).hexdigest()
@@ -401,7 +402,7 @@ class _CodexAuthLifecycle:
             _write_codex_auth_ancestor(path, digest)
         except OSError as exc:
             raise ACPFileCredentialSyncError(
-                "Codex credentials could not be reconciled with Cloud."
+                "Codex credentials could not be reconciled with the credential broker."
             ) from exc
         self._track_values(value)
         self.expected_digest = digest
