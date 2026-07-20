@@ -15,12 +15,17 @@ from litellm.types.utils import (
 )
 from pydantic import SecretStr
 
-from openhands.sdk.llm import LLM, FallbackStrategy, Message, TextContent
+from openhands.sdk.llm import (
+    LLM,
+    FallbackStrategy,
+    LLMCallContext,
+    Message,
+    TextContent,
+)
 from openhands.sdk.llm.exceptions import (
     LLMContextWindowExceedError,
     LLMServiceUnavailableError,
 )
-from openhands.sdk.llm.llm import LLMCallContext
 
 
 def _get_mock_response(content: str = "ok", model: str = "gpt-4o") -> ModelResponse:

@@ -716,7 +716,7 @@ class TestAgentHookExecution:
                 HookDefinition(type=HookType.AGENT), sample_event
             )
 
-        assert mock_conv.call_args.kwargs["parent_llm_call_context"] is context
+        assert mock_conv.call_args.kwargs["_parent_llm_call_context"] is context
 
     def test_hook_metrics_under_usage_id(self, executor, sample_event):
         """Hook LLM uses per-hook usage_id and an isolated Metrics object."""

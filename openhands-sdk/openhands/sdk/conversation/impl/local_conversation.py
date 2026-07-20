@@ -204,7 +204,7 @@ class LocalConversation(BaseConversation):
         prompt_cache_key: str | None = None,
         file_store: FileStore | None = None,
         mcp_tool_provider: MCPToolProvider | None = None,
-        parent_llm_call_context: LLMCallContext | None = None,
+        _parent_llm_call_context: LLMCallContext | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -263,7 +263,7 @@ class LocalConversation(BaseConversation):
             file_store: Optional FileStore to use for conversation state and EventLog
                 persistence. If provided, this takes precedence over persistence_dir
                 for state and EventLog storage.
-            parent_llm_call_context: Runtime LLM context inherited by an internal
+            _parent_llm_call_context: Runtime LLM context inherited by an internal
                 child conversation. Conversation-local identity is always replaced.
         """
         super().__init__()  # Initialize with span tracking
@@ -287,7 +287,7 @@ class LocalConversation(BaseConversation):
         # Create-or-resume: factory inspects BASE_STATE to decide
         desired_id = conversation_id or uuid.uuid4()
         self._llm_call_context = (
-            parent_llm_call_context or LLMCallContext()
+            _parent_llm_call_context or LLMCallContext()
         ).for_conversation(
             str(desired_id),
             prompt_cache_key=prompt_cache_key,
@@ -340,8 +340,6 @@ class LocalConversation(BaseConversation):
             cipher=cipher,
             tags=tags,
         )
-
-        self._bind_conversation_context(self.agent.llm)
 
         # Default callback: persist every event to state
         def _default_callback(e):
@@ -745,7 +743,7 @@ class LocalConversation(BaseConversation):
                 visualizer=type(self._visualizer) if self._visualizer else None,
                 delete_on_close=self.delete_on_close,
                 tags=tags,
-                parent_llm_call_context=self._llm_call_context,
+                _parent_llm_call_context=self._llm_call_context,
             )
 
             # Branch slice copies path_to_root(event) (root-first, re-rootable);
@@ -1396,9 +1394,6 @@ class LocalConversation(BaseConversation):
                 if llm.usage_id not in registered:
                     self.llm_registry.add(llm)
                     registered.add(llm.usage_id)
-                # Rebinds the primary LLM (harmless, same values) and
-                # binds any additional LLMs (e.g. condenser).
-                self._bind_conversation_context(llm)
 
             self._agent_ready = True
 
@@ -1420,17 +1415,6 @@ class LocalConversation(BaseConversation):
         own ID.  ``session_id`` is always the conversation's ID.
         """
         return self._llm_call_context
-
-    def _bind_conversation_context(self, llm: LLM) -> None:
-        """Bind per-conversation call context to *llm* as a PrivateAttr fallback.
-
-        Internal execution uses :func:`llm_call_context_scope` or passes the
-        context explicitly. This private binding remains as a compatibility
-        fallback for direct calls on an LLM obtained from a conversation.
-
-        See #3443 for background.
-        """
-        llm._call_context = self._llm_call_context
 
     def _condenser_for_switched_llm(
         self,
@@ -1505,7 +1489,6 @@ class LocalConversation(BaseConversation):
                 )
             self.agent = self.agent.model_copy(update=update)
             self._state.agent = self.agent
-            self._bind_conversation_context(new_llm)
             # Invalidate the cached ask-agent LLM so it re-clones.
             self.llm_registry.remove(ASK_AGENT_LLM_USAGE_ID)
 
@@ -1546,7 +1529,6 @@ class LocalConversation(BaseConversation):
             llm = loaded.model_copy(update={"usage_id": usage_id})
             llm = create_subscription_llm_from_config(llm)
             self.llm_registry.add(llm)
-            self._bind_conversation_context(llm)
             return llm
 
     def switch_acp_model(self, model: str) -> None:

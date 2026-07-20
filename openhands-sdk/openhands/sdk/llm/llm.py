@@ -25,16 +25,17 @@ from pydantic import (
 )
 from pydantic.json_schema import SkipJsonSchema
 
-from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.utils.model_info import get_litellm_model_info
 from openhands.sdk.settings.metadata import SettingProminence, field_meta
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
 
 if TYPE_CHECKING:  # type hints only, avoid runtime import cycle
     from openhands.sdk.llm.auth import SupportedVendor
     from openhands.sdk.llm.auth.openai import OpenAIAuthMethod
+    from openhands.sdk.llm.call_context import LLMCallContext
     from openhands.sdk.tool.tool import ToolDefinition
 
 from openhands.sdk.llm.auth.openai import transform_for_subscription
@@ -179,6 +180,22 @@ LLM_SECRET_FIELDS: Final[tuple[str, ...]] = (
 )
 
 LLM_PROFILE_SCHEMA_VERSION: Final[int] = 1
+
+
+def __getattr__(name: str) -> Any:
+    """Provide the deprecated pre-refactor import path for call context."""
+    if name == "LLMCallContext":
+        warn_deprecated(
+            "openhands.sdk.llm.llm.LLMCallContext",
+            deprecated_in="1.36.0",
+            removed_in="2.0.0",
+            details="Import LLMCallContext from openhands.sdk.llm instead.",
+            stacklevel=2,
+        )
+        from openhands.sdk.llm.call_context import LLMCallContext
+
+        return LLMCallContext
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
@@ -530,7 +547,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _subscription_credential_store: Any = PrivateAttr(default=None)
     _subscription_credentials: Any = PrivateAttr(default=None)
     _litellm_provider: str | None = PrivateAttr(default=None)
-    _call_context: LLMCallContext = PrivateAttr(default_factory=LLMCallContext)
     _effective_max_input_tokens: int | None = PrivateAttr(default=None)
     _effective_max_output_tokens: int | None = PrivateAttr(default=None)
     # Plain (non-reentrant) Lock: the async transport path acquires this off

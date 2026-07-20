@@ -59,11 +59,9 @@ def llm_call_context_scope(context: LLMCallContext) -> Iterator[None]:
 
 def resolve_llm_call_context(
     explicit: LLMCallContext | None,
-    *,
-    fallback: LLMCallContext | None = None,
 ) -> LLMCallContext:
-    """Resolve context using explicit, scoped, then compatibility precedence."""
-    return explicit or _CURRENT_LLM_CALL_CONTEXT.get() or fallback or LLMCallContext()
+    """Resolve context using explicit, scoped, then empty precedence."""
+    return explicit or _CURRENT_LLM_CALL_CONTEXT.get() or LLMCallContext()
 
 
 def apply_llm_call_context(

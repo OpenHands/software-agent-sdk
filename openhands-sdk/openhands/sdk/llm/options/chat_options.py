@@ -11,7 +11,7 @@ from openhands.sdk.llm.utils.model_features import get_features
 
 
 if TYPE_CHECKING:
-    from openhands.sdk.llm.llm import LLMCallContext
+    from openhands.sdk.llm.call_context import LLMCallContext
 
 
 def select_chat_options(
@@ -107,7 +107,7 @@ def select_chat_options(
     if llm.litellm_extra_body:
         out["extra_body"] = llm.litellm_extra_body
 
-    context = resolve_llm_call_context(call_context, fallback=llm._call_context)
+    context = resolve_llm_call_context(call_context)
     apply_llm_call_context(out, context)
 
     return out

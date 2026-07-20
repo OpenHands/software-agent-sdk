@@ -273,7 +273,7 @@ class HookExecutor:
                 persistence_dir=self.persistence_dir,
                 visualizer=hook_visualizer,
                 max_iteration_per_run=hook.max_iterations,
-                parent_llm_call_context=self.llm_call_context,
+                _parent_llm_call_context=self.llm_call_context,
             )
             conversation.send_message(
                 f"Evaluate this {event_type} hook event and make your decision.\n\n"
