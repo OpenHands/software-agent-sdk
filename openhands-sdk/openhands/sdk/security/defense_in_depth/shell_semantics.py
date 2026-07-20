@@ -27,6 +27,7 @@ would flood the ensemble with UNKNOWNs. Detector IDs are owned by
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 from typing import Final
 
@@ -168,10 +169,9 @@ def scan_shell_command(command: str, rm_detector_id: str) -> ShellScanResult:
 
 
 def _safe_parse(command: str) -> ShellProgram | None:
-    try:
+    with contextlib.suppress(UnicodeEncodeError, ValueError):
         return ast_view.parse_shell_program(command)
-    except (UnicodeEncodeError, ValueError):
-        return None
+    return None
 
 
 def _program_signal(program: ShellProgram, depth: int) -> SignalOutput:
