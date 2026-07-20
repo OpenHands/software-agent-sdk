@@ -1480,7 +1480,6 @@ class ConversationService:
 
         try:
             await event_service.start()
-            event_service.stored = stored
             # Register subscribers after start() so subscribe_to_events runs
             # its initial-state push synchronously and any failure surfaces to
             # the caller instead of being silently logged on a later publish.

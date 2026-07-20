@@ -23,6 +23,7 @@ from pydantic import SecretStr
 
 import openhands.sdk.agent.acp_agent as acp_agent_module
 import openhands.sdk.agent.acp_file_credentials as acp_file_credentials_module
+import openhands.sdk.utils.files as files_module
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
     _acp_error_detail,
@@ -811,6 +812,13 @@ class TestClassifyACPInitError:
         assert _classify_acp_init_error(exc) == "ACPInitError"
 
 
+def test_file_credential_sync_failure_is_init_error():
+    assert (
+        _classify_acp_init_error(ACPFileCredentialSyncError("unavailable"))
+        == "ACPInitError"
+    )
+
+
 # ---------------------------------------------------------------------------
 # _stringify_acp_error_data
 # ---------------------------------------------------------------------------
@@ -905,6 +913,13 @@ class TestClassifyACPTurnError:
         # A bad credential surfaced mid-turn as -32603 must still route to re-auth.
         exc = ACPRequestError(-32603, "Internal error", {"message": "401 unauthorized"})
         assert _classify_acp_turn_error(exc) == "ACPAuthRequired"
+
+
+def test_file_credential_sync_failure_is_prompt_error():
+    assert (
+        _classify_acp_turn_error(ACPFileCredentialSyncError("unavailable"))
+        == "ACPPromptError"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -8143,7 +8158,7 @@ class TestACPFileSecretMaterialisation:
 
         with (
             patch.object(
-                acp_file_credentials_module.os,
+                files_module.os,
                 "replace",
                 side_effect=OSError("disk full"),
             ),
@@ -8757,6 +8772,32 @@ class TestACPFileSecretMaterialisation:
         update.assert_called_once()
         assert update.call_args.args[1] == rotated
 
+    def test_apikey_local_value_never_overwrites_cloud(self, tmp_path):
+        original = '{"tokens":{"refresh_token":"r0"}}'
+        apikey = '{"auth_mode":"apikey","OPENAI_API_KEY":"secret"}'
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": _brokered_codex_source()}
+        )
+
+        with (
+            patch.object(LookupSecret, "get_value", return_value=original),
+            patch.object(
+                acp_file_credentials_module, "_update_codex_auth_source"
+            ) as update,
+            patch.object(acp_file_credentials_module, "_release_codex_auth_source"),
+        ):
+            env: dict[str, str] = {}
+            agent._materialise_file_secrets(state, env)
+            Path(env["CODEX_HOME"], "auth.json").write_text(apikey)
+
+            with pytest.raises(ACPFileCredentialSyncError, match="invalid"):
+                agent._sync_file_credentials()
+
+            update.assert_not_called()
+            agent._release_file_credentials()
+
     def test_remote_digest_change_updates_unchanged_working_copy(self, tmp_path):
         original = '{"tokens":{"refresh_token":"r0"}}'
         authoritative = '{"tokens":{"refresh_token":"r1"}}'
@@ -8973,7 +9014,7 @@ class TestACPFileSecretMaterialisation:
             (Path(env["CODEX_HOME"]) / "auth.json").write_text(rotated)
             with pytest.raises(ACPFileCredentialSyncError) as exc_info:
                 agent._sync_file_credentials()
-            assert _classify_acp_turn_error(exc_info.value) == "ACPAuthRequired"
+            assert _classify_acp_turn_error(exc_info.value) == "ACPPromptError"
             assert rotated not in str(exc_info.value)
             agent._release_file_credentials()
 
@@ -9058,23 +9099,66 @@ class TestACPFileSecretMaterialisation:
         assert update_value.call_count == 2
         release.assert_called_once()
 
-    def test_finalizer_skips_network_sync(self, tmp_path):
+    def test_finalizer_syncs_and_releases_credentials(self, tmp_path):
         agent = _make_agent()
-        _attach_file_credential_lifecycle(agent, tmp_path / "auth.json")
+        lifecycle = _attach_file_credential_lifecycle(agent, tmp_path / "auth.json")
 
-        with (
-            patch.object(ACPAgent, "_sync_file_credentials", autospec=True) as sync,
-            patch.object(
-                ACPAgent, "_release_file_credentials", autospec=True
-            ) as release,
-            patch.object(ACPAgent, "_cleanup", autospec=True) as cleanup,
-        ):
+        with patch.object(ACPAgent, "_cleanup", autospec=True) as cleanup:
             agent.__del__()
 
-        sync.assert_not_called()
-        release.assert_not_called()
+        lifecycle.sync.assert_called_once_with()
+        lifecycle.release.assert_called_once_with()
         cleanup.assert_called_once_with(agent)
         assert agent._closed is True
+
+    def test_broker_load_does_not_block_close(self, tmp_path):
+        credential = '{"tokens":{"refresh_token":"r0"}}'
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": _brokered_codex_source()}
+        )
+        load_started = threading.Event()
+        finish_load = threading.Event()
+        close_finished = threading.Event()
+        errors: list[BaseException] = []
+
+        def load(_source):
+            load_started.set()
+            finish_load.wait(2)
+            return credential
+
+        def materialise():
+            try:
+                agent._materialise_file_secrets(state, {})
+            except BaseException as error:
+                errors.append(error)
+
+        def close():
+            agent.close()
+            close_finished.set()
+
+        with (
+            patch.object(LookupSecret, "get_value", autospec=True, side_effect=load),
+            patch.object(
+                acp_file_credentials_module, "_release_codex_auth_source"
+            ) as release,
+        ):
+            materialise_thread = threading.Thread(target=materialise)
+            materialise_thread.start()
+            assert load_started.wait(1)
+            close_thread = threading.Thread(target=close)
+            close_thread.start()
+            assert close_finished.wait(1)
+            finish_load.set()
+            materialise_thread.join(2)
+            close_thread.join(2)
+
+        assert errors == []
+        assert not materialise_thread.is_alive()
+        assert not close_thread.is_alive()
+        release.assert_called_once()
+        assert agent._file_credential_lifecycles == {}
 
     def test_best_effort_sync_survives_failure(self, tmp_path):
         agent = _make_agent()
@@ -9256,7 +9340,11 @@ class TestACPFileSecretMaterialisation:
             current_agent._materialise_file_secrets(current_state, {})
 
         with (
-            patch.object(LookupSecret, "get_value", return_value='{"tokens": {}}'),
+            patch.object(
+                LookupSecret,
+                "get_value",
+                return_value='{"tokens":{"refresh_token":"r0"}}',
+            ),
             patch.object(
                 ACPAgent,
                 "_start_acp_server",

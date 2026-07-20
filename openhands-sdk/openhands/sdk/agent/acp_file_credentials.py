@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
-import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -15,6 +13,7 @@ from typing import TYPE_CHECKING, Protocol
 import httpx
 
 from openhands.sdk.secret import LookupSecret
+from openhands.sdk.utils.files import atomic_write_text
 
 
 if TYPE_CHECKING:
@@ -94,28 +93,7 @@ def codex_auth_file_is_chatgpt(env: dict[str, str]) -> bool:
 
 
 def write_secret_file(path: Path, value: str) -> None:
-    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary_path = Path(temporary_name)
-    try:
-        os.fchmod(fd, 0o600)
-        file = os.fdopen(fd, "w", encoding="utf-8")
-        fd = -1
-        with file:
-            file.write(value)
-            file.flush()
-            os.fsync(file.fileno())
-        os.replace(temporary_path, path)
-    except BaseException:
-        if fd >= 0:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-        try:
-            temporary_path.unlink()
-        except OSError:
-            pass
-        raise
+    atomic_write_text(path, value)
 
 
 def _codex_auth_ancestor_file(path: Path) -> Path:
@@ -205,7 +183,16 @@ def _is_valid_codex_auth_value(value: object) -> bool:
         payload = json.loads(value)
     except (TypeError, ValueError):
         return False
-    return isinstance(payload, dict) and bool(payload)
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("auth_mode") not in (None, "chatgpt"):
+        return False
+    tokens = payload.get("tokens")
+    return (
+        isinstance(tokens, dict)
+        and isinstance(tokens.get("refresh_token"), str)
+        and bool(tokens["refresh_token"])
+    )
 
 
 class _CodexAuthLifecycle:
@@ -277,9 +264,9 @@ class _CodexAuthLifecycle:
         )
         if local_digest != expected_digest:
             self._may_have_changed = True
-        self._track_values(remote_value)
+        self._track_values(remote_value, expected_digest)
         if local_digest != expected_digest:
-            self._track_values(local_value)
+            self._track_values(local_value, local_digest)
 
     def on_auth_succeeded(self, method_id: str) -> None:
         if method_id == "chat-gpt":
@@ -288,11 +275,11 @@ class _CodexAuthLifecycle:
     def on_session_started(self) -> None:
         self._may_have_changed = True
 
-    def _track_values(self, value: str) -> None:
+    def _track_values(self, value: str, value_digest: str | None = None) -> None:
         registry = self.registry
         if registry is None:
             return
-        value_digest = hashlib.sha256(value.encode()).hexdigest()
+        value_digest = value_digest or hashlib.sha256(value.encode()).hexdigest()
         mask_name = f"{self.secret_name}.{value_digest}"
         exported_values = {mask_name: value}
         try:

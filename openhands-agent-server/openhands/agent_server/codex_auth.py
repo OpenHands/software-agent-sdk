@@ -63,7 +63,7 @@ def is_chatgpt_codex_auth(value: str) -> bool:
 @dataclass
 class CodexAuthBroker:
     store: FileSecretsStore
-    _capability_digests: dict[UUID, bytes] = field(default_factory=dict, init=False)
+    _capability_tokens: dict[UUID, str] = field(default_factory=dict, init=False)
     _capability_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _refresh_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
 
@@ -76,17 +76,15 @@ class CodexAuthBroker:
         if path not in {_LOCAL_SECRET_PATH, broker_path}:
             return source
 
-        if (
-            path == broker_path
-            and (token := source.headers.get(_CODEX_AUTH_HEADER))
-            and self.is_authorized(conversation_id, token)
-        ):
+        token = source.headers.get(_CODEX_AUTH_HEADER)
+        if path == broker_path and token and self.is_authorized(conversation_id, token):
             return source
 
-        token = secrets.token_urlsafe(32)
-        token_digest = hashlib.sha256(token.encode()).digest()
         with self._capability_lock:
-            self._capability_digests[conversation_id] = token_digest
+            token = self._capability_tokens.get(conversation_id)
+            if token is None:
+                token = secrets.token_urlsafe(32)
+                self._capability_tokens[conversation_id] = token
         return LookupSecret(
             url=parsed_url._replace(path=broker_path, query="", fragment="").geturl(),
             headers={_CODEX_AUTH_HEADER: token},
@@ -94,26 +92,23 @@ class CodexAuthBroker:
         )
 
     def is_authorized(self, conversation_id: UUID, token: str) -> bool:
-        candidate = hashlib.sha256(token.encode()).digest()
         with self._capability_lock:
-            expected = self._capability_digests.get(conversation_id)
-        return expected is not None and hmac.compare_digest(expected, candidate)
+            expected = self._capability_tokens.get(conversation_id)
+        return expected is not None and hmac.compare_digest(expected, token)
 
     def revoke(self, conversation_id: UUID, token: str | None = None) -> bool:
         with self._capability_lock:
-            expected = self._capability_digests.get(conversation_id)
+            expected = self._capability_tokens.get(conversation_id)
             if expected is None:
                 return False
-            if token is not None:
-                candidate = hashlib.sha256(token.encode()).digest()
-                if not hmac.compare_digest(expected, candidate):
-                    return False
-            del self._capability_digests[conversation_id]
+            if token is not None and not hmac.compare_digest(expected, token):
+                return False
+            del self._capability_tokens[conversation_id]
             return True
 
     def clear(self) -> None:
         with self._capability_lock:
-            self._capability_digests.clear()
+            self._capability_tokens.clear()
 
     async def get_value(self) -> str | None:
         return await asyncio.to_thread(

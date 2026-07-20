@@ -984,7 +984,9 @@ def _classify_acp_init_error(exc: BaseException) -> str:
       creation (timeouts, transport drops, unexpected protocol errors, cwd
       mismatch surfaced by the server).
     """
-    if isinstance(exc, (ACPFileCredentialNeedsReauthError, ACPFileCredentialSyncError)):
+    if isinstance(exc, ACPFileCredentialSyncError):
+        return "ACPInitError"
+    if isinstance(exc, ACPFileCredentialNeedsReauthError):
         return "ACPAuthRequired"
     if _acp_error_indicates_auth(exc):
         return "ACPAuthRequired"
@@ -1000,7 +1002,9 @@ def _classify_acp_turn_error(exc: BaseException) -> str:
     policy refusals get their own code, credential failures map to ``ACPAuthRequired``
     (so the client can offer re-auth), everything else is a generic ``ACPPromptError``.
     """
-    if isinstance(exc, (ACPFileCredentialNeedsReauthError, ACPFileCredentialSyncError)):
+    if isinstance(exc, ACPFileCredentialSyncError):
+        return "ACPPromptError"
+    if isinstance(exc, ACPFileCredentialNeedsReauthError):
         return "ACPAuthRequired"
     text = _acp_error_text(exc)
     if "usage policy" in text or "content policy" in text:
@@ -2212,13 +2216,6 @@ class ACPAgent(AgentBase):
     def _materialise_file_secrets(
         self, state: ConversationState, env: dict[str, str]
     ) -> None:
-        """Materialize reserved file credentials and configure their paths."""
-        with self._file_credential_lock:
-            self._materialise_file_secrets_locked(state, env)
-
-    def _materialise_file_secrets_locked(
-        self, state: ConversationState, env: dict[str, str]
-    ) -> None:
         for spec in self.acp_file_secrets:
             name = spec.secret_name
             source = state.secret_registry.secret_sources.get(name)
@@ -2226,78 +2223,103 @@ class ACPAgent(AgentBase):
             target = directory / spec.filename
             lifecycle = create_file_credential_lifecycle(name, source)
             if lifecycle is not None:
-                self._file_credential_lifecycles[name] = lifecycle
-                value = lifecycle.load()
+                try:
+                    value = lifecycle.load()
+                except BaseException:
+                    release_lifecycle = False
+                    with self._file_credential_lock:
+                        if not self._closed:
+                            self._file_credential_lifecycles[name] = lifecycle
+                        else:
+                            release_lifecycle = True
+                    if release_lifecycle:
+                        try:
+                            lifecycle.release()
+                        except Exception:
+                            logger.warning(
+                                "Failed to release ACP file credential %r",
+                                name,
+                                exc_info=True,
+                            )
+                    raise
             else:
                 value = state.secret_registry.get_secret_value(name)
-            if not value:
+            release_lifecycle = False
+            with self._file_credential_lock:
                 if lifecycle is not None:
+                    if self._closed or not value:
+                        release_lifecycle = True
+                    else:
+                        self._file_credential_lifecycles[name] = lifecycle
+                if value and not self._closed:
+                    self._materialise_file_secret_locked(
+                        spec, state, env, directory, target, lifecycle, value
+                    )
+            if release_lifecycle:
+                assert lifecycle is not None
+                try:
                     lifecycle.release()
-                    self._file_credential_lifecycles.pop(name, None)
-                continue
+                except BaseException:
+                    with self._file_credential_lock:
+                        if not self._closed:
+                            self._file_credential_lifecycles[name] = lifecycle
+                    raise
+
+    def _materialise_file_secret_locked(
+        self,
+        spec: ACPFileSecretSpec,
+        state: ConversationState,
+        env: dict[str, str],
+        directory: Path,
+        target: Path,
+        lifecycle: ACPFileCredentialLifecycle | None,
+        value: str,
+    ) -> None:
+        name = spec.secret_name
+        if lifecycle is not None:
+            lifecycle.bind(target, state.secret_registry, value, env)
+        try:
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            directory.chmod(0o700)
+            directory.parent.chmod(0o700)
+            preserve_existing = target.is_file() and target.stat().st_size > 0
             if lifecycle is not None:
-                lifecycle.bind(target, state.secret_registry, value, env)
-            try:
-                directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-                # Tighten the SDK-owned per-conversation dir in case it
-                # pre-existed or umask widened mkdir's mode.
-                directory.chmod(0o700)
-                # Also clamp the shared SDK-owned `acp/` parent, which
-                # parents=True may have created under the process umask
-                # (e.g. 0o755); the leaf chmod above only covers <subdir>.
-                # Stop at `acp/` — its parent is the persistence layer's.
-                directory.parent.chmod(0o700)
-                preserve_existing = target.is_file() and target.stat().st_size > 0
-                if lifecycle is not None:
-                    preserve_existing = (
-                        preserve_existing and lifecycle.should_preserve_existing(target)
-                    )
-                if preserve_existing:
-                    # Seed-if-absent: keep the (possibly CLI-refreshed) contents,
-                    # but still clamp perms — a pre-existing credential file may
-                    # be world-readable (e.g. 0644 from another tool/restore).
-                    target.chmod(0o600)
-                    logger.info(
-                        "ACP file-secret %r already present at %s; preserving "
-                        "(seed-if-absent)",
-                        name,
-                        target,
-                    )
-                else:
-                    write_secret_file(target, value)
-                    logger.info("Materialised ACP file-secret %r -> %s", name, target)
-                local_value = (
-                    target.read_text(encoding="utf-8")
-                    if lifecycle is not None
-                    else None
+                preserve_existing = (
+                    preserve_existing and lifecycle.should_preserve_existing(target)
                 )
-            except (OSError, UnicodeError):
-                # Fail fast rather than swallowing: if the credential the caller
-                # supplied can't be written (read-only/full workspace mount, etc.)
-                # its data-dir env var would never be set and the subprocess would
-                # fail at auth time with a cryptic CLI error and no SDK breadcrumb.
-                # Re-raising lets init_state surface a typed ConversationErrorEvent
-                # (ACPInitError) that names the materialisation failure.
-                logger.exception(
-                    "Failed to materialise ACP file-secret %r under %s",
+            if preserve_existing:
+                target.chmod(0o600)
+                logger.info(
+                    "ACP file-secret %r already present at %s; preserving "
+                    "(seed-if-absent)",
                     name,
-                    directory,
+                    target,
                 )
-                raise
-            env[spec.env_var] = str(
-                directory if spec.env_points_to == "dir" else target
+            else:
+                write_secret_file(target, value)
+                logger.info("Materialised ACP file-secret %r -> %s", name, target)
+            local_value = (
+                target.read_text(encoding="utf-8") if lifecycle is not None else None
             )
-            if lifecycle is not None:
-                assert local_value is not None
-                lifecycle.record_materialized(value, local_value)
-            for companion in spec.warn_if_unset:
-                if not env.get(companion):
-                    logger.warning(
-                        "ACP file-secret %r materialised but %s is unset; the "
-                        "provider may fail to authenticate until it is configured",
-                        name,
-                        companion,
-                    )
+        except (OSError, UnicodeError):
+            logger.exception(
+                "Failed to materialise ACP file-secret %r under %s",
+                name,
+                directory,
+            )
+            raise
+        env[spec.env_var] = str(directory if spec.env_points_to == "dir" else target)
+        if lifecycle is not None:
+            assert local_value is not None
+            lifecycle.record_materialized(value, local_value)
+        for companion in spec.warn_if_unset:
+            if not env.get(companion):
+                logger.warning(
+                    "ACP file-secret %r materialised but %s is unset; the "
+                    "provider may fail to authenticate until it is configured",
+                    name,
+                    companion,
+                )
 
     @staticmethod
     def _log_file_credential_failures(
@@ -3959,31 +3981,6 @@ class ACPAgent(AgentBase):
 
     def __del__(self) -> None:
         try:
-            with self._file_credential_close_lock:
-                credential_paths: list[Path] = []
-                with self._file_credential_lock:
-                    for name, lifecycle in self._file_credential_lifecycles.items():
-                        try:
-                            path = lifecycle.path
-                        except Exception:
-                            logger.warning(
-                                "Failed to inspect ACP file credential %r",
-                                name,
-                                exc_info=True,
-                            )
-                        else:
-                            if path is not None:
-                                credential_paths.append(path)
-                    already_closed = self._closed
-                    self._closed = True
-                if credential_paths:
-                    logger.warning(
-                        "Skipping ACP file credential sync during finalization; "
-                        "durable working copies remain at %s",
-                        credential_paths,
-                    )
-                if already_closed:
-                    return
-                self._cleanup()
+            self.close()
         except Exception:
             logger.warning("Failed to finalize ACPAgent resources", exc_info=True)

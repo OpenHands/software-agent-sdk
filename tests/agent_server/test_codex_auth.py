@@ -94,6 +94,17 @@ def test_local_lookup_uses_scoped_non_disclosing_capability(tmp_path):
     assert token not in source.model_dump_json()
 
 
+def test_local_lookup_reuses_conversation_capability(tmp_path):
+    broker = CodexAuthBroker(FileSecretsStore(tmp_path))
+    conversation_id = uuid4()
+
+    first = broker.ensure_brokered_source(conversation_id, _local_source())
+    second = broker.ensure_brokered_source(conversation_id, _local_source())
+
+    assert _token(second) == _token(first)
+    assert broker.is_authorized(conversation_id, _token(first))
+
+
 def test_broker_leaves_saas_source_unchanged(tmp_path):
     broker = CodexAuthBroker(FileSecretsStore(tmp_path))
     source = LookupSecret(
