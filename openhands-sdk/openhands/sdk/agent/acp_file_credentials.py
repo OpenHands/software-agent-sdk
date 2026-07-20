@@ -292,7 +292,9 @@ class _CodexAuthLifecycle:
         registry = self.registry
         if registry is None:
             return
-        exported_values = {self.secret_name: value}
+        value_digest = hashlib.sha256(value.encode()).hexdigest()
+        mask_name = f"{self.secret_name}.{value_digest}"
+        exported_values = {mask_name: value}
         try:
             tokens = json.loads(value).get("tokens", {})
         except (AttributeError, TypeError, ValueError):
@@ -300,7 +302,7 @@ class _CodexAuthLifecycle:
         if isinstance(tokens, dict):
             for name, token in tokens.items():
                 if isinstance(token, str) and token:
-                    exported_values[f"{self.secret_name}.tokens.{name}"] = token
+                    exported_values[f"{mask_name}.tokens.{name}"] = token
         registry.track_exported_values(exported_values)
 
     def _track_transport(self) -> None:

@@ -8534,7 +8534,11 @@ class TestACPFileSecretMaterialisation:
         original = (
             '{"tokens":{"access_token":"access-r0","refresh_token":"refresh-r0"}}'
         )
-        rotated = '{"tokens":{"access_token":"access-r1","refresh_token":"refresh-r1"}}'
+        authoritative = (
+            '{"tokens":{"access_token":"access-r1","refresh_token":"refresh-r1"}}'
+        )
+        rotated = '{"tokens":{"access_token":"access-r2","refresh_token":"refresh-r2"}}'
+        authoritative_digest = hashlib.sha256(authoritative.encode()).hexdigest()
         agent = _make_agent()
         state = self._state(tmp_path)
         state.secret_registry.update_secrets(
@@ -8543,6 +8547,16 @@ class TestACPFileSecretMaterialisation:
 
         with (
             patch.object(LookupSecret, "get_value", return_value=original),
+            patch.object(
+                acp_file_credentials_module,
+                "_get_codex_auth_source",
+                return_value=authoritative,
+            ),
+            patch.object(
+                acp_file_credentials_module,
+                "_touch_codex_auth_source",
+                return_value=authoritative_digest,
+            ),
             patch.object(acp_file_credentials_module, "_update_codex_auth_source"),
             patch.object(acp_file_credentials_module, "_release_codex_auth_source"),
         ):
@@ -8554,34 +8568,62 @@ class TestACPFileSecretMaterialisation:
             )
 
             auth_path = Path(env["CODEX_HOME"]) / "auth.json"
-            original_stat = auth_path.stat()
-            auth_path.write_text(rotated)
-            assert len(original) == len(rotated)
-            os.utime(
-                auth_path,
-                ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
-            )
+            _codex_lifecycle(agent).last_remote_check = 0.0
             agent._sync_file_credentials()
+            assert auth_path.read_text() == authoritative
             assert (
                 state.secret_registry.mask_secrets_in_output("access-r1 refresh-r1")
                 == "<secret-hidden> <secret-hidden>"
             )
-            assert state.secret_registry.mask_secrets_in_output(
-                "access-r0 refresh-r0"
-            ) == ("access-r0 refresh-r0")
+
+            authoritative_stat = auth_path.stat()
+            auth_path.write_text(rotated)
+            assert len(authoritative) == len(rotated)
+            os.utime(
+                auth_path,
+                ns=(authoritative_stat.st_atime_ns, authoritative_stat.st_mtime_ns),
+            )
+            agent._sync_file_credentials()
+            assert (
+                state.secret_registry.mask_secrets_in_output("access-r2 refresh-r2")
+                == "<secret-hidden> <secret-hidden>"
+            )
+            for revision in range(3):
+                assert (
+                    state.secret_registry.mask_secrets_in_output(
+                        f"access-r{revision} refresh-r{revision}"
+                    )
+                    == "<secret-hidden> <secret-hidden>"
+                )
+            for value in (original, authoritative, rotated):
+                assert (
+                    state.secret_registry.mask_secrets_in_output(value)
+                    == "<secret-hidden>"
+                )
             codex_keys = {
                 name
                 for name in state.secret_registry._exported_values
                 if name.startswith("CODEX_AUTH_JSON")
             }
-            assert codex_keys == {
-                "CODEX_AUTH_JSON",
-                "CODEX_AUTH_JSON.tokens.access_token",
-                "CODEX_AUTH_JSON.tokens.refresh_token",
+            value_digests = {
+                hashlib.sha256(value.encode()).hexdigest()
+                for value in (original, authoritative, rotated)
+            }
+            expected_keys = {
                 "CODEX_AUTH_JSON.refresh_url",
                 "CODEX_AUTH_JSON.header.x-oh-sandbox",
                 "CODEX_AUTH_JSON.header.x-oh-codex",
             }
+            for value_digest in value_digests:
+                mask_name = f"CODEX_AUTH_JSON.{value_digest}"
+                expected_keys.update(
+                    {
+                        mask_name,
+                        f"{mask_name}.tokens.access_token",
+                        f"{mask_name}.tokens.refresh_token",
+                    }
+                )
+            assert codex_keys == expected_keys
             agent._release_file_credentials()
 
     def test_lost_update_response_reconciles_matching_remote_value(self, tmp_path):
