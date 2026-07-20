@@ -323,7 +323,7 @@ class TestTaskManager:
         assert not manager._persistence_dir.exists()
         assert len(manager._tasks) == 0
 
-    def test_interrupt_pauses_only_running_tasks(self, tmp_path):
+    def test_interrupt_only_targets_running_tasks(self, tmp_path):
         manager, _ = _manager_with_parent(tmp_path)
         register_builtins_agents()
         running = manager._create_task(
