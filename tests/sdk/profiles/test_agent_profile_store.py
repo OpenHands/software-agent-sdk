@@ -462,7 +462,7 @@ def test_save_cleans_up_tmp_on_replace_failure(
     def boom(src, dst):
         raise OSError("disk full")
 
-    monkeypatch.setattr(Path, "replace", boom)
+    monkeypatch.setattr("openhands.sdk.utils.files.os.replace", boom)
 
     with pytest.raises(OSError, match="disk full"):
         agent_store.save(openhands_profile)
