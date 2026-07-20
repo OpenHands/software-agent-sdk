@@ -14,7 +14,7 @@ import pytest
 
 import openhands.tools.grep.impl as grep_impl
 from openhands.tools.grep import GrepAction
-from openhands.tools.grep.impl import GrepExecutor
+from openhands.tools.grep.impl import GrepExecutor, _expand_brace_pattern
 from openhands.tools.utils import _check_grep_available
 
 
@@ -109,6 +109,50 @@ def test_grep_executor_include_filter():
         assert observation.is_error is False
         assert len(observation.matches) == 1
         assert observation.matches[0].endswith(".py")
+
+
+@pytest.mark.parametrize(
+    "pattern,expected",
+    [
+        ("*.py", ["*.py"]),
+        ("*.{ts,tsx}", ["*.ts", "*.tsx"]),
+        ("{a,b}.{js,ts}", ["a.js", "a.ts", "b.js", "b.ts"]),
+        ("a{,_test}.py", ["a.py", "a_test.py"]),
+        ("{abc}", ["{abc}"]),  # no comma: left literal, like the shell
+        ("*.{ts", ["*.{ts"]),  # unbalanced brace: left literal
+    ],
+)
+def test_expand_brace_pattern(pattern, expected):
+    assert _expand_brace_pattern(pattern) == expected
+
+
+def test_grep_executor_include_brace_expansion():
+    """`include` honors brace alternation like the documented "*.{ts,tsx}"."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        (Path(temp_dir) / "a.ts").write_text("logError('x')")
+        (Path(temp_dir) / "b.tsx").write_text("logError('y')")
+        (Path(temp_dir) / "c.py").write_text("logError('z')")
+
+        executor = GrepExecutor(working_dir=temp_dir)
+        observation = executor(GrepAction(pattern="logError", include="*.{ts,tsx}"))
+
+        assert observation.is_error is False
+        assert sorted(Path(m).name for m in observation.matches) == ["a.ts", "b.tsx"]
+
+
+def test_grep_executor_include_brace_expansion_python_backend():
+    """Brace expansion also works on the Python fallback backend."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        (Path(temp_dir) / "a.ts").write_text("logError('x')")
+        (Path(temp_dir) / "b.tsx").write_text("logError('y')")
+        (Path(temp_dir) / "c.py").write_text("logError('z')")
+
+        executor = GrepExecutor(working_dir=temp_dir)
+        executor._search_backend = "python"
+        observation = executor(GrepAction(pattern="logError", include="*.{ts,tsx}"))
+
+        assert observation.is_error is False
+        assert sorted(Path(m).name for m in observation.matches) == ["a.ts", "b.tsx"]
 
 
 def test_grep_executor_custom_path():
