@@ -178,17 +178,47 @@ class AgentSandboxWorkspace(RemoteWorkspace):
             self._sandbox.claim_name,
         )
 
-        # 2) Establish the connection to the agent server.
+        # 2) Establish the connection to the agent server and wait for health.
         if self.connection == "port_forward":
-            self._start_port_forward()
-        # 'direct': self.host was provided by the caller.
-
-        # 3) Wait for the agent server to answer health checks.
-        self._wait_for_health(timeout=self.health_check_timeout)
+            self._connect_port_forward_with_retry()
+        else:
+            # 'direct': self.host was provided by the caller.
+            self._wait_for_health(timeout=self.health_check_timeout)
         logger.info("agent-sandbox workspace is ready at %s", self.host)
 
         # 4) Initialize the parent RemoteWorkspace against the agent server URL.
         super().model_post_init(context)
+
+    def _connect_port_forward_with_retry(self, attempts: int = 5) -> None:
+        """Start a port-forward and wait for health, retrying transient failures.
+
+        Right after a resume the pod's network namespace can still be churning, so
+        kubectl port-forward may drop with "network namespace ... is closed". A
+        dead forward is detected quickly, so retrying with a fresh local port is
+        cheap and lets the pod settle.
+        """
+        preferred = self.host_port
+        last_error: Exception | None = None
+        for i in range(attempts):
+            # Honor a caller-provided port on the first try; auto-pick on retries.
+            self.host_port = preferred if i == 0 else None
+            try:
+                self._start_port_forward()
+                self._wait_for_health(timeout=self.health_check_timeout)
+                return
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    "Agent server not reachable (attempt %d/%d): %s",
+                    i + 1,
+                    attempts,
+                    e,
+                )
+                self._stop_port_forward()
+                time.sleep(2)
+        raise RuntimeError(
+            f"Could not reach agent server after {attempts} attempts: {last_error}"
+        )
 
     def _start_port_forward(self) -> None:
         """Start (or restart) kubectl port-forward to the sandbox pod."""
@@ -301,8 +331,12 @@ class AgentSandboxWorkspace(RemoteWorkspace):
             self._sandbox.sandbox_id, self.namespace, self.sandbox_ready_timeout
         )
         if self.connection == "port_forward":
-            self._start_port_forward()
-        self._wait_for_health(timeout=self.health_check_timeout)
+            # Reconnect on a fresh local port (the old one may be in TIME_WAIT) and
+            # rebuild the HTTP client so it targets the new host URL.
+            self._connect_port_forward_with_retry()
+            self.reset_client()
+        else:
+            self._wait_for_health(timeout=self.health_check_timeout)
         logger.info("Sandbox %r resumed at %s", self._sandbox.sandbox_id, self.host)
 
     def _stop_port_forward(self) -> None:
