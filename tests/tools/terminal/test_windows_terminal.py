@@ -93,6 +93,14 @@ def test_basic_command_execution(windows_session) -> None:
     assert "Hello from Windows terminal" in obs.text
 
 
+def test_multiline_powershell_command_executes(windows_session) -> None:
+    obs = windows_session.execute(TerminalAction(command='Write-Output "a\nb"'))
+
+    assert obs.exit_code == 0
+    assert "a" in obs.text
+    assert "b" in obs.text
+
+
 def test_working_directory_updates_and_persists(windows_session, temp_dir: str) -> None:
     subdir = os.path.join(temp_dir, "subdir")
     os.makedirs(subdir, exist_ok=True)
