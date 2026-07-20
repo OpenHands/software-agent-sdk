@@ -337,3 +337,20 @@ def test_get_secret_value_missing_not_tracked():
     result = secret_registry.get_secret_value("NONEXISTENT")
     assert result is None
     assert "NONEXISTENT" not in secret_registry._exported_values
+
+
+def test_track_exported_values_drops_empty_values():
+    """Empty values must not enter _exported_values (they would poison masking)."""
+    secret_registry = SecretRegistry()
+    secret_registry.track_exported_values({"REAL": "secret", "EMPTY": ""})
+
+    assert "EMPTY" not in secret_registry._exported_values
+    assert secret_registry._exported_values["REAL"] == "secret"
+
+
+def test_mask_secrets_in_output_ignores_empty_value():
+    """An empty exported value must not splice the placeholder between chars."""
+    secret_registry = SecretRegistry()
+    secret_registry._exported_values["EMPTY"] = ""
+
+    assert secret_registry.mask_secrets_in_output("hello") == "hello"

@@ -38,7 +38,7 @@ class SecretRegistry(OpenHandsModel):
     def track_exported_values(self, values: Mapping[str, str]) -> None:
         """Track values for output masking."""
         with self._exported_values_lock:
-            self._exported_values.update(values)
+            self._exported_values.update({k: v for k, v in values.items() if v})
 
     def update_secrets(
         self,
@@ -154,7 +154,8 @@ class SecretRegistry(OpenHandsModel):
         with self._exported_values_lock:
             exported_values = tuple(self._exported_values.values())
         for value in exported_values:
-            masked_text = masked_text.replace(value, "<secret-hidden>")
+            if value:
+                masked_text = masked_text.replace(value, "<secret-hidden>")
 
         return masked_text
 
