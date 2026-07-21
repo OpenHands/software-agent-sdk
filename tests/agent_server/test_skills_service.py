@@ -59,6 +59,35 @@ def _create_test_marketplace(marketplace_dir: Path) -> Path:
     return marketplace_dir
 
 
+def _create_standalone_skill(skill_dir: Path, name: str) -> None:
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {name} description\n---\n{name} content"
+    )
+
+
+def _create_skills_only_marketplace(marketplace_dir: Path) -> Path:
+    """Marketplace declaring only standalone skills (no plugins)."""
+    _create_standalone_skill(marketplace_dir / "skills" / "greet", "greet")
+    _create_standalone_skill(marketplace_dir / "skills" / "commit", "commit")
+    manifest_dir = marketplace_dir / ".plugin"
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    (manifest_dir / "marketplace.json").write_text(
+        json.dumps(
+            {
+                "name": "skills-marketplace",
+                "owner": {"name": "Test Team"},
+                "plugins": [],
+                "skills": [
+                    {"name": "greet", "source": "./skills/greet"},
+                    {"name": "commit", "source": "./skills/commit"},
+                ],
+            }
+        )
+    )
+    return marketplace_dir
+
+
 class TestExposedUrlData:
     """Tests for ExposedUrlData dataclass."""
 
@@ -354,6 +383,84 @@ class TestLoadAllSkills:
         )
 
         assert [skill.name for skill in skills] == ["manual-skill"]
+
+    def test_load_registered_marketplace_skills_loads_standalone_skills(
+        self, tmp_path: Path
+    ):
+        """auto_load=True loads standalone skills, not just plugins."""
+        marketplace_dir = _create_skills_only_marketplace(tmp_path / "marketplace")
+
+        skills = load_registered_marketplace_skills(
+            [
+                MarketplaceRegistration(
+                    name="skills-only",
+                    source=str(marketplace_dir),
+                    auto_load=True,
+                )
+            ]
+        )
+
+        assert {skill.name for skill in skills} == {"greet", "commit"}
+
+    def test_load_registered_marketplace_skills_selects_listed_standalone_skills(
+        self, tmp_path: Path
+    ):
+        """A name list selects standalone skills the same way it selects plugins."""
+        marketplace_dir = _create_skills_only_marketplace(tmp_path / "marketplace")
+
+        skills = load_registered_marketplace_skills(
+            [
+                MarketplaceRegistration(
+                    name="skills-only",
+                    source=str(marketplace_dir),
+                    auto_load=["greet"],
+                )
+            ]
+        )
+
+        assert [skill.name for skill in skills] == ["greet"]
+
+    def test_load_registered_marketplace_skills_skips_standalone_when_not_auto_load(
+        self, tmp_path: Path
+    ):
+        """A skills-only marketplace without auto_load contributes nothing."""
+        marketplace_dir = _create_skills_only_marketplace(tmp_path / "marketplace")
+
+        skills = load_registered_marketplace_skills(
+            [MarketplaceRegistration(name="skills-only", source=str(marketplace_dir))]
+        )
+
+        assert skills == []
+
+    def test_load_registered_marketplace_skills_loads_plugins_and_standalone(
+        self, tmp_path: Path
+    ):
+        """A marketplace with both plugins and standalone skills loads both."""
+        marketplace_dir = tmp_path / "marketplace"
+        _create_test_plugin(marketplace_dir / "plugins" / "auto", "auto", "auto-skill")
+        _create_standalone_skill(marketplace_dir / "skills" / "greet", "greet")
+        manifest_dir = marketplace_dir / ".plugin"
+        manifest_dir.mkdir(parents=True, exist_ok=True)
+        (manifest_dir / "marketplace.json").write_text(
+            json.dumps(
+                {
+                    "name": "mixed-marketplace",
+                    "owner": {"name": "Test Team"},
+                    "plugins": [{"name": "auto", "source": "./plugins/auto"}],
+                    "skills": [{"name": "greet", "source": "./skills/greet"}],
+                }
+            )
+        )
+
+        skills = load_registered_marketplace_skills(
+            [
+                MarketplaceRegistration(
+                    name="mixed", source=str(marketplace_dir), auto_load=True
+                )
+            ]
+        )
+
+        assert {skill.name for skill in skills} == {"auto-skill", "greet"}
 
     def test_load_registered_marketplace_skills_uses_registration_fetch_fields(
         self, tmp_path: Path

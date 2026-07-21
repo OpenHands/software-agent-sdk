@@ -147,6 +147,32 @@ def create_test_marketplace(
     return marketplace_dir
 
 
+def create_test_marketplace_with_standalone_skills(
+    marketplace_dir: Path,
+    skills: list[str],
+    name: str = "skills-marketplace",
+) -> Path:
+    """Helper to create a marketplace declaring only standalone skills."""
+    manifest_dir = marketplace_dir / ".plugin"
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    entries = []
+    for skill_name in skills:
+        skill_dir = marketplace_dir / "skills" / skill_name
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {skill_name}\ndescription: {skill_name} desc\n---\nbody"
+        )
+        entries.append({"name": skill_name, "source": f"./skills/{skill_name}"})
+    manifest = {
+        "name": name,
+        "owner": {"name": "Test Team"},
+        "plugins": [],
+        "skills": entries,
+    }
+    (manifest_dir / "marketplace.json").write_text(json.dumps(manifest))
+    return marketplace_dir
+
+
 class TestLocalConversationPlugins:
     """Tests for plugin loading in LocalConversation.
 
@@ -207,6 +233,43 @@ class TestLocalConversationPlugins:
         assert "public-skill" in skill_names
         assert conversation.resolved_plugins is not None
         assert len(conversation.resolved_plugins) == 1
+
+    def test_auto_load_marketplace_standalone_skills(self, tmp_path: Path, mock_llm):
+        """Standalone marketplace skills auto-load into the agent context."""
+        marketplace_dir = create_test_marketplace_with_standalone_skills(
+            tmp_path / "marketplace",
+            skills=["greet", "commit"],
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        with patch(
+            "openhands.sdk.context.agent_context.load_available_skills",
+            return_value={},
+        ):
+            agent = Agent(
+                llm=mock_llm,
+                tools=[],
+                agent_context=AgentContext(
+                    registered_marketplaces=[
+                        MarketplaceRegistration(
+                            name="skills-only",
+                            source=str(marketplace_dir),
+                            auto_load=True,
+                        )
+                    ],
+                ),
+            )
+
+        conversation = LocalConversation(
+            agent=agent,
+            workspace=workspace,
+            visualizer=None,
+        )
+        conversation._ensure_plugins_loaded()
+
+        assert conversation.agent.agent_context is not None
+        skill_names = {s.name for s in conversation.agent.agent_context.skills}
+        assert {"greet", "commit"} <= skill_names
 
         conversation.close()
 

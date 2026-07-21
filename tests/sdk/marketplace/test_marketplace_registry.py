@@ -59,6 +59,21 @@ def test_marketplace_registration_accepts_selective_auto_load() -> None:
     assert registration.auto_load == ["formatter", "linter"]
     assert registration.auto_loads_plugin("formatter") is True
     assert registration.auto_loads_plugin("other") is False
+    # A name list selects standalone skills the same way it selects plugins.
+    assert registration.auto_loads_skill("formatter") is True
+    assert registration.auto_loads_skill("other") is False
+
+
+def test_marketplace_registration_auto_loads_skill_bool() -> None:
+    assert (
+        MarketplaceRegistration(name="a", source="x", auto_load=True).auto_loads_skill(
+            "any"
+        )
+        is True
+    )
+    assert (
+        MarketplaceRegistration(name="a", source="x").auto_loads_skill("any") is False
+    )
 
 
 @pytest.mark.parametrize(
