@@ -19,13 +19,14 @@ already PII-free, so the hash is defence in depth rather than the thing being
 relied on.
 """
 
+import bisect
 import hashlib
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import lru_cache
 from types import TracebackType
-from typing import Final
+from typing import Final, NamedTuple
 
 from openhands.agent_server.telemetry.models import (
     ERROR_CATEGORY_BY_CLASS_NAME,
@@ -34,18 +35,20 @@ from openhands.agent_server.telemetry.models import (
 )
 
 
-_FIRST_PARTY_ROOT: Final = __name__.split(".", 1)[0]
-_MAX_FINGERPRINT_FRAMES: Final = 5
+_FIRST_PARTY_ROOT: Final[str] = __name__.split(".", 1)[0]
+_MAX_FINGERPRINT_FRAMES: Final[int] = 5
 
-_SAFE_TOKEN_RE: Final = re.compile(r"^[a-z0-9][a-z0-9_.:\-]{0,63}$")
-_SAFE_IDENTIFIER_RE: Final = re.compile(
+_SAFE_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z0-9][a-z0-9_.:\-]{0,63}$")
+_SAFE_IDENTIFIER_RE: Final[re.Pattern[str]] = re.compile(
     r"^[A-Za-z_][A-Za-z0-9_]*([.:][A-Za-z_][A-Za-z0-9_]*)*$"
 )
-_SAFE_IDENTIFIER_MAX_LEN: Final = 96
-_VERSION_RE: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+\-/]{0,63}$")
+_SAFE_IDENTIFIER_MAX_LEN: Final[int] = 96
+_VERSION_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9_.+\-/]{0,63}$"
+)
 
-UNKNOWN_TOKEN: Final = "unknown"
-UNKNOWN_ERROR_CLASS: Final = "UnknownError"
+UNKNOWN_TOKEN: Final[str] = "unknown"
+UNKNOWN_ERROR_CLASS: Final[str] = "UnknownError"
 _UNKNOWN_CATEGORY: Final[ErrorCategory] = "unknown"
 
 
@@ -90,33 +93,47 @@ def allowlisted(
     return token if token in allowed else default
 
 
-DURATION_BOUNDS: Final[tuple[float, ...]] = (1, 5, 15, 60, 300, 1800)
-COUNT_BOUNDS: Final[tuple[float, ...]] = (1, 5, 20, 100, 500)
-TOKEN_BOUNDS: Final[tuple[float, ...]] = (1_000, 10_000, 50_000, 200_000, 1_000_000)
-COST_BOUNDS: Final[tuple[float, ...]] = (0.01, 0.1, 1, 10, 100)
+class Bounds(NamedTuple):
+    """Ordered bucket edges plus the labelling for a magnitude.
 
-
-def bucket(value: float | None, bounds: tuple[float, ...]) -> str:
-    """Map a magnitude to a coarse label such as ``5-20`` or ``500+``.
-
-    Raw magnitudes are a re-identification vector once joined with a
-    timestamp, so no count, duration or cost is ever reported exactly.
+    Keeping the edges and the lookup together means a caller cannot pair a
+    value with the wrong scale, and the lookup is a binary search rather than a
+    linear scan.
     """
-    if value is None:
-        return UNKNOWN_TOKEN
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        return UNKNOWN_TOKEN
-    if numeric < 0:
-        return UNKNOWN_TOKEN
 
-    previous: float | None = None
-    for upper in bounds:
-        if numeric < upper:
-            return _format_bucket(previous, upper)
-        previous = upper
-    return f"{_format_number(bounds[-1])}+"
+    edges: tuple[float, ...]
+
+    def label(self, value: float | None) -> str:
+        """Map a magnitude to a coarse label such as ``5-20`` or ``500+``.
+
+        Raw magnitudes are a re-identification vector once joined with a
+        timestamp, so no count, duration or cost is ever reported exactly.
+        """
+        if value is None:
+            return UNKNOWN_TOKEN
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return UNKNOWN_TOKEN
+        if numeric < 0:
+            return UNKNOWN_TOKEN
+
+        index = bisect.bisect_right(self.edges, numeric)
+        if index == len(self.edges):
+            return f"{_format_number(self.edges[-1])}+"
+        lower = self.edges[index - 1] if index else None
+        return _format_bucket(lower, self.edges[index])
+
+
+DURATION_BOUNDS: Final[Bounds] = Bounds((1, 5, 15, 60, 300, 1800))
+COUNT_BOUNDS: Final[Bounds] = Bounds((1, 5, 20, 100, 500))
+TOKEN_BOUNDS: Final[Bounds] = Bounds((1_000, 10_000, 50_000, 200_000, 1_000_000))
+COST_BOUNDS: Final[Bounds] = Bounds((0.01, 0.1, 1, 10, 100))
+
+
+def bucket(value: float | None, bounds: Bounds) -> str:
+    """Backwards-compatible wrapper over :meth:`Bounds.label`."""
+    return bounds.label(value)
 
 
 def _format_bucket(lower: float | None, upper: float) -> str:
@@ -159,6 +176,12 @@ def _known_providers() -> frozenset[str]:
     return frozenset(str(getattr(p, "value", p)).lower() for p in provider_list)
 
 
+# Model *family*, which litellm has no concept of: it models providers, and the
+# same family is served by many (claude-* is on anthropic, bedrock, azure_ai and
+# deepinfra). Deriving this from models_by_provider yields 4+ candidates for
+# every family, so the bare-model-name fallback stays explicit. The
+# provider-prefixed path uses litellm's real provider list; a test asserts every
+# target here is one of them.
 _MODEL_FAMILY_HINTS: Final[tuple[tuple[str, str], ...]] = (
     ("claude", "anthropic"),
     ("gpt", "openai"),

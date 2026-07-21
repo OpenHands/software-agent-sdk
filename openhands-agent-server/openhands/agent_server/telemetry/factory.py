@@ -29,7 +29,7 @@ from openhands.agent_server.telemetry.sanitizer import (
 from openhands.sdk.utils import utc_now
 
 
-ANONYMOUS_PREFIX: Final = "anon:"
+ANONYMOUS_PREFIX: Final[str] = "anon:"
 
 
 def _platform_token() -> str:

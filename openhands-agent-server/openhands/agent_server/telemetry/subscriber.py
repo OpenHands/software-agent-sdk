@@ -40,17 +40,23 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import utc_now
 
 
+__all__ = [
+    "ConversationTelemetryContext",
+    "TelemetrySubscriber",
+]
+
+
 logger = get_logger(__name__)
 
 # Derived from the SDK enum rather than hardcoded, so a new terminal status
 # cannot silently stop being reported.
-_TERMINAL_STATUSES: Final = frozenset(
+_TERMINAL_STATUSES: Final[frozenset[str]] = frozenset(
     s.value for s in ConversationExecutionStatus if s.is_terminal()
 )
-_FAILURE_STATUSES: Final = _TERMINAL_STATUSES - {
+_FAILURE_STATUSES: Final[frozenset[str]] = _TERMINAL_STATUSES - {
     ConversationExecutionStatus.FINISHED.value
 }
-_EXECUTION_STATUS_KEY: Final = "execution_status"
+_EXECUTION_STATUS_KEY: Final[str] = "execution_status"
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,30 +100,30 @@ class TelemetrySubscriber(Subscriber[Event]):
     def _handle(self, event: Event) -> None:
         self._event_count += 1
 
-        if isinstance(event, AgentErrorEvent):
-            self._emit_error_from_agent_event(event)
+        match event:
+            case AgentErrorEvent():
+                self._emit_error_from_agent_event(event)
+            case ConversationErrorEvent():
+                self._emit_error_from_conversation_event(event)
+            case ConversationStateUpdateEvent():
+                self._handle_state_update(event)
+
+    def _handle_state_update(self, event: ConversationStateUpdateEvent) -> None:
+        status = _extract_status(event)
+        if status is None:
+            return
+        self._last_status = status
+
+        if not self._seeded:
+            # The attach-time push is a baseline, not a transition; otherwise
+            # every rehydration re-emits a terminal event.
+            self._seeded = True
+            self._terminal_emitted = status in _TERMINAL_STATUSES
             return
 
-        if isinstance(event, ConversationErrorEvent):
-            self._emit_error_from_conversation_event(event)
-            return
-
-        if isinstance(event, ConversationStateUpdateEvent):
-            status = _extract_status(event)
-            if status is not None:
-                self._last_status = status
-
-                if not self._seeded:
-                    # The attach-time push is a baseline, not a transition;
-                    # otherwise every rehydration re-emits a terminal event.
-                    self._seeded = True
-                    if status in _TERMINAL_STATUSES:
-                        self._terminal_emitted = True
-                    return
-
-                if status in _TERMINAL_STATUSES:
-                    self._capture_usage(event)
-                    self._emit_terminal(status)
+        if status in _TERMINAL_STATUSES:
+            self._capture_usage(event)
+            self._emit_terminal(status)
 
     def emit_started(self) -> None:
         """Emit ``conversation_started``. Called once, at registration."""
@@ -273,9 +279,3 @@ def _extract_status(event: ConversationStateUpdateEvent) -> str | None:
         if isinstance(status, str):
             return status
     return None
-
-
-__all__ = [
-    "ConversationTelemetryContext",
-    "TelemetrySubscriber",
-]

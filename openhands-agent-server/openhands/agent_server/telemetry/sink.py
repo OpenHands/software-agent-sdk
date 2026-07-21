@@ -31,12 +31,12 @@ from openhands.sdk.logger import get_logger
 logger = get_logger(__name__)
 
 #: Consent cache TTL. Revocation does not wait for it; the endpoint pushes.
-CONSENT_REFRESH_SECONDS: Final = 5.0
+CONSENT_REFRESH_SECONDS: Final[float] = 5.0
 
 #: Caps the final flush so a hung endpoint cannot extend shutdown.
-SHUTDOWN_FLUSH_TIMEOUT_SECONDS: Final = 5.0
+SHUTDOWN_FLUSH_TIMEOUT_SECONDS: Final[float] = 5.0
 
-_MAX_BACKOFF_SECONDS: Final = 60.0
+_MAX_BACKOFF_SECONDS: Final[float] = 60.0
 
 
 class TelemetryExporter(Protocol):

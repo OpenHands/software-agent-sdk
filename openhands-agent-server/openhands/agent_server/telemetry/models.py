@@ -23,7 +23,7 @@ from typing import Annotated, Final, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 
-TELEMETRY_SCHEMA_VERSION: Final = 1
+TELEMETRY_SCHEMA_VERSION: Final[int] = 1
 
 SafeToken = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9_.:\-]{0,63}$")]
 """Lowercase enum-ish token: ``finished``, ``anthropic``, ``0-5s``."""

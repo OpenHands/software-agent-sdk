@@ -26,6 +26,8 @@ Failures propagate to ``BufferedTelemetrySink``, which owns the retry, drop and
 bounded-shutdown behaviour — this class deliberately implements none of it.
 """
 
+from typing import Final
+
 import httpx
 
 from openhands.agent_server.telemetry.models import (
@@ -37,7 +39,7 @@ from openhands.sdk.logger import get_logger
 
 logger = get_logger(__name__)
 
-DEFAULT_TIMEOUT_SECONDS = 15.0
+DEFAULT_TIMEOUT_SECONDS: Final[float] = 15.0
 
 
 class HttpExporter:

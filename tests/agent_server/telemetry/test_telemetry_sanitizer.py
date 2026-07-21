@@ -16,6 +16,7 @@ from openhands.agent_server.telemetry.sanitizer import (
     COST_BOUNDS,
     COUNT_BOUNDS,
     DURATION_BOUNDS,
+    Bounds,
     bucket,
     model_family,
     normalize_error_code,
@@ -211,7 +212,7 @@ def test_buckets_never_reveal_exact_magnitudes():
 
 
 def test_bucket_is_monotonic():
-    bounds = (1, 10, 100)
+    bounds = Bounds((1, 10, 100))
     labels = [bucket(v, bounds) for v in (0, 5, 50, 500)]
     assert len(set(labels)) == 4
 

@@ -32,7 +32,7 @@ from openhands.sdk.logger import get_logger
 
 logger = get_logger(__name__)
 
-DEFAULT_POSTHOG_HOST: Final = "https://us.i.posthog.com"
+DEFAULT_POSTHOG_HOST: Final[str] = "https://us.i.posthog.com"
 
 
 class PostHogExporter:

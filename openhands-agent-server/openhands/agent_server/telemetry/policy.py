@@ -17,32 +17,60 @@ agent-server special-casing it.
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, Final, Literal
 
 
-TelemetryConsent = Literal["granted", "denied", "unset"]
-"""The user's recorded choice. ``unset`` is the default and is not consent."""
+__all__ = [
+    "CONSENT_ENV",
+    "CONSENT_MODE_ENV",
+    "DO_NOT_TRACK_ENV",
+    "LEGACY_CONSENT_KEY",
+    "LEGACY_MISC_NAMESPACE",
+    "MISC_CONSENT_KEY",
+    "MISC_MANAGED_KEY",
+    "MISC_NAMESPACE",
+    "ConsentMode",
+    "TelemetryConsent",
+    "TelemetryDecision",
+    "kill_switch_engaged",
+    "read_consent",
+    "read_legacy_consent",
+    "resolve",
+]
 
-ConsentMode = Literal["seed", "override"]
-"""How ``OH_TELEMETRY_CONSENT`` interacts with the persisted value."""
+
+class TelemetryConsent(StrEnum):
+    """The user's recorded choice. ``UNSET`` is the default and is not consent."""
+
+    GRANTED = "granted"
+    DENIED = "denied"
+    UNSET = "unset"
+
+
+class ConsentMode(StrEnum):
+    """How ``OH_TELEMETRY_CONSENT`` interacts with the persisted value."""
+
+    SEED = "seed"
+    OVERRIDE = "override"
+
 
 #: The one namespace inside the otherwise-opaque ``misc_settings`` container
 #: that the agent-server reads. Owned by the frontend, documented here.
-MISC_NAMESPACE: Final = "telemetry"
-MISC_CONSENT_KEY: Final = "consent"
-MISC_MANAGED_KEY: Final = "managed"
+MISC_NAMESPACE: Final[str] = "telemetry"
+MISC_CONSENT_KEY: Final[str] = "consent"
+MISC_MANAGED_KEY: Final[str] = "managed"
 
 #: Pre-namespace key Canvas used. Read as a fallback so an existing user is not
 #: silently reset to no-consent; never written back.
-LEGACY_MISC_NAMESPACE: Final = "app_preferences"
-LEGACY_CONSENT_KEY: Final = "user_consents_to_analytics"
+LEGACY_MISC_NAMESPACE: Final[str] = "app_preferences"
+LEGACY_CONSENT_KEY: Final[str] = "user_consents_to_analytics"
 
-DO_NOT_TRACK_ENV: Final = "DO_NOT_TRACK"
-CONSENT_ENV: Final = "OH_TELEMETRY_CONSENT"
-CONSENT_MODE_ENV: Final = "OH_TELEMETRY_CONSENT_MODE"
+DO_NOT_TRACK_ENV: Final[str] = "DO_NOT_TRACK"
+CONSENT_ENV: Final[str] = "OH_TELEMETRY_CONSENT"
+CONSENT_MODE_ENV: Final[str] = "OH_TELEMETRY_CONSENT_MODE"
 
-_TRUTHY: Final = frozenset({"1", "true", "yes", "on"})
-_VALID_CONSENT: Final = frozenset({"granted", "denied", "unset"})
+_TRUTHY: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,11 +105,12 @@ def kill_switch_engaged(env: Mapping[str, str] | None = None) -> bool:
 def _coerce_consent(value: Any) -> TelemetryConsent | None:
     """Accept the documented strings, plus the legacy boolean shape."""
     if isinstance(value, bool):
-        return "granted" if value else "denied"
+        return TelemetryConsent.GRANTED if value else TelemetryConsent.DENIED
     if isinstance(value, str):
-        candidate = value.strip().lower()
-        if candidate in _VALID_CONSENT:
-            return candidate  # type: ignore[return-value]
+        try:
+            return TelemetryConsent(value.strip().lower())
+        except ValueError:
+            return None
     return None
 
 
@@ -122,7 +151,9 @@ def _env_consent(
     raw_mode = (env.get(CONSENT_MODE_ENV) or "").strip().lower()
     # Default to `seed`: an operator default must not silently overrule a
     # choice the user has already made.
-    mode: ConsentMode = "override" if raw_mode == "override" else "seed"
+    mode = (
+        ConsentMode.OVERRIDE if raw_mode == ConsentMode.OVERRIDE else ConsentMode.SEED
+    )
     return consent, mode
 
 
@@ -139,30 +170,32 @@ def resolve(
     source = os.environ if env is None else env
 
     if kill_switch_engaged(source):
-        return TelemetryDecision(consent="denied", enabled=False, reason="kill_switch")
+        return TelemetryDecision(
+            consent=TelemetryConsent.DENIED, enabled=False, reason="kill_switch"
+        )
 
     env_value, env_mode = _env_consent(source)
-    if env_value is not None and env_mode == "override":
+    if env_value is not None and env_mode is ConsentMode.OVERRIDE:
         return TelemetryDecision(
             consent=env_value,
-            enabled=env_value == "granted",
+            enabled=env_value is TelemetryConsent.GRANTED,
             reason="env_override",
         )
 
     settings_value, managed = read_consent(misc_settings)
-    if settings_value is not None and settings_value != "unset":
+    if settings_value is not None and settings_value is not TelemetryConsent.UNSET:
         return TelemetryDecision(
             consent=settings_value,
-            enabled=settings_value == "granted",
+            enabled=settings_value is TelemetryConsent.GRANTED,
             reason="settings",
             managed=managed,
         )
 
     legacy_value = read_legacy_consent(misc_settings)
-    if legacy_value is not None and legacy_value != "unset":
+    if legacy_value is not None and legacy_value is not TelemetryConsent.UNSET:
         return TelemetryDecision(
             consent=legacy_value,
-            enabled=legacy_value == "granted",
+            enabled=legacy_value is TelemetryConsent.GRANTED,
             reason="legacy_settings",
             managed=managed,
         )
@@ -170,30 +203,14 @@ def resolve(
     if env_value is not None:
         return TelemetryDecision(
             consent=env_value,
-            enabled=env_value == "granted",
+            enabled=env_value is TelemetryConsent.GRANTED,
             reason="env_seed",
             managed=managed,
         )
 
     return TelemetryDecision(
-        consent="unset", enabled=False, reason="default", managed=managed
+        consent=TelemetryConsent.UNSET,
+        enabled=False,
+        reason="default",
+        managed=managed,
     )
-
-
-__all__ = [
-    "CONSENT_ENV",
-    "CONSENT_MODE_ENV",
-    "DO_NOT_TRACK_ENV",
-    "LEGACY_CONSENT_KEY",
-    "LEGACY_MISC_NAMESPACE",
-    "MISC_CONSENT_KEY",
-    "MISC_MANAGED_KEY",
-    "MISC_NAMESPACE",
-    "ConsentMode",
-    "TelemetryConsent",
-    "TelemetryDecision",
-    "kill_switch_engaged",
-    "read_consent",
-    "read_legacy_consent",
-    "resolve",
-]
