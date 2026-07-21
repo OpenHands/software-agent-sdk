@@ -2342,7 +2342,34 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 input_tokens,
                 context_window,
             )
-        return {**call_kwargs, budget_key: clamped}
+
+        updated = {**call_kwargs, budget_key: clamped}
+
+        # The extended-thinking path in chat_options sets ``max_tokens`` without
+        # popping the default ``max_completion_tokens``, so both budget keys can
+        # be present. Clamp the sibling too (only when already present) so a stale
+        # full-size copy can't defeat the clamp downstream.
+        sibling_key = (
+            "max_completion_tokens" if budget_key == "max_tokens" else "max_tokens"
+        )
+        sibling = updated.get(sibling_key)
+        if isinstance(sibling, int) and sibling > clamped:
+            updated[sibling_key] = clamped
+
+        # Preserve the extended-thinking invariant ``budget_tokens < max_tokens``
+        # (Anthropic/Bedrock reject a thinking budget that meets or exceeds
+        # max_tokens). chat_options applied this against the original
+        # max_output_tokens; re-apply it against the clamped budget so lowering
+        # max_tokens for a large input can't invert it into an invalid request.
+        thinking = updated.get("thinking")
+        if (
+            isinstance(thinking, dict)
+            and isinstance(thinking.get("budget_tokens"), int)
+            and thinking["budget_tokens"] >= clamped
+        ):
+            updated["thinking"] = {**thinking, "budget_tokens": max(clamped - 1, 1)}
+
+        return updated
 
     def _init_model_info_and_caps(self) -> None:
         self._model_info = get_litellm_model_info(
