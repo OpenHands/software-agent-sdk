@@ -22,9 +22,14 @@ from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from openhands.agent_server.bash_service import BashEventService
-from openhands.agent_server.config import Config, WebhookSpec
+from openhands.agent_server.config import Config, TelemetrySpec, WebhookSpec
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.server_details_router import mark_initialization_complete
+from openhands.agent_server.telemetry import (
+    build_telemetry_sink,
+    emit_server_started,
+    shutdown_telemetry_sink,
+)
 from openhands.sdk.logger import get_logger
 
 
@@ -115,6 +120,14 @@ class InitRequest(BaseModel):
             "overwritten."
         ),
     )
+    telemetry: TelemetrySpec | None = Field(
+        default=None,
+        description=(
+            "Product-analytics policy for this pod. Without this, a warm-pool "
+            "pod keeps whatever mode it booted with (normally 'disabled'), so "
+            "a deployment that expects telemetry must supply it here."
+        ),
+    )
 
 
 class InitStatus(BaseModel):
@@ -158,6 +171,8 @@ def _build_initialized_config(base: Config, req: InitRequest) -> Config:
         updates["allow_cors_origins"] = req.allow_cors_origins
     if req.max_concurrent_runs is not None:
         updates["max_concurrent_runs"] = req.max_concurrent_runs
+    if req.telemetry is not None:
+        updates["telemetry"] = req.telemetry
     return base.model_copy(update=updates)
 
 
@@ -202,6 +217,17 @@ class InitService:
                 # tools pick up credentials.
                 for key, value in req.env.items():
                     os.environ[key] = value
+
+            # Rebuild the telemetry sink *before* the conversation service is
+            # constructed: ConversationService.get_instance() captures the
+            # sink, so a rebuild after this point would leave a warm-pool pod
+            # on the dormant (disabled) sink for its entire lifetime.
+            await shutdown_telemetry_sink()
+            self._app.state.telemetry_sink = await build_telemetry_sink(new_config)
+            # Emitted here, not at boot: a warm-pool pod boots with
+            # telemetry disabled, so a start event emitted then would be
+            # dropped and leave an unpaired `server_stopped` at shutdown.
+            emit_server_started()
 
             # Reset the module-level singleton so other call sites that go
             # through ``get_default_conversation_service`` see the new

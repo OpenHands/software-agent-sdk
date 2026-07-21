@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from typing import Any, TypedDict
+from datetime import datetime
+from typing import Any, Literal, TypedDict
 
 from pydantic import (
     BaseModel,
@@ -30,7 +31,16 @@ from openhands.sdk.settings import (
     default_agent_settings,
     validate_agent_settings,
 )
+from openhands.sdk.utils import utc_now
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
+
+
+TelemetryConsent = Literal["granted", "denied", "unset"]
+"""Whether the user has consented to product analytics.
+
+Only meaningful when the deployment sets ``Config.telemetry.mode`` to
+``local_opt_in``. ``unset`` is the default and is **not** consent.
+"""
 
 
 class SettingsUpdatePayload(TypedDict, total=False):
@@ -57,6 +67,7 @@ class SettingsUpdatePayload(TypedDict, total=False):
     misc_settings_diff: dict[str, Any]
     active_profile: str | None
     active_agent_profile_id: str | None
+    telemetry_consent: TelemetryConsent
 
 
 def _deep_merge(
@@ -110,7 +121,7 @@ def _deep_merge(
     return result
 
 
-PERSISTED_SETTINGS_SCHEMA_VERSION = 2
+PERSISTED_SETTINGS_SCHEMA_VERSION = 3
 
 
 class PersistedSettings(BaseModel):
@@ -126,8 +137,13 @@ class PersistedSettings(BaseModel):
     The ``misc_settings`` field is an opaque dict the agent-server persists
     on behalf of the frontend. The agent-server never reads its contents and
     has no schema for it; clients are free to store any JSON-serializable
-    structure they need (e.g. app/UI preferences, analytics consent, git
-    identity used for in-conversation commits, etc.).
+    structure they need (e.g. app/UI preferences, git identity used for
+    in-conversation commits, etc.).
+
+    ``telemetry_consent`` is deliberately a *typed* field rather than a key
+    inside ``misc_settings``: the agent-server reads and acts on it, which is
+    exactly what ``misc_settings`` promises never to do. It is only consulted
+    when the deployment sets ``Config.telemetry.mode`` to ``local_opt_in``.
     """
 
     schema_version: int = Field(
@@ -158,6 +174,18 @@ class PersistedSettings(BaseModel):
             "Updated through misc_settings_diff (deep-merged); contents are "
             "never read or validated by the agent-server."
         ),
+    )
+    telemetry_consent: TelemetryConsent = Field(
+        default="unset",
+        description=(
+            "Whether the user consented to product analytics. Only consulted "
+            "when Config.telemetry.mode is 'local_opt_in'. 'unset' is the "
+            "default and is not consent."
+        ),
+    )
+    telemetry_consent_updated_at: datetime | None = Field(
+        default=None,
+        description="When telemetry_consent was last changed, if ever.",
     )
 
     model_config = ConfigDict(populate_by_name=True)
@@ -266,6 +294,11 @@ class PersistedSettings(BaseModel):
                 self.active_profile = payload["active_profile"]
             if "active_agent_profile_id" in payload:
                 self.active_agent_profile_id = payload["active_agent_profile_id"]
+            if "telemetry_consent" in payload:
+                consent = payload["telemetry_consent"]
+                if consent != self.telemetry_consent:
+                    self.telemetry_consent = consent
+                    self.telemetry_consent_updated_at = utc_now()
         finally:
             # Clear conv_merged to minimize plaintext exposure window
             if conv_merged is not None:
@@ -281,7 +314,9 @@ class PersistedSettings(BaseModel):
 
         - **v1**: ``agent_settings`` + ``conversation_settings`` plus
           ``active_profile``.
-        - **v2** (current): adds the opaque ``misc_settings`` container.
+        - **v2**: adds the opaque ``misc_settings`` container.
+        - **v3** (current): adds typed ``telemetry_consent`` /
+          ``telemetry_consent_updated_at``.
         """
         if not isinstance(data, dict):
             return cls.model_validate(data, context=context)
@@ -296,6 +331,14 @@ class PersistedSettings(BaseModel):
                 f"{version} is newer than supported version "
                 f"{PERSISTED_SETTINGS_SCHEMA_VERSION}"
             )
+
+        if version < 3:
+            # Pre-v3 settings predate the consent field. Absence must read as
+            # "not consented" — the field default already does this, but it is
+            # stated explicitly so an upgrade can never be mistaken for an
+            # opt-in, and so a future v3->v4 migration has an obvious seam.
+            payload.setdefault("telemetry_consent", "unset")
+            payload.setdefault("telemetry_consent_updated_at", None)
 
         payload["schema_version"] = PERSISTED_SETTINGS_SCHEMA_VERSION
         return cls.model_validate(payload, context=context)

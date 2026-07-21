@@ -61,6 +61,20 @@ from openhands.agent_server.settings_router import settings_router
 from openhands.agent_server.skills_router import skills_router
 from openhands.agent_server.sockets import sockets_router
 from openhands.agent_server.sub_agents_router import sub_agents_router
+from openhands.agent_server.telemetry import (
+    build_telemetry_sink,
+    emit_server_started,
+    emit_server_stopped,
+    get_event_factory,
+    get_telemetry_sink,
+    shutdown_telemetry_sink,
+    telemetry_router,
+)
+from openhands.agent_server.telemetry.models import (
+    REQUEST_FAILED,
+    RequestFailedProperties,
+)
+from openhands.agent_server.telemetry.sanitizer import normalize_exception
 from openhands.agent_server.tool_preload_service import get_tool_preload_service
 from openhands.agent_server.tool_router import tool_router
 from openhands.agent_server.vscode_router import vscode_router
@@ -133,6 +147,18 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
 
         config: Config = api.state.config
         deferred = config.deferred_init
+
+        # Built before the deferred/legacy split so both branches share one
+        # sink. Disabled by default, so this is a no-op unless a deployment
+        # opts in. In deferred mode it is rebuilt by InitService once the real
+        # config arrives — which is why `server_started` is emitted there
+        # rather than here: a warm-pool pod boots with telemetry disabled, so
+        # emitting now would drop the start event and leave every pod
+        # reporting an unpaired `server_stopped`.
+        api.state.telemetry_sink = await build_telemetry_sink(config)
+        if not deferred:
+            emit_server_started()
+
         vscode_service = get_vscode_service()
         desktop_service = get_desktop_service()
         tool_preload_service = get_tool_preload_service()
@@ -265,10 +291,68 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
 
                 await stop_stateless_services()
     finally:
+        # Runs on every exit path, including a startup failure between the
+        # sink being built and either branch being reached — otherwise the
+        # drain task would leak. This sits after `async with service` has
+        # exited, so terminal conversation events emitted during EventService
+        # teardown are still accepted.
+        #
+        # Only paired with a start: a deferred pod that never received
+        # POST /api/init has no `server_started`, and an unpaired stop would
+        # corrupt uptime metrics.
+        emit_server_stopped()
+        await shutdown_telemetry_sink()
+
         if tmux_tmpdir_was_defaulted and os.environ.get("TMUX_TMPDIR") == str(
             tmux_tmpdir
         ):
             os.environ.pop("TMUX_TMPDIR", None)
+
+
+def _emit_request_failed(request: Request, exc: Exception, error_id: str) -> None:
+    """Report an unhandled 5xx as a sanitized diagnostic event.
+
+    Sends the *route template* (``/api/conversations/{conversation_id}``)
+    rather than ``request.url.path``, which embeds real identifiers. Fully
+    defensive: an error in the telemetry path must not replace the 500 the
+    caller is already getting with a different failure.
+    """
+    try:
+        sink = get_telemetry_sink()
+        if not sink.enabled:
+            return
+
+        factory = get_event_factory()
+        if factory is None:
+            return
+
+        route = request.scope.get("route")
+        route_template = getattr(route, "path", None)
+        if not isinstance(route_template, str) or not route_template:
+            # Unmatched route: reporting the raw path could leak identifiers.
+            route_template = "/unmatched"
+
+        method = request.method.upper()
+        if method not in ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"):
+            return
+
+        fingerprint = normalize_exception(exc)
+        sink.emit(
+            factory.build(
+                REQUEST_FAILED,
+                RequestFailedProperties(
+                    route_template=route_template,
+                    method=method,  # type: ignore[arg-type]
+                    status_code=500,
+                    error_class=fingerprint.error_class,
+                    error_category=fingerprint.error_category,
+                    error_fingerprint=fingerprint.error_fingerprint,
+                    error_id=error_id,
+                ),
+            )
+        )
+    except Exception:
+        logger.debug("Could not emit request_failed telemetry", exc_info=True)
 
 
 def _get_root_path(config: Config) -> str:
@@ -356,6 +440,7 @@ def _add_api_routes(app: FastAPI) -> None:
     api_router.include_router(llm_router)
     api_router.include_router(mcp_router)
     api_router.include_router(settings_router)
+    api_router.include_router(telemetry_router)
     api_router.include_router(workspaces_router)
     api_router.include_router(profiles_router)
     api_router.include_router(agent_profiles_router)
@@ -528,6 +613,7 @@ def _add_exception_handlers(api: FastAPI) -> None:
             error_id,
             exc_info=(type(exc), exc, exc.__traceback__),
         )
+        _emit_request_failed(request, exc, error_id)
         return JSONResponse(status_code=500, content=content)
 
     @api.exception_handler(HTTPException)

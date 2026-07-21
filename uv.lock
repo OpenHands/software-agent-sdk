@@ -8,7 +8,7 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
+exclude-newer = "2026-07-14T09:20:12.397198Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -2669,6 +2669,11 @@ dependencies = [
     { name = "wsproto" },
 ]
 
+[package.optional-dependencies]
+posthog = [
+    { name = "posthog" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.19" },
@@ -2677,12 +2682,14 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.104" },
     { name = "openai", specifier = ">=2.33.0,<3" },
     { name = "openhands-sdk", editable = "openhands-sdk" },
+    { name = "posthog", marker = "extra == 'posthog'", specifier = ">=6,<7" },
     { name = "pydantic", specifier = ">=2" },
     { name = "sqlalchemy", specifier = ">=2" },
     { name = "uvicorn", specifier = ">=0.31.1" },
     { name = "websockets", specifier = ">=12" },
     { name = "wsproto", specifier = ">=1.2.0" },
 ]
+provides-extras = ["posthog"]
 
 [[package]]
 name = "openhands-sdk"

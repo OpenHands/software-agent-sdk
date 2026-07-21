@@ -55,6 +55,12 @@ The server can be configured using environment variables or a JSON configuration
 | `SESSION_API_KEY` | API key for authentication (optional) | None |
 | `OH_SECRET_KEY` | Secret key for encrypting sensitive data (LLM API keys, secrets) in stored conversations. **Required for persistence across restarts.** | None |
 | `OH_ALLOW_CORS_ORIGIN_REGEX` | Regular expression for additional allowed CORS origins. Use `https?://.+` to allow any HTTP(S) origin while echoing the concrete origin. | None |
+| `OH_TELEMETRY_MODE` | Product-analytics policy: `disabled`, `local_opt_in`, or `cloud_locked`. See [Telemetry](#telemetry). | `disabled` |
+| `OH_TELEMETRY_POSTHOG_API_KEY` | PostHog project API key. Without it telemetry stays inactive in any mode. | None |
+| `OH_TELEMETRY_POSTHOG_HOST` | PostHog ingestion host. | `https://us.i.posthog.com` |
+| `OH_TELEMETRY_SALT` | Key used to pseudonymize conversation ids. Falls back to `OH_SECRET_KEY`, then to a per-process random salt. | None |
+| `DO_NOT_TRACK` | Set to `1` to force telemetry off, **overriding every mode including `cloud_locked`**. | Unset |
+| `OH_TELEMETRY_DISABLED` | Project-specific alias for `DO_NOT_TRACK`. | Unset |
 
 ### Configuration File
 
@@ -89,6 +95,94 @@ Create a JSON configuration file (default: `workspace/openhands_agent_server_con
 - **`webhooks`**: Array of webhook configurations for event notifications
 
 **Note**: Directory configuration (`working_dir`) will be handled at the conversation level rather than globally. These directories are specified when starting a conversation through the API.
+
+### Telemetry
+
+The agent server can emit a small set of **product-analytics** events to PostHog.
+It is **disabled by default** and does nothing unless a deployment opts in.
+
+#### This is not the same as the other two observability features
+
+| Feature | What it collects | Where it goes |
+|---|---|---|
+| **Telemetry** (this section) | Allowlisted lifecycle/failure events. Never prompts, messages, file contents, paths, secrets, request/response bodies, or tracebacks. | PostHog, when configured |
+| **LLM completion logging** (`log_completions`) | Full prompts, responses, and raw provider payloads — deliberately high fidelity for debugging. | Local disk only |
+| **Laminar / OpenTelemetry tracing** | Distributed traces and spans for latency analysis. | Your OTel/Laminar backend |
+
+Nothing from completion logging or tracing is ever forwarded to telemetry.
+
+#### Modes
+
+`OH_TELEMETRY_MODE` selects the deployment's policy:
+
+- **`disabled`** (default) — never emits. This is what library and headless
+  consumers get, and requires no PostHog dependency.
+- **`local_opt_in`** — emits only after the user explicitly consents through
+  `PUT /api/telemetry/consent`. Nothing is buffered before consent, so granting
+  it later cannot retroactively ship earlier activity. Revoking stops delivery
+  immediately and **discards** anything already queued.
+- **`cloud_locked`** — always emits; user consent is recorded but does not
+  change delivery. Intended for hosted deployments where analytics is part of
+  the service.
+
+`DO_NOT_TRACK=1` (or `OH_TELEMETRY_DISABLED=1`) forces telemetry off in **all**
+modes, including `cloud_locked`. This is an operator-level break-glass, not a
+user-level setting.
+
+#### Consent API
+
+```
+GET  /api/telemetry/consent
+PUT  /api/telemetry/consent   {"consent": "granted" | "denied" | "unset"}
+```
+
+Both return the resolved state, including `effective_enabled` and `is_locked`
+so a UI can render "managed by your administrator" without special-casing an
+error response. Consent is stored as a typed field in persisted settings
+(schema v3) — deliberately **not** inside the opaque `misc_settings` container,
+which the server documents as never interpreting.
+
+#### What is sent
+
+Events: `conversation_started`, `conversation_finished`, `conversation_failed`,
+`conversation_error`, `request_failed`, `server_started`, `server_stopped` — all
+prefixed `agent_server.`.
+
+Properties are limited to: schema version; release/runtime facts
+(`server_version`, `sdk_version`, `tools_version`, `build_git_sha`,
+`build_git_ref`, `python_version`, `platform`, `deployment_mode`,
+`deferred_init`); coarse conversation shape (`llm_model_family`, `agent_kind`,
+`tool_count`, `is_fork`, `has_agent_profile`, `workspace_kind`,
+`confirmation_mode`); bucketed outcomes (`terminal_status`, `duration_bucket`,
+`event_count_bucket`, …); and a normalized failure shape (`error_class`,
+`error_category`, `error_fingerprint`, `error_origin_module`,
+`error_origin_lineno`, `is_first_party`, `tool_name`, `error_id`).
+
+Magnitudes are bucketed rather than exact, because a raw count joined with a
+timestamp is a re-identification vector. `conversation_ref` is a keyed digest,
+never the raw conversation UUID. Exception *messages* and tracebacks are never
+read at all — failures are grouped by a fingerprint computed from the exception
+type and first-party module/line pairs.
+
+#### Identity
+
+Events use the deployment-supplied `user_id` verbatim as the PostHog
+`distinct_id`, so they attach to the person your product already identified.
+The exporter only ever calls `capture()` — never `identify()`, `alias()`, or
+`group_identify()` — so it cannot create a duplicate identity or irreversibly
+merge two. Without a `user_id`, an in-memory `anon:<hex>` id is used that resets
+on restart and is flagged so PostHog creates no person profile.
+
+#### Installation
+
+The PostHog client is an optional extra:
+
+```bash
+pip install 'openhands-agent-server[posthog]'
+```
+
+Without it, telemetry logs one warning and stays inactive; the server starts
+normally.
 
 ### Secret Encryption
 

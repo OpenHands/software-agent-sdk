@@ -2,7 +2,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
@@ -108,6 +108,75 @@ class WebhookSpec(BaseModel):
             "downstream is failing and events are re-queued for retry, the oldest "
             "events are dropped past this bound to prevent unbounded memory growth."
         ),
+    )
+
+
+class TelemetrySpec(BaseModel):
+    """Deployment-supplied product-analytics policy and transport settings.
+
+    This is the *deployment's* half of the telemetry policy; the user's half is
+    ``PersistedSettings.telemetry_consent``. Splitting them means a hosted
+    deployment can require telemetry without that requirement being defeatable
+    by editing a settings file, while a local installation stays strictly
+    opt-in.
+
+    Note that consent is deliberately **not** stored in the opaque
+    ``misc_settings`` container, which the agent-server documents as never
+    interpreting.
+    """
+
+    mode: Literal["cloud_locked", "local_opt_in", "disabled"] = Field(
+        default="disabled",
+        description=(
+            "Telemetry policy for this deployment. 'disabled' (the default) "
+            "never emits, and is what library and headless consumers get. "
+            "'local_opt_in' emits only after explicit consent via "
+            "PUT /api/telemetry/consent. 'cloud_locked' always emits and "
+            "ignores consent. The DO_NOT_TRACK / OH_TELEMETRY_DISABLED "
+            "environment variables override all three."
+        ),
+    )
+    posthog_api_key: SecretStr | None = Field(
+        default=None,
+        description=(
+            "PostHog project API key. When unset, no exporter is constructed "
+            "and telemetry stays a no-op regardless of mode."
+        ),
+    )
+    posthog_host: str = Field(
+        default="https://us.i.posthog.com",
+        description="PostHog ingestion host.",
+    )
+    salt: SecretStr | None = Field(
+        default=None,
+        description=(
+            "Key used to pseudonymize conversation identifiers. Falls back to "
+            "a per-process random salt, which keeps pseudonyms stable within a "
+            "run but unlinkable across runs."
+        ),
+    )
+    max_queue_size: int = Field(
+        default=1000,
+        ge=1,
+        description=(
+            "Upper bound on buffered diagnostic events. The queue is bounded "
+            "on ingest: past this many events the oldest are dropped, so a "
+            "failing exporter cannot grow memory without limit."
+        ),
+    )
+    event_buffer_size: int = Field(
+        default=20, ge=1, description="Maximum events per delivery batch."
+    )
+    flush_delay: float = Field(
+        default=30.0,
+        gt=0,
+        description="Seconds to wait before flushing a partial batch.",
+    )
+    num_retries: int = Field(
+        default=2, ge=0, description="Retries before a batch is dropped."
+    )
+    retry_delay: float = Field(
+        default=5.0, ge=0, description="Base seconds between delivery retries."
     )
 
 
@@ -268,6 +337,13 @@ class Config(BaseModel):
             "ownership is impossible. Values between 0 and "
             "LEASE_RENEW_INTERVAL_SECONDS (15 s) are valid but cause the lease "
             "to expire before the first renewal, effectively making it one-shot."
+        ),
+    )
+    telemetry: TelemetrySpec = Field(
+        default_factory=TelemetrySpec,
+        description=(
+            "Product-analytics policy. Disabled by default; see TelemetrySpec. "
+            "Distinct from LLM completion logging and from Laminar/OTel tracing."
         ),
     )
     model_config: ClassVar[ConfigDict] = {"frozen": True}
