@@ -8,6 +8,10 @@ from libtmux.exc import LibTmuxException, TmuxObjectDoesNotExist
 
 from openhands.sdk.llm import TextContent
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.redact import (
+    redact_api_key_literals,
+    redact_url_credentials_in_text,
+)
 from openhands.sdk.tool import ToolExecutor
 
 
@@ -362,24 +366,37 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         observation: TerminalObservation,
         conversation: "LocalConversation | None" = None,
     ) -> TerminalObservation:
-        """Apply automatic secrets masking to *observation*."""
-        content_text = observation.text
+        """Apply automatic secrets masking to *observation*.
 
-        if content_text and conversation is not None:
+        Always redacts URL-embedded credentials and bare API key literals so
+        outputs like ``git remote -v`` never leak GitHub tokens into the model
+        context (OpenHands#15338), even when no conversation secrets are set.
+        """
+        content_text = observation.text
+        if not content_text:
+            return observation
+
+        masked_content = content_text
+        if conversation is not None:
             try:
                 secret_registry = conversation.state.secret_registry
-                masked_content = secret_registry.mask_secrets_in_output(content_text)
-                if masked_content:
-                    data = observation.model_dump(
-                        exclude={"content", "full_output_save_dir"}
-                    )
-                    return TerminalObservation.from_text(
-                        text=masked_content,
-                        full_output_save_dir=self.full_output_save_dir,
-                        **data,
-                    )
+                masked_content = secret_registry.mask_secrets_in_output(masked_content)
             except Exception:
                 pass
+
+        # Generic redaction (idempotent if secret_registry already applied it).
+        masked_content = redact_api_key_literals(masked_content)
+        masked_content = redact_url_credentials_in_text(masked_content)
+
+        if masked_content != content_text:
+            data = observation.model_dump(
+                exclude={"content", "full_output_save_dir"}
+            )
+            return TerminalObservation.from_text(
+                text=masked_content,
+                full_output_save_dir=self.full_output_save_dir,
+                **data,
+            )
 
         return observation
 

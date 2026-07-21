@@ -1,6 +1,8 @@
 """Tests for redact utility functions."""
 
 from openhands.sdk.utils.redact import (
+    redact_api_key_literals,
+    redact_text_secrets,
     SENSITIVE_URL_PARAMS,
     redact_url_credentials,
     redact_url_credentials_in_text,
@@ -251,3 +253,34 @@ class TestRedactUrlCredentialsInText:
         """For a bare whole-URL string both helpers agree."""
         url = "https://oauth2:SECRET@gitlab.com/org/repo.git"
         assert redact_url_credentials_in_text(url) == redact_url_credentials(url)
+
+
+
+class TestGitHubUrlAndTokenRedaction:
+    """Coverage for OpenHands#15338 — git remote URL credential leakage."""
+
+    def test_redact_api_key_literals_ghu_token(self):
+        text = "https://ghu_abcdefghijklmnopqrstuvwxyz0123456789@github.com/owner/repo.git"
+        redacted = redact_api_key_literals(text)
+        assert "ghu_abcdefghijklmnopqrstuvwxyz0123456789" not in redacted
+        assert "<redacted>" in redacted
+
+    def test_redact_api_key_literals_gho_token(self):
+        text = "token gho_abcdefghijklmnopqrstuvwxyz0123456789 used"
+        redacted = redact_api_key_literals(text)
+        assert "gho_abcdefghijklmnopqrstuvwxyz0123456789" not in redacted
+
+    def test_redact_text_secrets_git_remote_v_output(self):
+        text = (
+            "origin\thttps://ghu_abcdefghijklmnopqrstuvwxyz0123456789@github.com/o/r.git (fetch)\n"
+            "origin\thttps://ghu_abcdefghijklmnopqrstuvwxyz0123456789@github.com/o/r.git (push)"
+        )
+        redacted = redact_text_secrets(text)
+        assert "ghu_abcdefghijklmnopqrstuvwxyz0123456789" not in redacted
+        assert "github.com/o/r.git" in redacted
+
+    def test_redact_url_credentials_in_text_ghu_userinfo(self):
+        text = "origin  https://ghu_abcdefghijklmnopqrstuvwxyz0123456789@github.com/owner/repo.git (fetch)"
+        redacted = redact_url_credentials_in_text(text)
+        assert "ghu_abcdefghijklmnopqrstuvwxyz0123456789" not in redacted
+        assert "https://****@github.com/owner/repo.git" in redacted
