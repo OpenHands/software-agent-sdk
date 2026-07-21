@@ -558,7 +558,7 @@ def test_metrics_subtitle_caps_cache_rate_when_cache_exceeds_prompt():
 
     subtitle = visualizer._format_metrics_subtitle()
     assert subtitle is not None
-    match = re.search(r"cache hit ([\d.]+)%", subtitle)
+    match = re.search(r"cache hit (?:\(total )?([\d.]+)%", subtitle)
     assert match, subtitle
     rate = float(match.group(1))
     assert 0.0 <= rate <= 100.0, f"cache hit rate {rate} outside [0, 100]"
@@ -796,9 +796,9 @@ def test_metrics_subtitle_fallback_labels_totals():
     visualizer.initialize(mock_state)
 
     expected = (
-        "Tokens: [cyan]↑ input 1K (total)[/cyan] • "
-        "[magenta]cache hit 0.00% (total)[/magenta] • "
-        "[blue]↓ output 100 (total)[/blue] • "
+        "Tokens: [cyan]↑ input (total 1K)[/cyan] • "
+        "[magenta]cache hit (total 0.00%)[/magenta] • "
+        "[blue]↓ output (total 100)[/blue] • "
         "[green]$ (total 0.00)[/green]"
     )
 
@@ -844,9 +844,9 @@ def test_metrics_subtitle_user_message_labels_totals():
         llm_message=Message(role="user", content=[TextContent(text="Hello")]),
     )
     assert visualizer._format_metrics_subtitle(user_event) == (
-        "Tokens: [cyan]↑ input 1K (total)[/cyan] • "
-        "[magenta]cache hit 0.00% (total)[/magenta] • "
-        "[blue]↓ output 100 (total)[/blue] • "
+        "Tokens: [cyan]↑ input (total 1K)[/cyan] • "
+        "[magenta]cache hit (total 0.00%)[/magenta] • "
+        "[blue]↓ output (total 100)[/blue] • "
         "[green]$ (total 0.00)[/green]"
     )
 

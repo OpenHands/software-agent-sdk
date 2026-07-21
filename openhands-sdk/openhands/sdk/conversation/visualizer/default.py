@@ -460,12 +460,12 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
             # per-session). Every number here is a running total, so label it
             # as such -- next to per-request events, bare numbers would read
             # as per-request, which is the confusion #4105 set out to fix.
-            input_str = f"↑ input {abbr(usage.prompt_tokens or 0)} (total)"
-            output_str = f"↓ output {abbr(usage.completion_tokens or 0)} (total)"
-            cache_rate = f"{fmt_rate(combined_metrics.cache_hit_rate)} (total)"
+            input_str = f"↑ input (total {abbr(usage.prompt_tokens or 0)})"
+            output_str = f"↓ output (total {abbr(usage.completion_tokens or 0)})"
+            cache_rate = f"(total {fmt_rate(combined_metrics.cache_hit_rate)})"
             total_reasoning_tokens = usage.reasoning_tokens or 0
             show_reasoning = total_reasoning_tokens > 0
-            reasoning_str = f"reasoning {abbr(total_reasoning_tokens)} (total)"
+            reasoning_str = f"reasoning (total {abbr(total_reasoning_tokens)})"
 
         # Cost is always cumulative: ``Cost`` entries carry no ``response_id``
         # (unlike ``TokenUsage``), so a per-request cost cannot be attributed.

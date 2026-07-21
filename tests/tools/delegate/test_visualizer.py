@@ -331,6 +331,6 @@ def test_delegation_visualizer_user_message_labels_totals():
 
     assert block is not None
     rendered = "".join(str(r) for r in block.renderables)
-    assert "input 1K (total)" in rendered
-    assert "output 100 (total)" in rendered
+    assert "input (total 1K)" in rendered
+    assert "output (total 100)" in rendered
     assert "$ (total 0.00)" in rendered
