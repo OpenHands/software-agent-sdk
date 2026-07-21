@@ -16,15 +16,14 @@ oversight.
 This module must not import any analytics vendor SDK.
 """
 
-from __future__ import annotations
-
 from datetime import datetime
-from typing import Annotated, Literal
+from enum import StrEnum
+from typing import Annotated, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 
-TELEMETRY_SCHEMA_VERSION = 1
+TELEMETRY_SCHEMA_VERSION: Final = 1
 
 SafeToken = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9_.:\-]{0,63}$")]
 """Lowercase enum-ish token: ``finished``, ``anthropic``, ``0-5s``."""
@@ -62,23 +61,17 @@ Bucket = SafeToken
 """A bucketed magnitude such as ``11-50``. Never a raw count."""
 
 
-SERVER_STARTED = "agent_server.server_started"
-SERVER_STOPPED = "agent_server.server_stopped"
-CONVERSATION_STARTED = "agent_server.conversation_started"
-CONVERSATION_FINISHED = "agent_server.conversation_finished"
-CONVERSATION_FAILED = "agent_server.conversation_failed"
-CONVERSATION_ERROR = "agent_server.conversation_error"
-REQUEST_FAILED = "agent_server.request_failed"
+class EventName(StrEnum):
+    """Stable event names. The wire value is the member value."""
 
-EventNameLiteral = Literal[
-    "agent_server.server_started",
-    "agent_server.server_stopped",
-    "agent_server.conversation_started",
-    "agent_server.conversation_finished",
-    "agent_server.conversation_failed",
-    "agent_server.conversation_error",
-    "agent_server.request_failed",
-]
+    SERVER_STARTED = "agent_server.server_started"
+    SERVER_STOPPED = "agent_server.server_stopped"
+    CONVERSATION_STARTED = "agent_server.conversation_started"
+    CONVERSATION_FINISHED = "agent_server.conversation_finished"
+    CONVERSATION_FAILED = "agent_server.conversation_failed"
+    CONVERSATION_ERROR = "agent_server.conversation_error"
+    REQUEST_FAILED = "agent_server.request_failed"
+
 
 ErrorCategory = Literal[
     "llm_auth",
@@ -97,7 +90,7 @@ ErrorCategory = Literal[
     "unknown",
 ]
 
-ERROR_CATEGORY_BY_CLASS_NAME: dict[str, ErrorCategory] = {
+ERROR_CATEGORY_BY_CLASS_NAME: Final[dict[str, ErrorCategory]] = {
     "AuthenticationError": "llm_auth",
     "PermissionDeniedError": "llm_auth",
     "RateLimitError": "llm_rate_limit",
@@ -249,7 +242,7 @@ class DiagnosticEvent(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    event_name: EventNameLiteral
+    event_name: EventName
     schema_version: int = TELEMETRY_SCHEMA_VERSION
     occurred_at: datetime
 
@@ -282,7 +275,7 @@ class DiagnosticEvent(BaseModel):
 
 
 #: A deny test asserts the models produce exactly this set.
-EXPECTED_PROPERTY_NAMES: frozenset[str] = frozenset(
+EXPECTED_PROPERTY_NAMES: Final[frozenset[str]] = frozenset(
     {
         "schema_version",
         "server_version",

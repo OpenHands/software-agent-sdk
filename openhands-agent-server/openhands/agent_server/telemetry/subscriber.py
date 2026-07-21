@@ -13,24 +13,23 @@ Two properties are non-negotiable here:
   so anything slower would stall event fan-out for the whole conversation.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Final
 from uuid import UUID
 
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.telemetry import models as m
 from openhands.agent_server.telemetry.factory import DiagnosticEventFactory
 from openhands.agent_server.telemetry.sanitizer import (
+    COST_BOUNDS,
+    COUNT_BOUNDS,
+    DURATION_BOUNDS,
+    TOKEN_BOUNDS,
     UNKNOWN_TOKEN,
-    cost_bucket,
-    count_bucket,
-    duration_bucket,
+    bucket,
     normalize_error_code,
     safe_token,
-    token_bucket,
 )
 from openhands.agent_server.telemetry.sink import TelemetrySink
 from openhands.sdk.event import AgentErrorEvent, ConversationStateUpdateEvent, Event
@@ -41,13 +40,13 @@ from openhands.sdk.utils import utc_now
 
 logger = get_logger(__name__)
 
-_TERMINAL_STATUSES = frozenset({"finished", "error", "stuck"})
-_FAILURE_STATUSES = frozenset({"error", "stuck"})
-_EXECUTION_STATUS_KEY = "execution_status"
-_FULL_STATE_KEY = "full_state"
+_TERMINAL_STATUSES: Final = frozenset({"finished", "error", "stuck"})
+_FAILURE_STATUSES: Final = frozenset({"error", "stuck"})
+_EXECUTION_STATUS_KEY: Final = "execution_status"
+_FULL_STATE_KEY: Final = "full_state"
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class ConversationTelemetryContext:
     """The sanitized facts about one conversation, resolved once at start."""
 
@@ -62,7 +61,7 @@ class ConversationTelemetryContext:
     confirmation_policy: str
 
 
-@dataclass
+@dataclass(slots=True)
 class TelemetrySubscriber(Subscriber[Event]):
     """Emits lifecycle and failure events for a single conversation."""
 
@@ -128,7 +127,7 @@ class TelemetrySubscriber(Subscriber[Event]):
             )
             self.sink.emit(
                 self.factory.build(
-                    m.CONVERSATION_STARTED,
+                    m.EventName.CONVERSATION_STARTED,
                     properties,
                     user_id=self.context.user_id,
                 )
@@ -146,16 +145,16 @@ class TelemetrySubscriber(Subscriber[Event]):
         properties = m.ConversationOutcomeProperties(
             conversation_ref=self.context.conversation_ref,
             terminal_status=token,
-            duration_bucket=duration_bucket(elapsed),
-            event_count_bucket=count_bucket(self._event_count),
-            total_tokens_bucket=token_bucket(self._total_tokens),
-            cost_bucket=cost_bucket(self._total_cost),
+            duration_bucket=bucket(elapsed, DURATION_BOUNDS),
+            event_count_bucket=bucket(self._event_count, COUNT_BOUNDS),
+            total_tokens_bucket=bucket(self._total_tokens, TOKEN_BOUNDS),
+            cost_bucket=bucket(self._total_cost, COST_BOUNDS),
             llm_model_family=self.context.llm_model_family,
         )
         event_name = (
-            m.CONVERSATION_FAILED
+            m.EventName.CONVERSATION_FAILED
             if token in _FAILURE_STATUSES
-            else m.CONVERSATION_FINISHED
+            else m.EventName.CONVERSATION_FINISHED
         )
         self.sink.emit(
             self.factory.build(event_name, properties, user_id=self.context.user_id)
@@ -172,13 +171,13 @@ class TelemetrySubscriber(Subscriber[Event]):
         try:
             value = getattr(event, "value", None)
             if not isinstance(value, dict):
-                return
+                return None
             stats = value.get("stats")
             if not isinstance(stats, dict):
-                return
+                return None
             per_usage = stats.get("usage_to_metrics")
             if not isinstance(per_usage, dict):
-                return
+                return None
 
             tokens = 0
             cost = 0.0
@@ -214,7 +213,7 @@ class TelemetrySubscriber(Subscriber[Event]):
         )
         self.sink.emit(
             self.factory.build(
-                m.CONVERSATION_ERROR, properties, user_id=self.context.user_id
+                m.EventName.CONVERSATION_ERROR, properties, user_id=self.context.user_id
             )
         )
 
@@ -238,7 +237,7 @@ class TelemetrySubscriber(Subscriber[Event]):
         )
         self.sink.emit(
             self.factory.build(
-                m.CONVERSATION_ERROR, properties, user_id=self.context.user_id
+                m.EventName.CONVERSATION_ERROR, properties, user_id=self.context.user_id
             )
         )
 

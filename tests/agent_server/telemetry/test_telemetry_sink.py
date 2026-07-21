@@ -16,7 +16,7 @@ from openhands.agent_server.telemetry.sink import (
 
 def make_event(index: int = 0) -> m.DiagnosticEvent:
     return m.DiagnosticEvent(
-        event_name=m.CONVERSATION_STARTED,
+        event_name=m.EventName.CONVERSATION_STARTED,
         occurred_at=datetime.now(UTC),
         distinct_id=f"user-{index}",
         runtime=m.RuntimeProperties(

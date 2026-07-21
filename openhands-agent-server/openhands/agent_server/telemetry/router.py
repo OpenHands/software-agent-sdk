@@ -10,7 +10,7 @@ two reasons:
    wrong shape for something that must be *granted*, not accidentally set.
 """
 
-from __future__ import annotations
+from typing import Final
 
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
@@ -30,7 +30,7 @@ from openhands.sdk.logger import get_logger
 
 logger = get_logger(__name__)
 
-CONSENT_PATH = "/consent"  # -> /api/telemetry/consent
+CONSENT_PATH: Final = "/consent"  # -> /api/telemetry/consent
 
 telemetry_router = APIRouter(prefix="/telemetry", tags=["Telemetry"])
 

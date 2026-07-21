@@ -147,7 +147,7 @@ def test_server_lifecycle_events_are_emitted_when_enabled(
     with TestClient(create_app(Config(static_files_path=None))):
         pass
 
-    assert emitted == [m.SERVER_STARTED, m.SERVER_STOPPED]
+    assert emitted == [m.EventName.SERVER_STARTED, m.EventName.SERVER_STOPPED]
 
 
 def test_deferred_pod_does_not_emit_an_unpaired_server_stopped(

@@ -139,7 +139,7 @@ def test_payload_carries_schema_version_and_excludes_distinct_id():
     from datetime import UTC, datetime
 
     event = m.DiagnosticEvent(
-        event_name=m.SERVER_STARTED,
+        event_name=m.EventName.SERVER_STARTED,
         occurred_at=datetime.now(UTC),
         distinct_id="user-123",
         runtime=m.RuntimeProperties(

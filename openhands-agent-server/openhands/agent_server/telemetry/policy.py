@@ -14,23 +14,21 @@ opaque and never interpreted by the agent-server, and this value is very much
 interpreted by the agent-server.
 """
 
-from __future__ import annotations
-
 import os
 from dataclasses import dataclass
-from typing import Literal
+from typing import Final, Literal
 
 
 TelemetryMode = Literal["cloud_locked", "local_opt_in", "disabled"]
 TelemetryConsent = Literal["granted", "denied", "unset"]
 
-DO_NOT_TRACK_ENV = "DO_NOT_TRACK"
-TELEMETRY_DISABLED_ENV = "OH_TELEMETRY_DISABLED"
+DO_NOT_TRACK_ENV: Final = "DO_NOT_TRACK"
+TELEMETRY_DISABLED_ENV: Final = "OH_TELEMETRY_DISABLED"
 
-_TRUTHY = frozenset({"1", "true", "yes", "on"})
+_TRUTHY: Final = frozenset({"1", "true", "yes", "on"})
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class TelemetryDecision:
     """The resolved answer, with the reason retained for the consent API."""
 
@@ -81,14 +79,16 @@ def resolve(
     if kill_switch_engaged(env):
         return TelemetryDecision(enabled=False, reason="kill_switch")
 
-    if mode == "disabled":
-        return TelemetryDecision(enabled=False, reason="mode_disabled")
+    match mode:
+        case "disabled":
+            return TelemetryDecision(enabled=False, reason="mode_disabled")
+        case "cloud_locked":
+            return TelemetryDecision(enabled=True, reason="cloud_locked")
 
-    if mode == "cloud_locked":
-        return TelemetryDecision(enabled=True, reason="cloud_locked")
-
-    if consent == "granted":
-        return TelemetryDecision(enabled=True, reason="consent_granted")
-    if consent == "denied":
-        return TelemetryDecision(enabled=False, reason="consent_denied")
-    return TelemetryDecision(enabled=False, reason="consent_unset")
+    match consent:
+        case "granted":
+            return TelemetryDecision(enabled=True, reason="consent_granted")
+        case "denied":
+            return TelemetryDecision(enabled=False, reason="consent_denied")
+        case _:
+            return TelemetryDecision(enabled=False, reason="consent_unset")

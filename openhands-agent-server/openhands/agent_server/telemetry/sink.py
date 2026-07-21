@@ -17,13 +17,11 @@ Failure policy differs deliberately from ``WebhookSubscriber``:
 * revocation **discards** the queue instead of draining it.
 """
 
-from __future__ import annotations
-
 import asyncio
 from collections import deque
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
-from typing import Protocol
+from typing import Final, Protocol
 
 from openhands.agent_server.telemetry.models import DiagnosticEvent
 from openhands.agent_server.telemetry.policy import (
@@ -38,12 +36,12 @@ from openhands.sdk.logger import get_logger
 logger = get_logger(__name__)
 
 #: Consent cache TTL. Revocation does not wait for it; the endpoint pushes.
-CONSENT_REFRESH_SECONDS = 5.0
+CONSENT_REFRESH_SECONDS: Final = 5.0
 
 #: Caps the final flush so a hung endpoint cannot extend shutdown.
-SHUTDOWN_FLUSH_TIMEOUT_SECONDS = 5.0
+SHUTDOWN_FLUSH_TIMEOUT_SECONDS: Final = 5.0
 
-_MAX_BACKOFF_SECONDS = 60.0
+_MAX_BACKOFF_SECONDS: Final = 60.0
 
 
 class TelemetryExporter(Protocol):

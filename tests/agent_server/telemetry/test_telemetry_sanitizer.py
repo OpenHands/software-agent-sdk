@@ -8,14 +8,15 @@ read, which is the whole guarantee.
 """
 
 import json
+from dataclasses import asdict
 
 import pytest
 
 from openhands.agent_server.telemetry.sanitizer import (
+    COST_BOUNDS,
+    COUNT_BOUNDS,
+    DURATION_BOUNDS,
     bucket,
-    cost_bucket,
-    count_bucket,
-    duration_bucket,
     model_family,
     normalize_error_code,
     normalize_exception,
@@ -94,7 +95,7 @@ def test_fingerprint_distinguishes_different_raise_sites():
 )
 def test_no_part_of_the_message_survives_normalization(payload: str):
     fingerprint = normalize_exception(_raise(payload))
-    serialized = json.dumps(fingerprint.__dict__)
+    serialized = json.dumps(asdict(fingerprint))
 
     assert payload not in serialized
     # Nor any distinctive fragment of it.
@@ -105,7 +106,7 @@ def test_no_part_of_the_message_survives_normalization(payload: str):
 
 def test_normalization_never_emits_a_traceback_or_a_path():
     fingerprint = normalize_exception(_raise("boom"))
-    serialized = json.dumps(fingerprint.__dict__)
+    serialized = json.dumps(asdict(fingerprint))
 
     assert "Traceback" not in serialized
     assert "/" not in serialized
@@ -199,14 +200,14 @@ def test_safe_version_accepts_real_versions_and_refs():
 
 
 def test_buckets_never_reveal_exact_magnitudes():
-    assert duration_bucket(0.5) == "lt-1"
-    assert duration_bucket(7) == "5-15"
-    assert duration_bucket(100_000) == "1800+"
-    assert count_bucket(0) == "lt-1"
-    assert count_bucket(3) == "1-5"
-    assert cost_bucket(0.005) == "lt-0p01"
-    assert duration_bucket(None) == "unknown"
-    assert duration_bucket(-1) == "unknown"
+    assert bucket(0.5, DURATION_BOUNDS) == "lt-1"
+    assert bucket(7, DURATION_BOUNDS) == "5-15"
+    assert bucket(100_000, DURATION_BOUNDS) == "1800+"
+    assert bucket(0, COUNT_BOUNDS) == "lt-1"
+    assert bucket(3, COUNT_BOUNDS) == "1-5"
+    assert bucket(0.005, COST_BOUNDS) == "lt-0p01"
+    assert bucket(None, DURATION_BOUNDS) == "unknown"
+    assert bucket(-1, DURATION_BOUNDS) == "unknown"
 
 
 def test_bucket_is_monotonic():
@@ -244,7 +245,7 @@ def test_pseudonymize_accepts_an_oversized_salt():
         ("claude-opus-4-8", "anthropic"),
         ("gpt-4o", "openai"),
         ("gemini-2.0-flash", "gemini"),
-        ("litellm_proxy/my-internal-deployment", "other"),
+        ("litellm_proxy/my-internal-deployment", "litellm_proxy"),
         ("", "unknown"),
         (None, "unknown"),
     ],

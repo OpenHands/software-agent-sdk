@@ -71,7 +71,7 @@ from openhands.agent_server.telemetry import (
     telemetry_router,
 )
 from openhands.agent_server.telemetry.models import (
-    REQUEST_FAILED,
+    EventName,
     RequestFailedProperties,
 )
 from openhands.agent_server.telemetry.sanitizer import normalize_exception
@@ -327,7 +327,7 @@ def _emit_request_failed(request: Request, exc: Exception, error_id: str) -> Non
         fingerprint = normalize_exception(exc)
         sink.emit(
             factory.build(
-                REQUEST_FAILED,
+                EventName.REQUEST_FAILED,
                 RequestFailedProperties(
                     route_template=route_template,
                     method=method,  # type: ignore[arg-type]

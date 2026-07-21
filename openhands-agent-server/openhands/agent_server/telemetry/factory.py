@@ -6,20 +6,19 @@ accidentally assemble an event with a raw conversation id or an unbucketed
 count.
 """
 
-from __future__ import annotations
-
 import os
 import sys
 import uuid
 from datetime import datetime
 from importlib.metadata import version
+from typing import Final
 from uuid import UUID
 
 from openhands.agent_server.telemetry.models import (
     TELEMETRY_SCHEMA_VERSION,
     DiagnosticEvent,
     DiagnosticProperties,
-    EventNameLiteral,
+    EventName,
     RuntimeProperties,
 )
 from openhands.agent_server.telemetry.policy import TelemetryMode
@@ -32,7 +31,7 @@ from openhands.agent_server.telemetry.sanitizer import (
 from openhands.sdk.utils import utc_now
 
 
-ANONYMOUS_PREFIX = "anon:"
+ANONYMOUS_PREFIX: Final = "anon:"
 
 
 def _package_version(dist_name: str) -> str:
@@ -120,7 +119,7 @@ class DiagnosticEventFactory:
 
     def build(
         self,
-        event_name: EventNameLiteral,
+        event_name: EventName,
         properties: DiagnosticProperties,
         *,
         user_id: str | None = None,

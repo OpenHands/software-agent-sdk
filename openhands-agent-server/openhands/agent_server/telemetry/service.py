@@ -8,8 +8,6 @@ absent API key, or a settings-store read error all resolve to the no-op sink.
 Analytics must never be able to prevent a server from starting.
 """
 
-from __future__ import annotations
-
 import asyncio
 from functools import partial
 
@@ -19,9 +17,7 @@ from openhands.agent_server.telemetry.factory import (
     build_runtime_properties,
 )
 from openhands.agent_server.telemetry.models import (
-    SERVER_STARTED,
-    SERVER_STOPPED,
-    EventNameLiteral,
+    EventName,
     ServerLifecycleProperties,
 )
 from openhands.agent_server.telemetry.policy import (
@@ -201,7 +197,7 @@ def emit_server_started() -> None:
     telemetry disabled and an event emitted then would be silently dropped.
     """
     global _server_started_emitted
-    if _emit_lifecycle(SERVER_STARTED):
+    if _emit_lifecycle(EventName.SERVER_STARTED):
         _server_started_emitted = True
 
 
@@ -215,10 +211,10 @@ def emit_server_stopped() -> None:
     if not _server_started_emitted:
         return
     _server_started_emitted = False
-    _emit_lifecycle(SERVER_STOPPED)
+    _emit_lifecycle(EventName.SERVER_STOPPED)
 
 
-def _emit_lifecycle(event_name: EventNameLiteral) -> bool:
+def _emit_lifecycle(event_name: EventName) -> bool:
     """Emit a server lifecycle event. Returns whether it was actually sent."""
     try:
         sink = get_telemetry_sink()

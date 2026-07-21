@@ -39,7 +39,7 @@ def fake_posthog(monkeypatch):
 
 def make_event(distinct_id: str) -> m.DiagnosticEvent:
     return m.DiagnosticEvent(
-        event_name=m.CONVERSATION_FINISHED,
+        event_name=m.EventName.CONVERSATION_FINISHED,
         occurred_at=datetime.now(UTC),
         distinct_id=distinct_id,
         runtime=m.RuntimeProperties(

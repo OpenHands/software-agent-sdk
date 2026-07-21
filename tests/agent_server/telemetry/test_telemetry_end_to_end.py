@@ -126,9 +126,9 @@ async def test_opted_in_session_emits_sanitized_lifecycle_and_error_events():
     await asyncio.wait_for(sink.aclose(), timeout=10)
 
     names = [p["event"] for p in exporter.payloads]
-    assert m.CONVERSATION_STARTED in names
-    assert m.CONVERSATION_ERROR in names
-    assert m.CONVERSATION_FINISHED in names
+    assert m.EventName.CONVERSATION_STARTED in names
+    assert m.EventName.CONVERSATION_ERROR in names
+    assert m.EventName.CONVERSATION_FINISHED in names
 
     serialized = json.dumps(exporter.payloads)
 
@@ -167,16 +167,16 @@ async def test_opted_in_session_reports_useful_diagnostics():
 
     by_name = {p["event"]: p["properties"] for p in exporter.payloads}
 
-    started = by_name[m.CONVERSATION_STARTED]
+    started = by_name[m.EventName.CONVERSATION_STARTED]
     assert started["llm_model_family"] == "anthropic"
     assert started["tool_count"] == 4
 
-    error = by_name[m.CONVERSATION_ERROR]
+    error = by_name[m.EventName.CONVERSATION_ERROR]
     assert error["error_category"] == "tool_execution"
     assert error["tool_name"] == "bash"
     assert len(error["error_fingerprint"]) >= 16
 
-    finished = by_name[m.CONVERSATION_FINISHED]
+    finished = by_name[m.EventName.CONVERSATION_FINISHED]
     assert finished["terminal_status"] == "finished"
     # Bucketed, not exact.
     assert "-" in finished["duration_bucket"] or finished["duration_bucket"].startswith(

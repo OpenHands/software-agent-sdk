@@ -22,9 +22,8 @@ Correlation is achieved by *reusing* the identity the deployment already
 established, never by asserting a new one.
 """
 
-from __future__ import annotations
-
 import asyncio
+from typing import Final
 
 from openhands.agent_server.telemetry.factory import ANONYMOUS_PREFIX
 from openhands.agent_server.telemetry.models import DiagnosticEvent
@@ -33,7 +32,7 @@ from openhands.sdk.logger import get_logger
 
 logger = get_logger(__name__)
 
-DEFAULT_POSTHOG_HOST = "https://us.i.posthog.com"
+DEFAULT_POSTHOG_HOST: Final = "https://us.i.posthog.com"
 
 
 class PostHogExporter:

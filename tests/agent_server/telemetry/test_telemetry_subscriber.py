@@ -84,7 +84,7 @@ async def test_emits_exactly_one_started_event(factory):
     sub = make_subscriber(sink, factory)
 
     sub.emit_started()
-    assert sink.names == [m.CONVERSATION_STARTED]
+    assert sink.names == [m.EventName.CONVERSATION_STARTED]
 
 
 def test_started_is_only_emitted_for_genuinely_new_conversations():
@@ -122,7 +122,7 @@ async def test_terminal_status_emits_finished_once(factory):
     await sub(ConversationStateUpdateEvent(key="execution_status", value="finished"))
     await sub.close()
 
-    assert sink.names == [m.CONVERSATION_FINISHED]
+    assert sink.names == [m.EventName.CONVERSATION_FINISHED]
 
 
 @pytest.mark.parametrize("status", ["error", "stuck"])
@@ -133,7 +133,7 @@ async def test_failure_statuses_emit_conversation_failed(factory, status):
     # Baseline push that subscribe_to_events performs on attach.
     await sub(ConversationStateUpdateEvent(key="execution_status", value="idle"))
     await sub(ConversationStateUpdateEvent(key="execution_status", value=status))
-    assert sink.names == [m.CONVERSATION_FAILED]
+    assert sink.names == [m.EventName.CONVERSATION_FAILED]
     assert sink.events[0].to_payload()["terminal_status"] == status
 
 
@@ -148,7 +148,7 @@ async def test_terminal_status_is_read_from_a_full_state_snapshot(factory):
             key="full_state", value={"execution_status": "finished"}
         )
     )
-    assert sink.names == [m.CONVERSATION_FINISHED]
+    assert sink.names == [m.EventName.CONVERSATION_FINISHED]
 
 
 async def test_close_emits_a_terminal_event_when_none_was_observed(factory):
@@ -185,7 +185,7 @@ async def test_agent_error_event_reports_only_the_tool_name(factory):
         )
     )
 
-    assert sink.names == [m.CONVERSATION_ERROR]
+    assert sink.names == [m.EventName.CONVERSATION_ERROR]
     serialized = json.dumps(sink.events[0].to_payload())
     assert secret not in serialized
     assert "sk-ant" not in serialized
@@ -269,7 +269,7 @@ async def test_subscriber_does_not_stall_pubsub_fanout(factory):
     await asyncio.wait_for(pub_sub(event), timeout=1.0)
 
     assert sibling.received == 1
-    assert sink.names == [m.CONVERSATION_FINISHED]
+    assert sink.names == [m.EventName.CONVERSATION_FINISHED]
 
 
 async def test_disabled_sink_short_circuits_before_building_events(factory):
@@ -278,7 +278,7 @@ async def test_disabled_sink_short_circuits_before_building_events(factory):
 
     sub.emit_started()
     # emit() itself is a no-op on a disabled sink; nothing is recorded.
-    assert sink.events == [] or sink.names == [m.CONVERSATION_STARTED]
+    assert sink.events == [] or sink.names == [m.EventName.CONVERSATION_STARTED]
 
 
 # ── identity ──────────────────────────────────────────────────────────────
@@ -347,7 +347,7 @@ async def test_a_live_transition_after_the_baseline_still_emits(factory):
     assert sink.names == []
 
     await sub(ConversationStateUpdateEvent(key="execution_status", value="finished"))
-    assert sink.names == [m.CONVERSATION_FINISHED]
+    assert sink.names == [m.EventName.CONVERSATION_FINISHED]
 
 
 # ── production event shape ────────────────────────────────────────────────
@@ -394,7 +394,7 @@ async def test_lifecycle_fires_on_the_real_from_conversation_state_event(factory
 
     state.execution_status = ConversationExecutionStatus.FINISHED
     await sub(ConversationStateUpdateEvent.from_conversation_state(state))
-    assert sink.names == [m.CONVERSATION_FINISHED]
+    assert sink.names == [m.EventName.CONVERSATION_FINISHED]
 
 
 async def test_outcome_reports_real_bucketed_usage(factory):
@@ -472,9 +472,12 @@ def test_confirmation_policy_is_read_from_the_field_that_exists():
         ),
     )
 
+    from dataclasses import asdict
+
     assert ctx.confirmation_policy == "alwaysconfirm"
     assert ctx.llm_model_family == "anthropic"
     assert ctx.user_id == "canvas-user-42"
     # No field silently degraded, and the workspace path did not leak.
-    assert "unknown" not in ctx.__dict__.values()
-    assert "secret-project" not in repr(ctx.__dict__)
+    fields = asdict(ctx)
+    assert "unknown" not in fields.values()
+    assert "secret-project" not in repr(fields)

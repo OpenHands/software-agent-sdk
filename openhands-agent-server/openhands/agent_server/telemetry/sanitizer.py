@@ -19,12 +19,13 @@ already PII-free, so the hash is defence in depth rather than the thing being
 relied on.
 """
 
-from __future__ import annotations
-
 import hashlib
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
+from functools import lru_cache
 from types import TracebackType
+from typing import Final
 
 from openhands.agent_server.telemetry.models import (
     ERROR_CATEGORY_BY_CLASS_NAME,
@@ -33,18 +34,19 @@ from openhands.agent_server.telemetry.models import (
 )
 
 
-_FIRST_PARTY_ROOT = "openhands"
-_MAX_FINGERPRINT_FRAMES = 5
+_FIRST_PARTY_ROOT: Final = "openhands"
+_MAX_FINGERPRINT_FRAMES: Final = 5
 
-_SAFE_TOKEN_RE = re.compile(r"^[a-z0-9][a-z0-9_.:\-]{0,63}$")
-_SAFE_IDENTIFIER_RE = re.compile(
+_SAFE_TOKEN_RE: Final = re.compile(r"^[a-z0-9][a-z0-9_.:\-]{0,63}$")
+_SAFE_IDENTIFIER_RE: Final = re.compile(
     r"^[A-Za-z_][A-Za-z0-9_]*([.:][A-Za-z_][A-Za-z0-9_]*)*$"
 )
-_SAFE_IDENTIFIER_MAX_LEN = 96
-_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+\-/]{0,63}$")
+_SAFE_IDENTIFIER_MAX_LEN: Final = 96
+_VERSION_RE: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+\-/]{0,63}$")
 
-UNKNOWN_TOKEN = "unknown"
-UNKNOWN_ERROR_CLASS = "UnknownError"
+UNKNOWN_TOKEN: Final = "unknown"
+UNKNOWN_ERROR_CLASS: Final = "UnknownError"
+_UNKNOWN_CATEGORY: Final[ErrorCategory] = "unknown"
 
 
 def safe_token(value: object, *, default: str = UNKNOWN_TOKEN) -> str:
@@ -88,10 +90,10 @@ def allowlisted(
     return token if token in allowed else default
 
 
-_DURATION_BOUNDS: tuple[float, ...] = (1, 5, 15, 60, 300, 1800)
-_COUNT_BOUNDS: tuple[float, ...] = (1, 5, 20, 100, 500)
-_TOKEN_BOUNDS: tuple[float, ...] = (1_000, 10_000, 50_000, 200_000, 1_000_000)
-_COST_BOUNDS: tuple[float, ...] = (0.01, 0.1, 1, 10, 100)
+DURATION_BOUNDS: Final[tuple[float, ...]] = (1, 5, 15, 60, 300, 1800)
+COUNT_BOUNDS: Final[tuple[float, ...]] = (1, 5, 20, 100, 500)
+TOKEN_BOUNDS: Final[tuple[float, ...]] = (1_000, 10_000, 50_000, 200_000, 1_000_000)
+COST_BOUNDS: Final[tuple[float, ...]] = (0.01, 0.1, 1, 10, 100)
 
 
 def bucket(value: float | None, bounds: tuple[float, ...]) -> str:
@@ -129,22 +131,6 @@ def _format_number(value: float) -> str:
     return str(value).replace(".", "p")
 
 
-def duration_bucket(seconds: float | None) -> str:
-    return bucket(seconds, _DURATION_BOUNDS)
-
-
-def count_bucket(count: int | None) -> str:
-    return bucket(count, _COUNT_BOUNDS)
-
-
-def token_bucket(tokens: int | None) -> str:
-    return bucket(tokens, _TOKEN_BOUNDS)
-
-
-def cost_bucket(cost: float | None) -> str:
-    return bucket(cost, _COST_BOUNDS)
-
-
 def _derive_key(salt: str | bytes | None) -> bytes:
     """Normalise any salt to the 32 bytes blake2s accepts as a key."""
     if salt is None:
@@ -165,26 +151,15 @@ def pseudonymize(value: str | bytes, salt: str | bytes | None) -> str:
     return hashlib.blake2s(raw, key=_derive_key(salt), digest_size=16).hexdigest()
 
 
-MODEL_FAMILIES: frozenset[str] = frozenset(
-    {
-        "anthropic",
-        "openai",
-        "azure",
-        "gemini",
-        "vertex_ai",
-        "bedrock",
-        "mistral",
-        "deepseek",
-        "groq",
-        "openrouter",
-        "ollama",
-        "xai",
-        "together_ai",
-        "fireworks_ai",
-    }
-)
+@lru_cache(maxsize=1)
+def _known_providers() -> frozenset[str]:
+    """Provider names, sourced from litellm rather than hand-maintained."""
+    from litellm import provider_list
 
-_MODEL_FAMILY_HINTS: tuple[tuple[str, str], ...] = (
+    return frozenset(str(getattr(p, "value", p)).lower() for p in provider_list)
+
+
+_MODEL_FAMILY_HINTS: Final[tuple[tuple[str, str], ...]] = (
     ("claude", "anthropic"),
     ("gpt", "openai"),
     ("o1", "openai"),
@@ -208,7 +183,7 @@ def model_family(model: object) -> str:
     lowered = model.strip().lower()
 
     prefix = lowered.split("/", 1)[0] if "/" in lowered else ""
-    if prefix in MODEL_FAMILIES:
+    if prefix in _known_providers():
         return prefix
 
     for hint, family in _MODEL_FAMILY_HINTS:
@@ -217,7 +192,7 @@ def model_family(model: object) -> str:
     return "other"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ErrorFingerprint:
     """The complete, sanitized description of a failure."""
 
@@ -229,23 +204,21 @@ class ErrorFingerprint:
     is_first_party: bool
 
 
-def _walk_frames(tb: TracebackType | None) -> list[tuple[str, int]]:
+def _walk_frames(tb: TracebackType | None) -> Iterator[tuple[str, int]]:
     """Collect ``(module, lineno)`` pairs without materialising source.
 
     Reads only ``f_globals["__name__"]`` and ``tb_lineno``. Never touches
     ``f_locals``, and never calls into :mod:`traceback`.
     """
-    frames: list[tuple[str, int]] = []
     current = tb
     # Bounded: a runaway recursion produces a huge chain.
     remaining = 256
     while current is not None and remaining > 0:
         module = current.tb_frame.f_globals.get("__name__")
         if isinstance(module, str) and module:
-            frames.append((module, current.tb_lineno))
+            yield module, current.tb_lineno
         current = current.tb_next
         remaining -= 1
-    return frames
 
 
 def _classify(exc: BaseException) -> tuple[str, bool]:
@@ -272,11 +245,15 @@ def _classify(exc: BaseException) -> tuple[str, bool]:
 
 def _categorize(exc: BaseException) -> ErrorCategory:
     """Category from the exception *type* only, walking the MRO."""
-    for klass in type(exc).__mro__:
-        category = ERROR_CATEGORY_BY_CLASS_NAME.get(klass.__name__)
+    candidates: Iterator[ErrorCategory | None] = (
+        ERROR_CATEGORY_BY_CLASS_NAME.get(klass.__name__) for klass in type(exc).__mro__
+    )
+    # Consumed with a loop rather than next(): pyright widens next() over a
+    # generator expression to str, losing the Literal type.
+    for category in candidates:
         if category is not None:
             return category
-    return "unknown"
+    return _UNKNOWN_CATEGORY
 
 
 def normalize_exception(exc: BaseException) -> ErrorFingerprint:
@@ -288,7 +265,7 @@ def normalize_exception(exc: BaseException) -> ErrorFingerprint:
     error_class, is_first_party = _classify(exc)
     category = _categorize(exc)
 
-    frames = _walk_frames(exc.__traceback__)
+    frames = list(_walk_frames(exc.__traceback__))
     first_party_frames = [
         (module, lineno)
         for module, lineno in frames
