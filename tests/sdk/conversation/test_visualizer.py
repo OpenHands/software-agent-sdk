@@ -658,7 +658,7 @@ def test_metrics_subtitle_shows_per_request_and_cumulative():
         "Tokens: [cyan]↑ input 4.63K (total 9.02K)[/cyan] • "
         "[magenta]cache hit 0.00% (total 0.00%)[/magenta] • "
         "[blue]↓ output 114 (total 258)[/blue] • "
-        "[green]$ 0.00[/green]"
+        "[green]$ 0.00 (total)[/green]"
     )
 
 
@@ -772,9 +772,11 @@ def test_metrics_subtitle_matches_by_response_id_not_last_index():
     assert request_usage.completion_tokens == 50
 
 
-def test_metrics_subtitle_fallback_without_request_match():
-    """No event, or an event whose response_id is unknown, keeps the exact
-    totals-only format (#4105)."""
+def test_metrics_subtitle_fallback_labels_totals():
+    """No event, or an event whose response_id is unknown (e.g. the ACP path,
+    where response ids are per-session), must label every number "(total)":
+    bare numbers next to per-request events read as per-request, which is the
+    confusion #4105 set out to fix."""
     stats = ConversationStats()
     metrics = Metrics(model_name="test-model")
     metrics.add_token_usage(
@@ -793,10 +795,15 @@ def test_metrics_subtitle_fallback_without_request_match():
     mock_state.stats = stats
     visualizer.initialize(mock_state)
 
+    expected = (
+        "Tokens: [cyan]↑ input 1K (total)[/cyan] • "
+        "[magenta]cache hit 0.00% (total)[/magenta] • "
+        "[blue]↓ output 100 (total)[/blue] • "
+        "[green]$ 0.00 (total)[/green]"
+    )
+
     # No event at all.
-    subtitle_no_event = visualizer._format_metrics_subtitle()
-    assert subtitle_no_event is not None
-    assert "(total" not in subtitle_no_event
+    assert visualizer._format_metrics_subtitle() == expected
 
     # Event carries a response_id that doesn't match any recorded usage.
     tool_call = create_tool_call("call_1", "test", {})
@@ -808,9 +815,40 @@ def test_metrics_subtitle_fallback_without_request_match():
         tool_call=tool_call,
         llm_response_id="unknown_response",
     )
-    subtitle_unknown = visualizer._format_metrics_subtitle(event)
-    assert subtitle_unknown is not None
-    assert "(total" not in subtitle_unknown
+    assert visualizer._format_metrics_subtitle(event) == expected
+
+
+def test_metrics_subtitle_user_message_labels_totals():
+    """User MessageEvents carry no llm_response_id, so their subtitle can only
+    show running totals -- and must say so instead of printing bare numbers."""
+    stats = ConversationStats()
+    metrics = Metrics(model_name="test-model")
+    metrics.add_token_usage(
+        prompt_tokens=1000,
+        completion_tokens=100,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        reasoning_tokens=0,
+        context_window=8000,
+        response_id="response_1",
+    )
+    stats.usage_to_metrics["agent"] = metrics
+
+    visualizer = DefaultConversationVisualizer()
+    mock_state = MagicMock()
+    mock_state.stats = stats
+    visualizer.initialize(mock_state)
+
+    user_event = MessageEvent(
+        source="user",
+        llm_message=Message(role="user", content=[TextContent(text="Hello")]),
+    )
+    assert visualizer._format_metrics_subtitle(user_event) == (
+        "Tokens: [cyan]↑ input 1K (total)[/cyan] • "
+        "[magenta]cache hit 0.00% (total)[/magenta] • "
+        "[blue]↓ output 100 (total)[/blue] • "
+        "[green]$ 0.00 (total)[/green]"
+    )
 
 
 def test_event_base_fallback_visualize():

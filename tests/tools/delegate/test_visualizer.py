@@ -299,3 +299,37 @@ def test_delegation_visualizer_create_sub_visualizer_with_defaults():
     # Default values should be inherited
     assert sub_visualizer._highlight_patterns is not None  # Has default patterns
     assert sub_visualizer._skip_user_messages is False
+
+
+def test_delegation_visualizer_user_message_labels_totals():
+    """User MessageEvents carry no llm_response_id, so the delegate message
+    block can only show running totals -- they must be labeled "(total)"
+    instead of printed as bare numbers next to per-request subtitles (#4105)."""
+    stats = ConversationStats()
+    metrics = Metrics(model_name="test-model")
+    metrics.add_token_usage(
+        prompt_tokens=1000,
+        completion_tokens=100,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        reasoning_tokens=0,
+        context_window=8000,
+        response_id="response_1",
+    )
+    stats.usage_to_metrics["agent"] = metrics
+
+    visualizer = DelegationVisualizer(name="MainAgent")
+    mock_state = MagicMock()
+    mock_state.stats = stats
+    mock_state.events = []
+    visualizer.initialize(mock_state)
+
+    user_message = Message(role="user", content=[TextContent(text="Hello")])
+    user_event = MessageEvent(source="user", llm_message=user_message)
+    block = visualizer._create_message_event_block(user_event)
+
+    assert block is not None
+    rendered = "".join(str(r) for r in block.renderables)
+    assert "input 1K (total)" in rendered
+    assert "output 100 (total)" in rendered
+    assert "$ 0.00 (total)" in rendered

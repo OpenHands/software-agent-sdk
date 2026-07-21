@@ -450,14 +450,20 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
                 f"(total {abbr(total_reasoning_tokens)})"
             )
         else:
-            input_str = f"↑ input {abbr(usage.prompt_tokens or 0)}"
-            output_str = f"↓ output {abbr(usage.completion_tokens or 0)}"
-            cache_rate = fmt_rate(combined_metrics.cache_hit_rate)
+            # No per-request usage is attributable to this event (no
+            # ``llm_response_id``, or a path like ACP where response ids are
+            # per-session). Every number here is a running total, so label it
+            # as such -- next to per-request events, bare numbers would read
+            # as per-request, which is the confusion #4105 set out to fix.
+            input_str = f"↑ input {abbr(usage.prompt_tokens or 0)} (total)"
+            output_str = f"↓ output {abbr(usage.completion_tokens or 0)} (total)"
+            cache_rate = f"{fmt_rate(combined_metrics.cache_hit_rate)} (total)"
             total_reasoning_tokens = usage.reasoning_tokens or 0
             show_reasoning = total_reasoning_tokens > 0
-            reasoning_str = f"reasoning {abbr(total_reasoning_tokens)}"
+            reasoning_str = f"reasoning {abbr(total_reasoning_tokens)} (total)"
 
-        # Cost
+        # Cost is always cumulative: ``Cost`` entries carry no ``response_id``
+        # (unlike ``TokenUsage``), so a per-request cost cannot be attributed.
         cost_str = f"{cost:.4f}" if cost > 0 else "0.00"
 
         # Build with fixed color scheme
@@ -467,6 +473,6 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
         if show_reasoning:
             parts.append(f"[yellow] {reasoning_str}[/yellow]")
         parts.append(f"[blue]{output_str}[/blue]")
-        parts.append(f"[green]$ {cost_str}[/green]")
+        parts.append(f"[green]$ {cost_str} (total)[/green]")
 
         return "Tokens: " + " • ".join(parts)
