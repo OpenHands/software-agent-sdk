@@ -25,10 +25,12 @@ from openhands.agent_server.telemetry import models as m
 from openhands.agent_server.telemetry.factory import DiagnosticEventFactory
 from openhands.agent_server.telemetry.sanitizer import (
     UNKNOWN_TOKEN,
+    cost_bucket,
     count_bucket,
     duration_bucket,
     normalize_error_code,
     safe_token,
+    token_bucket,
 )
 from openhands.agent_server.telemetry.sink import TelemetrySink
 from openhands.sdk.event import AgentErrorEvent, ConversationStateUpdateEvent, Event
@@ -57,7 +59,7 @@ class ConversationTelemetryContext:
     is_fork: bool
     has_agent_profile: bool
     workspace_kind: str
-    confirmation_mode: bool
+    confirmation_policy: str
 
 
 @dataclass
@@ -74,6 +76,8 @@ class TelemetrySubscriber(Subscriber[Event]):
     _terminal_emitted: bool = False
     _last_status: str | None = None
     _seeded: bool = False
+    _total_tokens: int | None = None
+    _total_cost: float | None = None
 
     # ── ingest ────────────────────────────────────────────────────────────
 
@@ -114,6 +118,7 @@ class TelemetrySubscriber(Subscriber[Event]):
                     return
 
                 if status in _TERMINAL_STATUSES:
+                    self._capture_usage(event)
                     self._emit_terminal(status)
 
     # ── emit ──────────────────────────────────────────────────────────────
@@ -129,7 +134,7 @@ class TelemetrySubscriber(Subscriber[Event]):
                 is_fork=self.context.is_fork,
                 has_agent_profile=self.context.has_agent_profile,
                 workspace_kind=self.context.workspace_kind,
-                confirmation_mode=self.context.confirmation_mode,
+                confirmation_policy=self.context.confirmation_policy,
             )
             self.sink.emit(
                 self.factory.build(
@@ -152,10 +157,9 @@ class TelemetrySubscriber(Subscriber[Event]):
             conversation_ref=self.context.conversation_ref,
             terminal_status=token,
             duration_bucket=duration_bucket(elapsed),
-            iteration_count_bucket=UNKNOWN_TOKEN,
             event_count_bucket=count_bucket(self._event_count),
-            total_tokens_bucket=UNKNOWN_TOKEN,
-            cost_bucket=UNKNOWN_TOKEN,
+            total_tokens_bucket=token_bucket(self._total_tokens),
+            cost_bucket=cost_bucket(self._total_cost),
             llm_model_family=self.context.llm_model_family,
         )
         event_name = (
@@ -166,6 +170,40 @@ class TelemetrySubscriber(Subscriber[Event]):
         self.sink.emit(
             self.factory.build(event_name, properties, user_id=self.context.user_id)
         )
+
+    def _capture_usage(self, event: ConversationStateUpdateEvent) -> None:
+        """Pull aggregate token/cost out of the terminal state snapshot.
+
+        ``full_state`` carries ``stats.usage_to_metrics``, a map of usage id to
+        a ``MetricsSnapshot``. Summing it gives the conversation totals, which
+        are then bucketed — the raw figures are never reported. Best-effort:
+        any shape change degrades to ``unknown`` rather than raising.
+        """
+        try:
+            value = getattr(event, "value", None)
+            if not isinstance(value, dict):
+                return
+            stats = value.get("stats")
+            if not isinstance(stats, dict):
+                return
+            per_usage = stats.get("usage_to_metrics")
+            if not isinstance(per_usage, dict):
+                return
+
+            tokens = 0
+            cost = 0.0
+            for snapshot in per_usage.values():
+                if not isinstance(snapshot, dict):
+                    continue
+                cost += float(snapshot.get("accumulated_cost") or 0.0)
+                usage = snapshot.get("accumulated_token_usage")
+                if isinstance(usage, dict):
+                    tokens += int(usage.get("prompt_tokens") or 0)
+                    tokens += int(usage.get("completion_tokens") or 0)
+            self._total_tokens = tokens
+            self._total_cost = cost
+        except Exception:
+            logger.debug("Could not read usage from state snapshot", exc_info=True)
 
     def _emit_error_from_agent_event(self, event: AgentErrorEvent) -> None:
         """Report a tool-level agent error.

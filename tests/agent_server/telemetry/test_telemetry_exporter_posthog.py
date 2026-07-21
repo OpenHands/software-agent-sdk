@@ -57,7 +57,6 @@ def make_event(distinct_id: str) -> m.DiagnosticEvent:
             conversation_ref="a" * 32,
             terminal_status="finished",
             duration_bucket="5-15",
-            iteration_count_bucket="1-5",
             event_count_bucket="5-20",
             total_tokens_bucket="1000-10000",
             cost_bucket="lt-0p01",

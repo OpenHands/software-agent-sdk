@@ -71,7 +71,7 @@ def make_subscriber(sink, factory, user_id: str | None = "user-1"):
             is_fork=False,
             has_agent_profile=False,
             workspace_kind="localworkspace",
-            confirmation_mode=False,
+            confirmation_policy="neverconfirm",
         ),
     )
 
@@ -348,3 +348,133 @@ async def test_a_live_transition_after_the_baseline_still_emits(factory):
 
     await sub(ConversationStateUpdateEvent(key="execution_status", value="finished"))
     assert sink.names == [m.CONVERSATION_FINISHED]
+
+
+# ── production event shape ────────────────────────────────────────────────
+# The tests above construct ConversationStateUpdateEvent by hand with
+# key="execution_status". Production never does that: EventService always
+# publishes via ConversationStateUpdateEvent.from_conversation_state(), which
+# emits key="full_state". These tests drive that real constructor so a bug in
+# the full_state branch cannot hide behind the synthetic shape.
+
+
+def _real_state(status=None):
+    import uuid as _uuid
+
+    from openhands.sdk.agent import Agent
+    from openhands.sdk.conversation.state import ConversationState
+    from openhands.sdk.llm import LLM
+    from openhands.sdk.workspace import LocalWorkspace
+
+    state = ConversationState(
+        id=_uuid.uuid4(),
+        agent=Agent(llm=LLM(model="anthropic/claude-sonnet-5", usage_id="t"), tools=[]),
+        workspace=LocalWorkspace(working_dir="workspace/project"),
+    )
+    if status is not None:
+        state.execution_status = status
+    return state
+
+
+async def test_lifecycle_fires_on_the_real_from_conversation_state_event(factory):
+    """End-to-end on the constructor EventService actually uses."""
+    from openhands.sdk.conversation.state import ConversationExecutionStatus
+    from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+
+    sink = CollectingSink()
+    sub = make_subscriber(sink, factory)
+    state = _real_state()
+
+    baseline = ConversationStateUpdateEvent.from_conversation_state(state)
+    assert baseline.key == "full_state", (
+        "production shape changed; the subscriber's full_state branch may be dead"
+    )
+    await sub(baseline)
+    assert sink.names == []
+
+    state.execution_status = ConversationExecutionStatus.FINISHED
+    await sub(ConversationStateUpdateEvent.from_conversation_state(state))
+    assert sink.names == [m.CONVERSATION_FINISHED]
+
+
+async def test_outcome_reports_real_bucketed_usage(factory):
+    """Regression: token/cost were hardcoded to 'unknown' and never populated."""
+    from openhands.sdk.conversation.state import ConversationExecutionStatus
+    from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+    from openhands.sdk.llm.utils.metrics import Metrics
+
+    sink = CollectingSink()
+    sub = make_subscriber(sink, factory)
+    state = _real_state()
+    await sub(ConversationStateUpdateEvent.from_conversation_state(state))
+
+    metrics = Metrics(model_name="anthropic/claude-sonnet-5")
+    metrics.add_cost(0.42)
+    metrics.add_token_usage(
+        prompt_tokens=12000,
+        completion_tokens=3000,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        reasoning_tokens=0,
+        context_window=200000,
+        response_id="r",
+    )
+    # usage_to_metrics holds Metrics (not MetricsSnapshot); both serialize
+    # accumulated_cost / accumulated_token_usage, which is what we read.
+    state.stats.usage_to_metrics["t"] = metrics
+    state.execution_status = ConversationExecutionStatus.FINISHED
+
+    await sub(ConversationStateUpdateEvent.from_conversation_state(state))
+    payload = sink.events[0].to_payload()
+
+    assert payload["total_tokens_bucket"] == "10000-50000"
+    assert payload["cost_bucket"] == "0p1-1"
+    # Bucketed, never raw.
+    assert "15000" not in str(payload)
+    assert "0.42" not in str(payload)
+
+
+def test_confirmation_policy_is_read_from_the_field_that_exists():
+    """Regression: the field is confirmation_policy, not confirmation_mode.
+
+    Reading a non-existent ``confirmation_mode`` via getattr silently reported
+    False for every conversation, and a bool would have collapsed ConfirmRisky
+    into NeverConfirm anyway.
+    """
+    import uuid as _uuid
+
+    from openhands.agent_server.conversation_service import _build_telemetry_context
+    from openhands.agent_server.models import StoredConversation
+    from openhands.agent_server.telemetry.factory import (
+        DiagnosticEventFactory,
+        build_runtime_properties,
+    )
+    from openhands.sdk.agent import Agent
+    from openhands.sdk.llm import LLM
+    from openhands.sdk.security.confirmation_policy import AlwaysConfirm
+    from openhands.sdk.workspace import LocalWorkspace
+
+    assert "confirmation_mode" not in StoredConversation.model_fields
+    assert "confirmation_policy" in StoredConversation.model_fields
+
+    stored = StoredConversation(
+        id=_uuid.uuid4(),
+        agent=Agent(llm=LLM(model="anthropic/claude-sonnet-5", usage_id="t"), tools=[]),
+        workspace=LocalWorkspace(working_dir="/Users/alice/secret-project"),
+        confirmation_policy=AlwaysConfirm(),
+        user_id="canvas-user-42",
+    )
+    ctx = _build_telemetry_context(
+        stored,
+        DiagnosticEventFactory(
+            runtime=build_runtime_properties(mode="cloud_locked", deferred_init=False),
+            salt="s",
+        ),
+    )
+
+    assert ctx.confirmation_policy == "alwaysconfirm"
+    assert ctx.llm_model_family == "anthropic"
+    assert ctx.user_id == "canvas-user-42"
+    # No field silently degraded, and the workspace path did not leak.
+    assert "unknown" not in ctx.__dict__.values()
+    assert "secret-project" not in repr(ctx.__dict__)

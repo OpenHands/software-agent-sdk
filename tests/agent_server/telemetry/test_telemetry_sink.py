@@ -38,7 +38,7 @@ def make_event(index: int = 0) -> m.DiagnosticEvent:
             is_fork=False,
             has_agent_profile=False,
             workspace_kind="localworkspace",
-            confirmation_mode=False,
+            confirmation_policy="neverconfirm",
         ),
     )
 

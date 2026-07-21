@@ -1595,7 +1595,13 @@ def _build_telemetry_context(
         is_fork=getattr(stored, "forked_from_conversation_id", None) is not None,
         has_agent_profile=getattr(stored, "launched_agent_profile", None) is not None,
         workspace_kind=workspace_kind,
-        confirmation_mode=bool(getattr(stored, "confirmation_mode", False)),
+        # The field is ``confirmation_policy`` (a policy object), not a
+        # ``confirmation_mode`` bool -- reading the latter silently reported
+        # False for every conversation. Report the policy kind, which also
+        # preserves ConfirmRisky that a bool would have collapsed.
+        confirmation_policy=safe_token(
+            type(getattr(stored, "confirmation_policy", None)).__name__.lower()
+        ),
     )
 
 

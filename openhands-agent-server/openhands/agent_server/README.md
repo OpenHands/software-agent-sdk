@@ -148,15 +148,22 @@ Events: `conversation_started`, `conversation_finished`, `conversation_failed`,
 `conversation_error`, `request_failed`, `server_started`, `server_stopped` — all
 prefixed `agent_server.`.
 
-Properties are limited to: schema version; release/runtime facts
-(`server_version`, `sdk_version`, `tools_version`, `build_git_sha`,
-`build_git_ref`, `python_version`, `platform`, `deployment_mode`,
-`deferred_init`); coarse conversation shape (`llm_model_family`, `agent_kind`,
-`tool_count`, `is_fork`, `has_agent_profile`, `workspace_kind`,
-`confirmation_mode`); bucketed outcomes (`terminal_status`, `duration_bucket`,
-`event_count_bucket`, …); and a normalized failure shape (`error_class`,
-`error_category`, `error_fingerprint`, `error_origin_module`,
-`error_origin_lineno`, `is_first_party`, `tool_name`, `error_id`).
+Properties are limited to:
+
+- **Envelope** — `schema_version`, `source`.
+- **Release / runtime** — `server_version`, `sdk_version`, `tools_version`,
+  `build_git_sha`, `build_git_ref`, `python_version`, `platform`,
+  `deployment_mode`, `deferred_init`.
+- **Conversation shape** — `conversation_ref`, `llm_model_family`, `agent_kind`,
+  `tool_count`, `is_fork`, `has_agent_profile`, `workspace_kind`,
+  `confirmation_policy`.
+- **Outcome (bucketed)** — `terminal_status`, `duration_bucket`,
+  `event_count_bucket`, `total_tokens_bucket`, `cost_bucket`.
+- **Failure** — `error_class`, `error_category`, `error_fingerprint`,
+  `error_origin_module`, `error_origin_lineno`, `is_first_party`,
+  `is_terminal`, `tool_name`, `error_id`.
+- **Request failure** — `route_template` (the parametrised route, never the
+  concrete path), `method`, `status_code`.
 
 Magnitudes are bucketed rather than exact, because a raw count joined with a
 timestamp is a re-identification vector. `conversation_ref` is a keyed digest,

@@ -83,7 +83,7 @@ def build_subscriber(sink, user_id: str | None = "canvas-user-7"):
             is_fork=False,
             has_agent_profile=False,
             workspace_kind="localworkspace",
-            confirmation_mode=False,
+            confirmation_policy="neverconfirm",
         ),
     )
 

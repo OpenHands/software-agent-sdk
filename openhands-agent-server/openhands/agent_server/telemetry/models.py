@@ -195,7 +195,7 @@ class ConversationStartedProperties(_BaseProperties):
     is_fork: bool
     has_agent_profile: bool
     workspace_kind: SafeToken
-    confirmation_mode: bool
+    confirmation_policy: SafeToken
 
 
 class ConversationOutcomeProperties(_BaseProperties):
@@ -210,7 +210,6 @@ class ConversationOutcomeProperties(_BaseProperties):
     conversation_ref: Digest
     terminal_status: SafeToken
     duration_bucket: Bucket
-    iteration_count_bucket: Bucket
     event_count_bucket: Bucket
     total_tokens_bucket: Bucket
     cost_bucket: Bucket
@@ -334,11 +333,10 @@ EXPECTED_PROPERTY_NAMES: frozenset[str] = frozenset(
         "is_fork",
         "has_agent_profile",
         "workspace_kind",
-        "confirmation_mode",
+        "confirmation_policy",
         # outcome
         "terminal_status",
         "duration_bucket",
-        "iteration_count_bucket",
         "event_count_bucket",
         "total_tokens_bucket",
         "cost_bucket",
