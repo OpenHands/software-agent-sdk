@@ -11,6 +11,7 @@ from openhands.agent_server.telemetry.policy import (
     CONSENT_ENV,
     CONSENT_MODE_ENV,
     DO_NOT_TRACK_ENV,
+    TelemetryConsent,
     kill_switch_engaged,
     read_consent,
     read_legacy_consent,
@@ -71,17 +72,20 @@ def test_settings_consent_decides(consent, enabled):
 
 
 def test_managed_flag_marks_the_choice_as_locked():
-    d = resolve(misc(consent="granted", managed=True), env={})
+    d = resolve(misc(consent=TelemetryConsent.GRANTED, managed=True), env={})
     assert d.enabled is True
     assert d.is_locked is True
-    assert resolve(misc(consent="granted"), env={}).is_locked is False
+    assert resolve(misc(consent=TelemetryConsent.GRANTED), env={}).is_locked is False
 
 
 def test_read_consent_returns_none_when_absent():
     assert read_consent(None) == (None, False)
     assert read_consent({}) == (None, False)
-    assert read_consent(misc(consent="granted")) == ("granted", False)
-    assert read_consent(misc(consent="granted", managed=True)) == ("granted", True)
+    assert read_consent(misc(consent=TelemetryConsent.GRANTED)) == ("granted", False)
+    assert read_consent(misc(consent=TelemetryConsent.GRANTED, managed=True)) == (
+        "granted",
+        True,
+    )
 
 
 # ── legacy key ────────────────────────────────────────────────────────────
@@ -97,7 +101,7 @@ def test_legacy_key_is_read_when_the_new_namespace_is_absent():
 
 
 def test_new_namespace_wins_over_the_legacy_key():
-    d = resolve(misc(consent="denied", legacy=True), env={})
+    d = resolve(misc(consent=TelemetryConsent.DENIED, legacy=True), env={})
     assert d.enabled is False
     assert d.reason == "settings"
 
@@ -119,7 +123,7 @@ def test_env_seed_applies_only_when_settings_are_unset():
     assert seeded.reason == "env_seed"
 
     # An explicit user choice wins over a seed.
-    chosen = resolve(misc(consent="denied"), env=env)
+    chosen = resolve(misc(consent=TelemetryConsent.DENIED), env=env)
     assert chosen.enabled is False
     assert chosen.reason == "settings"
 
@@ -127,16 +131,19 @@ def test_env_seed_applies_only_when_settings_are_unset():
 def test_seed_is_the_default_mode():
     """An operator default must not silently overrule an explicit choice."""
     env = {CONSENT_ENV: "granted", CONSENT_MODE_ENV: "seed"}
-    assert resolve(misc(consent="denied"), env=env).enabled is False
+    assert resolve(misc(consent=TelemetryConsent.DENIED), env=env).enabled is False
     # Same without naming the mode.
     assert (
-        resolve(misc(consent="denied"), env={CONSENT_ENV: "granted"}).enabled is False
+        resolve(
+            misc(consent=TelemetryConsent.DENIED), env={CONSENT_ENV: "granted"}
+        ).enabled
+        is False
     )
 
 
 def test_env_override_beats_settings():
     env = {CONSENT_ENV: "granted", CONSENT_MODE_ENV: "override"}
-    d = resolve(misc(consent="denied"), env=env)
+    d = resolve(misc(consent=TelemetryConsent.DENIED), env=env)
     assert d.enabled is True
     assert d.reason == "env_override"
     assert d.is_locked is True
@@ -144,12 +151,12 @@ def test_env_override_beats_settings():
 
 def test_env_override_can_also_force_denial():
     env = {CONSENT_ENV: "denied", CONSENT_MODE_ENV: "override"}
-    assert resolve(misc(consent="granted"), env=env).enabled is False
+    assert resolve(misc(consent=TelemetryConsent.GRANTED), env=env).enabled is False
 
 
 def test_unrecognised_mode_falls_back_to_seed():
     env = {CONSENT_ENV: "granted", CONSENT_MODE_ENV: "nonsense"}
-    assert resolve(misc(consent="denied"), env=env).enabled is False
+    assert resolve(misc(consent=TelemetryConsent.DENIED), env=env).enabled is False
 
 
 # ── kill switch ───────────────────────────────────────────────────────────
@@ -162,7 +169,7 @@ def test_do_not_track_overrides_everything(value):
         CONSENT_ENV: "granted",
         CONSENT_MODE_ENV: "override",
     }
-    d = resolve(misc(consent="granted", managed=True), env=env)
+    d = resolve(misc(consent=TelemetryConsent.GRANTED, managed=True), env=env)
     assert d.enabled is False
     assert d.reason == "kill_switch"
     assert d.is_locked is True
@@ -171,7 +178,9 @@ def test_do_not_track_overrides_everything(value):
 @pytest.mark.parametrize("value", ["0", "false", "no", "", "off"])
 def test_do_not_track_ignores_falsey_values(value):
     assert kill_switch_engaged({DO_NOT_TRACK_ENV: value}) is False
-    assert resolve(misc(consent="granted"), env={DO_NOT_TRACK_ENV: value}).enabled
+    assert resolve(
+        misc(consent=TelemetryConsent.GRANTED), env={DO_NOT_TRACK_ENV: value}
+    ).enabled
 
 
 def test_the_redundant_alias_is_gone():

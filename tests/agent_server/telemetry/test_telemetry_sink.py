@@ -8,7 +8,10 @@ from typing import Any
 import pytest
 
 from openhands.agent_server.telemetry import models as m
-from openhands.agent_server.telemetry.policy import TelemetryDecision
+from openhands.agent_server.telemetry.policy import (
+    TelemetryConsent,
+    TelemetryDecision,
+)
 from openhands.agent_server.telemetry.sink import (
     BufferedTelemetrySink,
     NoOpTelemetrySink,
@@ -91,7 +94,9 @@ def granted(**kw) -> TelemetryDecision:
 
 
 def denied() -> TelemetryDecision:
-    return TelemetryDecision(consent="denied", enabled=False, reason="settings")
+    return TelemetryDecision(
+        consent=TelemetryConsent.DENIED, enabled=False, reason="settings"
+    )
 
 
 def build_sink(exporter, **kwargs: Any) -> BufferedTelemetrySink:
@@ -296,7 +301,10 @@ async def test_a_managed_decision_still_reports_as_locked():
     sink = build_sink(
         exporter,
         decision=TelemetryDecision(
-            consent="granted", enabled=True, reason="settings", managed=True
+            consent=TelemetryConsent.GRANTED,
+            enabled=True,
+            reason="settings",
+            managed=True,
         ),
     )
     try:

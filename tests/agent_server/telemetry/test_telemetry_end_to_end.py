@@ -19,7 +19,10 @@ from openhands.agent_server.telemetry.factory import (
     DiagnosticEventFactory,
     build_runtime_properties,
 )
-from openhands.agent_server.telemetry.policy import TelemetryDecision
+from openhands.agent_server.telemetry.policy import (
+    TelemetryConsent,
+    TelemetryDecision,
+)
 from openhands.agent_server.telemetry.sink import BufferedTelemetrySink
 from openhands.agent_server.telemetry.subscriber import (
     ConversationTelemetryContext,
@@ -115,7 +118,9 @@ async def test_opted_in_session_emits_sanitized_lifecycle_and_error_events():
     exporter = CapturingExporter()
     sink = BufferedTelemetrySink(
         exporter,
-        decision=TelemetryDecision(consent="granted", enabled=True, reason="settings"),
+        decision=TelemetryDecision(
+            consent=TelemetryConsent.GRANTED, enabled=True, reason="settings"
+        ),
         flush_delay=0.05,
         shutdown_flush_timeout=1.0,
     )
@@ -155,7 +160,9 @@ async def test_opted_in_session_reports_useful_diagnostics():
     exporter = CapturingExporter()
     sink = BufferedTelemetrySink(
         exporter,
-        decision=TelemetryDecision(consent="granted", enabled=True, reason="settings"),
+        decision=TelemetryDecision(
+            consent=TelemetryConsent.GRANTED, enabled=True, reason="settings"
+        ),
         flush_delay=0.05,
         shutdown_flush_timeout=1.0,
     )
@@ -211,7 +218,9 @@ async def test_revocation_mid_session_stops_delivery_and_drops_the_backlog():
     exporter = CapturingExporter()
     sink = BufferedTelemetrySink(
         exporter,
-        decision=TelemetryDecision(consent="granted", enabled=True, reason="settings"),
+        decision=TelemetryDecision(
+            consent=TelemetryConsent.GRANTED, enabled=True, reason="settings"
+        ),
         flush_delay=3600,  # nothing flushes on its own
         shutdown_flush_timeout=1.0,
     )
@@ -223,7 +232,9 @@ async def test_revocation_mid_session_stops_delivery_and_drops_the_backlog():
     await subscriber(AgentErrorEvent(error=SECRET, tool_name="bash", tool_call_id="c1"))
 
     sink.on_decision_changed(
-        TelemetryDecision(consent="denied", enabled=False, reason="settings")
+        TelemetryDecision(
+            consent=TelemetryConsent.DENIED, enabled=False, reason="settings"
+        )
     )
 
     await subscriber(
@@ -243,7 +254,9 @@ async def test_exporter_failure_leaves_conversation_execution_unaffected():
     exporter = AlwaysFailingExporter()
     sink = BufferedTelemetrySink(
         exporter,
-        decision=TelemetryDecision(consent="granted", enabled=True, reason="settings"),
+        decision=TelemetryDecision(
+            consent=TelemetryConsent.GRANTED, enabled=True, reason="settings"
+        ),
         flush_delay=0.02,
         num_retries=1,
         retry_delay=0.01,
@@ -275,7 +288,9 @@ async def test_a_hanging_exporter_does_not_delay_the_conversation():
 
     sink = BufferedTelemetrySink(
         HangingExporter(),
-        decision=TelemetryDecision(consent="granted", enabled=True, reason="settings"),
+        decision=TelemetryDecision(
+            consent=TelemetryConsent.GRANTED, enabled=True, reason="settings"
+        ),
         flush_delay=0.01,
         shutdown_flush_timeout=0.5,
     )
