@@ -218,15 +218,9 @@ class InitService:
                 for key, value in req.env.items():
                     os.environ[key] = value
 
-            # Rebuild the telemetry sink *before* the conversation service is
-            # constructed: ConversationService.get_instance() captures the
-            # sink, so a rebuild after this point would leave a warm-pool pod
-            # on the dormant (disabled) sink for its entire lifetime.
+            # Must precede get_instance(), which captures the sink.
             await shutdown_telemetry_sink()
             self._app.state.telemetry_sink = await build_telemetry_sink(new_config)
-            # Emitted here, not at boot: a warm-pool pod boots with
-            # telemetry disabled, so a start event emitted then would be
-            # dropped and leave an unpaired `server_stopped` at shutdown.
             emit_server_started()
 
             # Reset the module-level singleton so other call sites that go

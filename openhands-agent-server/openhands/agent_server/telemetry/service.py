@@ -47,13 +47,9 @@ _server_started_emitted = False
 def _read_consent_sync(config: Config) -> TelemetryConsent:
     from openhands.agent_server.persistence.store import get_settings_store
 
-    # ``config`` must be passed: ``get_settings_store`` is a singleton whose
-    # persistence directory and cipher are fixed by the *first* call
-    # (persistence/store.py). Telemetry initialises during lifespan startup,
-    # before ConversationService.get_instance() performs its own priming call,
-    # so a no-arg call here would win the race and leave the whole process
-    # writing settings and secrets to the default relative directory with
-    # encryption disabled.
+    # Must pass config: the store is a singleton fixed by the first call, and
+    # telemetry initialises before ConversationService primes it. A no-arg call
+    # here disables the cipher process-wide.
     settings = get_settings_store(config).load()
     if settings is None:
         return "unset"
@@ -113,8 +109,7 @@ async def build_telemetry_sink(config: Config) -> TelemetrySink:
         return _telemetry_sink
 
     try:
-        # Imported here, not at module scope: this is the only line that pulls
-        # in the optional vendor dependency.
+        # Lazy: the only line that pulls in the optional vendor dependency.
         from openhands.agent_server.telemetry.posthog_exporter import PostHogExporter
 
         exporter = PostHogExporter(api_key, host=spec.posthog_host)
@@ -139,7 +134,6 @@ async def build_telemetry_sink(config: Config) -> TelemetrySink:
         try:
             consent = await _read_consent(config)
         except Exception as exc:
-            # Unreadable consent is treated as absent consent.
             logger.debug("Could not read telemetry consent: %s", type(exc).__name__)
             consent = "unset"
 

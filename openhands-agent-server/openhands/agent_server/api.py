@@ -148,13 +148,8 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         config: Config = api.state.config
         deferred = config.deferred_init
 
-        # Built before the deferred/legacy split so both branches share one
-        # sink. Disabled by default, so this is a no-op unless a deployment
-        # opts in. In deferred mode it is rebuilt by InitService once the real
-        # config arrives — which is why `server_started` is emitted there
-        # rather than here: a warm-pool pod boots with telemetry disabled, so
-        # emitting now would drop the start event and leave every pod
-        # reporting an unpaired `server_stopped`.
+        # Deferred pods boot with telemetry disabled and are rebuilt by
+        # InitService, so they emit `server_started` there instead.
         api.state.telemetry_sink = await build_telemetry_sink(config)
         if not deferred:
             emit_server_started()
@@ -291,15 +286,8 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
 
                 await stop_stateless_services()
     finally:
-        # Runs on every exit path, including a startup failure between the
-        # sink being built and either branch being reached — otherwise the
-        # drain task would leak. This sits after `async with service` has
-        # exited, so terminal conversation events emitted during EventService
-        # teardown are still accepted.
-        #
-        # Only paired with a start: a deferred pod that never received
-        # POST /api/init has no `server_started`, and an unpaired stop would
-        # corrupt uptime metrics.
+        # Outer finally so a startup failure cannot leak the drain task, and
+        # after `async with service` so terminal events are still accepted.
         emit_server_stopped()
         await shutdown_telemetry_sink()
 

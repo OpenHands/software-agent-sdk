@@ -105,13 +105,9 @@ class TelemetrySubscriber(Subscriber[Event]):
                 self._last_status = status
 
                 if not self._seeded:
-                    # ``subscribe_to_events`` pushes the *current* state to a
-                    # new subscriber synchronously (event_service.py). That
-                    # first update is a baseline, not a transition we
-                    # witnessed. A conversation rehydrated after it already
-                    # finished would otherwise report a fresh terminal event
-                    # with a nonsense sub-second duration on every lazy reload
-                    # and every crash recovery.
+                    # subscribe_to_events pushes current state on attach. That
+                    # is a baseline, not a transition we witnessed -- otherwise
+                    # every rehydration re-emits a terminal event.
                     self._seeded = True
                     if status in _TERMINAL_STATUSES:
                         self._terminal_emitted = True

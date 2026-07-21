@@ -37,13 +37,10 @@ from openhands.sdk.logger import get_logger
 
 logger = get_logger(__name__)
 
-#: How long a cached consent value is trusted before the drain task re-reads
-#: it. Revocation does not wait for this — the consent endpoint pushes
-#: synchronously via :meth:`BufferedTelemetrySink.on_consent_changed`.
+#: Consent cache TTL. Revocation does not wait for it; the endpoint pushes.
 CONSENT_REFRESH_SECONDS = 5.0
 
-#: Upper bound on the final flush during shutdown. A hung analytics endpoint
-#: must not extend server shutdown.
+#: Caps the final flush so a hung endpoint cannot extend shutdown.
 SHUTDOWN_FLUSH_TIMEOUT_SECONDS = 5.0
 
 _MAX_BACKOFF_SECONDS = 60.0
@@ -81,8 +78,7 @@ class NoOpTelemetrySink:
     def enabled(self) -> bool:
         return False
 
-    # Arguments are intentionally ignored; the parameter names are kept to
-    # match the protocol so callers may pass them by keyword.
+    # Args ignored; names match the protocol for keyword callers.
     def emit(self, event: DiagnosticEvent) -> None:  # noqa: ARG002
         return None
 
@@ -270,18 +266,13 @@ class BufferedTelemetrySink:
                 if batch:
                     await self._dispatch(batch)
                     if self._queue:
-                        # A backlog larger than one batch must keep draining
-                        # rather than waiting out another flush_delay per
-                        # batch: at the default 30s delay and 20-event batch,
-                        # a full 1000-event queue would otherwise need ~25
-                        # minutes to clear and would drop events it could
-                        # have delivered.
+                        # Keep draining a backlog instead of waiting out
+                        # flush_delay per batch.
                         self._wake.set()
             except asyncio.CancelledError:
                 raise
             except Exception:
-                # The drain task must outlive any single failure; if it dies,
-                # telemetry silently stops for the process lifetime.
+                # The drain task must outlive any single failure.
                 logger.debug("Telemetry drain iteration failed", exc_info=True)
                 await asyncio.sleep(self._retry_delay)
 
@@ -308,8 +299,7 @@ class BufferedTelemetrySink:
                     await asyncio.sleep(self._retry_delay)
                     continue
                 self._failure_streak += 1
-                # One warning per streak, not per failure, so a sustained
-                # outage doesn't flood the log.
+                # One warning per streak, so an outage doesn't flood the log.
                 if self._failure_streak == 1:
                     logger.warning(
                         "Telemetry export failing (%s); dropping %d event(s). "
@@ -324,10 +314,8 @@ class BufferedTelemetrySink:
                         type(exc).__name__,
                     )
                 self._dropped_count += len(batch)
-                # Bounded deliberately: this sleep happens on the drain task,
-                # so an unbounded exponential backoff would park delivery for
-                # minutes at a time and let the queue fill and drop events
-                # that a recovered exporter could have taken.
+                # Capped: this sleeps on the drain task, so an unbounded
+                # backoff would park delivery entirely.
                 backoff = min(
                     self._retry_delay * (2 ** min(self._failure_streak, 4)),
                     _MAX_BACKOFF_SECONDS,

@@ -104,9 +104,7 @@ ErrorCategory = Literal[
     "unknown",
 ]
 
-#: Maps an exception class *name* (never a message) to a category. Checked
-#: against the unqualified class name so it works for both first-party and
-#: vendored exception hierarchies.
+#: Maps an exception class *name* (never a message) to a category.
 ERROR_CATEGORY_BY_CLASS_NAME: dict[str, ErrorCategory] = {
     # LLM / provider
     "AuthenticationError": "llm_auth",
@@ -307,9 +305,8 @@ class DiagnosticEvent(BaseModel):
         return payload
 
 
-#: Every property name that may ever appear in a payload. The deny test in
-#: ``tests/agent_server/telemetry/test_telemetry_schema.py`` asserts the models
-#: produce exactly this set, so adding a field is a deliberate, reviewed act.
+#: Every property that may appear in a payload. A deny test asserts the models
+#: produce exactly this set, so adding one is a deliberate, reviewed act.
 EXPECTED_PROPERTY_NAMES: frozenset[str] = frozenset(
     {
         # envelope
