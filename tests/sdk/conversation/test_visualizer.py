@@ -658,7 +658,7 @@ def test_metrics_subtitle_shows_per_request_and_cumulative():
         "Tokens: [cyan]↑ input 4.63K (total 9.02K)[/cyan] • "
         "[magenta]cache hit 0.00% (total 0.00%)[/magenta] • "
         "[blue]↓ output 114 (total 258)[/blue] • "
-        "[green]$ 0.00 (total)[/green]"
+        "[green]$ (total 0.00)[/green]"
     )
 
 
@@ -799,7 +799,7 @@ def test_metrics_subtitle_fallback_labels_totals():
         "Tokens: [cyan]↑ input 1K (total)[/cyan] • "
         "[magenta]cache hit 0.00% (total)[/magenta] • "
         "[blue]↓ output 100 (total)[/blue] • "
-        "[green]$ 0.00 (total)[/green]"
+        "[green]$ (total 0.00)[/green]"
     )
 
     # No event at all.
@@ -847,7 +847,7 @@ def test_metrics_subtitle_user_message_labels_totals():
         "Tokens: [cyan]↑ input 1K (total)[/cyan] • "
         "[magenta]cache hit 0.00% (total)[/magenta] • "
         "[blue]↓ output 100 (total)[/blue] • "
-        "[green]$ 0.00 (total)[/green]"
+        "[green]$ (total 0.00)[/green]"
     )
 
 

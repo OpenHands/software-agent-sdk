@@ -389,10 +389,15 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
         if not (stats := self.conversation_stats):
             return None
 
-        for metrics in stats.usage_to_metrics.values():
-            for usage in reversed(metrics.token_usages):
-                if usage.response_id == response_id:
-                    return usage
+        return next(
+            (
+                usage
+                for metrics in stats.usage_to_metrics.values()
+                for usage in reversed(metrics.token_usages)
+                if usage.response_id == response_id
+            ),
+            None,
+        )
 
     def _format_metrics_subtitle(self, event: Event | None = None) -> str | None:
         """Format LLM metrics as a visually appealing subtitle string with icons,
@@ -473,6 +478,6 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
         if show_reasoning:
             parts.append(f"[yellow] {reasoning_str}[/yellow]")
         parts.append(f"[blue]{output_str}[/blue]")
-        parts.append(f"[green]$ {cost_str} (total)[/green]")
+        parts.append(f"[green]$ (total {cost_str})[/green]")
 
         return "Tokens: " + " • ".join(parts)

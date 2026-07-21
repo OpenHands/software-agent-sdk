@@ -192,9 +192,10 @@ def test_delegation_visualizer_action_event():
 def test_delegation_visualizer_action_event_shows_per_request_usage():
     """Regression: DelegationVisualizer overrides _create_event_block and must
     forward the event into _format_metrics_subtitle. Without it, ActionEvent
-    subtitles silently stay cumulative-only while Condensation/AgentErrorEvent
-    (handled by the parent class) show per-request numbers, mixing formats
-    within a single delegate transcript (#4105)."""
+    subtitles silently stay cumulative-only while Condensation (handled by the
+    parent class, and the only other event type carrying an llm_response_id)
+    shows per-request numbers, mixing formats within a single delegate
+    transcript (#4105)."""
     stats = ConversationStats()
     metrics = Metrics(model_name="test-model")
     metrics.add_token_usage(
@@ -332,4 +333,4 @@ def test_delegation_visualizer_user_message_labels_totals():
     rendered = "".join(str(r) for r in block.renderables)
     assert "input 1K (total)" in rendered
     assert "output 100 (total)" in rendered
-    assert "$ 0.00 (total)" in rendered
+    assert "$ (total 0.00)" in rendered
