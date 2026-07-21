@@ -28,7 +28,7 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.marketplace import Marketplace
 from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.marketplace.registry import MarketplaceRegistry
-from openhands.sdk.plugin import Plugin, resolve_source_path
+from openhands.sdk.plugin import Plugin
 from openhands.sdk.skills import (
     InstalledSkillInfo,
     Skill,
@@ -38,6 +38,7 @@ from openhands.sdk.skills import (
     install_skill,
     list_installed_skills,
     load_available_skills,
+    load_marketplace_standalone_skills,
     uninstall_skill,
     update_skill,
 )
@@ -49,7 +50,6 @@ from openhands.sdk.skills.skill import (
     load_skills_from_dir,
 )
 from openhands.sdk.skills.utils import (
-    find_skill_md,
     get_skills_cache_dir,
     update_skills_repository,
 )
@@ -333,32 +333,12 @@ def load_registered_marketplace_skills(
                     exc_info=True,
                 )
 
-        # Standalone skills (sources relative to the marketplace repo, or github
-        # URLs). Plugins already contribute their bundled skills above.
-        for skill_entry in marketplace.skills:
-            if not registration.auto_loads_skill(skill_entry.name):
-                continue
-            try:
-                skill_dir = resolve_source_path(
-                    skill_entry.source, base_path=marketplace_path
-                )
-                skill_md = find_skill_md(skill_dir) if skill_dir else None
-                if skill_md is None:
-                    logger.warning(
-                        "Skill '%s' from marketplace '%s' could not be resolved "
-                        "to a SKILL.md; skipping",
-                        skill_entry.name,
-                        registration.name,
-                    )
-                    continue
-                all_skills.append(Skill.load(skill_md, strict=False))
-            except Exception:
-                logger.warning(
-                    "Failed to load skill '%s' from marketplace '%s'",
-                    skill_entry.name,
-                    registration.name,
-                    exc_info=True,
-                )
+        # Standalone skills (plugins already contributed their bundled skills).
+        all_skills.extend(
+            load_marketplace_standalone_skills(
+                marketplace, marketplace_path, registration
+            )
+        )
     return all_skills
 
 

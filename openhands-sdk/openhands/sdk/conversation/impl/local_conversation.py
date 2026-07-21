@@ -65,18 +65,21 @@ from openhands.sdk.plugin import (
     ResolvedPluginSource,
     fetch_plugin_with_resolution,
     load_available_plugins,
-    resolve_source_path,
 )
 from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
-from openhands.sdk.skills import Skill, load_available_skills, merge_skills_by_name
+from openhands.sdk.skills import (
+    Skill,
+    load_available_skills,
+    load_marketplace_standalone_skills,
+    merge_skills_by_name,
+)
 from openhands.sdk.skills.utils import (
     expand_mcp_variables,
     expand_variable_references,
-    find_skill_md,
 )
 from openhands.sdk.subagent import (
     AgentDefinition,
@@ -890,33 +893,14 @@ class LocalConversation(BaseConversation):
                             True,
                         )
                     )
-                # Standalone skills (sources relative to the marketplace repo, or
-                # github URLs). Merged below as low precedence; plugins loaded
-                # afterwards override same-named skills, matching the catalog.
-                for skill_entry in marketplace.skills:
-                    if not registration.auto_loads_skill(skill_entry.name):
-                        continue
-                    try:
-                        skill_dir = resolve_source_path(
-                            skill_entry.source, base_path=marketplace_path
-                        )
-                        skill_md = find_skill_md(skill_dir) if skill_dir else None
-                        if skill_md is None:
-                            logger.warning(
-                                "Skill '%s' from marketplace '%s' could not be "
-                                "resolved to a SKILL.md; skipping",
-                                skill_entry.name,
-                                registration.name,
-                            )
-                            continue
-                        marketplace_skills.append(Skill.load(skill_md, strict=False))
-                    except Exception:
-                        logger.warning(
-                            "Failed to load skill '%s' from marketplace '%s'",
-                            skill_entry.name,
-                            registration.name,
-                            exc_info=True,
-                        )
+                # Standalone skills. Merged below as low precedence; plugins
+                # loaded afterwards override same-named skills, matching the
+                # catalog.
+                marketplace_skills.extend(
+                    load_marketplace_standalone_skills(
+                        marketplace, marketplace_path, registration
+                    )
+                )
             if marketplace_skills:
                 merged_context = merged_context.model_copy(
                     update={
