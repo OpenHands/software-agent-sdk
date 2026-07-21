@@ -68,7 +68,6 @@ from openhands.agent_server.telemetry import (
     get_event_factory,
     get_telemetry_sink,
     shutdown_telemetry_sink,
-    telemetry_router,
 )
 from openhands.agent_server.telemetry.models import (
     EventName,
@@ -428,7 +427,6 @@ def _add_api_routes(app: FastAPI) -> None:
     api_router.include_router(llm_router)
     api_router.include_router(mcp_router)
     api_router.include_router(settings_router)
-    api_router.include_router(telemetry_router)
     api_router.include_router(workspaces_router)
     api_router.include_router(profiles_router)
     api_router.include_router(agent_profiles_router)

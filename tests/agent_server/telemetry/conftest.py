@@ -14,13 +14,13 @@ from typing import Any
 import pytest
 from pydantic import SecretStr
 
-from openhands.agent_server.config import Config, TelemetrySpec
+from openhands.agent_server.config import Config, TelemetryExporterKind, TelemetrySpec
 from openhands.agent_server.persistence.store import reset_stores
 from openhands.agent_server.telemetry import reset_telemetry_sink
 from openhands.agent_server.telemetry.policy import (
+    CONSENT_ENV,
+    CONSENT_MODE_ENV,
     DO_NOT_TRACK_ENV,
-    TELEMETRY_DISABLED_ENV,
-    TelemetryMode,
 )
 
 
@@ -28,8 +28,8 @@ from openhands.agent_server.telemetry.policy import (
 def _clean_telemetry_env(monkeypatch):
     """Ensure a developer's own DO_NOT_TRACK cannot flip test outcomes."""
     monkeypatch.delenv(DO_NOT_TRACK_ENV, raising=False)
-    monkeypatch.delenv(TELEMETRY_DISABLED_ENV, raising=False)
-    monkeypatch.delenv("OH_TELEMETRY_MODE", raising=False)
+    monkeypatch.delenv(CONSENT_ENV, raising=False)
+    monkeypatch.delenv(CONSENT_MODE_ENV, raising=False)
     monkeypatch.delenv("OH_TELEMETRY", raising=False)
 
 
@@ -61,12 +61,14 @@ def secret_key() -> str:
 
 @pytest.fixture
 def config_factory(temp_persistence_dir, secret_key):
-    def _factory(mode: TelemetryMode = "disabled", **telemetry_kwargs: Any) -> Config:
+    def _factory(
+        exporter: TelemetryExporterKind = "none", **telemetry_kwargs: Any
+    ) -> Config:
         return Config(
             static_files_path=None,
             session_api_keys=[],
             secret_key=SecretStr(secret_key),
-            telemetry=TelemetrySpec(mode=mode, **telemetry_kwargs),
+            telemetry=TelemetrySpec(exporter=exporter, **telemetry_kwargs),
         )
 
     return _factory

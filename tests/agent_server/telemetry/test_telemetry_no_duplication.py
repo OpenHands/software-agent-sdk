@@ -9,9 +9,7 @@ import builtins
 
 import pytest
 
-from openhands.agent_server.config import TelemetryMode, TelemetrySpec
-from openhands.agent_server.persistence.models import PersistedSettings
-from openhands.agent_server.telemetry import models as m, policy
+from openhands.agent_server.telemetry import models as m
 from openhands.agent_server.telemetry.factory import build_runtime_properties
 from openhands.agent_server.telemetry.sanitizer import (
     _FIRST_PARTY_ROOT,
@@ -26,29 +24,6 @@ from openhands.sdk.conversation.state import ConversationExecutionStatus
 
 
 # ── single definitions ────────────────────────────────────────────────────
-
-
-def test_telemetry_mode_has_one_definition():
-    """config.TelemetryMode is canonical; policy re-exports the same object."""
-    assert policy.TelemetryMode is TelemetryMode
-    # And the config field uses it rather than restating the literal.
-    assert TelemetrySpec.model_fields["mode"].annotation is TelemetryMode
-
-
-def test_telemetry_consent_has_one_definition():
-    """persistence.models owns it (it is persisted); policy re-exports it."""
-    from openhands.agent_server.persistence.models import TelemetryConsent
-
-    assert policy.TelemetryConsent is TelemetryConsent
-    assert PersistedSettings.model_fields["telemetry_consent"].annotation is (
-        TelemetryConsent
-    )
-
-
-def test_runtime_deployment_mode_reuses_the_config_type():
-    assert m.RuntimeProperties.model_fields["deployment_mode"].annotation is (
-        TelemetryMode
-    )
 
 
 # ── derived, not hardcoded ────────────────────────────────────────────────
@@ -79,12 +54,32 @@ def test_first_party_root_is_derived_not_hardcoded():
     assert _FIRST_PARTY_ROOT == "openhands"  # current value, for readability
 
 
+def test_consent_literal_has_one_definition():
+    """policy owns TelemetryConsent now that no typed settings field exists."""
+    from openhands.agent_server.persistence import models as persisted
+
+    assert not hasattr(persisted, "TelemetryConsent"), (
+        "consent lives in misc_settings.telemetry; there is no typed field"
+    )
+    assert "telemetry_consent" not in persisted.PersistedSettings.model_fields
+
+
+def test_no_deployment_mode_concept_remains():
+    """The follow-up removed cloud mode from SDK and agent-server."""
+    import openhands.agent_server.config as config_mod
+
+    assert not hasattr(config_mod, "TelemetryMode")
+    assert "mode" not in config_mod.TelemetrySpec.model_fields
+    assert "deployment_mode" not in m.EXPECTED_PROPERTY_NAMES
+    assert "deployment_mode" not in m.RuntimeProperties.model_fields
+
+
 def test_versions_match_server_info():
     """Telemetry and /server_info must never disagree about what is running."""
     from openhands.agent_server.server_details_router import ServerInfo
 
     info = ServerInfo(uptime=0.0, idle_time=0.0)
-    runtime = build_runtime_properties(mode="cloud_locked", deferred_init=False)
+    runtime = build_runtime_properties(deferred_init=False)
 
     assert runtime.server_version == info.version
     assert runtime.sdk_version == info.sdk_version

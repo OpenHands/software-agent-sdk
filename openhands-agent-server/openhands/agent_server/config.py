@@ -111,45 +111,51 @@ class WebhookSpec(BaseModel):
     )
 
 
-TelemetryMode = Literal["cloud_locked", "local_opt_in", "disabled"]
-"""Deployment-supplied telemetry policy. Canonical definition."""
+TelemetryExporterKind = Literal["none", "posthog", "http"]
+"""Which exporter ships diagnostic events, if any."""
 
 
 class TelemetrySpec(BaseModel):
-    """Deployment-supplied product-analytics policy and transport settings.
+    """Deployment-supplied product-analytics transport settings.
 
-    This is the *deployment's* half of the telemetry policy; the user's half is
-    ``PersistedSettings.telemetry_consent``. Splitting them means a hosted
-    deployment can require telemetry without that requirement being defeatable
-    by editing a settings file, while a local installation stays strictly
-    opt-in.
-
-    Note that consent is deliberately **not** stored in the opaque
-    ``misc_settings`` container, which the agent-server documents as never
-    interpreting.
+    This carries *transport* only. Whether telemetry may be delivered is
+    resolved from consent (``misc_settings.telemetry.consent``, optionally
+    seeded or overridden by ``OH_TELEMETRY_CONSENT``) — there is no deployment
+    "mode" here, and nothing in the agent-server special-cases a hosted
+    deployment.
     """
 
-    mode: TelemetryMode = Field(
-        default="disabled",
+    exporter: TelemetryExporterKind = Field(
+        default="none",
         description=(
-            "Telemetry policy for this deployment. 'disabled' (the default) "
-            "never emits, and is what library and headless consumers get. "
-            "'local_opt_in' emits only after explicit consent via "
-            "PUT /api/telemetry/consent. 'cloud_locked' always emits and "
-            "ignores consent. The DO_NOT_TRACK / OH_TELEMETRY_DISABLED "
-            "environment variables override all three."
+            "Exporter to use. 'none' (the default) never delivers, and is what "
+            "library and headless consumers get. 'posthog' requires the "
+            "[posthog] extra. 'http' POSTs sanitized batches to "
+            "telemetry_http_endpoint."
         ),
     )
     posthog_api_key: SecretStr | None = Field(
         default=None,
         description=(
-            "PostHog project API key. When unset, no exporter is constructed "
-            "and telemetry stays a no-op regardless of mode."
+            "PostHog project API key. Required by the 'posthog' exporter; "
+            "without it telemetry stays inactive."
         ),
     )
     posthog_host: str = Field(
         default="https://us.i.posthog.com",
         description="PostHog ingestion host.",
+    )
+    http_endpoint: str | None = Field(
+        default=None,
+        description=(
+            "Endpoint the 'http' exporter POSTs sanitized event batches to. "
+            "Intended to front a backend that revalidates auth and consent "
+            "before forwarding onward."
+        ),
+    )
+    http_token: SecretStr | None = Field(
+        default=None,
+        description="Bearer token sent by the 'http' exporter, if required.",
     )
     salt: SecretStr | None = Field(
         default=None,

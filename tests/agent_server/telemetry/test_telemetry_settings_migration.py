@@ -1,4 +1,8 @@
-"""Backward-compatible migration of persisted settings to schema v3."""
+"""Persisted settings stay at schema v2.
+
+Consent lives in ``misc_settings.telemetry.consent``, which needs no schema
+change because ``misc_settings`` already exists and is already persisted.
+"""
 
 import pytest
 
@@ -6,85 +10,45 @@ from openhands.agent_server.persistence.models import (
     PERSISTED_SETTINGS_SCHEMA_VERSION,
     PersistedSettings,
 )
+from openhands.agent_server.telemetry.policy import resolve
 
 
-def test_current_schema_version_is_three():
-    assert PERSISTED_SETTINGS_SCHEMA_VERSION == 3
+def test_schema_version_was_not_bumped_for_consent():
+    assert PERSISTED_SETTINGS_SCHEMA_VERSION == 2
+
+
+def test_there_is_no_typed_consent_field():
+    assert "telemetry_consent" not in PersistedSettings.model_fields
+    assert "telemetry_consent_updated_at" not in PersistedSettings.model_fields
 
 
 @pytest.mark.parametrize("version", [1, 2])
-def test_older_settings_load_without_consent(version: int):
-    """An upgrade must never be mistaken for an opt-in."""
+def test_older_settings_still_load(version: int):
     settings = PersistedSettings.from_persisted(
         {"schema_version": version, "active_profile": "default"}
     )
-
-    assert settings.telemetry_consent == "unset"
-    assert settings.telemetry_consent_updated_at is None
-    assert settings.schema_version == 3
-    # Pre-existing data is preserved.
+    assert settings.schema_version == 2
     assert settings.active_profile == "default"
+    # No consent recorded anywhere means no consent.
+    assert resolve(settings.misc_settings, env={}).enabled is False
 
 
-def test_v2_misc_settings_are_preserved_across_the_migration():
-    settings = PersistedSettings.from_persisted(
-        {"schema_version": 2, "misc_settings": {"theme": "dark"}}
-    )
-    assert settings.misc_settings == {"theme": "dark"}
-    assert settings.telemetry_consent == "unset"
+def test_consent_round_trips_through_misc_settings():
+    settings = PersistedSettings()
+    settings.update({"misc_settings_diff": {"telemetry": {"consent": "granted"}}})
+    assert settings.misc_settings["telemetry"]["consent"] == "granted"
+
+    reloaded = PersistedSettings.from_persisted(settings.model_dump(mode="json"))
+    assert resolve(reloaded.misc_settings, env={}).enabled is True
 
 
-def test_a_legacy_analytics_key_in_misc_settings_is_not_read_as_consent():
-    """The opaque container must not be able to grant consent implicitly."""
-    settings = PersistedSettings.from_persisted(
-        {
-            "schema_version": 2,
-            "misc_settings": {
-                "analytics_consent": True,
-                "telemetry_consent": "granted",
-            },
-        }
-    )
-    assert settings.telemetry_consent == "unset"
-
-
-def test_v3_settings_round_trip():
-    original = PersistedSettings.from_persisted(
-        {"schema_version": 3, "telemetry_consent": "granted"}
-    )
-    assert original.telemetry_consent == "granted"
-
-    reloaded = PersistedSettings.from_persisted(original.model_dump(mode="json"))
-    assert reloaded.telemetry_consent == "granted"
+def test_revoking_through_misc_settings_disables():
+    settings = PersistedSettings()
+    settings.update({"misc_settings_diff": {"telemetry": {"consent": "granted"}}})
+    settings.update({"misc_settings_diff": {"telemetry": {"consent": "denied"}}})
+    assert resolve(settings.misc_settings, env={}).enabled is False
 
 
 def test_a_newer_schema_version_is_still_rejected():
     with pytest.raises(ValueError, match="newer than supported"):
-        PersistedSettings.from_persisted({"schema_version": 4})
-
-
-def test_update_records_a_timestamp_only_when_the_value_changes():
-    settings = PersistedSettings()
-    assert settings.telemetry_consent_updated_at is None
-
-    settings.update({"telemetry_consent": "granted"})
-    first = settings.telemetry_consent_updated_at
-    assert settings.telemetry_consent == "granted"
-    assert first is not None
-
-    # Re-applying the same value must not churn the timestamp.
-    settings.update({"telemetry_consent": "granted"})
-    assert settings.telemetry_consent_updated_at == first
-
-    settings.update({"telemetry_consent": "denied"})
-    assert settings.telemetry_consent == "denied"
-    assert settings.telemetry_consent_updated_at != first
-
-
-def test_update_leaves_consent_alone_when_not_supplied():
-    settings = PersistedSettings()
-    settings.update({"telemetry_consent": "granted"})
-    settings.update({"misc_settings_diff": {"theme": "dark"}})
-
-    assert settings.telemetry_consent == "granted"
-    assert settings.misc_settings == {"theme": "dark"}
+        PersistedSettings.from_persisted({"schema_version": 3})

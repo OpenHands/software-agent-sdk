@@ -150,7 +150,6 @@ def test_payload_carries_schema_version_and_excludes_distinct_id():
             build_git_ref="unknown",
             python_version="3.13",
             platform="darwin",
-            deployment_mode="local_opt_in",
             deferred_init=False,
         ),
         properties=m.ServerLifecycleProperties(),

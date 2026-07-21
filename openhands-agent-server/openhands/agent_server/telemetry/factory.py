@@ -20,7 +20,6 @@ from openhands.agent_server.telemetry.models import (
     EventName,
     RuntimeProperties,
 )
-from openhands.agent_server.telemetry.policy import TelemetryMode
 from openhands.agent_server.telemetry.sanitizer import (
     UNKNOWN_TOKEN,
     pseudonymize,
@@ -42,9 +41,7 @@ def _python_version() -> str:
     return f"{sys.version_info.major}.{sys.version_info.minor}"
 
 
-def build_runtime_properties(
-    *, mode: TelemetryMode, deferred_init: bool
-) -> RuntimeProperties:
+def build_runtime_properties(*, deferred_init: bool) -> RuntimeProperties:
     """Snapshot the coarse runtime facts shared by every event."""
     # Versions and build metadata come from ServerInfo's own field defaults, so
     # /server_info and telemetry can never disagree about what is running.
@@ -57,7 +54,6 @@ def build_runtime_properties(
         build_git_ref=safe_version(info.build_git_ref),
         python_version=_python_version(),
         platform=_platform_token(),
-        deployment_mode=mode,
         deferred_init=deferred_init,
     )
 

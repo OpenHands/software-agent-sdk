@@ -30,18 +30,17 @@ from openhands.agent_server.telemetry.models import (
 from openhands.agent_server.telemetry.policy import (
     TelemetryConsent,
     TelemetryDecision,
-    TelemetryMode,
     kill_switch_engaged,
+    read_consent,
     resolve,
 )
-from openhands.agent_server.telemetry.router import telemetry_router
 from openhands.agent_server.telemetry.service import (
     build_telemetry_sink,
     emit_server_started,
     emit_server_stopped,
     get_event_factory,
     get_telemetry_sink,
-    notify_consent_changed,
+    notify_misc_settings_changed,
     reset_telemetry_sink,
     shutdown_telemetry_sink,
 )
@@ -68,7 +67,7 @@ __all__ = [
     "TelemetryConsent",
     "TelemetryDecision",
     "TelemetryExporter",
-    "TelemetryMode",
+    "read_consent",
     "TelemetrySink",
     "TelemetrySubscriber",
     "build_runtime_properties",
@@ -78,9 +77,8 @@ __all__ = [
     "get_event_factory",
     "get_telemetry_sink",
     "kill_switch_engaged",
-    "notify_consent_changed",
+    "notify_misc_settings_changed",
     "reset_telemetry_sink",
     "resolve",
     "shutdown_telemetry_sink",
-    "telemetry_router",
 ]

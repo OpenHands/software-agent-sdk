@@ -24,12 +24,7 @@ from contextlib import suppress
 from typing import Final, Protocol
 
 from openhands.agent_server.telemetry.models import DiagnosticEvent
-from openhands.agent_server.telemetry.policy import (
-    TelemetryConsent,
-    TelemetryDecision,
-    TelemetryMode,
-    resolve,
-)
+from openhands.agent_server.telemetry.policy import TelemetryDecision
 from openhands.sdk.logger import get_logger
 
 
@@ -62,8 +57,8 @@ class TelemetrySink(Protocol):
         """Accept an event. Must be non-blocking and must never raise."""
         ...
 
-    def on_consent_changed(self, consent: TelemetryConsent) -> None:
-        """Apply a consent change immediately."""
+    def on_decision_changed(self, decision: TelemetryDecision) -> None:
+        """Apply a re-resolved consent decision immediately."""
         ...
 
     async def aclose(self) -> None: ...
@@ -80,7 +75,7 @@ class NoOpTelemetrySink:
     def emit(self, event: DiagnosticEvent) -> None:  # noqa: ARG002
         return None
 
-    def on_consent_changed(self, consent: TelemetryConsent) -> None:  # noqa: ARG002
+    def on_decision_changed(self, decision: TelemetryDecision) -> None:  # noqa: ARG002
         return None
 
     async def aclose(self) -> None:
@@ -94,9 +89,8 @@ class BufferedTelemetrySink:
         self,
         exporter: TelemetryExporter,
         *,
-        mode: TelemetryMode,
-        consent: TelemetryConsent,
-        consent_reader: Callable[[], Awaitable[TelemetryConsent]] | None = None,
+        decision: TelemetryDecision,
+        decision_reader: Callable[[], Awaitable[TelemetryDecision]] | None = None,
         max_queue_size: int = 1000,
         event_buffer_size: int = 20,
         flush_delay: float = 30.0,
@@ -106,9 +100,8 @@ class BufferedTelemetrySink:
     ) -> None:
         self._exporter = exporter
         self._shutdown_flush_timeout = shutdown_flush_timeout
-        self._mode: TelemetryMode = mode
-        self._consent: TelemetryConsent = consent
-        self._consent_reader = consent_reader
+        self._decision: TelemetryDecision = decision
+        self._decision_reader = decision_reader
         self._event_buffer_size = max(1, event_buffer_size)
         self._flush_delay = max(0.1, flush_delay)
         self._num_retries = max(0, num_retries)
@@ -120,8 +113,6 @@ class BufferedTelemetrySink:
         self._dropped_count = 0
         self._failure_streak = 0
         self._consent_checked_at: float | None = None
-
-        self._decision: TelemetryDecision = resolve(mode, consent)
         self._drain_task: asyncio.Task | None = None
 
     def start(self) -> None:
@@ -168,17 +159,16 @@ class BufferedTelemetrySink:
     def dropped_count(self) -> int:
         return self._dropped_count
 
-    def on_consent_changed(self, consent: TelemetryConsent) -> None:
-        """Apply a consent change immediately.
+    def on_decision_changed(self, decision: TelemetryDecision) -> None:
+        """Apply a re-resolved decision immediately.
 
-        Called synchronously from the consent endpoint so revocation takes
+        Called synchronously from the settings-update path so revocation takes
         effect without waiting for the refresh interval. On revocation the
         queue is **discarded rather than flushed** — the inverse of
         ``WebhookSubscriber.close()``. Events collected under a consent that
         has since been withdrawn must not be delivered.
         """
-        self._consent = consent
-        self._apply_decision(resolve(self._mode, consent))
+        self._apply_decision(decision)
 
     def _apply_decision(self, decision: TelemetryDecision) -> None:
         was_enabled = self._decision.enabled
@@ -195,10 +185,10 @@ class BufferedTelemetrySink:
     async def _refresh_consent_if_stale(self) -> None:
         """Re-read persisted consent on the drain task, never inline.
 
-        The settings store is a lock-protected file read, so it must not
-        happen on the hot path in :meth:`emit`.
+        The settings store is a file read, so it must not happen on the hot
+        path in :meth:`emit`.
         """
-        if self._consent_reader is None or self._mode != "local_opt_in":
+        if self._decision_reader is None:
             return
 
         loop = asyncio.get_running_loop()
@@ -211,14 +201,13 @@ class BufferedTelemetrySink:
         self._consent_checked_at = now
 
         try:
-            consent = await self._consent_reader()
+            decision = await self._decision_reader()
         except Exception as exc:
             logger.debug("Telemetry consent refresh failed: %s", type(exc).__name__)
             return
 
-        if consent != self._consent:
-            self._consent = consent
-            self._apply_decision(resolve(self._mode, consent))
+        if decision != self._decision:
+            self._apply_decision(decision)
 
     def emit(self, event: DiagnosticEvent) -> None:
         """Enqueue an event. Synchronous, non-blocking, never raises.

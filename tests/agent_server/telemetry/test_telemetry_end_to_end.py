@@ -19,6 +19,7 @@ from openhands.agent_server.telemetry.factory import (
     DiagnosticEventFactory,
     build_runtime_properties,
 )
+from openhands.agent_server.telemetry.policy import TelemetryDecision
 from openhands.agent_server.telemetry.sink import BufferedTelemetrySink
 from openhands.agent_server.telemetry.subscriber import (
     ConversationTelemetryContext,
@@ -66,7 +67,7 @@ class AlwaysFailingExporter:
 
 def build_subscriber(sink, user_id: str | None = "canvas-user-7"):
     factory = DiagnosticEventFactory(
-        runtime=build_runtime_properties(mode="local_opt_in", deferred_init=False),
+        runtime=build_runtime_properties(deferred_init=False),
         salt="deployment-salt",
     )
     conversation_id = uuid.uuid4()
@@ -114,8 +115,7 @@ async def test_opted_in_session_emits_sanitized_lifecycle_and_error_events():
     exporter = CapturingExporter()
     sink = BufferedTelemetrySink(
         exporter,
-        mode="local_opt_in",
-        consent="granted",
+        decision=TelemetryDecision(consent="granted", enabled=True, reason="settings"),
         flush_delay=0.05,
         shutdown_flush_timeout=1.0,
     )
@@ -155,8 +155,7 @@ async def test_opted_in_session_reports_useful_diagnostics():
     exporter = CapturingExporter()
     sink = BufferedTelemetrySink(
         exporter,
-        mode="local_opt_in",
-        consent="granted",
+        decision=TelemetryDecision(consent="granted", enabled=True, reason="settings"),
         flush_delay=0.05,
         shutdown_flush_timeout=1.0,
     )
@@ -187,16 +186,14 @@ async def test_opted_in_session_reports_useful_diagnostics():
 # ── 2. opted out ──────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize(
-    "mode,consent",
-    [("local_opt_in", "denied"), ("local_opt_in", "unset"), ("disabled", "granted")],
-)
-async def test_opted_out_session_emits_nothing(mode, consent):
+@pytest.mark.parametrize("consent", ["denied", "unset"])
+async def test_opted_out_session_emits_nothing(consent):
     exporter = CapturingExporter()
     sink = BufferedTelemetrySink(
         exporter,
-        mode=mode,
-        consent=consent,
+        decision=TelemetryDecision(
+            consent=consent, enabled=consent == "granted", reason="settings"
+        ),
         flush_delay=0.05,
         shutdown_flush_timeout=1.0,
     )
@@ -214,8 +211,7 @@ async def test_revocation_mid_session_stops_delivery_and_drops_the_backlog():
     exporter = CapturingExporter()
     sink = BufferedTelemetrySink(
         exporter,
-        mode="local_opt_in",
-        consent="granted",
+        decision=TelemetryDecision(consent="granted", enabled=True, reason="settings"),
         flush_delay=3600,  # nothing flushes on its own
         shutdown_flush_timeout=1.0,
     )
@@ -226,7 +222,9 @@ async def test_revocation_mid_session_stops_delivery_and_drops_the_backlog():
     await subscriber(ConversationStateUpdateEvent(key="execution_status", value="idle"))
     await subscriber(AgentErrorEvent(error=SECRET, tool_name="bash", tool_call_id="c1"))
 
-    sink.on_consent_changed("denied")
+    sink.on_decision_changed(
+        TelemetryDecision(consent="denied", enabled=False, reason="settings")
+    )
 
     await subscriber(
         ConversationStateUpdateEvent(key="execution_status", value="finished")
@@ -245,8 +243,7 @@ async def test_exporter_failure_leaves_conversation_execution_unaffected():
     exporter = AlwaysFailingExporter()
     sink = BufferedTelemetrySink(
         exporter,
-        mode="local_opt_in",
-        consent="granted",
+        decision=TelemetryDecision(consent="granted", enabled=True, reason="settings"),
         flush_delay=0.02,
         num_retries=1,
         retry_delay=0.01,
@@ -278,8 +275,7 @@ async def test_a_hanging_exporter_does_not_delay_the_conversation():
 
     sink = BufferedTelemetrySink(
         HangingExporter(),
-        mode="local_opt_in",
-        consent="granted",
+        decision=TelemetryDecision(consent="granted", enabled=True, reason="settings"),
         flush_delay=0.01,
         shutdown_flush_timeout=0.5,
     )

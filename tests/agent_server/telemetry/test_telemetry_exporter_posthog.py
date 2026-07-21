@@ -50,7 +50,6 @@ def make_event(distinct_id: str) -> m.DiagnosticEvent:
             build_git_ref="unknown",
             python_version="3.13",
             platform="darwin",
-            deployment_mode="cloud_locked",
             deferred_init=False,
         ),
         properties=m.ConversationOutcomeProperties(

@@ -49,7 +49,6 @@ def factory() -> DiagnosticEventFactory:
             build_git_ref="unknown",
             python_version="3.13",
             platform="darwin",
-            deployment_mode="local_opt_in",
             deferred_init=False,
         ),
         salt="test-salt",
@@ -467,7 +466,7 @@ def test_confirmation_policy_is_read_from_the_field_that_exists():
     ctx = _build_telemetry_context(
         stored,
         DiagnosticEventFactory(
-            runtime=build_runtime_properties(mode="cloud_locked", deferred_init=False),
+            runtime=build_runtime_properties(deferred_init=False),
             salt="s",
         ),
     )

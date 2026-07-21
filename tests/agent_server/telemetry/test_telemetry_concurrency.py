@@ -19,12 +19,12 @@ Background on why these specific shapes are tested:
 import asyncio
 import inspect
 
-import pytest
-
 from openhands.agent_server.telemetry.sink import BufferedTelemetrySink
 from tests.agent_server.telemetry.test_telemetry_sink import (
     RecordingExporter,
     build_sink,
+    denied,
+    granted,
     make_event,
 )
 
@@ -45,10 +45,10 @@ async def test_shutdown_while_consent_reader_is_blocked_in_a_thread():
 
     async def blocking_reader():
         await release.wait()
-        return "granted"
+        return granted()
 
     sink = build_sink(
-        RecordingExporter(), consent_reader=blocking_reader, flush_delay=0.01
+        RecordingExporter(), decision_reader=blocking_reader, flush_delay=0.01
     )
     sink.start()
     sink.emit(make_event())
@@ -132,15 +132,15 @@ async def test_revocation_racing_a_burst_of_emits():
 
         async def flipper():
             for _ in range(20):
-                sink.on_consent_changed("denied")
+                sink.on_decision_changed(denied())
                 await asyncio.sleep(0)
-                sink.on_consent_changed("granted")
+                sink.on_decision_changed(granted())
                 await asyncio.sleep(0)
 
         await asyncio.wait_for(asyncio.gather(emitter(), flipper()), timeout=TIMEOUT)
 
         # End denied: nothing further may be delivered and the queue is empty.
-        sink.on_consent_changed("denied")
+        sink.on_decision_changed(denied())
         assert len(sink._queue) == 0
 
         before = len(exporter.sent)
@@ -178,7 +178,7 @@ async def test_drain_survives_a_consent_reader_that_always_raises():
         raise RuntimeError("settings unreadable")
 
     exporter = RecordingExporter()
-    sink = build_sink(exporter, consent_reader=broken_reader, flush_delay=0.02)
+    sink = build_sink(exporter, decision_reader=broken_reader, flush_delay=0.02)
     sink.start()
     try:
         sink.emit(make_event())
@@ -196,9 +196,9 @@ async def test_drain_survives_a_consent_reader_that_always_raises():
 # ── blocking-call discipline ──────────────────────────────────────────────
 
 
-def test_emit_and_on_consent_changed_are_sync_and_lock_free():
+def test_emit_and_on_decision_changed_are_sync_and_lock_free():
     """Neither may await or touch the settings store on the hot path."""
-    for fn in (BufferedTelemetrySink.emit, BufferedTelemetrySink.on_consent_changed):
+    for fn in (BufferedTelemetrySink.emit, BufferedTelemetrySink.on_decision_changed):
         assert not asyncio.iscoroutinefunction(fn)
         src = inspect.getsource(fn)
         assert "await" not in src, f"{fn.__name__} must not await"
@@ -211,13 +211,14 @@ def test_consent_is_never_read_from_inside_a_settings_lock():
     The consent endpoint must finish its update() before touching the sink, and
     the sink must never call back into the store.
     """
-    import openhands.agent_server.telemetry.router as router_mod
+    import openhands.agent_server.settings_router as router_mod
 
-    src = inspect.getsource(router_mod.set_telemetry_consent)
+    src = inspect.getsource(router_mod.update_settings)
     update_at = src.index("store.update(")
-    notify_at = src.index("notify_consent_changed(")
+    notify_at = src.index("notify_misc_settings_changed(")
     assert update_at < notify_at, (
-        "notify_consent_changed must run after store.update() returns, not inside it"
+        "notify_misc_settings_changed must run after store.update() returns, "
+        "not inside it"
     )
 
     sink_src = inspect.getsource(BufferedTelemetrySink)
@@ -243,8 +244,7 @@ def test_settings_load_does_not_take_the_file_lock():
     )
 
 
-@pytest.mark.parametrize("mode", ["cloud_locked", "local_opt_in"])
-async def test_sink_never_blocks_the_loop_under_load(mode):
+async def test_sink_never_blocks_the_loop_under_load():
     """A heartbeat coroutine must keep ticking while telemetry is saturated."""
     ticks = {"n": 0}
 
@@ -260,7 +260,7 @@ async def test_sink_never_blocks_the_loop_under_load(mode):
         async def aclose(self):
             pass
 
-    sink = build_sink(SlowExporter(), mode=mode, flush_delay=0.01)
+    sink = build_sink(SlowExporter(), flush_delay=0.01)
     sink.start()
     try:
         hb = asyncio.create_task(heartbeat())
@@ -291,7 +291,7 @@ def _subscriber(sink):
 
     cid = uuid.uuid4()
     factory = DiagnosticEventFactory(
-        runtime=build_runtime_properties(mode="cloud_locked", deferred_init=False),
+        runtime=build_runtime_properties(deferred_init=False),
         salt="s",
     )
     return TelemetrySubscriber(

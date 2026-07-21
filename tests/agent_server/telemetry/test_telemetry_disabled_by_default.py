@@ -26,19 +26,17 @@ async def test_building_from_a_default_config_stays_a_noop(temp_persistence_dir)
 
 
 async def test_opt_in_without_an_api_key_stays_inactive(config_factory):
-    """No key means no exporter, regardless of mode."""
-    sink = await build_telemetry_sink(config_factory("cloud_locked"))
+    """No key means no exporter."""
+    sink = await build_telemetry_sink(config_factory("posthog"))
     assert isinstance(sink, NoOpTelemetrySink)
 
 
-async def test_kill_switch_short_circuits_before_any_exporter(
-    config_factory, monkeypatch
-):
+async def test_kill_switch_short_circuits_delivery(config_factory, monkeypatch):
     monkeypatch.setenv("DO_NOT_TRACK", "1")
     sink = await build_telemetry_sink(
-        config_factory("cloud_locked", posthog_api_key="phc_test")
+        config_factory("posthog", posthog_api_key="phc_test")
     )
-    assert isinstance(sink, NoOpTelemetrySink)
+    assert sink.enabled is False
 
 
 def test_importing_the_telemetry_package_does_not_import_posthog():
@@ -138,9 +136,7 @@ def test_server_lifecycle_events_are_emitted_when_enabled(
         service_mod,
         "_event_factory",
         service_mod.DiagnosticEventFactory(
-            runtime=service_mod.build_runtime_properties(
-                mode="cloud_locked", deferred_init=False
-            )
+            runtime=service_mod.build_runtime_properties(deferred_init=False)
         ),
     )
 
@@ -181,9 +177,7 @@ def test_deferred_pod_does_not_emit_an_unpaired_server_stopped(
         service_mod,
         "_event_factory",
         service_mod.DiagnosticEventFactory(
-            runtime=service_mod.build_runtime_properties(
-                mode="cloud_locked", deferred_init=True
-            )
+            runtime=service_mod.build_runtime_properties(deferred_init=True)
         ),
     )
 
@@ -228,7 +222,7 @@ async def test_telemetry_init_does_not_hijack_the_settings_store_singleton(
         conversations_path=temp_persistence_dir / "workspace/conversations",
         secret_key=SecretStr(urlsafe_b64encode(b"a" * 32).decode("ascii")),
         telemetry=TelemetrySpec(
-            mode="local_opt_in", posthog_api_key=SecretStr("phc_test")
+            exporter="posthog", posthog_api_key=SecretStr("phc_test")
         ),
     )
 

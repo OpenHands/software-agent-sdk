@@ -55,12 +55,15 @@ The server can be configured using environment variables or a JSON configuration
 | `SESSION_API_KEY` | API key for authentication (optional) | None |
 | `OH_SECRET_KEY` | Secret key for encrypting sensitive data (LLM API keys, secrets) in stored conversations. **Required for persistence across restarts.** | None |
 | `OH_ALLOW_CORS_ORIGIN_REGEX` | Regular expression for additional allowed CORS origins. Use `https?://.+` to allow any HTTP(S) origin while echoing the concrete origin. | None |
-| `OH_TELEMETRY_MODE` | Product-analytics policy: `disabled`, `local_opt_in`, or `cloud_locked`. See [Telemetry](#telemetry). | `disabled` |
-| `OH_TELEMETRY_POSTHOG_API_KEY` | PostHog project API key. Without it telemetry stays inactive in any mode. | None |
+| `OH_TELEMETRY_EXPORTER` | Where events go: `none`, `posthog`, or `http`. See [Telemetry](#telemetry). | `none` |
+| `OH_TELEMETRY_POSTHOG_API_KEY` | PostHog project API key. Required by the `posthog` exporter. | None |
 | `OH_TELEMETRY_POSTHOG_HOST` | PostHog ingestion host. | `https://us.i.posthog.com` |
+| `OH_TELEMETRY_HTTP_ENDPOINT` | Endpoint the `http` exporter POSTs sanitized batches to. | None |
+| `OH_TELEMETRY_HTTP_TOKEN` | Bearer token for the `http` exporter, if required. | None |
+| `OH_TELEMETRY_CONSENT` | `granted` or `denied`. Seeds or overrides the persisted consent value. | Unset |
+| `OH_TELEMETRY_CONSENT_MODE` | `seed` (applies only while consent is `unset`) or `override` (wins over settings). | `seed` |
 | `OH_TELEMETRY_SALT` | Key used to pseudonymize conversation ids. Falls back to `OH_SECRET_KEY`, then to a per-process random salt. | None |
-| `DO_NOT_TRACK` | Set to `1` to force telemetry off, **overriding every mode including `cloud_locked`**. | Unset |
-| `OH_TELEMETRY_DISABLED` | Project-specific alias for `DO_NOT_TRACK`. | Unset |
+| `DO_NOT_TRACK` | Set to `1` to force telemetry off, overriding consent and env. | Unset |
 
 ### Configuration File
 
@@ -111,36 +114,83 @@ It is **disabled by default** and does nothing unless a deployment opts in.
 
 Nothing from completion logging or tracing is ever forwarded to telemetry.
 
-#### Modes
+#### Consent
 
-`OH_TELEMETRY_MODE` selects the deployment's policy:
+There is no deployment "mode" and nothing in the agent-server special-cases a
+hosted deployment. It resolves one thing — **effective consent** — and delivery
+additionally requires that an exporter is configured.
 
-- **`disabled`** (default) — never emits. This is what library and headless
-  consumers get, and requires no PostHog dependency.
-- **`local_opt_in`** — emits only after the user explicitly consents through
-  `PUT /api/telemetry/consent`. Nothing is buffered before consent, so granting
-  it later cannot retroactively ship earlier activity. Revoking stops delivery
-  immediately and **discards** anything already queued.
-- **`cloud_locked`** — always emits; user consent is recorded but does not
-  change delivery. Intended for hosted deployments where analytics is part of
-  the service.
-
-`DO_NOT_TRACK=1` (or `OH_TELEMETRY_DISABLED=1`) forces telemetry off in **all**
-modes, including `cloud_locked`. This is an operator-level break-glass, not a
-user-level setting.
-
-#### Consent API
+Consent lives at `misc_settings.telemetry.consent` (`granted` | `denied` |
+`unset`), with an optional `misc_settings.telemetry.managed = true` marking the
+choice as administrator-managed so a UI can render it read-only. Canvas writes
+it through `PATCH /api/settings` like any other frontend preference:
 
 ```
-GET  /api/telemetry/consent
-PUT  /api/telemetry/consent   {"consent": "granted" | "denied" | "unset"}
+PATCH /api/settings
+{"misc_settings_diff": {"telemetry": {"consent": "granted"}}}
 ```
 
-Both return the resolved state, including `effective_enabled` and `is_locked`
-so a UI can render "managed by your administrator" without special-casing an
-error response. Consent is stored as a typed field in persisted settings
-(schema v3) — deliberately **not** inside the opaque `misc_settings` container,
-which the server documents as never interpreting.
+`misc_settings` is otherwise opaque to the agent-server. **This one namespace is
+the documented exception**: the frontend still owns the value, the server only
+reads it. Nothing else in the container is interpreted.
+
+Because it is ordinary `misc_settings`, consent persists across restarts for
+free and needs no settings schema change.
+
+Precedence, highest first:
+
+1. `DO_NOT_TRACK=1` — operator kill switch, overrides everything.
+2. `OH_TELEMETRY_CONSENT` when `OH_TELEMETRY_CONSENT_MODE=override`.
+3. `misc_settings.telemetry.consent`.
+4. The legacy `misc_settings.app_preferences.user_consents_to_analytics` key,
+   read only as a fallback so existing users are not reset. Never written.
+5. `OH_TELEMETRY_CONSENT` as a seed (the default mode) — applies only while the
+   persisted value is `unset`, so an operator default never silently overrules
+   an explicit choice.
+6. Otherwise `unset`, which is **not** consent.
+
+Revoking takes effect before the settings request returns: delivery stops and
+anything already queued is **discarded**, not flushed.
+
+#### Exporters
+
+`OH_TELEMETRY_EXPORTER` selects the transport:
+
+- **`none`** (default) — nothing is delivered. This is what library and headless
+  consumers get, and it requires no vendor dependency.
+- **`posthog`** — requires `OH_TELEMETRY_POSTHOG_API_KEY` and the optional
+  `[posthog]` extra. Without either, telemetry logs one line and stays inactive.
+- **`http`** — POSTs sanitized batches to `OH_TELEMETRY_HTTP_ENDPOINT`. Intended
+  to front a backend that revalidates auth and consent before forwarding onward,
+  so no vendor credentials need to live in the sandbox. Payload shape:
+
+```
+POST <endpoint>
+Content-Type: application/json
+Authorization: Bearer <OH_TELEMETRY_HTTP_TOKEN>   # only when configured
+
+{
+  "schema_version": 1,
+  "events": [
+    {
+      "event": "agent_server.conversation_finished",
+      "distinct_id": "<user id, or anon:...>",
+      "occurred_at": "2026-07-21T10:00:00+00:00",
+      "properties": { ... allowlisted properties ... }
+    }
+  ]
+}
+```
+
+All three share the same bounded queue, drop-on-failure and capped-shutdown
+behaviour.
+
+#### Hosted deployments
+
+A hosted deployment enforces its policy by **seeding** the sandbox's misc
+settings before any conversation starts (`consent = granted`, `managed = true`),
+not by the agent-server knowing about it. That seeding lives outside this
+repository.
 
 #### What is sent
 
@@ -153,7 +203,7 @@ Properties are limited to:
 - **Envelope** — `schema_version`, `source`.
 - **Release / runtime** — `server_version`, `sdk_version`, `tools_version`,
   `build_git_sha`, `build_git_ref`, `python_version`, `platform`,
-  `deployment_mode`, `deferred_init`.
+  `deferred_init`.
 - **Conversation shape** — `conversation_ref`, `llm_model_family`, `agent_kind`,
   `tool_count`, `is_fork`, `has_agent_profile`, `workspace_kind`,
   `confirmation_policy`.

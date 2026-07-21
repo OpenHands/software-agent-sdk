@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from openhands.agent_server.telemetry import models as m
+from openhands.agent_server.telemetry.policy import TelemetryDecision
 from openhands.agent_server.telemetry.sink import (
     BufferedTelemetrySink,
     NoOpTelemetrySink,
@@ -27,7 +28,6 @@ def make_event(index: int = 0) -> m.DiagnosticEvent:
             build_git_ref="unknown",
             python_version="3.13",
             platform="darwin",
-            deployment_mode="local_opt_in",
             deferred_init=False,
         ),
         properties=m.ConversationStartedProperties(
@@ -83,10 +83,20 @@ class FailingExporter:
         pass
 
 
+def granted(**kw) -> TelemetryDecision:
+    kw.setdefault("consent", "granted")
+    kw.setdefault("enabled", kw["consent"] == "granted")
+    kw.setdefault("reason", "settings")
+    return TelemetryDecision(**kw)
+
+
+def denied() -> TelemetryDecision:
+    return TelemetryDecision(consent="denied", enabled=False, reason="settings")
+
+
 def build_sink(exporter, **kwargs: Any) -> BufferedTelemetrySink:
     defaults: dict[str, Any] = {
-        "mode": "local_opt_in",
-        "consent": "granted",
+        "decision": granted(),
         "flush_delay": 0.05,
         "event_buffer_size": 10,
         "num_retries": 0,
@@ -245,7 +255,7 @@ async def test_revocation_discards_the_queue_and_never_delivers():
             sink.emit(make_event(i))
         assert len(sink._queue) == 5
 
-        sink.on_consent_changed("denied")
+        sink.on_decision_changed(denied())
 
         assert sink.enabled is False
         assert len(sink._queue) == 0
@@ -260,7 +270,7 @@ async def test_revocation_discards_the_queue_and_never_delivers():
 async def test_emit_while_denied_is_dropped_and_cannot_leak_on_later_grant():
     """Re-granting must not retroactively ship pre-consent activity."""
     exporter = RecordingExporter()
-    sink = build_sink(exporter, consent="denied", flush_delay=0.05)
+    sink = build_sink(exporter, decision=denied(), flush_delay=0.05)
     sink.start()
     try:
         assert sink.enabled is False
@@ -268,7 +278,7 @@ async def test_emit_while_denied_is_dropped_and_cannot_leak_on_later_grant():
             sink.emit(make_event(i))
         assert len(sink._queue) == 0
 
-        sink.on_consent_changed("granted")
+        sink.on_decision_changed(granted())
         await asyncio.sleep(0.2)
 
         assert exporter.sent == [], "pre-consent events leaked after grant"
@@ -280,28 +290,33 @@ async def test_emit_while_denied_is_dropped_and_cannot_leak_on_later_grant():
         await asyncio.wait_for(sink.aclose(), timeout=10)
 
 
-async def test_cloud_locked_ignores_a_denial():
+async def test_a_managed_decision_still_reports_as_locked():
+    """Cloud enforcement is now a seeded `managed` flag, not a mode."""
     exporter = RecordingExporter()
-    sink = build_sink(exporter, mode="cloud_locked", consent="denied")
+    sink = build_sink(
+        exporter,
+        decision=TelemetryDecision(
+            consent="granted", enabled=True, reason="settings", managed=True
+        ),
+    )
     try:
         assert sink.enabled is True
-        sink.on_consent_changed("denied")
-        assert sink.enabled is True
+        assert sink.decision.is_locked is True
     finally:
         await asyncio.wait_for(sink.aclose(), timeout=10)
 
 
 async def test_consent_is_refreshed_from_the_reader_on_the_drain_task():
     exporter = RecordingExporter()
-    state = {"consent": "granted"}
+    state = {"decision": granted()}
 
     async def reader():
-        return state["consent"]
+        return state["decision"]
 
-    sink = build_sink(exporter, consent="granted", consent_reader=reader)
+    sink = build_sink(exporter, decision=granted(), decision_reader=reader)
     sink.start()
     try:
-        state["consent"] = "denied"
+        state["decision"] = denied()
         sink.emit(make_event())
         # Wait past CONSENT_REFRESH_SECONDS-gated first check.
         await asyncio.sleep(0.3)
@@ -323,7 +338,7 @@ async def test_noop_sink_is_inert():
 
 @pytest.mark.parametrize("mode", ["disabled"])
 async def test_disabled_mode_never_enables(mode):
-    sink = build_sink(RecordingExporter(), mode=mode, consent="granted")
+    sink = build_sink(RecordingExporter(), decision=denied())
     try:
         assert sink.enabled is False
     finally:

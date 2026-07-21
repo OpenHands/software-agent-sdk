@@ -19,16 +19,17 @@ from openhands.agent_server.telemetry import (
     NoOpTelemetrySink,
     build_telemetry_sink,
     get_telemetry_sink,
-    notify_consent_changed,
+    notify_misc_settings_changed,
     shutdown_telemetry_sink,
 )
 
 
-CONSENT_URL = "/api/telemetry/consent"
+SETTINGS_URL = "/api/settings"
+_GRANT = {"misc_settings_diff": {"telemetry": {"consent": "granted"}}}
 
 
 def _spec(**kw) -> TelemetrySpec:
-    kw.setdefault("mode", "cloud_locked")
+    kw.setdefault("exporter", "posthog")
     kw.setdefault("posthog_api_key", SecretStr("phc_test"))
     return TelemetrySpec(**kw)
 
@@ -87,11 +88,9 @@ async def test_unreadable_consent_is_treated_as_absent_consent(
     def _boom(_config):
         raise RuntimeError("settings file is corrupt")
 
-    monkeypatch.setattr(service_mod, "_read_consent_sync", _boom)
+    monkeypatch.setattr(service_mod, "_read_misc_settings_sync", _boom)
 
-    sink = await build_telemetry_sink(
-        Config(static_files_path=None, telemetry=_spec(mode="local_opt_in"))
-    )
+    sink = await build_telemetry_sink(Config(static_files_path=None, telemetry=_spec()))
     try:
         assert sink.enabled is False, "unreadable consent must not enable telemetry"
     finally:
@@ -115,7 +114,7 @@ async def test_exporter_aclose_raising_is_swallowed(temp_persistence_dir, monkey
 
 @pytest.fixture
 def client(config_factory):
-    return TestClient(create_app(config_factory("local_opt_in")))
+    return TestClient(create_app(config_factory()))
 
 
 def test_corrupt_settings_file_yields_409(client, monkeypatch):
@@ -126,7 +125,7 @@ def test_corrupt_settings_file_yields_409(client, monkeypatch):
 
     monkeypatch.setattr(store_mod.FileSettingsStore, "update", _boom)
     with client as c:
-        assert c.put(CONSENT_URL, json={"consent": "granted"}).status_code == 409
+        assert c.patch(SETTINGS_URL, json=_GRANT).status_code == 409
 
 
 def test_unwritable_settings_file_yields_500(client, monkeypatch):
@@ -137,7 +136,7 @@ def test_unwritable_settings_file_yields_500(client, monkeypatch):
 
     monkeypatch.setattr(store_mod.FileSettingsStore, "update", _boom)
     with client as c:
-        assert c.put(CONSENT_URL, json={"consent": "granted"}).status_code == 500
+        assert c.patch(SETTINGS_URL, json=_GRANT).status_code == 500
 
 
 def test_consent_endpoint_survives_a_sink_that_raises(client, monkeypatch):
@@ -150,7 +149,7 @@ def test_consent_endpoint_survives_a_sink_that_raises(client, monkeypatch):
         def emit(self, event):
             pass
 
-        def on_consent_changed(self, consent):
+        def on_decision_changed(self, decision):
             raise RuntimeError("sink is broken")
 
         async def aclose(self):
@@ -158,14 +157,20 @@ def test_consent_endpoint_survives_a_sink_that_raises(client, monkeypatch):
 
     monkeypatch.setattr(service_mod, "_telemetry_sink", _ExplodingSink())
     with client as c:
-        assert c.put(CONSENT_URL, json={"consent": "denied"}).status_code == 200
+        assert (
+            c.patch(
+                SETTINGS_URL,
+                json={"misc_settings_diff": {"telemetry": {"consent": "denied"}}},
+            ).status_code
+            == 200
+        )
 
 
 # ── singleton / lifecycle edge cases ──────────────────────────────────────
 
 
 def test_notify_consent_changed_before_any_sink_is_built_is_a_noop():
-    notify_consent_changed("granted")  # must not raise
+    notify_misc_settings_changed({})  # must not raise
 
 
 async def test_shutdown_without_a_sink_is_a_noop():
@@ -186,7 +191,7 @@ async def test_shutdown_swallows_an_aclose_failure(temp_persistence_dir, monkeyp
         def emit(self, event):
             pass
 
-        def on_consent_changed(self, consent):
+        def on_decision_changed(self, decision):
             pass
 
         async def aclose(self):
