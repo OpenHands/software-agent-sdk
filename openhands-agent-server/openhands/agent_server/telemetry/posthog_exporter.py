@@ -53,14 +53,10 @@ class PostHogExporter:
             project_api_key=api_key,
             host=host,
             timeout=timeout,
-            # Never let the vendor SDK collect anything on its own. Exception
-            # autocapture in particular would ship full tracebacks, defeating
-            # every guarantee made in `sanitizer`.
+            # Autocapture would ship full tracebacks, defeating `sanitizer`.
             enable_exception_autocapture=False,
             log_captured_exceptions=False,
-            # No IP-derived geolocation.
             disable_geoip=True,
-            # We resolve flags ourselves; don't phone home for them.
             enable_local_evaluation=False,
             sync_mode=False,
         )
@@ -78,9 +74,8 @@ class PostHogExporter:
         for event in events:
             properties = event.to_payload()
 
-            # An anonymous session must not create a person profile. Identified
-            # events omit this so they attach to the person the host already
-            # created — which is the whole correlation mechanism.
+            # Identified events omit this so they attach to the host's existing
+            # person -- that is the correlation mechanism.
             if event.distinct_id.startswith(ANONYMOUS_PREFIX):
                 properties["$process_person_profile"] = False
 

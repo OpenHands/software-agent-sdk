@@ -129,8 +129,7 @@ async def set_telemetry_consent(
             status_code=500, detail="Failed to persist telemetry consent"
         )
 
-    # Push into the running sink before returning, so a client that revokes and
-    # immediately checks cannot observe further delivery.
+    # Before returning, so a revoke-then-check cannot observe delivery.
     notify_consent_changed(body.consent)
 
     logger.info("Telemetry consent set to %s (mode=%s)", body.consent, mode)

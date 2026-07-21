@@ -79,13 +79,10 @@ class TelemetrySubscriber(Subscriber[Event]):
     _total_tokens: int | None = None
     _total_cost: float | None = None
 
-    # ── ingest ────────────────────────────────────────────────────────────
-
     async def __call__(self, event: Event) -> None:
         try:
             self._handle(event)
         except Exception:
-            # Telemetry must never perturb conversation execution.
             logger.debug("Telemetry subscriber failed to handle event", exc_info=True)
 
     def _handle(self, event: Event) -> None:
@@ -105,9 +102,8 @@ class TelemetrySubscriber(Subscriber[Event]):
                 self._last_status = status
 
                 if not self._seeded:
-                    # subscribe_to_events pushes current state on attach. That
-                    # is a baseline, not a transition we witnessed -- otherwise
-                    # every rehydration re-emits a terminal event.
+                    # The attach-time push is a baseline, not a transition;
+                    # otherwise every rehydration re-emits a terminal event.
                     self._seeded = True
                     if status in _TERMINAL_STATUSES:
                         self._terminal_emitted = True
@@ -116,8 +112,6 @@ class TelemetrySubscriber(Subscriber[Event]):
                 if status in _TERMINAL_STATUSES:
                     self._capture_usage(event)
                     self._emit_terminal(status)
-
-    # ── emit ──────────────────────────────────────────────────────────────
 
     def emit_started(self) -> None:
         """Emit ``conversation_started``. Called once, at registration."""
@@ -247,8 +241,6 @@ class TelemetrySubscriber(Subscriber[Event]):
                 m.CONVERSATION_ERROR, properties, user_id=self.context.user_id
             )
         )
-
-    # ── teardown ──────────────────────────────────────────────────────────
 
     async def close(self) -> None:
         """Emit a terminal event if none was observed.

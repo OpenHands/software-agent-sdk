@@ -126,8 +126,6 @@ class BufferedTelemetrySink:
         self._decision: TelemetryDecision = resolve(mode, consent)
         self._drain_task: asyncio.Task | None = None
 
-    # ── lifecycle ─────────────────────────────────────────────────────────
-
     def start(self) -> None:
         """Spawn the drain task. Retained on the instance, never orphaned."""
         if self._drain_task is None:
@@ -137,7 +135,6 @@ class BufferedTelemetrySink:
 
     async def aclose(self) -> None:
         if self._closed:
-            # Idempotent: a second close must not re-run the exporter teardown.
             return
         self._closed = True
         self._wake.set()
@@ -148,7 +145,6 @@ class BufferedTelemetrySink:
                 await self._drain_task
             self._drain_task = None
 
-        # Best-effort final flush, hard-capped so shutdown stays bounded.
         if self._decision.enabled and self._queue:
             batch = list(self._queue)
             self._queue.clear()
@@ -161,8 +157,6 @@ class BufferedTelemetrySink:
         self._queue.clear()
         with suppress(Exception):
             await self._exporter.aclose()
-
-    # ── policy ────────────────────────────────────────────────────────────
 
     @property
     def enabled(self) -> bool:
@@ -228,8 +222,6 @@ class BufferedTelemetrySink:
             self._consent = consent
             self._apply_decision(resolve(self._mode, consent))
 
-    # ── ingest ────────────────────────────────────────────────────────────
-
     def emit(self, event: DiagnosticEvent) -> None:
         """Enqueue an event. Synchronous, non-blocking, never raises.
 
@@ -246,8 +238,6 @@ class BufferedTelemetrySink:
             self._wake.set()
         except Exception:  # pragma: no cover - defensive, deque cannot raise
             logger.debug("Telemetry emit failed", exc_info=True)
-
-    # ── drain ─────────────────────────────────────────────────────────────
 
     async def _drain_loop(self) -> None:
         while not self._closed:
@@ -266,13 +256,11 @@ class BufferedTelemetrySink:
                 if batch:
                     await self._dispatch(batch)
                     if self._queue:
-                        # Keep draining a backlog instead of waiting out
-                        # flush_delay per batch.
+                        # Keep draining; do not wait out flush_delay per batch.
                         self._wake.set()
             except asyncio.CancelledError:
                 raise
             except Exception:
-                # The drain task must outlive any single failure.
                 logger.debug("Telemetry drain iteration failed", exc_info=True)
                 await asyncio.sleep(self._retry_delay)
 
@@ -284,8 +272,7 @@ class BufferedTelemetrySink:
 
     async def _dispatch(self, batch: list[DiagnosticEvent]) -> None:
         for attempt in range(self._num_retries + 1):
-            # Re-check immediately before the wire call so a revocation that
-            # landed mid-retry stops delivery.
+            # Re-check: a revocation may have landed mid-retry.
             if not self._decision.enabled:
                 return
             try:
@@ -314,8 +301,7 @@ class BufferedTelemetrySink:
                         type(exc).__name__,
                     )
                 self._dropped_count += len(batch)
-                # Capped: this sleeps on the drain task, so an unbounded
-                # backoff would park delivery entirely.
+                # Capped: this sleeps on the drain task.
                 backoff = min(
                     self._retry_delay * (2 ** min(self._failure_streak, 4)),
                     _MAX_BACKOFF_SECONDS,

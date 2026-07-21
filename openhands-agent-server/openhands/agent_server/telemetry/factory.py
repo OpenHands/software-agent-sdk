@@ -48,8 +48,7 @@ def _platform_token() -> str:
 
 
 def _python_version() -> str:
-    # Deliberately not ``sys.version`` (what ``ServerInfo`` reports) — that is
-    # a long string carrying compiler and build metadata.
+    # Not sys.version: that carries compiler and build metadata.
     return f"{sys.version_info.major}.{sys.version_info.minor}"
 
 
@@ -80,9 +79,7 @@ class DiagnosticEventFactory:
         salt: str | bytes | None = None,
     ) -> None:
         self._runtime = runtime
-        # Falling back to a per-process random salt keeps pseudonyms stable
-        # within a run but unlinkable across runs — the privacy-preferred
-        # failure mode when no deployment salt is configured.
+        # Random fallback: stable within a run, unlinkable across runs.
         self._salt = salt if salt else uuid.uuid4().hex
         self._session_ref = uuid.uuid4().hex
 

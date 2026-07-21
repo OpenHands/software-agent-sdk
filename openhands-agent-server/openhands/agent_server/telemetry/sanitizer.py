@@ -47,9 +47,6 @@ UNKNOWN_TOKEN = "unknown"
 UNKNOWN_ERROR_CLASS = "UnknownError"
 
 
-# ── Scalar coercion ───────────────────────────────────────────────────────
-
-
 def safe_token(value: object, *, default: str = UNKNOWN_TOKEN) -> str:
     """Coerce to a lowercase token, or ``default`` if it doesn't fit.
 
@@ -90,8 +87,6 @@ def allowlisted(
     token = safe_token(value, default=default)
     return token if token in allowed else default
 
-
-# ── Bucketing ─────────────────────────────────────────────────────────────
 
 _DURATION_BOUNDS: tuple[float, ...] = (1, 5, 15, 60, 300, 1800)
 _COUNT_BOUNDS: tuple[float, ...] = (1, 5, 20, 100, 500)
@@ -150,9 +145,6 @@ def cost_bucket(cost: float | None) -> str:
     return bucket(cost, _COST_BOUNDS)
 
 
-# ── Pseudonymisation ──────────────────────────────────────────────────────
-
-
 def _derive_key(salt: str | bytes | None) -> bytes:
     """Normalise any salt to the 32 bytes blake2s accepts as a key."""
     if salt is None:
@@ -172,8 +164,6 @@ def pseudonymize(value: str | bytes, salt: str | bytes | None) -> str:
     raw = value.encode("utf-8") if isinstance(value, str) else value
     return hashlib.blake2s(raw, key=_derive_key(salt), digest_size=16).hexdigest()
 
-
-# ── Model families ────────────────────────────────────────────────────────
 
 MODEL_FAMILIES: frozenset[str] = frozenset(
     {
@@ -227,9 +217,6 @@ def model_family(model: object) -> str:
     return "other"
 
 
-# ── Exception normalisation ───────────────────────────────────────────────
-
-
 @dataclass(frozen=True)
 class ErrorFingerprint:
     """The complete, sanitized description of a failure."""
@@ -250,8 +237,7 @@ def _walk_frames(tb: TracebackType | None) -> list[tuple[str, int]]:
     """
     frames: list[tuple[str, int]] = []
     current = tb
-    # Bound the walk: a runaway recursion produces a huge chain and we only
-    # ever use the deepest few frames anyway.
+    # Bounded: a runaway recursion produces a huge chain.
     remaining = 256
     while current is not None and remaining > 0:
         module = current.tb_frame.f_globals.get("__name__")
@@ -269,10 +255,8 @@ def _classify(exc: BaseException) -> tuple[str, bool]:
     to ``pkg:QualName`` so an unfamiliar dependency cannot blow up cardinality.
     """
     exc_type = type(exc)
-    # ``__name__``, not ``__qualname__``: a nested or locally-defined class has
-    # a qualname like ``outer.<locals>.Inner``, which is both noisy and not a
-    # valid identifier. Falling back to it would smuggle an unvalidated string
-    # into the payload.
+    # __name__, not __qualname__: a nested class gives ``outer.<locals>.Inner``,
+    # which is not a valid identifier and would bypass validation.
     name = safe_identifier(getattr(exc_type, "__name__", None))
     module = getattr(exc_type, "__module__", "") or ""
 
@@ -318,16 +302,14 @@ def normalize_exception(exc: BaseException) -> ErrorFingerprint:
         origin_module = safe_identifier(deepest_module, default=UNKNOWN_TOKEN)
         origin_lineno = deepest_lineno
     elif frames:
-        # No first-party frame: report only the top-level package so we can
-        # still tell "this blew up inside litellm" without leaking structure.
+        # No first-party frame: report only the top-level package.
         deepest_module, deepest_lineno = frames[-1]
         origin_module = safe_identifier(
             deepest_module.split(".", 1)[0], default=UNKNOWN_TOKEN
         )
         origin_lineno = deepest_lineno
 
-    # Fingerprint preimage is assembled from values that are already safe:
-    # a class name, a fixed category, and module/line pairs. No message.
+    # Preimage is already PII-free: class, category, module/line. No message.
     parts = [str(TELEMETRY_SCHEMA_VERSION), error_class, category]
     parts.extend(
         f"{module}:{lineno}"

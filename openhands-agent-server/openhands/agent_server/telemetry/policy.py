@@ -24,7 +24,6 @@ from typing import Literal
 TelemetryMode = Literal["cloud_locked", "local_opt_in", "disabled"]
 TelemetryConsent = Literal["granted", "denied", "unset"]
 
-#: Community-standard opt-out, plus a project-specific alias.
 DO_NOT_TRACK_ENV = "DO_NOT_TRACK"
 TELEMETRY_DISABLED_ENV = "OH_TELEMETRY_DISABLED"
 
@@ -88,7 +87,6 @@ def resolve(
     if mode == "cloud_locked":
         return TelemetryDecision(enabled=True, reason="cloud_locked")
 
-    # local_opt_in: silence is *not* consent.
     if consent == "granted":
         return TelemetryDecision(enabled=True, reason="consent_granted")
     if consent == "denied":

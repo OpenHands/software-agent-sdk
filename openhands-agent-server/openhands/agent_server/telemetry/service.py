@@ -47,9 +47,8 @@ _server_started_emitted = False
 def _read_consent_sync(config: Config) -> TelemetryConsent:
     from openhands.agent_server.persistence.store import get_settings_store
 
-    # Must pass config: the store is a singleton fixed by the first call, and
-    # telemetry initialises before ConversationService primes it. A no-arg call
-    # here disables the cipher process-wide.
+    # Must pass config: the store singleton is fixed by the first call, and a
+    # no-arg call here would disable the cipher process-wide.
     settings = get_settings_store(config).load()
     if settings is None:
         return "unset"

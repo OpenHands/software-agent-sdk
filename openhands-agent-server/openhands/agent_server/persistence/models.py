@@ -333,10 +333,7 @@ class PersistedSettings(BaseModel):
             )
 
         if version < 3:
-            # Pre-v3 settings predate the consent field. Absence must read as
-            # "not consented" — the field default already does this, but it is
-            # stated explicitly so an upgrade can never be mistaken for an
-            # opt-in, and so a future v3->v4 migration has an obvious seam.
+            # Explicit so an upgrade can never be mistaken for an opt-in.
             payload.setdefault("telemetry_consent", "unset")
             payload.setdefault("telemetry_consent_updated_at", None)
 

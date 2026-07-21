@@ -26,9 +26,6 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 TELEMETRY_SCHEMA_VERSION = 1
 
-# ── Constrained scalar aliases ────────────────────────────────────────────
-# A value that cannot structurally hold a sentence, a path, or a secret.
-
 SafeToken = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9_.:\-]{0,63}$")]
 """Lowercase enum-ish token: ``finished``, ``anthropic``, ``0-5s``."""
 
@@ -83,10 +80,6 @@ EventNameLiteral = Literal[
     "agent_server.request_failed",
 ]
 
-# ── Error categories ──────────────────────────────────────────────────────
-# A frozen, low-cardinality classification derived purely from the exception
-# *type*. Never from its message.
-
 ErrorCategory = Literal[
     "llm_auth",
     "llm_rate_limit",
@@ -104,9 +97,7 @@ ErrorCategory = Literal[
     "unknown",
 ]
 
-#: Maps an exception class *name* (never a message) to a category.
 ERROR_CATEGORY_BY_CLASS_NAME: dict[str, ErrorCategory] = {
-    # LLM / provider
     "AuthenticationError": "llm_auth",
     "PermissionDeniedError": "llm_auth",
     "RateLimitError": "llm_rate_limit",
@@ -120,39 +111,30 @@ ERROR_CATEGORY_BY_CLASS_NAME: dict[str, ErrorCategory] = {
     "APIConnectionError": "network",
     "ServiceUnavailableError": "network",
     "InternalServerError": "network",
-    # Tools / MCP
     "ToolExecutionError": "tool_execution",
     "ToolNotFoundError": "tool_execution",
     "MCPError": "mcp",
     "McpError": "mcp",
-    # Workspace / IO
     "FileNotFoundError": "workspace_io",
     "PermissionError": "workspace_io",
     "IsADirectoryError": "workspace_io",
     "NotADirectoryError": "workspace_io",
     "OSError": "workspace_io",
     "IOError": "workspace_io",
-    # Git
     "GitCommandError": "git",
     "InvalidGitRepositoryError": "git",
-    # Network
     "ConnectionError": "network",
     "ConnectError": "network",
     "ReadTimeout": "network",
     "HTTPStatusError": "network",
     "ClientConnectorError": "network",
-    # Config / validation
     "ValidationError": "config",
     "ValueError": "config",
     "KeyError": "config",
     "TypeError": "internal",
-    # Cancellation
     "CancelledError": "cancelled",
     "KeyboardInterrupt": "cancelled",
 }
-
-
-# ── Runtime envelope ──────────────────────────────────────────────────────
 
 
 class RuntimeProperties(BaseModel):
@@ -170,9 +152,6 @@ class RuntimeProperties(BaseModel):
     deployment_mode: Literal["cloud_locked", "local_opt_in", "disabled"]
     deferred_init: bool
     source: Literal["openhands-agent-server"] = "openhands-agent-server"
-
-
-# ── Per-event property models ─────────────────────────────────────────────
 
 
 class _BaseProperties(BaseModel):
@@ -265,9 +244,6 @@ DiagnosticProperties = Annotated[
 ]
 
 
-# ── Envelope ──────────────────────────────────────────────────────────────
-
-
 class DiagnosticEvent(BaseModel):
     """One sanitized analytics event. The only thing a sink ever accepts."""
 
@@ -305,13 +281,10 @@ class DiagnosticEvent(BaseModel):
         return payload
 
 
-#: Every property that may appear in a payload. A deny test asserts the models
-#: produce exactly this set, so adding one is a deliberate, reviewed act.
+#: A deny test asserts the models produce exactly this set.
 EXPECTED_PROPERTY_NAMES: frozenset[str] = frozenset(
     {
-        # envelope
         "schema_version",
-        # runtime
         "server_version",
         "sdk_version",
         "tools_version",
@@ -322,7 +295,6 @@ EXPECTED_PROPERTY_NAMES: frozenset[str] = frozenset(
         "deployment_mode",
         "deferred_init",
         "source",
-        # conversation
         "conversation_ref",
         "llm_model_family",
         "agent_kind",
@@ -331,13 +303,11 @@ EXPECTED_PROPERTY_NAMES: frozenset[str] = frozenset(
         "has_agent_profile",
         "workspace_kind",
         "confirmation_policy",
-        # outcome
         "terminal_status",
         "duration_bucket",
         "event_count_bucket",
         "total_tokens_bucket",
         "cost_bucket",
-        # error
         "error_class",
         "error_category",
         "error_fingerprint",
@@ -347,7 +317,6 @@ EXPECTED_PROPERTY_NAMES: frozenset[str] = frozenset(
         "is_terminal",
         "tool_name",
         "error_id",
-        # request
         "route_template",
         "method",
         "status_code",
