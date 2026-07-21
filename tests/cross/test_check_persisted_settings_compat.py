@@ -65,7 +65,7 @@ def test_collect_fixture_cases_and_validate_current_repo_fixtures() -> None:
     assert versions_by_surface == {
         "agent_settings": {1, 2, 3, 4},
         "conversation_settings": {1},
-        "persisted_settings": {1, 2},
+        "persisted_settings": {1, 2, 3},
     }
 
 
