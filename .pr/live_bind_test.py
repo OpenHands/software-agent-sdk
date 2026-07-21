@@ -1,4 +1,5 @@
 """Live test: agent server bind host guard behavior."""
+
 import json
 import os
 import socket
@@ -44,7 +45,8 @@ def run_main(env: dict, extra_args: list[str]) -> subprocess.CompletedProcess:
 def main():
     base_env = dict(os.environ)
     clean_env = {
-        k: v for k, v in base_env.items()
+        k: v
+        for k, v in base_env.items()
         if "SESSION_API_KEY" not in k and "OH_SESSION" not in k
     }
     cfg = Path("/tmp/__noconfig_bind_test.json")
@@ -57,16 +59,23 @@ def main():
     # 1. No key, explicit --host 0.0.0.0 -> allowed but warned, binds 0.0.0.0
     port = _free_port()
     proc = subprocess.Popen(
-        [sys.executable, "-m", "openhands.agent_server", "--host", "0.0.0.0",
-         "--port", str(port)],
+        [
+            sys.executable,
+            "-m",
+            "openhands.agent_server",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            str(port),
+        ],
         env=clean_env,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
     )
     time.sleep(6)
     loopback_up_e = _can_connect("127.0.0.1", port)
-    non_loopback_up_e = (
-        _can_connect(non_loopback, port) if non_loopback else None
-    )
+    non_loopback_up_e = _can_connect(non_loopback, port) if non_loopback else None
     proc.terminate()
     try:
         out_e, _ = proc.communicate(timeout=5)
@@ -76,8 +85,12 @@ def main():
     results["no_key_explicit_wildcard"] = {
         "loopback_up": loopback_up_e,
         "non_loopback_up": non_loopback_up_e,
-        "bind_line": [l for l in out_e.splitlines() if "Uvicorn running on" in l],
-        "warn_line": [l for l in out_e.splitlines() if "without a session API key" in l],
+        "bind_line": [
+            line for line in out_e.splitlines() if "Uvicorn running on" in line
+        ],
+        "warn_line": [
+            line for line in out_e.splitlines() if "without a session API key" in line
+        ],
     }
 
     # 2. No key, default host -> should bind loopback only
@@ -85,13 +98,13 @@ def main():
     proc = subprocess.Popen(
         [sys.executable, "-m", "openhands.agent_server", "--port", str(port)],
         env=clean_env,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
     )
     time.sleep(5)
     loopback_up = _can_connect("127.0.0.1", port)
-    non_loopback_up = (
-        _can_connect(non_loopback, port) if non_loopback else None
-    )
+    non_loopback_up = _can_connect(non_loopback, port) if non_loopback else None
     proc.terminate()
     try:
         out, _ = proc.communicate(timeout=5)
@@ -101,7 +114,9 @@ def main():
     results["no_key_default"] = {
         "loopback_up": loopback_up,
         "non_loopback_up": non_loopback_up,
-        "bind_line": [l for l in out.splitlines() if "Uvicorn running on" in l],
+        "bind_line": [
+            line for line in out.splitlines() if "Uvicorn running on" in line
+        ],
     }
 
     # 3. With key, default host -> should bind 0.0.0.0
@@ -111,13 +126,13 @@ def main():
     proc = subprocess.Popen(
         [sys.executable, "-m", "openhands.agent_server", "--port", str(port)],
         env=key_env,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
     )
     time.sleep(5)
     loopback_up_k = _can_connect("127.0.0.1", port)
-    non_loopback_up_k = (
-        _can_connect(non_loopback, port) if non_loopback else None
-    )
+    non_loopback_up_k = _can_connect(non_loopback, port) if non_loopback else None
     proc.terminate()
     try:
         out_k, _ = proc.communicate(timeout=5)
@@ -127,7 +142,9 @@ def main():
     results["with_key_default"] = {
         "loopback_up": loopback_up_k,
         "non_loopback_up": non_loopback_up_k,
-        "bind_line": [l for l in out_k.splitlines() if "Uvicorn running on" in l],
+        "bind_line": [
+            line for line in out_k.splitlines() if "Uvicorn running on" in line
+        ],
     }
 
     print(json.dumps(results, indent=2, default=str))
