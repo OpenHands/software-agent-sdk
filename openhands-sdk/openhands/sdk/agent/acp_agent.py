@@ -24,6 +24,7 @@ import re
 import threading
 import time
 import uuid
+import weakref
 from collections.abc import Awaitable, Callable, Generator, Iterable
 from concurrent.futures import Future
 from pathlib import Path
@@ -2412,7 +2413,14 @@ class ACPAgent(AgentBase):
         # session updates AND for ask_agent() forks, which run on the shared
         # client and may fire while no step()/astep() turn is active.
         client.mask = state.secret_registry.mask_secrets_in_output
-        client.before_mask = self._track_file_credentials_for_masking
+        agent_ref = weakref.ref(self)
+
+        def track_file_credentials() -> None:
+            agent = agent_ref()
+            if agent is not None:
+                agent._track_file_credentials_for_masking()
+
+        client.before_mask = track_file_credentials
 
         # Build the subprocess environment. Precedence, highest first:
         #   state.secret_registry > os.environ > default_environment

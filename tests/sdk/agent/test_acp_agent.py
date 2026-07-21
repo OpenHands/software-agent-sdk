@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 import threading
 import uuid
+import weakref
 from collections.abc import Mapping
 from concurrent.futures import Future
 from pathlib import Path
@@ -5611,7 +5613,9 @@ class TestACPSessionIdPersistence:
         """
         from contextlib import ExitStack
 
-        mock_process = MagicMock()
+        mock_process = MagicMock(spec=asyncio.subprocess.Process)
+        mock_process.returncode = None
+        mock_process.wait = AsyncMock(return_value=0)
         mock_process.stdin = MagicMock()
         mock_process.stdout = MagicMock()
 
@@ -5841,6 +5845,25 @@ class TestACPSessionIdPersistence:
         assert kwargs["session_id"] == "durable-sess"
         conn.new_session.assert_not_awaited()
         assert agent._session_id == "durable-sess"
+
+    def test_mask_callback_does_not_retain_agent(self, tmp_path):
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        conn = self._make_conn()
+        self._patched_start_acp_server(agent, state, conn=conn)
+        client = agent._client
+        executor = agent._executor
+        agent_ref = weakref.ref(agent)
+
+        del agent
+        gc.collect()
+
+        assert agent_ref() is None
+        assert executor is not None
+        assert executor._portal is None
+        assert client is not None
+        assert client.before_mask is not None
+        assert client.before_mask() is None
 
     def test_acp_resume_session_id_failure_falls_back_to_new_session(self, tmp_path):
         """If the server can't load the explicit id, fall back to new_session.
@@ -6706,7 +6729,9 @@ class TestACPSecretsEnvInjection:
         captured: dict = {}
         conn = TestACPSecretsEnvInjection._make_conn()
 
-        mock_process = MagicMock()
+        mock_process = MagicMock(spec=asyncio.subprocess.Process)
+        mock_process.returncode = None
+        mock_process.wait = AsyncMock(return_value=0)
         mock_process.stdin = MagicMock()
         mock_process.stdout = MagicMock()
 
@@ -6861,7 +6886,9 @@ class TestACPSecretRegistryEnvInjection:
         captured: dict = {}
         conn = TestACPSecretsEnvInjection._make_conn()
 
-        mock_process = MagicMock()
+        mock_process = MagicMock(spec=asyncio.subprocess.Process)
+        mock_process.returncode = None
+        mock_process.wait = AsyncMock(return_value=0)
         mock_process.stdin = MagicMock()
         mock_process.stdout = MagicMock()
 
@@ -7094,7 +7121,9 @@ class TestACPEnvConflictSuppression:
         captured: dict = {}
         conn = TestACPEnvConflictSuppression._make_conn()
 
-        mock_process = MagicMock()
+        mock_process = MagicMock(spec=asyncio.subprocess.Process)
+        mock_process.returncode = None
+        mock_process.wait = AsyncMock(return_value=0)
         mock_process.stdin = MagicMock()
         mock_process.stdout = MagicMock()
 
@@ -8093,7 +8122,9 @@ class TestACPFileSecretMaterialisation:
         from openhands.sdk.utils.async_executor import AsyncExecutor
 
         captured: dict[str, Any] = {}
-        mock_process = MagicMock()
+        mock_process = MagicMock(spec=asyncio.subprocess.Process)
+        mock_process.returncode = None
+        mock_process.wait = AsyncMock(return_value=0)
         mock_process.stdin = MagicMock()
         mock_process.stdout = MagicMock()
 
