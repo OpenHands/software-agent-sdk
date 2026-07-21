@@ -3987,6 +3987,27 @@ class ACPAgent(AgentBase):
 
     def __del__(self) -> None:
         try:
+            has_resources = (
+                self._executor is not None
+                or self._process is not None
+                or self._conn is not None
+                or bool(self._file_credential_lifecycles)
+            )
+        except Exception:
+            return
+        if not has_resources:
+            return
+        try:
+            threading.Thread(
+                target=self._finalize,
+                name="acp-agent-finalizer",
+                daemon=True,
+            ).start()
+        except Exception:
+            pass
+
+    def _finalize(self) -> None:
+        try:
             self.close()
         except Exception:
             logger.warning("Failed to finalize ACPAgent resources", exc_info=True)

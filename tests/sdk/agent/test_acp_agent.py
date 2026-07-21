@@ -6,6 +6,7 @@ import asyncio
 import gc
 import json
 import threading
+import time
 import uuid
 import weakref
 from collections.abc import Mapping
@@ -5857,6 +5858,10 @@ class TestACPSessionIdPersistence:
 
         del agent
         gc.collect()
+
+        deadline = time.monotonic() + 5
+        while agent_ref() is not None and time.monotonic() < deadline:
+            time.sleep(0.01)
 
         assert agent_ref() is None
         assert executor is not None
