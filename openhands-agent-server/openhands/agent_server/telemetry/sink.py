@@ -144,8 +144,15 @@ class BufferedTelemetrySink:
                 )
 
         self._queue.clear()
-        with suppress(Exception):
-            await self._exporter.aclose()
+        # Also capped. For PostHog this is where the real network I/O happens:
+        # capture() only enqueues, so aclose() -> client.shutdown() is
+        # flush() + join(), and posthog's consumer defaults to retries=10 with
+        # timeout=15 per batch. Unbounded, an unreachable endpoint blocks the
+        # uvicorn lifespan here for minutes.
+        with suppress(Exception, asyncio.CancelledError):
+            await asyncio.wait_for(
+                self._exporter.aclose(), timeout=self._shutdown_flush_timeout
+            )
 
     @property
     def enabled(self) -> bool:

@@ -53,6 +53,11 @@ logger = get_logger(__name__)
 _TERMINAL_STATUSES: Final[frozenset[str]] = frozenset(
     s.value for s in ConversationExecutionStatus if s.is_terminal()
 )
+_RUNNING_STATUS: Final[str] = ConversationExecutionStatus.RUNNING.value
+#: Reported when a run was observed but ended without a terminal state, e.g.
+#: the server stopped mid-run. Never a raw non-terminal status, which would put
+#: values like "paused" in a field named terminal_status.
+_INTERRUPTED_STATUS: Final[str] = "interrupted"
 _FAILURE_STATUSES: Final[frozenset[str]] = _TERMINAL_STATUSES - {
     ConversationExecutionStatus.FINISHED.value
 }
@@ -88,6 +93,7 @@ class TelemetrySubscriber(Subscriber[Event]):
     _terminal_emitted: bool = False
     _last_status: str | None = None
     _seeded: bool = False
+    _run_observed: bool = False
     _total_tokens: int | None = None
     _total_cost: float | None = None
 
@@ -120,6 +126,9 @@ class TelemetrySubscriber(Subscriber[Event]):
             self._seeded = True
             self._terminal_emitted = status in _TERMINAL_STATUSES
             return
+
+        if status == _RUNNING_STATUS:
+            self._run_observed = True
 
         if status in _TERMINAL_STATUSES:
             self._capture_usage(event)
@@ -164,9 +173,10 @@ class TelemetrySubscriber(Subscriber[Event]):
             cost_bucket=bucket(self._total_cost, COST_BOUNDS),
             llm_model_family=self.context.llm_model_family,
         )
+        # An interrupted run did not complete, so it is not "finished".
         event_name = (
             m.EventName.CONVERSATION_FAILED
-            if token in _FAILURE_STATUSES
+            if token in _FAILURE_STATUSES or token == _INTERRUPTED_STATUS
             else m.EventName.CONVERSATION_FINISHED
         )
         self.sink.emit(
@@ -255,14 +265,28 @@ class TelemetrySubscriber(Subscriber[Event]):
         )
 
     async def close(self) -> None:
-        """Emit a terminal event if none was observed.
+        """Emit a terminal event only if a run was actually observed.
+
+        The subscriber attaches on every ``_start_event_service`` path,
+        including the lazy attach when a user merely *opens* an existing
+        conversation. Emitting unconditionally here produced a
+        ``conversation_finished`` — carrying a non-terminal
+        ``terminal_status`` like ``paused`` — for a conversation that did
+        nothing this session, with no matching ``conversation_started``, and
+        again on every view-then-restart cycle for the same
+        ``conversation_ref``.
+
+        Gating on an observed run keeps the crash-mid-run safety net: a
+        conversation that reached ``running`` and never reported a terminal
+        state is still reported, as ``interrupted``.
 
         Deliberately does **not** close ``self.sink``: the sink is shared
         process-wide and outlives every conversation.
         """
         try:
-            if not self._terminal_emitted:
-                self._emit_terminal(self._last_status or UNKNOWN_TOKEN)
+            if self._terminal_emitted or not self._run_observed:
+                return
+            self._emit_terminal(_INTERRUPTED_STATUS)
         except Exception:
             logger.debug("Telemetry subscriber failed to close", exc_info=True)
 

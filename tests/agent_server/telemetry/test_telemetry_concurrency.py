@@ -382,3 +382,55 @@ async def test_capture_usage_swallows_a_malformed_stats_block():
     payload = sink.events[0].to_payload()
     assert payload["total_tokens_bucket"] in {"lt-1000", "unknown"}
     assert payload["terminal_status"] == "finished"
+
+
+async def test_shutdown_is_bounded_when_exporter_aclose_hangs():
+    """Regression: the exporter close was uncapped.
+
+    For PostHog this is where the real network I/O happens — capture() only
+    enqueues, so aclose() -> client.shutdown() is flush() + join(), and
+    posthog's consumer defaults to retries=10 with timeout=15 per batch. An
+    unreachable endpoint blocked the uvicorn lifespan here for minutes.
+    """
+    import time
+
+    class HangingCloseExporter:
+        async def send(self, events):
+            pass
+
+        async def aclose(self):
+            await asyncio.sleep(3600)
+
+    sink = build_sink(HangingCloseExporter(), shutdown_flush_timeout=0.5)
+    sink.start()
+    sink.emit(make_event())
+
+    started = time.monotonic()
+    await asyncio.wait_for(sink.aclose(), timeout=TIMEOUT)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 4, f"aclose() took {elapsed:.1f}s; the exporter close is uncapped"
+
+
+async def test_shutdown_is_bounded_when_both_send_and_aclose_hang():
+    """Both legs are capped, so worst case is bounded by 2x the timeout."""
+    import time
+
+    class FullyHangingExporter:
+        async def send(self, events):
+            await asyncio.sleep(3600)
+
+        async def aclose(self):
+            await asyncio.sleep(3600)
+
+    sink = build_sink(
+        FullyHangingExporter(), flush_delay=3600, shutdown_flush_timeout=0.5
+    )
+    sink.start()
+    sink.emit(make_event())
+
+    started = time.monotonic()
+    await asyncio.wait_for(sink.aclose(), timeout=TIMEOUT)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 5, f"aclose() took {elapsed:.1f}s"

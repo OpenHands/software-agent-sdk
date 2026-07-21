@@ -150,12 +150,61 @@ async def test_terminal_status_is_read_from_a_full_state_snapshot(factory):
     assert sink.names == [m.EventName.CONVERSATION_FINISHED]
 
 
-async def test_close_emits_a_terminal_event_when_none_was_observed(factory):
+async def test_close_is_silent_when_no_run_was_observed(factory):
+    """Regression: opening an existing conversation is not a conversation.
+
+    The subscriber attaches on every _start_event_service path, including the
+    lazy attach when a user merely views an old conversation. Emitting on close
+    produced a conversation_finished with no matching conversation_started,
+    repeated on every view-then-restart cycle for the same conversation_ref.
+    """
     sink = CollectingSink()
     sub = make_subscriber(sink, factory)
 
     await sub.close()
-    assert len(sink.names) == 1
+    assert sink.names == []
+
+
+@pytest.mark.parametrize("baseline", ["idle", "paused", "finished", "error"])
+async def test_view_only_rehydration_emits_nothing(factory, baseline):
+    sink = CollectingSink()
+    sub = make_subscriber(sink, factory)
+
+    # Attach-time baseline push, then the session ends without a run.
+    await sub(ConversationStateUpdateEvent(key="execution_status", value=baseline))
+    await sub.close()
+
+    assert sink.names == [], (
+        f"view-only rehydration at {baseline!r} emitted {sink.names}"
+    )
+
+
+async def test_a_run_interrupted_before_a_terminal_state_is_still_reported(factory):
+    """The crash-mid-run safety net must survive the noise fix."""
+    sink = CollectingSink()
+    sub = make_subscriber(sink, factory)
+
+    await sub(ConversationStateUpdateEvent(key="execution_status", value="idle"))
+    await sub(ConversationStateUpdateEvent(key="execution_status", value="running"))
+    await sub.close()
+
+    assert sink.names == [m.EventName.CONVERSATION_FAILED]
+    payload = sink.events[0].to_payload()
+    # Never a raw non-terminal status in a field named terminal_status.
+    assert payload["terminal_status"] == "interrupted"
+
+
+async def test_an_observed_terminal_state_wins_over_the_interrupted_fallback(factory):
+    sink = CollectingSink()
+    sub = make_subscriber(sink, factory)
+
+    await sub(ConversationStateUpdateEvent(key="execution_status", value="idle"))
+    await sub(ConversationStateUpdateEvent(key="execution_status", value="running"))
+    await sub(ConversationStateUpdateEvent(key="execution_status", value="finished"))
+    await sub.close()
+
+    assert sink.names == [m.EventName.CONVERSATION_FINISHED]
+    assert sink.events[0].to_payload()["terminal_status"] == "finished"
 
 
 async def test_close_does_not_close_the_shared_sink(factory):
