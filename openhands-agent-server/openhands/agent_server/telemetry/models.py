@@ -22,6 +22,8 @@ from typing import Annotated, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
+from openhands.agent_server.config import TelemetryMode
+
 
 TELEMETRY_SCHEMA_VERSION: Final = 1
 
@@ -142,7 +144,7 @@ class RuntimeProperties(BaseModel):
     build_git_ref: VersionToken
     python_version: SafeToken
     platform: SafeToken
-    deployment_mode: Literal["cloud_locked", "local_opt_in", "disabled"]
+    deployment_mode: TelemetryMode
     deferred_init: bool
     source: Literal["openhands-agent-server"] = "openhands-agent-server"
 

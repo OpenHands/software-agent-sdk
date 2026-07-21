@@ -111,6 +111,10 @@ class WebhookSpec(BaseModel):
     )
 
 
+TelemetryMode = Literal["cloud_locked", "local_opt_in", "disabled"]
+"""Deployment-supplied telemetry policy. Canonical definition."""
+
+
 class TelemetrySpec(BaseModel):
     """Deployment-supplied product-analytics policy and transport settings.
 
@@ -125,7 +129,7 @@ class TelemetrySpec(BaseModel):
     interpreting.
     """
 
-    mode: Literal["cloud_locked", "local_opt_in", "disabled"] = Field(
+    mode: TelemetryMode = Field(
         default="disabled",
         description=(
             "Telemetry policy for this deployment. 'disabled' (the default) "

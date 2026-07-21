@@ -6,14 +6,13 @@ accidentally assemble an event with a raw conversation id or an unbucketed
 count.
 """
 
-import os
 import sys
 import uuid
 from datetime import datetime
-from importlib.metadata import version
 from typing import Final
 from uuid import UUID
 
+from openhands.agent_server.server_details_router import ServerInfo
 from openhands.agent_server.telemetry.models import (
     TELEMETRY_SCHEMA_VERSION,
     DiagnosticEvent,
@@ -34,14 +33,6 @@ from openhands.sdk.utils import utc_now
 ANONYMOUS_PREFIX: Final = "anon:"
 
 
-def _package_version(dist_name: str) -> str:
-    """Mirror of ``server_details_router._package_version``."""
-    try:
-        return safe_version(version(dist_name))
-    except Exception:
-        return UNKNOWN_TOKEN
-
-
 def _platform_token() -> str:
     return safe_token(sys.platform, default=UNKNOWN_TOKEN)
 
@@ -55,12 +46,15 @@ def build_runtime_properties(
     *, mode: TelemetryMode, deferred_init: bool
 ) -> RuntimeProperties:
     """Snapshot the coarse runtime facts shared by every event."""
+    # Versions and build metadata come from ServerInfo's own field defaults, so
+    # /server_info and telemetry can never disagree about what is running.
+    info = ServerInfo(uptime=0.0, idle_time=0.0)
     return RuntimeProperties(
-        server_version=_package_version("openhands-agent-server"),
-        sdk_version=_package_version("openhands-sdk"),
-        tools_version=_package_version("openhands-tools"),
-        build_git_sha=safe_version(os.environ.get("OPENHANDS_BUILD_GIT_SHA")),
-        build_git_ref=safe_version(os.environ.get("OPENHANDS_BUILD_GIT_REF")),
+        server_version=safe_version(info.version),
+        sdk_version=safe_version(info.sdk_version),
+        tools_version=safe_version(info.tools_version),
+        build_git_sha=safe_version(info.build_git_sha),
+        build_git_ref=safe_version(info.build_git_ref),
         python_version=_python_version(),
         platform=_platform_token(),
         deployment_mode=mode,

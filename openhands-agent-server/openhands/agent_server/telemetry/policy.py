@@ -18,9 +18,9 @@ import os
 from dataclasses import dataclass
 from typing import Final, Literal
 
+from openhands.agent_server.config import TelemetryMode
+from openhands.agent_server.persistence.models import TelemetryConsent
 
-TelemetryMode = Literal["cloud_locked", "local_opt_in", "disabled"]
-TelemetryConsent = Literal["granted", "denied", "unset"]
 
 DO_NOT_TRACK_ENV: Final = "DO_NOT_TRACK"
 TELEMETRY_DISABLED_ENV: Final = "OH_TELEMETRY_DISABLED"
@@ -92,3 +92,14 @@ def resolve(
             return TelemetryDecision(enabled=False, reason="consent_denied")
         case _:
             return TelemetryDecision(enabled=False, reason="consent_unset")
+
+
+__all__ = [
+    "TelemetryConsent",
+    "TelemetryDecision",
+    "TelemetryMode",
+    "kill_switch_engaged",
+    "resolve",
+    "DO_NOT_TRACK_ENV",
+    "TELEMETRY_DISABLED_ENV",
+]

@@ -34,7 +34,7 @@ from openhands.agent_server.telemetry.models import (
 )
 
 
-_FIRST_PARTY_ROOT: Final = "openhands"
+_FIRST_PARTY_ROOT: Final = __name__.split(".", 1)[0]
 _MAX_FINGERPRINT_FRAMES: Final = 5
 
 _SAFE_TOKEN_RE: Final = re.compile(r"^[a-z0-9][a-z0-9_.:\-]{0,63}$")

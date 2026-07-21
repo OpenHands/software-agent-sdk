@@ -32,18 +32,25 @@ from openhands.agent_server.telemetry.sanitizer import (
     safe_token,
 )
 from openhands.agent_server.telemetry.sink import TelemetrySink
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import AgentErrorEvent, ConversationStateUpdateEvent, Event
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
+from openhands.sdk.event.conversation_state import FULL_STATE_KEY
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import utc_now
 
 
 logger = get_logger(__name__)
 
-_TERMINAL_STATUSES: Final = frozenset({"finished", "error", "stuck"})
-_FAILURE_STATUSES: Final = frozenset({"error", "stuck"})
+# Derived from the SDK enum rather than hardcoded, so a new terminal status
+# cannot silently stop being reported.
+_TERMINAL_STATUSES: Final = frozenset(
+    s.value for s in ConversationExecutionStatus if s.is_terminal()
+)
+_FAILURE_STATUSES: Final = _TERMINAL_STATUSES - {
+    ConversationExecutionStatus.FINISHED.value
+}
 _EXECUTION_STATUS_KEY: Final = "execution_status"
-_FULL_STATE_KEY: Final = "full_state"
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,7 +268,7 @@ def _extract_status(event: ConversationStateUpdateEvent) -> str | None:
 
     if key == _EXECUTION_STATUS_KEY and isinstance(value, str):
         return value
-    if key == _FULL_STATE_KEY and isinstance(value, dict):
+    if key == FULL_STATE_KEY and isinstance(value, dict):
         status = value.get(_EXECUTION_STATUS_KEY)
         if isinstance(status, str):
             return status
