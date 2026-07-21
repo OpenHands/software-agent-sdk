@@ -22,7 +22,16 @@ from openhands.sdk.llm import (
     ThinkingBlock,
 )
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot, TokenUsage
-from openhands.tools.terminal.definition import TerminalAction, TerminalObservation
+from openhands.sdk.tool import Action, Observation
+
+
+class _LoopAction(Action):
+    command: str
+
+
+class _LoopObservation(Observation):
+    command: str
+    exit_code: int
 
 
 def _msg(**kwargs) -> Message:
@@ -239,7 +248,7 @@ def _repeating_terminal_loop_events(repeat_count: int) -> list[Event]:
         action = ActionEvent(
             source="agent",
             thought=[TextContent(text="I need to run ls command")],
-            action=TerminalAction(command="ls"),
+            action=_LoopAction(command="ls"),
             tool_name="terminal",
             tool_call_id=f"call_{i}",
             tool_call=MessageToolCall(
@@ -254,7 +263,7 @@ def _repeating_terminal_loop_events(repeat_count: int) -> list[Event]:
         loop_events.append(
             ObservationEvent(
                 source="environment",
-                observation=TerminalObservation.from_text(
+                observation=_LoopObservation.from_text(
                     text="file1.txt\nfile2.txt",
                     command="ls",
                     exit_code=0,
