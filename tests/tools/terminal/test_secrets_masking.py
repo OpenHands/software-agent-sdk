@@ -89,3 +89,33 @@ def test_terminal_executor_with_conversation_secrets():
         finally:
             executor.close()
             conversation.close()
+
+
+
+def test_terminal_masks_git_remote_credentials_without_registered_secrets():
+    """URL-embedded GitHub tokens must be redacted even with no conversation secrets.
+
+    Regression for OpenHands#15338: `git remote -v` can print
+    https://ghu_...@github.com/... and that used to reach the model unmasked.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        executor = TerminalExecutor(working_dir=temp_dir, terminal_type="subprocess")
+        try:
+            mock_session = Mock()
+            token = "ghu_" + ("a" * 36)
+            remote_line = f"origin\thttps://{token}@github.com/owner/repo.git (fetch)"
+            mock_observation = TerminalObservation(
+                command="git remote -v",
+                exit_code=0,
+                content=[TextContent(text=remote_line)],
+            )
+            mock_session.execute.return_value = mock_observation
+            mock_session._closed = False
+            executor._session = mock_session
+
+            result = executor(TerminalAction(command="git remote -v"))
+            assert token not in result.text
+            assert "github.com/owner/repo.git" in result.text
+            assert "****@" in result.text or "<redacted>" in result.text
+        finally:
+            executor.close()
