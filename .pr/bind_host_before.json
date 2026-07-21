@@ -1,0 +1,25 @@
+{
+  "non_loopback_ip": "10.2.21.20",
+  "no_key_explicit_wildcard": {
+    "loopback_up": true,
+    "non_loopback_up": true,
+    "bind_line": [
+      "{\"asctime\": \"2026-07-21 18:12:14,271\", \"levelname\": \"INFO\", \"name\": \"uvicorn.error\", \"filename\": \"server.py\", \"lineno\": 216, \"message\": \"Uvicorn running on http://0.0.0.0:54525 (Press CTRL+C to quit)\", \"color_message\": \"Uvicorn running on \\u001b[1m%s://%s:%d\\u001b[0m (Press CTRL+C to quit)\"}"
+    ],
+    "warn_line": []
+  },
+  "no_key_default": {
+    "loopback_up": false,
+    "non_loopback_up": false,
+    "bind_line": [
+      "{\"asctime\": \"2026-07-21 18:12:20,420\", \"levelname\": \"INFO\", \"name\": \"uvicorn.error\", \"filename\": \"server.py\", \"lineno\": 216, \"message\": \"Uvicorn running on http://0.0.0.0:35025 (Press CTRL+C to quit)\", \"color_message\": \"Uvicorn running on \\u001b[1m%s://%s:%d\\u001b[0m (Press CTRL+C to quit)\"}"
+    ]
+  },
+  "with_key_default": {
+    "loopback_up": false,
+    "non_loopback_up": false,
+    "bind_line": [
+      "{\"asctime\": \"2026-07-21 18:12:26,225\", \"levelname\": \"INFO\", \"name\": \"uvicorn.error\", \"filename\": \"server.py\", \"lineno\": 216, \"message\": \"Uvicorn running on http://0.0.0.0:42079 (Press CTRL+C to quit)\", \"color_message\": \"Uvicorn running on \\u001b[1m%s://%s:%d\\u001b[0m (Press CTRL+C to quit)\"}"
+    ]
+  }
+}

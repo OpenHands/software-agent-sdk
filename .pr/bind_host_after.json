@@ -1,0 +1,27 @@
+{
+  "non_loopback_ip": "10.2.21.20",
+  "no_key_explicit_wildcard": {
+    "loopback_up": true,
+    "non_loopback_up": true,
+    "bind_line": [
+      "{\"asctime\": \"2026-07-21 18:10:53,367\", \"levelname\": \"INFO\", \"name\": \"uvicorn.error\", \"filename\": \"server.py\", \"lineno\": 216, \"message\": \"Uvicorn running on http://0.0.0.0:52807 (Press CTRL+C to quit)\", \"color_message\": \"Uvicorn running on \\u001b[1m%s://%s:%d\\u001b[0m (Press CTRL+C to quit)\"}"
+    ],
+    "warn_line": [
+      "{\"asctime\": \"2026-07-21 18:10:52,273\", \"levelname\": \"WARNING\", \"name\": \"__main__\", \"filename\": \"__main__.py\", \"lineno\": 287, \"message\": \"Binding to all interfaces (0.0.0.0) without a session API key: the agent server will be unauthenticated and reachable from the network. Set SESSION_API_KEY (or OH_SESSION_API_KEYS_0) to require authentication, or bind to a loopback address with --host.\"}"
+    ]
+  },
+  "no_key_default": {
+    "loopback_up": false,
+    "non_loopback_up": false,
+    "bind_line": [
+      "{\"asctime\": \"2026-07-21 18:10:59,466\", \"levelname\": \"INFO\", \"name\": \"uvicorn.error\", \"filename\": \"server.py\", \"lineno\": 216, \"message\": \"Uvicorn running on http://127.0.0.1:42373 (Press CTRL+C to quit)\", \"color_message\": \"Uvicorn running on \\u001b[1m%s://%s:%d\\u001b[0m (Press CTRL+C to quit)\"}"
+    ]
+  },
+  "with_key_default": {
+    "loopback_up": false,
+    "non_loopback_up": false,
+    "bind_line": [
+      "{\"asctime\": \"2026-07-21 18:11:05,316\", \"levelname\": \"INFO\", \"name\": \"uvicorn.error\", \"filename\": \"server.py\", \"lineno\": 216, \"message\": \"Uvicorn running on http://0.0.0.0:52495 (Press CTRL+C to quit)\", \"color_message\": \"Uvicorn running on \\u001b[1m%s://%s:%d\\u001b[0m (Press CTRL+C to quit)\"}"
+    ]
+  }
+}
