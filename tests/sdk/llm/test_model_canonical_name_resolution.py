@@ -89,3 +89,14 @@ def test_reasoning_effort_accepts_forward_compatible_values():
         LLM(model="future-model", reasoning_effort="future-tier").reasoning_effort
         == "future-tier"
     )
+
+
+def test_reasoning_effort_preserves_legacy_json_schema_enum():
+    schema = LLM.model_json_schema()["properties"]["reasoning_effort"]
+    enum_values = next(
+        branch["enum"]
+        for branch in schema["anyOf"]
+        if isinstance(branch, dict) and "enum" in branch
+    )
+
+    assert enum_values == ["low", "medium", "high", "xhigh", "none"]

@@ -479,9 +479,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "nothing to inline."
         ),
     )
-    reasoning_effort: str | None = Field(
+    reasoning_effort: (
+        Literal["low", "medium", "high", "xhigh", "none"] | SkipJsonSchema[str] | None
+    ) = Field(
         default="high",
-        min_length=1,
         description=(
             "Provider-neutral reasoning effort. Common values include 'none', "
             "'minimal', 'low', 'medium', 'high', 'xhigh', and 'max'. The SDK "
