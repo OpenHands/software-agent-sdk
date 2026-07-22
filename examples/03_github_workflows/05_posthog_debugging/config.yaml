@@ -1,0 +1,45 @@
+---
+# Pilot configuration for the PostHog self-healing workflow.
+#
+# This file is the human-reviewable control surface. Adding a repository or
+# widening the pilot is a deliberate edit here, reviewed like any other change.
+# See README.md ("Adding a new repository safely") before changing `targets`.
+
+# Time window and volume of the telemetry query (triage job).
+telemetry:
+    days_back: 7        # how far back to scan sanitized error events
+    limit: 1000         # max rows per query (bounds cost)
+
+# Which fingerprints are allowed to reach remediation. A fingerprint must be
+# first-party AND match one of these module prefixes AND resolve to a base
+# commit. Prefixes are matched longest-first.
+targets:
+    - module_prefix: openhands.agent_server
+      repo: OpenHands/software-agent-sdk
+      sha_field: build_git_sha
+      verification:
+          runner: pytest
+          test_root: tests/
+    - module_prefix: openhands.tools
+      repo: OpenHands/software-agent-sdk
+      sha_field: build_git_sha
+      verification:
+          runner: pytest
+          test_root: tests/
+    - module_prefix: openhands.sdk
+      repo: OpenHands/software-agent-sdk
+      sha_field: build_git_sha
+      verification:
+          runner: pytest
+          test_root: tests/
+
+# Guardrails.
+thresholds:
+    min_occurrences: 5        # ignore rare, possibly-transient errors
+    cooldown_hours: 24        # don't re-remediate the same fingerprint within
+    max_investigations_per_run: 1 # rate limit (also the practical concurrency cap)
+    max_remediation_attempts: 3   # then stop retrying (issue stays tracked)
+
+# Agent budget (remediation job). Bounds cost and blast radius.
+agent:
+    max_iterations: 40
