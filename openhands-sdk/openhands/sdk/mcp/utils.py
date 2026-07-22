@@ -167,10 +167,7 @@ async def log_handler(message: LogMessage):
 async def _connect_and_list_tools(client: MCPClient) -> None:
     """Connect to MCP server and populate client._tools."""
     await client.connect()
-    mcp_type_tools: list[mcp.types.Tool] = await client.list_tools()
-    for mcp_tool in mcp_type_tools:
-        tool_sequence = MCPToolDefinition.create(mcp_tool=mcp_tool, mcp_client=client)
-        client._tools.extend(tool_sequence)
+    await _refresh_tools(client)
 
 
 async def _refresh_tools(
@@ -179,13 +176,12 @@ async def _refresh_tools(
 ) -> None:
     """Re-list tools from the server and reconcile ``client._tools``.
 
-    Called both at connect time and whenever the server sends a
-    ``notifications/tools/list_changed`` notification. Newly discovered tools
-    are appended to ``client._tools`` and, when an ``on_tools_changed``
-    callback is supplied, reported to it so a running agent can register them
-    via ``add_runtime_tools``. Tools that are no longer advertised by the
-    server are dropped from ``client._tools`` (but are not proactively removed
-    from an agent's tool map).
+    Called after the initial connection and whenever the server sends a
+    ``notifications/tools/list_changed`` notification. When an
+    ``on_tools_changed`` callback is supplied, newly discovered tools are
+    reported so a running agent can register them via ``add_runtime_tools``.
+    Tools that are no longer advertised are dropped from ``client._tools`` but
+    are not proactively removed from an agent's tool map.
     """
     mcp_type_tools: list[mcp.types.Tool] = await client.list_tools()
     existing_by_name = {tool.name: tool for tool in client._tools}
@@ -253,8 +249,7 @@ class _ToolListChangedHandler(MessageHandler):
         if client._closed:
             return
         logger.debug("MCP tools/list_changed received; refreshing tools")
-        # The message handler runs on the MCP receive loop; awaiting list_tools()
-        # here would block the same loop that must process the list_tools response.
+        # Keep the receive loop free to process the list_tools response.
         task = asyncio.create_task(self._refresh_tools())
         self._refresh_tasks.add(task)
         task.add_done_callback(self._refresh_tasks.discard)
@@ -290,14 +285,12 @@ def create_mcp_tools(
                 # use tool
         # Connection automatically closed
 
-    When ``on_tools_changed`` is provided, the client also subscribes to the
-    server's ``notifications/tools/list_changed`` notifications. Each time the
-    server advertises a changed tool list, the client re-lists tools and
-    invokes the callback with the *newly added* tool definitions. This enables
-    progressive-disclosure MCP servers (which register tools dynamically after
-    a skill-loading call) to surface their full toolset to the agent. The
-    callback runs on the client's background event-loop thread, so callers
-    must ensure it is thread-safe (e.g. ``Agent.add_runtime_tools``).
+    The client subscribes to ``notifications/tools/list_changed`` and
+    reconciles its tool list whenever the server signals a change. When
+    ``on_tools_changed`` is provided, the client invokes it with newly added
+    tool definitions so progressive-disclosure servers can surface them to an
+    agent. The callback runs on the client's background event-loop thread, so
+    callers must ensure it is thread-safe (e.g. ``Agent.add_runtime_tools``).
     """
     mcp_config = _require_native_mcp_config(mcp_config)
     config = _prepare_mcp_config(

@@ -19,7 +19,7 @@ import asyncio
 import socket
 import threading
 import time
-from unittest.mock import MagicMock
+from typing import cast
 
 import mcp.types as mcp_types
 import pytest
@@ -28,7 +28,7 @@ from fastmcp.server.dependencies import get_context
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.llm import TextContent
-from openhands.sdk.mcp import create_mcp_tools
+from openhands.sdk.mcp import MCPClient, create_mcp_tools
 from openhands.sdk.mcp.config import coerce_mcp_config
 from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.mcp.utils import (
@@ -94,19 +94,14 @@ class _ConcreteAgent(AgentBase):
     """Minimal concrete ``AgentBase`` for unit-testing runtime helpers.
 
     ``AgentBase`` is abstract (``step``) and a frozen pydantic model, so
-    tests that only exercise ``_on_mcp_tools_changed`` use this stub which
-    bypasses full agent construction and records ``add_runtime_tools`` calls.
+    tests that only exercise runtime tool updates use this stub to bypass full
+    agent construction.
     """
 
     def __init__(self, _initialized: bool, _tools):  # noqa: ANN001
         # Skip pydantic validation; set the attributes the helpers read.
         object.__setattr__(self, "_initialized", _initialized)
         object.__setattr__(self, "_tools", _tools)
-        self._added: list = []
-
-    def add_runtime_tools(self, tools):  # noqa: ARG002, ANN001, D401
-        """Record calls instead of registering real tools."""
-        self._added.extend(tools)
 
     def step(self, conversation, on_event, on_token=None):  # noqa: ARG002, ANN001
         raise NotImplementedError
@@ -203,55 +198,6 @@ def test_handler_skips_when_client_closed():
     assert client._tools == []
 
 
-def test_create_mcp_tools_wires_message_handler():
-    """``create_mcp_tools`` installs the list_changed handler on the client.
-
-    Verified by inspecting the fastmcp session kwargs rather than relying on
-    transport-level notification delivery.
-    """
-    port = _find_free_port()
-    server = FastMCP("wiring-test-server")
-
-    @server.tool()
-    def ping() -> str:
-        return "pong"
-
-    def run():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(
-            server.run_http_async(
-                host="127.0.0.1",
-                port=port,
-                transport="http",
-                show_banner=False,
-                path="/mcp",
-            )
-        )
-
-    thread = threading.Thread(target=run, daemon=True)
-    thread.start()
-    _wait_for_port(port)
-    try:
-        config = _native_config(
-            {
-                "mcpServers": {
-                    "wiring": {
-                        "transport": "http",
-                        "url": f"http://127.0.0.1:{port}/mcp",
-                    }
-                }
-            }
-        )
-        with create_mcp_tools(config, timeout=10.0) as client:
-            handler = client._session_kwargs.get("message_handler")
-            assert isinstance(handler, _ToolListChangedHandler)
-            assert handler._client is client
-    finally:
-        # Daemon thread is cleaned up on process exit.
-        pass
-
-
 @pytest.fixture
 def progressive_server():
     """An MCP server that adds a tool and sends ``tools/list_changed``.
@@ -261,6 +207,11 @@ def progressive_server():
     mimicking Datadog's progressive-disclosure behavior.
     """
     mcp = FastMCP("progressive-test-server")
+
+    async def notify_list_changed() -> None:
+        notification = mcp_types.ToolListChangedNotification()
+        loop = asyncio.get_running_loop()
+        loop.create_task(get_context().send_notification(notification))
 
     @mcp.tool()
     async def gateway() -> str:
@@ -276,14 +227,18 @@ def progressive_server():
             """Tool added after the client connected."""
             return value * 2
 
-        ctx = get_context()
-        notification = mcp_types.ToolListChangedNotification()
         # Send the notification as a fire-and-forget task so the tool-call
         # response is flushed first; the notification rides the long-lived SSE
         # stream the client keeps open for server notifications.
-        loop = asyncio.get_running_loop()
-        loop.create_task(ctx.send_notification(notification))
+        await notify_list_changed()
         return "registered"
+
+    @mcp.tool()
+    async def remove_extra_tool() -> str:
+        """Remove the dynamically registered tool and notify the client."""
+        mcp.local_provider.remove_tool("extra")
+        await notify_list_changed()
+        return "removed"
 
     port = _find_free_port()
 
@@ -325,8 +280,10 @@ def test_no_callback_still_connects(progressive_server: int):
         assert "register_extra_tool" in names
 
 
-def test_list_changed_notification_refreshes_client_tools(progressive_server: int):
-    """A real server notification re-lists tools without blocking dispatch."""
+def test_list_changed_notification_reconciles_readded_agent_tool(
+    progressive_server: int,
+):
+    """A re-added tool replaces the agent's stale MCP definition."""
     port = progressive_server
     config = _native_config(
         {
@@ -339,14 +296,22 @@ def test_list_changed_notification_refreshes_client_tools(progressive_server: in
         }
     )
     received: list[str] = []
+    agent = _ConcreteAgent(_initialized=True, _tools={})
+
+    def on_tools_changed(tools):  # noqa: ANN001
+        received.extend(tool.name for tool in tools)
+        agent._on_mcp_tools_changed(tools)
+
     with create_mcp_tools(
         config,
         timeout=10.0,
-        on_tools_changed=lambda tools: received.extend(t.name for t in tools),
+        on_tools_changed=on_tools_changed,
     ) as client:
+        agent.add_runtime_tools(client.tools)
         initial_names = {t.name for t in client.tools}
         assert "gateway" in initial_names
         assert "register_extra_tool" in initial_names
+        assert "remove_extra_tool" in initial_names
         assert "extra" not in initial_names
 
         register_tool = next(t for t in client.tools if t.name == "register_extra_tool")
@@ -372,15 +337,51 @@ def test_list_changed_notification_refreshes_client_tools(progressive_server: in
         assert not extra_observation.is_error
         assert "42" in extra_text
 
+        first_agent_extra = agent.tools_map["extra"]
+        remove_tool = next(t for t in client.tools if t.name == "remove_extra_tool")
+        remove_observation = remove_tool(remove_tool.action_from_arguments({}))
+        assert not remove_observation.is_error
+
+        deadline = time.time() + 10.0
+        while time.time() < deadline and any(
+            tool.name == "extra" for tool in client.tools
+        ):
+            time.sleep(0.1)
+
+        assert all(tool.name != "extra" for tool in client.tools)
+        assert agent.tools_map["extra"] is first_agent_extra
+
+        register_observation = register_tool(register_tool.action_from_arguments({}))
+        assert not register_observation.is_error
+
+        deadline = time.time() + 10.0
+        while time.time() < deadline and agent.tools_map["extra"] is first_agent_extra:
+            time.sleep(0.1)
+
+        readded_agent_extra = agent.tools_map["extra"]
+        readded_client_extra = next(t for t in client.tools if t.name == "extra")
+        assert readded_agent_extra is readded_client_extra
+        assert readded_agent_extra is not first_agent_extra
+        assert received == ["extra", "extra"]
+
+        readded_observation = readded_agent_extra(
+            readded_agent_extra.action_from_arguments({"value": 21})
+        )
+        assert not readded_observation.is_error
+
 
 def test_on_mcp_tools_changed_registers_runtime_tools():
     """``AgentBase._on_mcp_tools_changed`` forwards to ``add_runtime_tools``."""
     agent = _ConcreteAgent(_initialized=True, _tools={})
+    client = _FakeClient([])
+    tool = MCPToolDefinition.create(
+        mcp_tool=_make_mcp_tool("dynamic"),
+        mcp_client=cast(MCPClient, client),
+    )[0]
 
-    fake_tools = [MagicMock(name="t1"), MagicMock(name="t2")]
-    agent._on_mcp_tools_changed(fake_tools)
+    agent._on_mcp_tools_changed([tool])
 
-    assert agent._added == fake_tools
+    assert agent.tools_map["dynamic"] is tool
 
 
 def test_on_mcp_tools_changed_skips_when_not_initialized():
