@@ -549,6 +549,7 @@ class TestConversationServiceStartFromProfile:
                     updated_at=datetime.now(UTC),
                     forked_from_conversation_id=None,
                     forked_from_event_id=None,
+                    parent_conversation_id=None,
                 )
 
                 async def capture_start(stored):
