@@ -1021,15 +1021,20 @@ def _classify_acp_init_error(exc: BaseException) -> str:
     - ``ACPAuthRequired``: a credential failure — the explicit ``-32000`` auth code,
       or a ``-32603`` whose message/data reveals an upstream 401/403 (see
       :func:`_acp_error_indicates_auth`).  The most actionable cloud failure.
+    - ``ACPStartupTimeout``: startup did not complete within
+      ``acp_startup_timeout`` — e.g. the server hung on ``authenticate()``
+      without ever returning an error (see :meth:`ACPAgent._start_acp_server`).
     - ``ACPSpawnError``: the subprocess could not be launched — the CLI binary is
       missing or not executable (``FileNotFoundError`` / ``PermissionError`` from
       ``create_subprocess_exec``).
     - ``ACPInitError``: anything else during the protocol handshake or session
-      creation (timeouts, transport drops, unexpected protocol errors, cwd
-      mismatch surfaced by the server).
+      creation (transport drops, unexpected protocol errors, cwd mismatch
+      surfaced by the server).
     """
     if _acp_error_indicates_auth(exc):
         return "ACPAuthRequired"
+    if isinstance(exc, TimeoutError):
+        return "ACPStartupTimeout"
     if isinstance(exc, (FileNotFoundError, PermissionError)):
         return "ACPSpawnError"
     return "ACPInitError"
@@ -1533,6 +1538,18 @@ class ACPAgent(AgentBase):
             "only aborted after this many seconds with no activity at all. "
             "Prevents indefinite hangs when the ACP server stops responding "
             "without killing legitimately long-running work."
+        ),
+    )
+    acp_startup_timeout: float = Field(
+        default=90.0,
+        description=(
+            "Timeout in seconds for ACP server startup: spawning the "
+            "subprocess, the initialize/authenticate handshake, and "
+            "new_session()/load_session(). Unlike acp_prompt_timeout, this "
+            "is a hard deadline rather than an idle deadline, since startup "
+            "has no intermediate progress signal to reset it against. "
+            "Prevents an indefinite hang when the ACP server blocks on "
+            "authentication (e.g. an expired token) without ever raising."
         ),
     )
     acp_model: str | None = Field(
@@ -2306,6 +2323,13 @@ class ACPAgent(AgentBase):
                         companion,
                     )
 
+    def _startup_timeout_message(self) -> str:
+        return (
+            f"ACP startup timed out after {self.acp_startup_timeout:.0f}s "
+            "waiting for the ACP server to spawn, authenticate, and "
+            "create/load a session"
+        )
+
     def _start_acp_server(self, state: ConversationState) -> None:
         """Start the ACP subprocess and initialize the session."""
         client = _OpenHandsACPBridge()
@@ -2671,14 +2695,19 @@ class ACPAgent(AgentBase):
         # _conn / _process / _filtered_reader are assigned to the instance inside
         # _init() so a mid-init failure can be cleaned up; only the
         # success-only fields (including the resolved model state) are returned.
-        (
-            self._session_id,
-            self._agent_name,
-            self._agent_version,
-            self._current_model_id,
-            self._available_models,
-            self._model_override_applied,
-        ) = self._executor.run_async(_init)
+        try:
+            (
+                self._session_id,
+                self._agent_name,
+                self._agent_version,
+                self._current_model_id,
+                self._available_models,
+                self._model_override_applied,
+            ) = self._executor.run_async(_init, timeout=self.acp_startup_timeout)
+        except TimeoutError:
+            # run_async's own TimeoutError carries no message (anyio.fail_after);
+            # raise a descriptive one so _acp_error_detail (str(exc)) isn't blank.
+            raise TimeoutError(self._startup_timeout_message()) from None
         self._working_dir = working_dir
 
     def _reset_client_for_turn(
