@@ -153,8 +153,10 @@ class SecretRegistry(OpenHandsModel):
             if key not in self._exported_values:
                 self.get_secret_value(key)
 
+        # Snapshot the values: masking runs on tool-output paths while other
+        # threads may still be resolving secrets into _exported_values.
         masked_text = text
-        for value in self._exported_values.values():
+        for value in list(self._exported_values.values()):
             masked_text = masked_text.replace(value, "<secret-hidden>")
 
         return masked_text
