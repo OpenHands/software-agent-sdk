@@ -16,7 +16,9 @@ from pydantic import BaseModel
 from openhands.agent_server.config import Config, WebhookSpec
 from openhands.agent_server.conversation_lease import (
     DEFAULT_LEASE_TTL_SECONDS,
+    ConversationLease,
     ConversationLeaseHeldError,
+    ConversationOwnershipLostError,
 )
 from openhands.agent_server.event_service import (
     LEASE_RENEW_INTERVAL_SECONDS,
@@ -513,6 +515,7 @@ class ConversationService:
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     max_concurrent_runs: int = 10
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
+    # Every live runtime has a catalog record; unloaded records have no runtime.
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_records: dict[UUID, _ConversationRecord] = field(
         default_factory=dict, init=False
@@ -606,25 +609,6 @@ class ConversationService:
                 record.execution_status = state.execution_status
         return record.execution_status
 
-    async def _reconcile_active_records(self) -> None:
-        """Fill catalog entries for services injected outside normal startup.
-
-        Normal service lifecycle paths maintain the catalog themselves. This
-        small reconciliation keeps direct embedders and existing test fixtures
-        that populate ``_event_services`` compatible.
-        """
-        event_services = self._event_services
-        if event_services is None:
-            raise ValueError("inactive_service")
-        for conversation_id, event_service in event_services.items():
-            if conversation_id in self._conversation_records:
-                continue
-            state = await event_service.get_state()
-            self._conversation_records[conversation_id] = _ConversationRecord(
-                stored=event_service.stored,
-                execution_status=state.execution_status,
-            )
-
     def _prepare_persisted_runtime(self, stored: StoredConversation) -> None:
         if stored.tool_module_qualnames:
             for tool_name, module_qualname in stored.tool_module_qualnames.items():
@@ -691,16 +675,7 @@ class ConversationService:
             raise ValueError("inactive_service")
         record = self._conversation_records.get(conversation_id)
         if record is None:
-            event_service = self._event_services.get(conversation_id)
-            if event_service is None:
-                return None
-            state = await event_service.get_state()
-            record = _ConversationRecord(
-                stored=event_service.stored,
-                execution_status=state.execution_status,
-            )
-            self._conversation_records[conversation_id] = record
-            return _compose_conversation_info(event_service.stored, state)
+            return None
         return await self._conversation_info(conversation_id, record)
 
     async def get_acp_conversation(
@@ -753,7 +728,6 @@ class ConversationService:
     ) -> tuple[list[ConversationInfo], str | None]:
         if self._event_services is None:
             raise ValueError("inactive_service")
-        await self._reconcile_active_records()
 
         records = list(self._conversation_records.items())
         if sort_order in (
@@ -810,7 +784,6 @@ class ConversationService:
         """Count conversations matching the given filters."""
         if self._event_services is None:
             raise ValueError("inactive_service")
-        await self._reconcile_active_records()
 
         if execution_status is None:
             return len(self._conversation_records)
@@ -899,10 +872,6 @@ class ConversationService:
         existing_event_service = self._event_services.get(conversation_id)
         if existing_event_service is not None and existing_event_service.is_open():
             state = await existing_event_service.get_state()
-            self._conversation_records[conversation_id] = _ConversationRecord(
-                stored=existing_event_service.stored,
-                execution_status=state.execution_status,
-            )
             return (
                 _compose_conversation_info(existing_event_service.stored, state),
                 False,
@@ -1105,45 +1074,96 @@ class ConversationService:
             event_services = self._event_services
             if event_services is None:
                 raise ValueError("inactive_service")
-            event_service = await self._get_or_load_event_service_locked(
-                conversation_id
-            )
-            if event_service is None:
+            record = self._conversation_records.get(conversation_id)
+            if record is None:
                 return False
 
-            event_services.pop(conversation_id, None)
-            self._conversation_records.pop(conversation_id, None)
-            # Notify conversation webhooks about the stopped conversation before closing
+            event_service = event_services.get(conversation_id)
+            if event_service is not None and not event_service.is_open():
+                event_services.pop(conversation_id, None)
+                event_service = None
+            conversation_dir = (
+                event_service.conversation_dir
+                if event_service is not None
+                else self.conversations_dir / conversation_id.hex
+            )
+            deletion_lease: ConversationLease | None = None
+            lease_generation: int | None = None
+            if event_service is None and self.lease_ttl_seconds > 0:
+                deletion_lease = ConversationLease(
+                    conversation_dir=conversation_dir,
+                    owner_instance_id=self.owner_instance_id,
+                    ttl_seconds=self.lease_ttl_seconds,
+                )
+                try:
+                    claim = await asyncio.to_thread(deletion_lease.claim)
+                except ConversationLeaseHeldError as exc:
+                    logger.debug(
+                        "Skipping deletion of conversation %s owned by %s until %s",
+                        conversation_id,
+                        exc.owner_instance_id,
+                        exc.expires_at,
+                    )
+                    return False
+                lease_generation = claim.generation
+
             try:
-                state = await event_service.get_state()
-                conversation_info = _compose_webhook_conversation_info(
-                    event_service.stored, state
+                state = (
+                    await event_service.get_state()
+                    if event_service is not None
+                    else await asyncio.to_thread(
+                        self._load_persisted_state_sync, conversation_id
+                    )
                 )
-                conversation_info.execution_status = (
-                    ConversationExecutionStatus.DELETING
-                )
-                await self._notify_conversation_webhooks(conversation_info)
+                if state is not None:
+                    stored = (
+                        event_service.stored
+                        if event_service is not None
+                        else record.stored
+                    )
+                    conversation_info = _compose_webhook_conversation_info(
+                        stored, state
+                    )
+                    conversation_info.execution_status = (
+                        ConversationExecutionStatus.DELETING
+                    )
+                    await self._notify_conversation_webhooks(conversation_info)
             except Exception as e:
                 logger.warning(
                     f"Failed to notify webhooks for conversation {conversation_id}: {e}"
                 )
 
-            # Close the event service
-            try:
-                await event_service.close()
-            except Exception as e:
-                logger.warning(
-                    f"Failed to close event service for conversation "
-                    f"{conversation_id}: {e}"
-                )
+            if deletion_lease is not None and lease_generation is not None:
+                try:
+                    await asyncio.to_thread(deletion_lease.renew, lease_generation)
+                except ConversationOwnershipLostError:
+                    logger.warning(
+                        "Lost ownership before deleting conversation %s",
+                        conversation_id,
+                    )
+                    return False
 
-            # Safely remove only the conversation directory (workspace is preserved).
-            # This operation may fail due to permission issues, but we don't want that
-            # to prevent the conversation from being marked as deleted.
-            safe_rmtree(
-                event_service.conversation_dir,
+            event_services.pop(conversation_id, None)
+            self._conversation_records.pop(conversation_id, None)
+            if event_service is not None:
+                try:
+                    await event_service.close()
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to close event service for conversation "
+                        f"{conversation_id}: {e}"
+                    )
+
+            removed = safe_rmtree(
+                conversation_dir,
                 f"conversation directory for {conversation_id}",
             )
+            if (
+                not removed
+                and deletion_lease is not None
+                and lease_generation is not None
+            ):
+                await asyncio.to_thread(deletion_lease.release, lease_generation)
 
             logger.info(f"Successfully deleted conversation {conversation_id}")
             return True
@@ -1514,12 +1534,12 @@ class ConversationService:
             await event_service.close()
             raise
 
-        event_services[stored.id] = event_service
         state = await event_service.get_state()
         self._conversation_records[stored.id] = _ConversationRecord(
             stored=event_service.stored,
             execution_status=state.execution_status,
         )
+        event_services[stored.id] = event_service
         return event_service
 
     async def _maybe_subscribe_telemetry(

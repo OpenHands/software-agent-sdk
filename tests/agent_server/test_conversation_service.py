@@ -20,6 +20,7 @@ from openhands.agent_server.conversation_lease import (
 from openhands.agent_server.conversation_service import (
     AutoTitleSubscriber,
     ConversationService,
+    _ConversationRecord,
     _get_worktree_start_point,
 )
 from openhands.agent_server.event_service import EventService
@@ -74,6 +75,20 @@ def sample_stored_conversation():
         created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
         updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
     )
+
+
+def _add_event_service(
+    conversation_service: ConversationService,
+    event_service: EventService,
+    execution_status: ConversationExecutionStatus = ConversationExecutionStatus.IDLE,
+) -> None:
+    assert conversation_service._event_services is not None
+    conversation_id = event_service.stored.id
+    conversation_service._conversation_records[conversation_id] = _ConversationRecord(
+        stored=event_service.stored,
+        execution_status=execution_status,
+    )
+    conversation_service._event_services[conversation_id] = event_service
 
 
 def _create_running_terminal_action(tool_call_id: str = "call_1") -> ActionEvent:
@@ -586,6 +601,131 @@ async def test_startup_and_search_do_not_hydrate_idle_conversation(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_delete_unloaded_conversation_without_hydration(persisted_conversation):
+    conversations_dir, conversation_id = persisted_conversation
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        with (
+            patch.object(
+                service,
+                "_start_event_service",
+                side_effect=AssertionError("delete should not hydrate event history"),
+            ) as start_event_service,
+            patch.object(
+                service, "_notify_conversation_webhooks", new=AsyncMock()
+            ) as notify,
+        ):
+            assert service._event_services == {}
+            assert await service.delete_conversation(conversation_id) is True
+
+        start_event_service.assert_not_awaited()
+        assert notify.await_args is not None
+        assert notify.await_args.args[0].execution_status == (
+            ConversationExecutionStatus.DELETING
+        )
+        assert conversation_id not in service._conversation_records
+        assert service._event_services == {}
+        assert not (conversations_dir / conversation_id.hex).exists()
+
+
+@pytest.mark.asyncio
+async def test_delete_closed_runtime_uses_unloaded_path(persisted_conversation):
+    conversations_dir, conversation_id = persisted_conversation
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        record = service._conversation_records[conversation_id]
+        closed_runtime = AsyncMock(spec=EventService)
+        closed_runtime.is_open.return_value = False
+        closed_runtime.stored = record.stored
+        assert service._event_services is not None
+        service._event_services[conversation_id] = closed_runtime
+
+        assert await service.delete_conversation(conversation_id) is True
+
+        closed_runtime.get_state.assert_not_awaited()
+        closed_runtime.close.assert_not_awaited()
+        assert service._event_services == {}
+        assert conversation_id not in service._conversation_records
+        assert not (conversations_dir / conversation_id.hex).exists()
+
+
+@pytest.mark.asyncio
+async def test_delete_unloaded_conversation_with_leasing_disabled(
+    persisted_conversation,
+):
+    conversations_dir, conversation_id = persisted_conversation
+    service = ConversationService(
+        conversations_dir=conversations_dir,
+        lease_ttl_seconds=0,
+    )
+
+    with patch(
+        "openhands.agent_server.conversation_service.ConversationLease",
+        side_effect=AssertionError("leasing is disabled"),
+    ):
+        async with service:
+            assert await service.delete_conversation(conversation_id) is True
+
+    assert not (conversations_dir / conversation_id.hex).exists()
+
+
+@pytest.mark.asyncio
+async def test_delete_unloaded_conversation_respects_live_lease(
+    persisted_conversation,
+):
+    conversations_dir, conversation_id = persisted_conversation
+
+    async with ConversationService(conversations_dir=conversations_dir) as owner:
+        assert await owner.get_event_service(conversation_id) is not None
+        async with ConversationService(conversations_dir=conversations_dir) as observer:
+            with patch.object(
+                observer,
+                "_start_event_service",
+                side_effect=AssertionError("delete should not hydrate event history"),
+            ) as start_event_service:
+                assert await observer.delete_conversation(conversation_id) is False
+
+            start_event_service.assert_not_awaited()
+            assert conversation_id in observer._conversation_records
+            assert observer._event_services == {}
+            assert (conversations_dir / conversation_id.hex).exists()
+
+
+@pytest.mark.asyncio
+async def test_waiting_hydration_cannot_restore_unloaded_deleted_conversation(
+    persisted_conversation,
+):
+    conversations_dir, conversation_id = persisted_conversation
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        with patch.object(
+            service,
+            "_start_event_service",
+            side_effect=AssertionError("deleted conversation should not hydrate"),
+        ) as start_event_service:
+            await service._lifecycle_lock.acquire()
+            try:
+                delete_task = asyncio.create_task(
+                    service.delete_conversation(conversation_id)
+                )
+                await asyncio.sleep(0)
+                getter_task = asyncio.create_task(
+                    service.get_event_service(conversation_id)
+                )
+                await asyncio.sleep(0)
+            finally:
+                service._lifecycle_lock.release()
+
+            deleted, event_service = await asyncio.gather(delete_task, getter_task)
+
+        assert deleted is True
+        assert event_service is None
+        start_event_service.assert_not_awaited()
+        assert service._event_services == {}
+        assert conversation_id not in service._conversation_records
+
+
+@pytest.mark.asyncio
 async def test_concurrent_access_hydrates_conversation_once(tmp_path):
     conversations_dir = tmp_path / "conversations"
     workspace_dir = tmp_path / "workspace"
@@ -812,6 +952,25 @@ class TestConversationServiceSearchConversations:
         assert result.next_page_id is None
 
     @pytest.mark.asyncio
+    async def test_catalog_queries_ignore_runtime_without_record(
+        self, conversation_service, sample_stored_conversation
+    ):
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.stored = sample_stored_conversation
+        assert conversation_service._event_services is not None
+        conversation_service._event_services[sample_stored_conversation.id] = (
+            mock_service
+        )
+
+        assert (
+            await conversation_service.get_conversation(sample_stored_conversation.id)
+            is None
+        )
+        assert (await conversation_service.search_conversations()).items == []
+        assert await conversation_service.count_conversations() == 0
+        assert conversation_service._conversation_records == {}
+
+    @pytest.mark.asyncio
     async def test_search_conversations_basic(
         self, conversation_service, sample_stored_conversation
     ):
@@ -829,7 +988,7 @@ class TestConversationServiceSearchConversations:
         mock_service.get_state.return_value = mock_state
 
         conversation_id = sample_stored_conversation.id
-        conversation_service._event_services[conversation_id] = mock_service
+        _add_event_service(conversation_service, mock_service)
 
         result = await conversation_service.search_conversations()
 
@@ -872,7 +1031,7 @@ class TestConversationServiceSearchConversations:
             execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=stored_conv.confirmation_policy,
         )
-        conversation_service._event_services[stored_conv.id] = mock_service
+        _add_event_service(conversation_service, mock_service)
 
         result = await conversation_service.search_conversations()
 
@@ -921,7 +1080,7 @@ class TestConversationServiceSearchConversations:
             )
             mock_service.get_state.return_value = mock_state
 
-            conversation_service._event_services[stored_conv.id] = mock_service
+            _add_event_service(conversation_service, mock_service)
             conversations.append((stored_conv.id, status))
 
         # Test filtering by IDLE status
@@ -975,7 +1134,7 @@ class TestConversationServiceSearchConversations:
             )
             mock_service.get_state.return_value = mock_state
 
-            conversation_service._event_services[stored_conv.id] = mock_service
+            _add_event_service(conversation_service, mock_service)
             conversations.append(stored_conv)
 
         # Test CREATED_AT (ascending)
@@ -1050,7 +1209,7 @@ class TestConversationServiceSearchConversations:
             )
             mock_service.get_state.return_value = mock_state
 
-            conversation_service._event_services[stored_conv.id] = mock_service
+            _add_event_service(conversation_service, mock_service)
             conversation_ids.append(stored_conv.id)
 
         # Test first page with limit 2
@@ -1120,7 +1279,7 @@ class TestConversationServiceSearchConversations:
             )
             mock_service.get_state.return_value = mock_state
 
-            conversation_service._event_services[stored_conv.id] = mock_service
+            _add_event_service(conversation_service, mock_service)
 
         # Filter by IDLE status and sort by CREATED_AT_DESC
         result = await conversation_service.search_conversations(
@@ -1148,9 +1307,7 @@ class TestConversationServiceSearchConversations:
         )
         mock_service.get_state.return_value = mock_state
 
-        conversation_service._event_services[sample_stored_conversation.id] = (
-            mock_service
-        )
+        _add_event_service(conversation_service, mock_service)
 
         # Use a non-existent page_id
         invalid_page_id = uuid4().hex
@@ -1197,8 +1354,7 @@ class TestConversationServiceCountConversations:
         )
         mock_service.get_state.return_value = mock_state
 
-        conversation_id = sample_stored_conversation.id
-        conversation_service._event_services[conversation_id] = mock_service
+        _add_event_service(conversation_service, mock_service)
 
         result = await conversation_service.count_conversations()
         assert result == 1
@@ -1237,7 +1393,7 @@ class TestConversationServiceCountConversations:
             )
             mock_service.get_state.return_value = mock_state
 
-            conversation_service._event_services[stored_conv.id] = mock_service
+            _add_event_service(conversation_service, mock_service)
 
         # Test counting all conversations
         result = await conversation_service.count_conversations()
@@ -1296,7 +1452,7 @@ class TestConversationServiceCountConversations:
                 execution_status=ConversationExecutionStatus.IDLE,
                 confirmation_policy=stored_conv.confirmation_policy,
             )
-            conversation_service._event_services[stored_conv.id] = mock_service
+            _add_event_service(conversation_service, mock_service)
 
         assert await conversation_service.count_conversations() == 2
 
@@ -1764,66 +1920,6 @@ class TestConversationServiceStartConversation:
             assert not is_new
 
     @pytest.mark.asyncio
-    async def test_start_conversation_reuse_checks_is_open(self, conversation_service):
-        """Test that conversation reuse checks if event service is open."""
-        custom_id = uuid4()
-
-        # Create a mock event service that exists but is not open
-        mock_event_service = AsyncMock(spec=EventService)
-        mock_event_service.is_open.return_value = False
-        mock_event_service.stored = StoredConversation(
-            id=custom_id,
-            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
-            workspace=LocalWorkspace(working_dir="workspace/project"),
-            confirmation_policy=NeverConfirm(),
-            initial_message=None,
-            metrics=None,
-            created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
-            updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
-        )
-        conversation_service._event_services[custom_id] = mock_event_service
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
-                workspace=LocalWorkspace(working_dir=temp_dir),
-                confirmation_policy=NeverConfirm(),
-                conversation_id=custom_id,
-            )
-
-            # Mock the _start_event_service method to avoid actual startup
-            with patch.object(
-                conversation_service, "_start_event_service"
-            ) as mock_start:
-                mock_new_service = AsyncMock(spec=EventService)
-                mock_new_service.stored = StoredConversation(
-                    id=custom_id,
-                    agent=request.agent,
-                    workspace=request.workspace,
-                    confirmation_policy=request.confirmation_policy,
-                    initial_message=request.initial_message,
-                    metrics=None,
-                    created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
-                    updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
-                )
-                mock_state = ConversationState(
-                    id=custom_id,
-                    agent=request.agent,
-                    workspace=request.workspace,
-                    execution_status=ConversationExecutionStatus.IDLE,
-                    confirmation_policy=request.confirmation_policy,
-                )
-                mock_new_service.get_state.return_value = mock_state
-                mock_start.return_value = mock_new_service
-
-                result, is_new = await conversation_service.start_conversation(request)
-
-                # Should create a new conversation since existing one is not open
-                assert result.id == custom_id
-                assert is_new
-                mock_start.assert_called_once()
-
-    @pytest.mark.asyncio
     async def test_start_conversation_reuse_when_open(self, conversation_service):
         """Test that conversation is reused when event service is open."""
         custom_id = uuid4()
@@ -1849,7 +1945,7 @@ class TestConversationServiceStartConversation:
             confirmation_policy=mock_event_service.stored.confirmation_policy,
         )
         mock_event_service.get_state.return_value = mock_state
-        conversation_service._event_services[custom_id] = mock_event_service
+        _add_event_service(conversation_service, mock_event_service)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             request = StartConversationRequest(
@@ -1895,7 +1991,7 @@ class TestConversationServiceStartConversation:
             execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=stored.confirmation_policy,
         )
-        conversation_service._event_services[custom_id] = mock_event_service
+        _add_event_service(conversation_service, mock_event_service)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             request = StartConversationRequest(
@@ -1978,6 +2074,7 @@ class TestConversationServiceStartConversation:
             ) as mock_event_service_class:
                 mock_event_service = AsyncMock()
                 mock_event_service.start = AsyncMock()  # Successful startup
+                mock_event_service.stored = stored
                 mock_event_service_class.return_value = mock_event_service
 
                 # Start event service should succeed
@@ -1991,6 +2088,10 @@ class TestConversationServiceStartConversation:
                 assert (
                     conversation_service._event_services[stored.id]
                     == mock_event_service
+                )
+                assert (
+                    conversation_service._conversation_records[stored.id].stored
+                    == stored
                 )
                 assert result == mock_event_service
 
@@ -2016,7 +2117,7 @@ class TestConversationServiceUpdateConversation:
         mock_service.get_state.return_value = mock_state
 
         conversation_id = sample_stored_conversation.id
-        conversation_service._event_services[conversation_id] = mock_service
+        _add_event_service(conversation_service, mock_service)
 
         # Update the title
         new_title = "My Updated Conversation Title"
@@ -2047,7 +2148,7 @@ class TestConversationServiceUpdateConversation:
         mock_service.get_state.return_value = mock_state
 
         conversation_id = sample_stored_conversation.id
-        conversation_service._event_services[conversation_id] = mock_service
+        _add_event_service(conversation_service, mock_service)
 
         # Update with title that has whitespace
         new_title = "   Whitespace Test   "
@@ -2082,7 +2183,7 @@ class TestConversationServiceUpdateConversation:
         mock_service.get_state.return_value = mock_state
 
         conversation_id = sample_stored_conversation.id
-        conversation_service._event_services[conversation_id] = mock_service
+        _add_event_service(conversation_service, mock_service)
 
         request = UpdateConversationRequest(tags={"env": "prod"})
         result = await conversation_service.update_conversation(
@@ -2112,7 +2213,7 @@ class TestConversationServiceUpdateConversation:
         mock_service.get_state.return_value = state
 
         conversation_id = sample_stored_conversation.id
-        conversation_service._event_services[conversation_id] = mock_service
+        _add_event_service(conversation_service, mock_service)
 
         lock_acquired = threading.Event()
         release_lock = threading.Event()
@@ -2199,7 +2300,7 @@ class TestConversationServiceUpdateConversation:
         mock_service.get_state.return_value = mock_state
 
         conversation_id = sample_stored_conversation.id
-        conversation_service._event_services[conversation_id] = mock_service
+        _add_event_service(conversation_service, mock_service)
 
         # Mock webhook notification
         with patch.object(
@@ -2246,7 +2347,7 @@ class TestConversationServiceUpdateConversation:
         mock_service.get_state.return_value = mock_state
 
         conversation_id = stored_conversation.id
-        conversation_service._event_services[conversation_id] = mock_service
+        _add_event_service(conversation_service, mock_service)
 
         with patch.object(
             conversation_service, "_notify_conversation_webhooks", new=AsyncMock()
@@ -2278,7 +2379,7 @@ class TestConversationServiceUpdateConversation:
         mock_service.get_state.return_value = mock_state
 
         conversation_id = sample_stored_conversation.id
-        conversation_service._event_services[conversation_id] = mock_service
+        _add_event_service(conversation_service, mock_service)
 
         # Initial title should be None
         assert mock_service.stored.title is None
@@ -2310,7 +2411,7 @@ class TestConversationServiceUpdateConversation:
         mock_service.get_state.return_value = mock_state
 
         conversation_id = sample_stored_conversation.id
-        conversation_service._event_services[conversation_id] = mock_service
+        _add_event_service(conversation_service, mock_service)
 
         # First update
         request1 = UpdateConversationRequest(title="First Title")
@@ -2361,7 +2462,7 @@ class TestConversationServiceUpdateConversation:
         mock_service.get_state.return_value = mock_state
 
         conversation_id = sample_stored_conversation.id
-        conversation_service._event_services[conversation_id] = mock_service
+        _add_event_service(conversation_service, mock_service)
 
         original_updated_at = mock_service.stored.updated_at
 
@@ -2416,7 +2517,7 @@ class TestConversationServiceDeleteConversation:
         mock_service.get_state.return_value = mock_state
 
         # Add to service
-        conversation_service._event_services[conversation_id] = mock_service
+        _add_event_service(conversation_service, mock_service)
 
         # Mock the directory removal to avoid actual filesystem operations
         with patch(
@@ -2462,7 +2563,7 @@ class TestConversationServiceDeleteConversation:
         mock_service.get_state.return_value = mock_state
 
         conversation_id = sample_stored_conversation.id
-        conversation_service._event_services[conversation_id] = mock_service
+        _add_event_service(conversation_service, mock_service)
 
         # Mock webhook notification
         with patch.object(
@@ -2521,7 +2622,7 @@ class TestConversationServiceDeleteConversation:
         mock_service.get_state.side_effect = Exception("Webhook notification failed")
 
         # Add to service
-        conversation_service._event_services[conversation_id] = mock_service
+        _add_event_service(conversation_service, mock_service)
 
         # Mock the directory removal
         with patch(
@@ -2572,7 +2673,7 @@ class TestConversationServiceDeleteConversation:
         mock_service.close.side_effect = Exception("Close failed")
 
         # Add to service
-        conversation_service._event_services[conversation_id] = mock_service
+        _add_event_service(conversation_service, mock_service)
 
         # Mock the directory removal
         with patch(
@@ -2619,7 +2720,7 @@ class TestConversationServiceDeleteConversation:
         mock_service.get_state.return_value = mock_state
 
         # Add to service
-        conversation_service._event_services[conversation_id] = mock_service
+        _add_event_service(conversation_service, mock_service)
 
         # Mock directory removal to fail (simulating permission errors)
         with patch(
