@@ -340,12 +340,7 @@ def test_get_secret_value_missing_not_tracked():
 
 
 def test_mask_secrets_without_name_reference_in_command():
-    """A secret value is masked even if no command ever referenced its name.
-
-    A token embedded in a git remote URL is printed by `git remote -v`, a
-    command that contains no secret name, so nothing gets exported by the
-    name-scan. The value must still be masked.
-    """
+    """A secret value is masked even if no command ever referenced its name."""
     token = "github_pat_REALSECRETVALUE123"
     secret_registry = SecretRegistry()
     secret_registry.update_secrets({"github_token": token})
@@ -360,11 +355,7 @@ def test_mask_secrets_without_name_reference_in_command():
 
 
 def test_mask_secrets_survives_serialization_round_trip():
-    """Masking still works after a conversation is persisted and resumed.
-
-    _exported_values is a PrivateAttr and is not serialized, so a restored
-    registry must re-resolve its sources rather than leak in cleartext.
-    """
+    """Masking survives a resume: _exported_values is not serialized."""
     token = "github_pat_REALSECRETVALUE123"
     secret_registry = SecretRegistry()
     secret_registry.update_secrets({"github_token": token})

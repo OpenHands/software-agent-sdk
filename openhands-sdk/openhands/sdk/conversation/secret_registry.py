@@ -131,10 +131,9 @@ class SecretRegistry(OpenHandsModel):
     def mask_secrets_in_output(self, text: str) -> str:
         """Mask secret values in the given text.
 
-        Every registered secret is masked, not just the ones already exported:
-        a value can reach the output without the command ever referencing the
-        secret's name (e.g. a token embedded in a git remote URL printed by
-        `git remote -v`), and it must be masked all the same.
+        Masks every registered secret, not only the exported ones: a value can
+        reach the output without the command ever referencing the secret's name
+        (e.g. a token in a git remote URL printed by `git remote -v`).
 
         Args:
             text: The text to mask secrets in
@@ -145,16 +144,12 @@ class SecretRegistry(OpenHandsModel):
         if not text:
             return text
 
-        # Resolve any source not yet cached in _exported_values. Retrieval
-        # failures are logged and skipped by get_secret_value, which keeps the
-        # last known value, so a flaky source degrades rather than breaking
-        # masking. Static secrets resolve once and then hit the cache.
+        # Resolve uncached sources; get_secret_value swallows failures.
         for key in list(self.secret_sources):
             if key not in self._exported_values:
                 self.get_secret_value(key)
 
-        # Snapshot the values: masking runs on tool-output paths while other
-        # threads may still be resolving secrets into _exported_values.
+        # Snapshot: other threads may insert while we iterate.
         masked_text = text
         for value in list(self._exported_values.values()):
             masked_text = masked_text.replace(value, "<secret-hidden>")

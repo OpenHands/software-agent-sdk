@@ -2335,13 +2335,12 @@ class ACPAgent(AgentBase):
         client = _OpenHandsACPBridge()
         self._client = client
         # Bind the secret masker for the conversation's lifetime. It's derived
-        # from state.secret_registry (stable for the conversation) and only
-        # resolves/reads that registry's own secrets, so it has none of the
-        # cross-thread/state-lock hazards that make on_event/on_token strictly
-        # per-turn. Binding it here (rather than per-turn in
-        # _reset_client_for_turn) keeps it available for session updates AND for
-        # ask_agent() forks, which run on the shared client and may fire while
-        # no step()/astep() turn is active.
+        # from state.secret_registry (stable for the conversation) and touches
+        # only that registry, so it has none of the cross-thread/state-lock
+        # hazards that make on_event/on_token strictly per-turn. Binding it here
+        # (rather than per-turn in _reset_client_for_turn) keeps it available for
+        # session updates AND for ask_agent() forks, which run on the shared
+        # client and may fire while no step()/astep() turn is active.
         client.mask = state.secret_registry.mask_secrets_in_output
 
         # Build the subprocess environment. Precedence, highest first:

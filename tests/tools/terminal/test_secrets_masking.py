@@ -92,11 +92,7 @@ def test_terminal_executor_with_conversation_secrets():
 
 
 def test_terminal_executor_masks_secret_not_referenced_by_command():
-    """Secrets are masked even when the command never references their name.
-
-    `git remote -v` mentions no secret name, so the name-scan exports nothing,
-    but a token embedded in the remote URL still reaches the observation.
-    """
+    """Secrets are masked even when the command never references their name."""
     with tempfile.TemporaryDirectory() as temp_dir:
         llm = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
