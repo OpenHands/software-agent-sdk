@@ -251,3 +251,49 @@ def test_request_failed_without_the_header_is_anonymous(client, monkeypatch):
 
     assert captured
     assert captured[-1].distinct_id.startswith(ANONYMOUS_PREFIX)
+
+
+def test_request_failed_is_emitted_for_an_exception_group(client, monkeypatch):
+    """Regression: a BaseExceptionGroup with no HTTPException returned a 500 but
+    skipped request_failed telemetry."""
+    import openhands.agent_server.telemetry.service as service_mod
+    from openhands.agent_server.api import create_app
+    from openhands.agent_server.telemetry import models as m
+    from openhands.agent_server.telemetry.factory import (
+        DiagnosticEventFactory,
+        build_runtime_properties,
+    )
+
+    captured: list = []
+
+    class _Sink:
+        enabled = True
+
+        def emit(self, event):
+            captured.append(event)
+
+        def on_decision_changed(self, decision):
+            pass
+
+        async def aclose(self):
+            pass
+
+    app = create_app()
+
+    @app.get("/api/_boom_group")
+    async def _boom():
+        raise BaseExceptionGroup("grouped", [ValueError("x"), RuntimeError("y")])
+
+    with TestClient(app, raise_server_exceptions=False) as c:
+        monkeypatch.setattr(service_mod, "_telemetry_sink", _Sink())
+        monkeypatch.setattr(
+            service_mod,
+            "_event_factory",
+            DiagnosticEventFactory(
+                runtime=build_runtime_properties(deferred_init=False)
+            ),
+        )
+        assert c.get("/api/_boom_group").status_code == 500
+
+    assert captured, "request_failed not emitted for an exception group"
+    assert captured[-1].event_name == m.EventName.REQUEST_FAILED

@@ -218,10 +218,13 @@ class InitService:
                 for key, value in req.env.items():
                     os.environ[key] = value
 
-            # Must precede get_instance(), which captures the sink.
+            # Must precede get_instance(), which captures the sink. The
+            # matching emit_server_started() is deferred until the ``ready``
+            # transition below: emitting here would produce a server_started
+            # for an init that later fails and rolls back to dormant, leaving
+            # an unpaired start and letting a retry emit a second one.
             await shutdown_telemetry_sink()
             self._app.state.telemetry_sink = await build_telemetry_sink(new_config)
-            emit_server_started()
 
             # Reset the module-level singleton so other call sites that go
             # through ``get_default_conversation_service`` see the new
@@ -249,6 +252,9 @@ class InitService:
 
             mark_initialization_complete()
             self._state = "ready"
+            # Emitted only now that init has actually succeeded, so a failed
+            # attempt never produces a start and a retry cannot double-emit.
+            emit_server_started()
             logger.info("deferred_init: server transitioned to ready")
             return self.snapshot()
         except Exception as exc:  # pragma: no cover - logged + re-raised

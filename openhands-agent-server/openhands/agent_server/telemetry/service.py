@@ -190,8 +190,15 @@ def reset_telemetry_sink() -> None:
 
 
 def emit_server_started() -> None:
-    """Emit ``server_started``, once, if telemetry is active."""
+    """Emit ``server_started`` once, if telemetry is active.
+
+    Idempotent: a second call while a start is already outstanding is a no-op,
+    so a caller that runs on a retry path cannot produce an unpaired second
+    start.
+    """
     global _server_started_emitted
+    if _server_started_emitted:
+        return
     if _emit_lifecycle(EventName.SERVER_STARTED):
         _server_started_emitted = True
 

@@ -596,6 +596,7 @@ def _add_exception_handlers(api: FastAPI) -> None:
                 error_id,
                 exc_info=(type(exc), exc, exc.__traceback__),
             )
+            _emit_request_failed(request, exc, error_id)
             return JSONResponse(status_code=500, content=content)
 
         # Logs full stack trace for any unhandled error that FastAPI would
