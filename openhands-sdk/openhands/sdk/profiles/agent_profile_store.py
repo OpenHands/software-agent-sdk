@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,7 +15,6 @@ from filelock import FileLock, Timeout
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles.agent_profile import validate_agent_profile
-from openhands.sdk.utils.files import atomic_write_text
 
 
 if TYPE_CHECKING:
@@ -116,7 +116,21 @@ class AgentProfileStore:
         return self.base_dir / f"{clean_name}.json"
 
     def _atomic_write(self, path: Path, text: str) -> None:
-        atomic_write_text(path, text)
+        """Write ``text`` to ``path`` via a temp file + atomic ``Path.replace``.
+
+        Callers must hold :meth:`_acquire_lock`. Shared with ``profile_refs`` so
+        the cascade rewrite reuses the same crash-safe write.
+        """
+        with tempfile.NamedTemporaryFile(
+            mode="w", dir=self.base_dir, suffix=".tmp", delete=False
+        ) as tmp:
+            tmp.write(text)
+            tmp_path = Path(tmp.name)
+        try:
+            Path.replace(tmp_path, path)
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            raise
 
     def save(
         self,

@@ -1,5 +1,4 @@
 import asyncio
-from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
@@ -195,19 +194,6 @@ class EventService:
         legacy_auth_file = self.conversation_dir / "acp" / "codex" / "auth.json"
         codex_binding = self.credential_bindings.get(CODEX_AUTH_SECRET_NAME)
         if codex_binding is not None and legacy_auth_file.exists():
-            maintain = getattr(codex_binding, "maintain", None)
-            due = getattr(codex_binding, "maintenance_due", False)
-            if callable(due):
-                due = due()
-            if callable(maintain) and due:
-                await cast(Callable[[], Awaitable[object]], maintain)()
-            check_usable = getattr(
-                codex_binding,
-                "raise_if_authorization_unusable",
-                None,
-            )
-            if callable(check_usable):
-                check_usable()
             resolved = await codex_binding.load()
             if not is_valid_codex_auth(resolved.value):
                 raise CredentialNeedsReauthentication(

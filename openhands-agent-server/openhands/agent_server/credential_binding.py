@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from openhands.agent_server.event_service import CredentialBindingActivationTooLate
 from openhands.agent_server.persistence import FileSecretsStore
@@ -24,17 +24,6 @@ class CredentialBindingActivation(BaseModel):
 
     url: str = Field(min_length=1, max_length=4096)
     headers: dict[str, str] = Field(default_factory=dict)
-    renewal_url: str | None = Field(default=None, min_length=1, max_length=4096)
-    renewal_interval_seconds: float | None = Field(
-        default=None,
-        gt=0,
-        allow_inf_nan=False,
-    )
-    authorization_expires_in_seconds: float | None = Field(
-        default=None,
-        gt=0,
-        allow_inf_nan=False,
-    )
 
     @field_validator("headers")
     @classmethod
@@ -45,19 +34,6 @@ class CredentialBindingActivation(BaseModel):
         ):
             raise ValueError("Invalid credential binding headers")
         return headers
-
-    @model_validator(mode="after")
-    def validate_renewal(self) -> CredentialBindingActivation:
-        values = (
-            self.renewal_url,
-            self.renewal_interval_seconds,
-            self.authorization_expires_in_seconds,
-        )
-        if any(value is None for value in values) and any(
-            value is not None for value in values
-        ):
-            raise ValueError("renewal configuration must be provided together")
-        return self
 
 
 @dataclass(frozen=True)
@@ -121,11 +97,6 @@ async def activate_credential_binding(
             HttpVersionedCredentialBinding(
                 activation.url,
                 activation.headers,
-                renewal_url=activation.renewal_url,
-                renewal_interval_seconds=activation.renewal_interval_seconds,
-                authorization_expires_in_seconds=(
-                    activation.authorization_expires_in_seconds
-                ),
             ),
         )
     except CredentialBindingActivationTooLate as exc:

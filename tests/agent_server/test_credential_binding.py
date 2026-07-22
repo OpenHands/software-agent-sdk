@@ -90,6 +90,17 @@ def test_local_versions_are_opaque_and_persisted(tmp_path) -> None:
     assert raw["_credential_versions"]["CODEX_AUTH_JSON"] == version
 
 
+def test_ordinary_secrets_do_not_get_versions(tmp_path) -> None:
+    store = FileSecretsStore(tmp_path)
+
+    store.set_secret("OTHER", "value")
+
+    raw = json.loads((tmp_path / "secrets.json").read_text(encoding="utf-8"))
+    assert "_credential_versions" not in raw
+    with pytest.raises(KeyError):
+        store.load_versioned_secret("OTHER")
+
+
 def test_whole_store_save_updates_credential_versions(tmp_path) -> None:
     store = FileSecretsStore(tmp_path)
     store.set_secret("CODEX_AUTH_JSON", "r0")
@@ -141,11 +152,7 @@ def test_activation_route_installs_http_binding(tmp_path) -> None:
             "url": "https://app.test/api/credential",
             "headers": {
                 "Authorization": "Bearer scoped",
-                "X-Session-API-Key": "session-key",
             },
-            "renewal_url": "https://app.test/api/credential/renew",
-            "renewal_interval_seconds": 3600,
-            "authorization_expires_in_seconds": 7200,
         },
     )
 
@@ -153,40 +160,7 @@ def test_activation_route_installs_http_binding(tmp_path) -> None:
     binding = service._credential_bindings[conversation_id]["CODEX_AUTH_JSON"]
     assert isinstance(binding, HttpVersionedCredentialBinding)
     assert binding.url == "https://app.test/api/credential"
-    assert binding.renewal_url == "https://app.test/api/credential/renew"
-    assert binding.renewal_interval_seconds == 3600
-    assert binding.authorization_expires_in_seconds == pytest.approx(7200)
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {
-            "url": "https://app.test/api/credential",
-            "renewal_url": "https://app.test/api/credential/renew",
-        },
-        {
-            "url": "https://app.test/api/credential",
-            "renewal_interval_seconds": 3600,
-        },
-        {
-            "url": "https://app.test/api/credential",
-            "authorization_expires_in_seconds": 7200,
-        },
-    ],
-)
-def test_activation_route_rejects_partial_renewal_config(tmp_path, payload) -> None:
-    service = ConversationService(conversations_dir=tmp_path / "conversations")
-    app = FastAPI()
-    app.state.conversation_service = service
-    app.include_router(router, prefix="/api")
-
-    response = TestClient(app).put(
-        f"/api/conversations/{uuid4()}/credential-bindings/CODEX_AUTH_JSON",
-        json=payload,
-    )
-
-    assert response.status_code == 422
+    assert binding.headers == {"Authorization": "Bearer scoped"}
 
 
 @pytest.mark.asyncio
@@ -310,11 +284,7 @@ async def test_late_binding_scrubs_open_uninitialized_conversation(tmp_path) -> 
         "https://app.test/api/credential",
         {
             "Authorization": "Bearer initial",
-            "X-Session-API-Key": "initial-session",
         },
-        renewal_url="https://app.test/api/credential/renew",
-        renewal_interval_seconds=60,
-        authorization_expires_in_seconds=120,
     )
 
     async with service:
@@ -361,11 +331,6 @@ async def test_late_binding_scrubs_open_uninitialized_conversation(tmp_path) -> 
                     HttpVersionedCredentialBinding(
                         binding.url,
                         binding.headers,
-                        renewal_url=binding.renewal_url,
-                        renewal_interval_seconds=binding.renewal_interval_seconds,
-                        authorization_expires_in_seconds=(
-                            binding.authorization_expires_in_seconds
-                        ),
                     ),
                 )
 
@@ -395,11 +360,7 @@ async def test_late_binding_scrubs_open_uninitialized_conversation(tmp_path) -> 
             "https://app.test/api/credential",
             {
                 "Authorization": "Bearer successor",
-                "X-Session-API-Key": "successor-session",
             },
-            renewal_url="https://app.test/api/credential/renew",
-            renewal_interval_seconds=120,
-            authorization_expires_in_seconds=240,
         )
         await service.activate_credential_binding(
             info.id,
@@ -409,14 +370,11 @@ async def test_late_binding_scrubs_open_uninitialized_conversation(tmp_path) -> 
         assert event_service.credential_bindings["CODEX_AUTH_JSON"] is binding
         assert binding.headers == {
             "Authorization": "Bearer successor",
-            "X-Session-API-Key": "successor-session",
         }
         artifacts = (conversation_dir / "meta.json").read_text() + (
             conversation_dir / "base_state.json"
         ).read_text()
         assert "Bearer successor" not in artifacts
-        assert "successor-session" not in artifacts
-        assert "credential/renew" not in artifacts
 
         with pytest.raises(CredentialBindingActivationTooLate):
             await service.activate_credential_binding(

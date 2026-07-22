@@ -519,7 +519,9 @@ class FileSecretsStore(SecretsStore):
         return {
             name: version
             for name, version in versions.items()
-            if isinstance(name, str) and isinstance(version, str) and version
+            if name in _VERSIONED_CREDENTIAL_NAMES
+            and isinstance(version, str)
+            and version
         }
 
     def get_secret(self, name: str) -> str | None:
@@ -566,7 +568,8 @@ class FileSecretsStore(SecretsStore):
             )
 
             versions = self._load_versions()
-            versions[name] = secrets_module.token_urlsafe(24)
+            if name in _VERSIONED_CREDENTIAL_NAMES:
+                versions[name] = secrets_module.token_urlsafe(24)
             self._save_with_versions(Secrets(custom_secrets=new_secrets), versions)
 
     def delete_secret(self, name: str) -> bool:
@@ -599,6 +602,8 @@ class FileSecretsStore(SecretsStore):
             return True
 
     def load_versioned_secret(self, name: str) -> tuple[str, str]:
+        if name not in _VERSIONED_CREDENTIAL_NAMES:
+            raise KeyError(name)
         with _file_lock(self._lock_path):
             secrets = self.load()
             if secrets is None:
@@ -627,6 +632,8 @@ class FileSecretsStore(SecretsStore):
         expected_version: str,
         value: str,
     ) -> str:
+        if name not in _VERSIONED_CREDENTIAL_NAMES:
+            raise KeyError(name)
         with _file_lock(self._lock_path):
             secrets = self.load()
             if secrets is None:
