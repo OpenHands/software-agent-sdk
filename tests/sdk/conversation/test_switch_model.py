@@ -213,6 +213,16 @@ def test_switch_acp_model_disarms_discarded_agent_finalizer(tmp_path):
     conv, old_agent = _make_acp_conversation(tmp_path)
     live_conn = old_agent._conn
     live_executor = old_agent._executor
+    lifecycle = MagicMock()
+    lifecycle.path = tmp_path / "auth.json"
+    lifecycle.may_have_changed = True
+    old_agent._file_credential_lifecycles["CODEX_AUTH_JSON"] = lifecycle
+    credential_lock = old_agent._file_credential_lock
+    client = MagicMock()
+    old_agent._client = client
+    old_agent._bind_file_credential_masking()
+    old_agent._register_atexit_cleanup()
+    old_cleanup = old_agent._atexit_callback
 
     conv.switch_acp_model("model-b")
 
@@ -221,6 +231,11 @@ def test_switch_acp_model_disarms_discarded_agent_finalizer(tmp_path):
     assert isinstance(switched, ACPAgent)
     assert switched._conn is live_conn
     assert switched._executor is live_executor
+    assert switched._file_credential_lifecycles == {"CODEX_AUTH_JSON": lifecycle}
+    assert switched._file_credential_lock is credential_lock
+    assert old_agent._atexit_callback is None
+    assert switched._atexit_callback is not None
+    assert switched._atexit_callback is not old_cleanup
 
     # ...and the discarded agent's finalizer was disarmed (marked closed)
     # WITHOUT clearing its runtime references — an in-flight ask_agent()/fork
@@ -228,6 +243,10 @@ def test_switch_acp_model_disarms_discarded_agent_finalizer(tmp_path):
     assert old_agent._closed is True
     assert old_agent._conn is live_conn
     assert old_agent._executor is live_executor
+    assert old_agent._file_credential_lifecycles == {}
+    lifecycle.track_current.reset_mock()
+    client.before_mask()
+    lifecycle.track_current.assert_called_once_with()
 
     # Simulating GC (__del__ -> close()) on the disarmed old agent is a no-op:
     # the copy's shared connection/executor are left intact.
@@ -235,6 +254,8 @@ def test_switch_acp_model_disarms_discarded_agent_finalizer(tmp_path):
     old_agent.close()
     live_executor.run_async.assert_not_called()
     live_executor.close.assert_not_called()
+    switched.release_runtime()
+    assert switched._atexit_callback is None
 
 
 def test_switch_profile(profile_store):
