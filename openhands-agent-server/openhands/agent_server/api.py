@@ -69,6 +69,10 @@ from openhands.agent_server.telemetry import (
     get_telemetry_sink,
     shutdown_telemetry_sink,
 )
+from openhands.agent_server.telemetry.factory import (
+    DISTINCT_ID_HEADER,
+    distinct_id_from_header,
+)
 from openhands.agent_server.telemetry.models import (
     EventName,
     RequestFailedProperties,
@@ -324,6 +328,9 @@ def _emit_request_failed(request: Request, exc: Exception, error_id: str) -> Non
             return
 
         fingerprint = normalize_exception(exc)
+        # Attribute to the frontend's analytics identity when it supplied one;
+        # request-scoped activity has no conversation user_id otherwise.
+        distinct_id = distinct_id_from_header(request.headers.get(DISTINCT_ID_HEADER))
         sink.emit(
             factory.build(
                 EventName.REQUEST_FAILED,
@@ -336,6 +343,7 @@ def _emit_request_failed(request: Request, exc: Exception, error_id: str) -> Non
                     error_fingerprint=fingerprint.error_fingerprint,
                     error_id=error_id,
                 ),
+                user_id=distinct_id,
             )
         )
     except Exception:

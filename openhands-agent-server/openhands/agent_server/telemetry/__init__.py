@@ -19,8 +19,10 @@ package must not pull in the optional vendor dependency.
 """
 
 from openhands.agent_server.telemetry.factory import (
+    DISTINCT_ID_HEADER,
     DiagnosticEventFactory,
     build_runtime_properties,
+    distinct_id_from_header,
 )
 from openhands.agent_server.telemetry.models import (
     TELEMETRY_SCHEMA_VERSION,
@@ -61,6 +63,7 @@ __all__ = [
     "BufferedTelemetrySink",
     "ConversationTelemetryContext",
     "DiagnosticEvent",
+    "DISTINCT_ID_HEADER",
     "DiagnosticEventFactory",
     "NoOpTelemetrySink",
     "RuntimeProperties",
@@ -71,6 +74,7 @@ __all__ = [
     "TelemetrySink",
     "TelemetrySubscriber",
     "build_runtime_properties",
+    "distinct_id_from_header",
     "build_telemetry_sink",
     "emit_server_started",
     "emit_server_stopped",

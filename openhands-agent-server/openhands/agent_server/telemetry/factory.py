@@ -31,6 +31,29 @@ from openhands.sdk.utils import utc_now
 
 ANONYMOUS_PREFIX: Final[str] = "anon:"
 
+#: Optional request header carrying the caller's analytics identity. The
+#: frontend sets it (``posthog.get_distinct_id()``) so request-scoped activity
+#: — which has no conversation ``user_id`` — attributes to the same person.
+DISTINCT_ID_HEADER: Final[str] = "X-OpenHands-Telemetry-Distinct-Id"
+
+_MAX_DISTINCT_ID_LEN: Final[int] = 256
+
+
+def distinct_id_from_header(value: str | None) -> str | None:
+    """Coerce the ``X-OpenHands-Telemetry-Distinct-Id`` header, or ``None``.
+
+    Trusted the same way as ``user_id``: it becomes the analytics identity
+    verbatim. Bounded and stripped of control characters so a stray value can
+    neither exceed the schema's length limit nor smuggle newlines into a
+    profile; anything left empty falls back to the anonymous id.
+    """
+    if not value:
+        return None
+    candidate = "".join(ch for ch in value if ch.isprintable()).strip()
+    if not candidate:
+        return None
+    return candidate[:_MAX_DISTINCT_ID_LEN]
+
 
 def _platform_token() -> str:
     return safe_token(sys.platform, default=UNKNOWN_TOKEN)

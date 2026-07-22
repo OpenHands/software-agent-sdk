@@ -155,3 +155,99 @@ def test_a_non_misc_settings_write_does_not_touch_telemetry(client, monkeypatch)
 def test_there_is_no_dedicated_consent_endpoint(client):
     with client as c:
         assert c.get("/api/telemetry/consent").status_code == 404
+
+
+# ── request-scoped attribution via header ─────────────────────────────────
+
+
+def test_request_failed_uses_the_distinct_id_header(client, monkeypatch):
+    """A 500 attributes to the frontend's PostHog identity when supplied."""
+    import openhands.agent_server.telemetry.service as service_mod
+    from openhands.agent_server.api import create_app
+    from openhands.agent_server.telemetry.factory import (
+        DISTINCT_ID_HEADER,
+        DiagnosticEventFactory,
+        build_runtime_properties,
+    )
+
+    captured: list = []
+
+    class _Sink:
+        enabled = True
+
+        def emit(self, event):
+            captured.append(event)
+
+        def on_decision_changed(self, decision):
+            pass
+
+        async def aclose(self):
+            pass
+
+    app = create_app()
+
+    @app.get("/api/_boom_header")
+    async def _boom():
+        raise ValueError("kaboom")
+
+    with TestClient(app, raise_server_exceptions=False) as c:
+        monkeypatch.setattr(service_mod, "_telemetry_sink", _Sink())
+        monkeypatch.setattr(
+            service_mod,
+            "_event_factory",
+            DiagnosticEventFactory(
+                runtime=build_runtime_properties(deferred_init=False)
+            ),
+        )
+        r = c.get(
+            "/api/_boom_header",
+            headers={DISTINCT_ID_HEADER: "phc_frontend_user"},
+        )
+        assert r.status_code == 500
+
+    assert captured, "request_failed was not emitted"
+    assert captured[-1].distinct_id == "phc_frontend_user"
+
+
+def test_request_failed_without_the_header_is_anonymous(client, monkeypatch):
+    import openhands.agent_server.telemetry.service as service_mod
+    from openhands.agent_server.api import create_app
+    from openhands.agent_server.telemetry.factory import (
+        ANONYMOUS_PREFIX,
+        DiagnosticEventFactory,
+        build_runtime_properties,
+    )
+
+    captured: list = []
+
+    class _Sink:
+        enabled = True
+
+        def emit(self, event):
+            captured.append(event)
+
+        def on_decision_changed(self, decision):
+            pass
+
+        async def aclose(self):
+            pass
+
+    app = create_app()
+
+    @app.get("/api/_boom_noheader")
+    async def _boom():
+        raise ValueError("kaboom")
+
+    with TestClient(app, raise_server_exceptions=False) as c:
+        monkeypatch.setattr(service_mod, "_telemetry_sink", _Sink())
+        monkeypatch.setattr(
+            service_mod,
+            "_event_factory",
+            DiagnosticEventFactory(
+                runtime=build_runtime_properties(deferred_init=False)
+            ),
+        )
+        assert c.get("/api/_boom_noheader").status_code == 500
+
+    assert captured
+    assert captured[-1].distinct_id.startswith(ANONYMOUS_PREFIX)

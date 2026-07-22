@@ -230,6 +230,13 @@ The exporter only ever calls `capture()` — never `identify()`, `alias()`, or
 merge two. Without a `user_id`, an in-memory `anon:<hex>` id is used that resets
 on restart and is flagged so PostHog creates no person profile.
 
+Request-scoped activity that has no conversation `user_id` — a failed request,
+and future events such as LLM-profile creation — can still be attributed by
+sending the frontend's PostHog id in the `X-OpenHands-Telemetry-Distinct-Id`
+header (`headers["X-OpenHands-Telemetry-Distinct-Id"] = posthog.get_distinct_id()`).
+When absent, those events fall back to the anonymous id. The header is trusted
+the same way as `user_id`: the frontend is responsible for setting it correctly.
+
 #### Installation
 
 The PostHog client is an optional extra:
