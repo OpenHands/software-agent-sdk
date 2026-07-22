@@ -449,6 +449,16 @@ def create_file_credential_lifecycle(
     binding: VersionedCredentialBinding | None,
     run_async: AsyncRunner,
 ) -> ACPFileCredentialLifecycle | None:
-    if secret_name != CODEX_AUTH_SECRET_NAME or binding is None:
+    if binding is None:
         return None
-    return _CodexAuthLifecycle(binding, run_async)
+    lifecycle = _FILE_CREDENTIAL_LIFECYCLES.get(secret_name)
+    return lifecycle(binding, run_async) if lifecycle is not None else None
+
+
+_FILE_CREDENTIAL_LIFECYCLES = {
+    CODEX_AUTH_SECRET_NAME: _CodexAuthLifecycle,
+}
+
+
+def supports_file_credential_binding(secret_name: str) -> bool:
+    return secret_name in _FILE_CREDENTIAL_LIFECYCLES

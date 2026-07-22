@@ -126,7 +126,7 @@ class HttpVersionedCredentialBinding:
     def _raise_for_status(response: httpx.Response) -> None:
         if response.status_code == 404:
             raise CredentialNeedsReauthentication(
-                "ChatGPT authentication is missing. Please sign in again."
+                "Credential is missing. Please authenticate again."
             )
         if response.status_code == 409:
             raise CredentialConflict(
@@ -134,7 +134,7 @@ class HttpVersionedCredentialBinding:
             )
         if response.status_code in (400, 422):
             raise CredentialNeedsReauthentication(
-                "ChatGPT authentication is invalid. Please sign in again."
+                "Credential is invalid. Please authenticate again."
             )
         if response.status_code in (401, 403):
             raise CredentialAuthorizationRejected(

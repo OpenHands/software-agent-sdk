@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from openhands.agent_server.event_service import CredentialBindingActivationTooLate
 from openhands.agent_server.persistence import FileSecretsStore
-from openhands.sdk.agent.acp_file_credentials import CODEX_AUTH_SECRET_NAME
+from openhands.sdk.agent.acp_file_credentials import supports_file_credential_binding
 from openhands.sdk.credential import (
     CredentialConflict,
     CredentialNeedsReauthentication,
@@ -49,7 +49,7 @@ class LocalVersionedCredentialBinding:
             )
         except KeyError as exc:
             raise CredentialNeedsReauthentication(
-                "ChatGPT authentication is missing. Please sign in again."
+                "Credential is missing. Please authenticate again."
             ) from exc
         except Exception as exc:
             raise CredentialSyncError("Local credential store is unavailable.") from exc
@@ -65,7 +65,7 @@ class LocalVersionedCredentialBinding:
             )
         except KeyError as exc:
             raise CredentialNeedsReauthentication(
-                "ChatGPT authentication is missing. Please sign in again."
+                "Credential is missing. Please authenticate again."
             ) from exc
         except ValueError as exc:
             raise CredentialConflict(
@@ -88,7 +88,7 @@ async def activate_credential_binding(
     activation: CredentialBindingActivation,
     request: Request,
 ) -> Response:
-    if secret_name != CODEX_AUTH_SECRET_NAME:
+    if not supports_file_credential_binding(secret_name):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     try:
         await request.app.state.conversation_service.activate_credential_binding(
