@@ -1605,6 +1605,7 @@ class LocalConversation(BaseConversation):
             old_agent = self.agent
             new_agent = old_agent.model_copy(update={"acp_model": model})
             if live:
+                new_agent._bind_file_credential_masking()
                 old_agent.release_runtime()
             # ``self.agent`` is the live reference used by subsequent ``step()``
             # calls; ``self._state.agent`` is what the autosave path serializes

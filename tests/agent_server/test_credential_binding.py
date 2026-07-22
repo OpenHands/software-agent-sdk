@@ -14,7 +14,11 @@ from openhands.agent_server.credential_binding import (
 from openhands.agent_server.models import StartConversationRequest, StoredConversation
 from openhands.agent_server.persistence import FileSecretsStore
 from openhands.sdk.agent import ACPAgent
-from openhands.sdk.credential import CredentialConflict, HttpVersionedCredentialBinding
+from openhands.sdk.credential import (
+    CredentialConflict,
+    CredentialNeedsReauthentication,
+    HttpVersionedCredentialBinding,
+)
 from openhands.sdk.secret import StaticSecret
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -49,6 +53,18 @@ async def test_local_binding_delete_recreate_changes_version(tmp_path) -> None:
     assert second.version != first.version
     with pytest.raises(CredentialConflict):
         await binding.replace(first.version, "stale")
+
+
+@pytest.mark.asyncio
+async def test_local_binding_deleted_secret_requires_reauthentication(tmp_path) -> None:
+    store = FileSecretsStore(tmp_path)
+    store.set_secret("CODEX_AUTH_JSON", "r0")
+    binding = LocalVersionedCredentialBinding(store, "CODEX_AUTH_JSON")
+    initial = await binding.load()
+    assert store.delete_secret("CODEX_AUTH_JSON")
+
+    with pytest.raises(CredentialNeedsReauthentication):
+        await binding.replace(initial.version, "r1")
 
 
 def test_local_versions_are_opaque_and_persisted(tmp_path) -> None:

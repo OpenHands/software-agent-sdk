@@ -73,7 +73,11 @@ from openhands.sdk.agent.acp_models import ACPModelInfo
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context import AgentContext
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.credential import CredentialSyncError, VersionedCredentialBinding
+from openhands.sdk.credential import (
+    CredentialBindingError,
+    CredentialSyncError,
+    VersionedCredentialBinding,
+)
 from openhands.sdk.event import (
     ACPToolCallEvent,
     ActionEvent,
@@ -1176,7 +1180,7 @@ class _OpenHandsACPBridge:
             if self.before_mask is not None:
                 self.before_mask()
             return _mask_json_value(value, self.mask)
-        except CredentialSyncError:
+        except CredentialBindingError:
             raise
         except Exception:
             logger.debug("secret masking failed", exc_info=True)
@@ -2347,11 +2351,12 @@ class ACPAgent(AgentBase):
     def _sync_file_credentials_collect(self) -> dict[str, Exception]:
         failures: dict[str, Exception] = {}
         with self._file_credential_lock:
-            for name, lifecycle in self._file_credential_lifecycles.items():
-                try:
-                    lifecycle.flush()
-                except Exception as error:
-                    failures[name] = error
+            lifecycles = tuple(self._file_credential_lifecycles.items())
+        for name, lifecycle in lifecycles:
+            try:
+                lifecycle.flush()
+            except Exception as error:
+                failures[name] = error
         return failures
 
     def _sync_file_credentials(self) -> None:
@@ -2361,32 +2366,52 @@ class ACPAgent(AgentBase):
 
     def _track_file_credentials_for_masking(self) -> None:
         with self._file_credential_lock:
-            for name, lifecycle in self._file_credential_lifecycles.items():
-                try:
-                    lifecycle.track_current()
-                except Exception as error:
-                    raise CredentialSyncError(
-                        f"ACP file credential {name!r} could not be synchronized."
-                    ) from error
+            lifecycles = tuple(self._file_credential_lifecycles.items())
+        for name, lifecycle in lifecycles:
+            try:
+                lifecycle.track_current()
+            except CredentialBindingError:
+                raise
+            except Exception as error:
+                raise CredentialSyncError(
+                    f"ACP file credential {name!r} could not be synchronized."
+                ) from error
 
-    async def _flush_file_credentials(self, **_: object) -> None:
+    def _bind_file_credential_masking(self) -> None:
+        client = self._client
+        if client is None:
+            return
+        agent_ref = weakref.ref(self)
+
+        def track_file_credentials() -> None:
+            agent = agent_ref()
+            if agent is not None:
+                agent._track_file_credentials_for_masking()
+
+        client.before_mask = track_file_credentials
+
+    async def _flush_file_credentials(self) -> None:
         with self._file_credential_lock:
             if not self._file_credential_lifecycles:
                 return
         await asyncio.to_thread(self._sync_file_credentials)
 
-    def _flush_file_credentials_blocking(self, **_: object) -> None:
+    def _flush_file_credentials_blocking(self) -> None:
         self._sync_file_credentials()
 
     def _release_file_credentials_collect(self) -> dict[str, Exception]:
         failures: dict[str, Exception] = {}
         with self._file_credential_lock:
-            for name, lifecycle in list(self._file_credential_lifecycles.items()):
-                try:
-                    lifecycle.close()
-                except Exception as error:
-                    failures[name] = error
-                self._file_credential_lifecycles.pop(name, None)
+            lifecycles = tuple(self._file_credential_lifecycles.items())
+        for name, lifecycle in lifecycles:
+            try:
+                lifecycle.close()
+            except Exception as error:
+                failures[name] = error
+            finally:
+                with self._file_credential_lock:
+                    if self._file_credential_lifecycles.get(name) is lifecycle:
+                        self._file_credential_lifecycles.pop(name)
         return failures
 
     def _release_file_credentials(self) -> None:
@@ -2413,14 +2438,7 @@ class ACPAgent(AgentBase):
         # session updates AND for ask_agent() forks, which run on the shared
         # client and may fire while no step()/astep() turn is active.
         client.mask = state.secret_registry.mask_secrets_in_output
-        agent_ref = weakref.ref(self)
-
-        def track_file_credentials() -> None:
-            agent = agent_ref()
-            if agent is not None:
-                agent._track_file_credentials_for_masking()
-
-        client.before_mask = track_file_credentials
+        self._bind_file_credential_masking()
 
         # Build the subprocess environment. Precedence, highest first:
         #   state.secret_registry > os.environ > default_environment
@@ -2651,7 +2669,7 @@ class ACPAgent(AgentBase):
                         raise ACPFileCredentialNeedsReauthError(
                             "ChatGPT authentication needs to be refreshed."
                         ) from exc
-                    await self._flush_file_credentials(changed_only=True)
+                    await self._flush_file_credentials()
                 else:
                     logger.warning(
                         "ACP server offers auth methods %s but no matching "
@@ -3485,7 +3503,7 @@ class ACPAgent(AgentBase):
             raise
         finally:
             self._clear_turn_callbacks()
-            self._flush_file_credentials_blocking(changed_only=True)
+            self._flush_file_credentials_blocking()
 
     @observe(name="acp_agent.astep", ignore_inputs=["conversation", "on_event"])
     async def astep(
@@ -3701,7 +3719,7 @@ class ACPAgent(AgentBase):
             raise
         finally:
             self._clear_turn_callbacks()
-            await self._flush_file_credentials(changed_only=True)
+            await self._flush_file_credentials()
 
     def ask_agent(self, question: str) -> str | None:
         """Fork the ACP session, prompt the fork, and return the response."""
@@ -3759,7 +3777,7 @@ class ACPAgent(AgentBase):
                 return result
             finally:
                 try:
-                    await self._flush_file_credentials(changed_only=True)
+                    await self._flush_file_credentials()
                 finally:
                     client._fork_session_id = None
                     client._fork_accumulated_text.clear()

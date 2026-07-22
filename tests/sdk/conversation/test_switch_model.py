@@ -218,6 +218,9 @@ def test_switch_acp_model_disarms_discarded_agent_finalizer(tmp_path):
     lifecycle.may_have_changed = True
     old_agent._file_credential_lifecycles["CODEX_AUTH_JSON"] = lifecycle
     credential_lock = old_agent._file_credential_lock
+    client = MagicMock()
+    old_agent._client = client
+    old_agent._bind_file_credential_masking()
 
     conv.switch_acp_model("model-b")
 
@@ -236,6 +239,9 @@ def test_switch_acp_model_disarms_discarded_agent_finalizer(tmp_path):
     assert old_agent._conn is live_conn
     assert old_agent._executor is live_executor
     assert old_agent._file_credential_lifecycles == {}
+    lifecycle.track_current.reset_mock()
+    client.before_mask()
+    lifecycle.track_current.assert_called_once_with()
 
     # Simulating GC (__del__ -> close()) on the disarmed old agent is a no-op:
     # the copy's shared connection/executor are left intact.

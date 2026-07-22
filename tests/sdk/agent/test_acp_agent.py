@@ -48,6 +48,7 @@ from openhands.sdk.agent.acp_agent import (
     _with_codex_base_url,
 )
 from openhands.sdk.agent.acp_file_credentials import (
+    ACPFileCredentialNeedsReauthError,
     ACPFileCredentialSyncError,
     codex_auth_file,
 )
@@ -120,6 +121,30 @@ def _attach_file_credential_lifecycle(
     lifecycle.path = path
     agent._file_credential_lifecycles[name] = lifecycle
     return lifecycle
+
+
+def test_file_credential_flush_does_not_hold_agent_lock(tmp_path):
+    agent = _make_agent()
+    lifecycle = _attach_file_credential_lifecycle(agent, tmp_path / "auth.json")
+    threads: list[threading.Thread] = []
+
+    def flush() -> None:
+        acquired = threading.Event()
+
+        def acquire_lock() -> None:
+            with agent._file_credential_lock:
+                acquired.set()
+
+        thread = threading.Thread(target=acquire_lock)
+        threads.append(thread)
+        thread.start()
+        assert acquired.wait(0.2)
+
+    lifecycle.flush.side_effect = flush
+    failures = agent._sync_file_credentials_collect()
+    for thread in threads:
+        thread.join(timeout=1)
+    assert failures == {}
 
 
 def _make_state(tmp_path) -> ConversationState:
@@ -8227,6 +8252,14 @@ class TestACPFileSecretMaterialisation:
         assert path.read_text() == "original"
         assert list(tmp_path.iterdir()) == [path]
 
+    def test_secret_file_write_without_fchmod(self, tmp_path):
+        path = tmp_path / "auth.json"
+
+        with patch.object(files_module.os, "fchmod", new=None, create=True):
+            acp_file_credentials_module.write_secret_file(path, "credential")
+
+        assert path.read_text(encoding="utf-8") == "credential"
+
     def test_gemini_vertex_sa_materialises_and_points_at_file(self, tmp_path):
         from openhands.sdk.secret import StaticSecret
 
@@ -8770,6 +8803,16 @@ class TestACPBridgeMasking:
         client = _OpenHandsACPBridge()
         client.mask = _boom
         assert client._mask_value("keep SEKRET") == "keep SEKRET"
+
+    def test_mask_value_propagates_credential_errors(self):
+        client = _OpenHandsACPBridge()
+        client.mask = _redacting_mask
+        client.before_mask = MagicMock(
+            side_effect=ACPFileCredentialNeedsReauthError("missing")
+        )
+
+        with pytest.raises(ACPFileCredentialNeedsReauthError):
+            client._mask_value("SEKRET")
 
     def test_reset_preserves_mask(self):
         """mask is conversation-lifetime (bound once in _start_acp_server), so a

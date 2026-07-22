@@ -1,8 +1,10 @@
 import asyncio
 import json
+import threading
 import time
 from collections.abc import Coroutine
-from typing import Any
+from typing import Any, cast
+from unittest.mock import patch
 
 import pytest
 
@@ -13,6 +15,7 @@ from openhands.sdk.agent.acp_file_credentials import (
 from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.credential import (
     CredentialConflict,
+    CredentialNeedsReauthentication,
     CredentialSyncError,
     ResolvedCredential,
 )
@@ -58,6 +61,24 @@ class AmbiguousBinding(MemoryBinding):
         raise CredentialSyncError("lost response")
 
 
+class BlockingBinding(MemoryBinding):
+    def __init__(self, value: str) -> None:
+        super().__init__(value)
+        self.replace_started = threading.Event()
+        self.replace_allowed = threading.Event()
+
+    async def replace(self, expected_version: str, value: str) -> str:
+        self.replace_started.set()
+        allowed = await asyncio.to_thread(self.replace_allowed.wait, 2)
+        assert allowed
+        return await super().replace(expected_version, value)
+
+
+class MissingBinding(MemoryBinding):
+    async def replace(self, expected_version: str, value: str) -> str:
+        raise CredentialNeedsReauthentication("missing")
+
+
 def _lifecycle(binding: MemoryBinding, registry: SecretRegistry):
     lifecycle = create_file_credential_lifecycle(
         CODEX_AUTH_SECRET_NAME,
@@ -95,6 +116,64 @@ def test_background_rotation_writes_through_and_masks() -> None:
     finally:
         lifecycle.close()
     assert not path.parent.exists()
+
+
+def test_mask_tracking_does_not_sleep_or_write() -> None:
+    initial = _auth("refresh-r0", "access-r0")
+    rotated = _auth("refresh-r1", "access-r1")
+    binding = MemoryBinding(initial)
+    registry = SecretRegistry()
+    lifecycle, _ = _lifecycle(binding, registry)
+    assert lifecycle.path is not None
+    runtime = cast(Any, lifecycle)
+    runtime._stop.set()
+    assert runtime._monitor is not None
+    runtime._monitor.join(timeout=1)
+    try:
+        lifecycle.path.write_text(rotated, encoding="utf-8")
+        with patch(
+            "openhands.sdk.agent.acp_file_credentials.time.sleep",
+            side_effect=AssertionError("mask tracking must not sleep"),
+        ):
+            lifecycle.track_current()
+        assert binding.value == initial
+        assert binding.replace_calls == 0
+        assert registry.mask_secrets_in_output("access-r1") == "<secret-hidden>"
+    finally:
+        lifecycle.close()
+
+
+def test_mask_tracking_does_not_wait_for_monitor_write() -> None:
+    rotated = _auth("refresh-r1", "access-r1")
+    binding = BlockingBinding(_auth("refresh-r0", "access-r0"))
+    lifecycle, _ = _lifecycle(binding, SecretRegistry())
+    assert lifecycle.path is not None
+    try:
+        lifecycle.path.write_text(rotated, encoding="utf-8")
+        assert binding.replace_started.wait(2)
+
+        tracked = threading.Event()
+        errors: list[BaseException] = []
+
+        def track() -> None:
+            try:
+                lifecycle.track_current()
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                tracked.set()
+
+        thread = threading.Thread(target=track)
+        thread.start()
+        completed = tracked.wait(0.5)
+        binding.replace_allowed.set()
+        thread.join(timeout=2)
+        assert completed
+        assert not errors
+        _wait_for_value(binding, rotated)
+    finally:
+        binding.replace_allowed.set()
+        lifecycle.close()
 
 
 def test_partial_file_is_not_published() -> None:
@@ -150,6 +229,24 @@ def test_conflict_is_sticky_and_cleans_runtime_directory() -> None:
     with pytest.raises(CredentialConflict):
         lifecycle.close()
     assert not runtime_dir.exists()
+
+
+def test_deleted_credential_error_is_sticky() -> None:
+    binding = MissingBinding(_auth("refresh-r0"))
+    lifecycle, _ = _lifecycle(binding, SecretRegistry())
+    assert lifecycle.path is not None
+    runtime = cast(Any, lifecycle)
+    runtime._stop.set()
+    assert runtime._monitor is not None
+    runtime._monitor.join(timeout=1)
+    lifecycle.path.write_text(_auth("refresh-r1"), encoding="utf-8")
+
+    with pytest.raises(CredentialNeedsReauthentication):
+        lifecycle.flush()
+    with pytest.raises(CredentialNeedsReauthentication):
+        lifecycle.track_current()
+    with pytest.raises(CredentialNeedsReauthentication):
+        lifecycle.close()
 
 
 def test_runtime_state_does_not_serialize_binding_values() -> None:

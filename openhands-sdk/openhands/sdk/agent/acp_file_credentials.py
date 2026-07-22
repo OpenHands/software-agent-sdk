@@ -12,6 +12,7 @@ from typing import Any, Protocol
 
 from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.credential import (
+    CredentialBindingError,
     CredentialConflict,
     CredentialNeedsReauthentication,
     CredentialSyncError,
@@ -105,8 +106,10 @@ class _CodexAuthLifecycle:
         self._registry: SecretRegistry | None = None
         self._expected_version: str | None = None
         self._local_digest: str | None = None
-        self._error: CredentialSyncError | None = None
+        self._error: CredentialBindingError | None = None
         self._lock = threading.RLock()
+        self._sync_lock = threading.Lock()
+        self._tracked_digests: set[str] = set()
         self._stop = threading.Event()
         self._monitor: threading.Thread | None = None
 
@@ -143,20 +146,19 @@ class _CodexAuthLifecycle:
         )
 
     def track_current(self) -> None:
-        with self._lock:
-            try:
-                self._raise_sticky_error()
-                value = self._read_stable(attempts=1)
-                if value is not None:
-                    self._sync_value(value)
-                self._raise_sticky_error()
-            except CredentialSyncError as exc:
-                self._set_error(exc)
-                raise
+        try:
+            self._raise_sticky_error()
+            value = self._read_current()
+            if value is not None:
+                self._track_if_changed(value)
+            self._raise_sticky_error()
+        except (CredentialNeedsReauthentication, CredentialSyncError) as exc:
+            self._set_error(exc)
+            raise
 
     def flush(self) -> None:
-        with self._lock:
-            try:
+        try:
+            with self._sync_lock:
                 self._raise_sticky_error()
                 value = self._read_stable(attempts=3)
                 if value is None:
@@ -165,9 +167,9 @@ class _CodexAuthLifecycle:
                     )
                 self._sync_value(value)
                 self._raise_sticky_error()
-            except CredentialSyncError as exc:
-                self._set_error(exc)
-                raise
+        except (CredentialNeedsReauthentication, CredentialSyncError) as exc:
+            self._set_error(exc)
+            raise
 
     def close(self) -> None:
         self._stop.set()
@@ -200,26 +202,35 @@ class _CodexAuthLifecycle:
     def _monitor_loop(self) -> None:
         while not self._stop.wait(_MONITOR_INTERVAL_SECONDS):
             try:
-                with self._lock:
-                    if self._error is not None:
-                        return
+                with self._sync_lock:
+                    self._raise_sticky_error()
                     value = self._read_stable(attempts=1)
                     if value is not None:
                         self._sync_value(value)
-            except CredentialSyncError as exc:
-                with self._lock:
-                    self._set_error(exc)
+            except (CredentialNeedsReauthentication, CredentialSyncError) as exc:
+                self._set_error(exc)
                 return
             except Exception as exc:
-                with self._lock:
-                    self._set_error(
-                        CredentialSyncError("Codex credential monitoring failed.")
-                    )
+                self._set_error(
+                    CredentialSyncError("Codex credential monitoring failed.")
+                )
                 logger.warning("credential_binding_monitor_failed", exc_info=exc)
                 return
 
+    def _read_current(self) -> str | None:
+        with self._lock:
+            path = self.path
+        if path is None:
+            return None
+        try:
+            value = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            return None
+        return value if is_valid_codex_auth(value) else None
+
     def _read_stable(self, *, attempts: int) -> str | None:
-        path = self.path
+        with self._lock:
+            path = self.path
         if path is None:
             return None
         for attempt in range(attempts):
@@ -240,14 +251,16 @@ class _CodexAuthLifecycle:
 
     def _sync_value(self, value: str) -> None:
         digest = self._digest(value)
-        if digest == self._local_digest:
-            return
+        with self._lock:
+            if digest == self._local_digest:
+                return
         self._track(value)
         logger.info(
             "credential_binding_rotation_detected",
             extra={"credential": self.secret_name},
         )
-        expected_version = self._expected_version
+        with self._lock:
+            expected_version = self._expected_version
         if expected_version is None:
             raise CredentialSyncError("Credential binding was not initialized.")
         error: CredentialSyncError | None = None
@@ -266,8 +279,9 @@ class _CodexAuthLifecycle:
                 error = exc
                 resolved = self._load_after_ambiguous_write()
                 if resolved is not None and resolved.value == value:
-                    self._expected_version = resolved.version
-                    self._local_digest = digest
+                    with self._lock:
+                        self._expected_version = resolved.version
+                        self._local_digest = digest
                     logger.info(
                         "credential_binding_replace",
                         extra={"credential": self.secret_name, "outcome": "converged"},
@@ -282,8 +296,9 @@ class _CodexAuthLifecycle:
                     raise CredentialSyncError(
                         "Credential source returned an invalid version."
                     )
-                self._expected_version = successor
-                self._local_digest = digest
+                with self._lock:
+                    self._expected_version = successor
+                    self._local_digest = digest
                 logger.info(
                     "credential_binding_replace",
                     extra={"credential": self.secret_name, "outcome": "success"},
@@ -309,10 +324,13 @@ class _CodexAuthLifecycle:
             return None
 
     def _track(self, value: str) -> None:
-        registry = self._registry
+        digest = self._digest(value)
+        with self._lock:
+            if digest in self._tracked_digests:
+                return
+            registry = self._registry
         if registry is None:
             return
-        digest = self._digest(value)
         mask_name = f"{self.secret_name}.{digest}"
         exported_values = {mask_name: value}
         try:
@@ -329,14 +347,25 @@ class _CodexAuthLifecycle:
             raise CredentialSyncError(
                 "Rotated credentials could not be registered for masking."
             ) from exc
+        with self._lock:
+            self._tracked_digests.add(digest)
 
-    def _set_error(self, error: CredentialSyncError) -> None:
-        if self._error is None:
-            self._error = error
+    def _track_if_changed(self, value: str) -> None:
+        digest = self._digest(value)
+        with self._lock:
+            if digest == self._local_digest:
+                return
+        self._track(value)
+
+    def _set_error(self, error: CredentialBindingError) -> None:
+        with self._lock:
+            if self._error is None:
+                self._error = error
 
     def _raise_sticky_error(self) -> None:
-        if self._error is not None:
-            raise self._error
+        with self._lock:
+            if self._error is not None:
+                raise self._error
 
     @staticmethod
     def _digest(value: str) -> str:

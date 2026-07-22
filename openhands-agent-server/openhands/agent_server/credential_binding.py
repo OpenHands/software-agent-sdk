@@ -62,7 +62,11 @@ class LocalVersionedCredentialBinding:
                 expected_version,
                 value,
             )
-        except (KeyError, ValueError) as exc:
+        except KeyError as exc:
+            raise CredentialNeedsReauthentication(
+                "ChatGPT authentication is missing. Please sign in again."
+            ) from exc
+        except ValueError as exc:
             raise CredentialConflict(
                 "The canonical credential changed in another runtime."
             ) from exc
