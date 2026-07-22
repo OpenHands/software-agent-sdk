@@ -110,7 +110,7 @@ from openhands.sdk.llm.utils.image_inline import (
 from openhands.sdk.llm.utils.image_resize import maybe_resize_messages_for_provider
 from openhands.sdk.llm.utils.litellm_provider import infer_litellm_provider
 from openhands.sdk.llm.utils.metrics import Metrics
-from openhands.sdk.llm.utils.model_features import get_features
+from openhands.sdk.llm.utils.model_features import ModelFeatures, get_features
 from openhands.sdk.llm.utils.openhands_provider import (
     LiteLLMCallKwargs,
     canonicalize_openhands_llm_payload,
@@ -373,6 +373,25 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "will be used for capability lookups."
         ),
     )
+    api_mode: Literal["auto", "chat", "responses"] = Field(
+        default="auto",
+        description=(
+            "LLM API endpoint mode. 'auto' resolves from model metadata and "
+            "SDK fallbacks; use 'chat' or 'responses' to override endpoint "
+            "selection for proxy aliases and newly released models."
+        ),
+    )
+    capability_overrides: dict[str, bool | str] = Field(
+        default_factory=dict,
+        description=(
+            "Explicit model capability overrides. Supported keys include "
+            "supports_reasoning_effort, thinking_mode (adaptive, manual, none, "
+            "or unknown), supports_sampling_params, supports_prompt_cache, "
+            "supports_stop_words, supports_responses_api, and "
+            "supports_prompt_cache_retention. Overrides take precedence over "
+            "LiteLLM metadata and SDK fallbacks."
+        ),
+    )
     extra_headers: dict[str, str] | None = Field(
         default=None,
         description="Optional HTTP headers to forward to LiteLLM requests.",
@@ -460,12 +479,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "nothing to inline."
         ),
     )
-    reasoning_effort: Literal["low", "medium", "high", "xhigh", "none"] | None = Field(
+    reasoning_effort: str | None = Field(
         default="high",
-        description="The effort to put into reasoning. "
-        "This is a string that can be one of 'low', 'medium', 'high', 'xhigh', "
-        "or 'none'. "
-        "Can apply to all reasoning models.",
+        min_length=1,
+        description=(
+            "Provider-neutral reasoning effort. Common values include 'none', "
+            "'minimal', 'low', 'medium', 'high', 'xhigh', and 'max'. The SDK "
+            "accepts future provider values and lets LiteLLM translate them."
+        ),
     )
     reasoning_summary: Literal["auto", "concise", "detailed"] | None = Field(
         default=None,
@@ -489,8 +510,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     )
     extended_thinking_budget: int | None = Field(
         default=200_000,
-        description="The budget tokens for extended thinking, "
-        "supported by Anthropic models.",
+        description=(
+            "Legacy token budget for models confirmed to use manual Anthropic "
+            "extended thinking. Ignored for adaptive-thinking models. Prefer "
+            "reasoning_effort for new integrations."
+        ),
     )
     seed: int | None = Field(
         default=None,
@@ -2248,6 +2272,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """Return canonical name for capability lookups (e.g., vision support)."""
         return self.model_canonical_name or self.model
 
+    def _model_features(self) -> ModelFeatures:
+        """Resolve capabilities consistently for every request path."""
+        return get_features(
+            self._model_name_for_capabilities(),
+            model_info=self._model_info,
+            overrides=self.capability_overrides,
+        )
+
     def _provider_has_joint_token_budget(self) -> bool:
         """Whether the provider enforces input + max_tokens <= context_window.
 
@@ -2516,18 +2548,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         if not self.caching_prompt:
             return False
-        # We don't need to look up model_info because explicit caching
-        # breakpoint support is tracked in the local feature table.
-        return (
-            self.caching_prompt
-            and get_features(self._model_name_for_capabilities()).supports_prompt_cache
-        )
+        return self.caching_prompt and self._model_features().supports_prompt_cache
 
     def uses_responses_api(self) -> bool:
         """Whether this model uses the OpenAI Responses API path."""
 
-        # by default, uses = supports
-        return get_features(self._model_name_for_capabilities()).supports_responses_api
+        if self.api_mode != "auto":
+            return self.api_mode == "responses"
+        return self._model_features().supports_responses_api
 
     @property
     def model_info(self) -> dict | None:
@@ -2589,9 +2617,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """Resolve whether http(s) image URLs must be downloaded and inlined."""
         if self.inline_image_urls is not None:
             return self.inline_image_urls
-        return get_features(
-            self._model_name_for_capabilities()
-        ).requires_inline_image_data
+        return self._model_features().requires_inline_image_data
 
     def _begin_chat_messages(
         self, messages: list[Message]
@@ -2627,7 +2653,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         return messages
 
     def _to_chat_dicts(self, messages: list[Message]) -> list[dict]:
-        model_features = get_features(self._model_name_for_capabilities())
+        model_features = self._model_features()
         cache_enabled = self.is_caching_prompt_active()
         vision_enabled = self.vision_is_active()
         function_calling_enabled = self.native_tool_calling

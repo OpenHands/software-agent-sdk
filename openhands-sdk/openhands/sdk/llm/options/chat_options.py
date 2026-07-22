@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from openhands.sdk.llm.options.common import apply_defaults_if_absent
-from openhands.sdk.llm.utils.model_features import get_features
 
 
 if TYPE_CHECKING:
@@ -48,21 +47,31 @@ def select_chat_options(
         existing = out.get("extra_headers") or {}
         out["extra_headers"] = {**openrouter_headers, **existing}
 
-    # Reasoning-model quirks
-    supports_reasoning_effort = get_features(llm.model).supports_reasoning_effort
+    model_features = llm._model_features()
+
+    # Reasoning is expressed in provider-neutral terms. LiteLLM owns the
+    # provider-specific translation (for example adaptive Anthropic thinking).
+    supports_reasoning_effort = model_features.supports_reasoning_effort
     if supports_reasoning_effort:
         # LiteLLM automatically handles reasoning_effort for all models, including
         # Claude Opus 4.5 (maps to output_config and adds beta header automatically)
         if llm.reasoning_effort is not None:
             out["reasoning_effort"] = llm.reasoning_effort
 
-        # All reasoning models ignore temp/top_p, except Gemini
-        if "gemini" not in llm.model.lower():
-            out.pop("temperature", None)
-            out.pop("top_p", None)
+    model_name = llm._model_name_for_capabilities()
+    if model_features.supports_sampling_params is False or (
+        supports_reasoning_effort and "gemini" not in model_name.lower()
+    ):
+        # Sampling compatibility is a single capability. Keep all three
+        # related parameters together so a newly restricted model cannot fail
+        # because top_k survived while temperature/top_p were removed.
+        out.pop("temperature", None)
+        out.pop("top_p", None)
+        out.pop("top_k", None)
 
-    # Extended thinking models
-    if get_features(llm.model).supports_extended_thinking:
+    # Preserve legacy manual thinking only for models that metadata (or an
+    # explicit override) does not identify as adaptive.
+    if model_features.thinking_mode == "manual":
         if llm.extended_thinking_budget and max_output_tokens:
             # Anthropic throws errors if thinking budget equals or exceeds max output
             # tokens -- force the thinking budget lower if there's a conflict
@@ -86,6 +95,7 @@ def select_chat_options(
         # Anthropic models ignore temp/top_p
         out.pop("temperature", None)
         out.pop("top_p", None)
+        out.pop("top_k", None)
 
     # Tools: if not using native, strip tool_choice so we don't confuse providers
     if not has_tools:
@@ -93,10 +103,7 @@ def select_chat_options(
         out.pop("tool_choice", None)
 
     # Send prompt_cache_retention only if model supports it
-    if (
-        get_features(llm.model).supports_prompt_cache_retention
-        and llm.prompt_cache_retention
-    ):
+    if model_features.supports_prompt_cache_retention and llm.prompt_cache_retention:
         out["prompt_cache_retention"] = llm.prompt_cache_retention
 
     # Pass through user-provided extra_body unchanged

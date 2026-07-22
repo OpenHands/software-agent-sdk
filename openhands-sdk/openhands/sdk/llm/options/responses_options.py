@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from openhands.sdk.llm.options.common import apply_defaults_if_absent
-from openhands.sdk.llm.utils.model_features import get_features
 
 
 if TYPE_CHECKING:
@@ -26,10 +25,14 @@ def select_responses_options(
         defaults["max_output_tokens"] = llm.effective_max_output_tokens
     out = apply_defaults_if_absent(user_kwargs, defaults)
 
-    # Enforce sampling/tool behavior for Responses path
-    # Note: temperature is not supported in subscription mode
-    if not llm.is_subscription:
-        out["temperature"] = 1.0
+    model_features = llm._model_features()
+
+    # Sampling behavior for the Responses path follows the same capability
+    # metadata as chat. Do not invent a temperature for a newly released model.
+    if not llm.is_subscription and model_features.supports_sampling_params is False:
+        out.pop("temperature", None)
+    elif not llm.is_subscription and llm.temperature is not None:
+        out.setdefault("temperature", llm.temperature)
     out["tool_choice"] = "auto"
 
     # If user didn't set extra_headers, propagate from llm config
@@ -49,8 +52,6 @@ def select_responses_options(
         out["store"] = bool(store)
     else:
         out.setdefault("store", False)
-
-    model_features = get_features(llm._model_name_for_capabilities())
 
     # Include encrypted reasoning only when the user enables it on the LLM,
     # and only for stateless calls (store=False). Respect user choice.

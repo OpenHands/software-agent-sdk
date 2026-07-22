@@ -8,11 +8,8 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-07-15T09:38:06.649011Z"
+exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
 exclude-newer-span = "P7D"
-
-[options.exclude-newer-package]
-litellm = "2026-05-22T00:00:00Z"
 
 [manifest]
 members = [
@@ -23,7 +20,7 @@ members = [
 ]
 constraints = [
     { name = "aiohttp", specifier = ">=3.13.3" },
-    { name = "litellm", specifier = "==1.84.1" },
+    { name = "litellm", specifier = "==1.92.0" },
     { name = "lupa", specifier = ">=2.8" },
     { name = "orjson", specifier = ">=3.11.7" },
     { name = "pillow", specifier = ">=12.1.1" },
@@ -2065,7 +2062,7 @@ wheels = [
 
 [[package]]
 name = "litellm"
-version = "1.84.1"
+version = "1.92.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -2081,9 +2078,12 @@ dependencies = [
     { name = "tiktoken" },
     { name = "tokenizers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/7c/9e/ec7d92a10f3aacc7184c5531d67adc20ec0bfb180d6577fb68dc2e6f18f7/litellm-1.84.1.tar.gz", hash = "sha256:2d01b146e5206e49d1bccc224d31afc37b41b275823c27184b81afaba90464c3", size = 15105765, upload-time = "2026-05-21T02:08:02.742Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/46/ea/5522be7e0dbcaa7c3fddfd2834f387c6e8eab47c0cc65f2a74657c815af7/litellm-1.92.0.tar.gz", hash = "sha256:773adf5503ee1793289689c899394a83df8122993760d9acd782e32aa798db9d", size = 15098143, upload-time = "2026-07-12T01:15:59.828Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1d/b0/11913b4b4d02f1fde11a2331b4122b090bd635a79cedbeeb70ef4f8f03b9/litellm-1.84.1-py3-none-any.whl", hash = "sha256:1f39e2d2d134bc0570577df846a987547efafd3c70765b00a83c456318fcdbe8", size = 16736900, upload-time = "2026-05-21T02:07:59.059Z" },
+    { url = "https://files.pythonhosted.org/packages/cf/26/8061907b67aa04b7cdf2a41cbc4f8aebfbc722c909a7e4b2aea25def7053/litellm-1.92.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:9c7b2849591a35f7039dc7386a81a8e68fccb5ac2fecaa5122192c1172556b29", size = 19291180, upload-time = "2026-07-12T01:15:48.728Z" },
+    { url = "https://files.pythonhosted.org/packages/ba/6c/dc9b0b580ee8af9117abd729d1de25d74fae487a0029ca77049a09f3ad33/litellm-1.92.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:f17499155366afd1eaaeb6fd0c7b55cbd2239dcd72f2fe1f8071a969cc402fae", size = 19289559, upload-time = "2026-07-12T01:15:51.376Z" },
+    { url = "https://files.pythonhosted.org/packages/10/34/1671376f228443330471416e24ee51bc8364c0ae6155d4ec6217b70a4753/litellm-1.92.0-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:437a0e403136996430795ead76502103dcf74769b6909e12d3e2511061ea8ff8", size = 19291560, upload-time = "2026-07-12T01:15:54.66Z" },
+    { url = "https://files.pythonhosted.org/packages/3d/4f/141cf1162eeee762fc839c335e3f78fc309a65f2385023479a20b09e680a/litellm-1.92.0-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:8f03047a73154f33c2733899e4bf9b5ed129e2e345caa305895a318452e4a807", size = 19289770, upload-time = "2026-07-12T01:15:57.136Z" },
 ]
 
 [[package]]
@@ -2783,7 +2783,7 @@ requires-dist = [
     { name = "google-cloud-aiplatform", marker = "extra == 'vertex'", specifier = ">=1.38" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
     { name = "joserfc", specifier = ">=1.0.0" },
-    { name = "litellm", specifier = ">=1.84.1" },
+    { name = "litellm", specifier = ">=1.92.0" },
     { name = "lmnr", specifier = ">=0.7.56,<0.8.0" },
     { name = "pillow", specifier = ">=12.1.1" },
     { name = "pydantic", specifier = ">=2.12.5" },
