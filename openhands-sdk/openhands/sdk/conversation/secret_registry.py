@@ -7,6 +7,10 @@ from pydantic import Field, PrivateAttr, SecretStr
 from openhands.sdk.logger import get_logger
 from openhands.sdk.secret import SecretSource, SecretValue, StaticSecret
 from openhands.sdk.utils.models import OpenHandsModel
+from openhands.sdk.utils.redact import (
+    redact_api_key_literals,
+    redact_url_credentials_in_text,
+)
 
 
 logger = get_logger(__name__)
@@ -148,6 +152,12 @@ class SecretRegistry(OpenHandsModel):
         # First, mask using currently exported values (always available)
         for value in self._exported_values.values():
             masked_text = masked_text.replace(value, "<secret-hidden>")
+
+        # Always scrub bare key literals and URL-embedded credentials (e.g.
+        # `git remote -v` showing https://ghu_...@github.com/...), even when the
+        # secret was not registered in this conversation.
+        masked_text = redact_api_key_literals(masked_text)
+        masked_text = redact_url_credentials_in_text(masked_text)
 
         return masked_text
 
