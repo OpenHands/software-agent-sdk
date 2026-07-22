@@ -49,6 +49,7 @@ from openhands.sdk.mcp.config import dump_mcp_config
 from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.security.risk import SecurityRisk
+from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal.definition import TerminalAction, TerminalObservation
@@ -215,6 +216,71 @@ async def test_start_conversation_registers_and_injects_client_tools(
     from openhands.sdk.tool.registry import list_registered_tools
 
     assert "srv_show_dialog" in list_registered_tools()
+
+
+@pytest.mark.asyncio
+async def test_start_conversation_passes_cipher_to_subagent_factory(
+    conversation_service, tmp_path
+):
+    cipher = Cipher("subagent-profile-test-key")
+    conversation_service.cipher = cipher
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    agent_def = AgentDefinition(name="profile-subagent")
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+        agent_definitions=[agent_def],
+    )
+
+    async def fake_start_event_service(stored: StoredConversation):
+        service = AsyncMock(spec=EventService)
+        service.stored = stored
+        service.get_state.return_value = ConversationState(
+            id=stored.id,
+            agent=stored.agent,
+            workspace=stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=stored.confirmation_policy,
+        )
+        return service
+
+    with (
+        patch.object(
+            conversation_service,
+            "_start_event_service",
+            side_effect=fake_start_event_service,
+        ),
+        patch(
+            "openhands.sdk.subagent.registry.agent_definition_to_factory"
+        ) as mock_factory,
+        patch("openhands.sdk.subagent.registry.register_agent_if_absent"),
+    ):
+        await conversation_service.start_conversation(request)
+
+    mock_factory.assert_called_once_with(agent_def, cipher=cipher)
+
+
+def test_prepare_persisted_runtime_passes_cipher_to_subagent_factory(
+    conversation_service, sample_stored_conversation
+):
+    cipher = Cipher("subagent-profile-test-key")
+    conversation_service.cipher = cipher
+    agent_def = AgentDefinition(name="profile-subagent")
+    stored = sample_stored_conversation.model_copy(
+        update={"agent_definitions": [agent_def]}
+    )
+
+    with (
+        patch(
+            "openhands.sdk.subagent.registry.agent_definition_to_factory"
+        ) as mock_factory,
+        patch("openhands.sdk.subagent.registry.register_agent_if_absent"),
+    ):
+        conversation_service._prepare_persisted_runtime(stored)
+
+    mock_factory.assert_called_once_with(agent_def, cipher=cipher)
 
 
 @pytest.mark.asyncio
