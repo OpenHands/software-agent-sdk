@@ -845,9 +845,10 @@ def _mask_json_value(value: Any, mask: Callable[[str], str]) -> Any:
 
     ACP tool-call ``raw_input`` / ``raw_output`` / ``content`` blocks are
     arbitrary JSON (a bare string, a dict of params, a list of content
-    blocks). ``SecretRegistry.mask_secrets_in_output`` is a pure string op,
-    so walk the structure and mask each leaf string; non-string leaves
-    (ints, bools, ``None``) pass through unchanged.
+    blocks). ``SecretRegistry.mask_secrets_in_output`` maps a string to a
+    string, so walk the structure and mask each leaf string; non-string leaves
+    (ints, bools, ``None``) pass through unchanged. It resolves uncached
+    sources on first use, so this is not free.
     """
     if isinstance(value, str):
         return mask(value)
@@ -1196,7 +1197,8 @@ class _OpenHandsACPBridge:
         Defensive: on mask failure, returns the original value unchanged and
         logs at DEBUG — this may transiently leak the credential but prevents a
         crash, matching the regular terminal tool's masking contract. (Masking
-        is a pure ``str.replace`` and should never raise in practice.)
+        swallows secret-resolution errors internally, so it should never raise
+        in practice.)
         """
         if self.mask is None:
             return value
@@ -2335,8 +2337,8 @@ class ACPAgent(AgentBase):
         client = _OpenHandsACPBridge()
         self._client = client
         # Bind the secret masker for the conversation's lifetime. It's derived
-        # from state.secret_registry (stable for the conversation) and is a pure
-        # read of _exported_values, so it has none of the cross-thread/state-lock
+        # from state.secret_registry (stable for the conversation) and touches
+        # only that registry, so it has none of the cross-thread/state-lock
         # hazards that make on_event/on_token strictly per-turn. Binding it here
         # (rather than per-turn in _reset_client_for_turn) keeps it available for
         # session updates AND for ask_agent() forks, which run on the shared
