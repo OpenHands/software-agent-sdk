@@ -30,6 +30,7 @@ from openhands.sdk.credential import (
     CredentialNeedsReauthentication,
     CredentialSyncError,
     HttpVersionedCredentialBinding,
+    ResolvedCredential,
 )
 from openhands.sdk.secret import StaticSecret
 from openhands.sdk.workspace import LocalWorkspace
@@ -158,21 +159,45 @@ def test_activation_route_installs_http_binding(tmp_path) -> None:
     app.include_router(router, prefix="/api")
     conversation_id = uuid4()
 
-    response = TestClient(app).put(
-        f"/api/conversations/{conversation_id}/credential-bindings/CODEX_AUTH_JSON",
-        json={
-            "url": "https://app.test/api/credential",
-            "headers": {
-                "Authorization": "Bearer scoped",
+    load = AsyncMock(return_value=ResolvedCredential(value="credential", version="v1"))
+    with patch.object(HttpVersionedCredentialBinding, "load", load):
+        response = TestClient(app).put(
+            f"/api/conversations/{conversation_id}/credential-bindings/CODEX_AUTH_JSON",
+            json={
+                "url": "https://app.test/api/credential",
+                "headers": {
+                    "Authorization": "Bearer scoped",
+                },
             },
-        },
-    )
+        )
 
     assert response.status_code == 204
+    load.assert_awaited_once()
     binding = service._credential_bindings[conversation_id]["CODEX_AUTH_JSON"]
     assert isinstance(binding, HttpVersionedCredentialBinding)
     assert binding.url == "https://app.test/api/credential"
     assert binding.headers == {"Authorization": "Bearer scoped"}
+
+
+def test_activation_route_rejects_unreachable_binding(tmp_path) -> None:
+    service = ConversationService(conversations_dir=tmp_path / "conversations")
+    app = FastAPI()
+    app.state.conversation_service = service
+    app.include_router(router, prefix="/api")
+    conversation_id = uuid4()
+
+    load = AsyncMock(side_effect=CredentialSyncError("unavailable"))
+    with patch.object(HttpVersionedCredentialBinding, "load", load):
+        response = TestClient(app).put(
+            f"/api/conversations/{conversation_id}/credential-bindings/CODEX_AUTH_JSON",
+            json={
+                "url": "https://app.test/api/credential",
+                "headers": {"Authorization": "Bearer scoped"},
+            },
+        )
+
+    assert response.status_code == 502
+    assert conversation_id not in service._credential_bindings
 
 
 @pytest.mark.asyncio

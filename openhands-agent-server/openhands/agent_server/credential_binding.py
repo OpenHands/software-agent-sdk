@@ -11,6 +11,7 @@ from openhands.agent_server.event_service import CredentialBindingActivationTooL
 from openhands.agent_server.persistence import FileSecretsStore
 from openhands.sdk.agent.acp_file_credentials import supports_file_credential_binding
 from openhands.sdk.credential import (
+    CredentialBindingError,
     CredentialConflict,
     CredentialNeedsReauthentication,
     CredentialSyncError,
@@ -90,18 +91,25 @@ async def activate_credential_binding(
 ) -> Response:
     if not supports_file_credential_binding(secret_name):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
+    binding = HttpVersionedCredentialBinding(
+        activation.url,
+        activation.headers,
+    )
     try:
+        await binding.load()
         await request.app.state.conversation_service.activate_credential_binding(
             conversation_id,
             secret_name,
-            HttpVersionedCredentialBinding(
-                activation.url,
-                activation.headers,
-            ),
+            binding,
         )
     except CredentialBindingActivationTooLate as exc:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             "Credential binding activation arrived after ACP initialization",
+        ) from exc
+    except CredentialBindingError as exc:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            "Credential binding source is unavailable",
         ) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)
