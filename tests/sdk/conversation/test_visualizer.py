@@ -9,6 +9,7 @@ from typing import IO, TYPE_CHECKING, Self, cast
 from unittest.mock import MagicMock
 
 from pydantic import Field
+from rich.console import Group
 from rich.text import Text
 
 from openhands.sdk.conversation.conversation_stats import ConversationStats
@@ -146,6 +147,17 @@ def create_tool_call(
         arguments=json.dumps(arguments),
         origin="completion",
     )
+
+
+def subtitle_of(block: Group | None) -> str | None:
+    """Extract the rendered metrics subtitle (markup stripped) from an event
+    block, or None if the block has no metrics subtitle."""
+    if block is None:
+        return None
+    for renderable in block.renderables:
+        if isinstance(renderable, Text) and renderable.plain.startswith("Tokens:"):
+            return renderable.plain
+    return None
 
 
 def test_action_base_visualize():
@@ -849,6 +861,100 @@ def test_metrics_subtitle_user_message_labels_totals():
         "[blue]↓ output (total 100)[/blue] • "
         "[green]$ (total 0.00)[/green]"
     )
+
+
+def _batch_action_event(call_id: str, response_id: str) -> ActionEvent:
+    """Build an ActionEvent for a given tool call and LLM response."""
+    return ActionEvent(
+        thought=[TextContent(text="Testing")],
+        action=VisualizerMockAction(command="test"),
+        tool_name="test",
+        tool_call_id=call_id,
+        tool_call=create_tool_call(call_id, "test", {}),
+        llm_response_id=response_id,
+    )
+
+
+def test_claim_batch_primary_tracks_consecutive_batches():
+    """Parallel tool calls share one llm_response_id and render consecutively;
+    only the first ActionEvent of each batch claims the per-request metrics
+    (#4189). Detection tracks just the previous response id -- O(1), no scan --
+    so it must be called once per event in render order."""
+    visualizer = DefaultConversationVisualizer()
+
+    a1 = _batch_action_event("call_1", "resp_batch")
+    a2 = _batch_action_event("call_2", "resp_batch")
+    a3 = _batch_action_event("call_3", "resp_batch")
+    b1 = _batch_action_event("call_4", "resp_other")
+    b2 = _batch_action_event("call_5", "resp_other")
+
+    # First ActionEvent of each response id is its batch's primary.
+    assert visualizer._claim_batch_primary(a1) is True
+    assert visualizer._claim_batch_primary(a2) is False
+    assert visualizer._claim_batch_primary(a3) is False
+    # A new response id starts a new batch -> primary again.
+    assert visualizer._claim_batch_primary(b1) is True
+
+    # Non-ActionEvents never form tool-call batches and never disturb tracking:
+    # the resp_other sibling after them is still detected.
+    user_event = MessageEvent(
+        source="user",
+        llm_message=Message(role="user", content=[TextContent(text="hi")]),
+    )
+    assert visualizer._claim_batch_primary(user_event) is True
+    assert visualizer._claim_batch_primary(b2) is False
+
+
+def test_parallel_batch_only_primary_shows_per_request():
+    """End-to-end through _create_event_block: in a parallel tool-call batch
+    (shared llm_response_id) only the first event shows per-request numbers;
+    siblings fall back to totals-only so the shared usage isn't repeated N
+    times (#4189)."""
+    stats = ConversationStats()
+    metrics = Metrics(model_name="test-model")
+    # A prior request, so the running total (3K/300) differs from this batch's
+    # per-request usage (2K/200) and the two are distinguishable in the output.
+    metrics.add_token_usage(
+        prompt_tokens=1000,
+        completion_tokens=100,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        reasoning_tokens=0,
+        context_window=8000,
+        response_id="resp_prev",
+    )
+    metrics.add_token_usage(
+        prompt_tokens=2000,
+        completion_tokens=200,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        reasoning_tokens=0,
+        context_window=8000,
+        response_id="resp_batch",
+    )
+    stats.usage_to_metrics["agent"] = metrics
+
+    a1 = _batch_action_event("call_1", "resp_batch")
+    a2 = _batch_action_event("call_2", "resp_batch")
+    a3 = _batch_action_event("call_3", "resp_batch")
+
+    visualizer = DefaultConversationVisualizer()
+    mock_state = MagicMock()
+    mock_state.stats = stats
+    visualizer.initialize(mock_state)
+
+    # Rendered in stream order. Primary: per-request numbers alongside the total.
+    assert subtitle_of(visualizer._create_event_block(a1)) == (
+        "Tokens: ↑ input 2K (total 3K) • cache hit 0.00% (total 0.00%) • "
+        "↓ output 200 (total 300) • $ (total 0.00)"
+    )
+    # Siblings: totals-only, so the same 2K/200 isn't shown three times.
+    sibling = (
+        "Tokens: ↑ input (total 3K) • cache hit (total 0.00%) • "
+        "↓ output (total 300) • $ (total 0.00)"
+    )
+    assert subtitle_of(visualizer._create_event_block(a2)) == sibling
+    assert subtitle_of(visualizer._create_event_block(a3)) == sibling
 
 
 def test_event_base_fallback_visualize():
