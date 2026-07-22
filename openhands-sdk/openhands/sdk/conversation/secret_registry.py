@@ -2,6 +2,7 @@
 
 import time
 from collections.abc import Collection, Mapping
+from typing import Final
 
 from pydantic import Field, PrivateAttr, SecretStr
 
@@ -12,10 +13,8 @@ from openhands.sdk.utils.models import OpenHandsModel
 
 logger = get_logger(__name__)
 
-# How long masking waits before retrying a source that failed to resolve.
-# A failed lookup yields no value to mask with, so backing off costs no
-# masking coverage — only a delay in picking a recovered source back up.
-FAILED_LOOKUP_RETRY_SECONDS = 60.0
+# Back-off before retrying a failed source; a failed lookup masks nothing anyway.
+FAILED_LOOKUP_RETRY_SECONDS: Final[float] = 60.0
 
 
 class SecretRegistry(OpenHandsModel):
@@ -140,9 +139,8 @@ class SecretRegistry(OpenHandsModel):
 
         Masks the last resolved value of every registered secret, not only the
         exported ones: a value can reach the output without the command ever
-        referencing the secret's name (e.g. a token in a git remote URL printed
-        by `git remote -v`). Already-cached values are not re-resolved, so a
-        rotated secret keeps masking its previous value, not its current one.
+        referencing its name (e.g. a token in a git remote URL). Cached values
+        are not re-resolved, so a rotated secret masks its previous value.
 
         Args:
             text: The text to mask secrets in
@@ -153,10 +151,8 @@ class SecretRegistry(OpenHandsModel):
         if not text:
             return text
 
-        # Resolve uncached sources; get_secret_value swallows failures. Sources
-        # that fail back off for FAILED_LOOKUP_RETRY_SECONDS: get_value() may do
-        # blocking network I/O (LookupSecret), and masking runs per tool output
-        # and per streamed ACP chunk.
+        # Resolve uncached sources, backing off on failure: get_value() may do
+        # blocking network I/O and masking runs per output and per ACP chunk.
         now = time.monotonic()
         for key in list(self.secret_sources):
             if key in self._exported_values:

@@ -404,11 +404,7 @@ def test_mask_secrets_tolerates_failing_source():
 
 
 def test_mask_secrets_backs_off_failing_source():
-    """A failing source is retried once per window, not on every mask call.
-
-    get_value() may do blocking network I/O (LookupSecret), and masking runs
-    per tool output and per streamed ACP chunk.
-    """
+    """A failing source is retried once per window, not on every mask call."""
     secret_registry = SecretRegistry()
     secret_registry.update_secrets({"FAILING_SECRET": MyCountingFailingSource()})
 
@@ -417,7 +413,7 @@ def test_mask_secrets_backs_off_failing_source():
         secret_registry.mask_secrets_in_output("unrelated output")
     assert MyCountingFailingSource.attempts == 1
 
-    # Once the window has elapsed, the source is retried again.
+    # Window elapsed: retried again.
     secret_registry._failed_lookups["FAILING_SECRET"] -= FAILED_LOOKUP_RETRY_SECONDS
     secret_registry.mask_secrets_in_output("unrelated output")
     assert MyCountingFailingSource.attempts == 2
