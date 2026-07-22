@@ -606,6 +606,13 @@ class LocalConversation(BaseConversation):
     def conversation_stats(self):
         return self._state.stats
 
+    def _latest_user_message_id(self) -> str | None:
+        """Id of the most recent user message, or None if there is none yet."""
+        for event in reversed(self._state.active_branch()):
+            if isinstance(event, MessageEvent) and event.source == "user":
+                return event.id
+        return None
+
     def _budget_exceeded_detail(self) -> str | None:
         """Error detail if the run has hit its cost budget, else None.
 
@@ -2095,6 +2102,7 @@ class LocalConversation(BaseConversation):
                         # worker threads skip re-acquiring it instead of
                         # deadlocking while this await holds it (#3485).
                         self._step_holds_state_lock = True
+                        last_user_message_id = self._latest_user_message_id()
                         try:
                             await self.agent.astep(
                                 self,
@@ -2104,6 +2112,32 @@ class LocalConversation(BaseConversation):
                         finally:
                             self._step_holds_state_lock = False
                         iteration += 1
+
+                        # astep releases the state lock for the LLM call, so a
+                        # message can land mid-step with status still RUNNING and
+                        # go unrecorded; without this rescan the loop breaks on
+                        # FINISHED with it unread (agent-canvas#1900). Mirrors the
+                        # ACP branch's rescan below.
+                        if (
+                            self._state.execution_status
+                            == ConversationExecutionStatus.FINISHED
+                            and self._latest_user_message_id() != last_user_message_id
+                        ):
+                            if iteration >= self.max_iteration_per_run:
+                                logger.info(
+                                    "User message arrived during final iteration; "
+                                    "leaving conversation idle for a follow-up run"
+                                )
+                                self._state.execution_status = (
+                                    ConversationExecutionStatus.IDLE
+                                )
+                                break
+                            logger.info(
+                                "User message arrived during step; continuing run"
+                            )
+                            self._state.execution_status = (
+                                ConversationExecutionStatus.RUNNING
+                            )
 
                         if (
                             self.state.execution_status
