@@ -337,3 +337,56 @@ def test_get_secret_value_missing_not_tracked():
     result = secret_registry.get_secret_value("NONEXISTENT")
     assert result is None
     assert "NONEXISTENT" not in secret_registry._exported_values
+
+
+def test_mask_secrets_without_name_reference_in_command():
+    """A secret value is masked even if no command ever referenced its name.
+
+    A token embedded in a git remote URL is printed by `git remote -v`, a
+    command that contains no secret name, so nothing gets exported by the
+    name-scan. The value must still be masked.
+    """
+    token = "github_pat_REALSECRETVALUE123"
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets({"github_token": token})
+
+    # The name-scan exports nothing: the command does not mention the name.
+    assert secret_registry.get_secrets_as_env_vars("git remote -v") == {}
+
+    output = f"origin\thttps://{token}@github.com/repo/test.git (fetch)"
+    masked = secret_registry.mask_secrets_in_output(output)
+    assert token not in masked
+    assert masked == "origin\thttps://<secret-hidden>@github.com/repo/test.git (fetch)"
+
+
+def test_mask_secrets_survives_serialization_round_trip():
+    """Masking still works after a conversation is persisted and resumed.
+
+    _exported_values is a PrivateAttr and is not serialized, so a restored
+    registry must re-resolve its sources rather than leak in cleartext.
+    """
+    token = "github_pat_REALSECRETVALUE123"
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets({"github_token": token})
+
+    restored = SecretRegistry.model_validate_json(
+        secret_registry.model_dump_json(context={"expose_secrets": True})
+    )
+    assert restored._exported_values == {}
+
+    output = f"origin\thttps://{token}@github.com/repo/test.git (fetch)"
+    assert token not in restored.mask_secrets_in_output(output)
+
+
+def test_mask_secrets_tolerates_failing_source():
+    """A source that fails to resolve is skipped; other secrets still mask."""
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets(
+        {
+            "FAILING_SECRET": MyFailingTokenSource(),
+            "WORKING_SECRET": MyWorkingTokenSource(),
+        }
+    )
+
+    masked = secret_registry.mask_secrets_in_output("leak: working-value")
+    assert masked == "leak: <secret-hidden>"
