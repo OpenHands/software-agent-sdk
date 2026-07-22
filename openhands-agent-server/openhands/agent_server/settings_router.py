@@ -17,6 +17,7 @@ from openhands.agent_server.persistence import (
     get_settings_store,
 )
 from openhands.agent_server.persistence.models import SettingsUpdatePayload
+from openhands.agent_server.telemetry import notify_misc_settings_changed
 from openhands.sdk.logger import get_logger
 from openhands.sdk.settings import (
     ConversationSettings,
@@ -239,6 +240,12 @@ async def update_settings(
                 "misc_settings_modified": "misc_settings_diff" in update_data,
             },
         )
+        # Consent lives in misc_settings.telemetry.consent, so a settings write
+        # is the only way it changes. Re-resolve before returning: a revocation
+        # must stop delivery and discard the queue while the caller is still
+        # waiting, not on the sink's next refresh.
+        if "misc_settings_diff" in update_data:
+            notify_misc_settings_changed(settings.misc_settings)
     except (ValueError, ValidationError):
         # Audit log: validation failed
         # Note: PersistedSettings.update() raises ValueError (sanitized message)
