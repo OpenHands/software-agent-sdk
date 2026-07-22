@@ -186,7 +186,7 @@ async def test_start_conversation_registers_and_injects_client_tools(
 
     captured: dict[str, StoredConversation] = {}
 
-    async def fake_start_event_service(stored: StoredConversation):
+    async def fake_start_event_service(stored: StoredConversation, **_kwargs):
         captured["stored"] = stored
         service = AsyncMock(spec=EventService)
         service.stored = stored
@@ -262,7 +262,7 @@ async def test_start_conversation_decrypts_encrypted_agent_settings_mcp_env(
 
     captured: dict[str, StoredConversation] = {}
 
-    async def fake_start_event_service(stored: StoredConversation):
+    async def fake_start_event_service(stored: StoredConversation, **_kwargs):
         captured["stored"] = stored
         service = AsyncMock(spec=EventService)
         service.stored = stored

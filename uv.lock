@@ -8,7 +8,7 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-07-14T17:21:09.426556Z"
+exclude-newer = "2026-07-15T09:38:06.649011Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -2715,6 +2715,11 @@ dependencies = [
     { name = "wsproto" },
 ]
 
+[package.optional-dependencies]
+posthog = [
+    { name = "posthog" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.19" },
@@ -2723,12 +2728,14 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.104" },
     { name = "openai", specifier = ">=2.33.0,<3" },
     { name = "openhands-sdk", editable = "openhands-sdk" },
+    { name = "posthog", marker = "extra == 'posthog'", specifier = ">=6,<7" },
     { name = "pydantic", specifier = ">=2" },
     { name = "sqlalchemy", specifier = ">=2" },
     { name = "uvicorn", specifier = ">=0.31.1" },
     { name = "websockets", specifier = ">=12" },
     { name = "wsproto", specifier = ">=1.2.0" },
 ]
+provides-extras = ["posthog"]
 
 [[package]]
 name = "openhands-sdk"
