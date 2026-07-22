@@ -823,20 +823,18 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         if self.filter_tools_regex:
             pattern = re.compile(self.filter_tools_regex)
             builtin_classes = tuple(BUILT_IN_TOOL_CLASSES.values())
-            kept = [
+            num_tools = len(tools)
+            tools = [
                 tool
                 for tool in tools
                 if isinstance(tool, builtin_classes) or pattern.match(tool.name)
             ]
-            if len(kept) != len(tools):
-                dropped = sorted(
-                    {tool.name for tool in tools} - {tool.name for tool in kept}
-                )
+            if len(tools) != num_tools:
                 logger.info(
-                    "Filtered out runtime tools not matching filter_tools_regex: %s",
-                    dropped,
+                    "Filtered runtime tools from %d to %d after applying regex filter",
+                    num_tools,
+                    len(tools),
                 )
-            tools = kept
 
         tool_names = [tool.name for tool in tools]
         if len(tool_names) != len(set(tool_names)):

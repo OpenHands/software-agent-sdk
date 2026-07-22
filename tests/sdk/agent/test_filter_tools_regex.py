@@ -4,13 +4,13 @@ The regex must apply both to statically configured tools resolved during
 `_initialize()` and to tools materialized at runtime (e.g. MCP tools) that are
 registered through `add_runtime_tools()`. Built-in default tools are exempt in
 both paths.
-
-Regression tests for https://github.com/OpenHands/software-agent-sdk/issues/4184
 """
 
 import uuid
 from collections.abc import Sequence
 from typing import ClassVar, cast
+
+import pytest
 
 from openhands.sdk import LLM
 from openhands.sdk.agent import Agent
@@ -71,6 +71,29 @@ class _BlockedTool(ToolDefinition[_FilterAction, _FilterObs]):
                 executor=_NoopExec(),
             )
         ]
+
+
+class _DisallowedTool(ToolDefinition[_FilterAction, _FilterObs]):
+    """Name contains 'allow' but not at the start; used for anchor tests."""
+
+    name: ClassVar[str] = "disallowed"
+
+    @classmethod
+    def create(cls, conv_state=None, **params) -> Sequence["_DisallowedTool"]:
+        return [
+            cls(
+                description="disallowed tool",
+                action_type=_FilterAction,
+                observation_type=_FilterObs,
+                executor=_NoopExec(),
+            )
+        ]
+
+
+class _ExemptThinkTool(ThinkTool):
+    """Built-in subclass whose name does not match any test regex."""
+
+    name = "subclassed_think"
 
 
 def _make_agent(**agent_kwargs) -> Agent:
@@ -134,6 +157,82 @@ def test_static_tools_apply_filter_tools_regex(tmp_path):
     _initialize_agent(agent, tmp_path)
 
     assert "allowed" in agent.tools_map
+    assert "blocked" not in agent.tools_map
+
+
+def test_add_runtime_tools_mixed_batch(tmp_path):
+    """One call mixing a built-in, a matching, and a non-matching tool."""
+    agent = _make_agent(filter_tools_regex=r"^allowed$")
+    _initialize_agent(agent, tmp_path)
+
+    think_tool = ThinkTool.create()[0]
+    agent.add_runtime_tools(
+        [_AllowedTool.create()[0], _BlockedTool.create()[0], think_tool]
+    )
+
+    assert "allowed" in agent.tools_map
+    assert think_tool.name in agent.tools_map
+    assert "blocked" not in agent.tools_map
+
+
+def test_add_runtime_tools_all_filtered_is_noop(tmp_path):
+    agent = _make_agent(filter_tools_regex=r"^allowed$")
+    _initialize_agent(agent, tmp_path)
+    before = dict(agent.tools_map)
+
+    agent.add_runtime_tools([_BlockedTool.create()[0]])
+
+    assert agent.tools_map == before
+
+
+def test_filter_uses_prefix_match_semantics(tmp_path):
+    """`re.match` anchors at the start of the name, like `_initialize()`:
+    an unanchored pattern matches a prefix but never mid-name."""
+    agent = _make_agent(filter_tools_regex=r"allow")
+    _initialize_agent(agent, tmp_path)
+
+    agent.add_runtime_tools([_AllowedTool.create()[0], _DisallowedTool.create()[0]])
+
+    assert "allowed" in agent.tools_map
+    assert "disallowed" not in agent.tools_map
+
+
+def test_add_runtime_tools_builtin_subclass_is_exempt(tmp_path):
+    """Subclasses of built-in tools count as built-ins for the exemption."""
+    agent = _make_agent(filter_tools_regex=r"^allowed$")
+    _initialize_agent(agent, tmp_path)
+
+    agent.add_runtime_tools([_ExemptThinkTool.create()[0]])
+
+    assert "subclassed_think" in agent.tools_map
+
+
+def test_add_runtime_tools_duplicate_kept_names_still_raise(tmp_path):
+    """Filtering must not weaken duplicate detection for surviving tools."""
+    agent = _make_agent(filter_tools_regex=r"^allowed$")
+    _initialize_agent(agent, tmp_path)
+
+    with pytest.raises(ValueError, match="Duplicate runtime tool names"):
+        agent.add_runtime_tools([_AllowedTool.create()[0], _AllowedTool.create()[0]])
+
+
+def test_add_runtime_tools_conflict_with_registered_tool_still_raises(tmp_path):
+    agent = _make_agent(filter_tools_regex=r"^allowed$")
+    _initialize_agent(agent, tmp_path)
+    agent.add_runtime_tools([_AllowedTool.create()[0]])
+
+    with pytest.raises(ValueError, match="Duplicate tool names"):
+        agent.add_runtime_tools([_AllowedTool.create()[0]])
+
+
+def test_add_runtime_tools_duplicate_filtered_names_do_not_raise(tmp_path):
+    """Duplicates among filtered-out tools are dropped before the duplicate
+    check, matching `_initialize()` which filters before validating names."""
+    agent = _make_agent(filter_tools_regex=r"^allowed$")
+    _initialize_agent(agent, tmp_path)
+
+    agent.add_runtime_tools([_BlockedTool.create()[0], _BlockedTool.create()[0]])
+
     assert "blocked" not in agent.tools_map
 
 
