@@ -1,6 +1,8 @@
 """Secrets manager for handling sensitive data in conversations."""
 
+import time
 from collections.abc import Collection, Mapping
+from typing import Final
 
 from pydantic import Field, PrivateAttr, SecretStr
 
@@ -10,6 +12,9 @@ from openhands.sdk.utils.models import OpenHandsModel
 
 
 logger = get_logger(__name__)
+
+# Back-off before retrying a failed source; a failed lookup masks nothing anyway.
+FAILED_LOOKUP_RETRY_SECONDS: Final[float] = 60.0
 
 
 class SecretRegistry(OpenHandsModel):
@@ -32,6 +37,7 @@ class SecretRegistry(OpenHandsModel):
 
     secret_sources: dict[str, SecretSource] = Field(default_factory=dict)
     _exported_values: dict[str, str] = PrivateAttr(default_factory=dict)
+    _failed_lookups: dict[str, float] = PrivateAttr(default_factory=dict)
 
     def update_secrets(
         self,
@@ -131,8 +137,10 @@ class SecretRegistry(OpenHandsModel):
     def mask_secrets_in_output(self, text: str) -> str:
         """Mask secret values in the given text.
 
-        This method uses both the current exported values and attempts to get
-        fresh values from callables to ensure comprehensive masking.
+        Masks the last resolved value of every registered secret, not only the
+        exported ones: a value can reach the output without the command ever
+        referencing its name (e.g. a token in a git remote URL). Cached values
+        are not re-resolved, so a rotated secret masks its previous value.
 
         Args:
             text: The text to mask secrets in
@@ -143,10 +151,21 @@ class SecretRegistry(OpenHandsModel):
         if not text:
             return text
 
-        masked_text = text
+        # Resolve uncached sources, backing off on failure: get_value() may do
+        # blocking network I/O and masking runs per output and per ACP chunk.
+        now = time.monotonic()
+        for key in list(self.secret_sources):
+            if key in self._exported_values:
+                continue
+            failed_at = self._failed_lookups.get(key)
+            if failed_at is not None and now - failed_at < FAILED_LOOKUP_RETRY_SECONDS:
+                continue
+            if not self.get_secret_value(key):
+                self._failed_lookups[key] = now
 
-        # First, mask using currently exported values (always available)
-        for value in self._exported_values.values():
+        # Snapshot: other threads may insert while we iterate.
+        masked_text = text
+        for value in list(self._exported_values.values()):
             masked_text = masked_text.replace(value, "<secret-hidden>")
 
         return masked_text
