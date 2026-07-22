@@ -22,6 +22,7 @@ from openhands.sdk.observability.laminar import (
     should_enable_observability,
     start_child_span,
     start_root_span,
+    update_root_span_metadata,
 )
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
@@ -182,6 +183,14 @@ class BaseConversation(ABC):
             end_root_span(self._observability_root_span)
         self._observability_root_span = None
         self._span_ended = True
+
+    def _update_observability_metadata(
+        self, metadata: dict[str, TraceMetadataValue]
+    ) -> None:
+        """Augment the conversation root span's trace metadata."""
+        if not should_enable_observability():
+            return
+        update_root_span_metadata(self._observability_root_span, metadata)
 
     @property
     @abstractmethod

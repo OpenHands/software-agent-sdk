@@ -3,6 +3,8 @@ import atexit
 import contextlib
 import copy
 import json
+import threading
+import time
 import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePath
@@ -47,6 +49,7 @@ from openhands.sdk.event import (
     UserRejectObservation,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
+from openhands.sdk.git.utils import resolve_repo_identity
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
@@ -99,6 +102,8 @@ _RUNTIME_MCP_TIMEOUT_SECS = 30
 ACP_STOP_HOOK_FEEDBACK_PREFIX = "[Stop hook feedback]"
 
 ASK_AGENT_LLM_USAGE_ID: Final[str] = "ask-agent-llm"
+
+_REPO_IDENTITY_PROBE_INTERVAL: Final[float] = 30.0
 
 
 def _agent_already_surfaced_error(events: Sequence[Event], since: int = 0) -> bool:
@@ -334,6 +339,14 @@ class LocalConversation(BaseConversation):
 
         self._bind_conversation_context(self.agent.llm)
 
+        self._repo_identity: dict[str, str] = {}
+        self._repo_probe_lock = threading.Lock()
+        self._repo_probe_execution_lock = threading.Lock()
+        self._repo_probe_running = False
+        self._repo_probe_pending = False
+        self._repo_probe_timer: threading.Timer | None = None
+        self._repo_probe_last_monotonic = 0.0
+
         # Default callback: persist every event to state
         def _default_callback(e):
             # This callback runs while holding the conversation state's lock
@@ -348,6 +361,7 @@ class LocalConversation(BaseConversation):
                 # Track the latest real user message ID for hook-blocked checks.
                 # Stop-hook feedback is emitted with source="environment".
                 self._state.last_user_message_id = e.id
+            self._maybe_probe_repo_identity()
 
         callback_list = list(callbacks) if callbacks else []
         composed_list = callback_list + [_default_callback]
@@ -2361,6 +2375,67 @@ class LocalConversation(BaseConversation):
                 self._cancel_token = None
             self._arun_task = None
 
+    def _maybe_probe_repo_identity(self) -> None:
+        """Schedule a rate-limited repository identity probe."""
+        if self._observability_root_span is None or self._cleanup_initiated:
+            return
+        now = time.monotonic()
+        with self._repo_probe_lock:
+            if self._repo_probe_running or self._repo_probe_timer is not None:
+                self._repo_probe_pending = True
+                return
+            elapsed = now - self._repo_probe_last_monotonic
+            delay = (
+                max(0.0, _REPO_IDENTITY_PROBE_INTERVAL - elapsed)
+                if self._repo_probe_last_monotonic
+                else 0.0
+            )
+            self._schedule_repo_identity_probe_locked(delay)
+
+    def _schedule_repo_identity_probe_locked(self, delay: float) -> None:
+        timer = threading.Timer(delay, self._run_scheduled_repo_identity_probe)
+        timer.name = "repo-identity-probe"
+        timer.daemon = True
+        self._repo_probe_timer = timer
+        timer.start()
+
+    def _run_scheduled_repo_identity_probe(self) -> None:
+        with self._repo_probe_lock:
+            if self._repo_probe_timer is not threading.current_thread():
+                return
+            self._repo_probe_timer = None
+            if self._cleanup_initiated or self._observability_root_span is None:
+                self._repo_probe_pending = False
+                return
+            self._repo_probe_pending = False
+            self._repo_probe_last_monotonic = time.monotonic()
+            self._repo_probe_running = True
+        self._probe_repo_identity_worker()
+
+    def _probe_repo_identity_worker(self) -> None:
+        with self._repo_probe_execution_lock:
+            try:
+                identity = resolve_repo_identity(self.workspace.working_dir)
+                if identity and identity != self._repo_identity:
+                    self._repo_identity = identity
+                    self._update_observability_metadata(cast(dict[str, Any], identity))
+            except Exception:
+                logger.debug("Repo-identity probe failed", exc_info=True)
+            finally:
+                with self._repo_probe_lock:
+                    self._repo_probe_running = False
+                    if (
+                        self._repo_probe_pending
+                        and self._repo_probe_timer is None
+                        and not self._cleanup_initiated
+                        and self._observability_root_span is not None
+                    ):
+                        self._repo_probe_pending = False
+                        elapsed = time.monotonic() - self._repo_probe_last_monotonic
+                        self._schedule_repo_identity_probe_locked(
+                            max(0.0, _REPO_IDENTITY_PROBE_INTERVAL - elapsed)
+                        )
+
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
         """Set the confirmation policy and store it in conversation state."""
         with self._state:
@@ -2526,6 +2601,14 @@ class LocalConversation(BaseConversation):
         hook_processor = getattr(self, "_hook_processor", None)
         if hook_processor is not None:
             hook_processor.run_session_end()
+        with self._repo_probe_lock:
+            repo_probe_timer = self._repo_probe_timer
+            self._repo_probe_timer = None
+            self._repo_probe_pending = False
+        if repo_probe_timer is not None:
+            repo_probe_timer.cancel()
+        if getattr(self, "_observability_root_span", None) is not None:
+            self._probe_repo_identity_worker()
         try:
             self._end_observability_span()
         except AttributeError:

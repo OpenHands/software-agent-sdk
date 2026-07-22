@@ -4,6 +4,7 @@ import shlex
 import subprocess
 from pathlib import Path
 from typing import Literal
+from urllib.parse import unquote, urlsplit
 
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.utils.redact import (
@@ -37,25 +38,27 @@ def _run_git_subprocess(
     )
 
 
-def _run_git_probe(args: list[str], cwd: str | Path) -> str:
+def _run_git_probe(args: list[str], cwd: str | Path, timeout: int = 30) -> str:
     try:
-        result = _run_git_subprocess(["git", "--no-pager", *args], cwd, timeout=30)
+        result = _run_git_subprocess(["git", "--no-pager", *args], cwd, timeout)
     except (OSError, subprocess.SubprocessError):
         return ""
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
-def get_git_repository_metadata(repo_dir: str | Path) -> dict[str, str]:
+def get_git_repository_metadata(
+    repo_dir: str | Path, timeout: int = 30
+) -> dict[str, str]:
     """Return best-effort repository identity metadata."""
     metadata: dict[str, str] = {}
-    remote = _run_git_probe(["remote", "get-url", "origin"], repo_dir)
+    remote = _run_git_probe(["remote", "get-url", "origin"], repo_dir, timeout)
     if remote:
         metadata["repo_remote"] = redact_url_params(
             redact_url_credentials_in_text(remote)
         )
 
     head_and_branch = _run_git_probe(
-        ["rev-parse", "HEAD", "--abbrev-ref", "HEAD"], repo_dir
+        ["rev-parse", "HEAD", "--abbrev-ref", "HEAD"], repo_dir, timeout
     )
     lines = head_and_branch.splitlines()
     if len(lines) == 2:
@@ -609,3 +612,148 @@ def extract_repo_name(source: str) -> str:
     name = re.sub(r"-+", "-", name).strip("-")
 
     return name[:32] if name else "repo"
+
+
+_REPO_ROOT_SKIP_DIRS = frozenset(
+    {"node_modules", "venv", ".venv", "site-packages", "vendor"}
+)
+
+
+def resolve_git_repo_root(base: str | Path, max_depth: int = 3) -> Path | None:
+    """Find the repository containing ``base`` or uniquely nested beneath it."""
+    root = Path(base)
+    for candidate in (root, *root.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    found: list[Path] = []
+    frontier: list[tuple[Path, int]] = [(root, 0)]
+    while frontier:
+        current, depth = frontier.pop()
+        if depth >= max_depth:
+            continue
+        try:
+            children = sorted(current.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            if child.name.startswith(".") or child.name in _REPO_ROOT_SKIP_DIRS:
+                continue
+            try:
+                if child.is_symlink() or not child.is_dir():
+                    continue
+            except OSError:
+                continue
+            if (child / ".git").exists():
+                found.append(child)
+                if len(found) > 1:
+                    return None  # ambiguous — don't guess which repo
+            else:
+                frontier.append((child, depth + 1))
+    return found[0] if len(found) == 1 else None
+
+
+def _split_git_remote(remote_url: str) -> tuple[str, list[str]] | None:
+    url = remote_url.strip()
+    scp = re.fullmatch(r"[\w.-]+@(?P<host>[\w.-]+):(?P<path>.+)", url)
+    if scp:
+        host = scp.group("host")
+        path = scp.group("path")
+    elif "://" in url:
+        parsed = urlsplit(url)
+        host = parsed.hostname or ""
+        path = parsed.path
+    else:
+        host, separator, path = url.partition("/")
+        if not separator or "." not in host:
+            return None
+
+    if not host:
+        return None
+    path = path.split("?", 1)[0].split("#", 1)[0]
+    parts = [unquote(part) for part in path.strip("/").split("/") if part]
+    if parts:
+        parts[-1] = parts[-1].removesuffix(".git")
+    if parts and not parts[-1]:
+        parts.pop()
+    return host.lower(), parts
+
+
+def _provider_for_remote(host: str, parts: list[str]) -> str | None:
+    if host in {"dev.azure.com", "ssh.dev.azure.com"} or host.endswith(
+        ".visualstudio.com"
+    ):
+        return "azure_devops"
+    if host == "bitbucket.org":
+        return "bitbucket"
+    if host == "codeberg.org" or "forgejo" in host:
+        return "forgejo"
+    for provider in ("github", "gitlab"):
+        if provider in host:
+            return provider
+    if parts and parts[0].lower() == "scm":
+        return "bitbucket_data_center"
+    if "bitbucket" in host:
+        return "bitbucket"
+    return None
+
+
+def _canonical_repo_parts(
+    host: str, parts: list[str], provider: str | None
+) -> list[str]:
+    if provider == "bitbucket_data_center" and parts:
+        normalized = parts[1:]
+        if normalized:
+            normalized[0] = normalized[0].upper()
+        return normalized
+    if provider != "azure_devops":
+        return parts
+
+    normalized = parts[1:] if parts and parts[0].lower() == "v3" else parts[:]
+    for index, part in enumerate(normalized):
+        if part.lower() == "_git":
+            normalized.pop(index)
+            break
+    if host.endswith(".visualstudio.com") and not host.startswith("vs-ssh."):
+        organization = host.removesuffix(".visualstudio.com").split(".")[0]
+        if organization and normalized and normalized[0].lower() != organization:
+            normalized.insert(0, organization)
+    return normalized
+
+
+def _repo_slug_and_provider(remote_url: str) -> tuple[str | None, str | None]:
+    """Parse a canonical repository slug and provider from a remote URL."""
+    split = _split_git_remote(remote_url)
+    if split is None:
+        return None, None
+    host, parts = split
+    provider = _provider_for_remote(host, parts)
+    parts = _canonical_repo_parts(host, parts, provider)
+    slug = "/".join(parts) if len(parts) >= 2 else None
+    return slug, provider
+
+
+def resolve_repo_identity(base: str | Path) -> dict[str, str]:
+    """Resolve trace metadata for the repository associated with ``base``."""
+    try:
+        root = resolve_git_repo_root(base)
+    except Exception:
+        return {}
+    if root is None:
+        return {}
+
+    metadata = get_git_repository_metadata(root, timeout=5)
+    remote = metadata.get("repo_remote")
+    if not remote:
+        return {}
+    slug, provider = _repo_slug_and_provider(remote)
+    if not slug:
+        return {}
+
+    identity: dict[str, str] = {"repo": slug}
+    if provider:
+        identity["git_provider"] = provider
+    if (branch := metadata.get("branch")) and branch != "DETACHED":
+        identity["branch"] = branch
+    if commit := metadata.get("head_commit"):
+        identity["commit"] = commit
+    return identity

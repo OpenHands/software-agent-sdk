@@ -337,6 +337,28 @@ def end_root_span(root: RootSpan | None) -> None:
     root.end()
 
 
+def update_root_span_metadata(
+    root: RootSpan | None,
+    metadata: dict[str, TraceMetadataValue],
+) -> None:
+    """Merge metadata onto a recording root span."""
+    if root is None or root.span is None or not metadata:
+        return
+    try:
+        from lmnr import Laminar
+
+        if not root.span.is_recording():
+            return
+        with Laminar.use_span(
+            root.span,
+            record_exception=False,
+            set_status_on_exception=False,
+        ):
+            Laminar.set_trace_metadata(cast(dict[str, Any], metadata))
+    except Exception:
+        logger.debug("Failed to update observability root span metadata", exc_info=True)
+
+
 def start_child_span(
     root: RootSpan | None,
     name: str,

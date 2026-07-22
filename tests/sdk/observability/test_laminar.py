@@ -583,6 +583,63 @@ def test_root_span_sets_trace_metadata_and_tags():
         )
 
 
+def test_update_root_span_metadata_merges_late():
+    """A late update re-enters the root span and sets the extra trace metadata."""
+    from openhands.sdk.observability.laminar import RootSpan, update_root_span_metadata
+
+    fake_span = MagicMock()
+    fake_span.is_recording.return_value = True
+
+    with patch("lmnr.Laminar") as mock_laminar:
+        mock_laminar.start_span.return_value = fake_span
+        root = RootSpan("conversation", session_id="session-1")
+        mock_laminar.set_trace_metadata.reset_mock()
+        mock_laminar.use_span.reset_mock()
+
+        update_root_span_metadata(
+            root, {"repo": "OpenHands/OpenHands", "branch": "main"}
+        )
+
+        mock_laminar.use_span.assert_called_once_with(
+            fake_span, record_exception=False, set_status_on_exception=False
+        )
+        mock_laminar.set_trace_metadata.assert_called_once_with(
+            {"repo": "OpenHands/OpenHands", "branch": "main"}
+        )
+
+
+def test_update_root_span_metadata_noop_when_span_ended():
+    """No metadata is written once the root span has stopped recording."""
+    from openhands.sdk.observability.laminar import RootSpan, update_root_span_metadata
+
+    fake_span = MagicMock()
+
+    with patch("lmnr.Laminar") as mock_laminar:
+        mock_laminar.start_span.return_value = fake_span
+        root = RootSpan("conversation")
+        fake_span.is_recording.return_value = False
+        mock_laminar.set_trace_metadata.reset_mock()
+
+        update_root_span_metadata(root, {"repo": "OpenHands/OpenHands"})
+
+        mock_laminar.set_trace_metadata.assert_not_called()
+
+
+def test_update_root_span_metadata_safe_with_none_and_empty():
+    """Guards: None root or empty metadata are no-ops that never touch lmnr."""
+    from openhands.sdk.observability.laminar import RootSpan, update_root_span_metadata
+
+    update_root_span_metadata(None, {"repo": "x/y"})  # must not raise
+
+    fake_span = MagicMock()
+    with patch("lmnr.Laminar") as mock_laminar:
+        mock_laminar.start_span.return_value = fake_span
+        root = RootSpan("conversation")
+        mock_laminar.set_trace_metadata.reset_mock()
+        update_root_span_metadata(root, {})
+        mock_laminar.set_trace_metadata.assert_not_called()
+
+
 def test_deprecated_shims_are_removed():
     """The legacy global-stack API (deprecated 1.22.0) was removed in 1.27.0."""
     from openhands.sdk.observability import laminar as lam
