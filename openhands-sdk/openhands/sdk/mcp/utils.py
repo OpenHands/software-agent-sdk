@@ -149,12 +149,51 @@ async def log_handler(message: LogMessage):
     logger.log(level, msg, extra=extra)
 
 
-async def _connect_and_list_tools(client: MCPClient) -> None:
+def _extract_timeout_from_config(config: MCPConfig) -> float | None:
+    """Extract the tool execution timeout from MCP server configurations.
+
+    Reads per-server ``timeout`` fields (in milliseconds) from the MCP config
+    and converts to seconds.  When multiple servers are configured, returns
+    the maximum timeout so that slower servers are still reachable.
+
+    Returns None if no server specifies a timeout.
+    """
+    if not config.mcpServers:
+        return None
+
+    timeouts_sec: list[float] = []
+    for server_name, server in config.mcpServers.items():
+        server_timeout = getattr(server, "timeout", None)
+        if server_timeout is not None:
+            # FastMCP stores timeout in milliseconds; convert to seconds
+            timeouts_sec.append(server_timeout / 1000.0)
+            logger.debug(
+                "Server '%s' configured with timeout: %d ms (%.1f s)",
+                server_name,
+                server_timeout,
+                server_timeout / 1000.0,
+            )
+
+    if not timeouts_sec:
+        return None
+
+    # Use the maximum timeout across all servers to ensure all are reachable
+    return max(timeouts_sec)
+
+
+async def _connect_and_list_tools(
+    client: MCPClient,
+    tool_timeout: float | None = None,
+) -> None:
     """Connect to MCP server and populate client._tools."""
     await client.connect()
     mcp_type_tools: list[mcp.types.Tool] = await client.list_tools()
     for mcp_tool in mcp_type_tools:
-        tool_sequence = MCPToolDefinition.create(mcp_tool=mcp_tool, mcp_client=client)
+        tool_sequence = MCPToolDefinition.create(
+            mcp_tool=mcp_tool,
+            mcp_client=client,
+            timeout=tool_timeout,
+        )
         client._tools.extend(tool_sequence)
 
 
@@ -182,9 +221,17 @@ def create_mcp_tools(
     )
     client = MCPClient(config, log_handler=log_handler)
 
+    # Extract per-server tool timeout from config (milliseconds → seconds).
+    # Falls back to MCP_TOOL_TIMEOUT_SECONDS inside MCPToolDefinition.create()
+    # when no server specifies a timeout.
+    tool_timeout = _extract_timeout_from_config(config)
+
     try:
         client.call_async_from_sync(
-            _connect_and_list_tools, timeout=timeout, client=client
+            _connect_and_list_tools,
+            timeout=timeout,
+            client=client,
+            tool_timeout=tool_timeout,
         )
     except TimeoutError as e:
         client.sync_close()
