@@ -72,7 +72,12 @@ from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
-from openhands.sdk.skills import load_available_skills, merge_skills_by_name
+from openhands.sdk.skills import (
+    Skill,
+    load_available_skills,
+    load_marketplace_standalone_skills,
+    merge_skills_by_name,
+)
 from openhands.sdk.skills.utils import (
     expand_mcp_variables,
     expand_variable_references,
@@ -850,6 +855,7 @@ class LocalConversation(BaseConversation):
 
         # Track whether we have plugins or MCP config to process
         has_mcp_config = bool(merged_mcp)
+        marketplace_skills_loaded = False
 
         plugins_to_load: list[tuple[PluginSource, bool]] = []
         if merged_context is not None and merged_context.registered_marketplaces:
@@ -865,9 +871,12 @@ class LocalConversation(BaseConversation):
                 for registration in merged_context.registered_marketplaces
             ]
             registry = MarketplaceRegistry(registrations)
+            marketplace_skills: list[Skill] = []
             for registration in registry.get_auto_load_registrations():
                 try:
-                    marketplace, _ = registry.get_marketplace(registration.name)
+                    marketplace, marketplace_path = registry.get_marketplace(
+                        registration.name
+                    )
                 except Exception:
                     logger.warning(
                         "Failed to load marketplace '%s'; continuing without it",
@@ -885,6 +894,23 @@ class LocalConversation(BaseConversation):
                             True,
                         )
                     )
+                # Standalone skills. Merged below as low precedence; plugins
+                # loaded afterwards override same-named skills, matching the
+                # catalog.
+                marketplace_skills.extend(
+                    load_marketplace_standalone_skills(
+                        marketplace, marketplace_path, registration
+                    )
+                )
+            if marketplace_skills:
+                merged_context = merged_context.model_copy(
+                    update={
+                        "skills": merge_skills_by_name(
+                            merged_context.skills, marketplace_skills
+                        )
+                    }
+                )
+                marketplace_skills_loaded = True
 
         if self._plugin_specs:
             plugins_to_load.extend((spec, False) for spec in self._plugin_specs)
@@ -1075,6 +1101,7 @@ class LocalConversation(BaseConversation):
             or has_mcp_config
             or project_skills_loaded
             or ambient_plugins_loaded
+            or marketplace_skills_loaded
             or memory_loaded
         ):
             self.agent = self.agent.model_copy(
