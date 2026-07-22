@@ -20,6 +20,7 @@ from openhands.sdk.context.prompts.sections.dynamic import (
     CustomSecretsSection,
     CustomSuffixSection,
     DateTimeSection,
+    MemoryContextSection,
     RepoContextSection,
 )
 from openhands.sdk.context.prompts.sections.planning import PlanningSection
@@ -80,6 +81,7 @@ _PLANNING_STATIC_SECTIONS: Final[tuple[PromptSection, ...]] = (PlanningSection()
 
 _DYNAMIC_SECTIONS: Final[tuple[PromptSection, ...]] = (
     RepoContextSection(),  # guard: gated repo skills present
+    MemoryContextSection(),  # guard: resolved memory present
     AvailableSkillsSection(),  # guard: available_skills_prompt
     CustomSuffixSection(),  # guard: system_message_suffix
     CustomSecretsSection(),  # guard: secret_infos present
