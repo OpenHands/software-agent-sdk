@@ -54,6 +54,7 @@ logger = get_logger(__name__)
 # File permission constants (owner read/write only)
 _DIR_MODE = stat.S_IRWXU  # 0o700 - rwx------
 _FILE_MODE = stat.S_IRUSR | stat.S_IWUSR  # 0o600 - rw-------
+_VERSIONED_CREDENTIAL_NAMES = frozenset({"CODEX_AUTH_JSON"})
 
 # Windows reserved filenames (case-insensitive)
 _WINDOWS_RESERVED_NAMES = frozenset(
@@ -444,22 +445,40 @@ class FileSecretsStore(SecretsStore):
             return None
 
     def save(self, secrets: Secrets) -> None:
-        """Save secrets to file atomically with secure permissions.
+        """Save secrets while preserving credential generations."""
+        with _file_lock(self._lock_path):
+            current = self.load()
+            if current is None:
+                if self._path.exists():
+                    raise RuntimeError(
+                        f"Cannot load secrets from {self._path}. "
+                        "Refusing to overwrite existing data."
+                    )
+                current = Secrets()
 
-        If a cipher is provided, secrets are encrypted via Pydantic's
-        serialization context. The cipher is passed to model_dump which
-        flows through to field serializers using serialize_secret().
+            versions = self._load_versions()
+            current_secrets = current.custom_secrets
+            replacement_secrets = secrets.custom_secrets
+            versioned_names = versions.keys() | _VERSIONED_CREDENTIAL_NAMES
 
-        Warning:
-            This method does NOT acquire a file lock. For concurrent-safe
-            updates, use :meth:`set_secret` or :meth:`delete_secret` which
-            wrap save() with file locking. Direct calls to save() from
-            multiple processes may cause lost updates.
+            for name in list(versions):
+                replacement = replacement_secrets.get(name)
+                if replacement is None or replacement.secret is None:
+                    versions.pop(name, None)
 
-        Warning:
-            If no cipher is provided, secrets are stored in plaintext.
-        """
-        self._save_with_versions(secrets, self._load_versions())
+            for name, replacement in replacement_secrets.items():
+                if name not in versioned_names or replacement.secret is None:
+                    continue
+                previous = current_secrets.get(name)
+                previous_value = (
+                    previous.secret.get_secret_value()
+                    if previous is not None and previous.secret is not None
+                    else None
+                )
+                if previous_value != replacement.secret.get_secret_value():
+                    versions[name] = secrets_module.token_urlsafe(24)
+
+            self._save_with_versions(secrets, versions)
 
     def _save_with_versions(
         self,

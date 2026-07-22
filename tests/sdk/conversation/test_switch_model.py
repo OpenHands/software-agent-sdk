@@ -221,6 +221,8 @@ def test_switch_acp_model_disarms_discarded_agent_finalizer(tmp_path):
     client = MagicMock()
     old_agent._client = client
     old_agent._bind_file_credential_masking()
+    old_agent._register_atexit_cleanup()
+    old_cleanup = old_agent._atexit_callback
 
     conv.switch_acp_model("model-b")
 
@@ -231,6 +233,9 @@ def test_switch_acp_model_disarms_discarded_agent_finalizer(tmp_path):
     assert switched._executor is live_executor
     assert switched._file_credential_lifecycles == {"CODEX_AUTH_JSON": lifecycle}
     assert switched._file_credential_lock is credential_lock
+    assert old_agent._atexit_callback is None
+    assert switched._atexit_callback is not None
+    assert switched._atexit_callback is not old_cleanup
 
     # ...and the discarded agent's finalizer was disarmed (marked closed)
     # WITHOUT clearing its runtime references — an in-flight ask_agent()/fork
@@ -250,6 +255,7 @@ def test_switch_acp_model_disarms_discarded_agent_finalizer(tmp_path):
     live_executor.run_async.assert_not_called()
     live_executor.close.assert_not_called()
     switched.release_runtime()
+    assert switched._atexit_callback is None
 
 
 def test_switch_profile(profile_store):

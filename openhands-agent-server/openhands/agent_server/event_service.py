@@ -1,9 +1,11 @@
 import asyncio
+from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import cast
 from uuid import UUID, uuid4
 
 from pydantic import ValidationError
@@ -22,7 +24,10 @@ from openhands.agent_server.models import (
 from openhands.agent_server.pub_sub import PubSub, Subscriber
 from openhands.sdk import LLM, AgentBase, Event, Message, TextContent, get_logger
 from openhands.sdk.agent import ACPAgent
-from openhands.sdk.agent.acp_file_credentials import CODEX_AUTH_SECRET_NAME
+from openhands.sdk.agent.acp_file_credentials import (
+    CODEX_AUTH_SECRET_NAME,
+    is_valid_codex_auth,
+)
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.goal import (
@@ -40,13 +45,19 @@ from openhands.sdk.conversation.impl.local_conversation import (
     ACP_SUPERSEDE_INFLIGHT_PROMPT,
     LocalConversation,
 )
+from openhands.sdk.conversation.persistence_const import BASE_STATE
 from openhands.sdk.conversation.response_utils import get_agent_final_response
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
-from openhands.sdk.credential import VersionedCredentialBinding
+from openhands.sdk.credential import (
+    CredentialBindingError,
+    CredentialNeedsReauthentication,
+    HttpVersionedCredentialBinding,
+    VersionedCredentialBinding,
+)
 from openhands.sdk.event import (
     AgentErrorEvent,
     ObservationBaseEvent,
@@ -62,6 +73,7 @@ from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.files import atomic_write_text
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -72,6 +84,24 @@ INITIAL_STATE_PUSH_TIMEOUT_SECONDS = 0.5
 
 
 logger = get_logger(__name__)
+
+
+class CredentialBindingActivationTooLate(RuntimeError):
+    pass
+
+
+def _without_agent_context_secret(
+    agent: AgentBase,
+    secret_name: str,
+) -> AgentBase:
+    context = agent.agent_context
+    if context is None or not context.secrets or secret_name not in context.secrets:
+        return agent
+    secrets = dict(context.secrets)
+    secrets.pop(secret_name, None)
+    return agent.model_copy(
+        update={"agent_context": context.model_copy(update={"secrets": secrets})}
+    )
 
 
 @dataclass
@@ -141,6 +171,167 @@ class EventService:
                     }
                 )
             )
+
+    def _without_stored_secret(self, secret_name: str) -> StoredConversation:
+        secrets = dict(self.stored.secrets)
+        secrets.pop(secret_name, None)
+        return self.stored.model_copy(
+            update={
+                "secrets": secrets,
+                "agent": _without_agent_context_secret(
+                    self.stored.agent,
+                    secret_name,
+                ),
+            }
+        )
+
+    async def _scrub_persisted_credentials(self) -> None:
+        if not self.credential_bindings:
+            return
+
+        context = {"cipher": self.cipher}
+        base_state_file = self.conversation_dir / BASE_STATE
+        meta_file = self.conversation_dir / "meta.json"
+        legacy_auth_file = self.conversation_dir / "acp" / "codex" / "auth.json"
+        codex_binding = self.credential_bindings.get(CODEX_AUTH_SECRET_NAME)
+        if codex_binding is not None and legacy_auth_file.exists():
+            maintain = getattr(codex_binding, "maintain", None)
+            due = getattr(codex_binding, "maintenance_due", False)
+            if callable(due):
+                due = due()
+            if callable(maintain) and due:
+                await cast(Callable[[], Awaitable[object]], maintain)()
+            check_usable = getattr(
+                codex_binding,
+                "raise_if_authorization_unusable",
+                None,
+            )
+            if callable(check_usable):
+                check_usable()
+            resolved = await codex_binding.load()
+            if not is_valid_codex_auth(resolved.value):
+                raise CredentialNeedsReauthentication(
+                    "ChatGPT authentication is invalid. Please sign in again."
+                )
+        for secret_name in self.credential_bindings:
+            self.stored = self._without_stored_secret(secret_name)
+
+        if (
+            not base_state_file.exists()
+            and not meta_file.exists()
+            and not legacy_auth_file.exists()
+        ):
+            return
+
+        with self._write_guard():
+            if base_state_file.exists():
+                state = ConversationState.model_validate_json(
+                    base_state_file.read_text(),
+                    context=context,
+                )
+                sources = dict(state.secret_registry.secret_sources)
+                for secret_name in self.credential_bindings:
+                    sources.pop(secret_name, None)
+                    state.agent = _without_agent_context_secret(
+                        state.agent,
+                        secret_name,
+                    )
+                state.secret_registry = state.secret_registry.model_copy(
+                    update={"secret_sources": sources}
+                )
+                atomic_write_text(
+                    base_state_file,
+                    state.model_dump_json(exclude_none=True, context=context),
+                )
+
+            if meta_file.exists():
+                atomic_write_text(
+                    meta_file,
+                    self.stored.model_dump_json(context=context),
+                )
+            if codex_binding is not None:
+                legacy_auth_file.unlink(missing_ok=True)
+
+    async def activate_credential_binding(
+        self,
+        secret_name: str,
+        binding: VersionedCredentialBinding,
+    ) -> None:
+        existing = self.credential_bindings.get(secret_name)
+        if isinstance(existing, HttpVersionedCredentialBinding) and isinstance(
+            binding, HttpVersionedCredentialBinding
+        ):
+            try:
+                existing.reauthorize(binding)
+            except ValueError as exc:
+                raise CredentialBindingActivationTooLate from exc
+            await self._scrub_persisted_credentials()
+            return
+        if existing is not None:
+            raise CredentialBindingActivationTooLate
+
+        conversation = self._conversation
+        if conversation is None:
+            raise CredentialBindingActivationTooLate
+
+        state = conversation._state
+        with state:
+            if not isinstance(conversation.agent, ACPAgent):
+                raise CredentialBindingActivationTooLate
+            agent = cast(
+                ACPAgent,
+                _without_agent_context_secret(conversation.agent, secret_name),
+            )
+            try:
+                agent.activate_file_credential_binding(secret_name, binding)
+            except RuntimeError as exc:
+                raise CredentialBindingActivationTooLate from exc
+
+            self.credential_bindings[secret_name] = binding
+            sources = dict(state.secret_registry.secret_sources)
+            sources.pop(secret_name, None)
+            state.secret_registry = state.secret_registry.model_copy(
+                update={"secret_sources": sources}
+            )
+            state.agent = agent
+            conversation.agent = agent
+            self.stored = self._without_stored_secret(secret_name)
+        await self._scrub_persisted_credentials()
+
+    async def apply_resume_secrets(
+        self,
+        secrets: dict[str, SecretValue],
+    ) -> None:
+        conversation = self._conversation
+        if conversation is None:
+            raise ValueError("inactive_service")
+        secrets = {
+            name: value
+            for name, value in secrets.items()
+            if name not in self.credential_bindings
+        }
+        if not secrets:
+            return
+
+        def _update() -> None:
+            state = conversation._state
+            with state:
+                registry = state.secret_registry.model_copy(
+                    update={
+                        "secret_sources": dict(state.secret_registry.secret_sources)
+                    }
+                )
+                registry.update_secrets(secrets)
+                state.secret_registry = registry
+                agent = conversation.agent
+                if isinstance(agent, ACPAgent):
+                    agent.restart_for_updated_credentials(secrets)
+
+        await asyncio.to_thread(_update)
+        self.stored = self.stored.model_copy(
+            update={"secrets": {**self.stored.secrets, **secrets}}
+        )
+        await self.save_meta()
 
     def _write_guard(self):
         if self._lease is None or self._lease_generation is None:
@@ -757,6 +948,7 @@ class EventService:
             )
             lease_claim = self._lease.claim()
             self._lease_generation = lease_claim.generation
+        await self._scrub_persisted_credentials()
         workspace = self.stored.workspace
         assert isinstance(workspace, LocalWorkspace)
         working_dir = Path(workspace.working_dir)
@@ -1592,6 +1784,7 @@ class EventService:
         return self
 
     async def __aexit__(self, exc_type, exc_value, traceback):
+        save_error: BaseException | None = None
         try:
             await self.save_meta()
         except ConversationOwnershipLostError:
@@ -1599,7 +1792,28 @@ class EventService:
                 "Skipping meta save after ownership loss for conversation %s",
                 self.stored.id,
             )
-        await self.close()
+        except BaseException as exc:
+            save_error = exc
+        close_error: BaseException | None = None
+        try:
+            await self.close()
+        except BaseException as exc:
+            close_error = exc
+        if isinstance(close_error, CredentialBindingError):
+            raise close_error
+        if save_error is not None:
+            if close_error is not None:
+                logger.warning(
+                    "Event service close also failed after meta save failure",
+                    exc_info=(
+                        type(close_error),
+                        close_error,
+                        close_error.__traceback__,
+                    ),
+                )
+            raise save_error
+        if close_error is not None:
+            raise close_error
 
     def is_open(self) -> bool:
         return bool(self._conversation)

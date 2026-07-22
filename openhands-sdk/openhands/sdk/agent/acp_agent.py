@@ -17,6 +17,7 @@ See https://agentclientprotocol.com/protocol/overview
 from __future__ import annotations
 
 import asyncio
+import atexit
 import inspect
 import json
 import os
@@ -25,7 +26,7 @@ import threading
 import time
 import uuid
 import weakref
-from collections.abc import Awaitable, Callable, Generator, Iterable
+from collections.abc import Awaitable, Callable, Collection, Generator, Iterable
 from concurrent.futures import Future
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
@@ -1098,6 +1099,7 @@ class _OpenHandsACPBridge:
         # event stream in cleartext. ``None`` ⇒ no-op (bridge used standalone).
         self.mask: Callable[[str], str] | None = None
         self.before_mask: Callable[[], None] | None = None
+        self._masking_error: CredentialBindingError | None = None
         self._last_activity_signal: float = float("-inf")
         # Monotonic timestamp of the most recent ``session_update``. Unlike the
         # throttled ``_last_activity_signal``, updated on *every* update so the
@@ -1127,6 +1129,7 @@ class _OpenHandsACPBridge:
         self.on_activity = None
         self._turn_usage_updates.clear()
         self._usage_received.clear()
+        self._masking_error = None
         # Note: telemetry state (_last_cost, _context_window, _last_activity_signal,
         # etc.) is intentionally NOT cleared — it accumulates across turns.
 
@@ -1180,7 +1183,9 @@ class _OpenHandsACPBridge:
             if self.before_mask is not None:
                 self.before_mask()
             return _mask_json_value(value, self.mask)
-        except CredentialBindingError:
+        except CredentialBindingError as exc:
+            if self._masking_error is None:
+                self._masking_error = exc
             raise
         except Exception:
             logger.debug("secret masking failed", exc_info=True)
@@ -1200,6 +1205,10 @@ class _OpenHandsACPBridge:
         for key in ("title", "raw_input", "raw_output", "content"):
             if entry.get(key) is not None:
                 entry[key] = self._mask_value(entry[key])
+
+    def _raise_masking_error(self) -> None:
+        if self._masking_error is not None:
+            raise self._masking_error
 
     # -- Client protocol methods ------------------------------------------
 
@@ -1281,30 +1290,27 @@ class _OpenHandsACPBridge:
             # transition into a terminal state.
             target: dict[str, Any] | None = None
             prev_status: str | None = None
-            for tc in self.accumulated_tool_calls:
+            for index, tc in enumerate(self.accumulated_tool_calls):
                 if tc["tool_call_id"] == update.tool_call_id:
                     prev_status = tc.get("status")
+                    updated = dict(tc)
                     if update.title is not None:
-                        tc["title"] = update.title
+                        updated["title"] = update.title
                     if update.kind is not None:
-                        tc["tool_kind"] = update.kind
+                        updated["tool_kind"] = update.kind
                     if update.status is not None:
-                        tc["status"] = update.status
+                        updated["status"] = update.status
                     if update.raw_input is not None:
-                        tc["raw_input"] = update.raw_input
+                        updated["raw_input"] = update.raw_input
                     if update.raw_output is not None:
-                        tc["raw_output"] = update.raw_output
+                        updated["raw_output"] = update.raw_output
                     if update.content is not None:
-                        tc["content"] = _serialize_tool_content(update.content)
-                    target = tc
+                        updated["content"] = _serialize_tool_content(update.content)
+                    self._mask_tool_call_entry(updated)
+                    self.accumulated_tool_calls[index] = updated
+                    target = updated
                     break
             logger.debug("ACP tool call progress: %s", update.tool_call_id)
-            # Mask the merged entry on every frame so the accumulator (and thus
-            # the terminal event and any _cancel_inflight_tool_calls supersede)
-            # never carries plaintext secrets. ``status`` is left untouched, so
-            # the terminal-transition check below is unaffected.
-            if target is not None:
-                self._mask_tool_call_entry(target)
             # Persist exactly one terminal event per tool call. Intermediate
             # progress frames each carry the *full cumulative* output; emitting
             # one per frame is O(n^2) storage + WebSocket relay (the bug this
@@ -1718,6 +1724,10 @@ class ACPAgent(AgentBase):
     _file_credential_close_lock: threading.Lock = PrivateAttr(
         default_factory=threading.Lock
     )
+    _replace_file_credentials_on_next_materialisation: set[str] = PrivateAttr(
+        default_factory=set
+    )
+    _atexit_callback: Callable[[], None] | None = PrivateAttr(default=None)
 
     # -- Helpers -----------------------------------------------------------
 
@@ -1732,6 +1742,44 @@ class ACPAgent(AgentBase):
                     "ACP credential bindings must be activated before use"
                 )
             self._file_credential_bindings[secret_name] = binding
+
+    def restart_for_updated_credentials(self, secret_names: Collection[str]) -> None:
+        configured = {spec.secret_name for spec in self.acp_file_secrets}
+        with self._file_credential_lock:
+            self._replace_file_credentials_on_next_materialisation.update(
+                configured.intersection(secret_names)
+            )
+        if self._initialized:
+            self._restart_session_on_next_turn = True
+
+    def _has_runtime_resources(self) -> bool:
+        return (
+            self._executor is not None
+            or self._process is not None
+            or self._conn is not None
+            or bool(self._file_credential_lifecycles)
+        )
+
+    def _register_atexit_cleanup(self, *, replace: bool = False) -> None:
+        if self._atexit_callback is not None:
+            if not replace:
+                return
+            atexit.unregister(self._atexit_callback)
+        agent_ref = weakref.ref(self)
+
+        def cleanup() -> None:
+            agent = agent_ref()
+            if agent is not None:
+                agent._finalize()
+
+        self._atexit_callback = cleanup
+        atexit.register(cleanup)
+
+    def _unregister_atexit_cleanup(self) -> None:
+        callback = self._atexit_callback
+        if callback is not None:
+            atexit.unregister(callback)
+            self._atexit_callback = None
 
     def _record_usage(
         self,
@@ -1965,6 +2013,8 @@ class ACPAgent(AgentBase):
 
         from openhands.sdk.utils.async_executor import AsyncExecutor
 
+        if self._executor is not None:
+            self._cleanup()
         self._executor = AsyncExecutor()
 
         # Render the suffix once, pulling secrets from the conversation's
@@ -2002,9 +2052,11 @@ class ACPAgent(AgentBase):
         except Exception as e:
             logger.error("Failed to start ACP server: %s", e)
             try:
-                self.close()
+                self._cleanup()
             except Exception:
                 logger.warning("Failed to clean up ACP resources", exc_info=True)
+            if self._has_runtime_resources():
+                self._register_atexit_cleanup(replace=True)
             # init_state runs *outside* run()/arun()'s try-block (it is reached
             # via _ensure_agent_ready() before the loop starts), so a cold-start
             # failure — bad/expired auth, missing CLI binary, cwd mismatch — would
@@ -2028,6 +2080,8 @@ class ACPAgent(AgentBase):
             except Exception:
                 logger.exception("Failed to surface ACP init error to client")
             raise
+
+        self._register_atexit_cleanup(replace=True)
 
         # A successful resume keeps the prior id; cwd mismatch and load_session
         # failure both fall back to ``new_session``, which mints a fresh one.
@@ -2260,6 +2314,10 @@ class ACPAgent(AgentBase):
     ) -> None:
         for spec in self.acp_file_secrets:
             name = spec.secret_name
+            with self._file_credential_lock:
+                replace_existing = (
+                    name in self._replace_file_credentials_on_next_materialisation
+                )
             binding = self._file_credential_bindings.get(name)
             assert self._executor is not None
             lifecycle = create_file_credential_lifecycle(
@@ -2271,8 +2329,32 @@ class ACPAgent(AgentBase):
                 with self._file_credential_lock:
                     if self._closed:
                         raise CredentialSyncError("Credential binding is closed.")
-                    self._file_credential_lifecycles[name] = lifecycle
-                lifecycle.materialize(state.secret_registry, env)
+                try:
+                    lifecycle.materialize(state.secret_registry, env)
+                    durable_path = (
+                        self._acp_file_secret_dir(state, spec.subdir) / spec.filename
+                    )
+                    try:
+                        durable_path.unlink(missing_ok=True)
+                    except OSError as exc:
+                        raise CredentialSyncError(
+                            "Durable credential copy could not be removed."
+                        ) from exc
+                except BaseException:
+                    env.pop("CODEX_HOME", None)
+                    lifecycle.discard()
+                    raise
+                with self._file_credential_lock:
+                    closed = self._closed
+                    if not closed:
+                        self._file_credential_lifecycles[name] = lifecycle
+                        self._replace_file_credentials_on_next_materialisation.discard(
+                            name
+                        )
+                if closed:
+                    env.pop("CODEX_HOME", None)
+                    lifecycle.discard()
+                    raise CredentialSyncError("Credential binding is closed.")
                 continue
 
             value = state.secret_registry.get_secret_value(name)
@@ -2280,7 +2362,16 @@ class ACPAgent(AgentBase):
                 continue
             directory = self._acp_file_secret_dir(state, spec.subdir)
             target = directory / spec.filename
-            self._materialise_file_secret(spec, env, directory, target, value)
+            self._materialise_file_secret(
+                spec,
+                env,
+                directory,
+                target,
+                value,
+                replace_existing=replace_existing,
+            )
+            with self._file_credential_lock:
+                self._replace_file_credentials_on_next_materialisation.discard(name)
 
     def _materialise_file_secret(
         self,
@@ -2289,13 +2380,17 @@ class ACPAgent(AgentBase):
         directory: Path,
         target: Path,
         value: str,
+        *,
+        replace_existing: bool = False,
     ) -> None:
         name = spec.secret_name
         try:
             directory.mkdir(mode=0o700, parents=True, exist_ok=True)
             directory.chmod(0o700)
             directory.parent.chmod(0o700)
-            preserve_existing = target.is_file() and target.stat().st_size > 0
+            preserve_existing = (
+                not replace_existing and target.is_file() and target.stat().st_size > 0
+            )
             if preserve_existing:
                 target.chmod(0o600)
                 logger.info(
@@ -2408,7 +2503,7 @@ class ACPAgent(AgentBase):
                 lifecycle.close()
             except Exception as error:
                 failures[name] = error
-            finally:
+            else:
                 with self._file_credential_lock:
                     if self._file_credential_lifecycles.get(name) is lifecycle:
                         self._file_credential_lifecycles.pop(name)
@@ -2466,20 +2561,15 @@ class ACPAgent(AgentBase):
         env.update(
             state.secret_registry.get_all_secrets_as_env_vars(exclude=file_secret_names)
         )
+        if self.acp_isolate_data_dir:
+            self._isolate_acp_data_dir(state, env)
+
         # Materialise reserved file-content secrets to disk and point their
         # data-dir env vars (CODEX_HOME / GOOGLE_APPLICATION_CREDENTIALS) at the
         # written files.
         self._materialise_file_secrets(state, env)
         # Strip CLAUDECODE so nested Claude Code instances don't refuse to start
         env.pop("CLAUDECODE", None)
-
-        # Relocate the CLI's data/config root to a per-conversation directory so
-        # sandbox-sharing conversations don't race on a shared HOME (#1019).
-        # Runs after the registry injection above. Independent of the strip below
-        # (keyed on the OAuth token, not the data-dir var), so ordering relative
-        # to it no longer matters for correctness.
-        if self.acp_isolate_data_dir:
-            self._isolate_acp_data_dir(state, env)
 
         # Strip env vars that conflict with an active auth mechanism: an active
         # CLAUDE_CODE_OAUTH_TOKEN must not coexist with ANTHROPIC_API_KEY (which
@@ -3210,6 +3300,7 @@ class ACPAgent(AgentBase):
         on_event: ConversationCallbackType,
     ) -> None:
         """Post-prompt bookkeeping + FinishAction/Observation emission."""
+        self._client._raise_masking_error()
         # ACP server has acknowledged the prompt; commit any pending
         # first-turn suffix install so a subsequent turn doesn't try to
         # re-send it (and so a future cancellation can't unmark it).
@@ -3314,13 +3405,20 @@ class ACPAgent(AgentBase):
         on_event: ConversationCallbackType,
     ) -> None:
         """Error path for non-timeout exceptions raised out of the prompt."""
-        logger.error("ACP prompt failed: %s", exc, exc_info=True)
-        # Rich, secret-free detail: for an ACPRequestError this keeps the JSON-RPC
-        # code + data (the real cause) instead of the bare "Internal error" that
-        # str(exc) yields — see _acp_error_detail.
-        self._track_file_credentials_for_masking()
-        error_detail = _acp_error_detail(exc, state.secret_registry)
-        # Close any tool cards left in flight before surfacing the error.
+        effective_exc = exc
+        try:
+            self._track_file_credentials_for_masking()
+        except CredentialBindingError as tracking_error:
+            effective_exc = tracking_error
+            logger.warning(
+                "Failed to track ACP credentials during error handling",
+            )
+        error_detail = _acp_error_detail(effective_exc, state.secret_registry)
+        logger.error(
+            "ACP prompt failed (%s): %s",
+            type(effective_exc).__name__,
+            error_detail,
+        )
         self._cancel_inflight_tool_calls()
         # Emit error as an agent message (preserved for consumers that
         # inspect MessageEvents).
@@ -3339,11 +3437,25 @@ class ACPAgent(AgentBase):
         on_event(
             ConversationErrorEvent(
                 source="agent",
-                code=_classify_acp_turn_error(exc),
+                code=_classify_acp_turn_error(effective_exc),
                 detail=error_detail,
             )
         )
         state.execution_status = ConversationExecutionStatus.ERROR
+
+    def _finalize_successful_turn_guarded(
+        self,
+        response: PromptResponse | None,
+        elapsed: float,
+        state: ConversationState,
+        on_event: ConversationCallbackType,
+    ) -> None:
+        try:
+            self._finalize_successful_turn(response, elapsed, state, on_event)
+        except CredentialBindingError as exc:
+            self._emit_turn_error(exc, state, on_event)
+            self._restart_session_on_next_turn = True
+            raise
 
     def _handle_cancelled_cleanup_interruption(
         self,
@@ -3364,7 +3476,12 @@ class ACPAgent(AgentBase):
                     self._cancel_inflight_tool_calls()
                     self._restart_session_on_next_turn = True
                 else:
-                    self._finalize_successful_turn(response, elapsed, state, on_event)
+                    self._finalize_successful_turn_guarded(
+                        response,
+                        elapsed,
+                        state,
+                        on_event,
+                    )
             return
 
         self._cancel_inflight_tool_calls()
@@ -3674,7 +3791,7 @@ class ACPAgent(AgentBase):
                         self._cancel_inflight_tool_calls()
                         self._restart_session_on_next_turn = True
                     else:
-                        self._finalize_successful_turn(
+                        self._finalize_successful_turn_guarded(
                             drain_result.response, elapsed, state, on_event
                         )
                     raise
@@ -3704,7 +3821,7 @@ class ACPAgent(AgentBase):
                         self._emit_turn_timeout(elapsed, state, on_event)
                         self._restart_session_on_next_turn = True
                     else:
-                        self._finalize_successful_turn(
+                        self._finalize_successful_turn_guarded(
                             drain_result.response, elapsed, state, on_event
                         )
                 elif drain_result.completed and drain_result.error is not None:
@@ -3922,8 +4039,10 @@ class ACPAgent(AgentBase):
             with self._file_credential_lock:
                 if self._closed and not self._file_credential_lifecycles:
                     return
-            self._closed = True
+                self._closed = True
             failures = self._shutdown_runtime(discard_bindings=True)
+            if not self._has_runtime_resources():
+                self._unregister_atexit_cleanup()
             self._raise_first_file_credential_failure("close", failures)
 
     def _cleanup(self) -> None:
@@ -3958,17 +4077,23 @@ class ACPAgent(AgentBase):
                 try:
                     process.kill()
                     if self._executor is not None:
-                        self._executor.run_async(self._wait_for_process, process)
+                        self._executor.run_async(
+                            self._wait_for_process,
+                            process,
+                            timeout=5.0,
+                        )
                 except Exception as kill_error:
                     logger.debug("Error killing ACP process: %s", kill_error)
             self._process = None
 
-        failures.update(self._release_file_credentials_collect())
+        credential_failures = self._release_file_credentials_collect()
+        failures.update(credential_failures)
         if discard_bindings:
             with self._file_credential_lock:
-                self._file_credential_bindings = {}
+                if not credential_failures:
+                    self._file_credential_bindings = {}
 
-        if self._executor is not None:
+        if self._executor is not None and not credential_failures:
             try:
                 self._executor.close()
             except Exception as e:
@@ -3998,19 +4123,15 @@ class ACPAgent(AgentBase):
         See :meth:`LocalConversation.switch_acp_model`.
         """
         with self._file_credential_close_lock:
+            self._unregister_atexit_cleanup()
             with self._file_credential_lock:
                 self._file_credential_lifecycles = {}
                 self._file_credential_bindings = {}
-            self._closed = True
+                self._closed = True
 
     def __del__(self) -> None:
         try:
-            has_resources = (
-                self._executor is not None
-                or self._process is not None
-                or self._conn is not None
-                or bool(self._file_credential_lifecycles)
-            )
+            has_resources = self._has_runtime_resources()
         except Exception:
             return
         if not has_resources:
@@ -4022,7 +4143,7 @@ class ACPAgent(AgentBase):
                 daemon=True,
             ).start()
         except Exception:
-            pass
+            self._finalize()
 
     def _finalize(self) -> None:
         try:

@@ -21,6 +21,7 @@ from openhands.agent_server.conversation_lease import (
 from openhands.agent_server.event_service import (
     LEASE_RENEW_INTERVAL_SECONDS,
     EventService,
+    _without_agent_context_secret,
 )
 from openhands.agent_server.models import (
     ConversationInfo,
@@ -49,7 +50,7 @@ from openhands.sdk.conversation.title_utils import (
     extract_message_text,
     generate_title_from_message,
 )
-from openhands.sdk.credential import VersionedCredentialBinding
+from openhands.sdk.credential import CredentialBindingError, VersionedCredentialBinding
 from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
@@ -58,7 +59,6 @@ from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.tool import BROWSER_TOOL_NAME, Tool, is_tool_usable
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.utils.cipher import Cipher
-from openhands.sdk.utils.files import atomic_write_text
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -568,45 +568,32 @@ class ConversationService:
             base_state_file.read_text(), context=context
         )
 
-    def activate_credential_binding(
+    async def activate_credential_binding(
         self,
         conversation_id: UUID,
         secret_name: str,
         binding: VersionedCredentialBinding,
     ) -> None:
-        self._credential_bindings.setdefault(conversation_id, {})[secret_name] = binding
+        async with self._lifecycle_lock:
+            event_services = self._event_services
+            event_service = (
+                event_services.get(conversation_id)
+                if event_services is not None
+                else None
+            )
+            if event_service is not None and event_service.is_open():
+                await event_service.activate_credential_binding(secret_name, binding)
+                record = self._conversation_records.get(conversation_id)
+                if record is not None:
+                    record.stored = event_service.stored
+                return
+            self._credential_bindings.setdefault(conversation_id, {})[secret_name] = (
+                binding
+            )
 
     @staticmethod
     def _is_codex_agent(agent: AgentBase | None) -> bool:
         return isinstance(agent, ACPAgent) and agent.acp_server == "codex"
-
-    def _strip_persisted_credential_sync(
-        self,
-        record: _ConversationRecord,
-        secret_name: str,
-    ) -> bool:
-        conversation_dir = self.conversations_dir / record.stored.id.hex
-        base_state_file = conversation_dir / BASE_STATE
-        if not base_state_file.exists():
-            return False
-        context = {"cipher": self.cipher}
-        state = ConversationState.model_validate_json(
-            base_state_file.read_text(), context=context
-        )
-        state.secret_registry.secret_sources.pop(secret_name, None)
-        stored_secrets = dict(record.stored.secrets)
-        stored_secrets.pop(secret_name, None)
-        stored = record.stored.model_copy(update={"secrets": stored_secrets})
-        atomic_write_text(
-            conversation_dir / "meta.json",
-            stored.model_dump_json(context=context),
-        )
-        atomic_write_text(
-            base_state_file,
-            state.model_dump_json(exclude_none=True, context=context),
-        )
-        record.stored = stored
-        return True
 
     async def _has_local_codex_credential(self) -> bool:
         if self.secrets_store is None:
@@ -967,31 +954,66 @@ class ConversationService:
         if self._event_services is None:
             raise ValueError("inactive_service")
         conversation_id = request.conversation_id or uuid4()
-        existing_event_service = self._event_services.get(conversation_id)
-        if existing_event_service is not None and existing_event_service.is_open():
-            state = await existing_event_service.get_state()
-            self._conversation_records[conversation_id] = _ConversationRecord(
-                stored=existing_event_service.stored,
-                execution_status=state.execution_status,
-            )
-            return (
-                _compose_conversation_info(existing_event_service.stored, state),
-                False,
-            )
         existing_record = self._conversation_records.get(conversation_id)
-        if existing_record is not None:
+        existing_event_service = self._event_services.get(conversation_id)
+        if existing_record is not None or (
+            existing_event_service is not None and existing_event_service.is_open()
+        ):
             async with self._lifecycle_lock:
                 existing_event_service = self._event_services.get(conversation_id)
                 if (
                     existing_event_service is not None
                     and existing_event_service.is_open()
                 ):
+                    if (
+                        self._is_codex_agent(existing_event_service.stored.agent)
+                        and CODEX_AUTH_SECRET_NAME
+                        not in existing_event_service.credential_bindings
+                    ):
+                        late_bindings = await self._resolve_credential_bindings(
+                            existing_event_service.stored
+                        )
+                        try:
+                            for secret_name, binding in late_bindings.items():
+                                await (
+                                    existing_event_service.activate_credential_binding(
+                                        secret_name,
+                                        binding,
+                                    )
+                                )
+                        except Exception:
+                            pending = self._credential_bindings.setdefault(
+                                conversation_id, {}
+                            )
+                            for secret_name, binding in late_bindings.items():
+                                pending.setdefault(secret_name, binding)
+                            raise
+                    if (
+                        CODEX_AUTH_SECRET_NAME in request.secrets
+                        and CODEX_AUTH_SECRET_NAME
+                        not in existing_event_service.credential_bindings
+                    ):
+                        await existing_event_service.apply_resume_secrets(
+                            {
+                                CODEX_AUTH_SECRET_NAME: request.secrets[
+                                    CODEX_AUTH_SECRET_NAME
+                                ]
+                            }
+                        )
                     state = await existing_event_service.get_state()
+                    self._conversation_records[conversation_id] = _ConversationRecord(
+                        stored=existing_event_service.stored,
+                        execution_status=state.execution_status,
+                    )
                     return (
                         _compose_conversation_info(
                             existing_event_service.stored, state
                         ),
                         False,
+                    )
+                if existing_record is None:
+                    raise ValueError(
+                        f"Persisted conversation {conversation_id} has no record"
                     )
                 managed_codex_credential = self._is_codex_agent(
                     existing_record.stored.agent
@@ -1000,16 +1022,33 @@ class ConversationService:
                     in self._credential_bindings.get(conversation_id, {})
                     or await self._has_local_codex_credential()
                 )
-                if managed_codex_credential:
-                    stripped = await asyncio.to_thread(
-                        self._strip_persisted_credential_sync,
-                        existing_record,
-                        CODEX_AUTH_SECRET_NAME,
+                fallback_secret = request.secrets.get(CODEX_AUTH_SECRET_NAME)
+                if managed_codex_credential or fallback_secret is not None:
+                    original_stored = existing_record.stored
+                    injected_fallback = (
+                        not managed_codex_credential and fallback_secret is not None
                     )
-                    if not stripped:
-                        raise ValueError(
-                            f"Persisted conversation {conversation_id} "
-                            "has no base state"
+                    if injected_fallback:
+                        existing_record.stored = original_stored.model_copy(
+                            update={
+                                "secrets": {
+                                    **original_stored.secrets,
+                                    CODEX_AUTH_SECRET_NAME: fallback_secret,
+                                }
+                            }
+                        )
+                    try:
+                        event_service = await self._get_or_load_event_service_locked(
+                            conversation_id
+                        )
+                    finally:
+                        if injected_fallback:
+                            existing_record.stored = original_stored
+                    if event_service is not None:
+                        state = await event_service.get_state()
+                        return (
+                            _compose_conversation_info(event_service.stored, state),
+                            False,
                         )
                 conversation_info = await self._conversation_info(
                     conversation_id, existing_record
@@ -1059,10 +1098,18 @@ class ConversationService:
             CODEX_AUTH_SECRET_NAME in self._credential_bindings.get(conversation_id, {})
             or await self._has_local_codex_credential()
         )
-        if managed_codex_credential and CODEX_AUTH_SECRET_NAME in request.secrets:
+        if managed_codex_credential:
             durable_secrets = dict(request.secrets)
             durable_secrets.pop(CODEX_AUTH_SECRET_NAME, None)
-            request = request.model_copy(update={"secrets": durable_secrets})
+            request = request.model_copy(
+                update={
+                    "secrets": durable_secrets,
+                    "agent": _without_agent_context_secret(
+                        request.agent,
+                        CODEX_AUTH_SECRET_NAME,
+                    ),
+                }
+            )
 
         # Dynamically register tools from client's registry
         if request.tool_module_qualnames:
@@ -1220,8 +1267,6 @@ class ConversationService:
             if event_service is None:
                 return False
 
-            event_services.pop(conversation_id, None)
-            self._conversation_records.pop(conversation_id, None)
             # Notify conversation webhooks about the stopped conversation before closing
             try:
                 state = await event_service.get_state()
@@ -1240,11 +1285,15 @@ class ConversationService:
             # Close the event service
             try:
                 await event_service.close()
+            except CredentialBindingError:
+                raise
             except Exception as e:
                 logger.warning(
                     f"Failed to close event service for conversation "
                     f"{conversation_id}: {e}"
                 )
+            event_services.pop(conversation_id, None)
+            self._conversation_records.pop(conversation_id, None)
             self._credential_bindings.pop(conversation_id, None)
 
             # Safely remove only the conversation directory (workspace is preserved).
@@ -1529,19 +1578,61 @@ class ConversationService:
             event_services = self._event_services
             if event_services is None:
                 return
-            self._event_services = None
-            self._conversation_records = {}
-            self._credential_bindings = {}
-        # This stops conversations and saves meta
-        await asyncio.gather(
-            *[
-                event_service.__aexit__(exc_type, exc_value, traceback)
-                for event_service in event_services.values()
+            services = tuple(event_services.items())
+            results = await asyncio.gather(
+                *[
+                    event_service.__aexit__(exc_type, exc_value, traceback)
+                    for _, event_service in services
+                ],
+                return_exceptions=True,
+            )
+            failed_ids = {
+                conversation_id
+                for (conversation_id, _), result in zip(services, results, strict=True)
+                if isinstance(result, BaseException)
+            }
+            failures = [
+                result for result in results if isinstance(result, BaseException)
             ]
-        )
+            if failed_ids:
+                self._event_services = {
+                    conversation_id: event_service
+                    for conversation_id, event_service in services
+                    if conversation_id in failed_ids
+                }
+                self._conversation_records = {
+                    conversation_id: record
+                    for conversation_id, record in self._conversation_records.items()
+                    if conversation_id in failed_ids
+                }
+                self._credential_bindings = {
+                    conversation_id: bindings
+                    for conversation_id, bindings in self._credential_bindings.items()
+                    if conversation_id in failed_ids
+                }
+            else:
+                self._event_services = None
+                self._conversation_records = {}
+                self._credential_bindings = {}
         if self._run_executor is not None:
             self._run_executor.shutdown(wait=False)
             self._run_executor = None
+        if failures:
+            assert self._event_services is not None
+            for event_service in self._event_services.values():
+                await asyncio.to_thread(event_service.renew_lease)
+            self._lease_renewal_task = asyncio.create_task(
+                self._renew_all_leases_loop()
+            )
+            credential_failure = next(
+                (
+                    failure
+                    for failure in failures
+                    if isinstance(failure, CredentialBindingError)
+                ),
+                None,
+            )
+            raise credential_failure or failures[0]
 
     @classmethod
     def get_instance(cls, config: Config) -> "ConversationService":
@@ -1620,10 +1711,18 @@ class ConversationService:
             if self._event_services is not event_services:
                 raise ValueError("inactive_service")
         except Exception:
-            await event_service.close()
-            pending = self._credential_bindings.setdefault(stored.id, {})
-            for secret_name, binding in credential_bindings.items():
-                pending.setdefault(secret_name, binding)
+            try:
+                await event_service.close()
+            except Exception as close_error:
+                logger.warning(
+                    "Failed to close conversation %s after startup failure: %s",
+                    stored.id,
+                    close_error,
+                )
+            finally:
+                pending = self._credential_bindings.setdefault(stored.id, {})
+                for secret_name, binding in credential_bindings.items():
+                    pending.setdefault(secret_name, binding)
             raise
 
         event_services[stored.id] = event_service

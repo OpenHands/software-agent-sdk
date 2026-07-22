@@ -60,6 +60,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.credential import CredentialSyncError, ResolvedCredential
 from openhands.sdk.event import (
     ACPToolCallEvent,
     ActionEvent,
@@ -2825,6 +2826,54 @@ class TestACPAgentAstep:
         assert agent._restart_session_on_next_turn is False
         assert any(isinstance(event, ActionEvent) for event in emitted)
 
+    def test_cleanup_interruption_emits_masking_error_before_propagating(
+        self,
+        tmp_path,
+    ):
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        client = _OpenHandsACPBridge()
+        client.get_turn_usage_update = MagicMock(return_value=object())
+        emitted = []
+        client.on_event = emitted.append
+        client._masking_error = ACPFileCredentialSyncError("credential tracking failed")
+        client.accumulated_tool_calls.append(
+            {
+                "tool_call_id": "tc-masking-1",
+                "title": "in-flight tool",
+                "status": "in_progress",
+                "tool_kind": None,
+                "raw_input": None,
+                "raw_output": None,
+                "content": None,
+            }
+        )
+        agent._client = client
+        agent._session_id = "test-session"
+        prompt_future: Future[PromptResponse | None] = Future()
+        prompt_future.set_result(None)
+
+        with (
+            conversation.state as state,
+            pytest.raises(ACPFileCredentialSyncError, match="tracking failed"),
+        ):
+            agent._handle_cancelled_cleanup_interruption(
+                prompt_future,
+                0.1,
+                state,
+                emitted.append,
+            )
+
+        assert any(
+            isinstance(event, ACPToolCallEvent)
+            and event.tool_call_id == "tc-masking-1"
+            and event.status == "failed"
+            for event in emitted
+        )
+        assert any(isinstance(event, ConversationErrorEvent) for event in emitted)
+        assert agent._restart_session_on_next_turn is True
+        assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+
     def test_astep_cancellation_does_not_mark_suffix_installed(self, tmp_path):
         """Cancellation before a turn completes must leave
         ``_suffix_install_state`` as ``pending_first_prompt``.
@@ -2968,6 +3017,199 @@ class TestACPAgentAstep:
 
 
 class TestACPAgentCleanup:
+    def test_close_during_credential_materialization_discards_lifecycle(
+        self, tmp_path, monkeypatch
+    ):
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        started = threading.Event()
+        release = threading.Event()
+        value = json.dumps(
+            {
+                "auth_mode": "chatgpt",
+                "tokens": {"refresh_token": "refresh-r0"},
+            }
+        )
+
+        async def load():
+            started.set()
+            assert release.wait(2)
+            return ResolvedCredential(value, "v0")
+
+        binding = MagicMock(spec=["load", "replace"])
+        binding.load = load
+        binding.replace = AsyncMock(return_value="v1")
+        agent.activate_file_credential_binding("CODEX_AUTH_JSON", binding)
+        executor = MagicMock()
+        executor.run_async.side_effect = asyncio.run
+        agent._executor = executor
+        runtime_dir = tmp_path / "runtime-auth"
+
+        def make_runtime_dir(*, prefix):
+            runtime_dir.mkdir()
+            return str(runtime_dir)
+
+        monkeypatch.setattr(
+            acp_file_credentials_module.tempfile,
+            "mkdtemp",
+            make_runtime_dir,
+        )
+        env: dict[str, str] = {}
+        errors: list[BaseException] = []
+
+        def materialize() -> None:
+            try:
+                agent._materialise_file_secrets(state, env)
+            except BaseException as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=materialize)
+        thread.start()
+        assert started.wait(1)
+        agent.close()
+        release.set()
+        thread.join(timeout=2)
+
+        assert not thread.is_alive()
+        assert len(errors) == 1
+        assert isinstance(errors[0], CredentialSyncError)
+        assert str(errors[0]) == "Credential binding is closed."
+        assert agent._file_credential_lifecycles == {}
+        assert "CODEX_HOME" not in env
+        assert not runtime_dir.exists()
+        assert not any(
+            thread.name == "codex-credential-monitor" and thread.is_alive()
+            for thread in threading.enumerate()
+        )
+
+    def test_close_during_failed_legacy_unlink_discards_lifecycle(
+        self, tmp_path, monkeypatch
+    ):
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        started = threading.Event()
+        release = threading.Event()
+        value = json.dumps(
+            {
+                "auth_mode": "chatgpt",
+                "tokens": {"refresh_token": "refresh-r0"},
+            }
+        )
+
+        async def load():
+            started.set()
+            assert release.wait(2)
+            return ResolvedCredential(value, "v0")
+
+        binding = MagicMock(spec=["load", "replace"])
+        binding.load = load
+        binding.replace = AsyncMock(return_value="v1")
+        agent.activate_file_credential_binding("CODEX_AUTH_JSON", binding)
+        executor = MagicMock()
+        executor.run_async.side_effect = asyncio.run
+        agent._executor = executor
+        runtime_dir = tmp_path / "runtime-auth"
+
+        def make_runtime_dir(*, prefix):
+            runtime_dir.mkdir()
+            return str(runtime_dir)
+
+        durable_dir = MagicMock()
+        durable_path = durable_dir.__truediv__.return_value
+        durable_path.unlink.side_effect = OSError("unlink failed")
+        monkeypatch.setattr(
+            acp_file_credentials_module.tempfile,
+            "mkdtemp",
+            make_runtime_dir,
+        )
+        monkeypatch.setattr(
+            ACPAgent,
+            "_acp_file_secret_dir",
+            lambda *_args: durable_dir,
+        )
+        env: dict[str, str] = {}
+        errors: list[BaseException] = []
+
+        def materialize() -> None:
+            try:
+                agent._materialise_file_secrets(state, env)
+            except BaseException as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=materialize)
+        thread.start()
+        assert started.wait(1)
+        agent.close()
+        release.set()
+        thread.join(timeout=2)
+
+        assert not thread.is_alive()
+        assert len(errors) == 1
+        assert isinstance(errors[0], CredentialSyncError)
+        assert str(errors[0]) == "Durable credential copy could not be removed."
+        assert agent._file_credential_lifecycles == {}
+        assert "CODEX_HOME" not in env
+        assert not runtime_dir.exists()
+        binding.replace.assert_not_awaited()
+
+    def test_failed_credential_materialization_can_retry(self, tmp_path):
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        durable_auth = agent._acp_file_secret_dir(state, "codex") / "auth.json"
+        durable_auth.parent.mkdir(parents=True)
+        durable_auth.write_text('{"legacy": true}', encoding="utf-8")
+        valid = json.dumps(
+            {
+                "auth_mode": "chatgpt",
+                "tokens": {"refresh_token": "refresh-r0"},
+            }
+        )
+        binding = MagicMock(spec=["load", "replace"])
+        binding.load = AsyncMock(
+            side_effect=[
+                ResolvedCredential("{}", "v0"),
+                ResolvedCredential(valid, "v1"),
+            ]
+        )
+        binding.replace = AsyncMock(return_value="v2")
+        agent.activate_file_credential_binding("CODEX_AUTH_JSON", binding)
+        agent._executor = AsyncExecutor()
+
+        with pytest.raises(ACPFileCredentialNeedsReauthError):
+            agent._materialise_file_secrets(state, {})
+
+        assert agent._file_credential_lifecycles == {}
+        assert durable_auth.read_text(encoding="utf-8") == '{"legacy": true}'
+        env: dict[str, str] = {}
+        agent._materialise_file_secrets(state, env)
+        assert Path(env["CODEX_HOME"], "auth.json").read_text() == valid
+        assert not durable_auth.exists()
+        agent.close()
+
+    def test_failed_init_keeps_agent_reusable(self, tmp_path):
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        binding = MagicMock(spec=["load", "replace"])
+        agent.activate_file_credential_binding("CODEX_AUTH_JSON", binding)
+        events: list = []
+
+        with patch.object(
+            ACPAgent,
+            "_start_acp_server",
+            side_effect=[RuntimeError("startup failed"), None],
+        ):
+            with pytest.raises(RuntimeError, match="startup failed"):
+                agent.init_state(state, events.append)
+            assert agent._closed is False
+            assert agent._file_credential_bindings == {"CODEX_AUTH_JSON": binding}
+
+            agent.init_state(state, events.append)
+
+        assert agent._initialized is True
+        agent.close()
+
     def test_close_terminates_process(self):
         agent = _make_agent()
         mock_process = MagicMock()
@@ -3015,6 +3257,129 @@ class TestACPAgentCleanup:
 
         # Should not raise
         agent.close()
+
+    def test_failed_credential_close_can_be_retried(self):
+        agent = _make_agent()
+        lifecycle = MagicMock()
+        lifecycle.close.side_effect = [CredentialSyncError("unavailable"), None]
+        binding = MagicMock()
+        executor = MagicMock()
+        agent._file_credential_lifecycles["CODEX_AUTH_JSON"] = lifecycle
+        agent._file_credential_bindings["CODEX_AUTH_JSON"] = binding
+        agent._executor = executor
+
+        with pytest.raises(CredentialSyncError, match="unavailable"):
+            agent.close()
+
+        assert agent._closed is True
+        assert agent._file_credential_lifecycles == {"CODEX_AUTH_JSON": lifecycle}
+        assert agent._file_credential_bindings == {"CODEX_AUTH_JSON": binding}
+        executor.close.assert_not_called()
+
+        agent.close()
+
+        assert agent._file_credential_lifecycles == {}
+        assert agent._file_credential_bindings == {}
+        executor.close.assert_called_once_with()
+
+    def test_kill_wait_is_bounded(self):
+        agent = _make_agent()
+        process = MagicMock()
+        process.returncode = None
+        process.terminate.side_effect = OSError("still running")
+        executor = MagicMock()
+        agent._process = process
+        agent._executor = executor
+
+        agent.close()
+
+        process.kill.assert_called_once_with()
+        executor.run_async.assert_called_once_with(
+            agent._wait_for_process,
+            process,
+            timeout=5.0,
+        )
+
+    def test_finalizer_falls_back_when_thread_start_fails(self):
+        agent = _make_agent()
+        agent._executor = MagicMock()
+
+        with (
+            patch.object(threading.Thread, "start", side_effect=RuntimeError),
+            patch.object(ACPAgent, "_finalize") as finalize,
+        ):
+            agent.__del__()
+
+        finalize.assert_called_once_with()
+        agent._executor = None
+
+    def test_atexit_cleanup_is_weak_and_inline(self):
+        agent = _make_agent()
+
+        with (
+            patch.object(acp_agent_module.atexit, "register") as register,
+            patch.object(acp_agent_module.atexit, "unregister") as unregister,
+            patch.object(ACPAgent, "_finalize") as finalize,
+        ):
+            agent._register_atexit_cleanup()
+            callback = register.call_args.args[0]
+            callback()
+            agent._unregister_atexit_cleanup()
+
+        finalize.assert_called_once_with()
+        unregister.assert_called_once_with(callback)
+
+    def test_atexit_callback_does_not_retain_agent(self):
+        with patch.object(acp_agent_module.atexit, "register") as register:
+            agent = _make_agent()
+            agent._register_atexit_cleanup()
+            callback = register.call_args.args[0]
+            agent_ref = weakref.ref(agent)
+
+            del agent
+            gc.collect()
+
+        assert agent_ref() is None
+        assert callback() is None
+
+    def test_turn_error_survives_credential_tracking_failure(self, tmp_path):
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        client = _OpenHandsACPBridge()
+        events: list = []
+        client.on_event = events.append
+        client.accumulated_tool_calls.append(
+            {
+                "tool_call_id": "tc-1",
+                "title": "Run",
+                "status": "in_progress",
+                "raw_input": None,
+                "raw_output": None,
+                "content": None,
+            }
+        )
+        agent._client = client
+        lifecycle = _attach_file_credential_lifecycle(agent, tmp_path / "auth.json")
+        raw_rotated_token = "raw-rotated-token"
+        lifecycle.track_current.side_effect = ACPFileCredentialSyncError(
+            "credential tracking failed"
+        )
+
+        agent._emit_turn_error(
+            RuntimeError(f"upstream returned {raw_rotated_token}"),
+            state,
+            events.append,
+        )
+
+        assert isinstance(events[0], ACPToolCallEvent)
+        assert events[0].status == "failed"
+        assert any(isinstance(event, MessageEvent) for event in events)
+        assert any(isinstance(event, ConversationErrorEvent) for event in events)
+        serialized = "\n".join(event.model_dump_json() for event in events)
+        assert raw_rotated_token not in serialized
+        assert "credential tracking failed" in serialized
+        assert state.execution_status == ConversationExecutionStatus.ERROR
+        agent.release_runtime()
 
 
 # ---------------------------------------------------------------------------
@@ -8314,6 +8679,43 @@ class TestACPFileSecretMaterialisation:
         # preserved 0644 file staying world-readable).
         assert refreshed.stat().st_mode & 0o777 == 0o600
 
+    def test_updated_credential_replaces_existing_file_once(self, tmp_path):
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
+        codex_home = Path(persist) / "acp" / "codex"
+        codex_home.mkdir(parents=True)
+        auth_file = codex_home / "auth.json"
+        auth_file.write_text('{"stale": true}', encoding="utf-8")
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": StaticSecret(value=SecretStr('{"fallback": true}'))}
+        )
+        agent.restart_for_updated_credentials({"CODEX_AUTH_JSON"})
+
+        env = self._run_start(agent, state, conn=self._make_conn())
+
+        assert Path(env["CODEX_HOME"]) == codex_home
+        assert auth_file.read_text(encoding="utf-8") == '{"fallback": true}'
+        assert (
+            "CODEX_AUTH_JSON"
+            not in agent._replace_file_credentials_on_next_materialisation
+        )
+
+        auth_file.write_text('{"refreshed": true}', encoding="utf-8")
+        state.secret_registry.update_secrets(
+            {
+                "CODEX_AUTH_JSON": StaticSecret(
+                    value=SecretStr('{"newer-fallback": true}')
+                )
+            }
+        )
+        agent._materialise_file_secrets(state, env)
+
+        assert auth_file.read_text(encoding="utf-8") == '{"refreshed": true}'
+
     def test_reads_reserved_secret_seeded_from_agent_context(self, tmp_path):
         """A reserved file secret supplied via agent_context.secrets (canvas-local
         path) is seeded into the registry at conversation init and materialised."""
@@ -8587,6 +8989,35 @@ class TestACPDataDirIsolation:
             encoding="utf-8"
         ) == '{"tokens": "x"}'
 
+    def test_binding_overrides_isolated_codex_home(self, tmp_path):
+        agent = self._agent(["codex-acp"])
+        state = self._H._state(tmp_path)
+        durable_codex_home = Path(state.persistence_dir or "") / "acp" / "codex"
+        durable_codex_home.mkdir(parents=True)
+        durable_auth = durable_codex_home / "auth.json"
+        durable_auth.write_text('{"legacy": true}', encoding="utf-8")
+        auth = json.dumps(
+            {
+                "auth_mode": "chatgpt",
+                "tokens": {"refresh_token": "refresh-r0", "access_token": "access-r0"},
+            }
+        )
+        binding = MagicMock(spec=["load", "replace"])
+        binding.load = AsyncMock(return_value=ResolvedCredential(auth, "v0"))
+        binding.replace = AsyncMock(return_value="v1")
+        agent.activate_file_credential_binding("CODEX_AUTH_JSON", binding)
+
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(agent, state, conn=self._H._make_conn())
+        try:
+            codex_home = Path(env["CODEX_HOME"])
+            assert codex_home != durable_codex_home
+            assert (codex_home / "auth.json").read_text(encoding="utf-8") == auth
+            assert not durable_auth.exists()
+            assert durable_codex_home.exists()
+        finally:
+            agent.close()
+
     # --- Claude: isolation applies under either auth mode (#3588) ------------
 
     def test_claude_isolates_under_api_key(self, tmp_path):
@@ -8772,6 +9203,46 @@ class TestACPBridgeMasking:
         assert (
             client.accumulated_tool_calls[0]["raw_output"] == "result: <secret-hidden>"
         )
+
+    @pytest.mark.asyncio
+    async def test_failed_progress_mask_keeps_accumulator_safe(self):
+        from contextlib import suppress
+
+        from acp.schema import ToolCallProgress, ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        client.mask = _redacting_mask
+
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Run"
+        start.kind = "execute"
+        start.status = "in_progress"
+        start.raw_input = None
+        start.raw_output = None
+        start.content = None
+        await client.session_update("sess-1", start)
+
+        client.before_mask = MagicMock(
+            side_effect=ACPFileCredentialSyncError("writeback failed")
+        )
+        progress = MagicMock(spec=ToolCallProgress)
+        progress.tool_call_id = "tc-1"
+        progress.title = None
+        progress.kind = None
+        progress.status = "completed"
+        progress.raw_input = None
+        progress.raw_output = "rotated SEKRET"
+        progress.content = None
+
+        with suppress(ACPFileCredentialSyncError):
+            await client.session_update("sess-1", progress)
+
+        stored = client.accumulated_tool_calls[0]
+        assert stored["status"] == "in_progress"
+        assert stored["raw_output"] is None
+        with pytest.raises(ACPFileCredentialSyncError, match="writeback failed"):
+            client._raise_masking_error()
 
     @pytest.mark.asyncio
     async def test_no_masking_when_mask_unset(self):
