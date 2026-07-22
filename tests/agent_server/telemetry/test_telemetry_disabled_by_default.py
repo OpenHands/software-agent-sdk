@@ -96,12 +96,89 @@ async def test_disabled_server_never_constructs_the_exporter(temp_persistence_di
     assert built == []
 
 
-def test_conversation_service_defaults_to_a_noop_sink(temp_persistence_dir):
-    from openhands.agent_server.conversation_service import ConversationService
+async def test_conversation_service_reads_the_live_sink_not_a_captured_one(
+    tmp_path, monkeypatch
+):
+    """Regression: conversation telemetry must gate on the *live* process sink.
 
-    service = ConversationService(conversations_dir=temp_persistence_dir)
-    assert isinstance(service.telemetry_sink, NoOpTelemetrySink)
-    assert service.telemetry_sink.enabled is False
+    ``ConversationService`` is instantiated at import time (``sockets.py`` module
+    scope), before the lifespan builds the telemetry sink. If the gate read a sink
+    captured at construction, every conversation would see the pre-init NoOp and
+    emit nothing regardless of consent. Build the service while the sink is still a
+    NoOp, enable telemetry afterwards, and assert a new conversation still attaches
+    the subscriber and emits ``conversation_started``.
+    """
+    from uuid import uuid4
+
+    import openhands.agent_server.telemetry.service as service_mod
+    from openhands.agent_server.conversation_service import ConversationService
+    from openhands.agent_server.models import StoredConversation
+    from openhands.agent_server.telemetry import models as m
+    from openhands.agent_server.telemetry.factory import (
+        DiagnosticEventFactory,
+        build_runtime_properties,
+    )
+    from openhands.sdk import LLM, Agent
+    from openhands.sdk.security.confirmation_policy import NeverConfirm
+    from openhands.sdk.workspace import LocalWorkspace
+
+    # 1. Construct the service while telemetry is still the pre-init NoOp — the
+    #    exact ordering sockets.py forces by building the service at import.
+    service_mod.reset_telemetry_sink()
+    assert isinstance(get_telemetry_sink(), NoOpTelemetrySink)
+    service = ConversationService(conversations_dir=tmp_path)
+
+    # 2. Telemetry is enabled later (lifespan build / consent grant).
+    class _RecordingSink:
+        enabled = True
+
+        def __init__(self):
+            self.events: list[str] = []
+
+        def emit(self, event):
+            self.events.append(str(event.event_name))
+
+        def on_decision_changed(self, decision):
+            pass
+
+        async def aclose(self):
+            pass
+
+    sink = _RecordingSink()
+    monkeypatch.setattr(service_mod, "_telemetry_sink", sink)
+    monkeypatch.setattr(
+        service_mod,
+        "_event_factory",
+        DiagnosticEventFactory(runtime=build_runtime_properties(deferred_init=False)),
+    )
+
+    # 3. A brand-new conversation must attach the subscriber and emit started,
+    #    reading the now-enabled sink rather than the NoOp present in step 1.
+    class _FakeEventService:
+        def __init__(self):
+            self.subscribers: list[object] = []
+
+        async def subscribe_to_events(self, subscriber):
+            self.subscribers.append(subscriber)
+
+    event_service = _FakeEventService()
+    stored = StoredConversation(
+        id=uuid4(),
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(tmp_path)),
+        confirmation_policy=NeverConfirm(),
+        initial_message=None,
+        metrics=None,
+    )
+
+    await service._maybe_subscribe_telemetry(
+        event_service,  # type: ignore[arg-type]
+        stored,
+        is_new_conversation=True,
+    )
+
+    assert len(event_service.subscribers) == 1
+    assert m.EventName.CONVERSATION_STARTED in sink.events
 
 
 def test_app_exposes_a_sink_on_state_after_startup(temp_persistence_dir):

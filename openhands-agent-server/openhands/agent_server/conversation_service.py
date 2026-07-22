@@ -37,8 +37,6 @@ from openhands.agent_server.skills_service import discover_profile_skills
 from openhands.agent_server.telemetry import (
     ConversationTelemetryContext,
     DiagnosticEventFactory,
-    NoOpTelemetrySink,
-    TelemetrySink,
     TelemetrySubscriber,
     get_event_factory,
     get_telemetry_sink,
@@ -515,7 +513,6 @@ class ConversationService:
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     max_concurrent_runs: int = 10
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
-    telemetry_sink: TelemetrySink = field(default_factory=NoOpTelemetrySink)
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_records: dict[UUID, _ConversationRecord] = field(
         default_factory=dict, init=False
@@ -1457,7 +1454,6 @@ class ConversationService:
             mcp_tool_provider=create_settings_backed_mcp_tool_provider(config),
             max_concurrent_runs=config.max_concurrent_runs,
             lease_ttl_seconds=config.lease_ttl_seconds,
-            telemetry_sink=get_telemetry_sink(),
         )
 
     async def _start_event_service(
@@ -1547,7 +1543,15 @@ class ConversationService:
         startup. The ``enabled`` check comes first so the disabled path does no
         sanitization work at all.
         """
-        if not self.telemetry_sink.enabled:
+        # Resolve the process sink lazily rather than trusting a value captured
+        # at construction. ``ConversationService`` is instantiated at import
+        # time (``sockets.py`` module scope), before the lifespan builds the
+        # sink, so a cached reference is always the pre-init NoOp — which would
+        # silence conversation telemetry regardless of consent. Reading the
+        # current sink here makes conversations honour the live decision, the
+        # same way the server-lifecycle and request-failed paths already do.
+        sink = get_telemetry_sink()
+        if not sink.enabled:
             return
         try:
             factory = get_event_factory()
@@ -1556,7 +1560,7 @@ class ConversationService:
 
             subscriber = TelemetrySubscriber(
                 conversation_id=stored.id,
-                sink=self.telemetry_sink,
+                sink=sink,
                 factory=factory,
                 context=_build_telemetry_context(stored, factory),
             )
