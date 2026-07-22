@@ -69,7 +69,7 @@ def _shallow_expand_circular_ref(ref_def: dict[str, Any]) -> dict[str, Any]:
 
 
 def _process_schema_node(
-    node: dict[str, Any],
+    node: dict[str, Any] | bool,
     defs: dict[str, Any],
     _visiting: frozenset[str] | None = None,
 ) -> dict[str, Any]:
@@ -104,6 +104,12 @@ def _process_schema_node(
     if _visiting is None:
         _visiting = frozenset()
 
+    # JSON Schema allows boolean sub-schemas: `true` accepts any value and
+    # `false` accepts none. Normalize them to their object equivalents so the
+    # rest of this function can assume a dict node.
+    if isinstance(node, bool):
+        return {} if node else {"not": {}}
+
     # Handle $ref references
     if "$ref" in node:
         ref_path = node["$ref"]
@@ -134,7 +140,11 @@ def _process_schema_node(
 
     # Handle anyOf (often used for optional fields with None)
     if "anyOf" in node:
-        non_null_types = [t for t in node["anyOf"] if t.get("type") != "null"]
+        non_null_types = [
+            t
+            for t in node["anyOf"]
+            if not isinstance(t, dict) or t.get("type") != "null"
+        ]
         if non_null_types:
             # Process the first non-null type
             processed = _process_schema_node(non_null_types[0], defs, _visiting)
