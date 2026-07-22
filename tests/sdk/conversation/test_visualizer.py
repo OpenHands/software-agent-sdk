@@ -558,7 +558,7 @@ def test_metrics_subtitle_caps_cache_rate_when_cache_exceeds_prompt():
 
     subtitle = visualizer._format_metrics_subtitle()
     assert subtitle is not None
-    match = re.search(r"cache hit ([\d.]+)%", subtitle)
+    match = re.search(r"cache hit (?:\(total )?([\d.]+)%", subtitle)
     assert match, subtitle
     rate = float(match.group(1))
     assert 0.0 <= rate <= 100.0, f"cache hit rate {rate} outside [0, 100]"
@@ -607,6 +607,248 @@ def test_metrics_abbreviation_formatting():
         assert expected in subtitle, (
             f"Expected '{expected}' in subtitle for {tokens}, got: {subtitle}"
         )
+
+
+def test_metrics_subtitle_shows_per_request_and_cumulative():
+    """Two sequential requests on the same LLM: the subtitle for the latest
+    event should show both the per-request usage and the running cumulative
+    total, not just the total (#4105)."""
+    stats = ConversationStats()
+    metrics = Metrics(model_name="test-model")
+    metrics.add_token_usage(
+        prompt_tokens=4390,
+        completion_tokens=144,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        reasoning_tokens=0,
+        context_window=8000,
+        response_id="response_1",
+    )
+    metrics.add_token_usage(
+        prompt_tokens=4630,
+        completion_tokens=114,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        reasoning_tokens=0,
+        context_window=8000,
+        response_id="response_2",
+    )
+    stats.usage_to_metrics["agent"] = metrics
+
+    visualizer = DefaultConversationVisualizer()
+    mock_state = MagicMock()
+    mock_state.stats = stats
+    visualizer.initialize(mock_state)
+
+    tool_call = create_tool_call("call_1", "test", {})
+    event = ActionEvent(
+        thought=[TextContent(text="Testing")],
+        action=VisualizerMockAction(command="test"),
+        tool_name="test",
+        tool_call_id="call_1",
+        tool_call=tool_call,
+        llm_response_id="response_2",
+    )
+
+    subtitle = visualizer._format_metrics_subtitle(event)
+    # Full-string assertion pins down which number is per-request vs.
+    # cumulative -- individual `in subtitle` checks can't tell "input 4.63K
+    # (total 9.02K)" apart from the numbers swapped.
+    assert subtitle == (
+        "Tokens: [cyan]↑ input 4.63K (total 9.02K)[/cyan] • "
+        "[magenta]cache hit 0.00% (total 0.00%)[/magenta] • "
+        "[blue]↓ output 114 (total 258)[/blue] • "
+        "[green]$ (total 0.00)[/green]"
+    )
+
+
+def test_metrics_subtitle_reasoning_and_cache_hit_are_per_request():
+    """Regression: reasoning tokens and cache hit rate must get the same
+    per-request "X (total Y)" treatment as input/output tokens. Showing the
+    cumulative reasoning count unlabeled next to per-request input/output
+    numbers reads as per-request too, which is the exact confusion #4105 set
+    out to fix."""
+    stats = ConversationStats()
+    metrics = Metrics(model_name="test-model")
+    metrics.add_token_usage(
+        prompt_tokens=1000,
+        completion_tokens=100,
+        cache_read_tokens=100,
+        cache_write_tokens=0,
+        reasoning_tokens=200,
+        context_window=8000,
+        response_id="response_1",
+    )
+    metrics.add_token_usage(
+        prompt_tokens=2000,
+        completion_tokens=200,
+        cache_read_tokens=1000,
+        cache_write_tokens=0,
+        reasoning_tokens=50,
+        context_window=8000,
+        response_id="response_2",
+    )
+    stats.usage_to_metrics["agent"] = metrics
+
+    visualizer = DefaultConversationVisualizer()
+    mock_state = MagicMock()
+    mock_state.stats = stats
+    visualizer.initialize(mock_state)
+
+    tool_call = create_tool_call("call_1", "test", {})
+    event = ActionEvent(
+        thought=[TextContent(text="Testing")],
+        action=VisualizerMockAction(command="test"),
+        tool_name="test",
+        tool_call_id="call_1",
+        tool_call=tool_call,
+        llm_response_id="response_2",
+    )
+
+    subtitle = visualizer._format_metrics_subtitle(event)
+    assert subtitle is not None
+    # Per-request reasoning (response_2 only: 50), not the cumulative 250.
+    assert "reasoning 50 (total 250)" in subtitle
+    # Per-request cache hit rate (1000 / 2000), not the cumulative rate.
+    assert "cache hit 50.00% (total 36.67%)" in subtitle
+
+
+def test_metrics_subtitle_matches_by_response_id_not_last_index():
+    """Regression: get_combined_metrics().token_usages[-1] merges usages
+    across every usage id (agent, condenser, ...) and is not chronological
+    across them. Per-request usage must be looked up by response_id, which
+    telemetry sets to the same id events carry as llm_response_id (#4105)."""
+    stats = ConversationStats()
+
+    # Condenser usage id is inserted first...
+    condenser_metrics = Metrics(model_name="test-model")
+    condenser_metrics.add_token_usage(
+        prompt_tokens=2000,
+        completion_tokens=50,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        reasoning_tokens=0,
+        context_window=8000,
+        response_id="condenser_response",
+    )
+    stats.usage_to_metrics["condenser"] = condenser_metrics
+
+    # ...then the agent usage id, which lands last in the merged list.
+    agent_metrics = Metrics(model_name="test-model")
+    agent_metrics.add_token_usage(
+        prompt_tokens=999,
+        completion_tokens=9,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        reasoning_tokens=0,
+        context_window=8000,
+        response_id="agent_response",
+    )
+    stats.usage_to_metrics["agent"] = agent_metrics
+
+    # Sanity check: naive token_usages[-1] would return the agent usage, not
+    # the condenser usage this test looks up.
+    combined = stats.get_combined_metrics()
+    assert combined.token_usages[-1].response_id == "agent_response"
+
+    visualizer = DefaultConversationVisualizer()
+    mock_state = MagicMock()
+    mock_state.stats = stats
+    visualizer.initialize(mock_state)
+
+    tool_call = create_tool_call("call_1", "test", {})
+    event = ActionEvent(
+        thought=[TextContent(text="Testing")],
+        action=VisualizerMockAction(command="test"),
+        tool_name="test",
+        tool_call_id="call_1",
+        tool_call=tool_call,
+        llm_response_id="condenser_response",
+    )
+
+    request_usage = visualizer._find_request_usage(event)
+    assert request_usage is not None
+    assert request_usage.prompt_tokens == 2000
+    assert request_usage.completion_tokens == 50
+
+
+def test_metrics_subtitle_fallback_labels_totals():
+    """No event, or an event whose response_id is unknown (e.g. the ACP path,
+    where response ids are per-session), must label every number "(total)":
+    bare numbers next to per-request events read as per-request, which is the
+    confusion #4105 set out to fix."""
+    stats = ConversationStats()
+    metrics = Metrics(model_name="test-model")
+    metrics.add_token_usage(
+        prompt_tokens=1000,
+        completion_tokens=100,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        reasoning_tokens=0,
+        context_window=8000,
+        response_id="response_1",
+    )
+    stats.usage_to_metrics["agent"] = metrics
+
+    visualizer = DefaultConversationVisualizer()
+    mock_state = MagicMock()
+    mock_state.stats = stats
+    visualizer.initialize(mock_state)
+
+    expected = (
+        "Tokens: [cyan]↑ input (total 1K)[/cyan] • "
+        "[magenta]cache hit (total 0.00%)[/magenta] • "
+        "[blue]↓ output (total 100)[/blue] • "
+        "[green]$ (total 0.00)[/green]"
+    )
+
+    # No event at all.
+    assert visualizer._format_metrics_subtitle() == expected
+
+    # Event carries a response_id that doesn't match any recorded usage.
+    tool_call = create_tool_call("call_1", "test", {})
+    event = ActionEvent(
+        thought=[TextContent(text="Testing")],
+        action=VisualizerMockAction(command="test"),
+        tool_name="test",
+        tool_call_id="call_1",
+        tool_call=tool_call,
+        llm_response_id="unknown_response",
+    )
+    assert visualizer._format_metrics_subtitle(event) == expected
+
+
+def test_metrics_subtitle_user_message_labels_totals():
+    """User MessageEvents carry no llm_response_id, so their subtitle can only
+    show running totals -- and must say so instead of printing bare numbers."""
+    stats = ConversationStats()
+    metrics = Metrics(model_name="test-model")
+    metrics.add_token_usage(
+        prompt_tokens=1000,
+        completion_tokens=100,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        reasoning_tokens=0,
+        context_window=8000,
+        response_id="response_1",
+    )
+    stats.usage_to_metrics["agent"] = metrics
+
+    visualizer = DefaultConversationVisualizer()
+    mock_state = MagicMock()
+    mock_state.stats = stats
+    visualizer.initialize(mock_state)
+
+    user_event = MessageEvent(
+        source="user",
+        llm_message=Message(role="user", content=[TextContent(text="Hello")]),
+    )
+    assert visualizer._format_metrics_subtitle(user_event) == (
+        "Tokens: [cyan]↑ input (total 1K)[/cyan] • "
+        "[magenta]cache hit (total 0.00%)[/magenta] • "
+        "[blue]↓ output (total 100)[/blue] • "
+        "[green]$ (total 0.00)[/green]"
+    )
 
 
 def test_event_base_fallback_visualize():
