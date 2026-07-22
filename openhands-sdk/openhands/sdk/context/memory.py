@@ -1,4 +1,4 @@
-"""Two-tier persistent-memory loader (issue #2037).
+"""Two-tier persistent-memory loader.
 
 Reads the agent-maintained ``MEMORY.md`` indexes -- ``~/.openhands/memory/``
 (user tier) and ``<workspace>/.openhands/memory/`` (project tier) -- into one
@@ -21,7 +21,7 @@ __all__ = ["MEMORY_CHAR_BUDGET", "MEMORY_INDEX_RELPATH", "load_memory"]
 
 MEMORY_INDEX_RELPATH: Final[str] = ".openhands/memory/MEMORY.md"
 MEMORY_CHAR_BUDGET: Final[int] = 6000
-_TRUNCATION_NOTICE: Final[str] = "[earlier memory truncated]\n"
+_TRUNCATION_NOTICE: Final[str] = "[earlier memory truncated]"
 
 
 def _read_index(path: Path) -> str | None:
@@ -35,6 +35,23 @@ def _read_index(path: Path) -> str | None:
     return text or None
 
 
+def _truncate_top(body: str, budget: int) -> str:
+    """Drop whole lines from the top of ``body`` until it fits ``budget``.
+
+    A truncated body starts with the truncation notice (which counts toward
+    the budget); partial lines never survive.
+    """
+    if len(body) <= budget:
+        return body
+    lines = body.splitlines()
+    while lines:
+        del lines[0]
+        candidate = "\n".join([_TRUNCATION_NOTICE, *lines])
+        if len(candidate) <= budget:
+            return candidate
+    return _TRUNCATION_NOTICE
+
+
 def load_memory(
     working_dir: str | Path, char_budget: int = MEMORY_CHAR_BUDGET
 ) -> str | None:
@@ -42,19 +59,39 @@ def load_memory(
 
     User tier first, project tier second (the later position gets more model
     attention). Returns ``None`` when neither index has content. Over-budget
-    text is truncated from the top, keeping the most recent tail -- the
-    maintenance instructions tell the agent to append.
+    tiers are truncated line-wise from the top, keeping the most recent tail
+    -- the maintenance instructions tell the agent to append -- while tier
+    headers (and truncation notices) always survive. That skeleton is the
+    budget's effective floor: ``char_budget`` is honored whenever it covers
+    the headers plus one notice per tier (~150 chars for both tiers).
     """
-    tiers: list[str] = []
+    tiers: list[tuple[str, str]] = []
     user_index = _read_index(Path.home() / MEMORY_INDEX_RELPATH)
     if user_index is not None:
-        tiers.append(f"# User memory (~/{MEMORY_INDEX_RELPATH})\n{user_index}")
+        tiers.append((f"# User memory (~/{MEMORY_INDEX_RELPATH})", user_index))
     project_index = _read_index(Path(working_dir) / MEMORY_INDEX_RELPATH)
     if project_index is not None:
-        tiers.append(f"# Project memory ({MEMORY_INDEX_RELPATH})\n{project_index}")
+        tiers.append((f"# Project memory ({MEMORY_INDEX_RELPATH})", project_index))
     if not tiers:
         return None
-    combined = "\n\n".join(tiers)
-    if len(combined) > char_budget:
-        combined = _TRUNCATION_NOTICE + combined[-char_budget:]
-    return combined
+
+    combined = "\n\n".join(f"{header}\n{body}" for header, body in tiers)
+    if len(combined) <= char_budget:
+        return combined
+
+    # Headers and blank-line separators are always emitted; the remaining
+    # budget is split evenly across tier bodies, a short tier's unused share
+    # rolling over to the other.
+    overhead = sum(len(header) + 1 for header, _ in tiers) + 2 * (len(tiers) - 1)
+    body_budget = char_budget - overhead
+    fair_share = body_budget // len(tiers)
+    budgets = [min(len(body), fair_share) for _, body in tiers]
+    leftover = body_budget - sum(budgets)
+    for i, (_, body) in enumerate(tiers):
+        extra = min(leftover, len(body) - budgets[i])
+        budgets[i] += extra
+        leftover -= extra
+    return "\n\n".join(
+        f"{header}\n{_truncate_top(body, budget)}"
+        for (header, body), budget in zip(tiers, budgets)
+    )

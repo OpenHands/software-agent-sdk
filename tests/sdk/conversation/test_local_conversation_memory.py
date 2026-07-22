@@ -25,6 +25,8 @@ def isolated_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    # USERPROFILE is what Path.home() reads on Windows, where HOME is a no-op.
+    monkeypatch.setenv("USERPROFILE", str(home))
     return home
 
 
