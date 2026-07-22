@@ -802,6 +802,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             logger.warning("Error closing executor for tool '%s': %s", tool.name, exc)
 
     def add_runtime_tools(self, tools: Sequence[ToolDefinition]) -> None:
+        """Register tools materialized at runtime (e.g. MCP tools).
+
+        Tools are subject to `filter_tools_regex`; built-in default tools are
+        exempt, matching the behavior of `_initialize()`.
+        """
         if not self._initialized:
             logger.warning(
                 "add_runtime_tools called before agent initialization; "
@@ -813,6 +818,22 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 raise ValueError(
                     f"Tool {tool} is not an instance of 'ToolDefinition'. "
                     f"Got type: {type(tool)}"
+                )
+
+        if self.filter_tools_regex:
+            pattern = re.compile(self.filter_tools_regex)
+            builtin_classes = tuple(BUILT_IN_TOOL_CLASSES.values())
+            num_tools = len(tools)
+            tools = [
+                tool
+                for tool in tools
+                if isinstance(tool, builtin_classes) or pattern.match(tool.name)
+            ]
+            if len(tools) != num_tools:
+                logger.info(
+                    "Filtered runtime tools from %d to %d after applying regex filter",
+                    num_tools,
+                    len(tools),
                 )
 
         tool_names = [tool.name for tool in tools]
