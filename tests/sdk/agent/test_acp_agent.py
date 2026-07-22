@@ -773,6 +773,9 @@ class TestClassifyACPInitError:
         exc = ACPRequestError(-32603, "Internal error")
         assert _classify_acp_init_error(exc) == "ACPInitError"
 
+    def test_timeout_error_is_startup_timeout(self):
+        assert _classify_acp_init_error(TimeoutError()) == "ACPStartupTimeout"
+
     def test_file_not_found_is_spawn_error(self):
         assert _classify_acp_init_error(FileNotFoundError()) == "ACPSpawnError"
 
@@ -6569,6 +6572,49 @@ class TestACPSessionIdPersistence:
         assert kwargs["cwd"] == str(workspace)
         conn2.new_session.assert_not_awaited()
         assert agent2._session_id == "roundtrip-sess"
+
+    def test_start_acp_server_bounds_a_hung_handshake_call(self, tmp_path):
+        """A hung ACP call during the handshake (e.g. codex-acp blocking on an
+        expired id_token inside authenticate(), #3629) used to freeze
+        init_state() forever. acp_startup_timeout now bounds the whole
+        _init() coroutine, and the resulting bare TimeoutError (raised by
+        anyio.fail_after with no message) is converted to a descriptive one."""
+        agent = _make_agent(acp_startup_timeout=0.05)
+        state = _make_state(tmp_path)
+        conn = self._make_conn()
+
+        async def _hang(*_args, **_kwargs):
+            await asyncio.sleep(10)
+
+        conn.initialize = _hang
+
+        with pytest.raises(TimeoutError, match="ACP startup timed out after 0s"):
+            self._patched_start_acp_server(agent, state, conn=conn)
+
+    def test_init_state_surfaces_startup_timeout(self, tmp_path):
+        """The converted TimeoutError reaches the client as a typed
+        ACPStartupTimeout ConversationErrorEvent, not a generic ACPInitError,
+        via the same init_state() cold-start path as other classified
+        failures."""
+        agent = _make_agent(acp_startup_timeout=0.05)
+        state = _make_state(tmp_path)
+        conn = self._make_conn()
+
+        async def _hang(*_args, **_kwargs):
+            await asyncio.sleep(10)
+
+        conn.initialize = _hang
+        events: list = []
+
+        with self._transport_patches(conn):
+            with pytest.raises(TimeoutError):
+                agent.init_state(state, on_event=events.append)
+
+        errors = [e for e in events if isinstance(e, ConversationErrorEvent)]
+        assert len(errors) == 1
+        assert errors[0].code == "ACPStartupTimeout"
+        assert "ACP startup timed out after 0s" in errors[0].detail
+        assert state.execution_status == ConversationExecutionStatus.ERROR
 
 
 class TestACPSecretsEnvInjection:

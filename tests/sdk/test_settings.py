@@ -168,6 +168,7 @@ def test_acp_agent_settings_export_schema_has_acp_section() -> None:
         "acp_model",
         "acp_session_mode",
         "acp_prompt_timeout",
+        "acp_startup_timeout",
     }
     # Server picker + model are both critical — users pick server then
     # model. Raw command is a minor override for power users.

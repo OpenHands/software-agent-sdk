@@ -26,6 +26,7 @@ from openhands.sdk.event import (
 )
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.condenser import Condensation, CondensationRequest
+from openhands.sdk.llm.utils.metrics import MetricsSnapshot, TokenUsage
 
 
 logger = logging.getLogger(__name__)
@@ -360,7 +361,7 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
         title_color = config.color(event) if callable(config.color) else config.color
 
         # Build subtitle if needed
-        subtitle = self._format_metrics_subtitle() if config.show_metrics else None
+        subtitle = self._format_metrics_subtitle(event) if config.show_metrics else None
 
         return build_event_block(
             content=content,
@@ -369,7 +370,41 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
             subtitle=subtitle,
         )
 
-    def _format_metrics_subtitle(self) -> str | None:
+    def _find_request_usage(self, event: Event | None) -> TokenUsage | None:
+        """Find the TokenUsage for the LLM request that produced ``event``.
+
+        Matches on ``TokenUsage.response_id``, not on list position: telemetry
+        records ``TokenUsage.response_id = resp.id`` and events carry
+        ``llm_response_id = llm_response.id``, which line up for most LLM
+        paths. That correspondence isn't guaranteed everywhere though -- the
+        ACP path records one ``response_id`` per session rather than per
+        request, so it never matches here and the caller falls back to the
+        cumulative-only format. We deliberately do NOT use
+        ``get_combined_metrics().token_usages[-1]`` because that list merges
+        usages across every usage id (agent, condenser, ...) and is not
+        chronological across them.
+        """
+        if not isinstance(event, (ActionEvent, MessageEvent, Condensation)):
+            return None
+
+        response_id = event.llm_response_id
+        if not response_id:
+            return None
+
+        if not (stats := self.conversation_stats):
+            return None
+
+        return next(
+            (
+                usage
+                for metrics in stats.usage_to_metrics.values()
+                for usage in reversed(metrics.token_usages)
+                if usage.response_id == response_id
+            ),
+            None,
+        )
+
+    def _format_metrics_subtitle(self, event: Event | None = None) -> str | None:
         """Format LLM metrics as a visually appealing subtitle string with icons,
         colors, and k/m abbreviations using conversation stats."""
         stats = self.conversation_stats
@@ -396,24 +431,58 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
                 return str(n)
             return f"{val:.2f}".rstrip("0").rstrip(".") + suffix
 
-        input_tokens = abbr(usage.prompt_tokens or 0)
-        output_tokens = abbr(usage.completion_tokens or 0)
-
         # Cache hit rate is derived on Metrics; the visualizer just formats it.
-        rate = combined_metrics.cache_hit_rate
-        cache_rate = f"{rate * 100:.2f}%" if rate is not None else "N/A"
-        reasoning_tokens = usage.reasoning_tokens or 0
+        def fmt_rate(rate: float | None) -> str:
+            return f"{rate * 100:.2f}%" if rate is not None else "N/A"
 
-        # Cost
+        request_usage = self._find_request_usage(event)
+        if request_usage is not None:
+            input_str = (
+                f"↑ input {abbr(request_usage.prompt_tokens or 0)} "
+                f"(total {abbr(usage.prompt_tokens or 0)})"
+            )
+            output_str = (
+                f"↓ output {abbr(request_usage.completion_tokens or 0)} "
+                f"(total {abbr(usage.completion_tokens or 0)})"
+            )
+            request_rate = MetricsSnapshot(
+                accumulated_token_usage=request_usage
+            ).cache_hit_rate
+            cache_rate = (
+                f"{fmt_rate(request_rate)} "
+                f"(total {fmt_rate(combined_metrics.cache_hit_rate)})"
+            )
+            request_reasoning_tokens = request_usage.reasoning_tokens or 0
+            total_reasoning_tokens = usage.reasoning_tokens or 0
+            show_reasoning = request_reasoning_tokens > 0 or total_reasoning_tokens > 0
+            reasoning_str = (
+                f"reasoning {abbr(request_reasoning_tokens)} "
+                f"(total {abbr(total_reasoning_tokens)})"
+            )
+        else:
+            # No per-request usage is attributable to this event (no
+            # ``llm_response_id``, or a path like ACP where response ids are
+            # per-session). Every number here is a running total, so label it
+            # as such -- next to per-request events, bare numbers would read
+            # as per-request, which is the confusion #4105 set out to fix.
+            input_str = f"↑ input (total {abbr(usage.prompt_tokens or 0)})"
+            output_str = f"↓ output (total {abbr(usage.completion_tokens or 0)})"
+            cache_rate = f"(total {fmt_rate(combined_metrics.cache_hit_rate)})"
+            total_reasoning_tokens = usage.reasoning_tokens or 0
+            show_reasoning = total_reasoning_tokens > 0
+            reasoning_str = f"reasoning (total {abbr(total_reasoning_tokens)})"
+
+        # Cost is always cumulative: ``Cost`` entries carry no ``response_id``
+        # (unlike ``TokenUsage``), so a per-request cost cannot be attributed.
         cost_str = f"{cost:.4f}" if cost > 0 else "0.00"
 
         # Build with fixed color scheme
         parts: list[str] = []
-        parts.append(f"[cyan]↑ input {input_tokens}[/cyan]")
+        parts.append(f"[cyan]{input_str}[/cyan]")
         parts.append(f"[magenta]cache hit {cache_rate}[/magenta]")
-        if reasoning_tokens > 0:
-            parts.append(f"[yellow] reasoning {abbr(reasoning_tokens)}[/yellow]")
-        parts.append(f"[blue]↓ output {output_tokens}[/blue]")
-        parts.append(f"[green]$ {cost_str}[/green]")
+        if show_reasoning:
+            parts.append(f"[yellow] {reasoning_str}[/yellow]")
+        parts.append(f"[blue]{output_str}[/blue]")
+        parts.append(f"[green]$ (total {cost_str})[/green]")
 
         return "Tokens: " + " • ".join(parts)
