@@ -104,9 +104,7 @@ def _process_schema_node(
     if _visiting is None:
         _visiting = frozenset()
 
-    # JSON Schema allows boolean sub-schemas: `true` accepts any value and
-    # `false` accepts none. Normalize them to their object equivalents so the
-    # rest of this function can assume a dict node.
+    # JSON Schema booleans: `true` accepts any value, `false` accepts none.
     if isinstance(node, bool):
         return {} if node else {"not": {}}
 

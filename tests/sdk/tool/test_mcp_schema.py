@@ -3,6 +3,7 @@
 import json
 from collections.abc import Sequence
 
+import pytest
 from pydantic import Field
 
 from openhands.sdk.llm import ImageContent, TextContent
@@ -388,67 +389,46 @@ class TestCircularSchemaHandling:
         json.dumps(result)
 
 
-class TestBooleanSchemaHandling:
-    """Tests for JSON Schema boolean sub-schemas.
-
-    JSON Schema allows ``true``/``false`` wherever a schema is expected:
-    ``true`` accepts any value, ``false`` accepts none. MCP servers emit
-    these (e.g. ``{"type": "array", "items": true}``), and the SDK used to
-    crash with ``TypeError: argument of type 'bool' is not iterable``.
-
-    Regression coverage for:
-        https://github.com/OpenHands/software-agent-sdk/issues/4182
-    """
-
-    def test_items_true_normalized_to_empty_schema(self):
-        """`items: true` becomes `items: {}` instead of raising TypeError."""
-        result = _process_schema_node({"type": "array", "items": True}, {})
-
-        assert result == {"type": "array", "items": {}}
-        json.dumps(result)
-
-    def test_items_false_normalized_to_never_schema(self):
-        """`items: false` becomes the equivalent 'accepts nothing' schema."""
-        result = _process_schema_node({"type": "array", "items": False}, {})
-
-        assert result == {"type": "array", "items": {"not": {}}}
-        json.dumps(result)
-
-    def test_boolean_inside_any_of(self):
-        """A boolean member of anyOf does not raise AttributeError."""
-        result = _process_schema_node({"anyOf": [True, {"type": "null"}]}, {})
-
-        assert result == {}
-        json.dumps(result)
-
-    def test_boolean_property_schema(self):
-        """A property whose whole schema is `true` is accepted."""
-        result = _process_schema_node(
-            {"type": "object", "properties": {"anything": True}}, {}
-        )
-
-        assert result["properties"]["anything"] == {}
-        json.dumps(result)
-
-    def test_issue_4182_reported_schema(self):
-        """The exact schema from the bug report converts successfully."""
-        schema = {
-            "type": "object",
-            "properties": {
-                "cursor": {
-                    "description": "Pagination cursor",
-                    "anyOf": [
-                        {"type": "array", "items": True},
-                        {"type": "null"},
-                    ],
-                }
+@pytest.mark.parametrize(
+    ("node", "expected"),
+    [
+        ({"type": "array", "items": True}, {"type": "array", "items": {}}),
+        ({"type": "array", "items": False}, {"type": "array", "items": {"not": {}}}),
+        ({"anyOf": [True, {"type": "null"}]}, {}),
+        (
+            {"type": "object", "properties": {"anything": True}},
+            {"type": "object", "properties": {"anything": {}}},
+        ),
+        (
+            {
+                "type": "object",
+                "properties": {
+                    "cursor": {
+                        "description": "Pagination cursor",
+                        "anyOf": [{"type": "array", "items": True}, {"type": "null"}],
+                    }
+                },
             },
-        }
+            {
+                "type": "object",
+                "properties": {
+                    "cursor": {
+                        "type": "array",
+                        "items": {},
+                        "description": "Pagination cursor",
+                    }
+                },
+            },
+        ),
+    ],
+)
+def test_boolean_schema_nodes_are_normalized(node, expected):
+    """Boolean sub-schemas normalize to their object equivalents.
 
-        result = _process_schema_node(schema, {})
+    ``true`` accepts any value and ``false`` accepts none; both are valid
+    wherever a schema is expected.
+    """
+    result = _process_schema_node(node, {})
 
-        cursor = result["properties"]["cursor"]
-        assert cursor["type"] == "array"
-        assert cursor["items"] == {}
-        assert cursor["description"] == "Pagination cursor"
-        json.dumps(result)
+    assert result == expected
+    json.dumps(result)
