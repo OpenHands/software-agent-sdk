@@ -1,5 +1,6 @@
 """Secrets manager for handling sensitive data in conversations."""
 
+import time
 from collections.abc import Collection, Mapping
 
 from pydantic import Field, PrivateAttr, SecretStr
@@ -10,6 +11,11 @@ from openhands.sdk.utils.models import OpenHandsModel
 
 
 logger = get_logger(__name__)
+
+# How long masking waits before retrying a source that failed to resolve.
+# A failed lookup yields no value to mask with, so backing off costs no
+# masking coverage — only a delay in picking a recovered source back up.
+FAILED_LOOKUP_RETRY_SECONDS = 60.0
 
 
 class SecretRegistry(OpenHandsModel):
@@ -32,6 +38,7 @@ class SecretRegistry(OpenHandsModel):
 
     secret_sources: dict[str, SecretSource] = Field(default_factory=dict)
     _exported_values: dict[str, str] = PrivateAttr(default_factory=dict)
+    _failed_lookups: dict[str, float] = PrivateAttr(default_factory=dict)
 
     def update_secrets(
         self,
@@ -131,9 +138,11 @@ class SecretRegistry(OpenHandsModel):
     def mask_secrets_in_output(self, text: str) -> str:
         """Mask secret values in the given text.
 
-        Masks every registered secret, not only the exported ones: a value can
-        reach the output without the command ever referencing the secret's name
-        (e.g. a token in a git remote URL printed by `git remote -v`).
+        Masks the last resolved value of every registered secret, not only the
+        exported ones: a value can reach the output without the command ever
+        referencing the secret's name (e.g. a token in a git remote URL printed
+        by `git remote -v`). Already-cached values are not re-resolved, so a
+        rotated secret keeps masking its previous value, not its current one.
 
         Args:
             text: The text to mask secrets in
@@ -144,10 +153,19 @@ class SecretRegistry(OpenHandsModel):
         if not text:
             return text
 
-        # Resolve uncached sources; get_secret_value swallows failures.
+        # Resolve uncached sources; get_secret_value swallows failures. Sources
+        # that fail back off for FAILED_LOOKUP_RETRY_SECONDS: get_value() may do
+        # blocking network I/O (LookupSecret), and masking runs per tool output
+        # and per streamed ACP chunk.
+        now = time.monotonic()
         for key in list(self.secret_sources):
-            if key not in self._exported_values:
-                self.get_secret_value(key)
+            if key in self._exported_values:
+                continue
+            failed_at = self._failed_lookups.get(key)
+            if failed_at is not None and now - failed_at < FAILED_LOOKUP_RETRY_SECONDS:
+                continue
+            if not self.get_secret_value(key):
+                self._failed_lookups[key] = now
 
         # Snapshot: other threads may insert while we iterate.
         masked_text = text

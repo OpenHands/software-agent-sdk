@@ -2,7 +2,10 @@
 
 from pydantic import SecretStr
 
-from openhands.sdk.conversation.secret_registry import SecretRegistry
+from openhands.sdk.conversation.secret_registry import (
+    FAILED_LOOKUP_RETRY_SECONDS,
+    SecretRegistry,
+)
 from openhands.sdk.secret import SecretSource, StaticSecret
 
 
@@ -25,6 +28,23 @@ class MyFailingTokenSource(SecretSource):
 class MyWorkingTokenSource(SecretSource):
     def get_value(self):
         return "working-value"
+
+
+class MyCountingFailingSource(SecretSource):
+    attempts: int = 0
+
+    def get_value(self):
+        type(self).attempts += 1
+        raise OSError("Secret retrieval failed")
+
+
+class MyRecoveringSource(SecretSource):
+    fail: bool = True
+
+    def get_value(self):
+        if type(self).fail:
+            raise OSError("Secret retrieval failed")
+        return "recovered-value"
 
 
 def test_update_secrets_with_static_values():
@@ -381,3 +401,40 @@ def test_mask_secrets_tolerates_failing_source():
 
     masked = secret_registry.mask_secrets_in_output("leak: working-value")
     assert masked == "leak: <secret-hidden>"
+
+
+def test_mask_secrets_backs_off_failing_source():
+    """A failing source is retried once per window, not on every mask call.
+
+    get_value() may do blocking network I/O (LookupSecret), and masking runs
+    per tool output and per streamed ACP chunk.
+    """
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets({"FAILING_SECRET": MyCountingFailingSource()})
+
+    MyCountingFailingSource.attempts = 0
+    for _ in range(25):
+        secret_registry.mask_secrets_in_output("unrelated output")
+    assert MyCountingFailingSource.attempts == 1
+
+    # Once the window has elapsed, the source is retried again.
+    secret_registry._failed_lookups["FAILING_SECRET"] -= FAILED_LOOKUP_RETRY_SECONDS
+    secret_registry.mask_secrets_in_output("unrelated output")
+    assert MyCountingFailingSource.attempts == 2
+
+
+def test_mask_secrets_retries_until_source_succeeds():
+    """Back-off does not permanently disable masking for a recovered source."""
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets({"FLAKY": MyRecoveringSource()})
+
+    MyRecoveringSource.fail = True
+    assert secret_registry.mask_secrets_in_output("leak: recovered-value") == (
+        "leak: recovered-value"
+    )
+
+    MyRecoveringSource.fail = False
+    secret_registry._failed_lookups["FLAKY"] -= FAILED_LOOKUP_RETRY_SECONDS
+    assert secret_registry.mask_secrets_in_output("leak: recovered-value") == (
+        "leak: <secret-hidden>"
+    )

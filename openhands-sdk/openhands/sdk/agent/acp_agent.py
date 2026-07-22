@@ -845,9 +845,10 @@ def _mask_json_value(value: Any, mask: Callable[[str], str]) -> Any:
 
     ACP tool-call ``raw_input`` / ``raw_output`` / ``content`` blocks are
     arbitrary JSON (a bare string, a dict of params, a list of content
-    blocks). ``SecretRegistry.mask_secrets_in_output`` is a pure string op,
-    so walk the structure and mask each leaf string; non-string leaves
-    (ints, bools, ``None``) pass through unchanged.
+    blocks). ``SecretRegistry.mask_secrets_in_output`` maps a string to a
+    string, so walk the structure and mask each leaf string; non-string leaves
+    (ints, bools, ``None``) pass through unchanged. Note it resolves uncached
+    secret sources on first use, so a leaf-heavy value is not free.
     """
     if isinstance(value, str):
         return mask(value)
@@ -1196,7 +1197,8 @@ class _OpenHandsACPBridge:
         Defensive: on mask failure, returns the original value unchanged and
         logs at DEBUG — this may transiently leak the credential but prevents a
         crash, matching the regular terminal tool's masking contract. (Masking
-        is a pure ``str.replace`` and should never raise in practice.)
+        swallows secret-resolution errors internally, so it should never raise
+        in practice.)
         """
         if self.mask is None:
             return value
