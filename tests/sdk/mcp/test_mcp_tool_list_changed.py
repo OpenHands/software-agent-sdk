@@ -102,6 +102,7 @@ class _ConcreteAgent(AgentBase):
         # Skip pydantic validation; set the attributes the helpers read.
         object.__setattr__(self, "_initialized", _initialized)
         object.__setattr__(self, "_tools", _tools)
+        object.__setattr__(self, "filter_tools_regex", None)
 
     def step(self, conversation, on_event, on_token=None):  # noqa: ARG002, ANN001
         raise NotImplementedError
