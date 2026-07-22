@@ -462,6 +462,58 @@ class TestLoadAllSkills:
 
         assert {skill.name for skill in skills} == {"auto-skill", "greet"}
 
+    def test_plugin_wins_over_standalone_on_name_collision(self, tmp_path: Path):
+        """A plugin skill overrides a same-named standalone skill (catalog rule)."""
+        marketplace_dir = tmp_path / "marketplace"
+        # Plugin 'p' bundles a skill named 'shared'.
+        plugin_dir = marketplace_dir / "plugins" / "p"
+        (plugin_dir / ".plugin").mkdir(parents=True)
+        (plugin_dir / ".plugin" / "plugin.json").write_text(
+            json.dumps({"name": "p", "version": "1.0.0"})
+        )
+        (plugin_dir / "skills").mkdir()
+        (plugin_dir / "skills" / "shared.md").write_text(
+            "---\nname: shared\n---\nFROM_PLUGIN"
+        )
+        # Standalone skill also named 'shared'.
+        standalone = marketplace_dir / "skills" / "shared"
+        standalone.mkdir(parents=True)
+        (standalone / "SKILL.md").write_text(
+            "---\nname: shared\ndescription: d\n---\nFROM_STANDALONE"
+        )
+        manifest_dir = marketplace_dir / ".plugin"
+        manifest_dir.mkdir(parents=True, exist_ok=True)
+        (manifest_dir / "marketplace.json").write_text(
+            json.dumps(
+                {
+                    "name": "collision",
+                    "owner": {"name": "Test Team"},
+                    "plugins": [{"name": "p", "source": "./plugins/p"}],
+                    "skills": [{"name": "shared", "source": "./skills/shared"}],
+                }
+            )
+        )
+
+        # Marketplace auto-load is gated on load_public; the patch keeps the
+        # public tier empty so only the marketplace contributes 'shared'.
+        with patch(self._PATCH_TARGET, return_value={}):
+            result = load_all_skills(
+                load_public=True,
+                load_user=False,
+                load_project=False,
+                load_org=False,
+                registered_marketplaces=[
+                    MarketplaceRegistration(
+                        name="collision", source=str(marketplace_dir), auto_load=True
+                    )
+                ],
+            )
+
+        shared = [s for s in result.skills if s.name == "shared"]
+        assert len(shared) == 1
+        assert "FROM_PLUGIN" in shared[0].content
+        assert "FROM_STANDALONE" not in shared[0].content
+
     def test_load_registered_marketplace_skills_uses_registration_fetch_fields(
         self, tmp_path: Path
     ):

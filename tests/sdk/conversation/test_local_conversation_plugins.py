@@ -273,6 +273,68 @@ class TestLocalConversationPlugins:
 
         conversation.close()
 
+    def test_plugin_wins_over_standalone_on_name_collision(
+        self, tmp_path: Path, mock_llm
+    ):
+        """A plugin skill overrides a same-named standalone skill (catalog rule)."""
+        marketplace_dir = tmp_path / "marketplace"
+        create_test_plugin(
+            marketplace_dir / "plugins" / "p",
+            name="p",
+            skills=[{"name": "shared", "content": "FROM_PLUGIN"}],
+        )
+        standalone = marketplace_dir / "skills" / "shared"
+        standalone.mkdir(parents=True)
+        (standalone / "SKILL.md").write_text(
+            "---\nname: shared\ndescription: d\n---\nFROM_STANDALONE"
+        )
+        manifest_dir = marketplace_dir / ".plugin"
+        manifest_dir.mkdir(parents=True, exist_ok=True)
+        (manifest_dir / "marketplace.json").write_text(
+            json.dumps(
+                {
+                    "name": "collision",
+                    "owner": {"name": "Test Team"},
+                    "plugins": [{"name": "p", "source": "./plugins/p"}],
+                    "skills": [{"name": "shared", "source": "./skills/shared"}],
+                }
+            )
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        with patch(
+            "openhands.sdk.context.agent_context.load_available_skills",
+            return_value={},
+        ):
+            agent = Agent(
+                llm=mock_llm,
+                tools=[],
+                agent_context=AgentContext(
+                    registered_marketplaces=[
+                        MarketplaceRegistration(
+                            name="collision",
+                            source=str(marketplace_dir),
+                            auto_load=True,
+                        )
+                    ],
+                ),
+            )
+
+        conversation = LocalConversation(
+            agent=agent,
+            workspace=workspace,
+            visualizer=None,
+        )
+        conversation._ensure_plugins_loaded()
+
+        assert conversation.agent.agent_context is not None
+        skills = {s.name: s for s in conversation.agent.agent_context.skills}
+        assert "shared" in skills
+        assert "FROM_PLUGIN" in skills["shared"].content
+        assert "FROM_STANDALONE" not in skills["shared"].content
+
+        conversation.close()
+
     def test_auto_load_marketplace_plugin_list_selects_plugins(
         self, tmp_path: Path, mock_llm
     ):

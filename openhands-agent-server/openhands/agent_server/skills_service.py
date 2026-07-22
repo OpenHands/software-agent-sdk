@@ -314,6 +314,15 @@ def load_registered_marketplace_skills(
             )
             continue
 
+        # Standalone skills first: the tier is merged last-wins, so appending
+        # plugins after lets a plugin win over a same-named standalone skill —
+        # matching the catalog's plugin-over-standalone rule.
+        all_skills.extend(
+            load_marketplace_standalone_skills(
+                marketplace, marketplace_path, registration
+            )
+        )
+
         for entry in marketplace.plugins:
             if not registration.auto_loads_plugin(entry.name):
                 continue
@@ -332,13 +341,6 @@ def load_registered_marketplace_skills(
                     registration.name,
                     exc_info=True,
                 )
-
-        # Standalone skills (plugins already contributed their bundled skills).
-        all_skills.extend(
-            load_marketplace_standalone_skills(
-                marketplace, marketplace_path, registration
-            )
-        )
     return all_skills
 
 
