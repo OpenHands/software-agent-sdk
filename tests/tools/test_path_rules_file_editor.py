@@ -1,9 +1,10 @@
-"""End-to-end check that path rules fire on the REAL file-editor action.
+"""End-to-end check that path rules fire on the REAL file-editor tool.
 
-The injection seam reads the touched path from the action's ``path`` field
-(``local_conversation._touched_rule_path``). These tests use the actual
+The injection seam reads the touched path from the observation's
+``affected_paths`` (``FileEditorObservation``). These tests use the actual
 ``FileEditorAction`` / ``FileEditorObservation`` from openhands-tools so a
-rename of that field (which would silently no-op the whole feature) is caught.
+rename of the underlying ``path`` field (which would silently no-op the whole
+feature) is caught.
 """
 
 from pathlib import Path
@@ -66,7 +67,9 @@ def test_real_file_editor_action_triggers_path_rule(tmp_path: Path) -> None:
 
         obs = ObservationEvent(
             observation=FileEditorObservation(
-                command="view", content=[TextContent(text="<file contents>")]
+                command="view",
+                path=str(tmp_path / "src" / "api" / "users.ts"),
+                content=[TextContent(text="<file contents>")],
             ),
             action_id=action_event.id,
             tool_name="str_replace_editor",
@@ -97,7 +100,9 @@ def test_real_file_editor_action_nonmatching_path(tmp_path: Path) -> None:
         with conv._state:
             conv._on_event(action_event)
         obs = ObservationEvent(
-            observation=FileEditorObservation(command="view"),
+            observation=FileEditorObservation(
+                command="view", path=str(tmp_path / "README.md")
+            ),
             action_id=action_event.id,
             tool_name="str_replace_editor",
             tool_call_id="tc1",
@@ -126,7 +131,11 @@ def test_real_file_editor_create_command_triggers_rule(tmp_path: Path) -> None:
         with conv._state:
             conv._on_event(action_event)
         obs = ObservationEvent(
-            observation=FileEditorObservation(command="create", prev_exist=False),
+            observation=FileEditorObservation(
+                command="create",
+                path=str(tmp_path / "src" / "api" / "new.ts"),
+                prev_exist=False,
+            ),
             action_id=action_event.id,
             tool_name="str_replace_editor",
             tool_call_id="tc1",

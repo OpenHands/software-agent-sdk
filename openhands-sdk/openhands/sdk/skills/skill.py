@@ -1,3 +1,4 @@
+import contextlib
 import io
 import json
 import os
@@ -6,7 +7,7 @@ import threading
 import time
 from collections.abc import Iterable, Mapping
 from functools import lru_cache
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath
 from typing import Annotated, Any, ClassVar, Final, Literal, Union
 from xml.sax.saxutils import escape as xml_escape
 
@@ -92,6 +93,37 @@ def path_matches_glob(file_path: str, pattern: str) -> bool:
     if not pattern:
         return False
     return _compile_path_glob(pattern).fullmatch(file_path) is not None
+
+
+def normalize_rule_path(
+    raw_path: str, working_dir: str | os.PathLike[str]
+) -> str | None:
+    """Return the ``working_dir``-relative POSIX form of ``raw_path``.
+
+    Path rules are repo-scoped, so a touched path is normalized to this form
+    before matching it against :class:`PathTrigger` globs with
+    :func:`path_matches_glob`. Returns None when ``raw_path`` is empty or
+    resolves outside ``working_dir``.
+    """
+    if not raw_path:
+        return None
+
+    # Use the native path flavour so Windows drive paths (e.g. ``D:\\...``) are
+    # recognized as absolute; emit a POSIX string for glob matching.
+    raw = PurePath(raw_path)
+    if not raw.is_absolute():
+        return raw.as_posix()
+    root = PurePath(working_dir)
+    with contextlib.suppress(ValueError):
+        return raw.relative_to(root).as_posix()
+    # Fall back to filesystem resolution so a symlinked workspace root (e.g.
+    # macOS /tmp -> /private/tmp) still matches; strict=False keeps a
+    # not-yet-created leaf.
+    with contextlib.suppress(ValueError, OSError):
+        resolved = Path(raw_path).resolve()
+        resolved_root = Path(working_dir).resolve()
+        return resolved.relative_to(resolved_root).as_posix()
+    return None  # touched a file outside the workspace; rules are repo-scoped
 
 
 class SkillInfo(BaseModel):

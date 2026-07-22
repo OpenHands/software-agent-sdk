@@ -5,7 +5,7 @@ import copy
 import json
 import uuid
 from collections.abc import Mapping, Sequence
-from pathlib import Path, PurePath
+from pathlib import Path
 from typing import Any, Final, TypeGuard, cast
 
 from openhands.sdk.agent.acp_agent import ACPAgent
@@ -72,6 +72,7 @@ from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
 from openhands.sdk.skills import load_available_skills, merge_skills_by_name
+from openhands.sdk.skills.skill import normalize_rule_path
 from openhands.sdk.skills.utils import (
     expand_mcp_variables,
     expand_variable_references,
@@ -484,8 +485,8 @@ class LocalConversation(BaseConversation):
     def _maybe_inject_path_rules(self, event: Event) -> Event:
         """Return ``event`` with matching path-rule content, or unchanged.
 
-        Only ``ObservationEvent``s carrying a file path are considered. Matching
-        rules already injected in this conversation are skipped via
+        Only ``ObservationEvent``s that report ``affected_paths`` are considered.
+        Matching rules already injected in this conversation are skipped via
         ``state.activated_path_rules``.
         """
         if not isinstance(event, ObservationEvent):
@@ -494,58 +495,26 @@ class LocalConversation(BaseConversation):
         if (agent_context := self.agent.agent_context) is None:
             return event
 
-        if (file_path := self._touched_rule_path(event)) is None:
-            return event
+        contents: list[TextContent] = []
+        working_dir = self.workspace.working_dir
+        for raw_path in event.observation.affected_paths:
+            if (file_path := normalize_rule_path(raw_path, working_dir)) is None:
+                continue
+            result = agent_context.get_tool_use_suffix(
+                file_path=file_path,
+                skip_skill_names=self._state.activated_path_rules,
+            )
+            if result is None:
+                continue
+            content, activated_rule_names = result
+            self._state.activated_path_rules.extend(activated_rule_names)
+            contents.append(content)
 
-        result = agent_context.get_tool_use_suffix(
-            file_path=file_path,
-            skip_skill_names=self._state.activated_path_rules,
-        )
-        if result is None:
+        if not contents:
             return event
-
-        content, activated_rule_names = result
-        self._state.activated_path_rules.extend(activated_rule_names)
         return event.model_copy(
-            update={"extended_content": list(event.extended_content) + [content]}
+            update={"extended_content": list(event.extended_content) + contents}
         )
-
-    def _touched_rule_path(self, event: ObservationEvent) -> str | None:
-        """Return the workspace-relative POSIX path a tool observation touched.
-
-        Correlates the observation to its ``ActionEvent`` and reads the action's
-        ``path`` field generically (no dependency on the tools package). Returns
-        None when the action has no file ``path`` or the path is outside the
-        workspace.
-        """
-        action_event: Event | None = None
-        with contextlib.suppress(KeyError):
-            idx = self._state.events.get_index(event.action_id)
-            action_event = self._state.events[idx]
-        if not isinstance(action_event, ActionEvent) or action_event.action is None:
-            return None
-        # Read the field directly rather than model_dump(): avoids copying large
-        # edit payloads (file_text/old_str/new_str) just to read the path.
-        raw_path = getattr(action_event.action, "path", None)
-        if not isinstance(raw_path, str) or not raw_path:
-            return None
-
-        # Use the native path flavour so Windows drive paths (e.g. ``D:\\...``) are
-        # recognized as absolute; emit a POSIX string for glob matching.
-        raw = PurePath(raw_path)
-        if not raw.is_absolute():
-            return raw.as_posix()
-        root = PurePath(self.workspace.working_dir)
-        with contextlib.suppress(ValueError):
-            return raw.relative_to(root).as_posix()
-        # Fall back to filesystem resolution so a symlinked workspace root (e.g.
-        # macOS /tmp -> /private/tmp) still matches; strict=False keeps a
-        # not-yet-created leaf.
-        with contextlib.suppress(ValueError, OSError):
-            resolved = Path(raw_path).resolve()
-            resolved_root = Path(self.workspace.working_dir).resolve()
-            return resolved.relative_to(resolved_root).as_posix()
-        return None  # touched a file outside the workspace; rules are repo-scoped
 
     def _recover_persisted_client_tools(
         self,
