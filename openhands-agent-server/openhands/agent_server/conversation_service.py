@@ -34,6 +34,14 @@ from openhands.agent_server.models import (
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.skills_service import discover_profile_skills
+from openhands.agent_server.telemetry import (
+    ConversationTelemetryContext,
+    DiagnosticEventFactory,
+    TelemetrySubscriber,
+    get_event_factory,
+    get_telemetry_sink,
+)
+from openhands.agent_server.telemetry.sanitizer import model_family, safe_token
 from openhands.agent_server.utils import safe_rmtree, utc_now
 from openhands.sdk import LLM, AgentContext, Event, Message
 from openhands.sdk.agent.base import AgentBase
@@ -1040,7 +1048,9 @@ class ConversationService:
                 **request_data,
             )
         async with self._lifecycle_lock:
-            event_service = await self._start_event_service(stored)
+            event_service = await self._start_event_service(
+                stored, is_new_conversation=True
+            )
         initial_message = request.initial_message
         if initial_message:
             message = Message(
@@ -1307,7 +1317,9 @@ class ConversationService:
         fork_dir = self.conversations_dir / fork_conv_id.hex
         try:
             async with self._lifecycle_lock:
-                fork_event_service = await self._start_event_service(fork_stored)
+                fork_event_service = await self._start_event_service(
+                    fork_stored, is_new_conversation=True
+                )
         except Exception:
             safe_rmtree(fork_dir)
             raise
@@ -1444,7 +1456,9 @@ class ConversationService:
             lease_ttl_seconds=config.lease_ttl_seconds,
         )
 
-    async def _start_event_service(self, stored: StoredConversation) -> EventService:
+    async def _start_event_service(
+        self, stored: StoredConversation, *, is_new_conversation: bool = False
+    ) -> EventService:
         event_services = self._event_services
         if event_services is None:
             raise ValueError("inactive_service")
@@ -1474,6 +1488,9 @@ class ConversationService:
                 await event_service.subscribe_to_events(
                     AutoTitleSubscriber(service=event_service)
                 )
+            await self._maybe_subscribe_telemetry(
+                event_service, stored, is_new_conversation=is_new_conversation
+            )
             await asyncio.gather(
                 *[
                     event_service.subscribe_to_events(
@@ -1504,6 +1521,89 @@ class ConversationService:
             execution_status=state.execution_status,
         )
         return event_service
+
+    async def _maybe_subscribe_telemetry(
+        self,
+        event_service: EventService,
+        stored: StoredConversation,
+        *,
+        is_new_conversation: bool,
+    ) -> None:
+        """Attach the telemetry subscriber, if telemetry is active.
+
+        The subscriber is attached on *every* path, including rehydration, so
+        errors and terminal outcomes are always captured. But
+        ``conversation_started`` is emitted only for a genuinely new
+        conversation: ``_start_event_service`` also runs when an idle
+        conversation is lazily reloaded and when RUNNING conversations are
+        recovered after a restart, and counting those as starts would inflate
+        the metric on every server bounce.
+
+        Deliberately total: telemetry must never be able to fail conversation
+        startup. The ``enabled`` check comes first so the disabled path does no
+        sanitization work at all.
+        """
+        # Resolve the process sink lazily rather than trusting a value captured
+        # at construction. ``ConversationService`` is instantiated at import
+        # time (``sockets.py`` module scope), before the lifespan builds the
+        # sink, so a cached reference is always the pre-init NoOp — which would
+        # silence conversation telemetry regardless of consent. Reading the
+        # current sink here makes conversations honour the live decision, the
+        # same way the server-lifecycle and request-failed paths already do.
+        sink = get_telemetry_sink()
+        if not sink.enabled:
+            return
+        try:
+            factory = get_event_factory()
+            if factory is None:
+                return
+
+            subscriber = TelemetrySubscriber(
+                conversation_id=stored.id,
+                sink=sink,
+                factory=factory,
+                context=_build_telemetry_context(stored, factory),
+            )
+            await event_service.subscribe_to_events(subscriber)
+            if is_new_conversation:
+                subscriber.emit_started()
+        except Exception:
+            logger.debug("Could not attach telemetry subscriber", exc_info=True)
+
+
+def _build_telemetry_context(
+    stored: StoredConversation, factory: DiagnosticEventFactory
+) -> ConversationTelemetryContext:
+    """Reduce a stored conversation to its sanitized telemetry facts.
+
+    Every read is defensive: a shape change upstream should degrade a property
+    to ``unknown``, never raise into conversation startup.
+    """
+    agent = getattr(stored, "agent", None)
+    llm = getattr(agent, "llm", None)
+
+    workspace = getattr(stored, "workspace", None)
+    workspace_kind = safe_token(
+        type(workspace).__name__.lower() if workspace is not None else None
+    )
+
+    tools = getattr(agent, "tools", None)
+    tool_count = len(tools) if isinstance(tools, (list, tuple)) else 0
+
+    return ConversationTelemetryContext(
+        conversation_ref=factory.conversation_ref(stored.id),
+        user_id=getattr(stored, "user_id", None),
+        llm_model_family=model_family(getattr(llm, "model", None)),
+        agent_kind=safe_token(type(agent).__name__.lower() if agent else None),
+        tool_count=tool_count,
+        is_fork=getattr(stored, "forked_from_conversation_id", None) is not None,
+        has_agent_profile=getattr(stored, "launched_agent_profile", None) is not None,
+        workspace_kind=workspace_kind,
+        # Policy kind, not a bool: a bool would collapse ConfirmRisky.
+        confirmation_policy=safe_token(
+            type(getattr(stored, "confirmation_policy", None)).__name__.lower()
+        ),
+    )
 
 
 @dataclass

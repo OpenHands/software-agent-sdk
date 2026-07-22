@@ -11,6 +11,7 @@ from typing import Any, Final, TypeGuard, cast
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondenser
+from openhands.sdk.context.memory import load_memory
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.cancellation import CancellationToken
@@ -1055,6 +1056,26 @@ class LocalConversation(BaseConversation):
                 )
                 project_skills_loaded = True
 
+        # Resolve persistent memory from disk. Like project skills, AgentContext
+        # cannot do this itself (the workspace path is unknown at validation
+        # time).
+        memory_loaded = False
+        if merged_context is not None and merged_context.load_memory:
+            # Best-effort: a failure to read memory must not prevent startup.
+            try:
+                memory_context = load_memory(self.workspace.working_dir)
+            except Exception:
+                logger.warning(
+                    "Failed to load memory; continuing without it",
+                    exc_info=True,
+                )
+                memory_context = None
+            if memory_context:
+                merged_context = merged_context.model_copy(
+                    update={"memory_context": memory_context}
+                )
+                memory_loaded = True
+
         # Expand MCP config variables with per-conversation secrets
         # This handles ${VAR} and ${VAR:-default} placeholders:
         # - Variables referencing secrets injected via API are expanded to secret values
@@ -1081,6 +1102,7 @@ class LocalConversation(BaseConversation):
             or project_skills_loaded
             or ambient_plugins_loaded
             or marketplace_skills_loaded
+            or memory_loaded
         ):
             self.agent = self.agent.model_copy(
                 update={
