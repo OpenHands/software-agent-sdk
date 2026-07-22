@@ -90,15 +90,27 @@ def test_local_versions_are_opaque_and_persisted(tmp_path) -> None:
     assert raw["_credential_versions"]["CODEX_AUTH_JSON"] == version
 
 
-def test_ordinary_secrets_do_not_get_versions(tmp_path) -> None:
+def test_versioning_is_lazy_and_generic(tmp_path) -> None:
     store = FileSecretsStore(tmp_path)
 
     store.set_secret("OTHER", "value")
 
     raw = json.loads((tmp_path / "secrets.json").read_text(encoding="utf-8"))
     assert "_credential_versions" not in raw
-    with pytest.raises(KeyError):
-        store.load_versioned_secret("OTHER")
+
+    value, version = store.load_versioned_secret("OTHER")
+    raw = json.loads((tmp_path / "secrets.json").read_text(encoding="utf-8"))
+    assert value == "value"
+    assert raw["_credential_versions"] == {"OTHER": version}
+
+    store.set_secret("OTHER", "updated")
+    updated_value, updated_version = store.load_versioned_secret("OTHER")
+    assert updated_value == "updated"
+    assert updated_version != version
+
+    successor = store.replace_versioned_secret("OTHER", updated_version, "replaced")
+    assert successor != updated_version
+    assert store.load_versioned_secret("OTHER") == ("replaced", successor)
 
 
 def test_whole_store_save_updates_credential_versions(tmp_path) -> None:

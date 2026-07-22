@@ -54,7 +54,6 @@ logger = get_logger(__name__)
 # File permission constants (owner read/write only)
 _DIR_MODE = stat.S_IRWXU  # 0o700 - rwx------
 _FILE_MODE = stat.S_IRUSR | stat.S_IWUSR  # 0o600 - rw-------
-_VERSIONED_CREDENTIAL_NAMES = frozenset({"CODEX_AUTH_JSON"})
 
 # Windows reserved filenames (case-insensitive)
 _WINDOWS_RESERVED_NAMES = frozenset(
@@ -459,7 +458,7 @@ class FileSecretsStore(SecretsStore):
             versions = self._load_versions()
             current_secrets = current.custom_secrets
             replacement_secrets = secrets.custom_secrets
-            versioned_names = versions.keys() | _VERSIONED_CREDENTIAL_NAMES
+            versioned_names = set(versions)
 
             for name in list(versions):
                 replacement = replacement_secrets.get(name)
@@ -519,9 +518,7 @@ class FileSecretsStore(SecretsStore):
         return {
             name: version
             for name, version in versions.items()
-            if name in _VERSIONED_CREDENTIAL_NAMES
-            and isinstance(version, str)
-            and version
+            if isinstance(name, str) and isinstance(version, str) and version
         }
 
     def get_secret(self, name: str) -> str | None:
@@ -568,7 +565,7 @@ class FileSecretsStore(SecretsStore):
             )
 
             versions = self._load_versions()
-            if name in _VERSIONED_CREDENTIAL_NAMES:
+            if name in versions:
                 versions[name] = secrets_module.token_urlsafe(24)
             self._save_with_versions(Secrets(custom_secrets=new_secrets), versions)
 
@@ -602,8 +599,6 @@ class FileSecretsStore(SecretsStore):
             return True
 
     def load_versioned_secret(self, name: str) -> tuple[str, str]:
-        if name not in _VERSIONED_CREDENTIAL_NAMES:
-            raise KeyError(name)
         with _file_lock(self._lock_path):
             secrets = self.load()
             if secrets is None:
@@ -632,8 +627,6 @@ class FileSecretsStore(SecretsStore):
         expected_version: str,
         value: str,
     ) -> str:
-        if name not in _VERSIONED_CREDENTIAL_NAMES:
-            raise KeyError(name)
         with _file_lock(self._lock_path):
             secrets = self.load()
             if secrets is None:
