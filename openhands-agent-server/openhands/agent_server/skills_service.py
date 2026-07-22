@@ -38,6 +38,7 @@ from openhands.sdk.skills import (
     install_skill,
     list_installed_skills,
     load_available_skills,
+    load_marketplace_standalone_skills,
     uninstall_skill,
     update_skill,
 )
@@ -296,7 +297,7 @@ def merge_skills(skill_lists: list[list[Skill]]) -> list[Skill]:
 def load_registered_marketplace_skills(
     registered_marketplaces: list[MarketplaceRegistration],
 ) -> list[Skill]:
-    """Load skills from auto-load plugins in registered marketplaces."""
+    """Load skills from auto-load plugins and standalone skills in marketplaces."""
     if not registered_marketplaces:
         return []
 
@@ -304,7 +305,7 @@ def load_registered_marketplace_skills(
     all_skills: list[Skill] = []
     for registration in registry.get_auto_load_registrations():
         try:
-            marketplace, _ = registry.get_marketplace(registration.name)
+            marketplace, marketplace_path = registry.get_marketplace(registration.name)
         except Exception:
             logger.warning(
                 "Failed to load marketplace '%s'; continuing without it",
@@ -312,6 +313,15 @@ def load_registered_marketplace_skills(
                 exc_info=True,
             )
             continue
+
+        # Standalone skills first: the tier is merged last-wins, so appending
+        # plugins after lets a plugin win over a same-named standalone skill —
+        # matching the catalog's plugin-over-standalone rule.
+        all_skills.extend(
+            load_marketplace_standalone_skills(
+                marketplace, marketplace_path, registration
+            )
+        )
 
         for entry in marketplace.plugins:
             if not registration.auto_loads_plugin(entry.name):

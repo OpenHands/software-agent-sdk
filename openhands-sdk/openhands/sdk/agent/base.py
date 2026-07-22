@@ -363,6 +363,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             "enable_browser",
             any(t.name == "browser_tool_set" for t in self.tools),
         )
+        template_kwargs.setdefault(
+            "memory_enabled",
+            self.agent_context is not None and self.agent_context.load_memory,
+        )
         template_kwargs["security_policy_filename"] = self.security_policy_filename
         template_kwargs.setdefault("model_name", self.llm.model)
         if (
@@ -424,6 +428,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         repo_skills: tuple[tuple[str, str], ...] = ()
         available_skills_prompt: str | None = None
         custom_suffix: str | None = None
+        memory_context: str | None = None
         secret_infos: tuple[tuple[str, str | None], ...] = ()
 
         if agent_context is not None:
@@ -441,6 +446,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             repo_skills = tuple((s.name, s.content) for s in data.repo_skills)
             available_skills_prompt = data.available_skills_prompt or None
             custom_suffix = agent_context.system_message_suffix or None
+            memory_context = agent_context.memory_context or None
             secret_infos = tuple(
                 (info["name"] or "", info["description"]) for info in data.secret_infos
             )
@@ -469,6 +475,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             repo_skills=repo_skills,
             available_skills_prompt=available_skills_prompt,
             custom_suffix=custom_suffix,
+            memory_context=memory_context,
             secret_infos=secret_infos,
         )
 
@@ -802,6 +809,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             logger.warning("Error closing executor for tool '%s': %s", tool.name, exc)
 
     def add_runtime_tools(self, tools: Sequence[ToolDefinition]) -> None:
+        """Register tools materialized at runtime (e.g. MCP tools).
+
+        Tools are subject to `filter_tools_regex`; built-in default tools are
+        exempt, matching the behavior of `_initialize()`.
+        """
         if not self._initialized:
             logger.warning(
                 "add_runtime_tools called before agent initialization; "
@@ -813,6 +825,22 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 raise ValueError(
                     f"Tool {tool} is not an instance of 'ToolDefinition'. "
                     f"Got type: {type(tool)}"
+                )
+
+        if self.filter_tools_regex:
+            pattern = re.compile(self.filter_tools_regex)
+            builtin_classes = tuple(BUILT_IN_TOOL_CLASSES.values())
+            num_tools = len(tools)
+            tools = [
+                tool
+                for tool in tools
+                if isinstance(tool, builtin_classes) or pattern.match(tool.name)
+            ]
+            if len(tools) != num_tools:
+                logger.info(
+                    "Filtered runtime tools from %d to %d after applying regex filter",
+                    num_tools,
+                    len(tools),
                 )
 
         tool_names = [tool.name for tool in tools]
