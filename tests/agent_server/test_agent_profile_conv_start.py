@@ -552,7 +552,7 @@ class TestConversationServiceStartFromProfile:
                     parent_conversation_id=None,
                 )
 
-                async def capture_start(stored):
+                async def capture_start(stored, **_kwargs):
                     captured["stored"] = stored
                     return mock_es
 

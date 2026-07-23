@@ -39,6 +39,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.credential import CredentialSyncError
 from openhands.sdk.critic.impl.api import APIBasedCritic
 from openhands.sdk.event import ActionEvent, AgentErrorEvent, ObservationEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
@@ -186,7 +187,7 @@ async def test_start_conversation_registers_and_injects_client_tools(
 
     captured: dict[str, StoredConversation] = {}
 
-    async def fake_start_event_service(stored: StoredConversation):
+    async def fake_start_event_service(stored: StoredConversation, **_kwargs):
         captured["stored"] = stored
         service = AsyncMock(spec=EventService)
         service.stored = stored
@@ -262,7 +263,7 @@ async def test_start_conversation_decrypts_encrypted_agent_settings_mcp_env(
 
     captured: dict[str, StoredConversation] = {}
 
-    async def fake_start_event_service(stored: StoredConversation):
+    async def fake_start_event_service(stored: StoredConversation, **_kwargs):
         captured["stored"] = stored
         service = AsyncMock(spec=EventService)
         service.stored = stored
@@ -508,6 +509,70 @@ async def test_event_services_share_dedicated_run_executor(tmp_path):
 
     # After __aexit__, executor should be shut down
     assert svc._run_executor is None
+
+
+@pytest.mark.asyncio
+async def test_shutdown_retains_credential_close_failure_for_retry(tmp_path):
+    service = ConversationService(conversations_dir=tmp_path / "conversations")
+    await service.__aenter__()
+    conversation_id = uuid4()
+    runtime = AsyncMock(spec=EventService)
+    runtime.__aexit__.side_effect = [
+        CredentialSyncError("broker unavailable"),
+        None,
+    ]
+    record = MagicMock()
+    binding = MagicMock()
+    assert service._event_services is not None
+    service._event_services[conversation_id] = runtime
+    service._conversation_records[conversation_id] = record
+    service._credential_bindings[conversation_id] = {"CODEX_AUTH_JSON": binding}
+
+    with pytest.raises(CredentialSyncError, match="broker unavailable"):
+        await service.__aexit__(None, None, None)
+
+    assert service._event_services == {conversation_id: runtime}
+    assert service._conversation_records == {conversation_id: record}
+    assert service._credential_bindings == {
+        conversation_id: {"CODEX_AUTH_JSON": binding}
+    }
+    assert service._run_executor is None
+    assert service._lease_renewal_task is not None
+    assert not service._lease_renewal_task.done()
+
+    await service.__aexit__(None, None, None)
+
+    assert runtime.__aexit__.await_count == 2
+    assert service._event_services is None
+    assert service._conversation_records == {}
+    assert service._credential_bindings == {}
+
+
+@pytest.mark.asyncio
+async def test_shutdown_prioritizes_credential_failure_across_runtimes(tmp_path):
+    service = ConversationService(conversations_dir=tmp_path / "conversations")
+    await service.__aenter__()
+    first_id = uuid4()
+    second_id = uuid4()
+    first = AsyncMock(spec=EventService)
+    second = AsyncMock(spec=EventService)
+    first.__aexit__.side_effect = OSError("save failed")
+    second.__aexit__.side_effect = CredentialSyncError("broker unavailable")
+    assert service._event_services is not None
+    service._event_services = {first_id: first, second_id: second}
+    service._conversation_records = {
+        first_id: MagicMock(),
+        second_id: MagicMock(),
+    }
+
+    with pytest.raises(CredentialSyncError, match="broker unavailable"):
+        await service.__aexit__(None, None, None)
+
+    assert service._event_services == {first_id: first, second_id: second}
+
+    first.__aexit__.side_effect = None
+    second.__aexit__.side_effect = None
+    await service.__aexit__(None, None, None)
 
 
 @pytest.mark.asyncio
@@ -2588,6 +2653,52 @@ class TestConversationServiceDeleteConversation:
 
             # Verify directories were still removed
             assert mock_rmtree.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_delete_conversation_retains_retryable_credential_close(
+        self, conversation_service, tmp_path
+    ):
+        conversation_id = uuid4()
+        conversation_dir = tmp_path / conversation_id.hex
+        conversation_dir.mkdir()
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.conversation_dir = conversation_dir
+        mock_service.stored = StoredConversation(
+            id=conversation_id,
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir=tmp_path / "workspace"),
+            confirmation_policy=NeverConfirm(),
+        )
+        mock_service.get_state.return_value = ConversationState(
+            id=conversation_id,
+            agent=mock_service.stored.agent,
+            workspace=mock_service.stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=mock_service.stored.confirmation_policy,
+        )
+        mock_service.close.side_effect = CredentialSyncError("broker unavailable")
+        binding = MagicMock()
+        conversation_service._event_services[conversation_id] = mock_service
+        conversation_service._conversation_records[conversation_id] = MagicMock()
+        conversation_service._credential_bindings[conversation_id] = {
+            "CODEX_AUTH_JSON": binding
+        }
+
+        with (
+            patch(
+                "openhands.agent_server.conversation_service.safe_rmtree"
+            ) as mock_rmtree,
+            pytest.raises(CredentialSyncError, match="broker unavailable"),
+        ):
+            await conversation_service.delete_conversation(conversation_id)
+
+        assert conversation_service._event_services[conversation_id] is mock_service
+        assert conversation_id in conversation_service._conversation_records
+        assert conversation_service._credential_bindings[conversation_id] == {
+            "CODEX_AUTH_JSON": binding
+        }
+        assert conversation_dir.exists()
+        mock_rmtree.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_delete_conversation_directory_removal_failure(
