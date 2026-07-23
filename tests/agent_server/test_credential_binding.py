@@ -39,6 +39,7 @@ from openhands.sdk.credential import (
     HttpVersionedCredentialBinding,
 )
 from openhands.sdk.secret import StaticSecret
+from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -449,6 +450,44 @@ async def test_callback_binding_blocks_cold_hydration_until_reactivation(
             ),
         )
         assert await restarted.get_event_service(conversation_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_one_off_credential_survives_cold_restart_without_binding(
+    tmp_path,
+) -> None:
+    conversations_dir = tmp_path / "conversations"
+    cipher = Cipher("stable-conversation-key")
+    request = StartConversationRequest(
+        agent=ACPAgent(acp_command=["codex-acp"], acp_server="codex"),
+        workspace=LocalWorkspace(working_dir=tmp_path / "workspace"),
+        secrets={
+            "CODEX_AUTH_JSON": StaticSecret(value=SecretStr("one-off-credential"))
+        },
+    )
+
+    async with ConversationService(
+        conversations_dir=conversations_dir,
+        cipher=cipher,
+    ) as service:
+        info, _ = await service.start_conversation(request)
+        event_service = await service.get_event_service(info.id)
+        assert event_service is not None
+        assert not event_service.credential_bindings
+        assert not event_service.stored.required_runtime_credential_bindings
+
+    async with ConversationService(
+        conversations_dir=conversations_dir,
+        cipher=cipher,
+    ) as restarted:
+        assert await restarted.get_conversation(info.id) is not None
+        event_service = await restarted.get_event_service(info.id)
+        assert event_service is not None
+        assert not event_service.credential_bindings
+        assert (
+            event_service.stored.secrets["CODEX_AUTH_JSON"].get_value()
+            == "one-off-credential"
+        )
 
 
 @pytest.mark.asyncio
