@@ -20,6 +20,7 @@ from openhands.agent_server.conversation_lease import (
 from openhands.agent_server.conversation_service import (
     AutoTitleSubscriber,
     ConversationService,
+    _ConversationRecord,
     _get_worktree_start_point,
 )
 from openhands.agent_server.event_service import EventService
@@ -3502,3 +3503,210 @@ class TestConversationTreeForkAndNavigate:
             assert reloaded_fork is not None
             assert reloaded_fork.forked_from_conversation_id == src_id
             assert reloaded_fork.forked_from_event_id == branch_point
+
+
+class TestConversationSearchScaling:
+    """Status-filtered search/count must not full-scan conversation state.
+
+    Regression coverage for #3142, where both called ``get_state()`` on every
+    catalog entry to read one enum field per conversation.
+    """
+
+    @staticmethod
+    def _seed(conversations_dir: Path, count: int, workspace_dir: Path) -> list[UUID]:
+        """Write ``count`` idle conversations straight to disk."""
+        conversations_dir.mkdir(parents=True, exist_ok=True)
+        ids = []
+        for i in range(count):
+            conversation_id = uuid4()
+            target = conversations_dir / conversation_id.hex
+            target.mkdir()
+            stored = StoredConversation(
+                id=conversation_id,
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id=f"llm-{i}"), tools=[]),
+                workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+                confirmation_policy=NeverConfirm(),
+            )
+            stored.created_at = datetime(2026, 1, 1, tzinfo=UTC).replace(microsecond=i)
+            stored.updated_at = stored.created_at
+            (target / "meta.json").write_text(stored.model_dump_json())
+            state = ConversationState(
+                id=conversation_id,
+                agent=stored.agent,
+                workspace=stored.workspace,
+                persistence_dir=str(target),
+            )
+            (target / "base_state.json").write_text(state.model_dump_json())
+            ids.append(conversation_id)
+        return ids
+
+    @pytest.mark.asyncio
+    async def test_filtered_search_loads_state_only_for_the_page(self, tmp_path):
+        """A filtered page loads full state for page items, not the whole catalog."""
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        conversations_dir = tmp_path / "conversations"
+        self._seed(conversations_dir, 40, workspace_dir)
+
+        async with ConversationService(conversations_dir=conversations_dir) as svc:
+            assert len(svc._conversation_records) == 40
+            real_load = svc._load_persisted_state_sync
+            loaded: list[UUID] = []
+
+            def _tracking_load(conversation_id: UUID):
+                loaded.append(conversation_id)
+                return real_load(conversation_id)
+
+            with patch.object(
+                svc, "_load_persisted_state_sync", side_effect=_tracking_load
+            ):
+                page = await svc.search_conversations(
+                    limit=5, execution_status=ConversationExecutionStatus.IDLE
+                )
+
+            assert len(page.items) == 5
+            assert page.next_page_id is not None
+            # Before the fix: 40, one full state load per conversation.
+            assert len(loaded) == 5, (
+                f"expected 5 full state loads (the page), got {len(loaded)}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_filtered_count_loads_no_state(self, tmp_path):
+        """Counting by status must not load any full conversation state."""
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        conversations_dir = tmp_path / "conversations"
+        self._seed(conversations_dir, 25, workspace_dir)
+
+        async with ConversationService(conversations_dir=conversations_dir) as svc:
+            with patch.object(
+                svc, "_load_persisted_state_sync", side_effect=AssertionError
+            ):
+                idle = await svc.count_conversations(
+                    execution_status=ConversationExecutionStatus.IDLE
+                )
+                running = await svc.count_conversations(
+                    execution_status=ConversationExecutionStatus.RUNNING
+                )
+                total = await svc.count_conversations()
+
+            assert idle == 25
+            assert running == 0
+            assert total == 25
+
+    @pytest.mark.asyncio
+    async def test_status_index_picks_up_on_disk_changes(self, tmp_path):
+        """The cached status is invalidated when base_state.json changes."""
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        conversations_dir = tmp_path / "conversations"
+        ids = self._seed(conversations_dir, 3, workspace_dir)
+
+        async with ConversationService(conversations_dir=conversations_dir) as svc:
+            assert (
+                await svc.count_conversations(
+                    execution_status=ConversationExecutionStatus.FINISHED
+                )
+                == 0
+            )
+
+            # Simulate another process finishing one conversation.
+            base_state = conversations_dir / ids[0].hex / "base_state.json"
+            payload = json.loads(base_state.read_text())
+            payload["execution_status"] = ConversationExecutionStatus.FINISHED.value
+            # Change the size too, so the test does not rely on mtime
+            # granularity.
+            payload["max_iterations"] = 1234567
+            base_state.write_text(json.dumps(payload))
+
+            assert (
+                await svc.count_conversations(
+                    execution_status=ConversationExecutionStatus.FINISHED
+                )
+                == 1
+            )
+            page = await svc.search_conversations(
+                execution_status=ConversationExecutionStatus.FINISHED
+            )
+            assert [item.id for item in page.items] == [ids[0]]
+            assert (
+                await svc.count_conversations(
+                    execution_status=ConversationExecutionStatus.IDLE
+                )
+                == 2
+            )
+
+    @pytest.mark.asyncio
+    async def test_live_conversation_status_is_read_from_memory(self, tmp_path):
+        """A live conversation answers the filter from its in-memory state."""
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        conversations_dir = tmp_path / "conversations"
+        self._seed(conversations_dir, 5, workspace_dir)
+
+        request = StartConversationRequest(
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="live-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+            confirmation_policy=NeverConfirm(),
+        )
+        async with ConversationService(conversations_dir=conversations_dir) as svc:
+            live, _ = await svc.start_conversation(request)
+            assert svc._event_services is not None
+            event_service = svc._event_services[live.id]
+
+            # Flip the live state without touching disk.
+            state = await event_service.get_state()
+            with state:
+                state.execution_status = ConversationExecutionStatus.RUNNING
+
+            assert (
+                await svc.count_conversations(
+                    execution_status=ConversationExecutionStatus.RUNNING
+                )
+                == 1
+            )
+            page = await svc.search_conversations(
+                execution_status=ConversationExecutionStatus.RUNNING
+            )
+            assert [item.id for item in page.items] == [live.id]
+            assert (
+                await svc.count_conversations(
+                    execution_status=ConversationExecutionStatus.IDLE
+                )
+                == 5
+            )
+
+    @pytest.mark.asyncio
+    async def test_filtered_search_sees_records_replaced_during_refresh(self, tmp_path):
+        """Filtered search must refresh before it snapshots the catalog.
+
+        A conversation going live during the refresh replaces its record with
+        authoritative in-memory state. Snapshotting first would filter on the
+        superseded object and drop the conversation from the page.
+        """
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        conversations_dir = tmp_path / "conversations"
+        self._seed(conversations_dir, 3, workspace_dir)
+
+        async with ConversationService(conversations_dir=conversations_dir) as svc:
+            target = next(iter(svc._conversation_records))
+            real_refresh = svc._refresh_execution_statuses
+
+            async def refresh_then_replace():
+                await real_refresh()
+                # Stands in for _start_event_service swapping in a fresh record
+                # while the refresh awaited.
+                old = svc._conversation_records[target]
+                svc._conversation_records[target] = _ConversationRecord(
+                    stored=old.stored,
+                    execution_status=ConversationExecutionStatus.RUNNING,
+                )
+
+            with patch.object(svc, "_refresh_execution_statuses", refresh_then_replace):
+                page = await svc.search_conversations(
+                    execution_status=ConversationExecutionStatus.RUNNING
+                )
+
+            assert [item.id for item in page.items] == [target]
