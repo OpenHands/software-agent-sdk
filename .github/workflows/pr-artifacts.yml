@@ -125,18 +125,36 @@ jobs:
                       > For fork PRs: Manual removal is required before merging.
                       `;
 
-                      const { data: comments } = await github.rest.issues.listComments({
-                        owner: context.repo.owner,
-                        repo: context.repo.repo,
-                        issue_number: context.issue.number,
-                      });
-
-                      const existing = comments.find(c => c.body.includes(marker));
-                      if (!existing) {
-                        await github.rest.issues.createComment({
+                      try {
+                        const { data: comments } = await github.rest.issues.listComments({
                           owner: context.repo.owner,
                           repo: context.repo.repo,
                           issue_number: context.issue.number,
-                          body: body,
                         });
+
+                        const existing = comments.find(c => c.body.includes(marker));
+                        if (!existing) {
+                          await github.rest.issues.createComment({
+                            owner: context.repo.owner,
+                            repo: context.repo.repo,
+                            issue_number: context.issue.number,
+                            body: body,
+                          });
+                        }
+                      } catch (error) {
+                        // Fork PRs run pull_request workflows with a read-only
+                        // token, so posting the notice is impossible there.
+                        // The notice is informational: degrade to a warning and
+                        // the job summary instead of failing the whole job.
+                        if (error.status === 403) {
+                          core.warning(
+                            'Cannot post the PR-artifacts notice comment ' +
+                            '(read-only token, expected on fork PRs): ' + error.message,
+                          );
+                          await core.summary
+                            .addRaw(body.replace(marker, '').trim())
+                            .write();
+                        } else {
+                          throw error;
+                        }
                       }
