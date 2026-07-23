@@ -2,6 +2,7 @@ import asyncio
 import importlib
 import json
 import logging
+import os
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
@@ -496,10 +497,43 @@ def _register_agent_definitions(
     )
 
 
+def _state_signature(base_state_path: str) -> tuple[int, int] | None:
+    """Change-detection token for ``base_state.json``. ``None`` if unreadable.
+
+    ``str`` + ``os.stat`` rather than ``Path``: this runs per conversation on
+    every status-filtered query, and ``Path`` costs more than the syscall.
+    """
+    with suppress(OSError):
+        stat = os.stat(base_state_path)
+        return (stat.st_mtime_ns, stat.st_size)
+    return None
+
+
+def _read_execution_status_sync(
+    base_state_path: str,
+) -> ConversationExecutionStatus | None:
+    """Read only ``execution_status`` from a persisted base state.
+
+    Validating the full ``ConversationState`` costs an agent, LLM config,
+    workspace, secret registry and stats blob to reach one enum field.
+    """
+    with suppress(OSError, ValueError):
+        with open(base_state_path, "rb") as f:
+            payload = json.loads(f.read())
+        return ConversationExecutionStatus(
+            payload.get("execution_status", ConversationExecutionStatus.IDLE.value)
+        )
+    return None
+
+
 @dataclass
 class _ConversationRecord:
     stored: StoredConversation
     execution_status: ConversationExecutionStatus
+    # Signature when execution_status was last read. None = unverified, re-read.
+    state_signature: tuple[int, int] | None = None
+    # Memoised by _base_state_path.
+    base_state_path: str | None = None
 
 
 @dataclass
@@ -546,16 +580,26 @@ class ConversationService:
                 )
                 execution_status = ConversationExecutionStatus.IDLE
                 base_state_file = conversation_dir / BASE_STATE
+                base_state_path = str(base_state_file)
+                # Signature before read, so a racing write leaves a stale
+                # signature and the next query re-reads rather than trusting it.
+                signature = _state_signature(base_state_path)
                 if base_state_file.exists():
+                    # Strict on purpose: a corrupt base state still drops the
+                    # conversation from the catalog and logs below.
                     payload = json.loads(base_state_file.read_text())
                     execution_status = ConversationExecutionStatus(
                         payload.get(
                             "execution_status", ConversationExecutionStatus.IDLE.value
                         )
                     )
+                else:
+                    signature = None
                 records[stored.id] = _ConversationRecord(
                     stored=stored,
                     execution_status=execution_status,
+                    state_signature=signature,
+                    base_state_path=base_state_path,
                 )
             except Exception:
                 logger.exception(
@@ -564,6 +608,16 @@ class ConversationService:
                     stack_info=True,
                 )
         return records
+
+    def _base_state_path(
+        self, conversation_id: UUID, record: _ConversationRecord
+    ) -> str:
+        """Memoised path to a conversation's ``base_state.json``."""
+        path = record.base_state_path
+        if path is None:
+            path = str(self.conversations_dir / conversation_id.hex / BASE_STATE)
+            record.base_state_path = path
+        return path
 
     def _load_persisted_state_sync(
         self, conversation_id: UUID
@@ -644,33 +698,96 @@ class ConversationService:
         if event_service is not None and event_service.is_open():
             state = await event_service.get_state()
             record.execution_status = state.execution_status
+            record.state_signature = None
             return _compose_conversation_info(event_service.stored, state)
 
+        signature = _state_signature(self._base_state_path(conversation_id, record))
         state = await asyncio.to_thread(
             self._load_persisted_state_sync, conversation_id
         )
         if state is None:
             return None
         record.execution_status = state.execution_status
+        record.state_signature = signature
         return _compose_conversation_info(record.stored, state)
 
-    async def _execution_status(
-        self, conversation_id: UUID, record: _ConversationRecord
-    ) -> ConversationExecutionStatus:
+    @staticmethod
+    def _refresh_persisted_statuses_sync(
+        targets: list[tuple[UUID, str, tuple[int, int] | None]],
+    ) -> dict[UUID, tuple[ConversationExecutionStatus | None, tuple[int, int] | None]]:
+        """Re-read ``execution_status`` for persisted conversations that changed.
+
+        ``targets`` is ``(conversation_id, base_state_path, cached_signature)``;
+        entries whose signature still matches are skipped without a read. Takes
+        plain values because it runs in a worker thread. In the result, a
+        ``None`` status means "keep the cached one" and a ``None`` signature
+        marks the entry unverified.
+        """
+        refreshed: dict[
+            UUID, tuple[ConversationExecutionStatus | None, tuple[int, int] | None]
+        ] = {}
+        for conversation_id, base_state_path, cached_signature in targets:
+            signature = _state_signature(base_state_path)
+            if signature is not None and signature == cached_signature:
+                continue
+            if signature is None:
+                # Unreadable (never started, or mid-delete): keep the cached
+                # status, unverified, so a later query retries.
+                refreshed[conversation_id] = (None, None)
+                continue
+            status = _read_execution_status_sync(base_state_path)
+            refreshed[conversation_id] = (
+                (None, None) if status is None else (status, signature)
+            )
+        return refreshed
+
+    async def _refresh_execution_statuses(self) -> None:
+        """Bring every cached ``execution_status`` up to date.
+
+        The index behind status-filtered search and count. Live conversations
+        answer from memory; persisted ones cost a ``stat()`` each and are
+        re-read only when changed, never as a full ``ConversationState``.
+        """
         event_services = self._event_services
         if event_services is None:
             raise ValueError("inactive_service")
-        event_service = event_services.get(conversation_id)
-        if event_service is not None and event_service.is_open():
-            state = await event_service.get_state()
-            record.execution_status = state.execution_status
-        else:
-            state = await asyncio.to_thread(
-                self._load_persisted_state_sync, conversation_id
-            )
-            if state is not None:
+
+        targets: list[tuple[UUID, str, tuple[int, int] | None]] = []
+        for conversation_id, record in list(self._conversation_records.items()):
+            event_service = event_services.get(conversation_id)
+            if event_service is not None and event_service.is_open():
+                # Authoritative: we own it, so disk can only be staler.
+                state = await event_service.get_state()
                 record.execution_status = state.execution_status
-        return record.execution_status
+                # Autosave will invalidate any signature we hold.
+                record.state_signature = None
+                continue
+            targets.append(
+                (
+                    conversation_id,
+                    self._base_state_path(conversation_id, record),
+                    record.state_signature,
+                )
+            )
+
+        if not targets:
+            return
+
+        # One thread hop for the catalog, not one per conversation.
+        refreshed = await asyncio.to_thread(
+            self._refresh_persisted_statuses_sync, targets
+        )
+        for conversation_id, (status, signature) in refreshed.items():
+            record = self._conversation_records.get(conversation_id)
+            if record is None:
+                continue
+            event_service = event_services.get(conversation_id)
+            if event_service is not None and event_service.is_open():
+                # Went live while we were reading disk; memory wins.
+                continue
+            if status is not None:
+                record.execution_status = status
+            record.state_signature = signature
 
     async def _reconcile_active_records(self) -> None:
         """Fill catalog entries for services injected outside normal startup.
@@ -821,7 +938,18 @@ class ConversationService:
             raise ValueError("inactive_service")
         await self._reconcile_active_records()
 
-        records = list(self._conversation_records.items())
+        if execution_status is not None:
+            # Refresh before snapshotting below: this awaits, and a conversation
+            # going live replaces its catalog record, so a snapshot taken first
+            # would filter on the superseded one. Full state is still loaded
+            # only for the page items.
+            await self._refresh_execution_statuses()
+
+        records = [
+            (conversation_id, record)
+            for conversation_id, record in self._conversation_records.items()
+            if execution_status is None or record.execution_status == execution_status
+        ]
         if sort_order in (
             ConversationSortOrder.CREATED_AT,
             ConversationSortOrder.CREATED_AT_DESC,
@@ -835,14 +963,6 @@ class ConversationService:
                 key=lambda item: item[1].stored.updated_at,
                 reverse=sort_order == ConversationSortOrder.UPDATED_AT_DESC,
             )
-
-        if execution_status is not None:
-            filtered_records = []
-            for conversation_id, record in records:
-                status = await self._execution_status(conversation_id, record)
-                if status == execution_status:
-                    filtered_records.append((conversation_id, record))
-            records = filtered_records
 
         start_index = 0
         if page_id:
@@ -881,12 +1001,12 @@ class ConversationService:
         if execution_status is None:
             return len(self._conversation_records)
 
-        count = 0
-        for conversation_id, record in self._conversation_records.items():
-            status = await self._execution_status(conversation_id, record)
-            if status == execution_status:
-                count += 1
-        return count
+        await self._refresh_execution_statuses()
+        return sum(
+            1
+            for record in self._conversation_records.values()
+            if record.execution_status == execution_status
+        )
 
     async def batch_get_conversations(
         self, conversation_ids: list[UUID]
