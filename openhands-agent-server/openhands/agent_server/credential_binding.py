@@ -15,6 +15,7 @@ from openhands.sdk.credential import (
     CredentialAuthorizationRejected,
     CredentialBindingError,
     CredentialConflict,
+    CredentialInvalidResponse,
     CredentialNeedsReauthentication,
     CredentialSyncError,
     HttpVersionedCredentialBinding,
@@ -91,6 +92,7 @@ async def _probe_binding(binding: HttpVersionedCredentialBinding) -> None:
         except (
             CredentialAuthorizationRejected,
             CredentialConflict,
+            CredentialInvalidResponse,
             CredentialNeedsReauthentication,
         ):
             raise
@@ -98,6 +100,12 @@ async def _probe_binding(binding: HttpVersionedCredentialBinding) -> None:
             if attempt == _PROBE_ATTEMPTS - 1:
                 raise
             await asyncio.sleep(_PROBE_INITIAL_DELAY * 2**attempt)
+
+
+@router.post("/prepare-for-sandbox-pause", include_in_schema=False)
+async def prepare_for_sandbox_pause(request: Request) -> Response:
+    await request.app.state.conversation_service.prepare_for_sandbox_pause()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.put(
@@ -128,7 +136,26 @@ async def activate_credential_binding(
             status.HTTP_409_CONFLICT,
             "Credential binding activation arrived after ACP initialization",
         ) from exc
-    except (CredentialBindingError, httpx.InvalidURL) as exc:
+    except CredentialConflict as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Credential binding source changed",
+        ) from exc
+    except CredentialAuthorizationRejected as exc:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Credential binding authorization was rejected",
+        ) from exc
+    except (
+        CredentialInvalidResponse,
+        CredentialNeedsReauthentication,
+        httpx.InvalidURL,
+    ) as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Credential binding source is invalid",
+        ) from exc
+    except CredentialBindingError as exc:
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY,
             "Credential binding source is unavailable",

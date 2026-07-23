@@ -25,6 +25,10 @@ class CredentialSyncError(CredentialBindingError):
     pass
 
 
+class CredentialInvalidResponse(CredentialSyncError):
+    pass
+
+
 class CredentialConflict(CredentialSyncError):
     pass
 
@@ -90,11 +94,13 @@ class HttpVersionedCredentialBinding:
             value = payload["value"]
             version = payload["version"]
         except (KeyError, TypeError, ValueError) as exc:
-            raise CredentialSyncError(
+            raise CredentialInvalidResponse(
                 "Credential source returned an invalid response."
             ) from exc
         if not isinstance(value, str) or not isinstance(version, str) or not version:
-            raise CredentialSyncError("Credential source returned an invalid response.")
+            raise CredentialInvalidResponse(
+                "Credential source returned an invalid response."
+            )
         return ResolvedCredential(value=value, version=version)
 
     async def replace(self, expected_version: str, value: str) -> str:
@@ -115,11 +121,13 @@ class HttpVersionedCredentialBinding:
         try:
             version = response.json()["version"]
         except (KeyError, TypeError, ValueError) as exc:
-            raise CredentialSyncError(
+            raise CredentialInvalidResponse(
                 "Credential source returned an invalid response."
             ) from exc
         if not isinstance(version, str) or not version:
-            raise CredentialSyncError("Credential source returned an invalid response.")
+            raise CredentialInvalidResponse(
+                "Credential source returned an invalid response."
+            )
         return version
 
     @staticmethod

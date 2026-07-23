@@ -599,6 +599,19 @@ class ConversationService:
                 binding
             )
 
+    async def prepare_for_sandbox_pause(self) -> None:
+        async with self._lifecycle_lock:
+            event_services = self._event_services
+            if event_services is None:
+                raise ValueError("inactive_service")
+            for conversation_id, event_service in tuple(event_services.items()):
+                await event_service.__aexit__(None, None, None)
+                record = self._conversation_records.get(conversation_id)
+                if record is not None:
+                    record.stored = event_service.stored
+                event_services.pop(conversation_id, None)
+            self._credential_bindings = {}
+
     @staticmethod
     def _is_codex_agent(agent: AgentBase | None) -> bool:
         return isinstance(agent, ACPAgent) and agent.acp_server == "codex"
