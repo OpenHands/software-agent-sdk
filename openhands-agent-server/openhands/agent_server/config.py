@@ -2,7 +2,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
@@ -24,6 +24,8 @@ V1_SESSION_API_KEY_ENV = "OH_SESSION_API_KEYS_0"
 ENVIRONMENT_VARIABLE_PREFIX = "OH"
 CONFIG_PATH_ENV = "OPENHANDS_AGENT_SERVER_CONFIG_PATH"
 DEFAULT_CONFIG_PATH = Path("workspace/openhands_agent_server_config.json")
+# 20 minutes, matching the idle timeout used by OpenHands Cloud.
+DEFAULT_CONVERSATION_IDLE_TTL_SECONDS: Final[float] = 20 * 60.0
 _logger = logging.getLogger(__name__)
 
 
@@ -350,12 +352,15 @@ class Config(BaseModel):
         ),
     )
     conversation_idle_ttl_seconds: float | None = Field(
-        default=None,
+        default=DEFAULT_CONVERSATION_IDLE_TTL_SECONDS,
         gt=0,
         description=(
             "Seconds an idle conversation stays in memory before a background "
             "task evicts it; evicted conversations re-hydrate from disk on next "
-            "access. None (default) keeps them until deleted or restart."
+            "access. Defaults to 20 minutes. Conversations that are running, "
+            "have a pending rerun, or have an attached websocket subscriber are "
+            "never evicted. Set to null to keep conversations in memory until "
+            "they are deleted or the server restarts."
         ),
     )
     telemetry: TelemetrySpec = Field(
