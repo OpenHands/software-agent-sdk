@@ -181,7 +181,7 @@ Run one controlled pilot end to end and confirm:
 | `debug_prompt.jinja` | Hardened, injection-resistant agent prompt |
 | `workflow.yml` | The two-job GitHub Actions pipeline |
 
-Tests: `tests/github_workflows/test_posthog_selfheal.py` and
+Tests: `tests/cross/test_posthog_selfheal.py` and
 `tests/cross/test_posthog_sanitizer_drift.py`.
 
 ## Notes
