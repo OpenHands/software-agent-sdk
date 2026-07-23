@@ -1433,10 +1433,10 @@ def test_discriminated_union_single_empty_kind_no_variables(clean_env):
 
 def test_config_lease_ttl_seconds_default(clean_env):
     config = from_env(Config, "OH")
-    assert config.lease_ttl_seconds == DEFAULT_LEASE_TTL_SECONDS
+    assert config.lease_ttl_seconds == 0.0
 
 
 def test_config_lease_ttl_seconds_env_var(clean_env):
-    os.environ["OH_LEASE_TTL_SECONDS"] = "0"
+    os.environ["OH_LEASE_TTL_SECONDS"] = str(DEFAULT_LEASE_TTL_SECONDS)
     config = from_env(Config, "OH")
-    assert config.lease_ttl_seconds == 0.0
+    assert config.lease_ttl_seconds == DEFAULT_LEASE_TTL_SECONDS
