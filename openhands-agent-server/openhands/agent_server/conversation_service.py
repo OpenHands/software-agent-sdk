@@ -579,16 +579,22 @@ class ConversationService:
                     context={"cipher": self.cipher},
                 )
                 execution_status = ConversationExecutionStatus.IDLE
-                base_state_path = str(conversation_dir / BASE_STATE)
+                base_state_file = conversation_dir / BASE_STATE
+                base_state_path = str(base_state_file)
                 # Signature before read, so a racing write leaves a stale
                 # signature and the next query re-reads rather than trusting it.
                 signature = _state_signature(base_state_path)
-                if signature is not None:
-                    status = _read_execution_status_sync(base_state_path)
-                    if status is not None:
-                        execution_status = status
-                    else:
-                        signature = None
+                if base_state_file.exists():
+                    # Strict on purpose: a corrupt base state still drops the
+                    # conversation from the catalog and logs below.
+                    payload = json.loads(base_state_file.read_text())
+                    execution_status = ConversationExecutionStatus(
+                        payload.get(
+                            "execution_status", ConversationExecutionStatus.IDLE.value
+                        )
+                    )
+                else:
+                    signature = None
                 records[stored.id] = _ConversationRecord(
                     stored=stored,
                     execution_status=execution_status,
@@ -774,6 +780,10 @@ class ConversationService:
         for conversation_id, (status, signature) in refreshed.items():
             record = self._conversation_records.get(conversation_id)
             if record is None:
+                continue
+            event_service = event_services.get(conversation_id)
+            if event_service is not None and event_service.is_open():
+                # Went live while we were reading disk; memory wins.
                 continue
             if status is not None:
                 record.execution_status = status
