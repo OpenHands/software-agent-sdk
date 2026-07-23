@@ -155,7 +155,7 @@ class AgentContext(BaseModel):
             "acp_compatible": True,
             # Surfaced in the curated agent-settings schema (the parent
             # agent_context section is fields_opt_in).
-            **field_meta(SettingProminence.CRITICAL, label="Persistent memory"),
+            **field_meta(SettingProminence.MAJOR, label="Persistent memory"),
         },
     )
     memory_context: str | None = Field(

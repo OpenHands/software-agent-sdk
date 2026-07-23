@@ -121,7 +121,7 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
     assert load_memory.label == "Persistent memory"
     assert load_memory.value_type == "boolean"
     assert load_memory.default is False
-    assert load_memory.prominence is SettingProminence.CRITICAL
+    assert load_memory.prominence is SettingProminence.MAJOR
 
     # -- condenser section --
     condenser_fields = {f.key: f for f in sections["condenser"].fields}

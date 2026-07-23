@@ -22,9 +22,14 @@ class SettingsSectionMetadata(BaseModel):
     variant: str | None = None
     fields_opt_in: bool = False
     """When True, the section exports only nested fields that carry
-    ``SETTINGS_METADATA_KEY`` — per-field opt-in curation for models whose
-    fields are mostly internal (e.g. ``AgentContext``). The default False
-    keeps the emit-all-non-excluded behavior existing sections rely on."""
+    ``SETTINGS_METADATA_KEY`` — the opt-in rule ``export_settings_schema``
+    already applies to top-level fields, extended to a nested section. The
+    default False keeps the emit-all-non-excluded behavior existing sections
+    (llm/condenser/verification) rely on. Opt-in curation exists for models
+    like ``AgentContext`` that are mostly internal plumbing: exporting every
+    field would surface knobs clients ignore or force-overwrite, while hiding
+    them with ``exclude``/``SkipJsonSchema`` would change the model's
+    serialization, not just this schema."""
 
 
 class SettingsFieldMetadata(BaseModel):
