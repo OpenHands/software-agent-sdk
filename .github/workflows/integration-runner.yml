@@ -230,6 +230,7 @@ jobs:
         runs-on: ubuntu-latest
         permissions:
             issues: write
+            pull-requests: write
         steps:
             - name: Comment on issue/PR (workflow_dispatch)
               env:
@@ -254,7 +255,8 @@ jobs:
                   Results will be posted here when complete.
                   EOF
                   )
-                  printf '%s' "$COMMENT_BODY" | gh issue comment "$ISSUE_NUMBER" --body-file -
+                  printf '%s' "$COMMENT_BODY" | gh issue comment "$ISSUE_NUMBER" \
+                    --repo "$GITHUB_REPOSITORY" --body-file -
 
     run-integration-tests:
         # Security: Only run when integration-related labels are present, via workflow_dispatch, or on schedule
@@ -564,6 +566,7 @@ jobs:
         permissions:
             contents: read
             issues: write
+            pull-requests: write
         steps:
             - name: Checkout repository
               uses: actions/checkout@v7
@@ -618,5 +621,6 @@ jobs:
               run: |
                   REPORT=$(find compliance-results -name compliance_report.md -type f -print -quit)
                   if [ -n "$REPORT" ]; then
-                    gh issue comment "$ISSUE_NUMBER" --body-file "$REPORT"
+                    gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+                      --body-file "$REPORT"
                   fi
