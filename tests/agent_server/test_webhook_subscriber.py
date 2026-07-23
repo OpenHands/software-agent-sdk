@@ -7,6 +7,7 @@ without dependencies on the openhands.sdk module.
 
 import asyncio
 import tempfile
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -23,7 +24,7 @@ from openhands.agent_server.conversation_service import (
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import StoredConversation
 from openhands.agent_server.utils import utc_now
-from openhands.sdk import LLM, Agent
+from openhands.sdk import LLM, Agent, Event
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm.message import Message, TextContent
 from openhands.sdk.workspace import LocalWorkspace
@@ -503,7 +504,8 @@ class TestWebhookSubscriberPostEvents:
         # Verify retries were attempted
         assert len(retry_attempts) == 3
         # Only this instance's delays are recorded — no global-sleep pollution.
-        assert sleep_calls == [webhook_spec.retry_delay] * 2
+        # Waits grow exponentially: retry_delay * 2**attempt.
+        assert sleep_calls == [webhook_spec.retry_delay, webhook_spec.retry_delay * 2]
 
         # Verify queue is cleared after success
         assert subscriber.queue == []
@@ -545,14 +547,23 @@ class TestWebhookSubscriberPostEvents:
 
             await subscriber._post_events()
 
+        # A retry flush was re-armed so delivery resumes without new events;
+        # stop it here so the always-failing mock does not loop in the test.
+        assert subscriber._flush_timer is not None
+        subscriber._cancel_flush_timer()
+
         # Verify all retries were attempted (num_retries + 1 = 3 total attempts)
         assert len(retry_attempts) == 3
         # Only this instance's delays are recorded — no global-sleep pollution.
-        assert sleep_calls == [webhook_spec.retry_delay] * 2
+        # Waits grow exponentially: retry_delay * 2**attempt.
+        assert sleep_calls == [webhook_spec.retry_delay, webhook_spec.retry_delay * 2]
 
         # Verify events are re-queued after failure
         assert len(subscriber.queue) == 2
         assert subscriber.queue == original_events
+
+        # A failure cooldown is armed so the next flush waits out the storm.
+        assert subscriber._backoff_until > 0
 
     @pytest.mark.asyncio
     async def test_post_events_drops_oldest_when_requeue_exceeds_max_queue_size(
@@ -596,6 +607,9 @@ class TestWebhookSubscriberPostEvents:
             mock_client.request = mock_request
             mock_client_class.return_value.__aenter__.return_value = mock_client
             await subscriber._post_events()
+
+        # Stop the re-armed retry timer so the failing mock does not loop.
+        subscriber._cancel_flush_timer()
 
         # Bound is honored, and the *oldest* events are the ones dropped.
         assert len(subscriber.queue) == spec.max_queue_size
@@ -821,10 +835,12 @@ class TestWebhookSubscriberErrorHandling:
 
         subscriber._sleep = record_sleep
         await subscriber._post_events()
+        subscriber._cancel_flush_timer()  # stop the re-armed retry timer
 
         # Verify retries were attempted
         assert mock_client.request.call_count == 3  # num_retries + 1
-        assert sleep_calls == [webhook_spec.retry_delay] * 2
+        # Waits grow exponentially: retry_delay * 2**attempt.
+        assert sleep_calls == [webhook_spec.retry_delay, webhook_spec.retry_delay * 2]
 
         # Events should be re-queued after failure
         assert len(subscriber.queue) == 2
@@ -861,10 +877,12 @@ class TestWebhookSubscriberErrorHandling:
 
         subscriber._sleep = record_sleep
         await subscriber._post_events()
+        subscriber._cancel_flush_timer()  # stop the re-armed retry timer
 
         # Verify retries were attempted
         assert mock_client.request.call_count == 3
-        assert sleep_calls == [webhook_spec.retry_delay] * 2
+        # Waits grow exponentially: retry_delay * 2**attempt.
+        assert sleep_calls == [webhook_spec.retry_delay, webhook_spec.retry_delay * 2]
 
         # Events should be re-queued after failure
         assert len(subscriber.queue) == 1
@@ -1418,3 +1436,128 @@ async def test_webhook_subscribe_errors_surface(tmp_path, monkeypatch):
                 usage_id="webhook-error",
                 initial_text=None,
             )
+
+
+class TestWebhookBackoffAndRecovery:
+    """Regression tests for #3842: a rate-limited webhook must not lose events
+    or hammer the downstream; delivery must resume once it recovers."""
+
+    @pytest.fixture
+    def spec(self):
+        return WebhookSpec(
+            base_url="https://example.com",
+            event_buffer_size=2,
+            flush_delay=0.1,
+            num_retries=2,
+            retry_delay=1,
+            max_queue_size=100,
+        )
+
+    def _events(self, n) -> list[Event]:
+        return [
+            MessageEvent(
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text=f"e{i}")]),
+            )
+            for i in range(n)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_429_storm_honours_retry_after_and_delivers_everything(
+        self, mock_event_service, spec, sample_conversation_id
+    ):
+        """Persistent 429s: waits honour Retry-After, nothing is dropped, and
+        the full queue is delivered in order once the downstream recovers."""
+        subscriber = WebhookSubscriber(
+            conversation_id=sample_conversation_id,
+            service=mock_event_service,
+            spec=spec,
+        )
+        events = self._events(4)
+        subscriber.queue = events.copy()
+
+        posted_bodies = []
+        request_count = 0
+
+        async def mock_request(*args, **kwargs):
+            nonlocal request_count
+            request_count += 1
+            if request_count <= 4:  # first volley (3 attempts) + 1 more fail
+                response = httpx.Response(
+                    status_code=429,
+                    headers={"Retry-After": "7"},
+                    request=httpx.Request("POST", "https://example.com"),
+                )
+                raise httpx.HTTPStatusError(
+                    "Too Many Requests",
+                    request=response.request,
+                    response=response,
+                )
+            posted_bodies.append(kwargs.get("json"))
+            response = AsyncMock()
+            response.raise_for_status.return_value = None
+            return response
+
+        sleep_calls = []
+
+        async def mock_sleep(delay):
+            sleep_calls.append(delay)
+
+        subscriber._sleep = mock_sleep
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.request = mock_request
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            # First flush: exhausts retries, re-queues, arms cooldown + timer.
+            await subscriber._post_events()
+            assert subscriber.queue == events  # nothing lost, order intact
+            assert subscriber._backoff_until > 0
+
+            # Let the re-armed retry flush run (mocked sleep returns at once).
+            # Skip the cooldown gate the way the timer's real wait would.
+            subscriber._backoff_until = 0.0
+            for _ in range(10):
+                await asyncio.sleep(0)
+                if posted_bodies:
+                    break
+
+        subscriber._cancel_flush_timer()
+        # Retry-After (7s) exceeded the computed backoff (1s, 2s) and was
+        # honoured for the in-volley waits.
+        assert sleep_calls[:2] == [7.0, 7.0]
+        # Everything delivered, in order, exactly once.
+        assert len(posted_bodies) == 1
+        texts = [item["llm_message"]["content"][0]["text"] for item in posted_bodies[0]]
+        assert texts == ["e0", "e1", "e2", "e3"]
+        assert subscriber.queue == []
+        # Success resets the failure circuit.
+        assert subscriber._consecutive_failures == 0
+        assert subscriber._backoff_until == 0.0
+
+    @pytest.mark.asyncio
+    async def test_size_triggered_flush_waits_out_cooldown(
+        self, mock_event_service, spec, sample_conversation_id
+    ):
+        """During a failure cooldown a full buffer queues instead of posting,
+        so a struggling downstream is not hammered."""
+        subscriber = WebhookSubscriber(
+            conversation_id=sample_conversation_id,
+            service=mock_event_service,
+            spec=spec,
+        )
+        subscriber._backoff_until = time.monotonic() + 60.0
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            for event in self._events(3):  # exceeds event_buffer_size=2
+                await subscriber(event)
+
+            mock_client.request.assert_not_called()
+
+        assert len(subscriber.queue) == 3
+        # A timer is armed so delivery resumes after the cooldown.
+        assert subscriber._flush_timer is not None
+        subscriber._cancel_flush_timer()

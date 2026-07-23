@@ -3423,3 +3423,56 @@ async def test_event_service_creates_lease_with_custom_ttl(tmp_path: Path) -> No
     assert service._lease is not None
     assert service._lease._ttl_seconds == 10.0
     assert (tmp_path / stored.id.hex / LEASE_FILE_NAME).exists()
+
+
+class TestStaleRunTaskReaper:
+    """Regression tests for #3842: a _run_task that never completes while
+    execution_status reports non-RUNNING must eventually be reaped so the
+    conversation can run again."""
+
+    @pytest.mark.asyncio
+    async def test_first_observation_does_not_reap(self, event_service):
+        never_done = asyncio.create_task(asyncio.Event().wait())
+        event_service._run_task = never_done
+
+        assert event_service._maybe_reap_stale_run_task() is False
+        assert event_service._run_task is never_done
+        assert event_service._stale_run_task_ref is never_done
+
+        never_done.cancel()
+
+    @pytest.mark.asyncio
+    async def test_reaps_after_grace_period(self, event_service, monkeypatch):
+        import openhands.agent_server.event_service as event_service_module
+
+        monkeypatch.setattr(event_service_module, "STALE_RUN_TASK_REAP_SECONDS", 0.05)
+        never_done = asyncio.create_task(asyncio.Event().wait())
+        event_service._run_task = never_done
+
+        assert event_service._maybe_reap_stale_run_task() is False
+        await asyncio.sleep(0.1)
+        assert event_service._maybe_reap_stale_run_task() is True
+
+        assert event_service._run_task is None
+        assert event_service._stale_run_task_ref is None
+        await asyncio.sleep(0)
+        assert never_done.cancelled()
+
+    @pytest.mark.asyncio
+    async def test_new_task_restarts_the_clock(self, event_service, monkeypatch):
+        import openhands.agent_server.event_service as event_service_module
+
+        monkeypatch.setattr(event_service_module, "STALE_RUN_TASK_REAP_SECONDS", 0.05)
+        first = asyncio.create_task(asyncio.Event().wait())
+        event_service._run_task = first
+        assert event_service._maybe_reap_stale_run_task() is False
+        await asyncio.sleep(0.1)
+
+        # A different lingering task is a fresh observation, not a stale one.
+        second = asyncio.create_task(asyncio.Event().wait())
+        event_service._run_task = second
+        assert event_service._maybe_reap_stale_run_task() is False
+        assert event_service._run_task is second
+
+        first.cancel()
+        second.cancel()

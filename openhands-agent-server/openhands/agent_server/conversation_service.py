@@ -2,6 +2,7 @@ import asyncio
 import importlib
 import json
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
@@ -1926,6 +1927,11 @@ class AutoTitleSubscriber(Subscriber):
             return None
 
 
+# Cap for the exponential retry/cooldown backoff so a long outage retries at a
+# steady cadence instead of growing unboundedly.
+_WEBHOOK_MAX_BACKOFF_SECONDS = 60.0
+
+
 @dataclass
 class WebhookSubscriber(Subscriber):
     conversation_id: UUID
@@ -1934,6 +1940,15 @@ class WebhookSubscriber(Subscriber):
     session_api_key: str | None = None
     queue: list[Event] = field(default_factory=list)
     _flush_timer: asyncio.Task | None = field(default=None, init=False)
+    # Serializes flushes: without it a burst of events (e.g. streaming deltas)
+    # fires overlapping _post_events volleys that hammer a rate-limited
+    # downstream and deliver out of order.
+    _post_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+    # Cooldown circuit: monotonic deadline before which no post is attempted.
+    # Set after a flush exhausts its retries; grows exponentially with
+    # consecutive failures so a downstream returning 429 gets room to recover.
+    _backoff_until: float = field(default=0.0, init=False)
+    _consecutive_failures: int = field(default=0, init=False)
     # Per-instance sleep seam so tests override delays without patching the
     # global asyncio.sleep. default_factory (not default) keeps it an instance
     # attribute, else the function would be descriptor-bound as a method.
@@ -1945,7 +1960,20 @@ class WebhookSubscriber(Subscriber):
         """Add event to queue and post to webhook when buffer size is reached."""
         self.queue.append(event)
 
-        if len(self.queue) >= self.spec.event_buffer_size:
+        # Enforce the queue bound on enqueue as well as on failed-flush
+        # re-queue: during a failure cooldown events accumulate here without
+        # passing through _post_events, and the bound must hold throughout.
+        overflow = len(self.queue) - self.spec.max_queue_size
+        if overflow > 0:
+            del self.queue[:overflow]
+            logger.warning(
+                f"Webhook queue exceeded max_queue_size="
+                f"{self.spec.max_queue_size}; dropped {overflow} oldest "
+                f"event(s) for conversation {self.conversation_id}."
+            )
+
+        in_cooldown = time.monotonic() < self._backoff_until
+        if len(self.queue) >= self.spec.event_buffer_size and not in_cooldown:
             # Cancel timer since we're flushing due to buffer size
             self._cancel_flush_timer()
             await self._post_events()
@@ -1958,11 +1986,47 @@ class WebhookSubscriber(Subscriber):
         self._cancel_flush_timer()
 
         if self.queue:
+            # Best effort on shutdown: skip any active cooldown so the tail of
+            # the conversation gets one final delivery attempt.
+            self._backoff_until = 0.0
             await self._post_events()
+
+    def _retry_wait(self, error: Exception, attempt: int) -> float:
+        """Exponential backoff wait, honouring a Retry-After header when present."""
+        wait = min(self.spec.retry_delay * (2**attempt), _WEBHOOK_MAX_BACKOFF_SECONDS)
+        if isinstance(error, httpx.HTTPStatusError):
+            retry_after = error.response.headers.get("Retry-After")
+            if retry_after:
+                # TypeError guards non-string values (e.g. mocked responses).
+                with suppress(TypeError, ValueError):
+                    wait = max(wait, float(retry_after))
+        return wait
+
+    def _schedule_retry_flush(self):
+        """Arm a flush timer so delivery resumes after the cooldown expires.
+
+        Without this, events re-queued after a failed flush would only be
+        retried when a NEW event arrived - the tail of a conversation could
+        stay undelivered forever after a downstream outage.
+        """
+        if self._flush_timer:
+            return
+        delay = max(self._backoff_until - time.monotonic(), 0.0)
+        self._flush_timer = asyncio.create_task(self._flush_after_delay(delay))
 
     async def _post_events(self):
         """Post queued events to the webhook with retry logic."""
+        async with self._post_lock:
+            await self._post_events_locked()
+
+    async def _post_events_locked(self):
         if not self.queue:
+            return
+        if time.monotonic() < self._backoff_until:
+            # Still cooling down after exhausted retries (e.g. the downstream
+            # is rate limiting with 429s). Leave events queued; the retry
+            # flush timer will deliver them once the cooldown expires.
+            self._schedule_retry_flush()
             return
 
         events_to_post = self.queue.copy()
@@ -1990,7 +2054,9 @@ class WebhookSubscriber(Subscriber):
             f"{self.spec.base_url.rstrip('/')}/events/{self.conversation_id.hex}"
         )
 
-        # Retry logic
+        # Retry logic: exponential backoff (honouring Retry-After) between
+        # attempts; after the final failure, enter a cooldown and re-arm the
+        # flush timer instead of hammering a struggling downstream.
         for attempt in range(self.spec.num_retries + 1):
             try:
                 async with httpx.AsyncClient() as client:
@@ -2006,17 +2072,32 @@ class WebhookSubscriber(Subscriber):
                         f"Successfully posted {len(event_data)} events "
                         f"to webhook {events_url}"
                     )
+                    self._consecutive_failures = 0
+                    self._backoff_until = 0.0
                     return
             except Exception as e:
                 logger.warning(f"Webhook post attempt {attempt + 1} failed: {e}")
                 if attempt < self.spec.num_retries:
-                    await self._sleep(self.spec.retry_delay)
+                    await self._sleep(self._retry_wait(e, attempt))
                 else:
+                    self._consecutive_failures += 1
+                    # Floor of 1s so retry_delay=0 cannot produce a hot loop.
+                    cooldown = max(
+                        min(
+                            self.spec.retry_delay * (2**self._consecutive_failures),
+                            _WEBHOOK_MAX_BACKOFF_SECONDS,
+                        ),
+                        1.0,
+                    )
+                    self._backoff_until = time.monotonic() + cooldown
                     logger.error(
                         f"Failed to post events to webhook {events_url} "
-                        f"after {self.spec.num_retries + 1} attempts"
+                        f"after {self.spec.num_retries + 1} attempts; "
+                        f"retrying in {cooldown:.0f}s"
                     )
-                    self.queue.extend(events_to_post)
+                    # Prepend so delivery order is preserved when events
+                    # queued during this flush are eventually posted.
+                    self.queue = events_to_post + self.queue
                     overflow = len(self.queue) - self.spec.max_queue_size
                     if overflow > 0:
                         del self.queue[:overflow]
@@ -2025,6 +2106,7 @@ class WebhookSubscriber(Subscriber):
                             f"{self.spec.max_queue_size}; dropped {overflow} "
                             f"oldest event(s) for {events_url}."
                         )
+                    self._schedule_retry_flush()
 
     def _cancel_flush_timer(self):
         """Cancel the current flush timer if it exists."""
@@ -2032,18 +2114,21 @@ class WebhookSubscriber(Subscriber):
             self._flush_timer.cancel()
         self._flush_timer = None
 
-    async def _flush_after_delay(self):
-        """Wait for flush_delay seconds then flush events if any exist."""
+    async def _flush_after_delay(self, delay: float | None = None):
+        """Wait (flush_delay by default) then flush events if any exist."""
         try:
-            await self._sleep(self.spec.flush_delay)
+            await self._sleep(self.spec.flush_delay if delay is None else delay)
+        except asyncio.CancelledError:
+            # Timer was cancelled, which is expected behavior
+            self._flush_timer = None
+            return
+        # The timer has fired: clear it BEFORE flushing so a flush that ends
+        # in cooldown (or another failure) can re-arm the next retry timer.
+        self._flush_timer = None
+        with suppress(asyncio.CancelledError):
             # Only flush if there are events in the queue
             if self.queue:
                 await self._post_events()
-        except asyncio.CancelledError:
-            # Timer was cancelled, which is expected behavior
-            pass
-        finally:
-            self._flush_timer = None
 
 
 @dataclass
