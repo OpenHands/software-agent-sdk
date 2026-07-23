@@ -233,3 +233,20 @@ def test_field_collision_raises():
     tool = _finish_with_schema(Bad)
     with pytest.raises(ValueError, match="collide"):
         tool._get_tool_schema()
+
+
+@pytest.mark.parametrize("reserved_name", ["summary", "security_risk"])
+def test_reserved_meta_field_names_raise(reserved_name):
+    """The SDK injects ``summary`` (always) and ``security_risk`` (with the
+    risk analyzer) into every action schema *after* the response-schema merge.
+    A user schema redefining them would be silently shadowed on the way out or
+    swallowed by the agent on the way back, so they are rejected up front."""
+    ReservedSchema = type(
+        "ReservedSchema",
+        (BaseModel,),
+        {"__annotations__": {reserved_name: str}},
+    )
+
+    tool = _finish_with_schema(ReservedSchema)
+    with pytest.raises(ValueError, match="reserved"):
+        tool._get_tool_schema()

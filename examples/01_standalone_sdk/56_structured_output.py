@@ -37,8 +37,9 @@ class CommandRationale(BaseModel):
 
 
 class ProjectFacts(BaseModel):
-    # NOTE: avoid the field name ``summary`` — the SDK already injects a
-    # meta ``summary`` field on every action schema for explainability.
+    # NOTE: ``summary`` and ``security_risk`` are reserved — the SDK injects
+    # meta-fields with those names on every action schema, and a response
+    # schema declaring them is rejected with a ValueError.
     description: str = Field(description="One-paragraph description of the project.")
     facts: list[str] = Field(description="Three concise, distinct facts.")
 

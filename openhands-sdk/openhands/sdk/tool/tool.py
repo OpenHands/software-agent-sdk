@@ -49,6 +49,11 @@ _action_types_with_summary: dict[type, type] = {}
 _action_types_with_schema: dict[tuple[type, type], type] = {}
 _action_type_lock = threading.Lock()
 
+# Meta-field names injected into every action schema after the
+# response-schema merge (see ``_create_action_type_with_summary`` and
+# ``create_action_type_with_risk``); rejected in user response schemas.
+_RESERVED_META_FIELDS = frozenset({"summary", "security_risk"})
+
 
 def _camel_to_snake(name: str) -> str:
     """Convert CamelCase to snake_case.
@@ -677,7 +682,12 @@ def _create_action_type_with_schema(
     the tool's own parameters and the user-defined response fields.
 
     A field name collision between the action and the response schema is a
-    programming error and raises ``ValueError``.
+    programming error and raises ``ValueError``. The same applies to the
+    meta-field names the SDK injects into every action schema *after* this
+    merge (``summary``, and ``security_risk`` when the risk analyzer is on):
+    a response-schema field with one of those names would be silently
+    shadowed on the way out or swallowed by the agent on the way back, so
+    they are rejected up front.
     """
     cache_key = (action_type, response_schema)
     with _action_type_lock:
@@ -690,6 +700,14 @@ def _create_action_type_with_schema(
             raise ValueError(
                 f"response_schema fields {sorted(overlap)} collide with "
                 f"existing fields on {action_type.__name__}."
+            )
+
+        reserved = _RESERVED_META_FIELDS & set(response_schema.model_fields)
+        if reserved:
+            raise ValueError(
+                f"response_schema fields {sorted(reserved)} are reserved: "
+                f"the SDK injects meta-fields with these names into every "
+                f"action schema. Rename them in your response schema."
             )
 
         attrs: dict[str, Any] = {}
