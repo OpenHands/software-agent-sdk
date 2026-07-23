@@ -36,6 +36,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.credential import CredentialSyncError
 from openhands.sdk.event import AgentErrorEvent, Event
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import (
@@ -2634,6 +2635,26 @@ class TestEventServiceClose:
         await event_service.close()  # second call — _conversation is already None
 
         conversation.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_exit_closes_after_meta_save_failure(self, event_service):
+        event_service.save_meta = AsyncMock(side_effect=OSError("save failed"))
+        event_service.close = AsyncMock()
+
+        with pytest.raises(OSError, match="save failed"):
+            await event_service.__aexit__(None, None, None)
+
+        event_service.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_exit_prioritizes_credential_close_failure(self, event_service):
+        event_service.save_meta = AsyncMock(side_effect=OSError("save failed"))
+        event_service.close = AsyncMock(
+            side_effect=CredentialSyncError("broker unavailable")
+        )
+
+        with pytest.raises(CredentialSyncError, match="broker unavailable"):
+            await event_service.__aexit__(None, None, None)
 
     @pytest.mark.asyncio
     async def test_close_pauses_before_closing_conversation(self, event_service):

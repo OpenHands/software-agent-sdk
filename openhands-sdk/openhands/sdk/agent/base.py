@@ -28,6 +28,7 @@ from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer
+from openhands.sdk.mcp.tool import MCPToolExecutor
 from openhands.sdk.tool import (
     BUILT_IN_TOOL_CLASSES,
     BUILT_IN_TOOLS,
@@ -853,8 +854,74 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         if existing:
             raise ValueError(f"Duplicate tool names found: {existing}")
 
+        # AgentBase is frozen, so update its mutable tool map in place.
         for tool in tools:
             self._tools[tool.name] = tool
+
+    def _on_mcp_tools_changed(self, tools: Sequence[ToolDefinition]) -> None:
+        """Handle dynamically advertised MCP tools.
+
+        Invoked on the MCP client's background event-loop thread when an MCP
+        server sends ``notifications/tools/list_changed`` (progressive
+        disclosure, e.g. Datadog's hosted MCP server). Registers new tools and
+        refreshes same-client tools that return after being removed.
+        """
+        if not self._initialized:
+            logger.warning(
+                "MCP tools/list_changed received before agent initialization; "
+                "skipping registration of %d tools",
+                len(tools),
+            )
+            return
+        tool_names = [tool.name for tool in tools]
+        if len(tool_names) != len(set(tool_names)):
+            duplicates = {
+                name for name, count in Counter(tool_names).items() if count > 1
+            }
+            raise ValueError(f"Duplicate MCP tool names found: {duplicates}")
+
+        additions: list[ToolDefinition] = []
+        replacements: list[ToolDefinition] = []
+        conflicts: set[str] = set()
+        for tool in tools:
+            existing = self._tools.get(tool.name)
+            if existing is None:
+                additions.append(tool)
+                continue
+
+            existing_executor = existing.executor
+            replacement_executor = tool.executor
+            if (
+                isinstance(existing_executor, MCPToolExecutor)
+                and isinstance(replacement_executor, MCPToolExecutor)
+                and existing_executor.client is replacement_executor.client
+            ):
+                replacements.append(tool)
+            else:
+                conflicts.add(tool.name)
+
+        if conflicts:
+            raise ValueError(
+                "Dynamically advertised MCP tools conflict with existing runtime "
+                f"tools: {sorted(conflicts)}"
+            )
+
+        self.add_runtime_tools(additions)
+        for tool in replacements:
+            self._tools[tool.name] = tool
+
+        if additions:
+            logger.info(
+                "Registered %d dynamically advertised MCP tools: %s",
+                len(additions),
+                ", ".join(tool.name for tool in additions),
+            )
+        if replacements:
+            logger.info(
+                "Refreshed %d dynamically advertised MCP tools: %s",
+                len(replacements),
+                ", ".join(tool.name for tool in replacements),
+            )
 
     @property
     def tools_map(self) -> dict[str, ToolDefinition]:
@@ -864,7 +931,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         """
         if not self._initialized:
             raise RuntimeError("Agent not initialized; call _initialize() before use")
-        return self._tools
+        # Isolate readers from background MCP tool updates.
+        return dict(self._tools)
 
     # -- Capability helpers -----------------------------------------------
     # Downstream code should branch on these properties rather than doing

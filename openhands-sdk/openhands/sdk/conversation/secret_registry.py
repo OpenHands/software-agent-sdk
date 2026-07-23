@@ -2,6 +2,7 @@
 
 import time
 from collections.abc import Collection, Mapping
+from threading import RLock
 from typing import Final
 
 from pydantic import Field, PrivateAttr, SecretStr
@@ -37,7 +38,13 @@ class SecretRegistry(OpenHandsModel):
 
     secret_sources: dict[str, SecretSource] = Field(default_factory=dict)
     _exported_values: dict[str, str] = PrivateAttr(default_factory=dict)
+    _exported_values_lock: RLock = PrivateAttr(default_factory=RLock)
     _failed_lookups: dict[str, float] = PrivateAttr(default_factory=dict)
+
+    def track_exported_values(self, values: Mapping[str, str]) -> None:
+        """Track values for output masking."""
+        with self._exported_values_lock:
+            self._exported_values.update({k: v for k, v in values.items() if v})
 
     def update_secrets(
         self,
@@ -90,8 +97,7 @@ class SecretRegistry(OpenHandsModel):
                 value = source.get_value()
                 if value:
                     env_vars[key] = value
-                    # Track successfully exported values for masking
-                    self._exported_values[key] = value
+                    self.track_exported_values({key: value})
             except Exception as e:
                 logger.error(f"Failed to retrieve secret for key '{key}': {e}")
                 continue
@@ -163,10 +169,12 @@ class SecretRegistry(OpenHandsModel):
             if not self.get_secret_value(key):
                 self._failed_lookups[key] = now
 
-        # Snapshot: other threads may insert while we iterate.
         masked_text = text
-        for value in list(self._exported_values.values()):
-            masked_text = masked_text.replace(value, "<secret-hidden>")
+        with self._exported_values_lock:
+            exported_values = tuple(self._exported_values.values())
+        for value in exported_values:
+            if value:
+                masked_text = masked_text.replace(value, "<secret-hidden>")
 
         return masked_text
 
@@ -212,8 +220,7 @@ class SecretRegistry(OpenHandsModel):
         try:
             value = source.get_value()
             if value:
-                # Track retrieved value for output masking
-                self._exported_values[name] = value
+                self.track_exported_values({name: value})
             return value
         except (OSError, TimeoutError) as e:
             # Network/IO errors - likely transient, log and return None
