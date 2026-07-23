@@ -168,6 +168,7 @@ def test_acp_agent_settings_export_schema_has_acp_section() -> None:
         "acp_model",
         "acp_session_mode",
         "acp_prompt_timeout",
+        "acp_startup_timeout",
     }
     # Server picker + model are both critical — users pick server then
     # model. Raw command is a minor override for power users.
@@ -693,6 +694,19 @@ def test_openhands_mcp_config_reject_unknown_server_fields() -> None:
                         "unknown_secret": "not-a-datamodel-field",
                     }
                 }
+            }
+        )
+
+
+def test_current_agent_settings_reject_legacy_mcp_wrapper_without_migration() -> None:
+    with pytest.raises(ValidationError):
+        validate_agent_settings(
+            {
+                "schema_version": AGENT_SETTINGS_SCHEMA_VERSION,
+                "agent_kind": "openhands",
+                "mcp_config": {
+                    "mcpServers": {"server": {"url": "https://mcp.example.com/mcp"}}
+                },
             }
         )
 
