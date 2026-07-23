@@ -1,24 +1,18 @@
 """Grouping keys and the aggregated view of a recurring error.
 
-The emission-side ``error_fingerprint`` (from the OSS-5715 telemetry) is a
-blake2s digest whose preimage *includes frame line numbers*
-(``sanitizer.py`` builds it from ``f"{module}:{lineno}"`` pairs). That is exactly
-right for pinpointing an exact failure site, but it means the *same logical bug*
-produces a *different* fingerprint after any unrelated edit that shifts a line.
-
-So this module derives a second, **line-agnostic** key -- :func:`dedup_key` --
-from just the class, origin module and category. Tracking, dedup and cooldown
-all key on ``dedup_key`` so one bug maps to one tracking issue across releases;
-the exact ``error_fingerprint`` values are retained only as evidence.
+The emission-side ``error_fingerprint`` hashes ``module:lineno`` pairs, so the
+*same logical bug* produces a *different* fingerprint after any unrelated edit
+that shifts a line. This module therefore derives a second, **line-agnostic**
+key -- :func:`dedup_key` -- from just the class, origin module and category.
+Tracking, dedup and cooldown all key on it, so one bug maps to one tracking
+issue across releases; the exact fingerprints are retained only as evidence.
 """
-
-from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
-from typing import Final
+from typing import Final, Self
 
 from sanitize import (
     UNKNOWN_ERROR_CLASS,
@@ -40,8 +34,8 @@ DEDUP_KEY_VERSION: Final[int] = 1
 def dedup_key(error_class: str, error_origin_module: str | None, category: str) -> str:
     """A stable, line-agnostic grouping key for one logical error.
 
-    Deliberately excludes ``error_origin_lineno`` and the exact
-    ``error_fingerprint`` so the key survives refactors that only move code.
+    Excludes ``error_origin_lineno`` and the exact ``error_fingerprint`` so the
+    key survives refactors that only move code.
     """
     module = error_origin_module or UNKNOWN_TOKEN
     preimage = "|".join([str(DEDUP_KEY_VERSION), error_class, module, category])
@@ -77,12 +71,10 @@ class SanitizedError:
     @classmethod
     def from_row(
         cls, row: dict[str, object], *, occurred_at: datetime | None = None
-    ) -> SanitizedError | None:
+    ) -> Self | None:
         """Validate a raw PostHog row, or ``None`` if it lacks a usable class.
 
         Note what is *not* read: no message, no traceback, no ``distinct_id``.
-        A row that fails to yield an ``error_class`` degrades to ``None`` rather
-        than being trusted.
         """
         error_class = safe_identifier(row.get("error_class"), default="")
         if not error_class:
@@ -148,9 +140,9 @@ class FingerprintGroup:
     def to_prompt_context(self) -> dict[str, object]:
         """The complete, injection-safe context handed to the agent prompt.
 
-        Every value here has already passed a ``safe_*`` coercion, so none of it
-        can carry an instruction. There is deliberately no message, stack trace,
-        user content, ``distinct_id`` or raw payload.
+        Every value has passed a ``safe_*`` coercion, so none of it can carry an
+        instruction; there is deliberately no message, stack trace, user
+        content, ``distinct_id`` or raw payload.
         """
         return {
             "dedup_key": self.dedup_key,

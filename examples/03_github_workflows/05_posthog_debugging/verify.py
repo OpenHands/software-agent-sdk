@@ -1,19 +1,14 @@
 """Deterministic red->green verification. The remediation gate.
 
-The agent proposes a fix; this module -- run as a separate workflow step, not by
-the agent -- decides whether a draft PR may open. It trusts nothing the agent
-reports: it applies the patches to a clean checkout and runs the test itself.
-
-The rule is simple: the regression test must FAIL at the base commit with only
-``test.patch`` applied, and PASS once ``fix.patch`` is also applied. One small
-guard keeps the fix honest -- it may not touch the regression-test file, so a
-"fix" cannot just weaken the test.
+Run as a separate workflow step, not by the agent: it trusts nothing the agent
+reports and applies the patches to a clean checkout itself. The regression test
+must FAIL at the base commit with only ``test.patch`` applied and PASS once
+``fix.patch`` is added; ``fix.patch`` may not touch the regression-test file, so
+a "fix" cannot just weaken the test.
 
 Uses pytest's built-in JUnit XML (``--junitxml``), so there is no plugin
 dependency.
 """
-
-from __future__ import annotations
 
 import argparse
 import json
@@ -24,7 +19,7 @@ import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
 
 NodeOutcome = Literal["passed", "failed", "missing"]
@@ -78,7 +73,7 @@ class VerificationSpec:
     fix_patch: str
 
     @classmethod
-    def from_json(cls, data: dict) -> VerificationSpec:
+    def from_json(cls, data: dict) -> Self:
         return cls(
             dedup_key=str(data["dedup_key"]),
             target_repo=str(data["target_repo"]),

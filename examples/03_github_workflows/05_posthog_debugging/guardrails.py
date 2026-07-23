@@ -1,14 +1,11 @@
 """Operational safety rails: kill switch, cooldown, rate limit.
 
 The hard guarantees (draft-only, verify-before-PR, scoped tokens) live in the
-workflow topology. These are the *soft* rails that keep a recurring loop from
+workflow topology; these are the *soft* rails that keep a recurring loop from
 misbehaving at scale, written as pure functions over
 :class:`issue_tracker.SelfHealState` so they are unit-testable without hitting
-GitHub. Duplicate-run protection is handled by the workflow's ``concurrency:``
-group, so it needs no code here.
+GitHub. Duplicate-run protection is the workflow's ``concurrency:`` group.
 """
-
-from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta

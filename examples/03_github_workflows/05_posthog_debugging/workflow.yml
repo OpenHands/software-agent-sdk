@@ -1,7 +1,5 @@
 ---
-# PostHog self-healing workflow.
-#
-# Two jobs:
+# PostHog self-healing workflow. Two jobs:
 #
 #   triage      contents:read, issues:write   -> one tracking issue per bug,
 #                                                emits the eligible list
@@ -9,10 +7,9 @@
 #               -> agent proposes a fix (token-free step), an agent-free verifier
 #                  re-proves red->green, and only then a DRAFT PR is opened
 #
-# The kill switch is the repository variable POSTHOG_SELFHEAL_ENABLED; triage
-# emits no candidates unless it is "true", so remediate skips. The remediation
-# job additionally sits behind a protected environment (human gate) and never
-# merges. See README.md for operation, rollback, and adding a repository.
+# Kill switch: the repository variable POSTHOG_SELFHEAL_ENABLED. Unless it is
+# "true" triage emits no candidates, so remediate skips. Remediation also sits
+# behind a protected environment (human gate) and never merges. See README.md.
 
 name: PostHog Self-Healing
 

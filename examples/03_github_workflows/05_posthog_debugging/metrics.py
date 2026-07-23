@@ -1,14 +1,10 @@
 """Append-only pilot metrics, written to an artifact for human review.
 
-The pilot is judged on *safety*, not fix rate (the sanitized events are too thin
-to reproduce most bugs). So each run records the outcome of every fingerprint it
-touched, and the README explains how to read the aggregate: precision =
-verified-and-correct PRs / PRs opened, duplicate rate, remediation rate, and any
-false-positive (a PR that a human judged wrong). Everything written here is a
-validated token or a scalar -- never event content.
+The pilot is judged on *safety*, not fix rate, so each run records the outcome
+of every fingerprint it touched; the README explains how to read the aggregate
+(precision, duplicate, remediation and false-positive rates). Everything written
+here is a validated token or a scalar -- never event content.
 """
-
-from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
@@ -40,12 +36,7 @@ class MetricRecord:
 
 
 def record(path: Path, entry: MetricRecord) -> None:
-    """Append one JSON line. Creates the file/parent dir if needed.
-
-    The pilot rates (precision, duplicate, remediation, false-positive) are
-    computed by eye from these rows -- the volume is small and the outcomes are
-    the ones the issue asks to record.
-    """
+    """Append one JSON line, creating the file and parent dir if needed."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(asdict(entry), sort_keys=True) + "\n")

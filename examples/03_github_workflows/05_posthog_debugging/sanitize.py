@@ -1,35 +1,25 @@
 """Untrusted-input validation for the self-healing workflow.
 
-Every value that reaches this workflow comes from PostHog, and PostHog is an
-*untrusted source* even though the OSS-5715 telemetry that feeds it is
-sanitized at the point of emission. A compromised project, a replayed event, or
-a future producer that ignores the schema could all put arbitrary bytes on the
-wire. So we re-validate here, at the boundary, and we do it by *coercion*: a
-surprising value degrades to a safe default, it never crashes the run and never
-escapes as free text into an issue, a log, or an agent prompt.
+PostHog is an untrusted source even though the OSS-5715 telemetry feeding it is
+sanitized at emission, so every value is re-validated here by *coercion*: a
+surprising value degrades to a safe default rather than crashing the run or
+escaping as free text into an issue, a log, or an agent prompt.
 
-The primitives below are a deliberate, self-contained copy of the emission-side
-sanitizer in
-``openhands-agent-server/openhands/agent_server/telemetry/sanitizer.py`` (and
-the constrained-scalar types in its ``models.py``). The copy exists because the
-GitHub Actions job runs this example standalone and cannot import the
-agent-server package. ``tests/cross/test_posthog_sanitizer_drift.py`` asserts
-the regex *pattern strings* here byte-match the originals, so the copy cannot
-silently rot away from the guarantee it mirrors.
+These primitives are a deliberate, self-contained copy of
+``openhands.agent_server.telemetry.sanitizer`` (and the constrained scalars in
+its ``models.py``), because the GitHub Actions job runs this example standalone
+and cannot import the agent-server package.
+``tests/cross/test_posthog_sanitizer_drift.py`` asserts the copy byte-matches.
 
 Two rules carry the privacy guarantee:
 
-1. **PII-bearing fields are never selected.** ``distinct_id`` and ``person_id``
-   are transport/identity fields; :data:`FORBIDDEN_PROPERTY_NAMES` names them and
-   :func:`assert_no_pii_keys` fails closed if one ever appears in a row we are
-   about to process.
-2. **Only enum-ish tokens reach a prompt.** The prompt context
-   (:meth:`fingerprint.FingerprintGroup.to_prompt_context`) is built from values
-   that have each passed one of the ``safe_*`` coercions below, so no free-form
-   attacker-controlled string can carry an injected instruction into the agent.
+1. **PII-bearing fields are never selected.** :data:`FORBIDDEN_PROPERTY_NAMES`
+   names them and :func:`assert_no_pii_keys` fails closed if one appears.
+2. **Only enum-ish tokens reach a prompt.** Every value in
+   :meth:`fingerprint.FingerprintGroup.to_prompt_context` has passed a
+   ``safe_*`` coercion, so no attacker-controlled string can carry an injected
+   instruction into the agent.
 """
-
-from __future__ import annotations
 
 import re
 from typing import Final
@@ -55,11 +45,7 @@ UNKNOWN_ERROR_CLASS: Final[str] = "UnknownError"
 
 
 def safe_token(value: object, *, default: str = UNKNOWN_TOKEN) -> str:
-    """Coerce to a lowercase token, or ``default`` if it doesn't fit.
-
-    Coerce rather than raise: a surprising value should degrade the event, not
-    lose it or crash a run.
-    """
+    """Coerce to a lowercase token, or ``default`` if it doesn't fit."""
     if not isinstance(value, str):
         return default
     candidate = value.strip().lower()
@@ -69,9 +55,8 @@ def safe_token(value: object, *, default: str = UNKNOWN_TOKEN) -> str:
 def safe_identifier(value: object, *, default: str = UNKNOWN_ERROR_CLASS) -> str:
     """Coerce to a dotted identifier, or ``default`` if it doesn't fit.
 
-    Stricter than a token: no dashes, spaces, slashes or ``@``. That rules out
-    the shapes secrets and paths actually take, so neither an API key nor a
-    filesystem path can occupy an ``error_class`` field.
+    Stricter than a token -- no dashes, spaces, slashes or ``@`` -- so neither an
+    API key nor a filesystem path can occupy an ``error_class`` field.
     """
     if not isinstance(value, str):
         return default
@@ -90,10 +75,9 @@ def safe_version(value: object, *, default: str = UNKNOWN_TOKEN) -> str:
 
 
 def safe_digest(value: object, *, default: str = "") -> str:
-    """Coerce a lowercase hex digest (16-64 chars), or ``default``.
+    """Coerce the emission-side fingerprint shape (16-64 hex chars), or ``default``.
 
-    This is the shape the emission-side fingerprint produces; anything else is
-    treated as absent rather than trusted.
+    Anything else is treated as absent rather than trusted.
     """
     if not isinstance(value, str):
         return default
@@ -115,8 +99,8 @@ def safe_lineno(value: object) -> int | None:
 def safe_bool(value: object) -> bool:
     """Coerce a strict boolean; anything ambiguous is ``False``.
 
-    Used for ``is_first_party`` where the safe default is *not* first-party, so
-    an unparseable value can never make a fingerprint look remediable.
+    The safe default for ``is_first_party``: an unparseable value can never make
+    a fingerprint look remediable.
     """
     if isinstance(value, bool):
         return value
@@ -126,9 +110,9 @@ def safe_bool(value: object) -> bool:
 
 
 # --- PII boundary -------------------------------------------------------------
-#: Property columns that must never be selected from PostHog or retained.
-#: ``distinct_id``/``person_id`` are identity; ``properties`` is the raw,
-#: unvalidated blob that could embed a message, a prompt, or a secret.
+#: Columns that must never be selected from PostHog or retained: identity
+#: fields, plus the raw ``properties`` blob that could embed a message, a
+#: prompt, or a secret.
 FORBIDDEN_PROPERTY_NAMES: Final[frozenset[str]] = frozenset(
     {
         "distinct_id",
@@ -166,9 +150,8 @@ class PiiLeakError(RuntimeError):
 def assert_no_pii_keys(row: object) -> None:
     """Fail closed if a row carries a forbidden identity column.
 
-    Defence in depth: the projection allowlist should already prevent these
-    from being selected, but a hand-written query or a schema change must not be
-    able to slip one through silently.
+    Defence in depth behind the projection allowlist: a hand-written query or a
+    schema change must not be able to slip one through silently.
     """
     if isinstance(row, dict):
         leaked = FORBIDDEN_PROPERTY_NAMES.intersection(row.keys())

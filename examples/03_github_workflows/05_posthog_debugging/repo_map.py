@@ -1,19 +1,16 @@
 """Deterministic, allowlisted mapping from an error origin to a target repo.
 
-The sanitized event's ``source`` is a *constant*
-(``Literal["openhands-agent-server"]``), so it cannot discriminate repositories.
-The only per-repo signal the event carries is ``error_origin_module`` -- the
-dotted ``openhands.*`` module of the deepest first-party frame -- together with
-``is_first_party``. So the mapping keys on a **longest-matching module prefix**,
-and a fingerprint is only ever remediable when it is first-party, maps to an
-allowlisted prefix, and resolves to a concrete base commit.
+The sanitized event's ``source`` is a *constant*, so it cannot discriminate
+repositories; the only per-repo signal is ``error_origin_module`` (the dotted
+module of the deepest first-party frame) plus ``is_first_party``. So the mapping
+keys on a **longest-matching module prefix**, and a fingerprint is remediable
+only when it is first-party, matches an allowlisted prefix, and resolves to a
+concrete base commit.
 
 Adding a repository is a deliberate, reviewable act: append one
 :class:`RepoTarget` here (or to the ``config.yaml`` overlay) and provision the
 scoped credential. Nothing is mapped implicitly.
 """
-
-from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Final
@@ -24,10 +21,9 @@ from sanitize import safe_token, safe_version
 
 @dataclass(frozen=True, slots=True)
 class VerificationProfile:
-    """How Job C proves red->green for a target repo.
+    """How ``verify.py`` proves red->green for a target repo.
 
-    The runner is declared, never auto-detected across an arbitrary repo. A
-    fingerprint whose repo has no profile is ineligible.
+    The runner is declared, never auto-detected across an arbitrary repo.
     """
 
     runner: str = "pytest"
@@ -112,9 +108,9 @@ def evaluate(
 ) -> Eligibility:
     """Decide whether one fingerprint group may enter remediation.
 
-    Fails closed on every uncertainty: third-party origin, unknown module, no
-    mapped repo, or no resolvable base commit all yield ``eligible=False`` with
-    a human-readable reason (safe to log -- contains only validated tokens).
+    Fails closed on every uncertainty (third-party origin, unknown module, no
+    mapped repo, no resolvable base commit), with a reason that is safe to log
+    -- it contains only validated tokens.
     """
     if not group.is_first_party:
         return Eligibility(False, "third-party origin (is_first_party is false)")

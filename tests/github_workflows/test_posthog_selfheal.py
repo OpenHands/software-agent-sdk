@@ -1,13 +1,12 @@
 """Unit + light-integration tests for the PostHog self-healing example.
 
-The example runs standalone (its GitHub Actions job checks out the repo and runs
-the modules directly), so we import its modules by appending the example
-directory to ``sys.path`` -- the same pattern as ``tests/cross/test_todo_scanner``.
+The example runs standalone, so its modules are imported by appending the
+example directory to ``sys.path`` -- the same pattern as
+``tests/cross/test_todo_scanner``.
 
-The safety-critical behaviours proven here: PII/injection coercion, one-issue-
-per-fingerprint aggregation across releases, allowlist eligibility, guardrail
-logic (cooldown, kill switch), redaction of the issue body, and the
-deterministic red->green verification gate.
+Covers the safety-critical behaviours: PII/injection coercion, one-issue-per-
+fingerprint aggregation across releases, allowlist eligibility, guardrails,
+issue-body redaction, and the deterministic red->green gate.
 """
 
 import subprocess

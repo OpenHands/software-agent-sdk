@@ -3,21 +3,18 @@
 
 Three subcommands span the two-job pipeline:
 
-* ``triage``        Job A. Query sanitized telemetry, aggregate by dedup_key,
-                    maintain one tracking issue per key, apply guardrails, and
-                    emit the eligible list. Needs only ``requests``/``pyyaml``.
-* ``remediate``     Job B. Clone the target, run a bounded agent, and leave
-                    ``test.patch`` / ``fix.patch`` / ``verification.json``.
-                    Lazily imports the OpenHands SDK.
-* ``record-outcome``Update tracking-issue state/disposition and pilot metrics.
+* ``triage``         Job A. Query sanitized telemetry, aggregate by dedup_key,
+                     maintain one tracking issue per key, apply guardrails and
+                     emit the eligible list. Needs only ``requests``/``pyyaml``.
+* ``remediate``      Job B. Clone the target, run a bounded agent, and leave
+                     ``test.patch`` / ``fix.patch`` / ``verification.json``.
+                     Imports the OpenHands SDK lazily.
+* ``record-outcome`` Update tracking-issue state and pilot metrics.
 
 Job B then runs ``verify.py`` (agent-free) and opens a draft PR only if it
-passes. The privacy and privilege guarantees live in the modules this file
-wires together (``sanitize``, ``telemetry_source``, ``repo_map``,
-``guardrails``, ``verify``) and in ``workflow.yml``; this file only orchestrates.
+passes. The privacy and privilege guarantees live in the modules this file wires
+together and in ``workflow.yml``; this file only orchestrates.
 """
-
-from __future__ import annotations
 
 import argparse
 import json
@@ -107,7 +104,7 @@ def _emit_output(name: str, value: str) -> None:
 def _candidate_record(group: FingerprintGroup, elig: repo_map.Eligibility) -> dict:
     """The PII-free record passed from triage to remediation.
 
-    Every value is a validated token — safe to place in a job output and a log.
+    Validated tokens only -- safe to place in a job output and a log.
     """
     ctx = group.to_prompt_context()
     return {

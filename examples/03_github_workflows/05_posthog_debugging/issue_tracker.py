@@ -2,22 +2,20 @@
 
 GitHub Actions has no shared mutable store, so the tracking issue *is* the
 durable state: a hidden marker locates it (never the title, which is
-human-editable), and a fenced JSON block carries the disposition, attempt count,
-cooldown timestamp and the dup-run lock.
+human-editable), and a JSON comment carries the disposition, attempt count and
+cooldown timestamp.
 
-The rendered body is redaction-safe by construction -- it is built only from the
+The rendered body is redaction-safe by construction -- built only from the
 validated tokens on a :class:`FingerprintGroup`, so no ``distinct_id``,
-``person_id``, message, or raw payload can appear (the prototype leaked all of
+``person_id``, message or raw payload can appear (the prototype leaked all of
 these).
 """
-
-from __future__ import annotations
 
 import json
 import re
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Self
 
 import requests
 from fingerprint import Disposition, FingerprintGroup
@@ -44,7 +42,7 @@ class SelfHealState:
         return f"<!-- selfheal-state:{json.dumps(asdict(self), sort_keys=True)} -->"
 
     @classmethod
-    def parse(cls, body: str | None) -> SelfHealState:
+    def parse(cls, body: str | None) -> Self:
         """Recover state from an issue body, tolerating a missing/garbled block."""
         if not body:
             return cls()
@@ -66,8 +64,8 @@ def key_marker(dedup_key: str) -> str:
 def replace_state_in_body(body: str, state: SelfHealState) -> str:
     """Swap only the state block, leaving the rest of the body untouched.
 
-    Lets a lock/cooldown update rewrite state without needing to re-render the
-    whole body from a group. Appends the block if none is present yet.
+    Lets a cooldown update rewrite state without re-rendering the whole body
+    from a group. Appends the block if none is present yet.
     """
     comment = state.to_comment()
     if _STATE_RE.search(body):

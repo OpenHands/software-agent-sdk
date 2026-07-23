@@ -1,13 +1,12 @@
 """Guard the vendored sanitizer copy against drift.
 
-``examples/03_github_workflows/05_posthog_debugging/sanitize.py`` is a
-deliberate, self-contained copy of the validation primitives in
-``openhands.agent_server.telemetry.sanitizer`` / ``models`` (the example's
-GitHub Actions job runs standalone and cannot import the agent-server package).
+The example's ``sanitize.py`` is a deliberate, self-contained copy of the
+validation primitives in ``openhands.agent_server.telemetry.sanitizer`` /
+``models``, because its GitHub Actions job runs standalone and cannot import the
+agent-server package.
 
-The PII guarantee only holds if the copy stays faithful, so this test asserts
-the *pattern strings* and key constants byte-match the source. If the source
-tightens a regex and the copy is not updated, this fails loudly.
+The PII guarantee only holds if the copy stays faithful, so these tests assert
+the *pattern strings* and key constants byte-match the source.
 """
 
 import sys

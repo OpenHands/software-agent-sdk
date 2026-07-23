@@ -1,19 +1,17 @@
 """Query the sanitized OSS-5715 diagnostic events from PostHog.
 
-This is the *only* module that talks to PostHog, and it is written so that no
-untrusted byte can steer the query and no PII column can be selected:
+The *only* module that talks to PostHog. No untrusted byte can steer the query
+and no PII column can be selected:
 
-* The HogQL is **fixed** apart from a single integer time window; there is no
-  string interpolation of any external value (the old prototype interpolated a
-  ``--query`` argument straight into the SQL).
+* The HogQL is **fixed** apart from an integer time window and row limit; no
+  external value is interpolated (the old prototype interpolated a ``--query``
+  argument straight into the SQL).
 * The projection is an explicit **column allowlist**
   (:data:`sanitize.ALLOWED_EVENT_PROPERTY_NAMES`); ``distinct_id``,
   ``person_id`` and the raw ``properties`` blob are never named.
-* Every returned row is re-validated through :meth:`SanitizedError.from_row`
-  and checked by :func:`assert_no_pii_keys` before it is used.
+* Every returned row is re-validated by :meth:`SanitizedError.from_row` and
+  checked by :func:`assert_no_pii_keys`.
 """
-
-from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -53,9 +51,8 @@ class TelemetryQueryConfig:
 def _build_hogql(days_back: int, limit: int) -> str:
     """Assemble the fixed projection query.
 
-    ``days_back`` and ``limit`` are the only variables and are coerced to
-    non-negative ints by the caller, so no attacker-controlled text reaches the
-    query text. Event names come from :data:`ERROR_EVENT_NAMES`, not from input.
+    ``days_back`` and ``limit`` are the only variables and are coerced to ints
+    here; event names come from :data:`ERROR_EVENT_NAMES`, never from input.
     """
     days = int(days_back)
     row_limit = int(limit)
@@ -86,8 +83,7 @@ def _parse_timestamp(value: object) -> datetime | None:
 def _rows_from_response(payload: dict[str, Any]) -> list[dict[str, object]]:
     """Turn PostHog's columnar HogQL response into plain dict rows.
 
-    Only the columns we asked for come back, but we still route every row
-    through :func:`assert_no_pii_keys` as defence in depth.
+    Every row still goes through :func:`assert_no_pii_keys` as defence in depth.
     """
     columns = payload.get("columns") or []
     results = payload.get("results") or []
@@ -106,8 +102,8 @@ def fetch_error_groups(
 ) -> list[FingerprintGroup]:
     """Fetch sanitized error events and collapse them into fingerprint groups.
 
-    Raises on transport/HTTP errors so the caller can fail the run loudly; a
-    partial or malformed row simply degrades to ``None`` and is dropped.
+    Raises on transport/HTTP errors so the run fails loudly; a malformed row
+    degrades to ``None`` and is dropped.
     """
     http = session or requests.Session()
     url = f"https://{config.host}/api/projects/{config.project_id}/query/"
