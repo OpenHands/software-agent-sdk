@@ -938,7 +938,18 @@ class ConversationService:
             raise ValueError("inactive_service")
         await self._reconcile_active_records()
 
-        records = list(self._conversation_records.items())
+        if execution_status is not None:
+            # Refresh before snapshotting below: this awaits, and a conversation
+            # going live replaces its catalog record, so a snapshot taken first
+            # would filter on the superseded one. Full state is still loaded
+            # only for the page items.
+            await self._refresh_execution_statuses()
+
+        records = [
+            (conversation_id, record)
+            for conversation_id, record in self._conversation_records.items()
+            if execution_status is None or record.execution_status == execution_status
+        ]
         if sort_order in (
             ConversationSortOrder.CREATED_AT,
             ConversationSortOrder.CREATED_AT_DESC,
@@ -952,16 +963,6 @@ class ConversationService:
                 key=lambda item: item[1].stored.updated_at,
                 reverse=sort_order == ConversationSortOrder.UPDATED_AT_DESC,
             )
-
-        if execution_status is not None:
-            # Batched index refresh, then in-memory filter. Full state is
-            # loaded only for the page items below.
-            await self._refresh_execution_statuses()
-            records = [
-                (conversation_id, record)
-                for conversation_id, record in records
-                if record.execution_status == execution_status
-            ]
 
         start_index = 0
         if page_id:

@@ -20,6 +20,7 @@ from openhands.agent_server.conversation_lease import (
 from openhands.agent_server.conversation_service import (
     AutoTitleSubscriber,
     ConversationService,
+    _ConversationRecord,
     _get_worktree_start_point,
 )
 from openhands.agent_server.event_service import EventService
@@ -3672,3 +3673,37 @@ class TestConversationSearchScaling:
                 )
                 == 5
             )
+
+    @pytest.mark.asyncio
+    async def test_filtered_search_sees_records_replaced_during_refresh(self, tmp_path):
+        """Filtered search must refresh before it snapshots the catalog.
+
+        A conversation going live during the refresh replaces its record with
+        authoritative in-memory state. Snapshotting first would filter on the
+        superseded object and drop the conversation from the page.
+        """
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        conversations_dir = tmp_path / "conversations"
+        self._seed(conversations_dir, 3, workspace_dir)
+
+        async with ConversationService(conversations_dir=conversations_dir) as svc:
+            target = next(iter(svc._conversation_records))
+            real_refresh = svc._refresh_execution_statuses
+
+            async def refresh_then_replace():
+                await real_refresh()
+                # Stands in for _start_event_service swapping in a fresh record
+                # while the refresh awaited.
+                old = svc._conversation_records[target]
+                svc._conversation_records[target] = _ConversationRecord(
+                    stored=old.stored,
+                    execution_status=ConversationExecutionStatus.RUNNING,
+                )
+
+            with patch.object(svc, "_refresh_execution_statuses", refresh_then_replace):
+                page = await svc.search_conversations(
+                    execution_status=ConversationExecutionStatus.RUNNING
+                )
+
+            assert [item.id for item in page.items] == [target]
