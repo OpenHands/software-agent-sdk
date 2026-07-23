@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass
 from uuid import UUID
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -11,6 +12,7 @@ from openhands.agent_server.event_service import CredentialBindingActivationTooL
 from openhands.agent_server.persistence import FileSecretsStore
 from openhands.sdk.agent.acp_file_credentials import supports_file_credential_binding
 from openhands.sdk.credential import (
+    CredentialAuthorizationRejected,
     CredentialBindingError,
     CredentialConflict,
     CredentialNeedsReauthentication,
@@ -77,6 +79,25 @@ class LocalVersionedCredentialBinding:
 
 
 router = APIRouter(prefix="/conversations", tags=["Credential Bindings"])
+_PROBE_ATTEMPTS = 3
+_PROBE_INITIAL_DELAY = 0.25
+
+
+async def _probe_binding(binding: HttpVersionedCredentialBinding) -> None:
+    for attempt in range(_PROBE_ATTEMPTS):
+        try:
+            await binding.load()
+            return
+        except (
+            CredentialAuthorizationRejected,
+            CredentialConflict,
+            CredentialNeedsReauthentication,
+        ):
+            raise
+        except CredentialSyncError:
+            if attempt == _PROBE_ATTEMPTS - 1:
+                raise
+            await asyncio.sleep(_PROBE_INITIAL_DELAY * 2**attempt)
 
 
 @router.put(
@@ -96,7 +117,7 @@ async def activate_credential_binding(
         activation.headers,
     )
     try:
-        await binding.load()
+        await _probe_binding(binding)
         await request.app.state.conversation_service.activate_credential_binding(
             conversation_id,
             secret_name,
@@ -107,7 +128,7 @@ async def activate_credential_binding(
             status.HTTP_409_CONFLICT,
             "Credential binding activation arrived after ACP initialization",
         ) from exc
-    except CredentialBindingError as exc:
+    except (CredentialBindingError, httpx.InvalidURL) as exc:
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY,
             "Credential binding source is unavailable",

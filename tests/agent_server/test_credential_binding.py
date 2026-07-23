@@ -1,5 +1,5 @@
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 from uuid import uuid4
 
 import pytest
@@ -187,7 +187,11 @@ def test_activation_route_rejects_unreachable_binding(tmp_path) -> None:
     conversation_id = uuid4()
 
     load = AsyncMock(side_effect=CredentialSyncError("unavailable"))
-    with patch.object(HttpVersionedCredentialBinding, "load", load):
+    sleep = AsyncMock()
+    with (
+        patch.object(HttpVersionedCredentialBinding, "load", load),
+        patch("openhands.agent_server.credential_binding.asyncio.sleep", sleep),
+    ):
         response = TestClient(app).put(
             f"/api/conversations/{conversation_id}/credential-bindings/CODEX_AUTH_JSON",
             json={
@@ -195,6 +199,55 @@ def test_activation_route_rejects_unreachable_binding(tmp_path) -> None:
                 "headers": {"Authorization": "Bearer scoped"},
             },
         )
+
+    assert response.status_code == 502
+    assert conversation_id not in service._credential_bindings
+    assert load.await_count == 3
+    assert sleep.await_args_list == [call(0.25), call(0.5)]
+
+
+def test_activation_route_retries_transient_binding_failure(tmp_path) -> None:
+    service = ConversationService(conversations_dir=tmp_path / "conversations")
+    app = FastAPI()
+    app.state.conversation_service = service
+    app.include_router(router, prefix="/api")
+    conversation_id = uuid4()
+    resolved = ResolvedCredential(value="credential", version="v1")
+    load = AsyncMock(side_effect=[CredentialSyncError("unavailable"), resolved])
+    sleep = AsyncMock()
+
+    with (
+        patch.object(HttpVersionedCredentialBinding, "load", load),
+        patch("openhands.agent_server.credential_binding.asyncio.sleep", sleep),
+    ):
+        response = TestClient(app).put(
+            f"/api/conversations/{conversation_id}/credential-bindings/CODEX_AUTH_JSON",
+            json={
+                "url": "https://app.test/api/credential",
+                "headers": {"Authorization": "Bearer scoped"},
+            },
+        )
+
+    assert response.status_code == 204
+    assert load.await_count == 2
+    sleep.assert_awaited_once_with(0.25)
+    assert conversation_id in service._credential_bindings
+
+
+def test_activation_route_rejects_invalid_binding_url(tmp_path) -> None:
+    service = ConversationService(conversations_dir=tmp_path / "conversations")
+    app = FastAPI()
+    app.state.conversation_service = service
+    app.include_router(router, prefix="/api")
+    conversation_id = uuid4()
+
+    response = TestClient(app).put(
+        f"/api/conversations/{conversation_id}/credential-bindings/CODEX_AUTH_JSON",
+        json={
+            "url": "http://example.com:abc/credential",
+            "headers": {"Authorization": "Bearer scoped"},
+        },
+    )
 
     assert response.status_code == 502
     assert conversation_id not in service._credential_bindings

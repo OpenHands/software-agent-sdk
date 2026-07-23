@@ -72,6 +72,16 @@ def test_server_info_reports_usable_tools(client, monkeypatch: pytest.MonkeyPatc
     assert response.json()["usable_tools"] == ["terminal", "file_editor"]
 
 
+def test_server_info_reports_credential_binding_probe(client):
+    response = client.get("/server_info")
+
+    assert response.status_code == 200
+    assert response.json()["capabilities"] == [
+        "credential_binding_v1",
+        "credential_binding_readiness_probe_v1",
+    ]
+
+
 def test_server_info_reports_runtime_timeout_cap(
     client,
     monkeypatch: pytest.MonkeyPatch,
