@@ -79,6 +79,7 @@ def test_server_info_reports_credential_binding_probe(client):
     assert response.json()["capabilities"] == [
         "credential_binding_v1",
         "credential_binding_readiness_probe_v1",
+        "credential_binding_activation_guard_v1",
     ]
 
 

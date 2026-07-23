@@ -12,7 +12,10 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 import openhands.agent_server.event_service as event_service_module
-from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.conversation_service import (
+    ConversationService,
+    CredentialBindingActivationRequired,
+)
 from openhands.agent_server.credential_binding import (
     LocalVersionedCredentialBinding,
     router,
@@ -285,6 +288,7 @@ def test_activation_route_retries_transient_binding_failure(
         (404, "{}", 422),
         (403, "{}", 403),
         (409, "{}", 409),
+        (501, "{}", 501),
         (200, "not-json", 422),
     ],
 )
@@ -378,6 +382,73 @@ async def test_direct_start_strips_reserved_conversation_secret(tmp_path) -> Non
         assert event_service is not None
         assert "CODEX_AUTH_JSON" not in event_service.stored.secrets
         assert "CODEX_AUTH_JSON" in event_service.credential_bindings
+        assert not event_service.stored.required_runtime_credential_bindings
+
+
+@pytest.mark.asyncio
+async def test_callback_binding_blocks_cold_hydration_until_reactivation(
+    tmp_path,
+) -> None:
+    conversation_id = uuid4()
+    request = StartConversationRequest(
+        conversation_id=conversation_id,
+        agent=ACPAgent(acp_command=["codex-acp"], acp_server="codex"),
+        workspace=LocalWorkspace(working_dir=tmp_path / "workspace"),
+    )
+    conversations_dir = tmp_path / "conversations"
+    service = ConversationService(conversations_dir=conversations_dir)
+
+    async with service:
+        await service.activate_credential_binding(
+            conversation_id,
+            "CODEX_AUTH_JSON",
+            HttpVersionedCredentialBinding(
+                "https://app.test/api/credential",
+                {"Authorization": "Bearer initial"},
+            ),
+        )
+        info, _ = await service.start_conversation(request)
+        assert info.id == conversation_id
+
+        meta_file = tmp_path / "conversations" / conversation_id.hex / "meta.json"
+        meta = json.loads(meta_file.read_text())
+        assert meta["required_runtime_credential_bindings"] == ["CODEX_AUTH_JSON"]
+
+    restarted = ConversationService(conversations_dir=conversations_dir)
+    async with restarted:
+        assert await restarted.get_conversation(conversation_id) is not None
+        with pytest.raises(
+            CredentialBindingActivationRequired,
+            match="credential_binding_activation_required",
+        ):
+            await restarted.get_event_service(conversation_id)
+
+        await restarted.activate_credential_binding(
+            conversation_id,
+            "CODEX_AUTH_JSON",
+            HttpVersionedCredentialBinding(
+                "https://app.test/api/credential",
+                {"Authorization": "Bearer resumed"},
+            ),
+        )
+        assert await restarted.get_event_service(conversation_id) is not None
+
+        await restarted.prepare_for_sandbox_pause()
+        with pytest.raises(
+            CredentialBindingActivationRequired,
+            match="credential_binding_activation_required",
+        ):
+            await restarted.get_event_service(conversation_id)
+
+        await restarted.activate_credential_binding(
+            conversation_id,
+            "CODEX_AUTH_JSON",
+            HttpVersionedCredentialBinding(
+                "https://app.test/api/credential",
+                {"Authorization": "Bearer resumed-again"},
+            ),
+        )
+        assert await restarted.get_event_service(conversation_id) is not None
 
 
 @pytest.mark.asyncio

@@ -26,6 +26,7 @@ from openhands.agent_server.config import (
 )
 from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.conversation_service import (
+    CredentialBindingActivationRequired,
     get_default_conversation_service,
 )
 from openhands.agent_server.credential_binding import (
@@ -530,6 +531,19 @@ def _sanitize_validation_errors(errors: Sequence[Any]) -> list[dict]:
 
 def _add_exception_handlers(api: FastAPI) -> None:
     """Add exception handlers to the FastAPI application."""
+
+    @api.exception_handler(CredentialBindingActivationRequired)
+    async def _credential_binding_activation_required_handler(
+        _request: Request,
+        exc: CredentialBindingActivationRequired,
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": str(exc),
+                "retryable": True,
+            },
+        )
 
     @api.exception_handler(RequestValidationError)
     async def _validation_exception_handler(

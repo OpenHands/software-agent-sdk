@@ -188,6 +188,21 @@ class EventService:
         if not self.credential_bindings:
             return
 
+        required_bindings = {
+            name
+            for name, binding in self.credential_bindings.items()
+            if isinstance(binding, HttpVersionedCredentialBinding)
+        }
+        if required_bindings:
+            self.stored = self.stored.model_copy(
+                update={
+                    "required_runtime_credential_bindings": (
+                        self.stored.required_runtime_credential_bindings
+                        | required_bindings
+                    )
+                }
+            )
+
         context = {"cipher": self.cipher}
         base_state_file = self.conversation_dir / BASE_STATE
         meta_file = self.conversation_dir / "meta.json"

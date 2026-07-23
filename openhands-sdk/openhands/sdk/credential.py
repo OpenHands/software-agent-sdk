@@ -37,6 +37,10 @@ class CredentialAuthorizationRejected(CredentialSyncError):
     pass
 
 
+class CredentialBindingUnsupported(CredentialBindingError):
+    pass
+
+
 class VersionedCredentialBinding(Protocol):
     async def load(self) -> ResolvedCredential: ...
 
@@ -132,6 +136,10 @@ class HttpVersionedCredentialBinding:
 
     @staticmethod
     def _raise_for_status(response: httpx.Response) -> None:
+        if response.status_code == 501:
+            raise CredentialBindingUnsupported(
+                "Credential binding is not supported by this source."
+            )
         if response.status_code == 404:
             raise CredentialNeedsReauthentication(
                 "Credential is missing. Please authenticate again."

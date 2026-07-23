@@ -77,6 +77,10 @@ if TYPE_CHECKING:
 CONVERSATION_WORKTREE_ROOT = Path("/tmp/conversation-worktrees")
 
 
+class CredentialBindingActivationRequired(RuntimeError):
+    pass
+
+
 def _build_worktree_guidance(
     *,
     source_workspace: Path,
@@ -752,6 +756,15 @@ class ConversationService:
         record = self._conversation_records.get(conversation_id)
         if record is None:
             return None
+
+        pending_bindings = self._credential_bindings.get(conversation_id, {})
+        missing_bindings = (
+            record.stored.required_runtime_credential_bindings - pending_bindings.keys()
+        )
+        if missing_bindings:
+            raise CredentialBindingActivationRequired(
+                "credential_binding_activation_required"
+            )
 
         await asyncio.to_thread(self._prepare_persisted_runtime, record.stored)
         try:

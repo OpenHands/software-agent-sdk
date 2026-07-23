@@ -14,6 +14,7 @@ from openhands.sdk.agent.acp_file_credentials import supports_file_credential_bi
 from openhands.sdk.credential import (
     CredentialAuthorizationRejected,
     CredentialBindingError,
+    CredentialBindingUnsupported,
     CredentialConflict,
     CredentialInvalidResponse,
     CredentialNeedsReauthentication,
@@ -91,6 +92,7 @@ async def _probe_binding(binding: HttpVersionedCredentialBinding) -> None:
             return
         except (
             CredentialAuthorizationRejected,
+            CredentialBindingUnsupported,
             CredentialConflict,
             CredentialInvalidResponse,
             CredentialNeedsReauthentication,
@@ -145,6 +147,11 @@ async def activate_credential_binding(
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
             "Credential binding authorization was rejected",
+        ) from exc
+    except CredentialBindingUnsupported as exc:
+        raise HTTPException(
+            status.HTTP_501_NOT_IMPLEMENTED,
+            "Credential binding source is unsupported",
         ) from exc
     except (
         CredentialInvalidResponse,

@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from openhands.sdk.credential import (
+    CredentialBindingUnsupported,
     CredentialConflict,
     CredentialNeedsReauthentication,
     HttpVersionedCredentialBinding,
@@ -42,7 +43,11 @@ async def test_http_binding_load_and_replace() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("status_code", "error_type"),
-    [(404, CredentialNeedsReauthentication), (409, CredentialConflict)],
+    [
+        (404, CredentialNeedsReauthentication),
+        (409, CredentialConflict),
+        (501, CredentialBindingUnsupported),
+    ],
 )
 async def test_http_binding_maps_protocol_errors(status_code, error_type) -> None:
     binding = HttpVersionedCredentialBinding(

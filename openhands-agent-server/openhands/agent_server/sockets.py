@@ -35,6 +35,7 @@ from openhands.agent_server.bash_service import (
 from openhands.agent_server.config import Config, get_default_config
 from openhands.agent_server.conversation_service import (
     ConversationService,
+    CredentialBindingActivationRequired,
     get_default_conversation_service,
 )
 from openhands.agent_server.event_compat import event_transport_dump
@@ -280,7 +281,14 @@ async def events_socket(
 
     logger.info(f"Event Websocket Connected: {conversation_id}")
     conv_service = _get_conversation_service(websocket)
-    event_service = await conv_service.get_event_service(conversation_id)
+    try:
+        event_service = await conv_service.get_event_service(conversation_id)
+    except CredentialBindingActivationRequired:
+        await websocket.close(
+            code=1013,
+            reason="credential_binding_activation_required",
+        )
+        return
     if event_service is None:
         logger.warning(f"Converation not found: {conversation_id}")
         await websocket.close(code=4004, reason="Conversation not found")
