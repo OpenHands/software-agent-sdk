@@ -28,6 +28,9 @@ from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.conversation_service import (
     get_default_conversation_service,
 )
+from openhands.agent_server.credential_binding import (
+    router as credential_binding_router,
+)
 from openhands.agent_server.dependencies import (
     check_session_api_key,
     check_workspace_session,
@@ -422,6 +425,7 @@ def _add_api_routes(app: FastAPI) -> None:
     api_router = APIRouter(prefix="/api", dependencies=dependencies)
     api_router.include_router(event_router)
     api_router.include_router(conversation_router)
+    api_router.include_router(credential_binding_router)
     api_router.include_router(tool_router)
     api_router.include_router(bash_router)
     api_router.include_router(git_router)
