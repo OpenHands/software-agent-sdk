@@ -45,7 +45,11 @@ class RecordingMCPToolProvider:
         self.state_locked = state_locked
 
     def create_tools(
-        self, mcp_config: dict[str, MCPServer], timeout: float = 30.0
+        self,
+        mcp_config: dict[str, MCPServer],
+        timeout: float = 30.0,
+        *,
+        on_tools_changed: Any = None,
     ) -> MCPClient:
         if self.state_locked is None:
             self.created.append(mcp_config)
