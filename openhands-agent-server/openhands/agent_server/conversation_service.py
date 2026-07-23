@@ -519,6 +519,7 @@ class ConversationService:
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     max_concurrent_runs: int = 10
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
+    conversation_idle_ttl_seconds: float | None = None
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_records: dict[UUID, _ConversationRecord] = field(
         default_factory=dict, init=False
@@ -528,6 +529,7 @@ class ConversationService:
         default_factory=list, init=False
     )
     _lease_renewal_task: asyncio.Task | None = field(default=None, init=False)
+    _eviction_task: asyncio.Task | None = field(default=None, init=False)
     _run_executor: ThreadPoolExecutor | None = field(default=None, init=False)
     _credential_bindings: dict[UUID, dict[str, VersionedCredentialBinding]] = field(
         default_factory=dict, init=False
@@ -734,6 +736,8 @@ class ConversationService:
 
         event_service = event_services.get(conversation_id)
         if event_service is not None and event_service.is_open():
+            # Access counts as activity, deferring idle eviction.
+            event_service.touch()
             return event_service
 
         record = self._conversation_records.get(conversation_id)
@@ -1557,6 +1561,10 @@ class ConversationService:
                 )
 
         self._lease_renewal_task = asyncio.create_task(self._renew_all_leases_loop())
+        if self.conversation_idle_ttl_seconds:
+            self._eviction_task = asyncio.create_task(
+                self._evict_idle_conversations_loop()
+            )
 
         return self
 
@@ -1579,7 +1587,78 @@ class ConversationService:
         except asyncio.CancelledError:
             raise
 
+    async def _evict_idle_conversations_loop(self) -> None:
+        """Periodically evict conversations idle beyond the TTL."""
+        ttl = self.conversation_idle_ttl_seconds
+        if not ttl or ttl <= 0:
+            return
+        interval = max(60.0, ttl / 2)
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                try:
+                    await self._evict_idle_conversations(ttl)
+                except Exception:
+                    logger.exception(
+                        "error_evicting_idle_conversations", stack_info=True
+                    )
+        except asyncio.CancelledError:
+            raise
+
+    async def _evict_idle_conversations(self, ttl_seconds: float) -> None:
+        """Evict idle conversations, keeping the record so they re-hydrate on access.
+
+        Running or externally-subscribed conversations are skipped.
+        """
+        async with self._lifecycle_lock:
+            event_services = self._event_services
+            if event_services is None:
+                return
+            to_evict = [
+                conversation_id
+                for conversation_id, event_service in event_services.items()
+                if event_service.is_open()
+                and event_service.idle_seconds() >= ttl_seconds
+                and event_service.is_idle_evictable()
+            ]
+            for conversation_id in to_evict:
+                event_service = event_services.pop(conversation_id, None)
+                if event_service is None:
+                    continue
+                # Preserve runtime-only state so rehydration is faithful:
+                # sync the catalog to the current stored (switch_acp_model /
+                # secret updates replace it) and hand back credential bindings
+                # (close() clears them).
+                record = self._conversation_records.get(conversation_id)
+                if record is not None:
+                    record.stored = event_service.stored
+                bindings = dict(event_service.credential_bindings)
+                try:
+                    await event_service.__aexit__(None, None, None)
+                except Exception:
+                    logger.warning(
+                        "Failed to evict idle conversation %s",
+                        conversation_id,
+                        exc_info=True,
+                    )
+                else:
+                    logger.info(
+                        "Evicted idle conversation %s (idle >= %.0fs)",
+                        conversation_id,
+                        ttl_seconds,
+                    )
+                if bindings:
+                    pending = self._credential_bindings.setdefault(conversation_id, {})
+                    for secret_name, binding in bindings.items():
+                        pending.setdefault(secret_name, binding)
+
     async def __aexit__(self, exc_type, exc_value, traceback):
+        if self._eviction_task is not None:
+            self._eviction_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._eviction_task
+            self._eviction_task = None
+
         if self._lease_renewal_task is not None:
             self._lease_renewal_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -1670,6 +1749,7 @@ class ConversationService:
             secrets_store=get_secrets_store(config),
             max_concurrent_runs=config.max_concurrent_runs,
             lease_ttl_seconds=config.lease_ttl_seconds,
+            conversation_idle_ttl_seconds=config.conversation_idle_ttl_seconds,
         )
 
     async def _start_event_service(
@@ -1722,6 +1802,8 @@ class ConversationService:
                     for webhook_spec in self.webhook_specs
                 ]
             )
+            # Mark these as internal so idle eviction only counts external clients.
+            event_service.mark_subscription_baseline()
             # Save metadata immediately after successful start to ensure persistence
             # even if the system is not shut down gracefully
             await event_service.save_meta()
@@ -1839,6 +1921,8 @@ class _EventSubscriber(Subscriber):
     service: EventService
 
     async def __call__(self, _event: Event):
+        # Any event is activity; refresh the idle-eviction clock.
+        self.service.touch()
         # Skip updating timestamp for ConversationStateUpdateEvent, which is
         # published during startup/state changes and doesn't represent actual
         # conversation activity. This prevents updated_at from being reset

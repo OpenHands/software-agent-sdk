@@ -2043,6 +2043,9 @@ class TestConversationServiceStartConversation:
             ) as mock_event_service_class:
                 mock_event_service = AsyncMock()
                 mock_event_service.start = AsyncMock()  # Successful startup
+                # Sync methods must not be AsyncMock (would return unawaited
+                # coroutines); mark_subscription_baseline is called sync.
+                mock_event_service.mark_subscription_baseline = MagicMock()
                 mock_event_service_class.return_value = mock_event_service
 
                 # Start event service should succeed

@@ -349,6 +349,15 @@ class Config(BaseModel):
             "to expire before the first renewal, effectively making it one-shot."
         ),
     )
+    conversation_idle_ttl_seconds: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Seconds an idle conversation stays in memory before a background "
+            "task evicts it; evicted conversations re-hydrate from disk on next "
+            "access. None (default) keeps them until deleted or restart."
+        ),
+    )
     telemetry: TelemetrySpec = Field(
         default_factory=TelemetrySpec,
         description=(
