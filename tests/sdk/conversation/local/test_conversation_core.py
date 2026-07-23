@@ -4,12 +4,14 @@ functionality."""
 import os
 import tempfile
 import uuid
+from unittest.mock import patch
 
 import pytest
 from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
+from openhands.sdk.credential import CredentialSyncError
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from tests.platform_utils import maybe_mark_forked
@@ -230,6 +232,38 @@ def test_conversation_error_handling():
         # Should have basic properties
         assert conv.id is not None
         assert conv.state is not None
+
+
+def test_close_propagates_agent_failure_and_allows_retry(tmp_path):
+    agent = create_test_agent()
+    conv = Conversation(agent=agent, persistence_dir=tmp_path, workspace=tmp_path)
+
+    with patch.object(
+        Agent,
+        "close",
+        side_effect=[CredentialSyncError("writeback failed"), None],
+    ) as close:
+        with pytest.raises(CredentialSyncError, match="writeback failed"):
+            conv.close()
+        conv.close()
+        conv.close()
+
+    assert close.call_count == 2
+
+
+def test_close_logs_noncredential_agent_failure_without_retry(tmp_path):
+    agent = create_test_agent()
+    conv = Conversation(agent=agent, persistence_dir=tmp_path, workspace=tmp_path)
+
+    with patch.object(
+        Agent,
+        "close",
+        side_effect=RuntimeError("custom agent close failed"),
+    ) as close:
+        conv.close()
+        conv.close()
+
+    assert close.call_count == 1
 
 
 def test_conversation_memory_vs_local_filestore():
