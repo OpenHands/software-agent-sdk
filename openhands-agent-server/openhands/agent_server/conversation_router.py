@@ -19,7 +19,10 @@ from openhands.agent_server._secrets_exposure import (
     decrypt_incoming_llm_secrets,
     get_cipher,
 )
-from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.conversation_service import (
+    ConversationService,
+    InvalidParentConversation,
+)
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.models import (
     INCLUDE_SKILLS_PARAM_TITLE,
@@ -30,6 +33,7 @@ from openhands.agent_server.models import (
     ConversationPage,
     ConversationSortOrder,
     ForkConversationRequest,
+    NavigateConversationRequest,
     SendMessageRequest,
     SetConfirmationPolicyRequest,
     SetSecurityAnalyzerRequest,
@@ -42,7 +46,16 @@ from openhands.agent_server.models import (
 )
 from openhands.sdk import LLM, Agent, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.profiles.resolver import DanglingMcpServerRef, ProfileNotFound
+from openhands.sdk.marketplace.registry import (
+    MarketplaceNotFoundError,
+    PluginNotFoundError,
+    PluginResolutionError,
+)
+from openhands.sdk.plugin import PluginFetchError
+from openhands.sdk.profiles.resolver import (
+    DanglingMcpServerRef,
+    ProfileNotFound,
+)
 from openhands.sdk.tool.client_tool import ClientToolRegistrationError
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.preset.default import get_default_tools
@@ -207,6 +220,10 @@ async def start_conversation(
             detail={"message": str(e), "dangling_mcp_server_refs": e.missing},
         ) from e
     except ClientToolRegistrationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+        ) from e
+    except InvalidParentConversation as e:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
         ) from e
@@ -498,6 +515,42 @@ async def switch_conversation_llm(
 
 
 @conversation_router.post(
+    "/{conversation_id}/load_plugin",
+    responses={
+        400: {"description": "Invalid plugin reference or inactive conversation"},
+        404: {"description": "Conversation or plugin not found"},
+    },
+)
+async def load_conversation_plugin(
+    conversation_id: UUID,
+    plugin_ref: str = Body(..., embed=True),
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Load a plugin from the conversation's registered marketplaces."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    try:
+        await event_service.load_plugin(plugin_ref)
+    except (PluginNotFoundError, MarketplaceNotFoundError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+    except (
+        PluginResolutionError,
+        PluginFetchError,
+        FileNotFoundError,
+        ValueError,
+    ) as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    return Success()
+
+
+@conversation_router.post(
     "/{conversation_id}/switch_acp_model",
     responses={
         400: {"description": "Agent is not ACP, or provider can't switch models"},
@@ -617,15 +670,58 @@ async def fork_conversation(
             title=request.title,
             tags=request.tags if request.tags is not None else None,
             reset_metrics=request.reset_metrics,
+            from_event_id=request.from_event_id,
         )
     except ValueError as exc:
         if "already exists" in str(exc):
             raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        # An unknown ``from_event_id`` is a bad request against an existing
+        # source conversation, not a missing conversation.
+        if "from_event_id" in str(exc):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
         raise
     if info is None:
         raise HTTPException(
             status.HTTP_404_NOT_FOUND,
             detail="Source conversation not found",
+        )
+    if not include_skills:
+        info = trim_conversation_response_skills(info)
+    return info
+
+
+@conversation_router.post(
+    "/{conversation_id}/navigate",
+    responses={
+        404: {"description": "Conversation or event not found"},
+    },
+)
+async def navigate_conversation(
+    conversation_id: UUID,
+    request: Annotated[NavigateConversationRequest, Body()],
+    include_skills: Annotated[bool, Query(title=INCLUDE_SKILLS_PARAM_TITLE)] = False,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ConversationInfo:
+    """Move a conversation's HEAD to an existing event, re-rooting the branch.
+
+    All branches stay on disk; only the active branch the agent runs on next
+    changes. Unlike ``fork``, no new conversation is created. Returns the
+    updated conversation info (carrying the new ``leaf_event_id``).
+    """
+    try:
+        info = await conversation_service.navigate_conversation(
+            conversation_id, event_id=request.event_id
+        )
+    except ValueError as exc:
+        # An unknown ``event_id`` against an existing conversation is a 404;
+        # other ValueErrors (e.g. inactive_service) are genuine server errors.
+        if "event_id" in str(exc):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        raise
+    if info is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            detail="Conversation not found",
         )
     if not include_skills:
         info = trim_conversation_response_skills(info)

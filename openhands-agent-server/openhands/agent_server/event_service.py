@@ -4,11 +4,13 @@ from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import cast
 from uuid import UUID, uuid4
 
 from pydantic import ValidationError
 
 from openhands.agent_server.conversation_lease import (
+    DEFAULT_LEASE_TTL_SECONDS,
     ConversationLease,
     ConversationOwnershipLostError,
 )
@@ -21,6 +23,10 @@ from openhands.agent_server.models import (
 from openhands.agent_server.pub_sub import PubSub, Subscriber
 from openhands.sdk import LLM, AgentBase, Event, Message, TextContent, get_logger
 from openhands.sdk.agent import ACPAgent
+from openhands.sdk.agent.acp_file_credentials import (
+    CODEX_AUTH_SECRET_NAME,
+    is_valid_codex_auth,
+)
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.goal import (
@@ -38,11 +44,18 @@ from openhands.sdk.conversation.impl.local_conversation import (
     ACP_SUPERSEDE_INFLIGHT_PROMPT,
     LocalConversation,
 )
+from openhands.sdk.conversation.persistence_const import BASE_STATE
 from openhands.sdk.conversation.response_utils import get_agent_final_response
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
+)
+from openhands.sdk.credential import (
+    CredentialBindingError,
+    CredentialNeedsReauthentication,
+    HttpVersionedCredentialBinding,
+    VersionedCredentialBinding,
 )
 from openhands.sdk.event import (
     AgentErrorEvent,
@@ -54,10 +67,12 @@ from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.llm.streaming import LLMStreamChunk
+from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.files import atomic_write_text
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -70,6 +85,24 @@ INITIAL_STATE_PUSH_TIMEOUT_SECONDS = 0.5
 logger = get_logger(__name__)
 
 
+class CredentialBindingActivationTooLate(RuntimeError):
+    pass
+
+
+def _without_agent_context_secret(
+    agent: AgentBase,
+    secret_name: str,
+) -> AgentBase:
+    context = agent.agent_context
+    if context is None or not context.secrets or secret_name not in context.secrets:
+        return agent
+    secrets = dict(context.secrets)
+    secrets.pop(secret_name, None)
+    return agent.model_copy(
+        update={"agent_context": context.model_copy(update={"secrets": secrets})}
+    )
+
+
 @dataclass
 class EventService:
     """
@@ -80,7 +113,12 @@ class EventService:
     stored: StoredConversation
     conversations_dir: Path
     cipher: Cipher | None = None
+    mcp_tool_provider: MCPToolProvider | None = None
+    credential_bindings: dict[str, VersionedCredentialBinding] = field(
+        default_factory=dict
+    )
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
+    lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
     _conversation: LocalConversation | None = field(default=None, init=False)
     _pub_sub: PubSub[Event] = field(
         default_factory=lambda: PubSub[Event](max_subscribers=50), init=False
@@ -132,6 +170,154 @@ class EventService:
                     }
                 )
             )
+
+    def _without_stored_secret(self, secret_name: str) -> StoredConversation:
+        secrets = dict(self.stored.secrets)
+        secrets.pop(secret_name, None)
+        return self.stored.model_copy(
+            update={
+                "secrets": secrets,
+                "agent": _without_agent_context_secret(
+                    self.stored.agent,
+                    secret_name,
+                ),
+            }
+        )
+
+    async def _scrub_persisted_credentials(self) -> None:
+        if not self.credential_bindings:
+            return
+
+        context = {"cipher": self.cipher}
+        base_state_file = self.conversation_dir / BASE_STATE
+        meta_file = self.conversation_dir / "meta.json"
+        legacy_auth_file = self.conversation_dir / "acp" / "codex" / "auth.json"
+        codex_binding = self.credential_bindings.get(CODEX_AUTH_SECRET_NAME)
+        if codex_binding is not None and legacy_auth_file.exists():
+            resolved = await codex_binding.load()
+            if not is_valid_codex_auth(resolved.value):
+                raise CredentialNeedsReauthentication(
+                    "ChatGPT authentication is invalid. Please sign in again."
+                )
+        for secret_name in self.credential_bindings:
+            self.stored = self._without_stored_secret(secret_name)
+
+        if (
+            not base_state_file.exists()
+            and not meta_file.exists()
+            and not legacy_auth_file.exists()
+        ):
+            return
+
+        with self._write_guard():
+            if base_state_file.exists():
+                state = ConversationState.model_validate_json(
+                    base_state_file.read_text(),
+                    context=context,
+                )
+                sources = dict(state.secret_registry.secret_sources)
+                for secret_name in self.credential_bindings:
+                    sources.pop(secret_name, None)
+                    state.agent = _without_agent_context_secret(
+                        state.agent,
+                        secret_name,
+                    )
+                state.secret_registry = state.secret_registry.model_copy(
+                    update={"secret_sources": sources}
+                )
+                atomic_write_text(
+                    base_state_file,
+                    state.model_dump_json(exclude_none=True, context=context),
+                )
+
+            if meta_file.exists():
+                atomic_write_text(
+                    meta_file,
+                    self.stored.model_dump_json(context=context),
+                )
+            if codex_binding is not None:
+                legacy_auth_file.unlink(missing_ok=True)
+
+    async def activate_credential_binding(
+        self,
+        secret_name: str,
+        binding: VersionedCredentialBinding,
+    ) -> None:
+        existing = self.credential_bindings.get(secret_name)
+        if isinstance(existing, HttpVersionedCredentialBinding) and isinstance(
+            binding, HttpVersionedCredentialBinding
+        ):
+            try:
+                existing.reauthorize(binding)
+            except ValueError as exc:
+                raise CredentialBindingActivationTooLate from exc
+            await self._scrub_persisted_credentials()
+            return
+        if existing is not None:
+            raise CredentialBindingActivationTooLate
+
+        conversation = self._conversation
+        if conversation is None:
+            raise CredentialBindingActivationTooLate
+
+        state = conversation._state
+        with state:
+            if not isinstance(conversation.agent, ACPAgent):
+                raise CredentialBindingActivationTooLate
+            agent = cast(
+                ACPAgent,
+                _without_agent_context_secret(conversation.agent, secret_name),
+            )
+            try:
+                agent.activate_file_credential_binding(secret_name, binding)
+            except RuntimeError as exc:
+                raise CredentialBindingActivationTooLate from exc
+
+            self.credential_bindings[secret_name] = binding
+            sources = dict(state.secret_registry.secret_sources)
+            sources.pop(secret_name, None)
+            state.secret_registry = state.secret_registry.model_copy(
+                update={"secret_sources": sources}
+            )
+            state.agent = agent
+            conversation.agent = agent
+            self.stored = self._without_stored_secret(secret_name)
+        await self._scrub_persisted_credentials()
+
+    async def apply_resume_secrets(
+        self,
+        secrets: dict[str, SecretValue],
+    ) -> None:
+        conversation = self._conversation
+        if conversation is None:
+            raise ValueError("inactive_service")
+        secrets = {
+            name: value
+            for name, value in secrets.items()
+            if name not in self.credential_bindings
+        }
+        if not secrets:
+            return
+
+        def _update() -> None:
+            state = conversation._state
+            with state:
+                registry = state.secret_registry.model_copy(
+                    update={
+                        "secret_sources": dict(state.secret_registry.secret_sources)
+                    }
+                )
+                registry.update_secrets(secrets)
+                state.secret_registry = registry
+                agent = conversation.agent
+                if isinstance(agent, ACPAgent):
+                    agent.restart_for_updated_credentials(secrets)
+
+        await asyncio.to_thread(_update)
+        self.stored = self.stored.model_copy(
+            update={"secrets": {**self.stored.secrets, **secrets}}
+        )
+        await self.save_meta()
 
     def _write_guard(self):
         if self._lease is None or self._lease_generation is None:
@@ -577,21 +763,26 @@ class EventService:
         # conversation's synchronous FIFOLock cannot block the server event loop.
         if self._conversation:
             state_update_event = await self._create_state_update_event()
+        else:
+            state_update_event = ConversationStateUpdateEvent(
+                key="execution_status",
+                value=ConversationExecutionStatus.IDLE,
+            )
 
-            try:
-                await asyncio.wait_for(
-                    subscriber(state_update_event),
-                    timeout=INITIAL_STATE_PUSH_TIMEOUT_SECONDS,
-                )
-            except TimeoutError:
-                # Subscriber stays registered; only the initial-state push is
-                # dropped. Subsequent publishes go through pub_sub and may
-                # still block there if the subscriber remains wedged.
-                logger.warning(
-                    f"Initial state push to subscriber {subscriber_id} timed "
-                    f"out after {INITIAL_STATE_PUSH_TIMEOUT_SECONDS}s."
-                )
-            # Non-timeout errors propagate to caller (e.g. webhook failures).
+        try:
+            await asyncio.wait_for(
+                subscriber(state_update_event),
+                timeout=INITIAL_STATE_PUSH_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            # Subscriber stays registered; only the initial-state push is
+            # dropped. Subsequent publishes go through pub_sub and may
+            # still block there if the subscriber remains wedged.
+            logger.warning(
+                f"Initial state push to subscriber {subscriber_id} timed "
+                f"out after {INITIAL_STATE_PUSH_TIMEOUT_SECONDS}s."
+            )
+        # Non-timeout errors propagate to caller (e.g. webhook failures).
 
         return subscriber_id
 
@@ -733,12 +924,17 @@ class EventService:
 
         # self.stored contains an Agent configuration we can instantiate
         self.conversation_dir.mkdir(parents=True, exist_ok=True)
-        self._lease = ConversationLease(
-            conversation_dir=self.conversation_dir,
-            owner_instance_id=self.owner_instance_id,
-        )
-        lease_claim = self._lease.claim()
-        self._lease_generation = lease_claim.generation
+        # lease_ttl_seconds=0 disables leasing for single-instance deployments
+        # where shared-storage stale leases would otherwise block pod restarts.
+        if self.lease_ttl_seconds > 0:
+            self._lease = ConversationLease(
+                conversation_dir=self.conversation_dir,
+                owner_instance_id=self.owner_instance_id,
+                ttl_seconds=self.lease_ttl_seconds,
+            )
+            lease_claim = self._lease.claim()
+            self._lease_generation = lease_claim.generation
+        await self._scrub_persisted_credentials()
         workspace = self.stored.workspace
         assert isinstance(workspace, LocalWorkspace)
         working_dir = Path(workspace.working_dir)
@@ -826,11 +1022,18 @@ class EventService:
             observability_metadata=self.stored.observability_metadata,
             observability_tags=self.stored.observability_tags,
             observability_span_name=self.stored.observability_span_name,
+            mcp_tool_provider=self.mcp_tool_provider,
         )
 
         conversation.set_confirmation_policy(self.stored.confirmation_policy)
         conversation.set_security_analyzer(self.stored.security_analyzer)
         self._conversation = conversation
+        if isinstance(conversation.agent, ACPAgent):
+            for secret_name, binding in self.credential_bindings.items():
+                conversation.agent.activate_file_credential_binding(
+                    secret_name,
+                    binding,
+                )
         self._conversation._state.set_write_guard(self._write_guard)
         if not self._external_lease_renewal:
             self._lease_task = asyncio.create_task(self._renew_lease_loop())
@@ -857,6 +1060,11 @@ class EventService:
         state = self._conversation.state
         if state.execution_status == ConversationExecutionStatus.RUNNING:
             state.execution_status = ConversationExecutionStatus.ERROR
+            # Crash recovery scans the full log, not the active branch: the
+            # process may have died between writing an event file and persisting
+            # the advanced HEAD, so the leaf can lag the on-disk events. (Remote
+            # branching is unsupported — #3749 — so there are no abandoned
+            # branches to exclude here anyway.)
             unmatched_actions = ConversationState.get_unmatched_actions(state.events)
             if unmatched_actions:
                 first_action = unmatched_actions[0]
@@ -1340,6 +1548,9 @@ class EventService:
         """Update secrets in the conversation."""
         if not self._conversation:
             raise ValueError("inactive_service")
+        if CODEX_AUTH_SECRET_NAME in self.credential_bindings:
+            secrets = dict(secrets)
+            secrets.pop(CODEX_AUTH_SECRET_NAME, None)
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.update_secrets, secrets)
 
@@ -1362,6 +1573,13 @@ class EventService:
         await loop.run_in_executor(
             None, self._conversation.set_security_analyzer, security_analyzer
         )
+
+    async def load_plugin(self, plugin_ref: str) -> None:
+        """Load a marketplace plugin into the active conversation."""
+        if self._conversation is None:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._conversation.load_plugin, plugin_ref)
 
     async def switch_acp_model(self, model: str) -> None:
         """Switch the model on an ACP conversation.
@@ -1438,6 +1656,7 @@ class EventService:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._conversation.close)
             self._conversation = None
+        self.credential_bindings = {}
 
         if self._lease is not None and self._lease_generation is not None:
             self._lease.release(self._lease_generation)
@@ -1492,6 +1711,22 @@ class EventService:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._conversation.condense)
 
+    async def navigate_to(self, event_id: str | None) -> None:
+        """Move the conversation HEAD to an existing event (in-place re-root).
+
+        Delegates to LocalConversation in an executor to avoid blocking the event loop.
+
+        Raises:
+            ValueError: If ``event_id`` is not ``None`` and not in the conversation.
+        """
+        if not self._conversation:
+            raise ValueError("inactive_service")
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, self._conversation.navigate_to, event_id
+        )
+
     def _get_agent_final_response_sync(self) -> str:
         """Extract the agent's final response from the conversation events.
 
@@ -1535,6 +1770,7 @@ class EventService:
         return self
 
     async def __aexit__(self, exc_type, exc_value, traceback):
+        save_error: BaseException | None = None
         try:
             await self.save_meta()
         except ConversationOwnershipLostError:
@@ -1542,7 +1778,28 @@ class EventService:
                 "Skipping meta save after ownership loss for conversation %s",
                 self.stored.id,
             )
-        await self.close()
+        except BaseException as exc:
+            save_error = exc
+        close_error: BaseException | None = None
+        try:
+            await self.close()
+        except BaseException as exc:
+            close_error = exc
+        if isinstance(close_error, CredentialBindingError):
+            raise close_error
+        if save_error is not None:
+            if close_error is not None:
+                logger.warning(
+                    "Event service close also failed after meta save failure",
+                    exc_info=(
+                        type(close_error),
+                        close_error,
+                        close_error.__traceback__,
+                    ),
+                )
+            raise save_error
+        if close_error is not None:
+            raise close_error
 
     def is_open(self) -> bool:
         return bool(self._conversation)

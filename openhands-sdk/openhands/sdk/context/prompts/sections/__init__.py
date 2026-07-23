@@ -3,7 +3,8 @@
 Sections are pure, synchronous functions of a :class:`PromptContext` -- no Jinja
 environment, no filesystem loader, no ``render_template`` bootstrap -- so each one
 unit-tests in isolation. The static tier (ported from ``system_prompt.j2``) lives
-in :mod:`.static`.
+in :mod:`.static`; the standalone planning composition (ported from
+``system_prompt_planning.j2``) in :mod:`.planning`.
 """
 
 from openhands.sdk.context.prompts.sections.dynamic import (
@@ -11,8 +12,10 @@ from openhands.sdk.context.prompts.sections.dynamic import (
     CustomSecretsSection,
     CustomSuffixSection,
     DateTimeSection,
+    MemoryContextSection,
     RepoContextSection,
 )
+from openhands.sdk.context.prompts.sections.planning import PlanningSection
 from openhands.sdk.context.prompts.sections.static import (
     BrowserSection,
     CodeQualitySection,
@@ -46,8 +49,10 @@ __all__ = [
     "EnvironmentSetupSection",
     "ExternalServicesSection",
     "FileSystemSection",
+    "MemoryContextSection",
     "MemorySection",
     "ModelSpecificSection",
+    "PlanningSection",
     "ProblemSolvingSection",
     "ProcessManagementSection",
     "PullRequestsSection",

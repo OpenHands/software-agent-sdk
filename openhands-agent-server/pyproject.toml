@@ -1,6 +1,6 @@
 [project]
 name = "openhands-agent-server"
-version = "1.29.3"
+version = "1.37.0"
 description = "OpenHands Agent Server - REST/WebSocket interface for OpenHands AI Agent"
 
 requires-python = ">=3.12"
@@ -17,6 +17,13 @@ dependencies = [
   "websockets>=12",
   "wsproto>=1.2.0",
 ]
+
+[project.optional-dependencies]
+# Product-analytics exporter. Optional on purpose: the core server and every
+# library/headless consumer must be able to run without a vendor analytics SDK
+# on the import path. Pinned to the major already resolved in uv.lock (6.7.7,
+# via browser-use) so installing the extra cannot force a resolver conflict.
+posthog = ["posthog>=6,<7"]
 
 [project.urls]
 Source = "https://github.com/OpenHands/software-agent-sdk"

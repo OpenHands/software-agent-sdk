@@ -34,3 +34,14 @@ class TaskTrigger(BaseTrigger):
 
     type: Literal["task"] = "task"
     triggers: list[str]
+
+
+class PathTrigger(BaseTrigger):
+    """Trigger for path-scoped skills ("rules").
+
+    These skills are activated when the agent touches a file whose path matches
+    one of the ``paths`` glob patterns (gitignore-style ``**`` semantics).
+    """
+
+    type: Literal["path"] = "path"
+    paths: list[str]

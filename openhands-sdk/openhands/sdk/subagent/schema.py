@@ -4,18 +4,23 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 import frontmatter
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from openhands.sdk.context.condenser import CondenserBase, NoOpCondenser
 from openhands.sdk.hooks.config import HookConfig
+from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config
 from openhands.sdk.utils.path import to_posix_path
 
 
 if TYPE_CHECKING:
     from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
+
+
+# Scope where an agent was discovered. Set during discovery, not from frontmatter.
+AgentDefinitionLevel = Literal["project", "user", "builtin", "plugin", "programmatic"]
 
 
 KNOWN_FIELDS: Final[set[str]] = {
@@ -30,6 +35,7 @@ KNOWN_FIELDS: Final[set[str]] = {
     "max_budget_per_run",
     "hooks",
     "profile_store_dir",
+    "mcp_config",
     "mcp_servers",
     "permission_mode",
     "condenser",
@@ -87,27 +93,26 @@ def _extract_triggers(fm: dict[str, object]) -> list[str]:
     return []
 
 
-def _extract_mcp_servers(fm: dict[str, Any]) -> dict[str, Any] | None:
-    """Extract MCP servers configuration from frontmatter.
+def _extract_mcp_config(fm: dict[str, object]) -> dict[str, MCPServer] | None:
+    """Extract MCP servers from frontmatter.
 
     Variable placeholders (``${VAR}`` and ``${VAR:-default}``) are preserved
     and expanded later when the agent runs, allowing per-conversation secrets
     to be injected at runtime. Expansion happens in LocalConversation when
-    the agent's mcp_config is processed.
+    the agent's mcp_config are processed.
 
     Note: The older ``$VAR`` syntax (without braces) is NOT supported.
     Use ``${VAR}`` for environment variables and secrets.
     """
-    mcp_servers_raw = fm.get("mcp_servers")
-    if mcp_servers_raw is None:
+    mcp_config_raw = fm.get("mcp_config", fm.get("mcp_servers"))
+    if mcp_config_raw is None:
         return None
-    if not isinstance(mcp_servers_raw, dict):
+    if not isinstance(mcp_config_raw, dict):
         raise ValueError(
-            f"mcp_servers must be a mapping of server names to configs, "
-            f"got {type(mcp_servers_raw)}"
+            f"mcp_config must be a mapping of server names to configs, "
+            f"got {type(mcp_config_raw)}"
         )
-    # Return raw config - variable expansion happens at runtime
-    return mcp_servers_raw
+    return coerce_mcp_config(mcp_config_raw)
 
 
 def _extract_profile_store_dir(fm: dict[str, object]) -> str | None:
@@ -226,6 +231,11 @@ class AgentDefinition(BaseModel):
     source: str | None = Field(
         default=None, description="Source file path for this agent"
     )
+    level: AgentDefinitionLevel | None = Field(
+        default=None,
+        description="Scope where the agent was discovered. "
+        "Set during discovery; None when loaded directly from a file.",
+    )
     when_to_use_examples: list[str] = Field(
         default_factory=list,
         description="Examples of when to use this agent (for triggering)",
@@ -262,10 +272,17 @@ class AgentDefinition(BaseModel):
         "Must be strictly positive, or None for no budget.",
         gt=0,
     )
+    mcp_config: dict[str, MCPServer] | None = Field(
+        default=None,
+        description="MCP servers for this agent.",
+        examples=[{"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}],
+    )
     mcp_servers: dict[str, Any] | None = Field(
         default=None,
-        description="MCP server configurations for this agent. "
-        "Keys are server names, values are server configs with 'command', 'args', etc.",
+        description=(
+            "Deprecated compatibility alias for mcp_config. "
+            "Use mcp_config for new clients."
+        ),
         examples=[{"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}],
     )
     profile_store_dir: str | None = Field(
@@ -281,6 +298,28 @@ class AgentDefinition(BaseModel):
     metadata: dict[str, Any] = Field(
         default_factory=dict, description="Additional metadata from frontmatter"
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_mcp_servers(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        if value.get("mcp_config") is not None or value.get("mcp_servers") is None:
+            return value
+        return {**value, "mcp_config": value["mcp_servers"]}
+
+    @model_validator(mode="after")
+    def _mirror_mcp_config_to_legacy_field(self) -> AgentDefinition:
+        if self.mcp_servers is None and self.mcp_config is not None:
+            self.mcp_servers = {
+                name: server.model_dump(
+                    mode="json",
+                    exclude_none=True,
+                    exclude_defaults=True,
+                )
+                for name, server in self.mcp_config.items()
+            }
+        return self
 
     def get_confirmation_policy(self) -> ConfirmationPolicyBase | None:
         """Convert permission_mode to a ConfirmationPolicyBase instance.
@@ -319,7 +358,7 @@ class AgentDefinition(BaseModel):
         - description: Description with optional <example> tags for triggering
         - tools (optional): List of allowed tools
         - skills (optional): Comma-separated skill names or list of skill names
-        - mcp_servers (optional): MCP server configurations mapping
+        - mcp_config (optional): MCP server configurations mapping
         - model (optional): Model profile to use (default: 'inherit')
         - color (optional): Display color
         - permission_mode (optional): How the subagent handles permissions
@@ -352,7 +391,7 @@ class AgentDefinition(BaseModel):
         permission_mode: str | None = _extract_permission_mode(fm)
         max_iteration_per_run: int | None = _extract_max_iteration_per_run(fm)
         max_budget_per_run: float | None = _extract_max_budget_per_run(fm)
-        mcp_servers: dict[str, Any] | None = _extract_mcp_servers(fm)
+        mcp_config: dict[str, MCPServer] | None = _extract_mcp_config(fm)
         profile_store_dir: str | None = _extract_profile_store_dir(fm)
         hooks: HookConfig | None = _extract_hooks(fm)
         condenser: CondenserBase | None = _extract_condenser(fm)
@@ -374,7 +413,7 @@ class AgentDefinition(BaseModel):
             permission_mode=permission_mode,
             max_iteration_per_run=max_iteration_per_run,
             max_budget_per_run=max_budget_per_run,
-            mcp_servers=mcp_servers,
+            mcp_config=mcp_config,
             hooks=hooks,
             profile_store_dir=profile_store_dir,
             condenser=condenser,

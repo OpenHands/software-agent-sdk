@@ -2,10 +2,11 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
+from openhands.agent_server.conversation_lease import DEFAULT_LEASE_TTL_SECONDS
 from openhands.agent_server.env_parser import (
     MISSING,
     _get_default_parsers,
@@ -13,6 +14,7 @@ from openhands.agent_server.env_parser import (
     get_env_parser,
     merge,
 )
+from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.utils.cipher import Cipher
 
 
@@ -106,6 +108,85 @@ class WebhookSpec(BaseModel):
             "downstream is failing and events are re-queued for retry, the oldest "
             "events are dropped past this bound to prevent unbounded memory growth."
         ),
+    )
+
+
+TelemetryExporterKind = Literal["none", "posthog", "http"]
+"""Which exporter ships diagnostic events, if any."""
+
+
+class TelemetrySpec(BaseModel):
+    """Deployment-supplied product-analytics transport settings.
+
+    This carries *transport* only. Whether telemetry may be delivered is
+    resolved from consent (``misc_settings.telemetry.consent``, optionally
+    seeded or overridden by ``OH_TELEMETRY_CONSENT``) — there is no deployment
+    "mode" here, and nothing in the agent-server special-cases a hosted
+    deployment.
+    """
+
+    exporter: TelemetryExporterKind = Field(
+        default="none",
+        description=(
+            "Exporter to use. 'none' (the default) never delivers, and is what "
+            "library and headless consumers get. 'posthog' requires the "
+            "[posthog] extra. 'http' POSTs sanitized batches to "
+            "telemetry_http_endpoint."
+        ),
+    )
+    posthog_api_key: SecretStr | None = Field(
+        default=None,
+        description=(
+            "PostHog project API key. Required by the 'posthog' exporter; "
+            "without it telemetry stays inactive."
+        ),
+    )
+    posthog_host: str = Field(
+        default="https://us.i.posthog.com",
+        description="PostHog ingestion host.",
+    )
+    http_endpoint: str | None = Field(
+        default=None,
+        description=(
+            "Endpoint the 'http' exporter POSTs sanitized event batches to. "
+            "Intended to front a backend that revalidates auth and consent "
+            "before forwarding onward."
+        ),
+    )
+    http_token: SecretStr | None = Field(
+        default=None,
+        description="Bearer token sent by the 'http' exporter, if required.",
+    )
+    salt: SecretStr | None = Field(
+        default=None,
+        description=(
+            "Key used to pseudonymize conversation identifiers. Falls back to "
+            "a per-process random salt, which keeps pseudonyms stable within a "
+            "run but unlinkable across runs."
+        ),
+    )
+    max_queue_size: int = Field(
+        default=1000,
+        ge=1,
+        description=(
+            "Upper bound on buffered diagnostic events. The queue is bounded "
+            "on ingest: past this many events the oldest are dropped, so a "
+            "failing exporter cannot grow memory without limit."
+        ),
+    )
+    event_buffer_size: int = Field(
+        default=20, ge=1, description="Maximum events per delivery batch."
+    )
+    flush_delay: float = Field(
+        default=30.0,
+        gt=0,
+        description="Seconds to wait before flushing a partial batch.",
+    )
+    num_retries: int = Field(
+        default=2, ge=0, description="Retries before a batch is dropped."
+    )
+    retry_delay: float = Field(
+        default=5.0, ge=0, description="Base seconds between delivery retries."
     )
 
 
@@ -236,6 +317,13 @@ class Config(BaseModel):
             "The URL where this agent server instance is available externally"
         ),
     )
+    registered_marketplaces: list[MarketplaceRegistration] = Field(
+        default_factory=list,
+        description=(
+            "Default marketplace registrations for plugin and skill loading. "
+            "Can be configured with OH_REGISTERED_MARKETPLACES as a JSON list."
+        ),
+    )
     deferred_init: bool = Field(
         default=False,
         description=(
@@ -245,6 +333,27 @@ class Config(BaseModel):
             "the runtime configuration. This is intended for warm-pool deployments "
             "where pods are pre-warmed before a user is matched and per-user "
             "configuration is delivered later."
+        ),
+    )
+    lease_ttl_seconds: float = Field(
+        default=DEFAULT_LEASE_TTL_SECONDS,
+        ge=0.0,
+        description=(
+            "How long (in seconds) a conversation ownership lease remains valid "
+            "without renewal. The lease prevents two server instances from "
+            "concurrently owning the same conversation when storage is shared "
+            "across instances. Set to 0 to disable leasing entirely, which is "
+            "appropriate for single-instance deployments where concurrent "
+            "ownership is impossible. Values between 0 and "
+            "LEASE_RENEW_INTERVAL_SECONDS (15 s) are valid but cause the lease "
+            "to expire before the first renewal, effectively making it one-shot."
+        ),
+    )
+    telemetry: TelemetrySpec = Field(
+        default_factory=TelemetrySpec,
+        description=(
+            "Product-analytics policy. Disabled by default; see TelemetrySpec. "
+            "Distinct from LLM completion logging and from Laminar/OTel tracing."
         ),
     )
     model_config: ClassVar[ConfigDict] = {"frozen": True}

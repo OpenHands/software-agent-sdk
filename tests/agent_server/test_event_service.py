@@ -13,6 +13,7 @@ from uuid import uuid4
 import pytest
 import pytest_asyncio
 
+from openhands.agent_server.conversation_lease import LEASE_FILE_NAME
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
@@ -35,6 +36,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.credential import CredentialSyncError
 from openhands.sdk.event import AgentErrorEvent, Event
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import (
@@ -45,7 +47,10 @@ from openhands.sdk.event.llm_convertible import (
 from openhands.sdk.io.local import LocalFileStore
 from openhands.sdk.io.memory import InMemoryFileStore
 from openhands.sdk.llm import MessageToolCall, TextContent
+from openhands.sdk.mcp.config import coerce_mcp_config
 from openhands.sdk.security.confirmation_policy import NeverConfirm
+from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal import TerminalAction, TerminalObservation
 from tests.agent_server.stress.scripts import (
@@ -1343,6 +1348,32 @@ class TestEventServiceSendMessage:
                 None, conversation.send_message, system_message
             )
 
+    @pytest.mark.asyncio
+    async def test_load_plugin_delegates_to_conversation(self, event_service):
+        """Runtime plugin loads are delegated through the executor."""
+        conversation = MagicMock()
+        conversation.load_plugin = MagicMock()
+        event_service._conversation = conversation
+
+        with patch("asyncio.get_running_loop") as mock_get_loop:
+            mock_loop = MagicMock()
+            mock_get_loop.return_value = mock_loop
+            mock_loop.run_in_executor.side_effect = lambda *args: self._mock_executor()
+
+            await event_service.load_plugin("plugin@team")
+
+        mock_loop.run_in_executor.assert_called_once_with(
+            None, conversation.load_plugin, "plugin@team"
+        )
+
+    @pytest.mark.asyncio
+    async def test_load_plugin_inactive_service(self, event_service):
+        """Runtime plugin loads require an active conversation."""
+        event_service._conversation = None
+
+        with pytest.raises(ValueError, match="inactive_service"):
+            await event_service.load_plugin("plugin@team")
+
 
 class TestEventServiceRespondToConfirmation:
     """Test cases for confirmation responses and rejection handling."""
@@ -1748,6 +1779,45 @@ class TestEventServiceSaveMeta:
         meta_file = conv_dir / "meta.json"
         loaded = StoredConversation.model_validate_json(meta_file.read_text())
         assert loaded.updated_at == original_updated_at
+
+    @pytest.mark.asyncio
+    async def test_save_meta_round_trips_agent_definition_mcp_secrets(
+        self, sample_stored_conversation, tmp_path
+    ):
+        cipher = Cipher("stored-conversation-mcp-secret")
+        sample_stored_conversation.agent_definitions = [
+            AgentDefinition(
+                name="web-researcher",
+                mcp_config=coerce_mcp_config(
+                    {
+                        "tavily": {
+                            "command": "npx",
+                            "args": ["-y", "tavily-mcp@0.2.1"],
+                            "env": {"TAVILY_API_KEY": "${TAVILY_API_KEY}"},
+                        }
+                    }
+                ),
+            )
+        ]
+        service = EventService(
+            stored=sample_stored_conversation,
+            conversations_dir=tmp_path,
+            cipher=cipher,
+        )
+        service.conversation_dir.mkdir(parents=True)
+
+        await service.save_meta()
+
+        payload = (service.conversation_dir / "meta.json").read_text()
+        assert "${TAVILY_API_KEY}" not in payload
+        loaded = StoredConversation.model_validate_json(
+            payload,
+            context={"cipher": cipher},
+        )
+        assert loaded.agent_definitions[0].mcp_config is not None
+        env = loaded.agent_definitions[0].mcp_config["tavily"].env
+        assert env is not None
+        assert env["TAVILY_API_KEY"].get_secret_value() == "${TAVILY_API_KEY}"
 
     @pytest.mark.asyncio
     async def test_switch_acp_model_persists_to_meta(self, tmp_path):
@@ -2240,6 +2310,25 @@ class TestEventServiceConcurrentSubscriptions:
             assert isinstance(events[0], ConversationStateUpdateEvent)
 
     @pytest.mark.asyncio
+    async def test_subscription_receives_state_when_conversation_not_open(
+        self, event_service
+    ):
+        """Inactive services still need an initial state event for WS readiness."""
+        received_events: list[Event] = []
+
+        class TestSubscriber(Subscriber[Event]):
+            async def __call__(self, event: Event):
+                received_events.append(event)
+
+        await event_service.subscribe_to_events(TestSubscriber())
+
+        assert len(received_events) == 1
+        event = received_events[0]
+        assert isinstance(event, ConversationStateUpdateEvent)
+        assert event.key == "execution_status"
+        assert event.value == ConversationExecutionStatus.IDLE
+
+    @pytest.mark.asyncio
     async def test_slow_subscriber_does_not_block_lock(
         self, event_service, mock_conversation_with_real_lock
     ):
@@ -2548,6 +2637,26 @@ class TestEventServiceClose:
         conversation.close.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_exit_closes_after_meta_save_failure(self, event_service):
+        event_service.save_meta = AsyncMock(side_effect=OSError("save failed"))
+        event_service.close = AsyncMock()
+
+        with pytest.raises(OSError, match="save failed"):
+            await event_service.__aexit__(None, None, None)
+
+        event_service.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_exit_prioritizes_credential_close_failure(self, event_service):
+        event_service.save_meta = AsyncMock(side_effect=OSError("save failed"))
+        event_service.close = AsyncMock(
+            side_effect=CredentialSyncError("broker unavailable")
+        )
+
+        with pytest.raises(CredentialSyncError, match="broker unavailable"):
+            await event_service.__aexit__(None, None, None)
+
+    @pytest.mark.asyncio
     async def test_close_pauses_before_closing_conversation(self, event_service):
         """close() must pause an in-flight run before calling conversation.close().
         If close() ran first, the still-active run loop would race with executor
@@ -2701,6 +2810,9 @@ class TestEventServiceClose:
 
             def fork(self, **kwargs):
                 return mock.fork(**kwargs)
+
+            def navigate_to(self, event_id):
+                return mock.navigate_to(event_id)
 
         conv = SyncOnlyConversation()
         event_service._conversation = conv  # type: ignore[assignment]
@@ -3250,3 +3362,64 @@ def test_llm_log_callback_swallows_emit_failures(
     emit_mock = cast(MagicMock, event_service._emit_event_from_thread)
     emit_mock.assert_called_once()
     assert "Failed to emit LLM completion log event" in caplog.text
+
+
+def _make_stored(tmp_path: Path) -> StoredConversation:
+    return StoredConversation(
+        id=uuid4(),
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(tmp_path)),
+        confirmation_policy=NeverConfirm(),
+        initial_message=None,
+        metrics=None,
+    )
+
+
+def _make_mock_conv() -> MagicMock:
+    mock_conv = MagicMock()
+    mock_state = MagicMock()
+    mock_state.execution_status = ConversationExecutionStatus.IDLE
+    mock_state.events = []
+    mock_state.stats = MagicMock()
+    mock_conv.agent.get_all_llms.return_value = []
+    mock_conv._state = mock_state
+    mock_conv.state = mock_state
+    mock_conv._on_event = MagicMock()
+    return mock_conv
+
+
+@pytest.mark.asyncio
+async def test_event_service_skips_lease_when_ttl_is_zero(tmp_path: Path) -> None:
+    stored = _make_stored(tmp_path)
+    service = EventService(
+        stored=stored,
+        conversations_dir=tmp_path,
+        lease_ttl_seconds=0,
+    )
+    with patch(
+        "openhands.agent_server.event_service.LocalConversation",
+        return_value=_make_mock_conv(),
+    ):
+        await service.start()
+
+    assert service._lease is None
+    assert not (tmp_path / stored.id.hex / LEASE_FILE_NAME).exists()
+
+
+@pytest.mark.asyncio
+async def test_event_service_creates_lease_with_custom_ttl(tmp_path: Path) -> None:
+    stored = _make_stored(tmp_path)
+    service = EventService(
+        stored=stored,
+        conversations_dir=tmp_path,
+        lease_ttl_seconds=10.0,
+    )
+    with patch(
+        "openhands.agent_server.event_service.LocalConversation",
+        return_value=_make_mock_conv(),
+    ):
+        await service.start()
+
+    assert service._lease is not None
+    assert service._lease._ttl_seconds == 10.0
+    assert (tmp_path / stored.id.hex / LEASE_FILE_NAME).exists()

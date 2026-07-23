@@ -10,7 +10,13 @@ from fastapi.testclient import TestClient
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
-from openhands.sdk.git.models import GitChange, GitChangeStatus, GitDiff
+from openhands.sdk.git.models import (
+    GitChange,
+    GitChangeStatus,
+    GitCommit,
+    GitCommitsPage,
+    GitDiff,
+)
 
 
 @pytest.fixture
@@ -432,3 +438,129 @@ def test_git_legacy_routes_are_removed_from_openapi(client):
     openapi_paths = response.json()["paths"]
     assert "/api/git/changes/{path}" not in openapi_paths
     assert "/api/git/diff/{path}" not in openapi_paths
+
+
+# =============================================================================
+# Commit History Tests
+# =============================================================================
+
+
+_SAMPLE_COMMIT = GitCommit(
+    sha="a" * 40,
+    short_sha="aaaaaaa",
+    subject="add logging",
+    author="Agent",
+    timestamp="2026-07-10T12:00:00+07:00",
+)
+
+
+@pytest.mark.asyncio
+async def test_git_commits_query_success(client):
+    """The commits endpoint forwards to the SDK and serializes the page."""
+    with patch("openhands.agent_server.git_router.get_git_commits") as mock_commits:
+        mock_commits.return_value = GitCommitsPage(
+            commits=[_SAMPLE_COMMIT], has_more=True
+        )
+
+        response = client.get("/api/git/commits", params={"path": "src/repo"})
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "commits": [
+                {
+                    "sha": "a" * 40,
+                    "short_sha": "aaaaaaa",
+                    "subject": "add logging",
+                    "author": "Agent",
+                    "timestamp": "2026-07-10T12:00:00+07:00",
+                }
+            ],
+            "has_more": True,
+        }
+        mock_commits.assert_called_once_with(Path("src/repo"), limit=50)
+
+
+@pytest.mark.asyncio
+async def test_git_commits_query_not_a_repo_returns_empty_page(client):
+    """A non-repo workspace yields an empty page, not an error."""
+    with patch("openhands.agent_server.git_router.get_git_commits") as mock_commits:
+        mock_commits.side_effect = GitRepositoryError("not a git repository")
+
+        response = client.get("/api/git/commits", params={"path": "/not-a-repo"})
+
+        assert response.status_code == 200
+        assert response.json() == {"commits": [], "has_more": False}
+
+
+@pytest.mark.asyncio
+async def test_git_commit_changes_query_success(client):
+    """The per-commit changes endpoint forwards the sha and repo path."""
+    sha = "b" * 40
+    with patch("openhands.agent_server.git_router.get_commit_changes") as mock_changes:
+        mock_changes.return_value = [
+            GitChange(status=GitChangeStatus.DELETED, path=Path("doomed.txt"))
+        ]
+
+        response = client.get(
+            f"/api/git/commits/{sha}/changes", params={"path": "src/repo"}
+        )
+
+        assert response.status_code == 200
+        assert response.json() == [{"status": "DELETED", "path": "doomed.txt"}]
+        mock_changes.assert_called_once_with(Path("src/repo"), sha)
+
+
+def test_git_commit_changes_query_malformed_sha_is_rejected(client):
+    """A non-hex sha fails validation before it can reach git argv."""
+    response = client.get(
+        "/api/git/commits/not-a-sha/changes", params={"path": "src/repo"}
+    )
+
+    assert response.status_code == 422
+
+
+def test_git_diff_query_rejects_ref_and_commit_together(client):
+    """``ref`` and ``commit`` are mutually exclusive on /diff."""
+    response = client.get(
+        "/api/git/diff",
+        params={"path": "src/repo/f.txt", "ref": "HEAD", "commit": "a" * 40},
+    )
+
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_git_diff_query_commit_param_uses_commit_file_diff(client):
+    """``commit=`` routes to the git-object diff, not the working-tree diff."""
+    sha = "c" * 40
+    with (
+        patch(
+            "openhands.agent_server.git_router.get_commit_file_diff"
+        ) as mock_commit_diff,
+        patch("openhands.agent_server.git_router.get_git_diff") as mock_git_diff,
+    ):
+        mock_commit_diff.return_value = GitDiff(modified="", original="contents")
+
+        response = client.get(
+            "/api/git/diff", params={"path": "src/repo/doomed.txt", "commit": sha}
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"modified": "", "original": "contents"}
+        mock_commit_diff.assert_called_once_with(Path("src/repo/doomed.txt"), sha)
+        mock_git_diff.assert_not_called()
+
+
+def test_git_commit_endpoints_in_openapi(client):
+    """The schema advertises the commit routes and the /diff commit param."""
+    response = client.get("/openapi.json")
+    assert response.status_code == 200
+
+    paths = response.json()["paths"]
+    assert "/api/git/commits" in paths
+    assert "/api/git/commits/{sha}/changes" in paths
+    diff_params = paths["/api/git/diff"]["get"]["parameters"]
+    commit_param = next((p for p in diff_params if p["name"] == "commit"), None)
+    assert commit_param is not None
+    assert commit_param["in"] == "query"
+    assert commit_param.get("required", False) is False
