@@ -93,6 +93,63 @@ def test_basic_command_execution(windows_session) -> None:
     assert "Hello from Windows terminal" in obs.text
 
 
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        pytest.param('Write-Output "a\nb"', ["a", "b"], id="newline-in-string"),
+        pytest.param(
+            'if ($true) {\n    Write-Output "yes"\n}',
+            ["yes"],
+            id="if-block",
+        ),
+        pytest.param(
+            'foreach ($i in 1..2) {\n    Write-Output "n$i"\n}',
+            ["n1", "n2"],
+            id="foreach-block",
+        ),
+        pytest.param(
+            'Write-Output `\n    "cont"',
+            ["cont"],
+            id="backtick-continuation",
+        ),
+        pytest.param(
+            '1..3 |\n    ForEach-Object { "v$_" }',
+            ["v1", "v2", "v3"],
+            id="pipeline-across-lines",
+        ),
+    ],
+)
+def test_multiline_powershell_command_executes(
+    windows_session, command: str, expected: list[str]
+) -> None:
+    """Multiline statements must leave PowerShell's ">>" continuation prompt.
+
+    Each case is a single statement spanning several lines, so it passes the
+    multiple-command guard in ``TerminalSession.execute`` and reaches
+    ``send_keys()``, which is what this PR fixes.
+    """
+    obs = windows_session.execute(TerminalAction(command=command))
+
+    assert obs.exit_code == 0
+    for token in expected:
+        assert token in obs.text
+
+
+def test_multiple_statements_rejected_like_unix(windows_session) -> None:
+    """Two newline-separated statements are refused, as on the unix terminals.
+
+    The guard lives in ``TerminalSession.execute``, which every terminal backend
+    is wrapped in, so this rejection is not Windows-specific. It is what
+    distinguishes multiple *statements* from a multi-line single statement.
+    """
+    obs = windows_session.execute(
+        TerminalAction(command="Write-Output a\nWrite-Output b")
+    )
+
+    assert obs.is_error
+    assert "Cannot execute multiple commands at once" in obs.text
+
+
 def test_working_directory_updates_and_persists(windows_session, temp_dir: str) -> None:
     subdir = os.path.join(temp_dir, "subdir")
     os.makedirs(subdir, exist_ok=True)

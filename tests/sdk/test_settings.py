@@ -168,6 +168,7 @@ def test_acp_agent_settings_export_schema_has_acp_section() -> None:
         "acp_model",
         "acp_session_mode",
         "acp_prompt_timeout",
+        "acp_startup_timeout",
     }
     # Server picker + model are both critical — users pick server then
     # model. Raw command is a minor override for power users.
@@ -693,6 +694,19 @@ def test_openhands_mcp_config_reject_unknown_server_fields() -> None:
                         "unknown_secret": "not-a-datamodel-field",
                     }
                 }
+            }
+        )
+
+
+def test_current_agent_settings_reject_legacy_mcp_wrapper_without_migration() -> None:
+    with pytest.raises(ValidationError):
+        validate_agent_settings(
+            {
+                "schema_version": AGENT_SETTINGS_SCHEMA_VERSION,
+                "agent_kind": "openhands",
+                "mcp_config": {
+                    "mcpServers": {"server": {"url": "https://mcp.example.com/mcp"}}
+                },
             }
         )
 
@@ -2075,6 +2089,7 @@ def test_llm_load_from_env_rehydrates_subscription_runtime(monkeypatch) -> None:
 
 def test_create_subscription_llm_from_config_preserves_runtime_llm(monkeypatch) -> None:
     import openhands.sdk.llm.auth.openai as openai_auth
+    from openhands.sdk.llm.auth.credentials import OAuthCredentials
 
     class UnexpectedAuth:
         def __init__(self, *args, **kwargs):
@@ -2087,8 +2102,56 @@ def test_create_subscription_llm_from_config_preserves_runtime_llm(monkeypatch) 
         subscription_vendor="openai",
     )
     runtime_llm._is_subscription = True
+    runtime_llm._subscription_credentials = OAuthCredentials(
+        vendor="openai",
+        access_token="access-token",
+        refresh_token="refresh-token",
+        expires_at=4_102_444_800_000,
+    )
 
     assert openai_auth.create_subscription_llm_from_config(runtime_llm) is runtime_llm
+
+
+def test_llm_from_persisted_rebuilds_serialized_subscription_runtime(
+    monkeypatch,
+) -> None:
+    import openhands.sdk.llm.auth.openai as openai_auth
+    from openhands.sdk.llm.auth.credentials import OAuthCredentials
+    from openhands.sdk.llm.auth.openai import OpenAISubscriptionAuth
+
+    credentials = OAuthCredentials(
+        vendor="openai",
+        access_token="access-token",
+        refresh_token="refresh-token",
+        expires_at=4_102_444_800_000,
+    )
+    monkeypatch.setattr(openai_auth, "_extract_chatgpt_account_id", lambda _: None)
+    monkeypatch.setattr(
+        OpenAISubscriptionAuth,
+        "refresh_if_needed_sync",
+        lambda self: credentials,
+    )
+
+    source = OpenAISubscriptionAuth().create_llm(
+        model="gpt-5.6",
+        credentials=credentials,
+    )
+    persisted = source.to_persisted()
+
+    assert persisted["is_subscription"] is True
+    assert "base_url" not in persisted
+
+    loaded = LLM.from_persisted(persisted)
+
+    assert loaded is not source
+    assert loaded.model == "openai/gpt-5.6"
+    assert loaded.base_url == "https://chatgpt.com/backend-api/codex"
+    assert loaded.is_subscription is True
+    assert loaded.extra_headers is not None
+    assert loaded.extra_headers["originator"] == "codex_cli_rs"
+    assert loaded.extra_headers["OpenAI-Beta"] == "responses=experimental"
+    assert loaded._subscription_credentials is credentials
+    assert loaded._get_litellm_api_key_value() == "access-token"
 
 
 @pytest.mark.asyncio
@@ -2243,3 +2306,4 @@ def test_create_subscription_llm_from_config_preserves_non_auth_options(
     assert captured["timeout"] == 123
     assert "api_key" not in captured
     assert "base_url" not in captured
+    assert "is_subscription" not in captured

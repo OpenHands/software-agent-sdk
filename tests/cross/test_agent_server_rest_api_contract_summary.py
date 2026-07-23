@@ -235,6 +235,31 @@ pytest
     assert "- Existing bullet." in removed
 
 
+def test_update_body_replaces_all_existing_summary_blocks_with_mixed_newlines():
+    body = (
+        "AGENT:\r\n\r\n"
+        "## Summary\r\n\r\n"
+        "- Existing bullet.\r\n\r\n"
+        f"{_body.START_MARKER}\r\n"
+        "old CRLF\r\n"
+        f"{_body.END_MARKER}\n\n"
+        f"{_body.START_MARKER}\n"
+        "old LF\n"
+        f"{_body.END_MARKER}\n\n"
+        "## How to Test\r\n\r\n"
+        "pytest\r\n"
+    )
+
+    updated = _body.update_body(body, "new")
+
+    assert updated.count(_body.START_MARKER) == 1
+    assert updated.count(_body.END_MARKER) == 1
+    assert "old CRLF" not in updated
+    assert "old LF" not in updated
+    assert "new" in updated
+    assert "- Existing bullet." in updated
+
+
 def test_update_body_cli_preserves_crlf_when_empty_summary_is_noop(
     tmp_path,
     monkeypatch,

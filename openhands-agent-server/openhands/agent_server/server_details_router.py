@@ -58,6 +58,7 @@ class ServerInfo(BaseModel):
     runtime_idle_timeout_seconds: float | None = Field(
         default_factory=lambda: get_runtime_idle_timeout_seconds()
     )
+    capabilities: list[str] = Field(default_factory=lambda: ["credential_binding_v1"])
     max_foreground_terminal_timeout_seconds: float | None = Field(
         default_factory=lambda: get_max_foreground_timeout_seconds()
     )

@@ -118,6 +118,28 @@ def test_save_writes_schema_version(
     assert data["schema_version"] == AGENT_PROFILE_SCHEMA_VERSION
 
 
+def test_load_migrates_untouched_v1_default_tools(
+    agent_store: AgentProfileStore,
+) -> None:
+    (agent_store.base_dir / "default.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "name": "default",
+                "revision": 0,
+                "llm_profile_ref": "default",
+                "tools": [],
+            }
+        )
+    )
+
+    profile = agent_store.load("default")
+
+    assert profile.schema_version == AGENT_PROFILE_SCHEMA_VERSION
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert profile.tools is None
+
+
 def test_save_persists_id_inside_file(
     agent_store: AgentProfileStore, openhands_profile: OpenHandsAgentProfile
 ) -> None:
