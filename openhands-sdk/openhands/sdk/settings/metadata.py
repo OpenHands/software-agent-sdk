@@ -20,6 +20,11 @@ class SettingsSectionMetadata(BaseModel):
     key: str
     label: str | None = None
     variant: str | None = None
+    fields_opt_in: bool = False
+    """When True, the section exports only nested fields that carry
+    ``SETTINGS_METADATA_KEY`` — per-field opt-in curation for models whose
+    fields are mostly internal (e.g. ``AgentContext``). The default False
+    keeps the emit-all-non-excluded behavior existing sections rely on."""
 
 
 class SettingsFieldMetadata(BaseModel):

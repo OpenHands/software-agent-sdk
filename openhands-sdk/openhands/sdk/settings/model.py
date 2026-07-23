@@ -1266,6 +1266,17 @@ class OpenHandsAgentSettings(AgentSettingsBase):
     agent_context: AgentContext = Field(
         default_factory=AgentContext,
         description="Context for the agent (skills, secrets, message suffixes).",
+        json_schema_extra={
+            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
+                key="agent_context",
+                label="Memory",
+                variant="openhands",
+                # AgentContext fields are mostly internal plumbing; only
+                # explicitly annotated ones (load_memory) surface in the
+                # schema.
+                fields_opt_in=True,
+            ).model_dump()
+        },
     )
     condenser: CondenserSettingsConfig = Field(
         default_factory=LLMSummarizingCondenserSettings,
@@ -2084,6 +2095,9 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                 for nested_key, nested_field in nested_model.model_fields.items():
                     if nested_field.exclude:
                         continue
+                    metadata = settings_metadata(nested_field)
+                    if explicit_section_metadata.fields_opt_in and metadata is None:
+                        continue
                     existing_field = seen_nested_fields.get(nested_key)
                     if existing_field is not None:
                         existing_choice_values = {
@@ -2094,7 +2108,6 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                                 existing_field.choices.append(choice)
                                 existing_choice_values.add(choice.value)
                         continue
-                    metadata = settings_metadata(nested_field)
                     default_value = None
                     if isinstance(section_default, BaseModel) and hasattr(
                         section_default, nested_key

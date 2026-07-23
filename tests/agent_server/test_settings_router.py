@@ -99,6 +99,16 @@ def test_get_agent_settings_schema():
     assert "confirmation_mode" not in verification_field_keys
     assert "security_analyzer" not in verification_field_keys
 
+    # agent_context is a fields_opt_in section: only the curated load_memory
+    # field surfaces, never the raw context model.
+    assert "agent_context" in section_keys
+    agent_context_section = next(
+        section for section in body["sections"] if section["key"] == "agent_context"
+    )
+    assert [field["key"] for field in agent_context_section["fields"]] == [
+        "agent_context.load_memory"
+    ]
+
 
 def test_get_conversation_settings_schema():
     client = TestClient(create_app(Config(static_files_path=None, session_api_keys=[])))
@@ -1012,6 +1022,22 @@ def test_patch_settings_deep_merges(client_with_settings):
     body = response.json()
     assert body["agent_settings"]["llm"]["model"] == "gpt-4o"
     assert body["llm_api_key_is_set"] is True
+
+
+def test_patch_settings_agent_context_load_memory_round_trips(client_with_settings):
+    """The persistent-memory toggle's wire path: a nested agent_context diff
+    persists and is served back by GET (what the GUI Memory page reads)."""
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"agent_context": {"load_memory": True}}},
+    )
+    assert response.status_code == 200
+
+    fetched = client_with_settings.get("/api/settings")
+
+    assert fetched.status_code == 200
+    agent_settings = fetched.json()["agent_settings"]
+    assert agent_settings["agent_context"]["load_memory"] is True
 
 
 # ── JSON Merge Patch (RFC 7386) unset semantics ─────────────────────────
