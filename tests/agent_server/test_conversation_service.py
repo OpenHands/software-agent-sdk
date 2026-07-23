@@ -3504,10 +3504,8 @@ class TestConversationTreeForkAndNavigate:
 class TestConversationSearchScaling:
     """Status-filtered search/count must not full-scan conversation state.
 
-    Regression coverage for #3142: ``_search_conversations`` and
-    ``_count_conversations`` used to call ``get_state()`` on *every* catalog
-    entry, so a status filter loaded and validated N full ``ConversationState``
-    objects to read one enum field per conversation.
+    Regression coverage for #3142, where both called ``get_state()`` on every
+    catalog entry to read one enum field per conversation.
     """
 
     @staticmethod
@@ -3564,7 +3562,7 @@ class TestConversationSearchScaling:
 
             assert len(page.items) == 5
             assert page.next_page_id is not None
-            # Before the fix this was 40: one full state load per conversation.
+            # Before the fix: 40, one full state load per conversation.
             assert len(loaded) == 5, (
                 f"expected 5 full state loads (the page), got {len(loaded)}"
             )
@@ -3613,8 +3611,8 @@ class TestConversationSearchScaling:
             base_state = conversations_dir / ids[0].hex / "base_state.json"
             payload = json.loads(base_state.read_text())
             payload["execution_status"] = ConversationExecutionStatus.FINISHED.value
-            # Pad so the size changes too, keeping the assertion independent of
-            # filesystem mtime granularity.
+            # Change the size too, so the test does not rely on mtime
+            # granularity.
             payload["max_iterations"] = 1234567
             base_state.write_text(json.dumps(payload))
 

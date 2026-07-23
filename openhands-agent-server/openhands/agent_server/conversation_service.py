@@ -498,55 +498,41 @@ def _register_agent_definitions(
 
 
 def _state_signature(base_state_path: str) -> tuple[int, int] | None:
-    """Cheap change-detection token for a persisted ``base_state.json``.
+    """Change-detection token for ``base_state.json``. ``None`` if unreadable.
 
-    Takes a ``str`` and calls ``os.stat`` directly: this runs once per
-    conversation on every status-filtered query, and building a ``Path`` costs
-    several times more than the syscall it wraps.
-
-    ``None`` means "no readable file", which is deliberately never equal to a
-    real signature, so a vanished or unreadable state always forces a re-read.
+    ``str`` + ``os.stat`` rather than ``Path``: this runs per conversation on
+    every status-filtered query, and ``Path`` costs more than the syscall.
     """
-    try:
+    with suppress(OSError):
         stat = os.stat(base_state_path)
-    except OSError:
-        return None
-    return (stat.st_mtime_ns, stat.st_size)
+        return (stat.st_mtime_ns, stat.st_size)
+    return None
 
 
 def _read_execution_status_sync(
     base_state_path: str,
 ) -> ConversationExecutionStatus | None:
-    """Read only ``execution_status`` out of a persisted base state.
+    """Read only ``execution_status`` from a persisted base state.
 
-    Validating the full ``ConversationState`` costs an agent, an LLM config, a
-    workspace, a secret registry and a stats blob -- all to reach one enum
-    field. The status filter only needs the field, so parse the JSON and stop
-    there.
+    Validating the full ``ConversationState`` costs an agent, LLM config,
+    workspace, secret registry and stats blob to reach one enum field.
     """
-    try:
+    with suppress(OSError, ValueError):
         with open(base_state_path, "rb") as f:
             payload = json.loads(f.read())
-    except (OSError, ValueError):
-        return None
-    try:
         return ConversationExecutionStatus(
             payload.get("execution_status", ConversationExecutionStatus.IDLE.value)
         )
-    except ValueError:
-        return None
+    return None
 
 
 @dataclass
 class _ConversationRecord:
     stored: StoredConversation
     execution_status: ConversationExecutionStatus
-    # Signature of ``base_state.json`` as of the last time ``execution_status``
-    # was read from disk. ``None`` marks the cached status as unverified, which
-    # forces a re-read on the next status query.
+    # Signature when execution_status was last read. None = unverified, re-read.
     state_signature: tuple[int, int] | None = None
-    # Memoised ``str(conversations_dir / <id>.hex / BASE_STATE)``. Filled on
-    # first use by ``ConversationService._base_state_path``.
+    # Memoised by _base_state_path.
     base_state_path: str | None = None
 
 
@@ -594,9 +580,8 @@ class ConversationService:
                 )
                 execution_status = ConversationExecutionStatus.IDLE
                 base_state_path = str(conversation_dir / BASE_STATE)
-                # Signature first: a write racing the read then leaves a
-                # signature that no longer matches the file, so the next status
-                # query re-reads instead of trusting a torn value.
+                # Signature before read, so a racing write leaves a stale
+                # signature and the next query re-reads rather than trusting it.
                 signature = _state_signature(base_state_path)
                 if signature is not None:
                     status = _read_execution_status_sync(base_state_path)
@@ -724,17 +709,13 @@ class ConversationService:
     def _refresh_persisted_statuses_sync(
         targets: list[tuple[UUID, str, tuple[int, int] | None]],
     ) -> dict[UUID, tuple[ConversationExecutionStatus | None, tuple[int, int] | None]]:
-        """Re-read ``execution_status`` for the given persisted conversations.
+        """Re-read ``execution_status`` for persisted conversations that changed.
 
-        ``targets`` is ``(conversation_id, base_state_path, cached_signature)``.
-        Conversations whose ``base_state.json`` is byte-for-byte where we last
-        left it are skipped entirely -- a ``stat()`` is orders of magnitude
-        cheaper than parsing the file.
-
-        Runs in a worker thread, so it takes plain values instead of touching
-        the catalog; the caller applies the returned statuses. A ``None``
-        status means "keep whatever you had", and a ``None`` signature marks
-        the entry unverified so the next query re-reads it.
+        ``targets`` is ``(conversation_id, base_state_path, cached_signature)``;
+        entries whose signature still matches are skipped without a read. Takes
+        plain values because it runs in a worker thread. In the result, a
+        ``None`` status means "keep the cached one" and a ``None`` signature
+        marks the entry unverified.
         """
         refreshed: dict[
             UUID, tuple[ConversationExecutionStatus | None, tuple[int, int] | None]
@@ -744,9 +725,8 @@ class ConversationService:
             if signature is not None and signature == cached_signature:
                 continue
             if signature is None:
-                # No readable state on disk (never started, or mid-delete).
-                # Keep the last known status but leave it unverified so a
-                # later query picks the file up once it lands.
+                # Unreadable (never started, or mid-delete): keep the cached
+                # status, unverified, so a later query retries.
                 refreshed[conversation_id] = (None, None)
                 continue
             status = _read_execution_status_sync(base_state_path)
@@ -756,12 +736,11 @@ class ConversationService:
         return refreshed
 
     async def _refresh_execution_statuses(self) -> None:
-        """Bring every cached ``execution_status`` in the catalog up to date.
+        """Bring every cached ``execution_status`` up to date.
 
-        This is the index behind status-filtered search and count. Live
-        conversations answer from memory, and persisted ones cost a ``stat()``
-        each plus a small JSON read for the few that actually changed -- so a
-        filtered query no longer loads N full ``ConversationState`` objects.
+        The index behind status-filtered search and count. Live conversations
+        answer from memory; persisted ones cost a ``stat()`` each and are
+        re-read only when changed, never as a full ``ConversationState``.
         """
         event_services = self._event_services
         if event_services is None:
@@ -771,12 +750,10 @@ class ConversationService:
         for conversation_id, record in list(self._conversation_records.items()):
             event_service = event_services.get(conversation_id)
             if event_service is not None and event_service.is_open():
-                # In-memory read, and authoritative: this process owns the
-                # conversation, so disk can only be staler than the service.
+                # Authoritative: we own it, so disk can only be staler.
                 state = await event_service.get_state()
                 record.execution_status = state.execution_status
-                # The live service autosaves, so any signature we hold is
-                # about to be invalidated anyway.
+                # Autosave will invalidate any signature we hold.
                 record.state_signature = None
                 continue
             targets.append(
@@ -790,7 +767,7 @@ class ConversationService:
         if not targets:
             return
 
-        # One thread hop for the whole catalog, not one per conversation.
+        # One thread hop for the catalog, not one per conversation.
         refreshed = await asyncio.to_thread(
             self._refresh_persisted_statuses_sync, targets
         )
@@ -967,8 +944,8 @@ class ConversationService:
             )
 
         if execution_status is not None:
-            # One batched index refresh, then an in-memory filter. Full state
-            # is loaded only for the page items below.
+            # Batched index refresh, then in-memory filter. Full state is
+            # loaded only for the page items below.
             await self._refresh_execution_statuses()
             records = [
                 (conversation_id, record)

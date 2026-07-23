@@ -1,16 +1,9 @@
 """Benchmark for issue #3142: O(N) full scan for conversation search and count.
 
-Builds a persistence directory holding ``N`` idle conversations, then times the
-public ``ConversationService`` read APIs that back ``GET /conversations`` and
-``GET /conversations/count``:
-
-* ``count_conversations()``                       -- unfiltered count
-* ``count_conversations(execution_status=IDLE)``  -- filtered count
-* ``search_conversations(limit=20)``              -- unfiltered first page
-* ``search_conversations(limit=20, status=IDLE)`` -- filtered first page
-
-The interesting property is the *slope*: a fixed-size page should cost the same
-whether the server holds 100 or 2000 conversations.
+Builds ``N`` idle conversations on disk, then times the ``ConversationService``
+reads behind ``GET /conversations`` and ``GET /conversations/count``, filtered
+and unfiltered. What matters is the slope: a fixed-size page should cost the
+same at 100 conversations as at 2000.
 
 Usage::
 
@@ -58,7 +51,7 @@ def _clone(template: Path, conversations_dir: Path, count: int) -> None:
         conversation_id = uuid4()
         target = conversations_dir / conversation_id.hex
         shutil.copytree(template, target)
-        # Rewrite the identity fields so every clone is a distinct conversation.
+        # Rewrite identity fields so each clone is a distinct conversation.
         for name in ("meta.json", "base_state.json"):
             path = target / name
             if not path.exists():
@@ -67,14 +60,13 @@ def _clone(template: Path, conversations_dir: Path, count: int) -> None:
             payload["id"] = str(conversation_id)
             if "persistence_dir" in payload:
                 payload["persistence_dir"] = str(target)
-            # Spread created_at/updated_at so sorting has real work to do.
+            # Spread timestamps so sorting has real work to do.
             if "created_at" in payload:
                 payload["created_at"] = f"2026-01-01T00:00:{i % 60:02d}.{i:06d}Z"
             if "updated_at" in payload:
                 payload["updated_at"] = f"2026-01-02T00:00:{i % 60:02d}.{i:06d}Z"
             path.write_text(json.dumps(payload))
-        # A live server keeps a lease file per conversation; drop the template's
-        # so every clone reads as unowned.
+        # Drop the template's lease so each clone reads as unowned.
         for stale in target.glob("*.lease"):
             stale.unlink()
 
