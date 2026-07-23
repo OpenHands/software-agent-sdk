@@ -269,6 +269,15 @@ def _prepare_request_workspace(
 logger = logging.getLogger(__name__)
 
 
+class InvalidParentConversation(ValueError):
+    """``parent_conversation_id`` is unknown, self-referential, or in
+    a different workspace."""
+
+
+def _same_workspace(a: LocalWorkspace, b: LocalWorkspace) -> bool:
+    return Path(a.working_dir).resolve() == Path(b.working_dir).resolve()
+
+
 def _resolve_agent_from_profile(
     profile_id: "UUID",
     cipher: "Cipher | None",
@@ -367,7 +376,9 @@ def _resolve_agent_from_profile(
 
 
 def _compose_conversation_info(
-    stored: StoredConversation, state: ConversationState
+    stored: StoredConversation,
+    state: ConversationState,
+    sub_conversation_ids: list[UUID] | None = None,
 ) -> ConversationInfo:
     # Use mode='json' so SecretStr in nested structures (e.g. LookupSecret.headers,
     # agent.agent_context.secrets) serialize to strings. Without it, validation
@@ -433,6 +444,8 @@ def _compose_conversation_info(
         updated_at=stored.updated_at,
         forked_from_conversation_id=stored.forked_from_conversation_id,
         forked_from_event_id=stored.forked_from_event_id,
+        parent_conversation_id=stored.parent_conversation_id,
+        sub_conversation_ids=sub_conversation_ids or [],
         current_model_id=current_model_id,
         available_models=available_models,
         supports_runtime_model_switch=supports_runtime_model_switch,
@@ -630,6 +643,23 @@ class ConversationService:
             base_state_file.read_text(), context=context
         )
 
+    def _children_index(self) -> dict[UUID, list[UUID]]:
+        """Reverse map parent_id -> child ids; rebuilt per call because the
+        catalog is mutated from several places and a cache could go stale."""
+        index: dict[UUID, list[UUID]] = {}
+        for child_id, record in self._conversation_records.items():
+            parent_id = record.stored.parent_conversation_id
+            if parent_id is not None:
+                index.setdefault(parent_id, []).append(child_id)
+        return index
+
+    def _children_of(self, conversation_id: UUID) -> list[UUID]:
+        return [
+            child_id
+            for child_id, record in self._conversation_records.items()
+            if record.stored.parent_conversation_id == conversation_id
+        ]
+
     async def activate_credential_binding(
         self,
         conversation_id: UUID,
@@ -688,18 +718,27 @@ class ConversationService:
         return bindings
 
     async def _conversation_info(
-        self, conversation_id: UUID, record: _ConversationRecord
+        self,
+        conversation_id: UUID,
+        record: _ConversationRecord,
+        children_index: dict[UUID, list[UUID]] | None = None,
     ) -> ConversationInfo | None:
         event_services = self._event_services
         if event_services is None:
             raise ValueError("inactive_service")
+
+        children = (
+            children_index.get(conversation_id, [])
+            if children_index is not None
+            else self._children_of(conversation_id)
+        )
 
         event_service = event_services.get(conversation_id)
         if event_service is not None and event_service.is_open():
             state = await event_service.get_state()
             record.execution_status = state.execution_status
             record.state_signature = None
-            return _compose_conversation_info(event_service.stored, state)
+            return _compose_conversation_info(event_service.stored, state, children)
 
         signature = _state_signature(self._base_state_path(conversation_id, record))
         state = await asyncio.to_thread(
@@ -709,7 +748,7 @@ class ConversationService:
             return None
         record.execution_status = state.execution_status
         record.state_signature = signature
-        return _compose_conversation_info(record.stored, state)
+        return _compose_conversation_info(record.stored, state, children)
 
     @staticmethod
     def _refresh_persisted_statuses_sync(
@@ -883,7 +922,9 @@ class ConversationService:
                 execution_status=state.execution_status,
             )
             self._conversation_records[conversation_id] = record
-            return _compose_conversation_info(event_service.stored, state)
+            return _compose_conversation_info(
+                event_service.stored, state, self._children_of(conversation_id)
+            )
         return await self._conversation_info(conversation_id, record)
 
     async def get_acp_conversation(
@@ -973,11 +1014,14 @@ class ConversationService:
 
         items: list[ConversationInfo] = []
         next_page_id = None
+        children_index = self._children_index()
         for conversation_id, record in records[start_index:]:
             if len(items) >= limit:
                 next_page_id = conversation_id.hex
                 break
-            conversation_info = await self._conversation_info(conversation_id, record)
+            conversation_info = await self._conversation_info(
+                conversation_id, record, children_index
+            )
             if conversation_info is not None:
                 items.append(conversation_info)
 
@@ -1135,7 +1179,9 @@ class ConversationService:
                     )
                     return (
                         _compose_conversation_info(
-                            existing_event_service.stored, state
+                            existing_event_service.stored,
+                            state,
+                            self._children_of(conversation_id),
                         ),
                         False,
                     )
@@ -1175,7 +1221,11 @@ class ConversationService:
                     if event_service is not None:
                         state = await event_service.get_state()
                         return (
-                            _compose_conversation_info(event_service.stored, state),
+                            _compose_conversation_info(
+                                event_service.stored,
+                                state,
+                                self._children_of(conversation_id),
+                            ),
                             False,
                         )
                 conversation_info = await self._conversation_info(
@@ -1186,6 +1236,26 @@ class ConversationService:
                     f"Persisted conversation {conversation_id} has no base state"
                 )
             return conversation_info, False
+
+        # The link is immutable after creation, so cycles beyond self-parent are
+        # impossible; allowing reparenting would require a real ancestor walk.
+        if request.parent_conversation_id is not None:
+            if request.parent_conversation_id == conversation_id:
+                raise InvalidParentConversation(
+                    "A conversation cannot be its own parent"
+                )
+            parent_record = self._conversation_records.get(
+                request.parent_conversation_id
+            )
+            if parent_record is None:
+                raise InvalidParentConversation(
+                    f"Parent conversation {request.parent_conversation_id} not found"
+                )
+            if not _same_workspace(parent_record.stored.workspace, request.workspace):
+                raise InvalidParentConversation(
+                    f"Parent conversation {request.parent_conversation_id} belongs "
+                    f"to a different workspace"
+                )
 
         # Profile resolution must happen before _prepare_request_workspace (which
         # asserts request.agent is not None) and before model_dump so the resolved
@@ -1423,6 +1493,8 @@ class ConversationService:
                     f"{conversation_id}: {e}"
                 )
             event_services.pop(conversation_id, None)
+            # Children are orphaned, not cascaded: parent_conversation_id is
+            # left dangling, like forked_from_conversation_id on source delete.
             self._conversation_records.pop(conversation_id, None)
             self._credential_bindings.pop(conversation_id, None)
 
@@ -1614,7 +1686,9 @@ class ConversationService:
             raise
 
         state = await fork_event_service.get_state()
-        return _compose_conversation_info(fork_event_service.stored, state)
+        return _compose_conversation_info(
+            fork_event_service.stored, state, self._children_of(fork_conv_id)
+        )
 
     async def navigate_conversation(
         self, conversation_id: UUID, *, event_id: str | None = None
@@ -1635,7 +1709,9 @@ class ConversationService:
 
         await event_service.navigate_to(event_id)
         state = await event_service.get_state()
-        return _compose_conversation_info(event_service.stored, state)
+        return _compose_conversation_info(
+            event_service.stored, state, self._children_of(conversation_id)
+        )
 
     async def __aenter__(self):
         self.conversations_dir.mkdir(parents=True, exist_ok=True)
