@@ -15,22 +15,23 @@ import json
 import re
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from typing import Any, Self
+from typing import Any, Final, Self
 
 import requests
 from fingerprint import Disposition, FingerprintGroup
 
 
-_GITHUB_API = "https://api.github.com"
+_GITHUB_API: Final[str] = "https://api.github.com"
 
 #: Locates the issue for a dedup_key. Searched via the code/issue search API.
-_KEY_MARKER = "<!-- selfheal-key:{key} -->"
-_KEY_MARKER_RE = re.compile(r"<!--\s*selfheal-key:([0-9a-f]{8,64})\s*-->")
+_KEY_MARKER: Final[str] = "<!-- selfheal-key:{key} -->"
 #: Carries the JSON state block.
-_STATE_RE = re.compile(r"<!--\s*selfheal-state:(\{.*?\})\s*-->", re.DOTALL)
+_STATE_RE: Final[re.Pattern[str]] = re.compile(
+    r"<!--\s*selfheal-state:(\{.*?\})\s*-->", re.DOTALL
+)
 
 
-@dataclass
+@dataclass(slots=True)
 class SelfHealState:
     """Durable per-fingerprint state, serialized into the issue body."""
 
@@ -116,9 +117,6 @@ def render_body(group: FingerprintGroup, state: SelfHealState) -> str:
 def issue_title(group: FingerprintGroup) -> str:
     ctx = group.to_prompt_context()
     return f"[self-heal] {ctx['error_class']} ({group.dedup_key})"
-
-
-# --- GitHub API (thin wrappers; pure logic above is what tests exercise) ------
 
 
 def _headers(token: str) -> dict[str, str]:

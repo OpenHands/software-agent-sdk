@@ -8,14 +8,15 @@ GitHub. Duplicate-run protection is the workflow's ``concurrency:`` group.
 """
 
 from collections.abc import Mapping
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Final
 
 from fingerprint import Disposition
 from issue_tracker import SelfHealState
 
 
-KILL_SWITCH_ENV = "POSTHOG_SELFHEAL_ENABLED"
+KILL_SWITCH_ENV: Final[str] = "POSTHOG_SELFHEAL_ENABLED"
 
 
 def kill_switch_enabled(env: Mapping[str, str]) -> bool:
@@ -26,19 +27,16 @@ def kill_switch_enabled(env: Mapping[str, str]) -> bool:
 def _parse_iso(value: str | None) -> datetime | None:
     if not value:
         return None
-    try:
+    with suppress(ValueError):
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    return None
 
 
 def in_cooldown(state: SelfHealState, now: datetime, window_hours: float) -> bool:
     """True if this fingerprint was remediated too recently to retry."""
     last = _parse_iso(state.last_remediation_at)
-    if last is None:
-        return False
-    return now - last < timedelta(hours=window_hours)
+    return last is not None and now - last < timedelta(hours=window_hours)
 
 
 def is_terminal(state: SelfHealState) -> bool:
