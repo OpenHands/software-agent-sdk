@@ -35,3 +35,4 @@ jobs:
                 behavior-test
                 integration-test
                 test-examples
+                security-scan

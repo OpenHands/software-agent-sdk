@@ -139,6 +139,43 @@ class AgentContext(BaseModel):
         ),
         json_schema_extra={"acp_compatible": True},
     )
+    load_memory: bool = Field(
+        default=False,
+        description=(
+            "Whether to load persistent agent memory (MEMORY.md indexes under "
+            "~/.openhands/memory/ and <workspace>/.openhands/memory/) into the "
+            "system prompt. Like load_project_skills, this flag is not "
+            "resolved by AgentContext itself (the workspace path is unknown "
+            "at validation time); LocalConversation resolves it lazily on the "
+            "first send_message() / run() and stores the result in "
+            "memory_context."
+        ),
+        json_schema_extra={"acp_compatible": True},
+    )
+    memory_context: str | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Resolved memory-index text rendered into the <MEMORY_CONTEXT> "
+            "prompt block. Populated via model_copy by LocalConversation when "
+            "load_memory is set; excluded from serialization because it is "
+            "re-resolved from disk each session and must not bloat persisted "
+            "conversation state."
+        ),
+        json_schema_extra={"acp_compatible": True},
+    )
+    disabled_skills: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of skills to EXCLUDE from this context — a deny-list applied "
+            "after every skill source is loaded (auto-loaded user/public, "
+            "explicit, and lazily-loaded project skills). A listed name absent "
+            "from the loaded set is a harmless no-op. [] (the default) keeps "
+            "every skill. This is the single, drift-tolerant skill-selection "
+            "mechanism (agent profiles set it from their own deny-list; #4017)."
+        ),
+        json_schema_extra={"acp_compatible": True},
+    )
     secrets: Mapping[str, SecretValue] | None = Field(
         default=None,
         description=(
@@ -218,29 +255,33 @@ class AgentContext(BaseModel):
 
     @model_validator(mode="after")
     def _load_auto_skills(self):
-        """Load user and/or legacy public skills if enabled."""
-        # Any marketplace registration opts the context out of the legacy
-        # public-skills path, even when the registration is resolution-only.
-        include_public = self.load_public_skills and not self.registered_marketplaces
-        if not self.load_user_skills and not include_public:
-            return self
+        """Load user/legacy-public skills if enabled, then apply ``disabled_skills``."""
+        include_public = self.load_public_skills
+        if self.load_user_skills or include_public:
+            auto_skills = load_available_skills(
+                work_dir=None,
+                include_user=self.load_user_skills,
+                include_project=False,
+                include_public=include_public,
+                marketplace_path=self.marketplace_path,
+            )
 
-        auto_skills = load_available_skills(
-            work_dir=None,
-            include_user=self.load_user_skills,
-            include_project=False,
-            include_public=include_public,
-            marketplace_path=self.marketplace_path,
-        )
+            # Explicit skills are authoritative; auto-loaded skills only fill gaps.
+            explicit_names = {skill.name for skill in self.skills}
+            for name in auto_skills:
+                if name in explicit_names:
+                    logger.debug(
+                        f"Skipping auto-loaded skill '{name}' "
+                        "(already in explicit skills)"
+                    )
+            self.skills = merge_skills_by_name(self.skills, auto_skills.values())
 
-        # Explicit skills are authoritative; auto-loaded skills only fill gaps.
-        explicit_names = {skill.name for skill in self.skills}
-        for name in auto_skills:
-            if name in explicit_names:
-                logger.debug(
-                    f"Skipping auto-loaded skill '{name}' (already in explicit skills)"
-                )
-        self.skills = merge_skills_by_name(self.skills, auto_skills.values())
+        # Deny-list: drop disabled skills from whatever ended up loaded (explicit
+        # + auto). A disabled name that isn't present is a harmless no-op — this
+        # is the drift-tolerant selection model that replaced allow-list refs.
+        if self.disabled_skills:
+            disabled = set(self.disabled_skills)
+            self.skills = [s for s in self.skills if s.name not in disabled]
         return self
 
     def get_secret_infos(self) -> list[dict[str, str | None]]:
@@ -296,6 +337,8 @@ class AgentContext(BaseModel):
         available_skills: list[Skill] = []
         for s in self.skills:
             if s.is_agentskills_format or s.trigger is not None:
+                # Path rules force disable_model_invocation (Skill validator), so
+                # they fall out here — injected only on file-touch, never listed.
                 if not s.disable_model_invocation:
                     available_skills.append(s)
             else:
@@ -339,6 +382,7 @@ class AgentContext(BaseModel):
             repo_skills=tuple((s.name, s.content) for s in data.repo_skills),
             available_skills_prompt=data.available_skills_prompt or None,
             custom_suffix=self.system_message_suffix or None,
+            memory_context=self.memory_context or None,
             secret_infos=tuple(
                 (info["name"] or "", info["description"]) for info in data.secret_infos
             ),
@@ -516,3 +560,48 @@ class AgentContext(BaseModel):
         if user_message_suffix:
             return TextContent(text=user_message_suffix), []
         return None
+
+    def get_tool_use_suffix(
+        self, file_path: str, skip_skill_names: list[str]
+    ) -> tuple[TextContent, list[str]] | None:
+        """Match ``PathTrigger`` skills ("rules") against a touched file path.
+
+        The path-based counterpart of :meth:`get_user_message_suffix`. Returns
+        the rendered rule content and the rules that fired, or None.
+        ``skip_skill_names`` suppresses rules already injected (dedup).
+        """
+        if not file_path:
+            return None
+
+        recalled_knowledge: list[SkillKnowledge] = []
+        for skill in self.skills:
+            if not isinstance(skill, Skill) or skill.name in skip_skill_names:
+                continue
+            if pattern := skill.match_path_trigger(file_path):
+                logger.info(
+                    "Rule '%s' triggered by path match '%s' for '%s'",
+                    skill.name,
+                    pattern,
+                    file_path,
+                )
+                recalled_knowledge.append(
+                    SkillKnowledge(
+                        name=skill.name,
+                        trigger=pattern,
+                        content=skill.content,
+                        location=skill.source,
+                    )
+                )
+
+        if not recalled_knowledge:
+            return None
+
+        blocks = [
+            "<EXTRA_INFO>\n"
+            "The following rule applies because a file you touched matches "
+            f'"{k.trigger}". Follow it when working with matching files.\n'
+            + (f"Rule location: {k.location}\n" if k.location else "")
+            + f"\n{k.content}\n</EXTRA_INFO>"
+            for k in recalled_knowledge
+        ]
+        return TextContent(text="\n".join(blocks)), [k.name for k in recalled_knowledge]

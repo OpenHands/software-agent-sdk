@@ -36,6 +36,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.credential import CredentialSyncError
 from openhands.sdk.event import AgentErrorEvent, Event
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import (
@@ -46,7 +47,10 @@ from openhands.sdk.event.llm_convertible import (
 from openhands.sdk.io.local import LocalFileStore
 from openhands.sdk.io.memory import InMemoryFileStore
 from openhands.sdk.llm import MessageToolCall, TextContent
+from openhands.sdk.mcp.config import coerce_mcp_config
 from openhands.sdk.security.confirmation_policy import NeverConfirm
+from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal import TerminalAction, TerminalObservation
 from tests.agent_server.stress.scripts import (
@@ -1777,6 +1781,45 @@ class TestEventServiceSaveMeta:
         assert loaded.updated_at == original_updated_at
 
     @pytest.mark.asyncio
+    async def test_save_meta_round_trips_agent_definition_mcp_secrets(
+        self, sample_stored_conversation, tmp_path
+    ):
+        cipher = Cipher("stored-conversation-mcp-secret")
+        sample_stored_conversation.agent_definitions = [
+            AgentDefinition(
+                name="web-researcher",
+                mcp_config=coerce_mcp_config(
+                    {
+                        "tavily": {
+                            "command": "npx",
+                            "args": ["-y", "tavily-mcp@0.2.1"],
+                            "env": {"TAVILY_API_KEY": "${TAVILY_API_KEY}"},
+                        }
+                    }
+                ),
+            )
+        ]
+        service = EventService(
+            stored=sample_stored_conversation,
+            conversations_dir=tmp_path,
+            cipher=cipher,
+        )
+        service.conversation_dir.mkdir(parents=True)
+
+        await service.save_meta()
+
+        payload = (service.conversation_dir / "meta.json").read_text()
+        assert "${TAVILY_API_KEY}" not in payload
+        loaded = StoredConversation.model_validate_json(
+            payload,
+            context={"cipher": cipher},
+        )
+        assert loaded.agent_definitions[0].mcp_config is not None
+        env = loaded.agent_definitions[0].mcp_config["tavily"].env
+        assert env is not None
+        assert env["TAVILY_API_KEY"].get_secret_value() == "${TAVILY_API_KEY}"
+
+    @pytest.mark.asyncio
     async def test_switch_acp_model_persists_to_meta(self, tmp_path):
         """switch_acp_model mirrors the new model into meta.json.
 
@@ -2267,6 +2310,25 @@ class TestEventServiceConcurrentSubscriptions:
             assert isinstance(events[0], ConversationStateUpdateEvent)
 
     @pytest.mark.asyncio
+    async def test_subscription_receives_state_when_conversation_not_open(
+        self, event_service
+    ):
+        """Inactive services still need an initial state event for WS readiness."""
+        received_events: list[Event] = []
+
+        class TestSubscriber(Subscriber[Event]):
+            async def __call__(self, event: Event):
+                received_events.append(event)
+
+        await event_service.subscribe_to_events(TestSubscriber())
+
+        assert len(received_events) == 1
+        event = received_events[0]
+        assert isinstance(event, ConversationStateUpdateEvent)
+        assert event.key == "execution_status"
+        assert event.value == ConversationExecutionStatus.IDLE
+
+    @pytest.mark.asyncio
     async def test_slow_subscriber_does_not_block_lock(
         self, event_service, mock_conversation_with_real_lock
     ):
@@ -2575,6 +2637,26 @@ class TestEventServiceClose:
         conversation.close.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_exit_closes_after_meta_save_failure(self, event_service):
+        event_service.save_meta = AsyncMock(side_effect=OSError("save failed"))
+        event_service.close = AsyncMock()
+
+        with pytest.raises(OSError, match="save failed"):
+            await event_service.__aexit__(None, None, None)
+
+        event_service.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_exit_prioritizes_credential_close_failure(self, event_service):
+        event_service.save_meta = AsyncMock(side_effect=OSError("save failed"))
+        event_service.close = AsyncMock(
+            side_effect=CredentialSyncError("broker unavailable")
+        )
+
+        with pytest.raises(CredentialSyncError, match="broker unavailable"):
+            await event_service.__aexit__(None, None, None)
+
+    @pytest.mark.asyncio
     async def test_close_pauses_before_closing_conversation(self, event_service):
         """close() must pause an in-flight run before calling conversation.close().
         If close() ran first, the still-active run loop would race with executor
@@ -2728,6 +2810,9 @@ class TestEventServiceClose:
 
             def fork(self, **kwargs):
                 return mock.fork(**kwargs)
+
+            def navigate_to(self, event_id):
+                return mock.navigate_to(event_id)
 
         conv = SyncOnlyConversation()
         event_service._conversation = conv  # type: ignore[assignment]

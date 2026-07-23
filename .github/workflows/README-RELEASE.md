@@ -11,7 +11,8 @@ reusable workflows.
 |---|---|---|
 | **release.yml** | push to `main` / `release/**` | Calls `release-actions`' `release-please.yml`. Maintains a **draft** `chore(main): release X.Y.Z` PR that bumps every package version and aggregates the changelog. Merging it tags `vX.Y.Z` and publishes the GitHub release. |
 | **pr.yml** | `pull_request_target` | Calls `release-actions`' `pr-title.yml`. Lints PR titles for Conventional Commits and applies a `type: <type>` label used for release-note grouping. |
-| **release-ready.yml** | `pull_request_target: ready_for_review` | Calls `release-actions`' `release-ready.yml`. When the draft release PR is marked ready, labels it `release: ready` + `behavior-test`, `integration-test`, `test-examples`, and notifies Slack. |
+| **release-ready.yml** | `pull_request_target: ready_for_review` | Calls `release-actions`' `release-ready.yml`. When the draft release PR is marked ready, labels it `release: ready` + `behavior-test`, `integration-test`, `test-examples`, `security-scan`, and notifies Slack. |
+| **security-scan.yml** | `pull_request: labeled` (`security-scan`) / `release/**` PRs / dispatch | Guards the release diff (last tag → this PR) against approval drift (TOCTOU) and risky dependency changes. |
 | **pypi-release.yml** | `release: published` | Builds and publishes all packages to PyPI. Unchanged. |
 | **release-binaries.yml** | `release: published` + push to `main` | Builds/smoke-tests multi-arch agent-server binaries and attaches them to the release. Unchanged. |
 | **version-bump-prs.yml** | dispatched by `pypi-release.yml` | Opens downstream version-bump PRs in `OpenHands` and `openhands-cli`. Unchanged. |
@@ -64,11 +65,12 @@ Review it and fix any deprecation deadlines if they exist.
 ### 3. Mark it "Ready for review" to cut the release
 
 Clicking **Ready for review** is the deliberate release-cut signal. It fires
-`release-ready.yml`, which labels the PR `release: ready` plus the three
+`release-ready.yml`, which labels the PR `release: ready` plus the four
 test-trigger labels and posts to Slack:
 
 - `integration-test` and `behavior-test` → `integration-runner.yml`
 - `test-examples` → `run-examples.yml`
+- `security-scan` → `security-scan.yml`
 
 Confirm those suites pass, and confirm any merged `release-note-required` PRs are
 accurately called out in the notes.
@@ -90,8 +92,19 @@ Because release-please acts as a GitHub App (org secrets `RELEASE_APP_ID` /
 
 ### 5. Post-release
 
-- Review and merge the auto-created version-bump PRs in `OpenHands` and
-  `openhands-cli`.
+- Review and merge the auto-created version-bump PRs in the downstream repos:
+  - **[OpenHands](https://github.com/OpenHands/OpenHands)** — bumps
+    `openhands-sdk`, `openhands-tools`, and `openhands-agent-server`;
+  - **[openhands-cli](https://github.com/OpenHands/openhands-cli)** — bumps
+    `openhands-sdk` and `openhands-tools`;
+  - **[automation](https://github.com/OpenHands/automation)** — bumps
+    `openhands-sdk` and `openhands-workspace`; opened with a `fix:` title so the
+    repo's release-please cuts a patch release, publishing an
+    `openhands-automation` build pinned to this SDK (which the agent-canvas
+    `sdk-version-sync` check requires). Merge its release-please PR too;
+  - **[typescript-client](https://github.com/OpenHands/typescript-client)** —
+    updates the pinned `agent-server` image tag (`config.agentServerImage`),
+    waiting on the GHCR image rather than PyPI.
 - Run evaluation on OpenHands Index (manual).
 - Announce the release.
 

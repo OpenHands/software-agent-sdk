@@ -27,7 +27,7 @@ from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
 from threading import RLock
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.logger import get_logger
@@ -250,13 +250,6 @@ def agent_definition_to_factory(
                 )
             tools.append(Tool(name=tool_name))
 
-        # Build MCP config if servers are defined.
-        # Key is "mcpServers" (camelCase) to match the MCPConfig schema
-        # (see sdk/plugin/types.py McpServersDict alias and Agent.mcp_config examples).
-        mcp_config: dict[str, Any] = {}
-        if agent_def.mcp_servers:
-            mcp_config = {"mcpServers": agent_def.mcp_servers}
-
         # Sub-agents get a summarizing condenser by default (parity with the
         # top-level agent) so deep runs auto-compact instead of erroring on context
         # overflow. The condenser LLM needs a distinct usage_id or its tokens get
@@ -285,7 +278,7 @@ def agent_definition_to_factory(
             llm=llm,
             tools=tools,
             agent_context=agent_context,
-            mcp_config=mcp_config,
+            mcp_config=agent_def.mcp_config or {},
             condenser=condenser,
         )
 

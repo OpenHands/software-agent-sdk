@@ -1,3 +1,4 @@
+import copy
 from abc import ABC
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
@@ -68,7 +69,7 @@ def _shallow_expand_circular_ref(ref_def: dict[str, Any]) -> dict[str, Any]:
 
 
 def _process_schema_node(
-    node: dict[str, Any],
+    node: dict[str, Any] | bool,
     defs: dict[str, Any],
     _visiting: frozenset[str] | None = None,
 ) -> dict[str, Any]:
@@ -103,6 +104,10 @@ def _process_schema_node(
     if _visiting is None:
         _visiting = frozenset()
 
+    # JSON Schema booleans: `true` accepts any value, `false` accepts none.
+    if isinstance(node, bool):
+        return {} if node else {"not": {}}
+
     # Handle $ref references
     if "$ref" in node:
         ref_path = node["$ref"]
@@ -133,7 +138,11 @@ def _process_schema_node(
 
     # Handle anyOf (often used for optional fields with None)
     if "anyOf" in node:
-        non_null_types = [t for t in node["anyOf"] if t.get("type") != "null"]
+        non_null_types = [
+            t
+            for t in node["anyOf"]
+            if not isinstance(t, dict) or t.get("type") != "null"
+        ]
         if non_null_types:
             # Process the first non-null type
             processed = _process_schema_node(non_null_types[0], defs, _visiting)
@@ -176,6 +185,12 @@ class Schema(DiscriminatedUnionMixin):
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
 
     @classmethod
+    def _discriminator_field_names(cls) -> set[str]:
+        return set(DiscriminatedUnionMixin.model_fields.keys()) | set(
+            DiscriminatedUnionMixin.model_computed_fields.keys()
+        )
+
+    @classmethod
     def to_mcp_schema(cls) -> dict[str, Any]:
         """Convert to JSON schema format compatible with MCP."""
         full_schema = cls.model_json_schema()
@@ -185,15 +200,42 @@ class Schema(DiscriminatedUnionMixin):
 
         # Remove discriminator fields from properties (not for LLM)
         # Need to exclude both regular fields and computed fields (like 'kind')
-        exclude_fields = set(DiscriminatedUnionMixin.model_fields.keys()) | set(
-            DiscriminatedUnionMixin.model_computed_fields.keys()
-        )
+        exclude_fields = cls._discriminator_field_names()
+        explicit_mcp_aliases = {
+            field_info.alias
+            for field_name, field_info in cls.model_fields.items()
+            if field_info.alias and field_info.alias != field_name
+        }
         for f in exclude_fields:
-            if "properties" in result and f in result["properties"]:
+            if (
+                "properties" in result
+                and f in result["properties"]
+                and f not in explicit_mcp_aliases
+            ):
                 result["properties"].pop(f)
                 # Also remove from required if present
                 if "required" in result and f in result["required"]:
                     result["required"].remove(f)
+
+        alias_specs: dict[str, dict[str, Any]] = getattr(
+            cls, "__mcp_schema_alias_specs__", {}
+        )
+        if alias_specs:
+            result.setdefault("properties", {})
+            for alias, spec in alias_specs.items():
+                result["properties"][alias] = _process_schema_node(
+                    copy.deepcopy(spec),
+                    full_schema.get("$defs", {}),
+                )
+
+            alias_required: set[str] = getattr(
+                cls, "__mcp_schema_alias_required__", set()
+            )
+            if alias_required:
+                required_fields = result.setdefault("required", [])
+                for alias in alias_required:
+                    if alias not in required_fields:
+                        required_fields.append(alias)
 
         return result
 
@@ -213,12 +255,34 @@ class Schema(DiscriminatedUnionMixin):
         required = set(schema.get("required", []) or [])
 
         fields: dict[str, tuple] = {}
+        discriminator_fields = cls._discriminator_field_names()
+        used_field_names = set(props.keys())
+        has_aliased_field = False
+        alias_specs: dict[str, dict[str, Any]] = {}
+        alias_required: set[str] = set()
         for fname, spec in props.items():
             spec = spec if isinstance(spec, dict) else {}
             tp = py_type(spec)
 
             # Add description if present
             desc: str | None = spec.get("description")
+            field_name = fname
+            field_alias = None
+            if fname in discriminator_fields:
+                # MCP tool argument names are user-defined JSON object keys. If
+                # one collides with OpenHands' internal discriminator (e.g.
+                # "kind"), keep the external name as an alias and use a safe
+                # internal field name for Pydantic.
+                field_alias = fname
+                has_aliased_field = True
+                alias_specs[fname] = copy.deepcopy(spec)
+                if fname in required:
+                    alias_required.add(fname)
+                field_name = f"mcp_arg_{fname}"
+                suffix = 2
+                while field_name in used_field_names or field_name in fields:
+                    field_name = f"mcp_arg_{fname}_{suffix}"
+                    suffix += 1
 
             # Required → bare type, ellipsis sentinel
             # Optional → make nullable via `| None`, default None
@@ -229,14 +293,39 @@ class Schema(DiscriminatedUnionMixin):
                 anno = tp | None  # allow explicit null in addition to omission
                 default = None
 
-            fields[fname] = (
+            field_kwargs: dict[str, Any] = {}
+            if desc:
+                field_kwargs["description"] = desc
+            if field_alias:
+                field_kwargs["alias"] = field_alias
+
+            fields[field_name] = (
                 anno,
-                Field(default=default, description=desc)
-                if desc
-                else Field(default=default),
+                Field(default=default, **field_kwargs),
             )
 
-        return create_model(model_name, __base__=cls, **fields)  # type: ignore[return-value]
+        field_definitions: Any = fields
+        if has_aliased_field:
+            model = create_model(  # type: ignore[reportCallIssue, return-value]
+                model_name,
+                __base__=cls,
+                __config__=ConfigDict(
+                    extra="forbid",
+                    frozen=True,
+                    populate_by_name=True,
+                ),
+                **field_definitions,
+            )
+        else:
+            model = create_model(  # type: ignore[reportCallIssue, return-value]
+                model_name,
+                __base__=cls,
+                **field_definitions,
+            )
+        if alias_specs:
+            setattr(model, "__mcp_schema_alias_specs__", alias_specs)
+            setattr(model, "__mcp_schema_alias_required__", alias_required)
+        return model
 
 
 class Action(Schema, ABC):

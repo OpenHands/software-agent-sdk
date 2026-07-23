@@ -46,6 +46,7 @@ def build_seed_profile(
             acp_model=agent_settings.acp_model,
             acp_session_mode=agent_settings.acp_session_mode,
             acp_prompt_timeout=agent_settings.acp_prompt_timeout,
+            acp_startup_timeout=agent_settings.acp_startup_timeout,
             # Settings store the command as a token list; the profile holds a
             # single (re-parseable) string. Empty list => use the server default.
             acp_command=(
@@ -55,17 +56,25 @@ def build_seed_profile(
             ),
             acp_args=list(agent_settings.acp_args) or None,
             mcp_server_refs=None,
+            # ACP profiles carry no skill field — the subprocess owns its context.
         )
     context = agent_settings.agent_context
     return OpenHandsAgentProfile(
         name=name,
         llm_profile_ref=active_llm_profile or SEED_PROFILE_NAME,
         agent=agent_settings.agent,
-        skills=list(context.skills),
+        # Verbatim: preserves explicit toolsets; None stays "server default".
+        tools=agent_settings.tools,
+        # Deny-list defaults to [] — the seeded default profile launches with all
+        # discovered skills, matching the "all skills by default" model. No names
+        # are frozen, so nothing can dangle at launch (the freeze-by-name seed
+        # was the #4017 launch-break; the deny-list removes that failure mode).
+        disabled_skills=[],
         system_message_suffix=context.system_message_suffix,
         condenser=agent_settings.condenser,
         verification=build_profile_verification(agent_settings.verification),
         enable_sub_agents=agent_settings.enable_sub_agents,
+        enable_switch_llm_tool=agent_settings.enable_switch_llm_tool,
         tool_concurrency_limit=agent_settings.tool_concurrency_limit,
         mcp_server_refs=None,
     )
