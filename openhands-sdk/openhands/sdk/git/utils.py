@@ -524,11 +524,17 @@ def is_git_url(source: str) -> bool:
         True
         >>> is_git_url("git@github.com:owner/repo.git")
         True
+        >>> is_git_url("ssh://git@github.com/owner/repo.git")
+        True
         >>> is_git_url("/local/path")
         False
     """
     # HTTPS/HTTP URLs to git repositories
     if source.startswith(("https://", "http://")):
+        return True
+
+    # SSH URL with explicit scheme: ssh://git@host[:port]/path
+    if source.startswith("ssh://"):
         return True
 
     # SSH format: git@host:path or user@host:path
