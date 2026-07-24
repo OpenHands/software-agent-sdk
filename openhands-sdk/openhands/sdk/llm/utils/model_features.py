@@ -149,6 +149,10 @@ PROMPT_CACHE_MODELS: list[str] = [
     "claude-opus-4-6",
     "claude-opus-4-7",
     "claude-opus-4-8",
+    # Claude Sonnet 5 supports prompt caching but is not covered by any
+    # "claude-sonnet-4*" entry above; without this, every input token bills
+    # uncached, which cancels the tier's price advantage on agent workloads.
+    "claude-sonnet-5",
     # https://www.anthropic.com/news/claude-fable-5
     # Listed explicitly until LiteLLM metadata recognizes it.
     "claude-fable-5",
