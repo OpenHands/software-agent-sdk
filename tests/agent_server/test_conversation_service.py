@@ -33,6 +33,7 @@ from openhands.agent_server.models import (
     StoredConversation,
     UpdateConversationRequest,
 )
+from openhands.agent_server.persistence import FileSettingsStore, PersistedSettings
 from openhands.agent_server.utils import safe_rmtree as _safe_rmtree
 from openhands.sdk import LLM, Agent, Message
 from openhands.sdk.agent.acp_agent import ACPAgent
@@ -47,6 +48,7 @@ from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.llm import MessageToolCall, TextContent
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.mcp.config import dump_mcp_config
 from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
@@ -153,6 +155,47 @@ async def persisted_conversation(tmp_path) -> tuple[Path, UUID]:
     async with ConversationService(conversations_dir=conversations_dir) as service:
         conversation_info, _ = await service.start_conversation(request)
     return conversations_dir, conversation_info.id
+
+
+@pytest.mark.parametrize(
+    ("requested", "active", "available", "expected"),
+    [
+        ("titles", "default", ("titles", "default"), "titles"),
+        (None, "default", ("default",), "default"),
+        ("deleted", "default", ("default",), "default"),
+        ("deleted", "missing", (), None),
+    ],
+)
+@pytest.mark.asyncio
+async def test_start_conversation_resolves_title_llm_profile(
+    tmp_path: Path,
+    requested: str | None,
+    active: str | None,
+    available: tuple[str, ...],
+    expected: str | None,
+) -> None:
+    settings_store = FileSettingsStore(tmp_path / "settings")
+    settings_store.save(PersistedSettings(active_profile=active))
+    profile_store = LLMProfileStore(tmp_path / "profiles")
+    for name in available:
+        profile_store.save(name, LLM(model="gpt-4o-mini", usage_id=name))
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="agent"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace)),
+        confirmation_policy=NeverConfirm(),
+        title_llm_profile=requested,
+    )
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations",
+        settings_store=settings_store,
+        llm_profile_store=profile_store,
+    ) as service:
+        info, _ = await service.start_conversation(request)
+        stored = service._conversation_records[info.id].stored
+        assert stored.title_llm_profile == expected
 
 
 @pytest.mark.asyncio

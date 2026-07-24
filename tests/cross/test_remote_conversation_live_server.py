@@ -196,6 +196,69 @@ def test_prepare_for_sandbox_pause_drains_conversations(server_env):
     assert conversation_id in server_env["conversation_service"]._conversation_records
 
 
+def test_conversation_start_resolves_active_title_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openhands.agent_server import (
+        config as config_module,
+        conversation_service as service_module,
+    )
+    from openhands.agent_server.persistence import reset_stores
+
+    monkeypatch.setattr(config_module, "_default_config", None)
+    monkeypatch.setattr(service_module, "_conversation_service", None)
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
+    reset_stores()
+    try:
+        with live_server_env(tmp_path, monkeypatch) as env:
+            title_llm = LLM(model="gpt-4o-mini", usage_id="title-default")
+            agent = Agent(
+                llm=LLM(
+                    model="gpt-4o-mini",
+                    api_key=SecretStr("test"),
+                    usage_id="agent",
+                ),
+                tools=[],
+            )
+            with httpx.Client(base_url=env["host"], timeout=10.0) as client:
+                save = client.post(
+                    "/api/profiles/default",
+                    json={
+                        "llm": title_llm.model_dump(
+                            mode="json", context={"expose_secrets": True}
+                        )
+                    },
+                )
+                save.raise_for_status()
+                activate = client.post("/api/profiles/default/activate")
+                activate.raise_for_status()
+
+                start = client.post(
+                    "/api/conversations",
+                    json={
+                        "agent": agent.model_dump(
+                            mode="json", context={"expose_secrets": True}
+                        ),
+                        "workspace": {
+                            "working_dir": str(env["workspace_path"]),
+                        },
+                        "title_llm_profile": "deleted",
+                        "autotitle": False,
+                    },
+                )
+                start.raise_for_status()
+
+            conversation_id = UUID(start.json()["id"])
+            stored = (
+                env["conversation_service"]
+                ._conversation_records[conversation_id]
+                .stored
+            )
+            assert stored.title_llm_profile == "default"
+    finally:
+        reset_stores()
+
+
 @pytest.fixture
 def server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[dict]:
     with live_server_env(tmp_path, monkeypatch) as env:
