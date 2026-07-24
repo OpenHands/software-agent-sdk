@@ -29,7 +29,7 @@ from openhands.sdk.agent.acp_file_credentials import (
     is_valid_codex_auth,
 )
 from openhands.sdk.conversation.base import BaseConversation
-from openhands.sdk.conversation.events_list_base import EventsListBase
+from openhands.sdk.conversation.events_list_base import EventsListBase, readable_events
 from openhands.sdk.conversation.goal import (
     GoalController,
     GoalDone,
@@ -1070,7 +1070,13 @@ class EventService:
             # the advanced HEAD, so the leaf can lag the on-disk events. (Remote
             # branching is unsupported — #3749 — so there are no abandoned
             # branches to exclude here anyway.)
-            unmatched_actions = ConversationState.get_unmatched_actions(state.events)
+            #
+            # Read it event by event: an unreadable event here would otherwise
+            # raise, and the startup scan drops the whole conversation on any
+            # exception, 404ing a conversation whose other events are all intact
+            # (#4080).
+            events = readable_events(state.events)
+            unmatched_actions = ConversationState.get_unmatched_actions(events)
             if unmatched_actions:
                 first_action = unmatched_actions[0]
                 # Skip if any observation-like event already exists for this
@@ -1079,7 +1085,7 @@ class EventService:
                 already_observed = any(
                     isinstance(e, ObservationBaseEvent)
                     and e.tool_call_id == first_action.tool_call_id
-                    for e in state.events
+                    for e in events
                 )
                 if not already_observed:
                     error_event = AgentErrorEvent(

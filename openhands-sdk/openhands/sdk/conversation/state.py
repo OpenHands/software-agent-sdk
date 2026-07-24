@@ -13,6 +13,7 @@ from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.view import View
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.event_store import ROOT_PARENT_ID, EventLog
+from openhands.sdk.conversation.events_list_base import read_event_or_none
 from openhands.sdk.conversation.fifo_lock import FIFOLock
 from openhands.sdk.conversation.persistence_const import BASE_STATE, EVENTS_DIR
 from openhands.sdk.conversation.secret_registry import SecretRegistry
@@ -288,7 +289,12 @@ class ConversationState(OpenHandsModel):
 
         artifacts = (ConversationStateUpdateEvent, ConversationErrorEvent)
         for i in range(len(self._events) - 1, -1, -1):
-            if not isinstance(self._events[i], artifacts):
+            event = read_event_or_none(self._events, i)
+            # An event that cannot be deserialized is not one of the artifact kinds
+            # (both are core, always registered), so it is a real tail event: name
+            # it the leaf and let ``path_to_root`` skip over it (#4080). Reading it
+            # strictly here would fail the whole load on one bad trailing event.
+            if event is None or not isinstance(event, artifacts):
                 return self._events.get_id(i)
         return None
 
