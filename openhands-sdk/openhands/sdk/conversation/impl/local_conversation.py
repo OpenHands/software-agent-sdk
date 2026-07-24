@@ -230,8 +230,8 @@ class LocalConversation(BaseConversation):
                 semantics: skills override by name (last wins), MCP config
                 override by key (last wins), hooks concatenate (all run).
             persistence_dir: Directory for persisting conversation state and events.
-                Can be a string path or Path object. When file_store is provided,
-                this value is still used to derive environment observation paths.
+                Can be a string path or Path object. Mutually exclusive with
+                file_store.
             conversation_id: Optional ID for the conversation. If provided, will
                       be used to identify the conversation. The user might want to
                       suffix their persistent filestore with this ID.
@@ -271,8 +271,7 @@ class LocalConversation(BaseConversation):
                 to the conversation's own ID. Sub-conversations set this to
                 the parent's ID to share the same cache shard.
             file_store: Optional FileStore to use for conversation state and EventLog
-                persistence. If provided, this takes precedence over persistence_dir
-                for state and EventLog storage.
+                persistence. Mutually exclusive with persistence_dir.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially

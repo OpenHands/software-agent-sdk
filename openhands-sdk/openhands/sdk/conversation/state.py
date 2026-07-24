@@ -474,10 +474,8 @@ class ConversationState(OpenHandsModel):
             id: Unique conversation identifier
             agent: The Agent to use (tools must match persisted on restore)
             workspace: Working directory for agent operations
-            persistence_dir: Directory for persisting state and events when
-                file_store is not provided. When file_store is provided, this
-                value is still stored on the state and used for environment
-                observation paths.
+            persistence_dir: Directory for persisting state and events.
+                Mutually exclusive with file_store.
             max_iterations: Maximum iterations per run
             stuck_detection: Whether to enable stuck detection
             cipher: Optional cipher for encrypting/decrypting secrets in
@@ -486,28 +484,32 @@ class ConversationState(OpenHandsModel):
                     are redacted (lost) on serialization.
             tags: Optional key-value tags for the conversation. Keys must be
                   lowercase alphanumeric, values up to 256 characters.
-            file_store: Optional FileStore to use for state and EventLog
-                persistence. If provided, this takes precedence over
-                persistence_dir for state and EventLog storage.
+            file_store: Optional FileStore to use for persistence. Mutually
+                    exclusive with persistence_dir. When provided, callers
+                    can inject any FileStore implementation (e.g. S3,
+                    database-backed). When None, a LocalFileStore is created
+                    from persistence_dir (or InMemoryFileStore if
+                    persistence_dir is also None).
 
         Returns:
             ConversationState ready for use
 
         Raises:
-            ValueError: If conversation ID or tools mismatch on restore
+            ValueError: If conversation ID or tools mismatch on restore, or
+                if both file_store and persistence_dir are supplied.
             ValidationError: If agent or other fields fail Pydantic validation
         """
+        if file_store is not None and persistence_dir is not None:
+            raise ValueError(
+                "file_store and persistence_dir are mutually exclusive. "
+                "When injecting a custom FileStore, do not pass persistence_dir."
+            )
         if file_store is None:
-            if persistence_dir:
-                file_store = LocalFileStore(
-                    persistence_dir, cache_limit_size=max_iterations
-                )
-            else:
-                logger.warning(
-                    "No persistence_dir provided; falling back to InMemoryFileStore. "
-                    "EventLog data will not persist across requests."
-                )
-                file_store = InMemoryFileStore()
+            file_store = (
+                LocalFileStore(persistence_dir, cache_limit_size=max_iterations)
+                if persistence_dir
+                else InMemoryFileStore()
+            )
 
         try:
             base_text = file_store.read(BASE_STATE)
