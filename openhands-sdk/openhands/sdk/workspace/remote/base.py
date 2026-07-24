@@ -110,6 +110,13 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         try:
             kwargs = next(generator)
             while True:
+                # Merge session-level headers into every request so that the
+                # X-Session-API-Key (and any future default headers) are
+                # always present, regardless of what the generator yields.
+                merged = dict(self._headers)
+                if "headers" in kwargs:
+                    merged.update(kwargs["headers"])
+                kwargs["headers"] = merged
                 response = self.client.request(**kwargs)
                 kwargs = generator.send(response)
         except StopIteration as e:

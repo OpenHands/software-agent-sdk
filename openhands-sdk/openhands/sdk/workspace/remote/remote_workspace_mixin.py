@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 from collections.abc import Generator
 from pathlib import Path, PureWindowsPath
@@ -13,6 +14,10 @@ from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 
 
 _logger = logging.getLogger(__name__)
+
+# Environment variable names for session API key fallback (agent-server ecosystem).
+# These match the env vars used by the agent-server and OpenHandsCloudWorkspace.
+_SESSION_API_KEY_ENV_VARS = ("OH_SESSION_API_KEYS_0", "SESSION_API_KEY")
 
 
 def _remote_path(path: str | Path) -> str:
@@ -57,11 +62,29 @@ class RemoteWorkspaceMixin(BaseModel):
         self.host = self.host.rstrip("/")
         return super().model_post_init(context)
 
+    def _resolve_api_key(self) -> str | None:
+        """Return the session API key from the field or environment fallback.
+
+        Falls back to ``OH_SESSION_API_KEYS_0`` and ``SESSION_API_KEY`` env
+        vars (in that order) when ``api_key`` is not explicitly set.  This
+        matches the convention used by the agent-server and by
+        ``OpenHandsCloudWorkspace`` so that the SDK works out of the box when
+        those variables are already present in the agent-server ecosystem.
+        """
+        if self.api_key:
+            return self.api_key
+        for name in _SESSION_API_KEY_ENV_VARS:
+            value = os.environ.get(name)
+            if value:
+                return value
+        return None
+
     @property
     def _headers(self):
         headers = {}
-        if self.api_key:
-            headers["X-Session-API-Key"] = self.api_key
+        api_key = self._resolve_api_key()
+        if api_key:
+            headers["X-Session-API-Key"] = api_key
         return headers
 
     def _execute_command_generator(
