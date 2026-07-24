@@ -100,6 +100,7 @@ def test_openhands_provider_translates_only_for_litellm(mock_completion, mock_ge
     _, kwargs = mock_completion.call_args
     assert kwargs["model"] == "litellm_proxy/claude-haiku-4-5-20251001"
     assert kwargs["api_base"] == "https://llm-proxy.app.all-hands.dev"
+    assert kwargs["base_url"] == "https://llm-proxy.app.all-hands.dev"
     persisted = llm.to_persisted()
     assert persisted["model"] == "openhands/claude-haiku-4-5-20251001"
     assert "base_url" not in persisted
@@ -147,6 +148,28 @@ def test_base_url_for_openhands_provider_with_custom_url(mock_get):
     assert llm.base_url == custom_url
     # Should call with custom URL
     mock_get.assert_called_once()
+
+
+@patch("openhands.sdk.llm.utils.model_info.httpx.get")
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_litellm_transport_includes_base_url_for_tracing(mock_completion, mock_get):
+    mock_get.return_value = Mock(json=lambda: {"data": []})
+    mock_completion.return_value = create_mock_litellm_response("ok")
+
+    llm = LLM(
+        model="openai/gpt-4o",
+        api_key=SecretStr("test-key"),
+        usage_id="test-base-url-tracing",
+        base_url="https://proxy.example.com/v1",
+        num_retries=0,
+    )
+
+    messages = [Message(role="user", content=[TextContent(text="Hello")])]
+    llm.completion(messages=messages)
+
+    _, kwargs = mock_completion.call_args
+    assert kwargs["api_base"] == "https://proxy.example.com/v1"
+    assert kwargs["base_url"] == "https://proxy.example.com/v1"
 
 
 def test_token_usage_add():
