@@ -324,6 +324,28 @@ def test_view_with_a_specific_range(editor):
     assert "101" not in result.text
 
 
+def test_view_full_file_with_trailing_newline_has_no_phantom_line(tmp_path):
+    """A full-file view of a file ending in a newline must not render a phantom
+    extra numbered line (it emulates ``cat -n``), and must match the equivalent
+    explicit range view."""
+    editor = FileEditor()
+    test_file = tmp_path / "trailing.txt"
+    test_file.write_text("line1\nline2\nline3\n")
+
+    full = editor(command="view", path=str(test_file))
+    assert isinstance(full, FileEditorObservation)
+    assert full.text == (
+        f"Here's the result of running `cat -n` on {test_file}:\n"
+        "     1\tline1\n"
+        "     2\tline2\n"
+        "     3\tline3\n"
+    )
+
+    # The full view and the equivalent range view must agree on line count.
+    ranged = editor(command="view", path=str(test_file), view_range=[1, 3])
+    assert full.text == ranged.text
+
+
 def test_create_file(editor):
     editor, test_file = editor
     new_file = test_file.parent / "new_file.txt"
@@ -518,6 +540,23 @@ def test_insert_no_linting(editor):
      2\tInserted line
      3\tThis file is for testing purposes.
 Review the changes and make sure they are as expected (correct indentation, no duplicate lines, etc). Edit the file again if necessary."""  # noqa: E501
+    )
+
+
+def test_insert_at_end_of_file_without_trailing_newline(editor):
+    """Inserting after the last line of a file that has no trailing newline must
+    put the new text on its own line instead of gluing it onto the last line."""
+    editor, test_file = editor
+    # The fixture file has two lines and no trailing newline.
+    result = editor(
+        command="insert",
+        path=str(test_file),
+        insert_line=2,
+        new_str="Appended line",
+    )
+    assert isinstance(result, FileEditorObservation)
+    assert test_file.read_text() == (
+        "This is a test file.\nThis file is for testing purposes.\nAppended line\n"
     )
 
 

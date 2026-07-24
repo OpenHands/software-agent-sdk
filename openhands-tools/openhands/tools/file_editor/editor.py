@@ -369,7 +369,12 @@ class FileEditor:
         start_line = 1
         if not view_range:
             file_content = self.read_file(path)
-            output = self._make_output(file_content, str(path), start_line)
+            # Normalize trailing newlines the same way the range path does, so a
+            # file ending in "\n" doesn't render a phantom extra numbered line
+            # (this path emulates `cat -n`, which shows no such trailing line).
+            output = self._make_output(
+                "\n".join(file_content.splitlines()), str(path), start_line
+            )
 
             return FileEditorObservation.from_text(
                 text=output,
@@ -573,6 +578,12 @@ class FileEditor:
                     break
                 new_lines.append(line)
                 history_lines.append(line)
+
+        # When inserting at the end of a file whose last line has no trailing
+        # newline, terminate that carried-over line first so the inserted text
+        # starts on its own line instead of being glued onto it.
+        if new_lines and not new_lines[-1].endswith("\n"):
+            new_lines[-1] += "\n"
 
         # Insert new content
         for line in new_str_lines:
