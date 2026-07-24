@@ -56,7 +56,8 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
 
     Supports optional completion callbacks on exit via environment variables:
       - ``AUTOMATION_CALLBACK_URL`` — URL to POST completion status to
-      - ``AUTOMATION_CALLBACK_API_KEY`` — Bearer token for callback auth (optional)
+      - ``AUTOMATION_CALLBACK_API_KEY`` — API key for callback auth (optional,
+        sent via ``X-Session-API-Key`` header)
       - ``AUTOMATION_RUN_ID`` — Run ID to include in callback payload (optional)
 
     Example:
@@ -284,7 +285,8 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
 
         Reads configuration from environment variables:
           - ``AUTOMATION_CALLBACK_URL`` — URL to POST completion status to
-          - ``AUTOMATION_CALLBACK_API_KEY`` — Bearer token for callback auth (optional)
+          - ``AUTOMATION_CALLBACK_API_KEY`` — API key for callback auth (optional,
+            sent via ``X-Session-API-Key`` header)
           - ``AUTOMATION_RUN_ID`` — Run ID to include in callback payload (optional)
 
         Includes ``conversation_id`` in the payload if one was registered via
@@ -315,7 +317,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         try:
             headers: dict[str, str] = {}
             if callback_api_key:
-                headers["Authorization"] = f"Bearer {callback_api_key}"
+                headers["X-Session-API-Key"] = callback_api_key
             with httpx.Client(timeout=10.0) as cb_client:
                 resp = cb_client.post(callback_url, json=payload, headers=headers)
                 logger.info(f"Completion callback sent ({status}): {resp.status_code}")

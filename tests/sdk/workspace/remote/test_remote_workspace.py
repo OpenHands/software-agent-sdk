@@ -1051,7 +1051,7 @@ def test_send_completion_callback_on_success(monkeypatch):
         assert payload["status"] == "COMPLETED"
         assert payload["run_id"] == "run-42"
         assert "error" not in payload
-        assert headers["Authorization"] == "Bearer test-api-key"
+        assert headers["X-Session-API-Key"] == "test-api-key"
 
 
 def test_send_completion_callback_on_failure(monkeypatch):
@@ -1109,7 +1109,7 @@ def test_send_completion_callback_swallows_errors(monkeypatch):
 
 
 def test_send_completion_callback_without_api_key(monkeypatch):
-    """Test _send_completion_callback sends without Authorization when no key."""
+    """Test _send_completion_callback sends without X-Session-API-Key when no key."""
     monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
     monkeypatch.delenv("AUTOMATION_CALLBACK_API_KEY", raising=False)
 
@@ -1128,7 +1128,7 @@ def test_send_completion_callback_without_api_key(monkeypatch):
         workspace._send_completion_callback(None, None)
 
         headers = mock_client.post.call_args.kwargs["headers"]
-        assert "Authorization" not in headers
+        assert "X-Session-API-Key" not in headers
 
 
 def test_send_completion_callback_includes_conversation_id(monkeypatch):
