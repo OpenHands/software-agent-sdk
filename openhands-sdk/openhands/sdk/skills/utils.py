@@ -151,6 +151,74 @@ def find_skill_md(skill_dir: Path) -> Path | None:
     return None
 
 
+# Plugin manifest locations. Mirrors ``PLUGIN_MANIFEST_DIRS`` /
+# ``PLUGIN_MANIFEST_FILE`` in ``openhands.sdk.plugin.plugin``; duplicated here
+# (rather than imported) because that module imports from this one, which would
+# create a circular import. Used only to detect plugin folders mistakenly
+# dropped into a skills directory so we can warn the user.
+PLUGIN_MANIFEST_DIRS = (".plugin", ".claude-plugin")
+PLUGIN_MANIFEST_FILE = "plugin.json"
+
+
+def find_plugin_manifest(plugin_dir: Path) -> Path | None:
+    """Find a plugin manifest (``plugin.json``) inside a directory.
+
+    Checks both ``.plugin/`` and ``.claude-plugin/`` subdirectories.
+
+    Args:
+        plugin_dir: Path to the directory to inspect.
+
+    Returns:
+        Path to the manifest if found, None otherwise.
+    """
+    if not plugin_dir.is_dir():
+        return None
+    for manifest_dir in PLUGIN_MANIFEST_DIRS:
+        candidate = plugin_dir / manifest_dir / PLUGIN_MANIFEST_FILE
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def warn_on_plugin_dirs(skill_dir: Path, loaded_skill_dirs: set[Path]) -> list[Path]:
+    """Warn about plugin folders found inside a skills directory.
+
+    Skills directories do not auto-load plugins. A folder containing only a
+    plugin manifest (``.claude-plugin/plugin.json`` or ``.plugin/plugin.json``)
+    but no ``SKILL.md`` would otherwise be silently ignored, which is confusing
+    for users coming from Claude Code. This emits one actionable warning per
+    such folder, pointing them at the explicit ``PluginSource`` load path.
+
+    Args:
+        skill_dir: The skills directory being scanned.
+        loaded_skill_dirs: Directories already recognized as skills (skipped so
+            a plugin that also ships a top-level ``SKILL.md`` isn't flagged).
+
+    Returns:
+        List of plugin directories that triggered a warning.
+    """
+    if not skill_dir.is_dir():
+        return []
+    flagged: list[Path] = []
+    for subdir in sorted(p for p in skill_dir.iterdir() if p.is_dir()):
+        if subdir in loaded_skill_dirs:
+            continue
+        manifest = find_plugin_manifest(subdir)
+        if manifest is None:
+            continue
+        flagged.append(subdir)
+        logger.warning(
+            "Found a plugin manifest at '%s' inside skills directory '%s', but "
+            "skills directories do not auto-load plugins; this folder is being "
+            "ignored. Load the plugin explicitly, e.g. "
+            'plugins=[PluginSource(source="%s")].',
+            manifest,
+            skill_dir,
+            subdir,
+        )
+    return flagged
+
+
 def find_mcp_config(skill_dir: Path) -> Path | None:
     """Find .mcp.json file in a skill directory.
 

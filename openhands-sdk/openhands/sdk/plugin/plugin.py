@@ -53,6 +53,14 @@ class Plugin(BaseModel):
     ├── .mcp.json                # External tool configuration (optional)
     └── README.md                # Plugin documentation
     ```
+
+    Coming from Claude Code? Note one behavioral difference: OpenHands does
+    **not** auto-discover plugins dropped into a skills directory
+    (``.agents/skills/``, ``.openhands/skills/``, ``~/.claude/skills/``...).
+    A plugin folder placed there is ignored (the skills loader will log a
+    warning). Load plugins explicitly instead, e.g.
+    ``plugins=[PluginSource(source="path/to/plugin")]`` or via
+    ``load_installed_plugins()``.
     """
 
     manifest: PluginManifest = Field(description="Plugin manifest from plugin.json")
