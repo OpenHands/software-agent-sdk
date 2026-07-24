@@ -1659,8 +1659,8 @@ class TestEventServiceRun:
             await event_service.run()
 
     @pytest.mark.asyncio
-    async def test_run_already_running_by_task(self, event_service):
-        """Test that run raises ValueError when there's an active run task."""
+    async def test_run_already_running_by_finalizing_task(self, event_service):
+        """Test that run raises ValueError when a run task is finalizing."""
         conversation = MagicMock(spec=Conversation)
         state = MagicMock(spec=ConversationState)
         state.execution_status = ConversationExecutionStatus.IDLE
@@ -1674,9 +1674,51 @@ class TestEventServiceRun:
         mock_task = MagicMock()
         mock_task.done.return_value = False
         event_service._run_task = mock_task
+        event_service._run_finalizing_task = mock_task
 
         with pytest.raises(ValueError, match="conversation_already_running"):
             await event_service.run()
+
+    @pytest.mark.asyncio
+    async def test_run_recovers_stale_task_when_status_is_idle(self, event_service):
+        """Test that run recovers when status is IDLE but a stale task remains."""
+        conversation = MagicMock(spec=Conversation)
+        state = MagicMock(spec=ConversationState)
+        state.execution_status = ConversationExecutionStatus.IDLE
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation._state = state
+        conversation.run = MagicMock()
+
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+
+        stale_task_started = asyncio.Event()
+        stale_task_cancelled = asyncio.Event()
+
+        async def stale_run_task():
+            try:
+                stale_task_started.set()
+                await asyncio.Event().wait()
+            finally:
+                stale_task_cancelled.set()
+
+        stale_task = asyncio.create_task(stale_run_task())
+        await stale_task_started.wait()
+        event_service._run_task = stale_task
+
+        await event_service.run()
+
+        replacement_task = event_service._run_task
+        assert replacement_task is not None
+        assert replacement_task is not stale_task
+
+        with suppress(asyncio.CancelledError):
+            await stale_task
+        assert stale_task_cancelled.is_set()
+
+        await replacement_task
+        conversation.run.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_run_starts_background_task(self, event_service):
