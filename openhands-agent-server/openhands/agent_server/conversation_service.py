@@ -33,7 +33,7 @@ from openhands.agent_server.models import (
     StoredConversation,
     UpdateConversationRequest,
 )
-from openhands.agent_server.persistence import FileSecretsStore
+from openhands.agent_server.persistence import FileSecretsStore, SettingsStore
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.skills_service import discover_profile_skills
@@ -64,6 +64,7 @@ from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.tool import BROWSER_TOOL_NAME, Tool, is_tool_usable
 from openhands.sdk.tool.client_tool import register_client_tools
@@ -567,6 +568,8 @@ class ConversationService:
     cipher: Cipher | None = None
     mcp_tool_provider: MCPToolProvider | None = None
     secrets_store: FileSecretsStore | None = None
+    settings_store: SettingsStore | None = None
+    llm_profile_store: LLMProfileStore | None = None
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     max_concurrent_runs: int = 10
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
@@ -751,6 +754,20 @@ class ConversationService:
                 CODEX_AUTH_SECRET_NAME,
             )
         return bindings
+
+    def _resolve_title_llm_profile(self, requested: str | None) -> str | None:
+        if self.settings_store is None or self.llm_profile_store is None:
+            return requested
+
+        settings = self.settings_store.load()
+        available = {
+            profile["name"] for profile in self.llm_profile_store.list_summaries()
+        }
+        if requested in available:
+            return requested
+        if settings and settings.active_profile in available:
+            return settings.active_profile
+        return None
 
     async def _conversation_info(
         self,
@@ -1327,6 +1344,21 @@ class ConversationService:
                 mcp_config,
             )
             request = request.model_copy(update={"agent": resolved_agent})
+
+        try:
+            title_llm_profile = await asyncio.to_thread(
+                self._resolve_title_llm_profile,
+                request.title_llm_profile,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to resolve title LLM profile; using the requested profile",
+                exc_info=True,
+            )
+        else:
+            request = request.model_copy(
+                update={"title_llm_profile": title_llm_profile}
+            )
 
         additions = request.agent_launch_additions
         suffix = (
@@ -1975,11 +2007,12 @@ class ConversationService:
             create_settings_backed_mcp_tool_provider,
         )
         from openhands.agent_server.persistence import (
+            get_llm_profile_store,
             get_secrets_store,
             get_settings_store,
         )
 
-        get_settings_store(config)
+        settings_store = get_settings_store(config)
         return ConversationService(
             conversations_dir=config.conversations_path,
             webhook_specs=config.webhooks,
@@ -1989,6 +2022,8 @@ class ConversationService:
             cipher=config.cipher,
             mcp_tool_provider=create_settings_backed_mcp_tool_provider(config),
             secrets_store=get_secrets_store(config),
+            settings_store=settings_store,
+            llm_profile_store=get_llm_profile_store(),
             max_concurrent_runs=config.max_concurrent_runs,
             lease_ttl_seconds=config.lease_ttl_seconds,
             conversation_idle_ttl_seconds=config.conversation_idle_ttl_seconds,
