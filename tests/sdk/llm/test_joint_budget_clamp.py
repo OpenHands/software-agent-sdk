@@ -184,3 +184,49 @@ def test_no_clamp_when_context_window_unknown():
         out = llm._clamp_max_tokens_for_joint_budget(call_kwargs, [], [])
 
     assert out["max_completion_tokens"] == 64_000
+
+
+def test_thinking_budget_clamped_below_clamped_max_tokens():
+    """On the extended-thinking path, lowering max_tokens must also lower the
+    thinking budget so it stays strictly below max_tokens.
+
+    chat_options sets ``max_tokens`` (without popping the default
+    ``max_completion_tokens``) plus a ``thinking.budget_tokens`` just under the
+    full output budget. Clamping only ``max_tokens`` for a large input would
+    leave ``budget_tokens >= max_tokens``, which Bedrock/Anthropic reject.
+    """
+    llm = _make_llm("bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+    call_kwargs = {
+        "max_tokens": 64_000,
+        "max_completion_tokens": 64_000,
+        "thinking": {"type": "enabled", "budget_tokens": 63_999},
+    }
+
+    with patch("openhands.sdk.llm.llm.token_counter", return_value=180_000):
+        out = llm._clamp_max_tokens_for_joint_budget(call_kwargs, [], [])
+
+    clamped = 200_000 - 180_000 - JOINT_BUDGET_SAFETY_MARGIN_TOKENS
+    assert out["max_tokens"] == clamped
+    # The sibling budget key is clamped too, so a stale full-size copy cannot
+    # defeat the clamp downstream.
+    assert out["max_completion_tokens"] == clamped
+    # Thinking budget stays strictly below the clamped max_tokens.
+    assert out["thinking"]["budget_tokens"] < out["max_tokens"]
+    assert out["thinking"]["budget_tokens"] == clamped - 1
+    # The caller's nested thinking dict must not be mutated in place.
+    assert call_kwargs["thinking"]["budget_tokens"] == 63_999
+
+
+def test_thinking_budget_preserved_when_no_clamp_needed():
+    """Small input: nothing is clamped and the thinking budget is preserved."""
+    llm = _make_llm("bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+    call_kwargs = {
+        "max_tokens": 64_000,
+        "thinking": {"type": "enabled", "budget_tokens": 63_999},
+    }
+
+    with patch("openhands.sdk.llm.llm.token_counter", return_value=50_000):
+        out = llm._clamp_max_tokens_for_joint_budget(call_kwargs, [], [])
+
+    assert out["max_tokens"] == 64_000
+    assert out["thinking"]["budget_tokens"] == 63_999
