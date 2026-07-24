@@ -1,4 +1,5 @@
 import asyncio
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
@@ -146,6 +147,10 @@ class EventService:
     # Background task for a /goal loop that is running inside this conversation.
     _goal_loop_task: asyncio.Task | None = field(default=None, init=False)
     _goal_loop_outcome: GoalOutcome | None = field(default=None, init=False)
+    # Monotonic clock of the last activity, used for idle eviction.
+    _last_active_monotonic: float = field(default_factory=time.monotonic, init=False)
+    # Subscribers attached at startup; later ones (e.g. websockets) are external.
+    _internal_subscriber_ids: set[UUID] = field(default_factory=set, init=False)
 
     @property
     def conversation_dir(self):
@@ -1818,3 +1823,36 @@ class EventService:
 
     def is_open(self) -> bool:
         return bool(self._conversation)
+
+    def touch(self) -> None:
+        """Record activity so idle-eviction defers this conversation."""
+        self._last_active_monotonic = time.monotonic()
+
+    def idle_seconds(self) -> float:
+        """Seconds since the last recorded activity."""
+        return time.monotonic() - self._last_active_monotonic
+
+    def mark_subscription_baseline(self) -> None:
+        """Snapshot the current (internal) subscribers; later ones are external."""
+        self._internal_subscriber_ids = self._pub_sub.subscriber_ids()
+
+    def has_external_subscribers(self) -> bool:
+        """True if a non-internal subscriber (e.g. a websocket) is attached."""
+        return bool(self._pub_sub.subscriber_ids() - self._internal_subscriber_ids)
+
+    def is_idle_evictable(self) -> bool:
+        """Safe to evict only with no in-flight work and no external subscriber."""
+        run_active = self._run_task is not None and not self._run_task.done()
+        goal_active = (
+            self._goal_loop_task is not None and not self._goal_loop_task.done()
+        )
+        if (
+            self._closing
+            or run_active
+            or goal_active
+            or self._rerun_requested
+            or self._acp_internal_rerun_requested
+            or self.has_external_subscribers()
+        ):
+            return False
+        return True

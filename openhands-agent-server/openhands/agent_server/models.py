@@ -235,6 +235,21 @@ class _ConversationInfoBase(BaseModel):
             "conversations or whole-conversation forks."
         ),
     )
+    parent_conversation_id: UUID | None = Field(
+        default=None,
+        description=(
+            "ID of the conversation that owns this one. ``None`` for top-level "
+            "conversations."
+        ),
+    )
+    sub_conversation_ids: list[UUID] = Field(
+        default_factory=list,
+        description=(
+            "IDs of conversations naming this one as their parent. Derived from "
+            "the server catalog; empty on webhook payloads. Name mirrors the "
+            "Cloud API field."
+        ),
+    )
 
     tags: ConversationTags = Field(
         default_factory=dict,
