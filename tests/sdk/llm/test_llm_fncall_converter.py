@@ -960,3 +960,57 @@ def test_security_params_excluded_when_flag_is_false():
     system_content = result[0]["content"]
     assert "<parameter=security_risk>" not in system_content
     assert "<parameter=summary>" not in system_content
+
+
+def test_security_risk_param_allowed_for_tool_that_does_not_declare_it():
+    """A tool schema that omits security_risk (as read-only tools like
+    `finish` do, per add_security_risk_prediction in tool.py) must still
+    accept a call that includes it, since the in-context examples teach the
+    model to add security_risk to every call regardless of tool.
+
+    Regression test: this previously raised FunctionCallValidationError
+    ("Parameter 'security_risk' is not allowed for function 'finish'").
+    """
+    finish_tool: list[ChatCompletionToolParam] = [
+        {
+            "type": "function",
+            "function": {
+                "name": "finish",
+                "description": "Finish the interaction when the task is complete.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "message": {"type": "string"},
+                        "summary": {"type": "string"},
+                    },
+                    "required": ["message"],
+                },
+            },
+        }
+    ]
+    non_fncall_messages = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": (
+                "<function=finish>\n"
+                "<parameter=message>Hello!</parameter>\n"
+                "<parameter=summary>Greet user</parameter>\n"
+                "<parameter=security_risk>LOW</parameter>\n"
+                "</function>"
+            ),
+        },
+    ]
+
+    fncall_messages = convert_non_fncall_messages_to_fncall_messages(
+        non_fncall_messages, finish_tool
+    )
+
+    assistant_msg = next(
+        msg
+        for msg in fncall_messages
+        if msg.get("role") == "assistant" and msg.get("tool_calls")
+    )
+    arguments = json.loads(assistant_msg["tool_calls"][0]["function"]["arguments"])
+    assert arguments["message"] == "Hello!"
+    assert arguments["security_risk"] == "LOW"
