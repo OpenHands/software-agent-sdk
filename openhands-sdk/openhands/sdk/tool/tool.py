@@ -405,7 +405,7 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
 
         Returns ``None`` if the tool has not been called yet.
         """
-        from openhands.sdk.event import ActionEvent  # avoid circular import
+        from openhands.sdk.event import ActionEvent
 
         for event in reversed(events):
             if (
