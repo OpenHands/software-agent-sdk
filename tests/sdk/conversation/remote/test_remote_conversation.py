@@ -222,6 +222,36 @@ class TestRemoteConversation:
             "to fetch initial events"
         )
 
+    def test_remote_conversation_uses_injected_websocket_factory(self):
+        conversation_id = str(uuid.uuid4())
+        self.setup_mock_client(conversation_id=conversation_id)
+        websocket_client = Mock()
+        websocket_factory = Mock(return_value=websocket_client)
+
+        with patch(
+            "openhands.sdk.conversation.impl.remote_conversation."
+            "WebSocketCallbackClient"
+        ) as default_factory:
+            conversation = RemoteConversation(
+                agent=self.agent,
+                workspace=self.workspace,
+                websocket_client_factory=websocket_factory,
+            )
+
+        default_factory.assert_not_called()
+        websocket_factory.assert_called_once()
+        factory_kwargs = websocket_factory.call_args.kwargs
+        assert factory_kwargs["host"] == self.host
+        assert factory_kwargs["conversation_id"] == conversation_id
+        assert callable(factory_kwargs["callback"])
+        assert factory_kwargs["api_key"] is None
+        assert callable(factory_kwargs["on_reconnect"])
+        websocket_client.start.assert_called_once_with()
+        websocket_client.wait_until_ready.assert_called_once_with(timeout=30.0)
+
+        conversation.close()
+        websocket_client.stop.assert_called_once_with()
+
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
