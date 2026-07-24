@@ -1862,6 +1862,66 @@ class TestEventServiceSaveMeta:
         assert loaded.agent.acp_model == "new-model"
 
     @pytest.mark.asyncio
+    async def test_switched_llm_survives_restart_via_base_state(self, tmp_path):
+        """A live switch_llm survives an agent-server restart with NO meta mirror.
+
+        Regression for #4032. The conversation is created with timeout=300 and
+        then switched to an LLM with timeout=600 while running. ``switch_llm``
+        writes the new LLM to ``base_state.json`` only (not ``meta.json``).
+        After tearing the service down and starting a fresh one over the same
+        dir (a restart), the live agent must use the switched timeout=600,
+        because start() now rebuilds the resume agent's llm/condenser from
+        ``base_state.json`` rather than the stale ``meta.json`` snapshot.
+        """
+        stored = StoredConversation(
+            id=uuid4(),
+            agent=Agent(
+                llm=LLM(model="gpt-4o", usage_id="agent", timeout=300), tools=[]
+            ),
+            workspace=LocalWorkspace(working_dir=str(tmp_path / "ws")),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+        )
+        (tmp_path / "ws").mkdir(parents=True, exist_ok=True)
+
+        # ---- first boot: start, switch the LLM, shut down ----
+        # ``async with`` runs save_meta() on exit, exactly like a real shutdown.
+        async with EventService(stored=stored, conversations_dir=tmp_path) as service:
+            assert service._conversation is not None
+            service._conversation.switch_llm(
+                LLM(model="gpt-4o", usage_id="agent", timeout=600)
+            )
+            assert service._conversation.agent.llm.timeout == 600
+
+        conv_dir = tmp_path / stored.id.hex
+        base_state = ConversationState.model_validate_json(
+            (conv_dir / "base_state.json").read_text()
+        )
+        meta = StoredConversation.model_validate_json(
+            (conv_dir / "meta.json").read_text()
+        )
+        # The switch reached base_state.json; meta.json still holds the old one.
+        assert base_state.agent.llm.timeout == 600
+        assert meta.agent.llm.timeout == 300
+
+        # ---- restart: a brand-new service over the same dir ----
+        restarted = EventService(
+            stored=StoredConversation.model_validate_json(
+                (conv_dir / "meta.json").read_text()
+            ),
+            conversations_dir=tmp_path,
+        )
+        await restarted.start()
+        try:
+            # The live agent uses the SWITCHED timeout, read from base_state.json,
+            # not the stale 300 in meta.json.
+            assert restarted._conversation is not None
+            assert restarted._conversation.agent.llm.timeout == 600
+        finally:
+            await restarted.close()
+
+    @pytest.mark.asyncio
     async def test_switch_acp_model_inactive_service_raises_value_error(self, tmp_path):
         """An inactive service (no live conversation) raises the shared
         ``inactive_service`` ValueError — consistent with the other

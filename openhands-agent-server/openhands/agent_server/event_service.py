@@ -177,6 +177,42 @@ class EventService:
                 )
             )
 
+    def _resume_agent_with_live_llm(self) -> AgentBase:
+        """The agent to instantiate on start, with live LLM/condenser applied.
+
+        Fresh conversation (no ``base_state.json`` yet): returns
+        ``self.stored.agent`` from the create request unchanged.
+
+        Resume: returns the creation-time ``self.stored.agent`` (so ``tools`` /
+        ``agent_context`` / ``mcp_config`` are the un-merged config the plugin
+        merge expects) but with ``llm`` and ``condenser`` overridden from
+        ``base_state.json``. Those two are exactly what a live ``switch_llm``
+        can change, and base_state.json is where such changes are persisted —
+        so this is what keeps a switched config from reverting after a restart
+        (#4032) without any write-side mirror into meta.json.
+
+        ACP agents are left untouched: they do not use the ``switch_llm`` /
+        condenser path, and their model switch already persists to meta.json.
+        """
+        stored_agent = self.stored.agent
+        if isinstance(stored_agent, ACPAgent):
+            return stored_agent
+
+        base_state_file = self.conversation_dir / BASE_STATE
+        if not base_state_file.exists():
+            return stored_agent  # fresh conversation
+
+        context = {"cipher": self.cipher} if self.cipher else None
+        persisted = ConversationState.model_validate_json(
+            base_state_file.read_text(), context=context
+        ).agent
+        if isinstance(persisted, ACPAgent):
+            return stored_agent
+
+        return stored_agent.model_copy(
+            update={"llm": persisted.llm, "condenser": persisted.condenser}
+        )
+
     def _without_stored_secret(self, secret_name: str) -> StoredConversation:
         secrets = dict(self.stored.secrets)
         secrets.pop(secret_name, None)
@@ -971,9 +1007,29 @@ class EventService:
         working_dir = Path(workspace.working_dir)
         working_dir.mkdir(parents=True, exist_ok=True)
         self._ensure_workspace_is_git_repo(working_dir)
-        agent_cls = type(self.stored.agent)
+        # base_state.json is authoritative for the LIVE-mutable agent config.
+        #
+        # meta.json also carries an ``agent`` blob, but it is only a
+        # creation-time snapshot: it is NOT re-written when the running agent's
+        # LLM/condenser change (the switch_llm tool/endpoint updates
+        # ConversationState.agent → base_state.json only). Rebuilding the resume
+        # agent purely from meta.json therefore reinstated the stale
+        # creation-time LLM and clobbered base_state.json inside
+        # ConversationState.create() (``state.agent = agent``), reverting e.g. a
+        # switched LLM's timeout on the next restart (issue #4032).
+        #
+        # Fix: on resume, take ``llm`` and ``condenser`` from base_state.json
+        # (the file the SDK already owns and every mutation writes to) while
+        # keeping the rest of the agent — ``tools``, ``agent_context``,
+        # ``mcp_config`` — from the creation-time ``meta.json`` snapshot. Those
+        # are re-derived by the plugin merge on first run; taking the already
+        # merged copy from base_state would double-merge them. This scoping
+        # matches the fields a live switch can change, so no mutation path has
+        # to mirror into meta.json.
+        source_agent = self._resume_agent_with_live_llm()
+        agent_cls = type(source_agent)
         agent = agent_cls.model_validate(
-            self.stored.agent.model_dump(context={"expose_secrets": True}),
+            source_agent.model_dump(context={"expose_secrets": True}),
         )
 
         # Create LocalConversation with plugins and hook_config.
