@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC
 from datetime import datetime
 from enum import Enum, StrEnum
-from typing import Any, TypeAlias
+from typing import TYPE_CHECKING, Any, TypeAlias
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator
@@ -39,6 +39,7 @@ from openhands.sdk.security.confirmation_policy import (
 )
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.utils import OpenHandsUUID, utc_now
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.models import (
     DiscriminatedUnionMixin,
     OpenHandsModel,
@@ -395,8 +396,31 @@ def trim_conversation_response_skills(info: ConversationInfo) -> ConversationInf
 # Deprecated compatibility aliases for the old ACP-specific response names.
 # Keep runtime assignment aliases so existing imports still resolve to the
 # canonical Pydantic models; PEP 695 ``type`` aliases would not preserve that.
-ACPConversationInfo: TypeAlias = ConversationInfo  # noqa: UP040
-ACPConversationPage: TypeAlias = ConversationPage  # noqa: UP040
+if TYPE_CHECKING:
+    ACPConversationInfo: TypeAlias = ConversationInfo  # noqa: UP040
+    ACPConversationPage: TypeAlias = ConversationPage  # noqa: UP040
+
+
+_DEPRECATED_ACP_RESPONSE_ALIASES: dict[str, type[BaseModel]] = {
+    "ACPConversationInfo": ConversationInfo,
+    "ACPConversationPage": ConversationPage,
+}
+
+
+def __getattr__(name: str) -> Any:
+    if name in _DEPRECATED_ACP_RESPONSE_ALIASES:
+        warn_deprecated(
+            f"openhands.agent_server.models.{name}",
+            deprecated_in="1.36.0",
+            removed_in="1.41.0",
+            details=(
+                "The ACP-specific response model names are compatibility aliases. "
+                "Use ConversationInfo or ConversationPage instead."
+            ),
+            stacklevel=2,
+        )
+        return _DEPRECATED_ACP_RESPONSE_ALIASES[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class ConversationResponse(BaseModel):

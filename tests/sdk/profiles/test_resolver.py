@@ -10,6 +10,7 @@ allow-list, which could dangle).
 from pathlib import Path
 
 import pytest
+from deprecation import DeprecatedWarning
 from pydantic import SecretStr
 
 from openhands.sdk.agent import ACPAgent, Agent
@@ -18,6 +19,7 @@ from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config
 from openhands.sdk.profiles import (
     ACPAgentProfile,
+    AgentProfileDiagnostics,
     DanglingMcpServerRef,
     OpenHandsAgentProfile,
     ProfileNotFound,
@@ -644,6 +646,23 @@ def test_dry_run_openhands_valid_and_redacted(
     dumped = diag.model_dump_json()
     assert _LLM_SECRET not in dumped
     assert _MCP_SECRET not in dumped
+
+
+def test_agent_profile_diagnostics_warns_on_legacy_resolved_mcp_servers() -> None:
+    with pytest.warns(
+        DeprecatedWarning,
+        match="AgentProfileDiagnostics\\.resolved_mcp_servers",
+    ) as warning_records:
+        diag = AgentProfileDiagnostics(
+            agent_kind="openhands",
+            resolved_mcp_servers=["fetch"],
+        )
+
+    warning_message = str(warning_records[0].message)
+    assert "deprecated as of 1.36.0" in warning_message
+    assert "removed in 1.41.0" in warning_message
+    assert diag.resolved_mcp_config_keys == ["fetch"]
+    assert diag.resolved_mcp_servers == ["fetch"]
 
 
 def test_dry_run_reports_dangling_llm_and_mcp(

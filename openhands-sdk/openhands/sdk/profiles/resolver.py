@@ -32,7 +32,7 @@ import shlex
 from collections.abc import Container
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, model_validator
 
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.mcp.config import MCPServer
@@ -47,6 +47,7 @@ from openhands.sdk.settings.model import (
     validate_agent_settings,
 )
 from openhands.sdk.skills import Skill
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
 
@@ -101,6 +102,7 @@ class AgentProfileDiagnostics(BaseModel):
     resolved_mcp_config_keys: list[str] = Field(default_factory=list)
     resolved_mcp_servers: list[str] = Field(
         default_factory=list,
+        deprecated=True,
         description="Deprecated alias for resolved_mcp_config_keys.",
     )
     dangling_mcp_server_refs: list[str] = Field(default_factory=list)
@@ -124,6 +126,36 @@ class AgentProfileDiagnostics(BaseModel):
 
     # Redacted resolved settings, present iff ``valid``.
     resolved_settings: dict[str, Any] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_resolved_mcp_servers(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        if value.get("resolved_mcp_servers") is None:
+            return value
+        warn_deprecated(
+            "AgentProfileDiagnostics.resolved_mcp_servers",
+            deprecated_in="1.36.0",
+            removed_in="1.41.0",
+            details="Use AgentProfileDiagnostics.resolved_mcp_config_keys instead.",
+            stacklevel=3,
+        )
+        if value.get("resolved_mcp_config_keys") is None:
+            return {
+                **value,
+                "resolved_mcp_config_keys": value["resolved_mcp_servers"],
+            }
+        return value
+
+    @model_validator(mode="after")
+    def _mirror_resolved_mcp_config_keys(self) -> AgentProfileDiagnostics:
+        if (
+            not self.__dict__.get("resolved_mcp_servers")
+            and self.resolved_mcp_config_keys
+        ):
+            self.resolved_mcp_servers = list(self.resolved_mcp_config_keys)
+        return self
 
 
 def _server_names(mcp_config: dict[str, MCPServer]) -> list[str]:
@@ -372,7 +404,6 @@ def resolve_agent_profile_dry_run(
         agent_kind=profile.agent_kind,
         mcp_server_refs=profile.mcp_server_refs,
         resolved_mcp_config_keys=resolved,
-        resolved_mcp_servers=resolved,
         dangling_mcp_server_refs=dangling,
     )
     if dangling:

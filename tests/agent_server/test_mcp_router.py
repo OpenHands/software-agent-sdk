@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import anyio
 import pytest
+from deprecation import DeprecatedWarning
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
@@ -522,17 +523,24 @@ def test_mcp_test_rejects_auth_with_auth_header(client: TestClient):
 
 
 def test_mcp_test_accepts_legacy_remote_api_key_field_as_bearer():
-    request = MCPTestRequest.model_validate(
-        {
-            "server": {
-                "transport": "http",
-                "url": "https://example.com/mcp",
-                "api_key": "some-token",
-            },
-            "timeout": 5.0,
-        }
-    )
+    with pytest.warns(
+        DeprecatedWarning,
+        match="_RemoteMCPServerSpec\\.api_key",
+    ) as warning_records:
+        request = MCPTestRequest.model_validate(
+            {
+                "server": {
+                    "transport": "http",
+                    "url": "https://example.com/mcp",
+                    "api_key": "some-token",
+                },
+                "timeout": 5.0,
+            }
+        )
 
+    warning_message = str(warning_records[0].message)
+    assert "deprecated as of 1.36.0" in warning_message
+    assert "removed in 1.41.0" in warning_message
     auth = request.resolved_server.auth
     assert auth is not None
     assert auth.strategy == "bearer"

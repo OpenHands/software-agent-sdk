@@ -6,12 +6,12 @@ showing them as "object | object | object...".
 """
 
 import pytest
+from deprecation import DeprecatedWarning
 from fastapi.testclient import TestClient
 
+from openhands.agent_server import models as agent_server_models
 from openhands.agent_server.api import create_app
 from openhands.agent_server.models import (
-    ACPConversationInfo,
-    ACPConversationPage,
     ConversationInfo,
     ConversationPage,
 )
@@ -212,5 +212,16 @@ def test_conversation_contracts_use_unified_acp_capable_endpoint(client):
 
 
 def test_acp_conversation_response_names_are_type_aliases():
-    assert ACPConversationInfo is ConversationInfo
-    assert ACPConversationPage is ConversationPage
+    with pytest.warns(DeprecatedWarning, match="ACPConversationInfo") as info_records:
+        acp_info = getattr(agent_server_models, "ACPConversationInfo")
+    with pytest.warns(DeprecatedWarning, match="ACPConversationPage") as page_records:
+        acp_page = getattr(agent_server_models, "ACPConversationPage")
+
+    info_message = str(info_records[0].message)
+    page_message = str(page_records[0].message)
+    assert "deprecated as of 1.36.0" in info_message
+    assert "removed in 1.41.0" in info_message
+    assert "deprecated as of 1.36.0" in page_message
+    assert "removed in 1.41.0" in page_message
+    assert acp_info is ConversationInfo
+    assert acp_page is ConversationPage
