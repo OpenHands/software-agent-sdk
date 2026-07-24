@@ -109,6 +109,12 @@ def select_chat_options(
     ctx = call_context or llm._call_context
     if ctx.prompt_cache_key:
         out["prompt_cache_key"] = ctx.prompt_cache_key
+    if ctx.extra_headers:
+        existing = out.get("extra_headers") or {}
+        out["extra_headers"] = {
+            **existing,
+            **ctx.extra_headers,
+        }
     if ctx.session_id:
         existing = out.get("extra_headers") or {}
         out["extra_headers"] = {

@@ -6,11 +6,14 @@ x-litellm-session-id).
 """
 
 import tempfile
+from collections.abc import Mapping
 
+import pytest
 from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm import LLMCallContext
 from openhands.sdk.llm.options.chat_options import select_chat_options
@@ -38,6 +41,16 @@ def test_call_context_defaults_to_empty():
     ctx = llm._call_context
     assert ctx.prompt_cache_key is None
     assert ctx.session_id is None
+    assert ctx.extra_headers == {}
+
+
+def test_call_context_copies_extra_headers():
+    headers = {"X-Request-ID": "first"}
+    ctx = LLMCallContext(extra_headers=headers)
+
+    headers["X-Request-ID"] = "changed"
+
+    assert ctx.extra_headers == {"X-Request-ID": "first"}
 
 
 def test_call_context_is_assignable():
@@ -65,6 +78,19 @@ def test_call_context_shallow_copied_by_model_copy():
     child = llm.model_copy(update={"usage_id": "child"})
     assert child._call_context.prompt_cache_key == "parent"
     assert child._call_context.session_id == "parent-sess"
+
+
+def test_call_context_supports_deep_model_copy():
+    llm = _llm()
+    llm._call_context = LLMCallContext(
+        prompt_cache_key="parent",
+        session_id="parent-sess",
+        extra_headers={"X-Request-ID": "request-1"},
+    )
+
+    child = llm.model_copy(deep=True)
+
+    assert child._call_context.extra_headers == {"X-Request-ID": "request-1"}
 
 
 # ── select_chat_options injection tests ────────────────────────────────
@@ -107,6 +133,26 @@ def test_chat_options_context_wins_over_user_session_id():
     assert out["extra_headers"]["x-litellm-session-id"] == "conv-99"
 
 
+def test_chat_options_merge_conversation_headers():
+    llm = _llm(extra_headers={"X-Static": "static", "X-Shared": "static"})
+    ctx = LLMCallContext(
+        session_id="conv-99",
+        extra_headers={"X-Conversation": "conversation", "X-Shared": "conversation"},
+    )
+
+    out = select_chat_options(
+        llm,
+        user_kwargs={},
+        has_tools=False,
+        call_context=ctx,
+    )
+
+    assert out["extra_headers"]["X-Static"] == "static"
+    assert out["extra_headers"]["X-Shared"] == "conversation"
+    assert out["extra_headers"]["X-Conversation"] == "conversation"
+    assert out["extra_headers"]["x-litellm-session-id"] == "conv-99"
+
+
 def test_responses_options_context_wins_over_user_session_id():
     """Context session_id must override a stale user-supplied value."""
     llm = _llm()
@@ -117,6 +163,27 @@ def test_responses_options_context_wins_over_user_session_id():
         include=None,
         store=None,
     )
+    assert out["extra_headers"]["x-litellm-session-id"] == "conv-99"
+
+
+def test_responses_options_merge_conversation_headers():
+    llm = _llm(extra_headers={"X-Static": "static", "X-Shared": "static"})
+    ctx = LLMCallContext(
+        session_id="conv-99",
+        extra_headers={"X-Conversation": "conversation", "X-Shared": "conversation"},
+    )
+
+    out = select_responses_options(
+        llm,
+        user_kwargs={},
+        include=None,
+        store=None,
+        call_context=ctx,
+    )
+
+    assert out["extra_headers"]["X-Static"] == "static"
+    assert out["extra_headers"]["X-Shared"] == "conversation"
+    assert out["extra_headers"]["X-Conversation"] == "conversation"
     assert out["extra_headers"]["x-litellm-session-id"] == "conv-99"
 
 
@@ -200,6 +267,68 @@ def test_extra_headers_not_polluted_by_session_id():
 
     # session ID should be in context
     assert conv.agent.llm._call_context.session_id == str(conv.id)
+
+
+def test_conversation_headers_apply_to_every_sync_run(monkeypatch):
+    seen_headers: list[Mapping[str, str]] = []
+
+    def step(self, conversation, on_event, on_token=None):
+        options = select_chat_options(self.llm, user_kwargs={}, has_tools=False)
+        seen_headers.append(options["extra_headers"])
+        conversation.state.execution_status = ConversationExecutionStatus.FINISHED
+
+    monkeypatch.setattr(Agent, "step", step)
+    headers = {"X-Request-ID": "request-1"}
+    conversation = Conversation(
+        agent=_agent(_llm(extra_headers={"X-Static": "static"})),
+        llm_extra_headers=headers,
+    )
+    headers["X-Request-ID"] = "changed"
+
+    conversation.send_message("first")
+    conversation.run()
+    conversation.send_message("second")
+    conversation.run()
+
+    assert [headers["X-Request-ID"] for headers in seen_headers] == [
+        "request-1",
+        "request-1",
+    ]
+    assert [headers["X-Static"] for headers in seen_headers] == [
+        "static",
+        "static",
+    ]
+    assert conversation.agent.llm.extra_headers == {"X-Static": "static"}
+
+
+@pytest.mark.asyncio
+async def test_conversation_headers_apply_to_every_async_run(monkeypatch):
+    seen_headers: list[Mapping[str, str]] = []
+
+    async def astep(self, conversation, on_event, on_token=None):
+        options = select_chat_options(self.llm, user_kwargs={}, has_tools=False)
+        seen_headers.append(options["extra_headers"])
+        conversation.state.execution_status = ConversationExecutionStatus.FINISHED
+
+    monkeypatch.setattr(Agent, "astep", astep)
+    conversation = Conversation(
+        agent=_agent(_llm(extra_headers={"X-Static": "static"})),
+        llm_extra_headers={"X-Request-ID": "request-1"},
+    )
+
+    conversation.send_message("first")
+    await conversation.arun()
+    conversation.send_message("second")
+    await conversation.arun()
+
+    assert [headers["X-Request-ID"] for headers in seen_headers] == [
+        "request-1",
+        "request-1",
+    ]
+    assert [headers["X-Static"] for headers in seen_headers] == [
+        "static",
+        "static",
+    ]
 
 
 def test_fork_gets_fresh_context():

@@ -725,6 +725,7 @@ class RemoteConversation(BaseConversation):
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
+        llm_extra_headers: Mapping[str, str] | None = None,
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
@@ -762,6 +763,8 @@ class RemoteConversation(BaseConversation):
             observability_tags: Optional root span tags for observability backends.
             observability_span_name: Optional child span name for observability
                       backends. The root span remains named "conversation".
+            llm_extra_headers: Headers applied to every LLM request made by this
+                      conversation. Used only when creating a conversation.
         """
         super().__init__()  # Initialize base class with span tracking
         self.agent = agent
@@ -859,6 +862,8 @@ class RemoteConversation(BaseConversation):
             }
             if user_id:
                 payload["user_id"] = user_id
+            if llm_extra_headers is not None:
+                payload["llm_extra_headers"] = dict(llm_extra_headers)
             if stuck_detection_thresholds is not None:
                 # Convert to StuckDetectionThresholds if dict, then serialize
                 if isinstance(stuck_detection_thresholds, Mapping):

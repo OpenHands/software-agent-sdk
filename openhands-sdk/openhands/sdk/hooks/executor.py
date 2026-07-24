@@ -7,7 +7,7 @@ import os
 import signal
 import subprocess
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
@@ -164,6 +164,7 @@ class HookExecutor:
         async_process_manager: AsyncProcessManager | None = None,
         llm: "LLM | None" = None,
         llm_getter: "Callable[[], LLM | None] | None" = None,
+        llm_extra_headers: Mapping[str, str] | None = None,
         persistence_dir: str | None = None,
         visualizer: type[ConversationVisualizerBase]
         | ConversationVisualizerBase
@@ -177,6 +178,7 @@ class HookExecutor:
         # LLM: switch_llm()/switch_profile() replace agent.llm after the executor
         # is built, and a captured instance would go stale.
         self._llm_getter = llm_getter
+        self.llm_extra_headers = dict(llm_extra_headers or {})
         self.persistence_dir = persistence_dir
         self.visualizer = visualizer
         self.conversation_stats = conversation_stats
@@ -270,6 +272,7 @@ class HookExecutor:
                 persistence_dir=self.persistence_dir,
                 visualizer=hook_visualizer,
                 max_iteration_per_run=hook.max_iterations,
+                llm_extra_headers=self.llm_extra_headers,
             )
             conversation.send_message(
                 f"Evaluate this {event_type} hook event and make your decision.\n\n"

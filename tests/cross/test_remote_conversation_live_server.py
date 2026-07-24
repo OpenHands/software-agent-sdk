@@ -1064,6 +1064,68 @@ def test_conversation_stats_with_live_server(
     conv.close()
 
 
+def test_remote_conversation_llm_headers_reach_every_run(
+    server_env, monkeypatch: pytest.MonkeyPatch
+):
+    from openhands.sdk.llm.llm_response import LLMResponse
+    from openhands.sdk.llm.message import Message
+    from openhands.sdk.llm.utils.metrics import MetricsSnapshot
+
+    seen_headers: list[dict[str, str]] = []
+
+    def response() -> LLMResponse:
+        litellm_msg = LiteLLMMessage.model_validate(
+            {"role": "assistant", "content": "Done"}
+        )
+        return LLMResponse(
+            message=Message.from_llm_chat_message(litellm_msg),
+            metrics=MetricsSnapshot(
+                model_name="test-model",
+                accumulated_cost=0.0,
+                max_budget_per_task=None,
+                accumulated_token_usage=None,
+            ),
+            raw_response=ModelResponse(
+                id="test-response",
+                created=int(time.time()),
+                model="test-model",
+                choices=[Choices(index=0, finish_reason="stop", message=litellm_msg)],
+            ),
+        )
+
+    async def fake_acompletion(self, messages, tools=None, call_context=None, **kwargs):  # type: ignore[no-untyped-def]
+        assert call_context is not None
+        seen_headers.append(dict(call_context.extra_headers))
+        return response()
+
+    monkeypatch.setattr(LLM, "acompletion", fake_acompletion, raising=True)
+
+    agent = Agent(
+        llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
+        tools=[],
+    )
+    workspace = RemoteWorkspace(
+        host=server_env["host"],
+        working_dir="/tmp/workspace/project",
+    )
+    conversation: RemoteConversation = Conversation(
+        agent=agent,
+        workspace=workspace,
+        llm_extra_headers={"X-Request-ID": "request-1"},
+    )
+
+    conversation.send_message("first")
+    conversation.run()
+    conversation.send_message("second")
+    conversation.run()
+
+    assert seen_headers == [
+        {"X-Request-ID": "request-1"},
+        {"X-Request-ID": "request-1"},
+    ]
+    conversation.close()
+
+
 def test_events_not_lost_during_client_disconnection(
     server_env, monkeypatch: pytest.MonkeyPatch
 ):

@@ -217,6 +217,11 @@ class StartConversationRequest(BaseModel):
             "hooks."
         ),
     )
+    llm_extra_headers: dict[str, str] | None = Field(
+        default=None,
+        repr=False,
+        description="Headers applied to every LLM request made by this conversation.",
+    )
     tags: ConversationTags = Field(
         default_factory=dict,
         description=(

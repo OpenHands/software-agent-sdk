@@ -84,6 +84,11 @@ class StoredConversation(StartConversationRequest):
     # agent_profile_id is resolved into launched_agent_profile at creation; exclude from
     # the persistence payload so it does not re-appear in meta.json.
     agent_profile_id: UUID | None = Field(default=None, exclude=True)
+    llm_extra_headers: dict[str, str] | None = Field(
+        default=None,
+        exclude=True,
+        repr=False,
+    )
 
     id: OpenHandsUUID
     title: str | None = Field(

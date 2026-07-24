@@ -72,6 +72,7 @@ class Conversation:
         callbacks: list[ConversationCallbackType] | None = None,
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
         hook_config: HookConfig | None = None,
+        llm_extra_headers: Mapping[str, str] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
         stuck_detection_thresholds: (
@@ -101,6 +102,7 @@ class Conversation:
         callbacks: list[ConversationCallbackType] | None = None,
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
         hook_config: HookConfig | None = None,
+        llm_extra_headers: Mapping[str, str] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
         stuck_detection_thresholds: (
@@ -130,6 +132,7 @@ class Conversation:
         callbacks: list[ConversationCallbackType] | None = None,
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
         hook_config: HookConfig | None = None,
+        llm_extra_headers: Mapping[str, str] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
         stuck_detection_thresholds: (
@@ -196,6 +199,7 @@ class Conversation:
                 callbacks=callbacks,
                 token_callbacks=token_callbacks,
                 hook_config=hook_config,
+                llm_extra_headers=llm_extra_headers,
                 max_iteration_per_run=max_iteration_per_run,
                 stuck_detection=stuck_detection,
                 stuck_detection_thresholds=stuck_detection_thresholds,
@@ -218,6 +222,7 @@ class Conversation:
             callbacks=callbacks,
             token_callbacks=token_callbacks,
             hook_config=hook_config,
+            llm_extra_headers=llm_extra_headers,
             max_iteration_per_run=max_iteration_per_run,
             stuck_detection=stuck_detection,
             stuck_detection_thresholds=stuck_detection_thresholds,

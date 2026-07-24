@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
@@ -34,6 +35,7 @@ def _make_llm() -> LLM:
 def _make_parent_conversation(
     tmp_path: Path,
     persistence_dir: str | Path | None = None,
+    llm_extra_headers: Mapping[str, str] | None = None,
 ) -> LocalConversation:
     """Create a real (minimal) parent conversation for the manager."""
     llm = _make_llm()
@@ -44,16 +46,22 @@ def _make_parent_conversation(
         visualizer=None,
         delete_on_close=False,
         persistence_dir=persistence_dir,
+        llm_extra_headers=llm_extra_headers,
     )
 
 
 def _manager_with_parent(
     tmp_path: Path,
     persistence_dir: str | Path | None = None,
+    llm_extra_headers: Mapping[str, str] | None = None,
 ) -> tuple[TaskManager, LocalConversation]:
     """Return a TaskManager whose parent conversation is already set."""
     manager = TaskManager()
-    parent = _make_parent_conversation(tmp_path, persistence_dir=persistence_dir)
+    parent = _make_parent_conversation(
+        tmp_path,
+        persistence_dir=persistence_dir,
+        llm_extra_headers=llm_extra_headers,
+    )
     manager._ensure_parent(parent)
     return manager, parent
 
@@ -393,6 +401,27 @@ class TestTaskManager:
             sub_keys.append(conv.get_llm_call_context().prompt_cache_key)
 
         assert sub_keys == [parent_key, parent_key]
+
+    def test_sub_agents_inherit_parent_llm_extra_headers(self, tmp_path):
+        manager, _ = _manager_with_parent(
+            tmp_path,
+            llm_extra_headers={"X-Request-ID": "request-1"},
+        )
+        register_builtins_agents()
+        task_id, conversation_id = manager._generate_ids()
+        agent = manager._get_sub_agent("general-purpose")
+
+        conversation = manager._get_conversation(
+            description=None,
+            max_iteration_per_run=500,
+            task_id=task_id,
+            conversation_id=conversation_id,
+            worker_agent=agent,
+        )
+
+        assert conversation.get_llm_call_context().extra_headers == {
+            "X-Request-ID": "request-1"
+        }
 
 
 def _make_task_with_mock_conv(task_id: str, **conv_kwargs) -> Task:

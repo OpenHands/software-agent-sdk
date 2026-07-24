@@ -694,6 +694,27 @@ class TestAgentHookExecution:
         assert hook_llm.timeout == 7
         assert executor.llm.timeout == parent_timeout
 
+    def test_agent_hook_inherits_conversation_llm_headers(
+        self, tmp_path, mock_llm, sample_event
+    ):
+        executor = HookExecutor(
+            working_dir=str(tmp_path),
+            llm=mock_llm,
+            llm_extra_headers={"X-Request-ID": "request-1"},
+        )
+
+        with (
+            patch(self._AGENT_PATH),
+            patch(self._CONV_PATH, side_effect=RuntimeError("stop early")) as mock_conv,
+        ):
+            executor._execute_agent_hook(
+                HookDefinition(type=HookType.AGENT), sample_event
+            )
+
+        assert mock_conv.call_args.kwargs["llm_extra_headers"] == {
+            "X-Request-ID": "request-1"
+        }
+
     def test_hook_metrics_under_usage_id(self, executor, sample_event):
         """Hook LLM uses per-hook usage_id and an isolated Metrics object."""
         parent_metrics = executor.llm.metrics

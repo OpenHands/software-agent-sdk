@@ -1,6 +1,6 @@
 """Hook integration for conversations."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from openhands.sdk.conversation.visualizer import ConversationVisualizerBase
@@ -394,6 +394,7 @@ def create_hook_callback(
     emit_hook_events: bool = True,
     llm: "LLM | None" = None,
     llm_getter: "Callable[[], LLM | None] | None" = None,
+    llm_extra_headers: Mapping[str, str] | None = None,
     persistence_dir: str | None = None,
     visualizer: type[ConversationVisualizerBase]
     | ConversationVisualizerBase
@@ -412,6 +413,7 @@ def create_hook_callback(
         llm: LLM instance inherited from the parent conversation, used by agent hooks.
         llm_getter: Callable returning the conversation's current LLM. Preferred
             over ``llm`` so agent hooks follow switch_llm()/switch_profile().
+        llm_extra_headers: Headers inherited by agent hook sub-conversations.
         persistence_dir: Directory used to persist agent hook sub-conversation events.
         visualizer: Visualizer instance passed to agent hook sub-conversations.
         conversation_stats: Parent conversation stats that should include hook spend.
@@ -425,6 +427,7 @@ def create_hook_callback(
         session_id=session_id,
         llm=llm,
         llm_getter=llm_getter,
+        llm_extra_headers=llm_extra_headers,
         persistence_dir=persistence_dir,
         visualizer=visualizer,
         conversation_stats=conversation_stats,

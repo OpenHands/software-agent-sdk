@@ -1,7 +1,7 @@
 """Hook manager - orchestrates hook execution within conversations."""
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from openhands.sdk.conversation.visualizer import ConversationVisualizerBase
@@ -28,6 +28,7 @@ class HookManager:
         session_id: str | None = None,
         llm: "LLM | None" = None,
         llm_getter: "Callable[[], LLM | None] | None" = None,
+        llm_extra_headers: Mapping[str, str] | None = None,
         persistence_dir: str | None = None,
         visualizer: type[ConversationVisualizerBase]
         | ConversationVisualizerBase
@@ -39,6 +40,7 @@ class HookManager:
             working_dir=working_dir,
             llm=llm,
             llm_getter=llm_getter,
+            llm_extra_headers=llm_extra_headers,
             persistence_dir=persistence_dir,
             visualizer=visualizer,
             conversation_stats=conversation_stats,
