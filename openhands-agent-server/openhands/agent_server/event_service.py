@@ -122,6 +122,8 @@ class EventService:
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
     _conversation: LocalConversation | None = field(default=None, init=False)
+    # LLM last written to meta.json; _sync_llm_to_meta fires only when it swaps.
+    _synced_llm: LLM | None = field(default=None, init=False)
     _pub_sub: PubSub[Event] = field(
         default_factory=lambda: PubSub[Event](max_subscribers=50), init=False
     )
@@ -140,6 +142,9 @@ class EventService:
     _closing: bool = field(default=False, init=False)
     _run_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     _callback_wrapper: AsyncCallbackWrapper | None = field(default=None, init=False)
+    # Reacts to the agent-change event to mirror an in-run LLM swap into
+    # meta.json (see _on_conversation_event / _sync_llm_to_meta).
+    _meta_sync_listener: AsyncCallbackWrapper | None = field(default=None, init=False)
     _lease: ConversationLease | None = field(default=None, init=False)
     _lease_generation: int | None = field(default=None, init=False)
     _lease_task: asyncio.Task | None = field(default=None, init=False)
@@ -985,6 +990,12 @@ class EventService:
         self._callback_wrapper = AsyncCallbackWrapper(
             self._pub_sub, loop=asyncio.get_running_loop()
         )
+        # Listener that mirrors an LLM swap into meta.json when the agent
+        # changes. The wrapper bridges worker-thread emissions onto the main
+        # loop, so _sync_llm_to_meta's save_meta() runs there safely.
+        self._meta_sync_listener = AsyncCallbackWrapper(
+            self._on_conversation_event, loop=asyncio.get_running_loop()
+        )
 
         # Only wire token streaming for agents that can actually emit token
         # callbacks. SDK LLM agents need stream=True, while ACP agents emit
@@ -1040,7 +1051,7 @@ class EventService:
             plugins=self.stored.plugins,
             persistence_dir=str(self.conversations_dir),
             conversation_id=self.stored.id,
-            callbacks=[self._callback_wrapper],
+            callbacks=[self._callback_wrapper, self._meta_sync_listener],
             token_callbacks=([_token_streaming_callback] if streaming_enabled else []),
             max_iteration_per_run=self.stored.max_iterations,
             stuck_detection=self.stored.stuck_detection,
@@ -1065,6 +1076,8 @@ class EventService:
                     secret_name,
                     binding,
                 )
+        # Baseline for _sync_llm_to_meta: meta.json already matches this LLM.
+        self._synced_llm = conversation.agent.llm
         self._conversation._state.set_write_guard(self._write_guard)
         if not self._external_lease_renewal:
             self._lease_task = asyncio.create_task(self._renew_lease_loop())
@@ -1210,6 +1223,15 @@ class EventService:
                     if self._callback_wrapper:
                         await loop.run_in_executor(
                             None, self._callback_wrapper.wait_for_pending, 30.0
+                        )
+
+                    # An in-run switch_llm tool changes state.agent, which the
+                    # meta-sync listener persists to meta.json off the main loop.
+                    # Flush it here so the swap is durable before the run task
+                    # completes (the listener is a no-op for ordinary runs).
+                    if self._meta_sync_listener:
+                        await loop.run_in_executor(
+                            None, self._meta_sync_listener.wait_for_pending, 30.0
                         )
 
                     # Clear task reference and publish state update
@@ -1637,6 +1659,73 @@ class EventService:
             update={"agent": self.stored.agent.model_copy(update={"acp_model": model})}
         )
         await self.save_meta()
+
+    async def _on_conversation_event(self, event: Event) -> None:
+        """Persist an in-run LLM swap the moment the agent changes.
+
+        The agent's own ``switch_llm`` tool swaps the LLM mid-run without going
+        through the endpoints; that swap ends in ``state.agent = ...``, which
+        emits ``ConversationStateUpdateEvent(key="agent")``. Reacting to that one
+        event covers the tool path (the endpoints persist synchronously
+        themselves). Best-effort so it can never break a run;
+        :meth:`_sync_llm_to_meta`'s identity guard keeps ordinary runs and
+        plugin merges (new agent object, same LLM) a no-op.
+        """
+        if not (
+            isinstance(event, ConversationStateUpdateEvent) and event.key == "agent"
+        ):
+            return
+        try:
+            await self._sync_llm_to_meta()
+        except Exception:
+            logger.exception("Failed to persist in-run LLM change to meta.json")
+
+    async def _sync_llm_to_meta(self) -> None:
+        """Persist an LLM swap into ``meta.json`` so it survives a restart.
+
+        Resume rebuilds the agent from ``meta.json`` and copies it over
+        ``base_state.json``, so a live-only switch reverts to the creation-time
+        LLM (and its ``timeout``). Only ``llm``/``condenser`` are mirrored — not
+        the whole agent — so plugin-merged ``agent_context``/``mcp_config`` isn't
+        baked in (it would double-merge on resume). Keyed on LLM identity, so
+        plugin loading (new agent, same LLM) is a no-op.
+        """
+        conversation = self._conversation
+        if (
+            conversation is None
+            or self._synced_llm is None
+            or conversation.agent.llm is self._synced_llm
+        ):
+            return
+        agent = self.stored.agent.model_copy(
+            update={
+                "llm": conversation.agent.llm,
+                "condenser": conversation.agent.condenser,
+            }
+        )
+        self.stored = self.stored.model_copy(update={"agent": agent})
+        self._synced_llm = conversation.agent.llm
+        await self.save_meta()
+
+    async def switch_llm(self, llm: LLM) -> None:
+        """Swap the conversation's LLM and persist it (see
+        :meth:`_sync_llm_to_meta`)."""
+        if self._conversation is None:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._conversation.switch_llm, llm)
+        await self._sync_llm_to_meta()
+
+    async def switch_profile(self, profile_name: str) -> None:
+        """Switch the conversation's LLM to a stored profile and persist it
+        (see :meth:`_sync_llm_to_meta`)."""
+        if self._conversation is None:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None, self._conversation.switch_profile, profile_name
+        )
+        await self._sync_llm_to_meta()
 
     async def close(self):
         self._closing = True
