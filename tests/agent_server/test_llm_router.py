@@ -202,6 +202,31 @@ def test_openai_subscription_device_start_returns_opaque_poll_token(
     assert "openai-device-auth-id" not in response.text
 
 
+def test_openai_subscription_device_start_rate_limit_returns_429(client, monkeypatch):
+    """OpenAI device-code rate limits are reported as retryable client errors."""
+    from openhands.agent_server import llm_router
+    from openhands.sdk.llm.auth.openai import OpenAIDeviceAuthError
+
+    class FakeAuth:
+        async def start_device_login(self):
+            raise OpenAIDeviceAuthError(
+                "Device code request failed with status 429",
+                status_code=429,
+            )
+
+    monkeypatch.setattr(llm_router, "_get_openai_subscription_auth", FakeAuth)
+
+    response = client.post("/api/llm/subscription/openai/device/start")
+
+    assert response.status_code == 429
+    assert response.json() == {
+        "detail": (
+            "OpenAI is rate-limiting ChatGPT device-code sign-in. "
+            "Wait a few minutes before trying again, or configure an OpenAI API key."
+        )
+    }
+
+
 def test_openai_subscription_device_poll_pending_and_success(client, monkeypatch):
     """Polling returns disconnected while pending and connected after success."""
     from openhands.agent_server import llm_router
@@ -261,6 +286,73 @@ def test_openai_subscription_device_poll_pending_and_success(client, monkeypatch
     assert FakeAuth.saved_credentials is not None
     assert "access-token" not in success.text
     assert "opaque-token" not in llm_router._PENDING_OPENAI_DEVICE_LOGINS
+
+
+def test_openai_subscription_device_poll_rate_limit_keeps_pending_login(
+    client, monkeypatch
+):
+    """OpenAI device-auth rate limits do not consume the opaque poll token."""
+    from openhands.agent_server import llm_router
+    from openhands.sdk.llm.auth.credentials import OAuthCredentials
+    from openhands.sdk.llm.auth.openai import DeviceCode, OpenAIDeviceAuthError
+
+    llm_router._PENDING_OPENAI_DEVICE_LOGINS.clear()
+    llm_router._IN_FLIGHT_OPENAI_DEVICE_LOGINS.clear()
+    llm_router._PENDING_OPENAI_DEVICE_LOGINS["opaque-token"] = (
+        llm_router.PendingDeviceLogin(
+            device_code=DeviceCode(
+                verification_url="https://auth.example/device",
+                user_code="ABCD-EFGH",
+                device_auth_id="openai-device-auth-id",
+                interval=1,
+            ),
+            expires_at=int(llm_router.time.time() * 1000) + 60_000,
+            epoch=llm_router._OPENAI_DEVICE_LOGIN_EPOCH,
+        )
+    )
+
+    class FakeAuth:
+        calls = 0
+
+        saved_credentials = None
+
+        async def poll_device_login(self, device_code, *, persist=True):
+            assert persist is False
+            self.__class__.calls += 1
+            if self.__class__.calls == 1:
+                raise OpenAIDeviceAuthError(
+                    "Device auth failed with status 429",
+                    status_code=429,
+                )
+            return OAuthCredentials(
+                vendor="openai",
+                access_token="access-token",
+                refresh_token="refresh-token",
+                expires_at=4_102_444_800_000,
+            )
+
+        def save_credentials(self, credentials):
+            self.__class__.saved_credentials = credentials
+
+    monkeypatch.setattr(llm_router, "_get_openai_subscription_auth", FakeAuth)
+
+    rate_limited = client.post(
+        "/api/llm/subscription/openai/device/poll",
+        json={"device_code": "opaque-token"},
+    )
+    success = client.post(
+        "/api/llm/subscription/openai/device/poll",
+        json={"device_code": "opaque-token"},
+    )
+
+    assert rate_limited.status_code == 429
+    assert "rate-limiting" in rate_limited.json()["detail"]
+    assert success.status_code == 200
+    assert success.json()["connected"] is True
+    assert FakeAuth.saved_credentials is not None
+    assert "access-token" not in success.text
+    assert "opaque-token" not in llm_router._PENDING_OPENAI_DEVICE_LOGINS
+    assert "opaque-token" not in llm_router._IN_FLIGHT_OPENAI_DEVICE_LOGINS
 
 
 @pytest.mark.asyncio
