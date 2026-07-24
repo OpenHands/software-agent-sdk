@@ -46,6 +46,7 @@ def build_seed_profile(
             acp_model=agent_settings.acp_model,
             acp_session_mode=agent_settings.acp_session_mode,
             acp_prompt_timeout=agent_settings.acp_prompt_timeout,
+            acp_startup_timeout=agent_settings.acp_startup_timeout,
             # Settings store the command as a token list; the profile holds a
             # single (re-parseable) string. Empty list => use the server default.
             acp_command=(

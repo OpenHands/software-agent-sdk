@@ -84,6 +84,7 @@ class StoredConversation(StartConversationRequest):
     # agent_profile_id is resolved into launched_agent_profile at creation; exclude from
     # the persistence payload so it does not re-appear in meta.json.
     agent_profile_id: UUID | None = Field(default=None, exclude=True)
+    required_runtime_credential_bindings: set[str] = Field(default_factory=set)
 
     id: OpenHandsUUID
     title: str | None = Field(
@@ -232,6 +233,21 @@ class _ConversationInfoBase(BaseModel):
         description=(
             "Event ID this conversation was forked at. ``None`` for non-forked "
             "conversations or whole-conversation forks."
+        ),
+    )
+    parent_conversation_id: UUID | None = Field(
+        default=None,
+        description=(
+            "ID of the conversation that owns this one. ``None`` for top-level "
+            "conversations."
+        ),
+    )
+    sub_conversation_ids: list[UUID] = Field(
+        default_factory=list,
+        description=(
+            "IDs of conversations naming this one as their parent. Derived from "
+            "the server catalog; empty on webhook payloads. Name mirrors the "
+            "Cloud API field."
         ),
     )
 

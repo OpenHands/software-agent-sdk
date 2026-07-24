@@ -460,7 +460,7 @@ def _default_llm_settings() -> LLM:
 
 _RequestT = TypeVar("_RequestT")
 
-AGENT_SETTINGS_SCHEMA_VERSION = 4
+AGENT_SETTINGS_SCHEMA_VERSION = 5
 CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 
 
@@ -613,6 +613,17 @@ def _migrate_agent_settings_v3_to_v4(payload: dict[str, Any]) -> dict[str, Any]:
     if isinstance(llm, dict):
         migrated["llm"] = canonicalize_openhands_llm_payload(llm)
     migrated["schema_version"] = 4
+    return migrated
+
+
+def _migrate_agent_settings_v4_to_v5(payload: dict[str, Any]) -> dict[str, Any]:
+    """Persist MCP settings in the SDK-native server map/auth shape."""
+
+    migrated = dict(payload)
+    mcp_config = migrated.get("mcp_config")
+    if isinstance(mcp_config, Mapping):
+        migrated["mcp_config"] = _migrate_mcp_config_to_server_map(mcp_config)
+    migrated["schema_version"] = 5
     return migrated
 
 
@@ -897,16 +908,6 @@ def _migrate_mcp_config_to_server_map(
     }
 
 
-def _normalize_mcp_config_field(mcp_config: Any) -> Any:
-    """Accept legacy ``mcpServers`` wrappers without a settings schema bump."""
-
-    if mcp_config in (None, {}):
-        return {}
-    if isinstance(mcp_config, Mapping):
-        return _migrate_mcp_config_to_server_map(mcp_config)
-    return mcp_config
-
-
 def _migrate_conversation_settings_v0_to_v1(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
@@ -920,6 +921,7 @@ _AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     1: _migrate_agent_settings_v1_to_v2,
     2: _migrate_agent_settings_v2_to_v3,
     3: _migrate_agent_settings_v3_to_v4,
+    4: _migrate_agent_settings_v4_to_v5,
 }
 _CONVERSATION_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     0: _migrate_conversation_settings_v0_to_v1,
@@ -1295,11 +1297,6 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             return LLMSummarizingCondenserSettings.model_validate(value.model_dump())
         return value
 
-    @field_validator("mcp_config", mode="before")
-    @classmethod
-    def _normalize_mcp_config(cls, value: Any) -> Any:
-        return _normalize_mcp_config_field(value)
-
     def create_agent(self) -> Agent:
         """Build an :class:`Agent` purely from these settings.
 
@@ -1534,6 +1531,28 @@ class ACPAgentSettings(AgentSettingsBase):
             ).model_dump(),
         },
     )
+    acp_startup_timeout: float = Field(
+        default=90.0,
+        gt=0,
+        description=(
+            "Timeout (seconds) for ACP server startup: spawning the "
+            "subprocess, the initialize/authenticate handshake, and "
+            "new_session()/load_session(). A hard deadline, unlike "
+            "acp_prompt_timeout, since startup has no intermediate progress "
+            "signal to reset it against."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="ACP startup timeout (seconds)",
+                prominence=SettingProminence.MINOR,
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
+                key="acp",
+                label="ACP (Agent Client Protocol)",
+                variant="acp",
+            ).model_dump(),
+        },
+    )
     mcp_config: dict[str, MCPServer] = Field(
         default_factory=dict,
         description=(
@@ -1552,11 +1571,6 @@ class ACPAgentSettings(AgentSettingsBase):
             ).model_dump(),
         },
     )
-
-    @field_validator("mcp_config", mode="before")
-    @classmethod
-    def _normalize_mcp_config(cls, value: Any) -> Any:
-        return _normalize_mcp_config_field(value)
 
     # Programmatic / downstream-facing knob, deliberately NOT surfaced in the
     # settings-form UI (no SETTINGS_METADATA_KEY): the deploying application sets
@@ -1775,6 +1789,7 @@ class ACPAgentSettings(AgentSettingsBase):
             acp_model=self.acp_model,
             acp_session_mode=self.acp_session_mode,
             acp_prompt_timeout=self.acp_prompt_timeout,
+            acp_startup_timeout=self.acp_startup_timeout,
             acp_isolate_data_dir=self.acp_isolate_data_dir,
             acp_file_secrets=list(self.acp_file_secrets),
             agent_context=self.agent_context,
