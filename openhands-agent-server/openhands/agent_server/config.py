@@ -6,7 +6,6 @@ from typing import Any, ClassVar, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
-from openhands.agent_server.conversation_lease import DEFAULT_LEASE_TTL_SECONDS
 from openhands.agent_server.env_parser import (
     MISSING,
     _get_default_parsers,
@@ -338,17 +337,20 @@ class Config(BaseModel):
         ),
     )
     lease_ttl_seconds: float = Field(
-        default=DEFAULT_LEASE_TTL_SECONDS,
+        default=0.0,
         ge=0.0,
         description=(
             "How long (in seconds) a conversation ownership lease remains valid "
             "without renewal. The lease prevents two server instances from "
             "concurrently owning the same conversation when storage is shared "
-            "across instances. Set to 0 to disable leasing entirely, which is "
-            "appropriate for single-instance deployments where concurrent "
-            "ownership is impossible. Values between 0 and "
-            "LEASE_RENEW_INTERVAL_SECONDS (15 s) are valid but cause the lease "
-            "to expire before the first renewal, effectively making it one-shot."
+            "across instances. Leasing is disabled by default (0) because most "
+            "servers are single-instance, where a held lease only delays "
+            "conversation rehydration after a restart. Deployments that share "
+            "conversation storage across instances should set this to a "
+            "positive value such as DEFAULT_LEASE_TTL_SECONDS (45 s). Values "
+            "between 0 and LEASE_RENEW_INTERVAL_SECONDS (15 s) are valid but "
+            "cause the lease to expire before the first renewal, effectively "
+            "making it one-shot."
         ),
     )
     conversation_idle_ttl_seconds: float | None = Field(

@@ -151,3 +151,38 @@ async def test_expired_lease_takeover_fences_stale_writer_with_disk_events(tmp_p
 
             with pytest.raises(ConversationOwnershipLostError):
                 primary_state.execution_status = ConversationExecutionStatus.ERROR
+
+
+def _assign_lease_to_foreign_host(conversation_dir: Path) -> None:
+    """Rewrite the lease as held by an unverifiable owner on another host."""
+    lease_path = conversation_dir / LEASE_FILE_NAME
+    payload = json.loads(lease_path.read_text())
+    payload["owner_host"] = "vanished-container-1234"
+    lease_path.write_text(json.dumps(payload))
+
+
+@pytest.mark.asyncio
+async def test_leasing_disabled_server_rehydrates_despite_live_foreign_lease(tmp_path):
+    """https://github.com/OpenHands/software-agent-sdk/issues/4192
+
+    With the server default (leasing disabled), a restarted server rehydrates
+    conversations even when the previous owner left a still-live lease that
+    cannot be verified dead (e.g. a recreated container with a new hostname).
+    """
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    async with ConversationService(conversations_dir=conversations_dir) as primary:
+        conversation_info, _ = await primary.start_conversation(_request(workspace_dir))
+        conversation_dir = conversations_dir / conversation_info.id.hex
+        _assign_lease_to_foreign_host(conversation_dir)
+
+        async with ConversationService(
+            conversations_dir=conversations_dir,
+            lease_ttl_seconds=0,
+        ) as restarted:
+            page = await restarted.search_conversations()
+            assert conversation_info.id in [item.id for item in page.items]
+            event_service = await restarted.get_event_service(conversation_info.id)
+            assert event_service is not None
