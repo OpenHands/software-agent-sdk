@@ -541,6 +541,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         default=None,
         exclude=True,
     )
+    serialized_is_subscription: SkipJsonSchema[bool] = Field(
+        default=False,
+        alias="is_subscription",
+        exclude=True,
+        repr=False,
+    )
     _metrics: Metrics | None = PrivateAttr(default=None)
     # Runtime-only private attrs
     _model_info: Any = PrivateAttr(default=None)
@@ -634,6 +640,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 output_cost_per_token=self.output_cost_per_token,
                 metrics=self._metrics,
             )
+
+        if self.serialized_is_subscription:
+            self._is_subscription = True
 
         # Tokenizer
         if self.custom_tokenizer:
@@ -781,24 +790,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             bool: True if using subscription-based transport, False otherwise.
         """
         return self._is_subscription
-
-    @model_validator(mode="wrap")
-    @classmethod
-    def _restore_is_subscription(cls, data, handler):
-        """Restore the subscription flag when validating serialized data.
-
-        ``is_subscription`` is a computed field backed by the private
-        ``_is_subscription`` attribute, so plain validation would drop it.
-        Without this, an LLM created via ``LLM.subscription_login()`` loses
-        its subscription-specific request handling (streaming exemption,
-        Codex system prompt transform, reasoning-item stripping) after a
-        dump/validate round trip - e.g. when shipped to a remote
-        agent-server.
-        """
-        llm = handler(data)
-        if isinstance(data, dict) and data.get("is_subscription"):
-            llm._is_subscription = True
-        return llm
 
     def restore_metrics(self, metrics: Metrics) -> None:
         # Only used by ConversationStats to seed metrics
