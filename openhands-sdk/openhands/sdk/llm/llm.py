@@ -2579,7 +2579,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # extends every turn. Anthropic-only; Gemini is excluded from
         # PROMPT_CACHE_MODELS because its cache can't extend this way.
         for message in reversed(messages):
-            if message.role in ("user", "tool"):
+            # Skip empty-content user/tool messages (e.g. a tool observation that
+            # produced no text/image): there is no content block to mark, and
+            # indexing content[-1] on an empty list would raise IndexError. Fall
+            # through to the previous non-empty user/tool message instead.
+            if message.role in ("user", "tool") and message.content:
                 message.content[
                     -1
                 ].cache_prompt = True  # Last item inside the message content
