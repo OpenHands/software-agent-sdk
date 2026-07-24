@@ -186,7 +186,8 @@ class EventLog(EventsListBase):
 
         Raises:
             TimeoutError: If the lock cannot be acquired within LOCK_TIMEOUT_SECONDS.
-            ValueError: If an event with the same ID already exists.
+            ValueError: If an event with the same ID already exists or its explicit
+                parent does not exist.
         """
         evt_id = event.id
 
@@ -202,6 +203,15 @@ class EventLog(EventsListBase):
                     raise ValueError(
                         f"Event with ID '{evt_id}' already exists at index "
                         f"{existing_idx}"
+                    )
+
+                if (
+                    event.parent_id not in (None, ROOT_PARENT_ID)
+                    and event.parent_id not in self._id_to_idx
+                ):
+                    raise ValueError(
+                        f"Parent event '{event.parent_id}' does not exist "
+                        f"for event '{evt_id}'"
                     )
 
                 payload = event.model_dump_json(exclude_none=True)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from typing import Final
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
@@ -11,7 +12,11 @@ from openhands.agent_server.event_service import CredentialBindingActivationTooL
 from openhands.agent_server.persistence import FileSecretsStore
 from openhands.sdk.agent.acp_file_credentials import supports_file_credential_binding
 from openhands.sdk.credential import (
+    CredentialAuthorizationRejected,
+    CredentialBindingError,
+    CredentialBindingUnsupported,
     CredentialConflict,
+    CredentialInvalidResponse,
     CredentialNeedsReauthentication,
     CredentialSyncError,
     HttpVersionedCredentialBinding,
@@ -76,6 +81,33 @@ class LocalVersionedCredentialBinding:
 
 
 router = APIRouter(prefix="/conversations", tags=["Credential Bindings"])
+_PROBE_ATTEMPTS: Final[int] = 3
+_PROBE_INITIAL_DELAY: Final[float] = 0.25
+
+
+async def _probe_binding(binding: HttpVersionedCredentialBinding) -> None:
+    for attempt in range(_PROBE_ATTEMPTS):
+        try:
+            await binding.load()
+            return
+        except (
+            CredentialAuthorizationRejected,
+            CredentialBindingUnsupported,
+            CredentialConflict,
+            CredentialInvalidResponse,
+            CredentialNeedsReauthentication,
+        ):
+            raise
+        except CredentialSyncError:
+            if attempt == _PROBE_ATTEMPTS - 1:
+                raise
+            await asyncio.sleep(_PROBE_INITIAL_DELAY * 2**attempt)
+
+
+@router.post("/prepare-for-sandbox-pause", include_in_schema=False)
+async def prepare_for_sandbox_pause(request: Request) -> Response:
+    await request.app.state.conversation_service.prepare_for_sandbox_pause()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.put(
@@ -90,18 +122,48 @@ async def activate_credential_binding(
 ) -> Response:
     if not supports_file_credential_binding(secret_name):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
+    binding = HttpVersionedCredentialBinding(
+        activation.url,
+        activation.headers,
+    )
     try:
+        await _probe_binding(binding)
         await request.app.state.conversation_service.activate_credential_binding(
             conversation_id,
             secret_name,
-            HttpVersionedCredentialBinding(
-                activation.url,
-                activation.headers,
-            ),
+            binding,
         )
     except CredentialBindingActivationTooLate as exc:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             "Credential binding activation arrived after ACP initialization",
+        ) from exc
+    except CredentialConflict as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Credential binding source changed",
+        ) from exc
+    except CredentialAuthorizationRejected as exc:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Credential binding authorization was rejected",
+        ) from exc
+    except CredentialBindingUnsupported as exc:
+        raise HTTPException(
+            status.HTTP_501_NOT_IMPLEMENTED,
+            "Credential binding source is unsupported",
+        ) from exc
+    except (
+        CredentialInvalidResponse,
+        CredentialNeedsReauthentication,
+    ) as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Credential binding source is invalid",
+        ) from exc
+    except CredentialBindingError as exc:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            "Credential binding source is unavailable",
         ) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)

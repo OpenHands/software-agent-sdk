@@ -78,6 +78,10 @@ if TYPE_CHECKING:
 CONVERSATION_WORKTREE_ROOT = Path("/tmp/conversation-worktrees")
 
 
+class CredentialBindingActivationRequired(RuntimeError):
+    pass
+
+
 def _build_worktree_guidance(
     *,
     source_workspace: Path,
@@ -685,6 +689,35 @@ class ConversationService:
                 binding
             )
 
+    async def prepare_for_sandbox_pause(self) -> None:
+        async with self._lifecycle_lock:
+            event_services = self._event_services
+            if event_services is None:
+                raise ValueError("inactive_service")
+            active_services = tuple(event_services.items())
+            results = await asyncio.gather(
+                *(
+                    event_service.__aexit__(None, None, None)
+                    for _, event_service in active_services
+                ),
+                return_exceptions=True,
+            )
+            first_error: BaseException | None = None
+            for (conversation_id, event_service), result in zip(
+                active_services, results, strict=True
+            ):
+                if isinstance(result, BaseException):
+                    if first_error is None:
+                        first_error = result
+                    continue
+                record = self._conversation_records.get(conversation_id)
+                if record is not None:
+                    record.stored = event_service.stored
+                event_services.pop(conversation_id, None)
+            if first_error is not None:
+                raise first_error
+            self._credential_bindings = {}
+
     @staticmethod
     def _is_codex_agent(agent: AgentBase | None) -> bool:
         return isinstance(agent, ACPAgent) and agent.acp_server == "codex"
@@ -884,7 +917,10 @@ class ConversationService:
             return await self._get_or_load_event_service_locked(conversation_id)
 
     async def _get_or_load_event_service_locked(
-        self, conversation_id: UUID
+        self,
+        conversation_id: UUID,
+        *,
+        require_runtime_bindings: bool = True,
     ) -> EventService | None:
         event_services = self._event_services
         if event_services is None:
@@ -899,6 +935,15 @@ class ConversationService:
         record = self._conversation_records.get(conversation_id)
         if record is None:
             return None
+
+        pending_bindings = self._credential_bindings.get(conversation_id, {})
+        missing_bindings = (
+            record.stored.required_runtime_credential_bindings - pending_bindings.keys()
+        )
+        if require_runtime_bindings and missing_bindings:
+            raise CredentialBindingActivationRequired(
+                "credential_binding_activation_required"
+            )
 
         await asyncio.to_thread(self._prepare_persisted_runtime, record.stored)
         try:
@@ -1466,7 +1511,8 @@ class ConversationService:
             if event_services is None:
                 raise ValueError("inactive_service")
             event_service = await self._get_or_load_event_service_locked(
-                conversation_id
+                conversation_id,
+                require_runtime_bindings=False,
             )
             if event_service is None:
                 return False

@@ -25,11 +25,19 @@ class CredentialSyncError(CredentialBindingError):
     pass
 
 
+class CredentialInvalidResponse(CredentialSyncError):
+    pass
+
+
 class CredentialConflict(CredentialSyncError):
     pass
 
 
 class CredentialAuthorizationRejected(CredentialSyncError):
+    pass
+
+
+class CredentialBindingUnsupported(CredentialBindingError):
     pass
 
 
@@ -82,6 +90,10 @@ class HttpVersionedCredentialBinding:
                 transport=self.transport,
             ) as client:
                 response = await client.get(self.url, headers=headers)
+        except (httpx.InvalidURL, httpx.UnsupportedProtocol) as exc:
+            raise CredentialInvalidResponse(
+                "Credential source URL is invalid."
+            ) from exc
         except httpx.RequestError as exc:
             raise CredentialSyncError("Credential source is unavailable.") from exc
         self._raise_for_status(response)
@@ -90,11 +102,13 @@ class HttpVersionedCredentialBinding:
             value = payload["value"]
             version = payload["version"]
         except (KeyError, TypeError, ValueError) as exc:
-            raise CredentialSyncError(
+            raise CredentialInvalidResponse(
                 "Credential source returned an invalid response."
             ) from exc
         if not isinstance(value, str) or not isinstance(version, str) or not version:
-            raise CredentialSyncError("Credential source returned an invalid response.")
+            raise CredentialInvalidResponse(
+                "Credential source returned an invalid response."
+            )
         return ResolvedCredential(value=value, version=version)
 
     async def replace(self, expected_version: str, value: str) -> str:
@@ -109,21 +123,31 @@ class HttpVersionedCredentialBinding:
                     headers=headers,
                     json={"expected_version": expected_version, "value": value},
                 )
+        except (httpx.InvalidURL, httpx.UnsupportedProtocol) as exc:
+            raise CredentialInvalidResponse(
+                "Credential source URL is invalid."
+            ) from exc
         except httpx.RequestError as exc:
             raise CredentialSyncError("Credential update is unavailable.") from exc
         self._raise_for_status(response)
         try:
             version = response.json()["version"]
         except (KeyError, TypeError, ValueError) as exc:
-            raise CredentialSyncError(
+            raise CredentialInvalidResponse(
                 "Credential source returned an invalid response."
             ) from exc
         if not isinstance(version, str) or not version:
-            raise CredentialSyncError("Credential source returned an invalid response.")
+            raise CredentialInvalidResponse(
+                "Credential source returned an invalid response."
+            )
         return version
 
     @staticmethod
     def _raise_for_status(response: httpx.Response) -> None:
+        if response.status_code == 501:
+            raise CredentialBindingUnsupported(
+                "Credential binding is not supported by this source."
+            )
         if response.status_code == 404:
             raise CredentialNeedsReauthentication(
                 "Credential is missing. Please authenticate again."
