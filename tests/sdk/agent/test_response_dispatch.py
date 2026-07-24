@@ -9,7 +9,8 @@ from openhands.sdk.agent import Agent
 from openhands.sdk.agent.response_dispatch import LLMResponseType, classify_response
 from openhands.sdk.conversation import Conversation, LocalConversation
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.event import ActionEvent, Event, MessageEvent
+from openhands.sdk.conversation.stuck_detector import StuckDetector
+from openhands.sdk.event import ActionEvent, Event, MessageEvent, ObservationEvent
 from openhands.sdk.llm import (
     LLM,
     LLMResponse,
@@ -21,6 +22,16 @@ from openhands.sdk.llm import (
     ThinkingBlock,
 )
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot, TokenUsage
+from openhands.sdk.tool import Action, Observation
+
+
+class _LoopAction(Action):
+    command: str
+
+
+class _LoopObservation(Observation):
+    command: str
+    exit_code: int
 
 
 def _msg(**kwargs) -> Message:
@@ -186,6 +197,9 @@ def _make_llm_response(message: Message) -> LLMResponse:
 
 def _run_single_step(
     llm_response: LLMResponse,
+    *,
+    seed_events: list[Event] | None = None,
+    record_emitted_events_in_state: bool = False,
 ) -> tuple[list[Event], LocalConversation]:
     """Run one agent step with a canned LLM response."""
     from pydantic import PrivateAttr
@@ -206,14 +220,60 @@ def _run_single_step(
     agent = Agent(llm=llm, tools=[])
     conversation = Conversation(agent=agent)
     conversation._ensure_agent_ready()
+    if seed_events is not None:
+        for event in seed_events:
+            conversation.state.append_event(event)
 
     events: list[Event] = []
 
     def on_event(e: Event) -> None:
         events.append(e)
+        if record_emitted_events_in_state:
+            conversation.state.append_event(e)
 
     agent.step(conversation, on_event=on_event)
     return events, conversation
+
+
+def _user_message(text: str) -> MessageEvent:
+    return MessageEvent(
+        source="user",
+        llm_message=Message(role="user", content=[TextContent(text=text)]),
+    )
+
+
+def _repeating_terminal_loop_events(repeat_count: int) -> list[Event]:
+    loop_events: list[Event] = []
+    for i in range(repeat_count):
+        action = ActionEvent(
+            source="agent",
+            thought=[TextContent(text="I need to run ls command")],
+            action=_LoopAction(command="ls"),
+            tool_name="terminal",
+            tool_call_id=f"call_{i}",
+            tool_call=MessageToolCall(
+                id=f"call_{i}",
+                name="terminal",
+                arguments='{"command": "ls"}',
+                origin="completion",
+            ),
+            llm_response_id=f"response_{i}",
+        )
+        loop_events.append(action)
+        loop_events.append(
+            ObservationEvent(
+                source="environment",
+                observation=_LoopObservation.from_text(
+                    text="file1.txt\nfile2.txt",
+                    command="ls",
+                    exit_code=0,
+                ),
+                action_id=action.id,
+                tool_name="terminal",
+                tool_call_id=f"call_{i}",
+            )
+        )
+    return loop_events
 
 
 def test_content_response_sets_finished():
@@ -236,7 +296,8 @@ def test_empty_response_sends_nudge():
     assert convo.state.execution_status != ConversationExecutionStatus.FINISHED
     assert len(msg_events) == 2
     assert msg_events[0].source == "agent"
-    assert msg_events[1].source == "user"
+    assert msg_events[1].source == "environment"
+    assert msg_events[1].llm_message.role == "user"
     nudge_content = msg_events[1].llm_message.content[0]
     assert isinstance(nudge_content, TextContent)
     assert "function call" in nudge_content.text
@@ -251,7 +312,28 @@ def test_reasoning_only_sends_nudge():
     assert convo.state.execution_status != ConversationExecutionStatus.FINISHED
     assert len(msg_events) == 2
     assert msg_events[0].source == "agent"
-    assert msg_events[1].source == "user"
+    assert msg_events[1].source == "environment"
+    assert msg_events[1].llm_message.role == "user"
+
+
+def test_corrective_nudge_does_not_reset_stuck_detection_window():
+    """Framework feedback must not count as a new human turn for stuck detection."""
+    seed_events = [
+        _user_message("Please keep trying ls"),
+        *_repeating_terminal_loop_events(repeat_count=4),
+    ]
+    msg = Message(role="assistant", content=[])
+    events, convo = _run_single_step(
+        _make_llm_response(msg),
+        seed_events=seed_events,
+        record_emitted_events_in_state=True,
+    )
+    msg_events = [e for e in events if isinstance(e, MessageEvent)]
+
+    assert len(msg_events) == 2
+    assert msg_events[1].source == "environment"
+    assert msg_events[1].llm_message.role == "user"
+    assert StuckDetector(convo.state).is_stuck() is True
 
 
 def test_tool_calls_response_executes_actions():
