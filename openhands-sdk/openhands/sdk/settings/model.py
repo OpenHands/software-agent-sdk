@@ -196,6 +196,7 @@ class LLMSummarizingCondenserSettings(CondenserSettings):
             "Discriminator for the condenser settings union. ``'llm_summarizing'`` "
             "selects the default LLM summarizing condenser."
         ),
+        json_schema_extra={SETTINGS_METADATA_KEY: SettingsFieldMetadata().model_dump()},
     )
     max_tokens: int | None = Field(
         default=None,
@@ -295,6 +296,7 @@ class NoOpCondenserSettings(CondenserSettings):
             "Discriminator for the condenser settings union. ``'no_op'`` selects "
             "a condenser that leaves conversation views unchanged."
         ),
+        json_schema_extra={SETTINGS_METADATA_KEY: SettingsFieldMetadata().model_dump()},
     )
 
     def build_condenser(self, llm: LLM) -> CondenserBase | None:  # noqa: ARG002
@@ -1266,6 +1268,13 @@ class OpenHandsAgentSettings(AgentSettingsBase):
     agent_context: AgentContext = Field(
         default_factory=AgentContext,
         description="Context for the agent (skills, secrets, message suffixes).",
+        json_schema_extra={
+            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
+                key="agent_context",
+                label="Memory",
+                variant="openhands",
+            ).model_dump()
+        },
     )
     condenser: CondenserSettingsConfig = Field(
         default_factory=LLMSummarizingCondenserSettings,
@@ -2084,6 +2093,9 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                 for nested_key, nested_field in nested_model.model_fields.items():
                     if nested_field.exclude:
                         continue
+                    metadata = settings_metadata(nested_field)
+                    if metadata is None:
+                        continue
                     existing_field = seen_nested_fields.get(nested_key)
                     if existing_field is not None:
                         existing_choice_values = {
@@ -2094,7 +2106,6 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                                 existing_field.choices.append(choice)
                                 existing_choice_values.add(choice.value)
                         continue
-                    metadata = settings_metadata(nested_field)
                     default_value = None
                     if isinstance(section_default, BaseModel) and hasattr(
                         section_default, nested_key
@@ -2104,7 +2115,7 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                         key=f"{explicit_section_metadata.key}.{nested_key}",
                         label=(
                             metadata.label
-                            if metadata is not None and metadata.label is not None
+                            if metadata.label is not None
                             else _humanize_name(nested_key)
                         ),
                         description=nested_field.description,
@@ -2112,26 +2123,17 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                         section_label=section.label,
                         value_type=_infer_value_type(nested_field.annotation),
                         default=_normalize_default(default_value),
-                        prominence=(
-                            metadata.prominence
-                            if metadata is not None
-                            else SettingProminence.MINOR
-                        ),
+                        prominence=metadata.prominence,
                         depends_on=[
                             f"{explicit_section_metadata.key}.{dependency}"
-                            for dependency in (
-                                metadata.depends_on if metadata is not None else ()
-                            )
+                            for dependency in metadata.depends_on
                         ],
                         secret=_contains_secret(nested_field.annotation),
                         choices=_extract_choices(nested_field.annotation),
                         # Field-level variant falls back to the enclosing
                         # section's variant — nested fields inherit their
                         # parent section's variant by default.
-                        variant=(
-                            (metadata.variant if metadata is not None else None)
-                            or section.variant
-                        ),
+                        variant=metadata.variant or section.variant,
                     )
                     seen_nested_fields[nested_key] = field_schema
                     section.fields.append(field_schema)
