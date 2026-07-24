@@ -407,14 +407,17 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         """
         from openhands.sdk.event import ActionEvent
 
-        for event in reversed(events):
-            if (
-                isinstance(event, ActionEvent)
+        action = next(
+            (
+                event.action
+                for event in reversed(events)
+                if isinstance(event, ActionEvent)
                 and event.tool_name == self.name
                 and event.action is not None
-            ):
-                return self.parse_response(event.action)
-        return None
+            ),
+            None,
+        )
+        return self.parse_response(action) if action is not None else None
 
     def __call__(
         self, action: ActionT, conversation: "LocalConversation | None" = None
