@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.base import Event
 from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.logger import get_logger
 
 
@@ -59,7 +60,13 @@ def extract_first_user_message(events: Sequence[Event]) -> str | None:
     return None
 
 
-def generate_title_with_llm(message: str, llm: LLM, max_length: int = 50) -> str | None:
+def generate_title_with_llm(
+    message: str,
+    llm: LLM,
+    max_length: int = 50,
+    *,
+    call_context: LLMCallContext | None = None,
+) -> str | None:
     """Generate a conversation title using LLM.
 
     Args:
@@ -123,7 +130,7 @@ def generate_title_with_llm(message: str, llm: LLM, max_length: int = 50) -> str
         if llm.stream:
             llm = llm.model_copy(update={"stream": False})
 
-        response = llm.completion(messages)
+        response = llm.completion(messages, call_context=call_context)
 
         # Extract the title from the response
         if response.message.content and isinstance(
@@ -162,7 +169,11 @@ def generate_fallback_title(message: str, max_length: int = 50) -> str:
 
 
 def generate_title_from_message(
-    message: str, llm: LLM | None = None, max_length: int = 50
+    message: str,
+    llm: LLM | None = None,
+    max_length: int = 50,
+    *,
+    call_context: LLMCallContext | None = None,
 ) -> str:
     """Generate a title from an already-extracted user message."""
     # Skip the ACP sentinel LLM — it has no credentials and cannot be
@@ -171,7 +182,12 @@ def generate_title_from_message(
     llm_to_use = None if llm and llm.usage_id == "acp-managed" else llm
 
     if llm_to_use:
-        llm_title = generate_title_with_llm(message, llm_to_use, max_length)
+        llm_title = generate_title_with_llm(
+            message,
+            llm_to_use,
+            max_length,
+            call_context=call_context,
+        )
         if llm_title:
             return llm_title
 
@@ -179,7 +195,11 @@ def generate_title_from_message(
 
 
 def generate_conversation_title(
-    events: Sequence[Event], llm: LLM | None = None, max_length: int = 50
+    events: Sequence[Event],
+    llm: LLM | None = None,
+    max_length: int = 50,
+    *,
+    call_context: LLMCallContext | None = None,
 ) -> str:
     """Generate a title for a conversation based on the first user message.
 
@@ -205,4 +225,9 @@ def generate_conversation_title(
     if not first_user_message:
         raise ValueError("No user messages found in conversation events")
 
-    return generate_title_from_message(first_user_message, llm, max_length)
+    return generate_title_from_message(
+        first_user_message,
+        llm,
+        max_length,
+        call_context=call_context,
+    )

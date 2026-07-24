@@ -53,7 +53,7 @@ from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_call
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
 from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
-from openhands.sdk.llm.llm import LLMCallContext
+from openhands.sdk.llm.call_context import LLMCallContext, llm_call_context_scope
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
@@ -181,6 +181,7 @@ class LocalConversation(BaseConversation):
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
     _subscription_disabled_condenser: Any | None
     _mcp_tool_provider: MCPToolProvider
+    _llm_call_context: LLMCallContext
 
     def __init__(
         self,
@@ -215,6 +216,7 @@ class LocalConversation(BaseConversation):
         prompt_cache_key: str | None = None,
         file_store: FileStore | None = None,
         mcp_tool_provider: MCPToolProvider | None = None,
+        _parent_llm_call_context: LLMCallContext | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -273,6 +275,8 @@ class LocalConversation(BaseConversation):
             file_store: Optional FileStore to use for conversation state and EventLog
                 persistence. If provided, this takes precedence over persistence_dir
                 for state and EventLog storage.
+            _parent_llm_call_context: Runtime LLM context inherited by an internal
+                child conversation. Conversation-local identity is always replaced.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -281,7 +285,6 @@ class LocalConversation(BaseConversation):
         self._cleanup_complete = False
         self._arun_task = None
         self._cancel_token = None
-        self._prompt_cache_key = prompt_cache_key
         self._step_holds_state_lock = False
 
         # Store plugin specs for lazy loading (no IO in constructor)
@@ -296,6 +299,12 @@ class LocalConversation(BaseConversation):
 
         # Create-or-resume: factory inspects BASE_STATE to decide
         desired_id = conversation_id or uuid.uuid4()
+        self._llm_call_context = (
+            _parent_llm_call_context or LLMCallContext()
+        ).for_conversation(
+            str(desired_id),
+            prompt_cache_key=prompt_cache_key,
+        )
 
         # Resolve client-defined tools, then register them and inject the matching
         # Tool specs into the agent so the agent can call them. Execution is
@@ -344,8 +353,6 @@ class LocalConversation(BaseConversation):
             cipher=cipher,
             tags=tags,
         )
-
-        self._bind_conversation_context(self.agent.llm)
 
         # Default callback: persist every event to state
         def _default_callback(e):
@@ -749,6 +756,7 @@ class LocalConversation(BaseConversation):
                 visualizer=type(self._visualizer) if self._visualizer else None,
                 delete_on_close=self.delete_on_close,
                 tags=tags,
+                _parent_llm_call_context=self._llm_call_context,
             )
 
             # Branch slice copies path_to_root(event) (root-first, re-rootable);
@@ -1160,6 +1168,7 @@ class LocalConversation(BaseConversation):
                 # Resolve lazily: switch_llm()/switch_profile() rebind self.agent,
                 # so agent hooks must read the current LLM at execution time.
                 llm_getter=lambda: self.agent.llm,
+                llm_call_context=self._llm_call_context,
                 persistence_dir=hook_persistence_dir,
                 visualizer=self._visualizer,
                 conversation_stats=self._state.stats,
@@ -1233,6 +1242,7 @@ class LocalConversation(BaseConversation):
             session_id=str(self._state.id),
             original_callback=self._base_callback,
             llm_getter=lambda: self.agent.llm,
+            llm_call_context=self._llm_call_context,
             persistence_dir=hook_persistence_dir,
             visualizer=self._visualizer,
             conversation_stats=self._state.stats,
@@ -1448,9 +1458,6 @@ class LocalConversation(BaseConversation):
                 if llm.usage_id not in registered:
                     self.llm_registry.add(llm)
                     registered.add(llm.usage_id)
-                # Rebinds the primary LLM (harmless, same values) and
-                # binds any additional LLMs (e.g. condenser).
-                self._bind_conversation_context(llm)
 
             self._agent_ready = True
 
@@ -1465,31 +1472,13 @@ class LocalConversation(BaseConversation):
         return not isinstance(self.agent, ACPAgent)
 
     def get_llm_call_context(self) -> LLMCallContext:
-        """Build an :class:`LLMCallContext` for this conversation.
+        """Return the immutable LLM call context owned by this conversation.
 
         The ``prompt_cache_key`` uses the override supplied at construction
         (for sub-agent cache-shard sharing) or defaults to the conversation's
         own ID.  ``session_id`` is always the conversation's ID.
         """
-        conv_id = str(self._state.id)
-        return LLMCallContext(
-            prompt_cache_key=self._prompt_cache_key or conv_id,
-            session_id=conv_id,
-        )
-
-    def _bind_conversation_context(self, llm: LLM) -> None:
-        """Bind per-conversation call context to *llm* as a PrivateAttr fallback.
-
-        This sets the LLM's ``_call_context`` so that callers who don't
-        thread an explicit ``call_context`` through the completion call
-        (e.g. the condenser's dedicated LLM) still get correct per-
-        conversation state.  The primary agent completion path threads
-        context explicitly via ``Agent.step()`` → ``make_llm_completion()``
-        → ``llm.completion(call_context=...)``.
-
-        See #3443 for background.
-        """
-        llm._call_context = self.get_llm_call_context()
+        return self._llm_call_context
 
     def _condenser_for_switched_llm(
         self,
@@ -1564,7 +1553,6 @@ class LocalConversation(BaseConversation):
                 )
             self.agent = self.agent.model_copy(update=update)
             self._state.agent = self.agent
-            self._bind_conversation_context(new_llm)
             # Invalidate the cached ask-agent LLM so it re-clones.
             self.llm_registry.remove(ASK_AGENT_LLM_USAGE_ID)
 
@@ -1605,7 +1593,6 @@ class LocalConversation(BaseConversation):
             llm = loaded.model_copy(update={"usage_id": usage_id})
             llm = create_subscription_llm_from_config(llm)
             self.llm_registry.add(llm)
-            self._bind_conversation_context(llm)
             return llm
 
     def switch_acp_model(self, model: str) -> None:
@@ -1800,6 +1787,11 @@ class LocalConversation(BaseConversation):
 
         Can be paused between steps
         """
+        with llm_call_context_scope(self._llm_call_context):
+            self._run()
+
+    def _run(self) -> None:
+        """Implement :meth:`run` inside the active LLM context scope."""
         # Ensure agent is fully initialized (loads plugins and initializes agent)
         self._ensure_agent_ready()
         self._cancel_token = CancellationToken()
@@ -1979,6 +1971,11 @@ class LocalConversation(BaseConversation):
         observation is patched with a synthetic ``AgentErrorEvent`` so
         the LLM conversation history stays consistent.
         """
+        with llm_call_context_scope(self._llm_call_context):
+            await self._arun()
+
+    async def _arun(self) -> None:
+        """Implement :meth:`arun` inside the active LLM context scope."""
         self._arun_task = asyncio.current_task()
         self._cancel_token = CancellationToken()
         # Off-load lazy init to a worker thread: init_state may block the loop
@@ -2681,7 +2678,10 @@ class LocalConversation(BaseConversation):
 
         # Pass agent tools so LLM can understand tool_calls in conversation history
         response = make_llm_completion(
-            question_llm, messages, tools=list(self.agent.tools_map.values())
+            question_llm,
+            messages,
+            tools=list(self.agent.tools_map.values()),
+            call_context=self._llm_call_context,
         )
 
         message = response.message
@@ -2719,6 +2719,7 @@ class LocalConversation(BaseConversation):
             events=self._state.active_branch(),
             llm=effective_llm,
             max_length=max_length,
+            call_context=self._llm_call_context,
         )
 
     def condense(self) -> None:
@@ -2729,6 +2730,11 @@ class LocalConversation(BaseConversation):
 
         Raises ValueError if no compatible condenser exists.
         """
+        with llm_call_context_scope(self._llm_call_context):
+            self._condense()
+
+    def _condense(self) -> None:
+        """Implement :meth:`condense` inside the active LLM context scope."""
 
         # Check if condenser is configured and handles condensation requests
         if (
