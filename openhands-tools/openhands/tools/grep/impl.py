@@ -25,6 +25,62 @@ from openhands.tools.utils import (
 logger = get_logger(__name__)
 
 
+def _expand_brace_pattern(pattern: str) -> list[str]:
+    """Expand shell-style brace alternation into concrete glob patterns.
+
+    ``fnmatch`` treats ``{``, ``}`` and ``,`` literally, but the tool documents
+    ``*.{ts,tsx}`` as a supported ``include`` example and ripgrep's ``-g`` flag
+    honors it, so the post-filter must understand it too or brace includes
+    silently match nothing. ``"*.{ts,tsx}"`` expands to ``["*.ts", "*.tsx"]``.
+
+    Handles multiple and nested groups via recursion. Returns ``[pattern]``
+    unchanged when there is no balanced, comma-bearing brace group (mirroring
+    the shell, which leaves ``{abc}`` literal).
+    """
+    start = pattern.find("{")
+    if start == -1:
+        return [pattern]
+
+    depth = 0
+    end = -1
+    for i in range(start, len(pattern)):
+        if pattern[i] == "{":
+            depth += 1
+        elif pattern[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    if end == -1:  # unbalanced "{": treat literally
+        return [pattern]
+
+    # Split the group body on top-level commas (commas inside nested braces
+    # belong to the inner group, not this one).
+    options: list[str] = []
+    current: list[str] = []
+    depth = 0
+    for ch in pattern[start + 1 : end]:
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        if ch == "," and depth == 0:
+            options.append("".join(current))
+            current = []
+        else:
+            current.append(ch)
+    options.append("".join(current))
+
+    if len(options) == 1:  # no alternation, e.g. "{abc}" — leave literal
+        return [pattern]
+
+    prefix, suffix = pattern[:start], pattern[end + 1 :]
+    expanded: list[str] = []
+    for option in options:
+        expanded.extend(_expand_brace_pattern(prefix + option + suffix))
+    return expanded
+
+
 class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
     """Executor for grep content search operations.
 
@@ -161,7 +217,10 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
 
         filename = relative_parts[-1] if relative_parts else path.name
         if include_pattern:
-            return fnmatch.fnmatch(filename, include_pattern)
+            return any(
+                fnmatch.fnmatch(filename, pat)
+                for pat in _expand_brace_pattern(include_pattern)
+            )
         return not filename.startswith(".")
 
     def _match_mtime(self, path: Path) -> float:
