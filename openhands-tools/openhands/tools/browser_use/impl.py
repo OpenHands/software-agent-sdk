@@ -29,6 +29,7 @@ from openhands.tools.browser_use.definition import (
     BrowserObservation,
 )
 from openhands.tools.browser_use.server import CustomBrowserUseServer
+from openhands.tools.browser_use.video_recording import BrowserVideoRecorder
 from openhands.tools.utils.timeout import (
     TimeoutError as ToolTimeoutError,
     run_with_timeout,
@@ -405,6 +406,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         self._cleanup_initiated = False
         self._action_timeout_seconds = action_timeout_seconds
         self._consecutive_failures = 0
+        self._video_recorder = BrowserVideoRecorder(full_output_save_dir)
 
     def __call__(
         self,
@@ -496,7 +498,9 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             BrowserScrollAction,
             BrowserSetStorageAction,
             BrowserStartRecordingAction,
+            BrowserStartVideoRecordingAction,
             BrowserStopRecordingAction,
+            BrowserStopVideoRecordingAction,
             BrowserSwitchTabAction,
             BrowserTypeAction,
         )
@@ -534,6 +538,10 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                 result = await self.start_recording()
             elif isinstance(action, BrowserStopRecordingAction):
                 result = await self.stop_recording()
+            elif isinstance(action, BrowserStartVideoRecordingAction):
+                result = await self.start_video_recording()
+            elif isinstance(action, BrowserStopVideoRecordingAction):
+                result = await self.stop_video_recording()
             else:
                 error_msg = f"Unsupported action type: {type(action)}"
                 return BrowserObservation.from_text(
@@ -683,6 +691,15 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         await self._ensure_initialized()
         return await self._server._stop_recording()
 
+    async def start_video_recording(self) -> str:
+        """Start recording the visible browser desktop to WebM."""
+        await self._ensure_initialized()
+        return await self._video_recorder.start()
+
+    async def stop_video_recording(self) -> str:
+        """Stop the visible browser recording and finalize the WebM file."""
+        return await self._video_recorder.stop()
+
     async def close_browser(self) -> str:
         """Close the browser session."""
         if self._initialized:
@@ -694,6 +711,8 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     async def cleanup(self):
         """Cleanup browser resources."""
         try:
+            if self._video_recorder.is_recording:
+                await self._video_recorder.stop()
             # Use _close_all_sessions instead of close_browser because it calls
             # session.kill() which properly stops the event bus and drains
             # pending events (including BrowserKillEvent that terminates the

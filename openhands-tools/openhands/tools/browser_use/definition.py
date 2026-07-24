@@ -773,6 +773,89 @@ class BrowserStopRecordingTool(
         ]
 
 
+# ============================================
+# `browser_start_video_recording`
+# ============================================
+class BrowserStartVideoRecordingAction(BrowserAction):
+    """Schema for starting visible browser video recording."""
+
+    pass
+
+
+BROWSER_START_VIDEO_RECORDING_DESCRIPTION = """Start recording the visible browser
+desktop to a WebM video file.
+
+The browser must run in headed mode on an X11 display. Use this before exercising a
+user-visible interaction that needs video evidence, then call
+browser_stop_video_recording to finalize the file.
+"""
+
+
+class BrowserStartVideoRecordingTool(
+    ToolDefinition[BrowserStartVideoRecordingAction, BrowserObservation]
+):
+    """Tool for starting encoded browser video recording."""
+
+    @classmethod
+    def create(cls, executor: "BrowserToolExecutor") -> Sequence[Self]:
+        return [
+            cls(
+                description=BROWSER_START_VIDEO_RECORDING_DESCRIPTION,
+                action_type=BrowserStartVideoRecordingAction,
+                observation_type=BrowserObservation,
+                annotations=ToolAnnotations(
+                    title="browser_start_video_recording",
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=False,
+                    openWorldHint=False,
+                ),
+                executor=executor,
+            )
+        ]
+
+
+# ============================================
+# `browser_stop_video_recording`
+# ============================================
+class BrowserStopVideoRecordingAction(BrowserAction):
+    """Schema for stopping visible browser video recording."""
+
+    pass
+
+
+BROWSER_STOP_VIDEO_RECORDING_DESCRIPTION = """Stop the visible browser recording and
+finalize its WebM file.
+
+The result includes the absolute sandbox path. Pass that path to an artifact publishing
+tool when the recording should be attached to a session or pull request.
+"""
+
+
+class BrowserStopVideoRecordingTool(
+    ToolDefinition[BrowserStopVideoRecordingAction, BrowserObservation]
+):
+    """Tool for stopping encoded browser video recording."""
+
+    @classmethod
+    def create(cls, executor: "BrowserToolExecutor") -> Sequence[Self]:
+        return [
+            cls(
+                description=BROWSER_STOP_VIDEO_RECORDING_DESCRIPTION,
+                action_type=BrowserStopVideoRecordingAction,
+                observation_type=BrowserObservation,
+                annotations=ToolAnnotations(
+                    title="browser_stop_video_recording",
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=False,
+                    openWorldHint=False,
+                ),
+                executor=executor,
+            )
+        ]
+
+
 class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
     """A set of all browser tools.
 
@@ -856,6 +939,8 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
             BrowserSetStorageTool,
             BrowserStartRecordingTool,
             BrowserStopRecordingTool,
+            BrowserStartVideoRecordingTool,
+            BrowserStopVideoRecordingTool,
         ]:
             tools.extend(tool_class.create(executor))
         return tools
