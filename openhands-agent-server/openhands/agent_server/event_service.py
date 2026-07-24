@@ -1,5 +1,6 @@
 import asyncio
 import time
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
@@ -189,16 +190,25 @@ class EventService:
             }
         )
 
-    async def _scrub_persisted_credentials(self) -> None:
-        if not self.credential_bindings:
+    async def _scrub_persisted_credentials(
+        self,
+        credential_bindings: Mapping[str, VersionedCredentialBinding] | None = None,
+    ) -> None:
+        bindings = (
+            self.credential_bindings
+            if credential_bindings is None
+            else credential_bindings
+        )
+        if not bindings:
             return
 
         required_bindings = {
             name
-            for name, binding in self.credential_bindings.items()
+            for name, binding in bindings.items()
             if isinstance(binding, HttpVersionedCredentialBinding)
         }
         if required_bindings:
+            # Scrubbed durable credentials must never become a fallback again.
             self.stored = self.stored.model_copy(
                 update={
                     "required_runtime_credential_bindings": (
@@ -212,14 +222,14 @@ class EventService:
         base_state_file = self.conversation_dir / BASE_STATE
         meta_file = self.conversation_dir / "meta.json"
         legacy_auth_file = self.conversation_dir / "acp" / "codex" / "auth.json"
-        codex_binding = self.credential_bindings.get(CODEX_AUTH_SECRET_NAME)
+        codex_binding = bindings.get(CODEX_AUTH_SECRET_NAME)
         if codex_binding is not None and legacy_auth_file.exists():
             resolved = await codex_binding.load()
             if not is_valid_codex_auth(resolved.value):
                 raise CredentialNeedsReauthentication(
                     "ChatGPT authentication is invalid. Please sign in again."
                 )
-        for secret_name in self.credential_bindings:
+        for secret_name in bindings:
             self.stored = self._without_stored_secret(secret_name)
 
         if (
@@ -236,7 +246,7 @@ class EventService:
                     context=context,
                 )
                 sources = dict(state.secret_registry.secret_sources)
-                for secret_name in self.credential_bindings:
+                for secret_name in bindings:
                     sources.pop(secret_name, None)
                     state.agent = _without_agent_context_secret(
                         state.agent,
@@ -267,11 +277,12 @@ class EventService:
         if isinstance(existing, HttpVersionedCredentialBinding) and isinstance(
             binding, HttpVersionedCredentialBinding
         ):
-            try:
-                existing.reauthorize(binding)
-            except ValueError as exc:
-                raise CredentialBindingActivationTooLate from exc
-            await self._scrub_persisted_credentials()
+            if existing.url != binding.url:
+                raise CredentialBindingActivationTooLate
+            await self._scrub_persisted_credentials(
+                {**self.credential_bindings, secret_name: binding}
+            )
+            existing.reauthorize(binding)
             return
         if existing is not None:
             raise CredentialBindingActivationTooLate

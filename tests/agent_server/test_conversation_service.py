@@ -544,6 +544,35 @@ async def test_prepare_for_sandbox_pause_drains_active_services(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_prepare_for_sandbox_pause_closes_services_concurrently(tmp_path):
+    service = ConversationService(conversations_dir=tmp_path / "conversations")
+    await service.__aenter__()
+    first = AsyncMock(spec=EventService)
+    second = AsyncMock(spec=EventService)
+    all_started = asyncio.Event()
+    started = 0
+
+    async def close(*_args):
+        nonlocal started
+        started += 1
+        if started == 2:
+            all_started.set()
+        await asyncio.wait_for(all_started.wait(), timeout=1)
+
+    first.__aexit__.side_effect = close
+    second.__aexit__.side_effect = close
+    assert service._event_services is not None
+    service._event_services = {uuid4(): first, uuid4(): second}
+
+    await service.prepare_for_sandbox_pause()
+
+    assert service._event_services == {}
+    first.__aexit__.assert_awaited_once_with(None, None, None)
+    second.__aexit__.assert_awaited_once_with(None, None, None)
+    await service.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
 async def test_shutdown_retains_credential_close_failure_for_retry(tmp_path):
     service = ConversationService(conversations_dir=tmp_path / "conversations")
     await service.__aenter__()

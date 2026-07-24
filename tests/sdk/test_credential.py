@@ -6,6 +6,7 @@ import pytest
 from openhands.sdk.credential import (
     CredentialBindingUnsupported,
     CredentialConflict,
+    CredentialInvalidResponse,
     CredentialNeedsReauthentication,
     HttpVersionedCredentialBinding,
 )
@@ -59,6 +60,24 @@ async def test_http_binding_maps_protocol_errors(status_code, error_type) -> Non
     )
     with pytest.raises(error_type):
         await binding.load()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "url",
+    [
+        "ftp://broker.test/credential",
+        "/relative/credential",
+        "http://example.com:abc/credential",
+    ],
+)
+async def test_http_binding_rejects_invalid_urls(url: str) -> None:
+    binding = HttpVersionedCredentialBinding(url, {})
+
+    with pytest.raises(CredentialInvalidResponse):
+        await binding.load()
+    with pytest.raises(CredentialInvalidResponse):
+        await binding.replace("v0", "r1")
 
 
 def test_http_binding_reauthorization_replaces_headers() -> None:

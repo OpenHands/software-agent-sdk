@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from typing import Final
 from uuid import UUID
 
-import httpx
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -81,8 +81,8 @@ class LocalVersionedCredentialBinding:
 
 
 router = APIRouter(prefix="/conversations", tags=["Credential Bindings"])
-_PROBE_ATTEMPTS = 3
-_PROBE_INITIAL_DELAY = 0.25
+_PROBE_ATTEMPTS: Final[int] = 3
+_PROBE_INITIAL_DELAY: Final[float] = 0.25
 
 
 async def _probe_binding(binding: HttpVersionedCredentialBinding) -> None:
@@ -156,7 +156,6 @@ async def activate_credential_binding(
     except (
         CredentialInvalidResponse,
         CredentialNeedsReauthentication,
-        httpx.InvalidURL,
     ) as exc:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,

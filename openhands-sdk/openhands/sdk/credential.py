@@ -90,6 +90,10 @@ class HttpVersionedCredentialBinding:
                 transport=self.transport,
             ) as client:
                 response = await client.get(self.url, headers=headers)
+        except (httpx.InvalidURL, httpx.UnsupportedProtocol) as exc:
+            raise CredentialInvalidResponse(
+                "Credential source URL is invalid."
+            ) from exc
         except httpx.RequestError as exc:
             raise CredentialSyncError("Credential source is unavailable.") from exc
         self._raise_for_status(response)
@@ -119,6 +123,10 @@ class HttpVersionedCredentialBinding:
                     headers=headers,
                     json={"expected_version": expected_version, "value": value},
                 )
+        except (httpx.InvalidURL, httpx.UnsupportedProtocol) as exc:
+            raise CredentialInvalidResponse(
+                "Credential source URL is invalid."
+            ) from exc
         except httpx.RequestError as exc:
             raise CredentialSyncError("Credential update is unavailable.") from exc
         self._raise_for_status(response)
