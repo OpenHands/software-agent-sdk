@@ -46,6 +46,24 @@ async def test_get_vscode_url_success(mock_vscode_service):
 
 
 @pytest.mark.asyncio
+async def test_get_vscode_url_default_uses_configured_port(mock_vscode_service):
+    """Omitting base_url must defer to the service (None), not hardcode :8001.
+
+    The service builds ``http://localhost:{self.port}`` when base_url is None,
+    so clients that don't know the deployment topology receive the port the
+    server actually binds (e.g. OH_VSCODE_PORT) rather than a fixed default.
+    """
+    mock_vscode_service.get_vscode_url.return_value = (
+        "http://localhost:19000/?tkn=test-token&folder=workspace"
+    )
+
+    response = await get_vscode_url()
+
+    assert response.url == "http://localhost:19000/?tkn=test-token&folder=workspace"
+    mock_vscode_service.get_vscode_url.assert_called_once_with(None, "workspace")
+
+
+@pytest.mark.asyncio
 async def test_get_vscode_url_error(mock_vscode_service):
     """Test getting VSCode URL with service error."""
     mock_vscode_service.get_connection_token.side_effect = Exception("Service error")
