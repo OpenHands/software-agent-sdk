@@ -105,7 +105,6 @@ def test_subscription_skips_unsupported_param(param: str):
     "param,expected_value",
     [
         ("prompt_cache_retention", "24h"),
-        ("temperature", 1.0),
     ],
 )
 def test_non_subscription_keeps_scalar_param(param: str, expected_value: Any):
@@ -115,6 +114,14 @@ def test_non_subscription_keeps_scalar_param(param: str, expected_value: Any):
     assert not llm.is_subscription
     opts = select_responses_options(llm, {}, include=None, store=None)
     assert opts.get(param) == expected_value
+
+
+def test_non_subscription_does_not_invent_temperature():
+    llm = LLM(model="openai/gpt-5.2-codex", reasoning_effort="high")
+
+    opts = select_responses_options(llm, {}, include=None, store=None)
+
+    assert "temperature" not in opts
 
 
 @pytest.mark.parametrize(

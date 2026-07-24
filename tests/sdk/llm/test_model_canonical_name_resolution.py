@@ -32,7 +32,7 @@ def test_model_canonical_name_used_for_capabilities(monkeypatch):
         vision_calls.append(model)
         return model.endswith("gpt-5-mini")
 
-    def fake_get_features(model: str):
+    def fake_get_features(model: str, model_info=None, overrides=None):
         feature_calls.append(model)
         return DummyFeatures(model)
 
@@ -76,3 +76,27 @@ def test_model_canonical_name_with_real_model_info():
     assert proxied.vision_is_active() == base.vision_is_active()
     assert proxied.is_caching_prompt_active() == base.is_caching_prompt_active()
     assert proxied.uses_responses_api() == base.uses_responses_api()
+
+
+def test_api_mode_can_override_endpoint_discovery():
+    assert LLM(model="gpt-4o", api_mode="responses").uses_responses_api() is True
+    assert LLM(model="gpt-5", api_mode="chat").uses_responses_api() is False
+
+
+def test_reasoning_effort_accepts_forward_compatible_values():
+    assert LLM(model="future-model", reasoning_effort="max").reasoning_effort == "max"
+    assert (
+        LLM(model="future-model", reasoning_effort="future-tier").reasoning_effort
+        == "future-tier"
+    )
+
+
+def test_reasoning_effort_preserves_legacy_json_schema_enum():
+    schema = LLM.model_json_schema()["properties"]["reasoning_effort"]
+    enum_values = next(
+        branch["enum"]
+        for branch in schema["anyOf"]
+        if isinstance(branch, dict) and "enum" in branch
+    )
+
+    assert enum_values == ["low", "medium", "high", "xhigh", "none"]

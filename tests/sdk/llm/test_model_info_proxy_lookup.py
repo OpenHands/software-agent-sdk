@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 from openhands.sdk.llm.utils.model_info import (
     _get_model_info_from_litellm_proxy,
+    _merge_raw_model_metadata,
     get_litellm_model_info,
 )
 
@@ -120,3 +121,20 @@ def test_get_litellm_model_info_uses_proxy_for_openhands_provider_model():
         )
     assert info is not None
     assert info.get("supports_vision") is True
+
+
+def test_raw_registry_capabilities_survive_typed_model_info_projection():
+    raw = {
+        "future-model": {
+            "supports_adaptive_thinking": True,
+            "supports_sampling_params": False,
+        }
+    }
+    with patch.dict("openhands.sdk.llm.utils.model_info.model_cost", raw, clear=True):
+        info = _merge_raw_model_metadata(
+            {"key": "future-model", "supports_reasoning": True}  # type: ignore[typeddict-item]
+        )
+
+    assert info["supports_reasoning"] is True
+    assert info["supports_adaptive_thinking"] is True
+    assert info["supports_sampling_params"] is False

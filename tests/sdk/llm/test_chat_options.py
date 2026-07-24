@@ -1,14 +1,21 @@
 from dataclasses import dataclass, field
 from typing import Any
 
+import pytest
+from litellm import get_optional_params
+
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm import LLMCallContext
 from openhands.sdk.llm.options.chat_options import select_chat_options
+from openhands.sdk.llm.utils.model_features import ModelFeatures, get_features
 
 
 @dataclass
 class DummyLLM:
     model: str
+    model_canonical_name: str | None = None
+    model_info: dict[str, Any] | None = None
+    capability_overrides: dict[str, bool | str] = field(default_factory=dict)
     top_k: int | None = None
     top_p: float | None = 1.0
     temperature: float | None = 0.0
@@ -30,6 +37,16 @@ class DummyLLM:
         if self.openrouter_app_name:
             headers["X-Title"] = self.openrouter_app_name
         return headers
+
+    def _model_name_for_capabilities(self) -> str:
+        return self.model_canonical_name or self.model
+
+    def _model_features(self) -> ModelFeatures:
+        return get_features(
+            self._model_name_for_capabilities(),
+            model_info=self.model_info,
+            overrides=self.capability_overrides,
+        )
 
     @property
     def effective_max_output_tokens(self) -> int:
@@ -138,6 +155,10 @@ def test_claude_sonnet_4_6_strips_temp_and_top_p():
     """
     llm = DummyLLM(
         model="claude-sonnet-4-6",
+        model_info={
+            "supports_reasoning": True,
+            "supports_adaptive_thinking": True,
+        },
         top_p=1.0,  # SDK default
         temperature=0.1,  # Often overridden by benchmarks
     )
@@ -146,15 +167,83 @@ def test_claude_sonnet_4_6_strips_temp_and_top_p():
     # Extended thinking models should strip temperature/top_p to avoid API errors
     assert "temperature" not in out
     assert "top_p" not in out
+    assert "thinking" not in out
+    assert "anthropic-beta" not in out.get("extra_headers", {})
+
+
+def test_claude_sonnet_5_uses_metadata_backed_adaptive_thinking_contract():
+    llm = DummyLLM(
+        model="anthropic/claude-sonnet-5",
+        top_k=40,
+        top_p=0.9,
+        temperature=0.7,
+        reasoning_effort="max",
+        extended_thinking_budget=20_000,
+        model_info={
+            "litellm_provider": "anthropic",
+            "supports_reasoning": True,
+            "supports_adaptive_thinking": True,
+            "supports_sampling_params": False,
+            "supports_prompt_caching": True,
+        },
+    )
+
+    out = select_chat_options(llm, user_kwargs={}, has_tools=True)
+
+    assert out["reasoning_effort"] == "max"
+    assert "thinking" not in out
+    assert "anthropic-beta" not in out.get("extra_headers", {})
+    assert "temperature" not in out
+    assert "top_p" not in out
+    assert "top_k" not in out
+
+
+def test_chat_options_resolve_capabilities_from_canonical_alias():
+    llm = DummyLLM(
+        model="litellm_proxy/customer-sonnet",
+        model_canonical_name="anthropic/claude-sonnet-5",
+        temperature=0.7,
+        reasoning_effort="high",
+        model_info={
+            "supports_reasoning": True,
+            "supports_adaptive_thinking": True,
+            "supports_sampling_params": False,
+        },
+    )
+
+    out = select_chat_options(llm, user_kwargs={}, has_tools=True)
+
+    assert out["reasoning_effort"] == "high"
+    assert "temperature" not in out
+    assert "thinking" not in out
+
+
+@pytest.mark.parametrize(
+    "model,provider",
+    [
+        ("claude-sonnet-5", "anthropic"),
+        ("us.anthropic.claude-sonnet-5-v1:0", "bedrock"),
+    ],
+)
+def test_litellm_translates_sonnet_5_reasoning_to_adaptive_thinking(
+    model: str, provider: str
+):
+    params = get_optional_params(
+        model=model,
+        custom_llm_provider=provider,
+        reasoning_effort="high",
+    )
+
+    assert params["thinking"] == {"type": "adaptive"}
+    assert "budget_tokens" not in params["thinking"]
 
 
 def test_bedrock_opus_4_8_strips_temp_top_p_without_thinking_block():
     """Bedrock cross-region claude-opus-4-8 routes through the reasoning path.
 
-    LiteLLM does not (yet) recognize the Bedrock cross-region inference id as a
-    reasoning model, so the SDK-side override must mark it as one. It must take
-    the reasoning_effort path (which strips temperature/top_p) and NOT the
-    extended-thinking path, which would inject the legacy
+    LiteLLM metadata recognizes the Bedrock cross-region inference id. It must
+    take the reasoning_effort path (which strips temperature/top_p) and NOT the
+    manual-thinking path, which would inject the legacy
     ``thinking.type=enabled`` block + ``interleaved-thinking`` header that
     Anthropic now rejects for this model (see reverted #3427 / revert #3441).
     """

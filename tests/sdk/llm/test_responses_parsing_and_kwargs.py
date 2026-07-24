@@ -78,8 +78,8 @@ def test_normalize_responses_kwargs_policy():
     out = select_responses_options(
         llm, {"temperature": 0.3}, include=["text.output_text"], store=None
     )
-    # Temperature forced to 1.0 for Responses path
-    assert out["temperature"] == 1.0
+    # Explicit sampling values are preserved when metadata does not reject them.
+    assert out["temperature"] == 0.3
     assert out["tool_choice"] == "auto"
     # include should contain original and encrypted_content
     assert set(out["include"]) >= {"text.output_text", "reasoning.encrypted_content"}
@@ -91,6 +91,19 @@ def test_normalize_responses_kwargs_policy():
     assert "summary" not in r  # Summary not included to support unverified orgs
     # max_output_tokens preserved
     assert out["max_output_tokens"] == 128
+
+
+def test_responses_options_strip_sampling_when_metadata_rejects_it():
+    llm = LLM(
+        model="proxy/future-responses-model",
+        api_mode="responses",
+        temperature=0.7,
+        capability_overrides={"supports_sampling_params": False},
+    )
+
+    out = select_responses_options(llm, {"temperature": 0.3}, include=None, store=None)
+
+    assert "temperature" not in out
 
 
 def test_normalize_responses_kwargs_with_summary():
