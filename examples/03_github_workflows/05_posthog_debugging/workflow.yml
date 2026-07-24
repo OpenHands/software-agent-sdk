@@ -1,114 +1,184 @@
 ---
-name: PostHog Error Debugging
+# PostHog self-healing workflow. Two jobs:
+#
+#   triage      contents:read, issues:write   -> one tracking issue per bug,
+#                                                emits the eligible list
+#   remediate   contents:write, pull-requests:write, issues:write
+#               -> agent proposes a fix (token-free step), an agent-free verifier
+#                  re-proves red->green, and only then a DRAFT PR is opened
+#
+# Kill switch: the repository variable POSTHOG_SELFHEAL_ENABLED. Unless it is
+# "true" triage emits no candidates, so remediate skips. Remediation also sits
+# behind a protected environment (human gate) and never merges. See README.md.
+
+name: PostHog Self-Healing
 
 on:
     workflow_dispatch:
         inputs:
-            query_type:
-                description: Query type
-                required: true
-                type: choice
-                options:
-                    - event-query
-                    - event-id
-                default: event-query
-            posthog_query:
-                description: PostHog query (event name or event ID)
-                required: true
-                default: $exception
-            repo_list:
-                description: Comma-separated list of repos to analyze (owner/repo)
-                required: true
-                default: OpenHands/OpenHands,All-Hands-AI/infra
-            issue_repo:
-                description: Repository to create issues in (owner/repo)
-                required: true
-                default: All-Hands-AI/infra
-            issue_parent:
-                description: Parent issue URL (optional)
-                required: false
-            issue_prefix:
-                description: Prefix for issue titles
-                required: false
-                default: 'PostHog Error: '
-            max_events:
-                description: Maximum number of events to fetch
-                required: false
-                default: '5'
-            llm_model:
-                description: LLM model to use
-                required: false
-                default: gpt-5.5
+            dry_run:
+                description: Track issues but emit no remediation candidates
+                type: boolean
+                default: false
+    schedule:
+        - cron: 17 8 * * *  # daily
 
-permissions:
-    contents: read
-    issues: write
+permissions: {}
+
+env:
+    EXAMPLE_DIR: examples/03_github_workflows/05_posthog_debugging
+    ISSUE_REPO: ${{ github.repository }}
+    METRICS_FILE: metrics/selfheal-metrics.jsonl
 
 jobs:
-    debug-posthog-errors:
+    # --- Job A: triage --------------------------------------------------------
+    triage:
+        if: github.event_name == 'workflow_dispatch' || github.repository == 'OpenHands/software-agent-sdk'
         runs-on: ubuntu-latest
-        timeout-minutes: 60
-
+        timeout-minutes: 20
+        permissions:
+            contents: read
+            issues: write
+        outputs:
+            eligible: ${{ steps.triage.outputs.eligible }}
+            has_eligible: ${{ steps.triage.outputs.has_eligible }}
         steps:
-            - name: Checkout code
-              uses: actions/checkout@v4
-
-            - name: Set up Python
-              uses: actions/setup-python@v5
+            - uses: actions/checkout@v4
+            - uses: astral-sh/setup-uv@v7
               with:
                   python-version: '3.13'
-
-            - name: Download debugging script
-              run: |
-                  mkdir -p posthog_debug_tools
-                  cd posthog_debug_tools
-
-                  # Download the debugging script and template
-                  curl -O https://raw.githubusercontent.com/OpenHands/software-agent-sdk/main/examples/03_github_workflows/05_posthog_debugging/posthog_debugging.py
-                  curl -O https://raw.githubusercontent.com/OpenHands/software-agent-sdk/main/examples/03_github_workflows/05_posthog_debugging/debug_prompt.jinja
-
-                  chmod +x posthog_debugging.py
-
-            - name: Install dependencies
-              run: |
-                  python -m pip install --upgrade pip
-                  pip install openhands-sdk requests jinja2
-
-            - name: Run PostHog debugging
+            - name: Install triage deps
+              run: pip install requests jinja2 pyyaml
+            - name: Triage telemetry
+              id: triage
+              working-directory: ${{ env.EXAMPLE_DIR }}
               env:
+                  # The kill switch. Absent/"false" => no candidates emitted.
+                  POSTHOG_SELFHEAL_ENABLED: ${{ vars.POSTHOG_SELFHEAL_ENABLED }}
                   POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
                   POSTHOG_PROJECT_ID: ${{ secrets.POSTHOG_PROJECT_ID }}
                   POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-                  LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-                  LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
-                  LLM_MODEL: ${{ inputs.llm_model }}
-                  INPUTS_QUERY_TYPE: ${{ inputs.query_type }}
-                  INPUTS_POSTHOG_QUERY: ${{ inputs.posthog_query }}
-                  INPUTS_REPO_LIST: ${{ inputs.repo_list }}
-                  INPUTS_ISSUE_REPO: ${{ inputs.issue_repo }}
-                  INPUTS_ISSUE_PARENT: ${{ inputs.issue_parent }}
-                  INPUTS_ISSUE_PREFIX: ${{ inputs.issue_prefix }}
               run: |
-                  cd posthog_debug_tools
-                  ISSUE_PARENT_ARG=()
-                  if [ -n "$INPUTS_ISSUE_PARENT" ]; then
-                    ISSUE_PARENT_ARG=(--issue-parent "$INPUTS_ISSUE_PARENT")
-                  fi
-
-                  python posthog_debugging.py \
-                    --query-type "$INPUTS_QUERY_TYPE" \
-                    --query "$INPUTS_POSTHOG_QUERY" \
-                    --repos "$INPUTS_REPO_LIST" \
-                    --issue-repo "$INPUTS_ISSUE_REPO" \
-                    "${ISSUE_PARENT_ARG[@]}" \
-                    --issue-prefix "$INPUTS_ISSUE_PREFIX" \
-                    --working-dir ./workspace
-
-            - name: Upload debugging artifacts
+                  python posthog_debugging.py triage \
+                    --config config.yaml \
+                    --issue-repo "${ISSUE_REPO}" \
+                    --metrics-file "${GITHUB_WORKSPACE}/${METRICS_FILE}" \
+                    ${{ inputs.dry_run && '--dry-run' || '' }}
+            - name: Upload metrics
               if: always()
               uses: actions/upload-artifact@v4
               with:
-                  name: posthog-debug-results
-                  path: posthog_debug_tools/workspace/
-                  retention-days: 7
+                  name: selfheal-metrics-triage
+                  path: ${{ env.METRICS_FILE }}
+                  retention-days: 30
+                  if-no-files-found: ignore
+
+    # --- Job B: remediate (agent -> verify -> draft PR) -----------------------
+    remediate:
+        needs: triage
+        if: needs.triage.outputs.has_eligible == 'true'
+        runs-on: ubuntu-latest
+        timeout-minutes: 60
+        # Human review/audit gate for the write-capable job.
+        environment: self-heal-remediation
+        permissions:
+            contents: write
+            pull-requests: write
+            issues: write
+        strategy:
+            fail-fast: false
+            max-parallel: 1
+            matrix:
+                fp: ${{ fromJson(needs.triage.outputs.eligible) }}
+        # Duplicate-run protection: one run per fingerprint at a time.
+        concurrency:
+            group: selfheal-${{ matrix.fp.dedup_key }}
+            cancel-in-progress: false
+        steps:
+            - uses: actions/checkout@v4
+            - uses: astral-sh/setup-uv@v7
+              with:
+                  python-version: '3.13'
+            - name: Install SDK + deps
+              run: pip install openhands-sdk openhands-tools requests jinja2 pyyaml
+            - name: Run bounded investigation
+              working-directory: ${{ env.EXAMPLE_DIR }}
+              # NO GITHUB_TOKEN here: the agent cannot push. It only writes
+              # test.patch / fix.patch / verification.json into workspace/artifacts.
+              env:
+                  LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+                  LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+                  LLM_MODEL: ${{ vars.SELFHEAL_LLM_MODEL || 'claude-sonnet-5' }}
+              run: |
+                  python posthog_debugging.py remediate \
+                    --config config.yaml \
+                    --dedup-key "${{ matrix.fp.dedup_key }}" \
+                    --repo "${{ matrix.fp.repo }}" \
+                    --base-sha "${{ matrix.fp.base_sha }}" \
+                    --error-class "${{ matrix.fp.error_class }}" \
+                    --error-category "${{ matrix.fp.error_category }}" \
+                    --origin-module "${{ matrix.fp.error_origin_module }}" \
+                    --count "${{ matrix.fp.occurrence_count }}" \
+                    --example-fingerprint "${{ matrix.fp.example_fingerprint }}" \
+                    --workdir "${GITHUB_WORKSPACE}/workspace"
+            - name: Fresh checkout of target at base_sha
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  git clone --no-tags "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ matrix.fp.repo }}.git" target
+                  git -C target checkout "${{ matrix.fp.base_sha }}"
+            - name: Verify red->green (agent-free)
+              id: verify
+              working-directory: ${{ env.EXAMPLE_DIR }}
+              run: |
+                  set +e
+                  python verify.py \
+                    --spec "${GITHUB_WORKSPACE}/workspace/artifacts/verification.json" \
+                    --repo-dir "${GITHUB_WORKSPACE}/target" \
+                    --patch-dir "${GITHUB_WORKSPACE}/workspace/artifacts"
+                  echo "passed=$([ $? -eq 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+            - name: Open draft PR (only on verified red->green)
+              if: steps.verify.outputs.passed == 'true'
+              env:
+                  # Same-repo pilots use the job's GITHUB_TOKEN; a cross-repo
+                  # target needs a fine-grained PAT scoped to Contents+PR write.
+                  GH_TOKEN: ${{ secrets.SELFHEAL_WRITE_TOKEN || github.token }}
+              run: |
+                  cd target
+                  BRANCH="selfheal/${{ matrix.fp.dedup_key }}"
+                  git config user.name "openhands-bot"
+                  git config user.email "openhands-bot@users.noreply.github.com"
+                  git checkout -b "$BRANCH"
+                  git apply --3way "${GITHUB_WORKSPACE}/workspace/artifacts/test.patch"
+                  git apply --3way "${GITHUB_WORKSPACE}/workspace/artifacts/fix.patch"
+                  git add -A
+                  git commit -m "Fix ${{ matrix.fp.error_class }} (self-heal ${{ matrix.fp.dedup_key }})"
+                  git push -u origin "$BRANCH"
+                  PR_URL=$(gh pr create --repo "${{ matrix.fp.repo }}" --draft \
+                    --base main --head "$BRANCH" \
+                    --title "[self-heal] Fix ${{ matrix.fp.error_class }}" \
+                    --body "Automated draft from the PostHog self-healing workflow. A regression test fails before this change and passes after it (verified). **Requires human review; the automation never merges.** Dedup key: \`${{ matrix.fp.dedup_key }}\`.")
+                  echo "PR_URL=${PR_URL}" >> "$GITHUB_ENV"
+            - name: Record outcome on tracking issue
+              if: always()
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              working-directory: ${{ env.EXAMPLE_DIR }}
+              run: |
+                  OUTCOME=$([ "${{ steps.verify.outputs.passed }}" = "true" ] && echo verified_pr_opened || echo verification_failed)
+                  python posthog_debugging.py record-outcome \
+                    --issue-repo "${ISSUE_REPO}" \
+                    --dedup-key "${{ matrix.fp.dedup_key }}" \
+                    --error-class "${{ matrix.fp.error_class }}" \
+                    --outcome "${OUTCOME}" \
+                    --pr-url "${PR_URL:-}" \
+                    --metrics-file "${GITHUB_WORKSPACE}/${METRICS_FILE}"
+            - name: Upload metrics
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: selfheal-metrics-${{ matrix.fp.dedup_key }}
+                  path: ${{ env.METRICS_FILE }}
+                  retention-days: 30
+                  if-no-files-found: ignore
