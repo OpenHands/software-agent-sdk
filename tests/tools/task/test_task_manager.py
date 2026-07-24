@@ -1,7 +1,9 @@
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 from typing import Any, cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import SecretStr
@@ -323,6 +325,33 @@ class TestTaskManager:
         assert not manager._persistence_dir.exists()
         assert len(manager._tasks) == 0
 
+    def test_interrupt_only_targets_running_tasks(self, tmp_path):
+        manager, _ = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+        running = manager._create_task(
+            subagent_type="general-purpose",
+            description="running task",
+        )
+        completed = manager._create_task(
+            subagent_type="general-purpose",
+            description="completed task",
+        )
+        completed.set_result("done")
+        assert running.conversation is not None
+        assert completed.conversation is not None
+
+        manager.interrupt()
+        manager.interrupt()
+
+        assert (
+            running.conversation.state.execution_status
+            == ConversationExecutionStatus.PAUSED
+        )
+        assert (
+            completed.conversation.state.execution_status
+            == ConversationExecutionStatus.IDLE
+        )
+
     def test_returns_local_conversation(self, tmp_path):
         manager, _ = _manager_with_parent(tmp_path)
         register_builtins_agents()
@@ -397,7 +426,9 @@ class TestTaskManager:
 
 def _make_task_with_mock_conv(task_id: str, **conv_kwargs) -> Task:
     """Create a Task with a MagicMock conversation, bypassing Pydantic validation."""
+    arun_side_effect = conv_kwargs.pop("arun.side_effect", None)
     mock_conv = MagicMock(**conv_kwargs)
+    mock_conv.arun = AsyncMock(side_effect=arun_side_effect)
     # Default to a FINISHED run; a non-FINISHED status is now surfaced as an error,
     # so override state.execution_status to test stuck/paused paths.
     mock_conv.state.execution_status = ConversationExecutionStatus.FINISHED
@@ -432,6 +463,26 @@ class TestRunTask:
         with pytest.raises(RuntimeError, match="has no conversation"):
             manager._run_task(task=task, prompt="do something")
 
+    def test_interrupt_after_registration_prevents_subagent_run(self, tmp_path):
+        manager, _ = _manager_with_parent(tmp_path)
+        task = _make_task_with_mock_conv("task_00000001")
+        manager._tasks[task.id] = task
+        interrupt_generation = manager._get_interrupt_generation()
+
+        manager.interrupt()
+        result = manager._run_task(
+            task=task,
+            prompt="do something",
+            interrupt_generation=interrupt_generation,
+        )
+
+        assert result.status == TaskStatus.ERROR
+        assert result.error == "Sub-agent task was interrupted before it started."
+        conversation = task.conversation
+        assert conversation is not None
+        conversation.send_message.assert_not_called()  # type: ignore[attr-defined]
+        conversation.arun.assert_not_awaited()  # type: ignore[attr-defined]
+
     @patch(
         "openhands.tools.task.manager.get_agent_final_response",
         return_value="task result",
@@ -453,7 +504,7 @@ class TestRunTask:
         conversation.send_message.assert_called_once_with(  # type: ignore[attr-defined]
             "do something", sender=None
         )
-        conversation.run.assert_called_once()  # type: ignore[attr-defined]
+        conversation.arun.assert_awaited_once()  # type: ignore[attr-defined]
 
     @patch(
         "openhands.tools.task.manager.get_agent_final_response",
@@ -480,7 +531,7 @@ class TestRunTask:
         manager, _ = _manager_with_parent(tmp_path)
 
         task = _make_task_with_mock_conv(
-            "task_00000001", **{"run.side_effect": RuntimeError("agent exploded")}
+            "task_00000001", **{"arun.side_effect": RuntimeError("agent exploded")}
         )
         manager._tasks[task.id] = task
 
@@ -514,7 +565,7 @@ class TestRunTask:
         manager, _ = _manager_with_parent(tmp_path)
 
         task = _make_task_with_mock_conv(
-            "task_00000001", **{"run.side_effect": RuntimeError("boom")}
+            "task_00000001", **{"arun.side_effect": RuntimeError("boom")}
         )
         mock_conv = task.conversation
         manager._tasks[task.id] = task
@@ -561,8 +612,14 @@ class TestStartTask:
     def teardown_method(self):
         _reset_registry_for_tests()
 
-    def _fake_run_task(self, task: Task, prompt: str) -> Task:
+    def _fake_run_task(
+        self,
+        task: Task,
+        prompt: str,
+        interrupt_generation: int,
+    ) -> Task:
         """Simulate a successful _run_task without hitting the LLM."""
+        assert interrupt_generation >= 0
         task.set_result(f"result for: {prompt}")
         return task
 
@@ -634,6 +691,58 @@ class TestStartTask:
                 resume="task_nonexistent",
                 conversation=parent,
             )
+
+    def test_interrupt_before_registration_prevents_subagent_run(self, tmp_path):
+        manager, parent = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+        create_started = Event()
+        allow_create = Event()
+        original_create_task = manager._create_task
+
+        def delayed_create_task(*args, **kwargs):
+            create_started.set()
+            if not allow_create.wait(timeout=2):
+                raise TimeoutError("Timed out waiting to create the task")
+            return original_create_task(*args, **kwargs)
+
+        with (
+            patch.object(manager, "_create_task", side_effect=delayed_create_task),
+            patch.object(manager, "_run_until_finished") as run_until_finished,
+            ThreadPoolExecutor(max_workers=1) as executor,
+        ):
+            future = executor.submit(
+                manager.start_task,
+                prompt="do the thing",
+                subagent_type="general-purpose",
+                conversation=parent,
+            )
+            try:
+                assert create_started.wait(timeout=1)
+                manager.interrupt()
+            finally:
+                allow_create.set()
+            result = future.result(timeout=2)
+
+        assert result.status == TaskStatus.ERROR
+        assert result.error == "Sub-agent task was interrupted before it started."
+        run_until_finished.assert_not_called()
+
+    def test_task_started_after_interrupt_uses_new_generation(self, tmp_path):
+        manager, parent = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+        manager.interrupt()
+
+        with patch.object(
+            manager, "_run_task", side_effect=self._fake_run_task
+        ) as run_task:
+            result = manager.start_task(
+                prompt="do the thing",
+                subagent_type="general-purpose",
+                conversation=parent,
+            )
+
+        assert result.status == TaskStatus.COMPLETED
+        assert run_task.call_args.kwargs["interrupt_generation"] == 1
 
 
 class TestTaskMetrics:
