@@ -12,6 +12,7 @@ from typing import (
     Any,
     ClassVar,
     Literal,
+    Self,
     TypeVar,
     get_args,
     get_origin,
@@ -467,10 +468,11 @@ CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 class AgentSettingsBase(BaseModel):
     """Shared base for all agent-settings variants.
 
-    Provides the three pieces common to every variant:
+    Provides the pieces common to every variant:
 
     - :attr:`schema_version` — used for persisted-payload migrations.
     - :meth:`export_schema` — structured field description for UIs.
+    - :meth:`from_persisted` — load persisted settings through migrations.
     - :meth:`create_agent` — canonical construction path; concrete subclasses
       must override this.
 
@@ -489,6 +491,36 @@ class AgentSettingsBase(BaseModel):
     def export_schema(cls) -> SettingsSchema:
         """Export a structured schema describing configurable settings."""
         return export_settings_schema(cls)
+
+    @classmethod
+    def from_persisted(cls, data: Any) -> Self:
+        """Load persisted agent settings into this concrete variant.
+
+        Applies registered schema migrations, then validates the migrated
+        payload against ``cls`` directly. This method is intended for concrete
+        subclasses; callers that want union dispatch across settings variants
+        should use :func:`validate_agent_settings`. Current-schema payloads
+        with the deprecated ``agent_kind='llm'`` discriminator are rejected by
+        :meth:`OpenHandsAgentSettings.from_persisted`.
+
+        Returns:
+            An instance of ``cls``.
+
+        Raises:
+            TypeError: If *data* is not a mapping/BaseModel or has a
+                non-integer ``schema_version``.
+            ValueError: If ``schema_version`` is negative, newer than
+                supported, or cannot be migrated.
+            pydantic.ValidationError: If the migrated payload is invalid for
+                ``cls``.
+        """
+        payload = _apply_persisted_migrations(
+            data,
+            current_version=AGENT_SETTINGS_SCHEMA_VERSION,
+            migrations=_AGENT_SETTINGS_MIGRATIONS,
+            payload_name="AgentSettings",
+        )
+        return cls.model_validate(payload)
 
     def create_agent(self) -> AgentBase:
         """Build an agent from these settings.
