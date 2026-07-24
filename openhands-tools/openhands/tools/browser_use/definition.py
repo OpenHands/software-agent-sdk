@@ -693,7 +693,8 @@ captures DOM mutations, mouse movements, clicks, scrolls, and other user interac
 Output Location: {BROWSER_RECORDING_OUTPUT_DIR}/recording-<timestamp>/
 Format: Recording events are saved as numbered JSON files (1.json, 2.json, etc.)
 containing rrweb event arrays. Events are flushed every 5 seconds or when they
-exceed 1 MB. These files can be replayed using rrweb-player.
+exceed 1 MB. These files can be replayed using rrweb-player or exported with
+browser_export_recording.
 
 Call browser_stop_recording to stop recording and save any remaining events.
 
@@ -741,8 +742,8 @@ This tool stops the current recording session and saves any remaining events to 
 
 Output Location: {BROWSER_RECORDING_OUTPUT_DIR}/recording-<timestamp>/
 Format: Events are saved as numbered JSON files (1.json, 2.json, etc.) containing
-rrweb event arrays. These files can be replayed using rrweb-player to visualize
-the recorded session.
+rrweb event arrays. These files can be replayed using rrweb-player or exported
+to MP4/GIF with browser_export_recording.
 
 Returns a summary message with the total event count, file count, and save directory.
 """
@@ -767,6 +768,77 @@ class BrowserStopRecordingTool(
                     destructiveHint=False,
                     idempotentHint=False,
                     openWorldHint=False,
+                ),
+                executor=executor,
+            )
+        ]
+
+
+# ============================================
+# `browser_export_recording`
+# ============================================
+class BrowserExportRecordingAction(BrowserAction):
+    """Schema for exporting a saved browser session recording."""
+
+    recording_path: str | None = Field(
+        default=None,
+        description=(
+            "Recording directory or JSON file produced by browser_stop_recording. "
+            "Defaults to the newest recording under .agent_tmp/browser_observations."
+        ),
+    )
+    output_path: str | None = Field(
+        default=None,
+        description=(
+            "Output .mp4 or .gif path. Defaults to recording.<format> inside the "
+            "recording directory."
+        ),
+    )
+    format: Literal["mp4", "gif"] = Field(
+        default="mp4",
+        description="Portable media format to generate.",
+    )
+    width: int = Field(default=1280, gt=0, description="Rendered video width.")
+    height: int = Field(default=720, gt=0, description="Rendered video height.")
+    fps: int = Field(default=30, gt=0, description="Frames per second for export.")
+    speed: float = Field(default=1.0, gt=0, description="rrweb playback speed.")
+
+
+BROWSER_EXPORT_RECORDING_DESCRIPTION = """Export a saved rrweb recording to MP4 or GIF.
+
+This tool renders the JSON event files produced by browser_stop_recording through
+rrweb-player and converts the result to a portable media file that can be watched
+directly in a pull request.
+
+Inputs:
+- recording_path: A recording directory or JSON file. If omitted, the newest
+  recording under .agent_tmp/browser_observations is used.
+- output_path: Destination .mp4 or .gif. If omitted, the file is written inside
+  the recording directory.
+- format: mp4 for compact video, or gif for inline PR markdown previews.
+
+Requires Playwright and ffmpeg to be installed in the runtime environment.
+"""
+
+
+class BrowserExportRecordingTool(
+    ToolDefinition[BrowserExportRecordingAction, BrowserObservation]
+):
+    """Tool for exporting saved browser session recordings."""
+
+    @classmethod
+    def create(cls, executor: "BrowserToolExecutor") -> Sequence[Self]:
+        return [
+            cls(
+                description=BROWSER_EXPORT_RECORDING_DESCRIPTION,
+                action_type=BrowserExportRecordingAction,
+                observation_type=BrowserObservation,
+                annotations=ToolAnnotations(
+                    title="browser_export_recording",
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=False,
+                    openWorldHint=True,
                 ),
                 executor=executor,
             )
@@ -856,6 +928,7 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
             BrowserSetStorageTool,
             BrowserStartRecordingTool,
             BrowserStopRecordingTool,
+            BrowserExportRecordingTool,
         ]:
             tools.extend(tool_class.create(executor))
         return tools
