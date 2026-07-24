@@ -13,8 +13,12 @@ UNDERLINE := \033[4m
 # Required uv version
 REQUIRED_UV_VERSION := 0.8.13
 PKGS ?= openhands-sdk openhands-tools openhands-workspace openhands-agent-server
+AGENT_CANVAS_PACKAGE_NAME ?= @openhands/agent-canvas
+AGENT_CANVAS_VERSION ?= 1.0.0-rc.7
+AGENT_CANVAS_PACKAGE ?= $(AGENT_CANVAS_PACKAGE_NAME)@$(AGENT_CANVAS_VERSION)
+AGENT_CANVAS_DIR := agent-canvas
 
-.PHONY: build format lint clean help check-uv-version
+.PHONY: build agent-canvas-frontend ensure-agent-canvas run canvas format lint clean help check-uv-version
 
 # Default target
 .DEFAULT_GOAL := help
@@ -39,7 +43,38 @@ build: check-uv-version
 	@$(ECHO) "$(YELLOW)Setting up pre-commit hooks...$(RESET)"
 	@uv run pre-commit install
 	@$(ECHO) "$(GREEN)Pre-commit hooks installed successfully.$(RESET)"
+	@$(MAKE) agent-canvas-frontend
 	@$(ECHO) "$(GREEN)Build complete! Development environment is ready.$(RESET)"
+
+agent-canvas-frontend:
+	@$(ECHO) "$(CYAN)Fetching prebuilt agent-canvas package...$(RESET)"
+	@tmp_dir=$$(mktemp -d); \
+	trap 'rm -rf "$$tmp_dir"' EXIT; \
+	npm --silent pack "$(AGENT_CANVAS_PACKAGE)" --pack-destination "$$tmp_dir" >/dev/null; \
+	tarball=$$(find "$$tmp_dir" -maxdepth 1 -name '*.tgz' -print -quit); \
+	if [ -z "$$tarball" ]; then \
+		$(ECHO) "$(RED)No agent-canvas tarball was downloaded.$(RESET)"; \
+		exit 1; \
+	fi; \
+	tar -xzf "$$tarball" -C "$$tmp_dir"; \
+	if [ ! -d "$$tmp_dir/package/build" ] || [ ! -f "$$tmp_dir/package/bin/agent-canvas.mjs" ]; then \
+		$(ECHO) "$(RED)agent-canvas package is missing expected build or CLI files.$(RESET)"; \
+		exit 1; \
+	fi; \
+	rm -rf "$(AGENT_CANVAS_DIR)"; \
+	mkdir -p "$$(dirname "$(AGENT_CANVAS_DIR)")"; \
+	mv "$$tmp_dir/package" "$(AGENT_CANVAS_DIR)"
+	@$(ECHO) "$(GREEN)Installed agent-canvas package in $(AGENT_CANVAS_DIR).$(RESET)"
+
+ensure-agent-canvas:
+	@if [ ! -d "$(AGENT_CANVAS_DIR)/build" ] || [ ! -f "$(AGENT_CANVAS_DIR)/bin/agent-canvas.mjs" ]; then \
+		$(MAKE) agent-canvas-frontend; \
+	fi
+
+run: ensure-agent-canvas
+	@OH_AGENT_SERVER_LOCAL_PATH="$(abspath .)" node "$(AGENT_CANVAS_DIR)/bin/agent-canvas.mjs" $(ARGS)
+
+canvas: run
 
 format:
 	@$(ECHO) "$(YELLOW)Formatting code with uv format...$(RESET)"
@@ -71,7 +106,11 @@ help:
 	@$(ECHO) "$(UNDERLINE)Usage:$(RESET) make <COMMAND>"
 	@$(ECHO) ""
 	@$(ECHO) "$(UNDERLINE)Commands:$(RESET)"
-	@$(ECHO) "  $(GREEN)build$(RESET)                Setup development environment (install deps + hooks)"
+	@$(ECHO) "  $(GREEN)build$(RESET)                Setup dev environment and fetch agent-canvas"
+	@$(ECHO) "  $(GREEN)run$(RESET)                  Start the full agent-canvas stack"
+	@$(ECHO) "  $(YELLOW)                        Pass modes with ARGS, e.g. make run ARGS='--frontend-only'$(RESET)"
+	@$(ECHO) "  $(GREEN)canvas$(RESET)               Alias for run"
+	@$(ECHO) "  $(GREEN)agent-canvas-frontend$(RESET) Refresh the downloaded agent-canvas package"
 	@$(ECHO) "  $(GREEN)build-server$(RESET)         Build agent-server executable"
 	@$(ECHO) "  $(GREEN)test-server-schema$(RESET)   Test server schema"
 	@$(ECHO) "  $(GREEN)format$(RESET)               Format code with uv format"
