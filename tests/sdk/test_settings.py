@@ -56,6 +56,7 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
     assert section_keys == [
         "general",
         "llm",
+        "agent_context",
         "condenser",
         "verification",
     ]
@@ -111,6 +112,16 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
     # Excluded fields must not appear
     assert "llm.fallback_strategy" not in llm_fields
     assert "llm.retry_listener" not in llm_fields
+
+    # -- agent_context section (fields_opt_in: only annotated fields surface) --
+    assert sections["agent_context"].label == "Memory"
+    ac_fields = {f.key: f for f in sections["agent_context"].fields}
+    assert set(ac_fields) == {"agent_context.load_memory"}
+    load_memory = ac_fields["agent_context.load_memory"]
+    assert load_memory.label == "Persistent memory"
+    assert load_memory.value_type == "boolean"
+    assert load_memory.default is False
+    assert load_memory.prominence is SettingProminence.MAJOR
 
     # -- condenser section --
     condenser_fields = {f.key: f for f in sections["condenser"].fields}
@@ -358,6 +369,11 @@ def test_export_agent_settings_schema_emits_variant_tagged_sections() -> None:
     assert ("llm", "openhands") in by_keyvariant
     assert ("condenser", "openhands") in by_keyvariant
     assert ("verification", "openhands") in by_keyvariant
+
+    # Memory section is OpenHands-only: the GUI matches sections by key and
+    # ignores variant, so tagging both variants would render the toggle twice.
+    assert ("agent_context", "openhands") in by_keyvariant
+    assert ("agent_context", "acp") not in by_keyvariant
 
     # ACP-variant sections.
     acp_section = by_keyvariant.get(("acp", "acp"))

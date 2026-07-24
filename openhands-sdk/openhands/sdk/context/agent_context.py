@@ -23,6 +23,7 @@ from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
 from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.secret import SecretSource, SecretValue
+from openhands.sdk.settings.metadata import SettingProminence, field_meta
 from openhands.sdk.skills import (
     Skill,
     SkillKnowledge,
@@ -150,7 +151,12 @@ class AgentContext(BaseModel):
             "first send_message() / run() and stores the result in "
             "memory_context."
         ),
-        json_schema_extra={"acp_compatible": True},
+        json_schema_extra={
+            "acp_compatible": True,
+            # Surfaced in the curated agent-settings schema (the parent
+            # agent_context section is fields_opt_in).
+            **field_meta(SettingProminence.MAJOR, label="Persistent memory"),
+        },
     )
     memory_context: str | None = Field(
         default=None,
