@@ -11,6 +11,7 @@ from typing import (
     Protocol,
     Self,
     TypeVar,
+    cast,
 )
 
 from litellm import (
@@ -45,7 +46,13 @@ ActionT = TypeVar("ActionT", bound=Action)
 ObservationT = TypeVar("ObservationT", bound=Observation)
 _action_types_with_risk: dict[type, type] = {}
 _action_types_with_summary: dict[type, type] = {}
+_action_types_with_schema: dict[tuple[type, type], type] = {}
 _action_type_lock = threading.Lock()
+
+# Meta-field names injected into every action schema after the
+# response-schema merge (see ``_create_action_type_with_summary`` and
+# ``create_action_type_with_risk``); rejected in user response schemas.
+_RESERVED_META_FIELDS = frozenset({"summary", "security_risk"})
 
 
 def _camel_to_snake(name: str) -> str:
@@ -252,6 +259,14 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         default=None, repr=False, exclude=True
     )
 
+    # Optional Pydantic model describing the structured payload the LLM must
+    # return when invoking this tool. When set, the model's fields are merged
+    # into the action schema sent to the LLM, and ``action_from_arguments``
+    # validates the call against that augmented schema. Runtime-only.
+    response_schema: SkipJsonSchema[type[BaseModel] | None] = Field(
+        default=None, repr=False, exclude=True
+    )
+
     @classmethod
     def is_usable(cls) -> bool:
         """Return whether the tool can be used in the current environment."""
@@ -318,6 +333,10 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         """Create a new Tool instance with the given executor."""
         return self.model_copy(update={"executor": executor})
 
+    def set_response_schema(self, response_schema: type[BaseModel] | None) -> Self:
+        """Return a copy of this tool with the structured ``response_schema`` set."""
+        return self.model_copy(update={"response_schema": response_schema})
+
     def as_executable(self) -> ExecutableTool:
         """Return this tool as an ExecutableTool, ensuring it has an executor.
 
@@ -356,7 +375,49 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         Returns:
             The action instance created from the arguments.
         """
-        return self.action_type.model_validate(arguments)
+        action_type: type[Action] = self.action_type
+        if self.response_schema is not None:
+            action_type = cast(
+                type[Action],
+                _create_action_type_with_schema(action_type, self.response_schema),
+            )
+        return action_type.model_validate(arguments)
+
+    def parse_response(self, action: Action) -> BaseModel:
+        """Validate ``action`` against ``response_schema`` and return the model.
+
+        The return type is declared as ``BaseModel`` because ``ToolDefinition``
+        is not generic over the schema; cast at the call site for type safety::
+
+            result = cast(MySchema, tool.parse_response(action))
+
+        Raises ``ValueError`` if no ``response_schema`` is configured.
+        """
+        if self.response_schema is None:
+            raise ValueError(f"Tool '{self.name}' has no response_schema configured.")
+        # Pick only the schema's own fields so meta-fields (kind, summary, ...)
+        # don't leak in and we don't have to chase them.
+        data = {k: getattr(action, k) for k in self.response_schema.model_fields}
+        return self.response_schema.model_validate(data)
+
+    def parse_last_response(self, events: "Sequence[Any]") -> BaseModel | None:
+        """Find the most recent ``ActionEvent`` for this tool and parse it.
+
+        Returns ``None`` if the tool has not been called yet.
+        """
+        from openhands.sdk.event import ActionEvent
+
+        action = next(
+            (
+                event.action
+                for event in reversed(events)
+                if isinstance(event, ActionEvent)
+                and event.tool_name == self.name
+                and event.action is not None
+            ),
+            None,
+        )
+        return self.parse_response(action) if action is not None else None
 
     def __call__(
         self, action: ActionT, conversation: "LocalConversation | None" = None
@@ -444,6 +505,12 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         action_type: type[Schema] | None = None,
     ) -> dict[str, Any]:
         action_type = action_type or self.action_type
+
+        # Merge the structured response schema (if any) into the action schema
+        if self.response_schema is not None:
+            action_type = _create_action_type_with_schema(
+                action_type, self.response_schema
+            )
 
         # Apply security risk enhancement if enabled
         add_security_risk_prediction = add_security_risk_prediction and (
@@ -605,6 +672,61 @@ def create_action_type_with_risk(action_type: type[Schema]) -> type[Schema]:
         )
         _action_types_with_risk[action_type] = action_type_with_risk
         return action_type_with_risk
+
+
+def _create_action_type_with_schema(
+    action_type: type[Schema], response_schema: type[BaseModel]
+) -> type[Schema]:
+    """Return an action type extended with the fields of ``response_schema``.
+
+    Every field declared on the Pydantic ``response_schema`` becomes an extra
+    field on the returned action class. This is what enables an LLM to reply
+    with structured output: the JSON schema sent to the model includes both
+    the tool's own parameters and the user-defined response fields.
+
+    A field name collision between the action and the response schema is a
+    programming error and raises ``ValueError``. The same applies to the
+    meta-field names the SDK injects into every action schema *after* this
+    merge (``summary``, and ``security_risk`` when the risk analyzer is on):
+    a response-schema field with one of those names would be silently
+    shadowed on the way out or swallowed by the agent on the way back, so
+    they are rejected up front.
+    """
+    cache_key = (action_type, response_schema)
+    with _action_type_lock:
+        cached = _action_types_with_schema.get(cache_key)
+        if cached is not None:
+            return cached
+
+        overlap = set(action_type.model_fields) & set(response_schema.model_fields)
+        if overlap:
+            raise ValueError(
+                f"response_schema fields {sorted(overlap)} collide with "
+                f"existing fields on {action_type.__name__}."
+            )
+
+        reserved = _RESERVED_META_FIELDS & set(response_schema.model_fields)
+        if reserved:
+            raise ValueError(
+                f"response_schema fields {sorted(reserved)} are reserved: "
+                f"the SDK injects meta-fields with these names into every "
+                f"action schema. Rename them in your response schema."
+            )
+
+        attrs: dict[str, Any] = {}
+        annotations: dict[str, Any] = {}
+        for field_name, field_info in response_schema.model_fields.items():
+            attrs[field_name] = field_info
+            annotations[field_name] = field_info.annotation
+        attrs["__annotations__"] = annotations
+
+        new_type = type(
+            f"{action_type.__name__}With{response_schema.__name__}",
+            (action_type,),
+            attrs,
+        )
+        _action_types_with_schema[cache_key] = new_type
+        return new_type
 
 
 def _create_action_type_with_summary(action_type: type[Schema]) -> type[Schema]:
