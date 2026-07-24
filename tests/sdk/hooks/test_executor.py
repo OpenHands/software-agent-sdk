@@ -12,7 +12,7 @@ from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.hooks.config import HookDefinition, HookType
 from openhands.sdk.hooks.executor import HookExecutor
 from openhands.sdk.hooks.types import HookDecision, HookEvent, HookEventType
-from openhands.sdk.llm import LLM
+from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
 from openhands.sdk.llm.utils.metrics import Metrics
 from tests.command_utils import python_command
 
@@ -862,33 +862,345 @@ class TestAgentHookExecution:
         assert parent_viz.requested_agent_id == "agent-hook:security-check"
 
 
-class TestPromptHookNotImplemented:
-    """HookType.PROMPT is a future stub — execution defaults to allow, never crashes."""
+class TestPromptHookExecution:
+    """Tests for the single-completion HookType.PROMPT execution path."""
 
     @pytest.fixture
-    def executor(self, tmp_path):
-        return HookExecutor(working_dir=str(tmp_path))
+    def mock_llm(self):
+        return LLM(model="gpt-4o", api_key=SecretStr("test-key"), usage_id="test")
+
+    @pytest.fixture
+    def executor(self, tmp_path, mock_llm):
+        return HookExecutor(working_dir=str(tmp_path), llm=mock_llm)
+
+    @pytest.fixture
+    def executor_no_llm(self, tmp_path):
+        return HookExecutor(working_dir=str(tmp_path), llm=None)
 
     @pytest.fixture
     def sample_event(self):
-        return HookEvent(event_type=HookEventType.PRE_TOOL_USE, tool_name="BashTool")
+        return HookEvent(
+            event_type=HookEventType.PRE_TOOL_USE,
+            tool_name="BashTool",
+            tool_input={"command": "rm -rf build"},
+            session_id="test-session",
+        )
 
-    def test_prompt_hook_defaults_to_allow(self, executor, sample_event):
-        """Executing a PROMPT hook returns allow instead of crashing."""
-        hook = HookDefinition(type=HookType.PROMPT, prompt="evaluate this event")
-        result = executor.execute(hook, sample_event)
+    @staticmethod
+    def _completion_response(raw: str):
+        return MagicMock(
+            message=Message(
+                role="assistant",
+                content=[TextContent(text=raw)],
+            )
+        )
+
+    def test_execute_dispatches_to_prompt_hook(self, executor, sample_event):
+        hook = HookDefinition(type=HookType.PROMPT, prompt="Block destructive commands")
+
+        with patch.object(
+            executor,
+            "_execute_prompt_hook",
+            return_value=MagicMock(decision=HookDecision.ALLOW),
+        ) as mock_prompt:
+            executor.execute(hook, sample_event)
+
+        mock_prompt.assert_called_once_with(hook, sample_event)
+
+    @pytest.mark.parametrize(
+        "payload,expected_decision,expected_blocked",
+        [
+            (
+                '{"decision": "allow", "reason": "Command is reversible"}',
+                HookDecision.ALLOW,
+                False,
+            ),
+            (
+                '{"decision": "deny", "reason": "Command deletes files"}',
+                HookDecision.DENY,
+                True,
+            ),
+        ],
+    )
+    def test_completion_decision_is_parsed(
+        self,
+        executor,
+        sample_event,
+        payload,
+        expected_decision,
+        expected_blocked,
+    ):
+        with patch.object(
+            LLM,
+            "completion",
+            return_value=self._completion_response(payload),
+        ):
+            result = executor.execute(
+                HookDefinition(
+                    type=HookType.PROMPT,
+                    prompt="Block destructive commands",
+                ),
+                sample_event,
+            )
+
+        assert result.success
+        assert result.decision == expected_decision
+        assert result.blocked is expected_blocked
+
+    def test_policy_and_untrusted_event_are_separate_messages(
+        self, executor, sample_event
+    ):
+        captured_messages = []
+
+        def capture_completion(_llm, messages, **_kwargs):
+            captured_messages.extend(messages)
+            return self._completion_response('{"decision": "allow", "reason": "safe"}')
+
+        with patch.object(
+            LLM, "completion", autospec=True, side_effect=capture_completion
+        ):
+            executor.execute(
+                HookDefinition(
+                    type=HookType.PROMPT,
+                    prompt="Block destructive commands",
+                ),
+                sample_event,
+            )
+
+        assert [message.role for message in captured_messages] == ["system", "user"]
+        system_text = "\n".join(content_to_str(captured_messages[0].content))
+        event_text = "\n".join(content_to_str(captured_messages[1].content))
+        assert "Block destructive commands" in system_text
+        assert '"command": "rm -rf build"' in event_text
+        assert "untrusted" in event_text.lower()
+
+    @pytest.mark.parametrize(
+        "uses_responses_api,called_method,uncalled_method",
+        [
+            (False, "completion", "responses"),
+            (True, "responses", "completion"),
+        ],
+        ids=["chat-completions", "responses-api"],
+    )
+    def test_uses_model_appropriate_llm_api(
+        self,
+        executor,
+        sample_event,
+        uses_responses_api,
+        called_method,
+        uncalled_method,
+    ):
+        response = self._completion_response('{"decision": "allow", "reason": "safe"}')
+
+        with (
+            patch.object(
+                LLM,
+                "uses_responses_api",
+                return_value=uses_responses_api,
+            ),
+            patch.object(LLM, called_method, return_value=response) as expected_call,
+            patch.object(LLM, uncalled_method) as unexpected_call,
+        ):
+            result = executor.execute(
+                HookDefinition(type=HookType.PROMPT, prompt="Evaluate this event"),
+                sample_event,
+            )
+
         assert result.decision == HookDecision.ALLOW
-        assert result.success is False
-        assert "not yet implemented" in (result.reason or "")
+        expected_call.assert_called_once()
+        unexpected_call.assert_not_called()
 
-    def test_prompt_hook_does_not_block(self, executor, sample_event):
-        """PROMPT hook must not block the operation while unimplemented."""
-        hook = HookDefinition(type=HookType.PROMPT, prompt="evaluate this event")
-        result = executor.execute(hook, sample_event)
-        assert result.blocked is False
-        assert result.should_continue is True
+    @pytest.mark.parametrize(
+        "response",
+        [
+            "",
+            "ALLOW",
+            '{"decision": "maybe", "reason": "uncertain"}',
+        ],
+    )
+    def test_invalid_response_falls_open(self, executor, sample_event, response):
+        with patch.object(
+            LLM,
+            "completion",
+            return_value=self._completion_response(response),
+        ):
+            result = executor.execute(
+                HookDefinition(type=HookType.PROMPT, prompt="Evaluate this event"),
+                sample_event,
+            )
 
-    def test_prompt_hook_without_command_validates(self):
-        """PROMPT hook with no command is valid at config time (future use)."""
-        hook = HookDefinition(type=HookType.PROMPT, prompt="evaluate this event")
-        assert hook.command == ""
+        assert not result.success
+        assert result.decision == HookDecision.ALLOW
+        assert not result.blocked
+        assert result.error is not None
+
+    def test_no_llm_falls_open(self, executor_no_llm, sample_event):
+        result = executor_no_llm.execute(
+            HookDefinition(type=HookType.PROMPT, prompt="Evaluate this event"),
+            sample_event,
+        )
+
+        assert not result.success
+        assert result.decision == HookDecision.ALLOW
+        assert result.error is not None
+
+    def test_completion_failure_falls_open(self, executor, sample_event):
+        with patch.object(LLM, "completion", side_effect=RuntimeError("provider down")):
+            result = executor.execute(
+                HookDefinition(type=HookType.PROMPT, prompt="Evaluate this event"),
+                sample_event,
+            )
+
+        assert not result.success
+        assert result.decision == HookDecision.ALLOW
+        assert result.error == "provider down"
+
+    def test_timeout_usage_id_and_metrics_are_isolated(self, executor, sample_event):
+        parent_metrics = executor.llm.metrics
+        captured_llm = None
+        executor.llm.stream = True
+
+        def capture_completion(hook_llm, messages, **_kwargs):
+            nonlocal captured_llm
+            assert messages
+            captured_llm = hook_llm
+            return self._completion_response('{"decision": "allow", "reason": "safe"}')
+
+        with patch.object(
+            LLM, "completion", autospec=True, side_effect=capture_completion
+        ):
+            executor.execute(
+                HookDefinition(
+                    type=HookType.PROMPT,
+                    name="safety-check",
+                    prompt="Evaluate this event",
+                    timeout=7,
+                ),
+                sample_event,
+            )
+
+        assert captured_llm is not None
+        assert captured_llm is not executor.llm
+        assert captured_llm.timeout == 7
+        assert captured_llm.usage_id == "prompt-hook:safety-check"
+        assert captured_llm.metrics is not parent_metrics
+        assert captured_llm.stream is False
+        assert executor.llm.stream is True
+
+    def test_hook_metrics_are_merged_into_parent_stats(
+        self, tmp_path, mock_llm, sample_event
+    ):
+        parent_stats = ConversationStats()
+        existing_metrics = Metrics(model_name="gpt-4o")
+        existing_metrics.add_cost(0.25)
+        parent_stats.usage_to_metrics["prompt-hook:policy"] = existing_metrics
+        executor = HookExecutor(
+            working_dir=str(tmp_path),
+            llm=mock_llm,
+            conversation_stats=parent_stats,
+        )
+
+        def add_hook_cost(hook_llm, messages, **_kwargs):
+            assert messages
+            hook_llm.metrics.add_cost(0.75)
+            return self._completion_response('{"decision": "allow", "reason": "safe"}')
+
+        with patch.object(LLM, "completion", autospec=True, side_effect=add_hook_cost):
+            executor.execute(
+                HookDefinition(
+                    type=HookType.PROMPT,
+                    name="policy",
+                    prompt="Evaluate this event",
+                ),
+                sample_event,
+            )
+
+        assert parent_stats.usage_to_metrics[
+            "prompt-hook:policy"
+        ].accumulated_cost == pytest.approx(1.0)
+
+    def test_repeated_prompt_hooks_merge_metrics(
+        self, tmp_path, mock_llm, sample_event
+    ):
+        parent_stats = ConversationStats()
+        executor = HookExecutor(
+            working_dir=str(tmp_path),
+            llm=mock_llm,
+            conversation_stats=parent_stats,
+        )
+        hook = HookDefinition(
+            type=HookType.PROMPT,
+            name="policy",
+            prompt="Evaluate this event",
+        )
+
+        def add_hook_cost(hook_llm, messages, **_kwargs):
+            assert messages
+            hook_llm.metrics.add_cost(0.5)
+            return self._completion_response('{"decision": "allow", "reason": "safe"}')
+
+        with patch.object(LLM, "completion", autospec=True, side_effect=add_hook_cost):
+            results = executor.execute_all([hook, hook], sample_event)
+
+        assert len(results) == 2
+        assert parent_stats.usage_to_metrics[
+            "prompt-hook:policy"
+        ].accumulated_cost == pytest.approx(1.0)
+
+    def test_execute_all_stops_after_prompt_deny(self, executor, sample_event):
+        hooks = [
+            HookDefinition(
+                type=HookType.PROMPT,
+                name="deny",
+                prompt="Deny this event",
+            ),
+            HookDefinition(
+                type=HookType.PROMPT,
+                name="never-called",
+                prompt="Evaluate this event",
+            ),
+        ]
+
+        with patch.object(
+            LLM,
+            "completion",
+            return_value=self._completion_response(
+                '{"decision": "deny", "reason": "blocked"}'
+            ),
+        ) as completion:
+            results = executor.execute_all(hooks, sample_event, stop_on_block=True)
+
+        assert len(results) == 1
+        assert results[0].blocked
+        completion.assert_called_once()
+
+    def test_llm_getter_is_resolved_live(self, tmp_path, sample_event):
+        current = {
+            "llm": LLM(model="gpt-4o", api_key=SecretStr("k1"), usage_id="first")
+        }
+        executor = HookExecutor(
+            working_dir=str(tmp_path),
+            llm_getter=lambda: current["llm"],
+        )
+        current["llm"] = LLM(
+            model="gpt-5.5",
+            api_key=SecretStr("k2"),
+            usage_id="second",
+        )
+        captured_model = None
+
+        def capture_completion(hook_llm, messages, **_kwargs):
+            nonlocal captured_model
+            assert messages
+            captured_model = hook_llm.model
+            return self._completion_response('{"decision": "allow", "reason": "safe"}')
+
+        with patch.object(
+            LLM, "responses", autospec=True, side_effect=capture_completion
+        ):
+            executor.execute(
+                HookDefinition(type=HookType.PROMPT, prompt="Evaluate this event"),
+                sample_event,
+            )
+
+        assert captured_model == "gpt-5.5"
