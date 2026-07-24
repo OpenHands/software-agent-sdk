@@ -9,6 +9,7 @@ from openhands.sdk.llm.options.chat_options import select_chat_options
 @dataclass
 class DummyLLM:
     model: str
+    model_canonical_name: str | None = None
     top_k: int | None = None
     top_p: float | None = 1.0
     temperature: float | None = 0.0
@@ -34,6 +35,9 @@ class DummyLLM:
     @property
     def effective_max_output_tokens(self) -> int:
         return self.max_output_tokens
+
+    def _model_name_for_capabilities(self) -> str:
+        return self.model_canonical_name or self.model
 
 
 def test_opus_4_5_uses_reasoning_effort_and_strips_temp_top_p():
@@ -146,6 +150,33 @@ def test_claude_sonnet_4_6_strips_temp_and_top_p():
     # Extended thinking models should strip temperature/top_p to avoid API errors
     assert "temperature" not in out
     assert "top_p" not in out
+
+
+def test_canonical_name_drives_capability_detection_for_proxied_model():
+    """A litellm_proxy alias with model_canonical_name must resolve capabilities
+    from the canonical name, like every other capability lookup in the SDK.
+
+    The raw alias carries no feature info, so before this fix the chat options
+    left temperature/top_p in the request and never enabled extended thinking for
+    a proxied thinking model — the direct model stripped them.
+    """
+    proxied = DummyLLM(
+        model="litellm_proxy/my-claude",
+        model_canonical_name="claude-sonnet-4-6",
+        top_p=1.0,
+        temperature=0.5,
+    )
+    out = select_chat_options(proxied, user_kwargs={}, has_tools=True)
+
+    # Same posture as the direct model (test_claude_sonnet_4_6_strips_temp_and_top_p).
+    assert "temperature" not in out
+    assert "top_p" not in out
+
+    # Sanity: the raw alias alone is not detected as a thinking model, so without
+    # the canonical resolution temperature would have survived.
+    raw = DummyLLM(model="litellm_proxy/my-claude", top_p=1.0, temperature=0.5)
+    raw_out = select_chat_options(raw, user_kwargs={}, has_tools=True)
+    assert raw_out.get("temperature") == 0.5
 
 
 def test_bedrock_opus_4_8_strips_temp_top_p_without_thinking_block():

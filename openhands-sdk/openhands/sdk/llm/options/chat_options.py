@@ -20,6 +20,14 @@ def select_chat_options(
 
     This keeps the exact provider-aware mappings and precedence.
     """
+    # Capability detection must use the canonical model name — e.g. when a
+    # `litellm_proxy/<alias>` model is configured with `model_canonical_name`,
+    # the alias itself carries no feature info. This matches every other
+    # capability lookup in the SDK (responses_options, caching, responses API,
+    # inline-image). The raw `llm.model` is still used below for provider-routing
+    # string checks (azure/gemini prefixes), which key off the real routed model.
+    model_for_caps = llm._model_name_for_capabilities()
+
     # First pass: apply simple defaults without touching user-supplied values
     max_output_tokens = llm.effective_max_output_tokens
     defaults: dict[str, Any] = {
@@ -49,7 +57,7 @@ def select_chat_options(
         out["extra_headers"] = {**openrouter_headers, **existing}
 
     # Reasoning-model quirks
-    supports_reasoning_effort = get_features(llm.model).supports_reasoning_effort
+    supports_reasoning_effort = get_features(model_for_caps).supports_reasoning_effort
     if supports_reasoning_effort:
         # LiteLLM automatically handles reasoning_effort for all models, including
         # Claude Opus 4.5 (maps to output_config and adds beta header automatically)
@@ -62,7 +70,7 @@ def select_chat_options(
             out.pop("top_p", None)
 
     # Extended thinking models
-    if get_features(llm.model).supports_extended_thinking:
+    if get_features(model_for_caps).supports_extended_thinking:
         if llm.extended_thinking_budget and max_output_tokens:
             # Anthropic throws errors if thinking budget equals or exceeds max output
             # tokens -- force the thinking budget lower if there's a conflict
@@ -94,7 +102,7 @@ def select_chat_options(
 
     # Send prompt_cache_retention only if model supports it
     if (
-        get_features(llm.model).supports_prompt_cache_retention
+        get_features(model_for_caps).supports_prompt_cache_retention
         and llm.prompt_cache_retention
     ):
         out["prompt_cache_retention"] = llm.prompt_cache_retention
