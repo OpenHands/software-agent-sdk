@@ -10,6 +10,9 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import _add_exception_handlers
+from openhands.agent_server.conversation_service import (
+    CredentialBindingActivationRequired,
+)
 
 
 @pytest.fixture
@@ -43,3 +46,22 @@ def test_error_id_is_unique_per_request(app_with_failing_route):
     first = client.get("/boom").json()["error_id"]
     second = client.get("/boom").json()["error_id"]
     assert first != second
+
+
+def test_credential_binding_activation_required_is_retryable():
+    app = FastAPI()
+    _add_exception_handlers(app)
+
+    @app.get("/conversation")
+    async def conversation():
+        raise CredentialBindingActivationRequired(
+            "credential_binding_activation_required"
+        )
+
+    response = TestClient(app, raise_server_exceptions=False).get("/conversation")
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": "credential_binding_activation_required",
+        "retryable": True,
+    }

@@ -632,6 +632,42 @@ _ACCEPTED_CLOUD_PROXY_REMOVAL_PATH = "/api/cloud-proxy"
 _ACCEPTED_CLOUD_PROXY_REMOVAL_METHOD = "post"
 _ACCEPTED_CLOUD_PROXY_REMOVAL_OPERATION_ID = "cloud_proxy_api_cloud_proxy_post"
 
+_ACCEPTED_VSCODE_BASE_URL_DEFAULT_REMOVAL_ID = "request-parameter-default-value-removed"
+_ACCEPTED_VSCODE_BASE_URL_DEFAULT_REMOVAL_PATH = "/api/vscode/url"
+_ACCEPTED_VSCODE_BASE_URL_DEFAULT_REMOVAL_METHOD = "get"
+_ACCEPTED_VSCODE_BASE_URL_DEFAULT_REMOVAL_OPERATION_ID = (
+    "get_vscode_url_api_vscode_url_get"
+)
+_ACCEPTED_VSCODE_BASE_URL_DEFAULT_REMOVAL_PARAM_RE = re.compile(
+    r"request parameter `base_url`, default value `http://localhost:8001` "
+    r"was removed"
+)
+
+
+def _is_accepted_vscode_base_url_default_removal(change: dict) -> bool:
+    """Return True for the accepted /api/vscode/url base_url default removal.
+
+    Maintainers accepted this documented-default removal in PR #4181: the
+    ``base_url`` query parameter stays optional, only the server-side fallback
+    changed (from a hardcoded ``http://localhost:8001`` to the actually
+    configured VSCode port). Requests that omit ``base_url`` keep working, so
+    no client contract is broken.
+    """
+    return (
+        str(change.get("id", "")) == _ACCEPTED_VSCODE_BASE_URL_DEFAULT_REMOVAL_ID
+        and str(change.get("path", ""))
+        == _ACCEPTED_VSCODE_BASE_URL_DEFAULT_REMOVAL_PATH
+        and str(change.get("operation", "")).lower()
+        == _ACCEPTED_VSCODE_BASE_URL_DEFAULT_REMOVAL_METHOD
+        and str(change.get("operationId", ""))
+        == _ACCEPTED_VSCODE_BASE_URL_DEFAULT_REMOVAL_OPERATION_ID
+        and bool(
+            _ACCEPTED_VSCODE_BASE_URL_DEFAULT_REMOVAL_PARAM_RE.search(
+                str(change.get("text", ""))
+            )
+        )
+    )
+
 
 def _is_accepted_cloud_proxy_removal(operation: dict) -> bool:
     """Return True for the accepted /api/cloud-proxy removal from PR #3326."""
@@ -994,6 +1030,16 @@ def main() -> int:
             for change in other_breaking_changes
             if not _is_accepted_cloud_proxy_path_removal(change)
         ]
+        accepted_vscode_base_url_default_removals = [
+            change
+            for change in other_breaking_changes
+            if _is_accepted_vscode_base_url_default_removal(change)
+        ]
+        other_breaking_changes = [
+            change
+            for change in other_breaking_changes
+            if not _is_accepted_vscode_base_url_default_removal(change)
+        ]
 
         removal_errors = _validate_removed_operations(
             removed_operations,
@@ -1015,6 +1061,15 @@ def main() -> int:
                 "Accepted removal of POST /api/cloud-proxy. Maintainers "
                 "explicitly accepted this REST break in PR #3326, and that PR "
                 "is labeled release-note-required."
+            )
+
+        if accepted_vscode_base_url_default_removals:
+            print(
+                f"\n::notice title={PYPI_DISTRIBUTION} REST API::"
+                "Accepted removal of the documented default for the optional "
+                "`base_url` query parameter of GET /api/vscode/url (PR #4181). "
+                "The parameter stays optional; only the server-side fallback "
+                "changed, so requests that omit it keep working."
             )
 
         if additive_response_oneof:
@@ -1084,7 +1139,8 @@ def main() -> int:
             print(
                 "Breaking changes are limited to previously-deprecated operations "
                 "or properties whose scheduled removal versions have been reached, "
-                "the accepted POST /api/cloud-proxy removal, additive response "
+                "the accepted POST /api/cloud-proxy removal, the accepted "
+                "GET /api/vscode/url base_url default removal, additive response "
                 "oneOf expansions, and/or additive response property type widenings."
             )
         else:
