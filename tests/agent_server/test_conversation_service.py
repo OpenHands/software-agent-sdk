@@ -3770,3 +3770,51 @@ class TestConversationSearchScaling:
                 )
 
             assert [item.id for item in page.items] == [target]
+
+
+@pytest.mark.asyncio
+async def test_switch_llm_survives_restart(tmp_path):
+    """Issue #4032: a live ``switch_llm`` persists only to base_state.json.
+
+    On resume the server rebuilds the agent from the (stale) meta.json snapshot,
+    so before the fix the switched LLM — and its ``timeout`` — reverted to the
+    creation-time value after an agent-server restart. base_state.json must win
+    for the live-mutable ``llm`` on resume.
+    """
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    request = StartConversationRequest(
+        agent=Agent(
+            llm=LLM(model="gpt-4o", usage_id="test-llm", timeout=300),
+            tools=[],
+        ),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    async with ConversationService(conversations_dir=conversations_dir) as primary:
+        conversation_info, _ = await primary.start_conversation(request)
+        conversation_id = conversation_info.id
+
+        # Switch the live LLM to timeout=600 (distinct usage_id so the registry
+        # installs it rather than reusing the first-write-wins cached entry).
+        # This writes ConversationState.agent -> base_state.json only.
+        event_service = await primary.get_event_service(conversation_id)
+        assert event_service is not None
+        conversation = event_service.get_conversation()
+        conversation.switch_llm(
+            LLM(model="gpt-4o", usage_id="test-llm-switched", timeout=600)
+        )
+        assert conversation.state.agent.llm.timeout == 600
+
+    # Restart: a fresh service over the same directory hydrates from disk.
+    async with ConversationService(conversations_dir=conversations_dir) as restarted:
+        assert restarted._event_services is not None
+        assert conversation_id not in restarted._event_services
+        restarted_event_service = await restarted.get_event_service(conversation_id)
+        assert restarted_event_service is not None
+        restarted_conversation = restarted_event_service.get_conversation()
+        # The switch survives the restart instead of reverting to timeout=300.
+        assert restarted_conversation.state.agent.llm.timeout == 600
