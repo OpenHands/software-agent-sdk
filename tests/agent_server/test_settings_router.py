@@ -99,8 +99,8 @@ def test_get_agent_settings_schema():
     assert "confirmation_mode" not in verification_field_keys
     assert "security_analyzer" not in verification_field_keys
 
-    # agent_context is a fields_opt_in section: only the curated load_memory
-    # field surfaces, never the raw context model.
+    # agent_context is curated: only the annotated load_memory field
+    # surfaces, never the raw context model.
     assert "agent_context" in section_keys
     agent_context_section = next(
         section for section in body["sections"] if section["key"] == "agent_context"

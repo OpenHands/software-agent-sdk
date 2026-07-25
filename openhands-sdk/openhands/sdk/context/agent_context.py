@@ -153,8 +153,6 @@ class AgentContext(BaseModel):
         ),
         json_schema_extra={
             "acp_compatible": True,
-            # Surfaced in the curated agent-settings schema (the parent
-            # agent_context section is fields_opt_in).
             **field_meta(SettingProminence.MAJOR, label="Persistent memory"),
         },
     )

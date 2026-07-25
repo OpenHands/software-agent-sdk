@@ -113,7 +113,7 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
     assert "llm.fallback_strategy" not in llm_fields
     assert "llm.retry_listener" not in llm_fields
 
-    # -- agent_context section (fields_opt_in: only annotated fields surface) --
+    # -- agent_context section (only annotated fields surface) --
     assert sections["agent_context"].label == "Memory"
     ac_fields = {f.key: f for f in sections["agent_context"].fields}
     assert set(ac_fields) == {"agent_context.load_memory"}
