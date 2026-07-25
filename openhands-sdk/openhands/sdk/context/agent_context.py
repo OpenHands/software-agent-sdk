@@ -139,6 +139,31 @@ class AgentContext(BaseModel):
         ),
         json_schema_extra={"acp_compatible": True},
     )
+    load_memory: bool = Field(
+        default=False,
+        description=(
+            "Whether to load persistent agent memory (MEMORY.md indexes under "
+            "~/.openhands/memory/ and <workspace>/.openhands/memory/) into the "
+            "system prompt. Like load_project_skills, this flag is not "
+            "resolved by AgentContext itself (the workspace path is unknown "
+            "at validation time); LocalConversation resolves it lazily on the "
+            "first send_message() / run() and stores the result in "
+            "memory_context."
+        ),
+        json_schema_extra={"acp_compatible": True},
+    )
+    memory_context: str | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Resolved memory-index text rendered into the <MEMORY_CONTEXT> "
+            "prompt block. Populated via model_copy by LocalConversation when "
+            "load_memory is set; excluded from serialization because it is "
+            "re-resolved from disk each session and must not bloat persisted "
+            "conversation state."
+        ),
+        json_schema_extra={"acp_compatible": True},
+    )
     disabled_skills: list[str] = Field(
         default_factory=list,
         description=(
@@ -357,6 +382,7 @@ class AgentContext(BaseModel):
             repo_skills=tuple((s.name, s.content) for s in data.repo_skills),
             available_skills_prompt=data.available_skills_prompt or None,
             custom_suffix=self.system_message_suffix or None,
+            memory_context=self.memory_context or None,
             secret_infos=tuple(
                 (info["name"] or "", info["description"]) for info in data.secret_infos
             ),

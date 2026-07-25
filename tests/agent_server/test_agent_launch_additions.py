@@ -55,6 +55,7 @@ def _mock_event_service(state: ConversationState) -> AsyncMock:
         updated_at=datetime.now(UTC),
         forked_from_conversation_id=None,
         forked_from_event_id=None,
+        parent_conversation_id=None,
     )
     return event_service
 
@@ -125,7 +126,7 @@ async def test_launch_additions_apply_after_agent_resolution(profile_launch, tmp
     service = ConversationService(conversations_dir=tmp_path)
     service._event_services = {}
 
-    async def capture_start(stored):
+    async def capture_start(stored, **_kwargs):
         captured["stored"] = stored
         return _mock_event_service(state)
 

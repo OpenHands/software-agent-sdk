@@ -35,9 +35,9 @@ from openhands.agent_server.bash_service import (
 from openhands.agent_server.config import Config, get_default_config
 from openhands.agent_server.conversation_service import (
     ConversationService,
+    CredentialBindingActivationRequired,
     get_default_conversation_service,
 )
-from openhands.agent_server.event_compat import event_transport_dump
 from openhands.agent_server.event_router import normalize_datetime_to_server_timezone
 from openhands.agent_server.models import (
     BashError,
@@ -280,7 +280,14 @@ async def events_socket(
 
     logger.info(f"Event Websocket Connected: {conversation_id}")
     conv_service = _get_conversation_service(websocket)
-    event_service = await conv_service.get_event_service(conversation_id)
+    try:
+        event_service = await conv_service.get_event_service(conversation_id)
+    except CredentialBindingActivationRequired:
+        await websocket.close(
+            code=1013,
+            reason="credential_binding_activation_required",
+        )
+        return
     if event_service is None:
         logger.warning(f"Converation not found: {conversation_id}")
         await websocket.close(code=4004, reason="Conversation not found")
@@ -477,8 +484,7 @@ async def _send_event(event: Event, websocket: WebSocket):
         logger.debug("skip_sending_event_socket_disconnected: %r", event)
         return
     try:
-        dumped = event_transport_dump(event)
-        await websocket.send_json(dumped)
+        await websocket.send_json(event.model_dump(mode="json", exclude_none=True))
     except (RuntimeError, WebSocketDisconnect) as e:
         # Expected race: client disconnected between our state check and send.
         logger.debug("error_sending_event_disconnected: %r (%s)", event, e)

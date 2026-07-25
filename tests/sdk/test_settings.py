@@ -698,6 +698,19 @@ def test_openhands_mcp_config_reject_unknown_server_fields() -> None:
         )
 
 
+def test_current_agent_settings_reject_legacy_mcp_wrapper_without_migration() -> None:
+    with pytest.raises(ValidationError):
+        validate_agent_settings(
+            {
+                "schema_version": AGENT_SETTINGS_SCHEMA_VERSION,
+                "agent_kind": "openhands",
+                "mcp_config": {
+                    "mcpServers": {"server": {"url": "https://mcp.example.com/mcp"}}
+                },
+            }
+        )
+
+
 def test_validate_agent_settings_mcp_linear_migration_does_not_duplicate() -> None:
     settings = validate_agent_settings(
         {
