@@ -3424,106 +3424,15 @@ async def test_event_service_creates_lease_with_custom_ttl(tmp_path: Path) -> No
 
 
 # ---------------------------------------------------------------------------
-# _resume_agent_with_live_llm — base_state.json is authoritative on resume
+# _resume_agent_with_live_llm — fresh-conversation no-op branch.
 #
-# A live switch_llm / switch_acp_model persists only to base_state.json, never
-# to meta.json. On resume EventService rebuilds the agent from the meta snapshot,
-# so without reading base_state the switch is silently reverted after a restart
-# (issue #4032). These cover the regular LLM/condenser path and the ACP
-# acp_model path (which lets the meta write-mirror be removed from
-# switch_acp_model), plus the fresh-conversation no-op.
+# The behavioral spec (a live switch_llm / switch_acp_model surviving a restart
+# because base_state.json is authoritative on resume, issue #4032) lives in
+# tests/cross/test_conversation_resume_behavior.py, exercised end-to-end through
+# ConversationService. Here we only pin the branch that spec does not reach:
+# before the first run there is no base_state.json, so the stored (create-time)
+# agent must be used verbatim.
 # ---------------------------------------------------------------------------
-
-
-def _persist_base_state_agent(
-    conversations_dir: Path, cid, agent: AgentBase, workspace_dir: Path
-) -> None:
-    """Write conversations_dir/<cid>/base_state.json carrying `agent`.
-
-    ``EventService.conversation_dir`` is ``conversations_dir / id.hex``; that is
-    where ``_resume_agent_with_live_llm`` reads base_state.json. ``create()``
-    writes ``base_state.json`` directly under its ``persistence_dir`` (unlike
-    ``LocalConversation``, which appends the id hex first), so point it straight
-    at the per-conversation dir.
-    """
-    ConversationState.create(
-        id=cid,
-        agent=agent,
-        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
-        persistence_dir=str(conversations_dir / cid.hex),
-    )
-
-
-def test_resume_agent_recovers_switched_llm_from_base_state(tmp_path: Path) -> None:
-    conversations_dir = tmp_path / "conversations"
-    workspace_dir = tmp_path / "workspace"
-    workspace_dir.mkdir(parents=True)
-    cid = uuid4()
-
-    # meta.json snapshot: creation-time LLM (timeout=300).
-    stored = StoredConversation(
-        id=cid,
-        agent=Agent(
-            llm=LLM(model="gpt-4o", usage_id="test-llm", timeout=300),
-            tools=[],
-        ),
-        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
-        confirmation_policy=NeverConfirm(),
-        initial_message=None,
-        metrics=None,
-    )
-    # base_state.json: a live switch bumped the timeout to 600 (and switched
-    # to a distinct usage_id, as switch_llm does for a new registry entry).
-    _persist_base_state_agent(
-        conversations_dir,
-        cid,
-        Agent(
-            llm=LLM(model="gpt-4o", usage_id="test-llm-2", timeout=600),
-            tools=[],
-        ),
-        workspace_dir,
-    )
-
-    service = EventService(stored=stored, conversations_dir=conversations_dir)
-    resumed = service._resume_agent_with_live_llm()
-
-    # base_state wins for the live-mutable llm; the rest still comes from meta.
-    assert resumed.llm.timeout == 600
-    assert resumed.llm.usage_id == "test-llm-2"
-
-
-def test_resume_agent_recovers_switched_acp_model_from_base_state(
-    tmp_path: Path,
-) -> None:
-    conversations_dir = tmp_path / "conversations"
-    workspace_dir = tmp_path / "workspace"
-    workspace_dir.mkdir(parents=True)
-    cid = uuid4()
-
-    # meta.json snapshot: creation-time acp_model.
-    stored = StoredConversation(
-        id=cid,
-        agent=ACPAgent(acp_command=["echo", "test"], acp_model="model-a"),
-        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
-        confirmation_policy=NeverConfirm(),
-        initial_message=None,
-        metrics=None,
-    )
-    # base_state.json: a live switch_acp_model moved it to model-b.
-    _persist_base_state_agent(
-        conversations_dir,
-        cid,
-        ACPAgent(acp_command=["echo", "test"], acp_model="model-b"),
-        workspace_dir,
-    )
-
-    service = EventService(stored=stored, conversations_dir=conversations_dir)
-    resumed = service._resume_agent_with_live_llm()
-
-    assert isinstance(resumed, ACPAgent)
-    # base_state wins for acp_model; model_post_init re-derives llm.model from it
-    # when start() re-validates the dumped agent.
-    assert resumed.acp_model == "model-b"
 
 
 def test_resume_agent_fresh_conversation_uses_stored(tmp_path: Path) -> None:
