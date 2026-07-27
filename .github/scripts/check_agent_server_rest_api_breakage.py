@@ -39,7 +39,15 @@ Policies enforced:
      accepted types, the check passes and the workflow marks the PR
      release-note-required.
 
-5) No in-place contract breakage
+5) Schema-only repairs of previously opaque MCP/settings locations are allowed
+   - The runtime already returned MCP objects at these locations, but historical
+     OpenAPI described them as empty/unconstrained schemas. Giving those existing
+     objects their real shape is not a wire-format change.
+   - Pydantic may also collapse identical validation/serialization components;
+     replacing ``MCPNoneAuthCredential-Input`` with the structurally identical
+     ``MCPNoneAuthCredential`` is a component-name repair, not a union removal.
+
+6) No in-place contract breakage
    - Breaking REST contract changes that are not removals of previously-deprecated
      operations/properties, additive oneOf expansions, or additive response property
      type widenings fail the check. REST clients need 5 minor releases of runway, so
@@ -67,6 +75,8 @@ from pathlib import Path
 
 from packaging import version as pkg_version
 
+from openhands.agent_server.openapi import filter_public_openapi
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 AGENT_SERVER_PYPROJECT = REPO_ROOT / "openhands-agent-server" / "pyproject.toml"
@@ -88,7 +98,6 @@ HTTP_METHODS = {
     "head",
     "trace",
 }
-PUBLIC_REST_PATH_PREFIX = "/api/"
 AGENT_SERVER_REST_API_BASE_REF_ENV = "AGENT_SERVER_REST_API_BASE_REF"
 RESPONSE_TYPE_WIDENING_REPORT_ENV = "AGENT_SERVER_REST_TYPE_WIDENING_REPORT_PATH"
 
@@ -316,14 +325,14 @@ def _find_sdk_deprecated_fastapi_routes(repo_root: Path) -> list[str]:
 
 
 def _filter_public_rest_openapi(schema: dict) -> dict:
-    filtered_schema = dict(schema)
-    filtered_schema["paths"] = {
-        path: path_item
-        for path, path_item in schema.get("paths", {}).items()
-        if path == PUBLIC_REST_PATH_PREFIX.rstrip("/")
-        or path.startswith(PUBLIC_REST_PATH_PREFIX)
-    }
-    return filtered_schema
+    # Compatibility checks retain the historical component set so an approved,
+    # deprecated property can still be inspected after the route that referenced
+    # it is removed. Release artifacts use the pruned, canonical mode instead.
+    return filter_public_openapi(
+        schema,
+        prune_schemas=False,
+        add_contract_components=False,
+    )
 
 
 def _find_deprecation_policy_errors(schema: dict) -> list[str]:
@@ -727,6 +736,46 @@ def _is_union_type_change_artifact(change: dict) -> bool:
     return "type/format changed from `object`/`` to ``/``" in text
 
 
+_OPAQUE_MCP_RESPONSE_REPAIR_PATHS = (
+    "/mcp_config/",
+    "/mcp_servers/",
+    "oauth_state/",
+)
+_OPAQUE_TO_OBJECT_TYPE_CHANGE = (
+    "response's property type/format changed from ``/`` to `object`/``"
+)
+_NONE_AUTH_INPUT_COMPONENT = "#/components/schemas/MCPNoneAuthCredential-Input"
+_AGENT_SETTINGS_DIFF_SCHEMA_REPAIR = (
+    "removed `subschema #1` from the `agent_settings_diff` request property "
+    "`anyOf` list"
+)
+
+
+def _is_mcp_contract_schema_repair(change: dict) -> bool:
+    """Recognize wire-compatible repairs of historically opaque MCP schemas.
+
+    This is deliberately narrower than accepting arbitrary type changes. The
+    response exception only covers MCP settings and OAuth state locations whose
+    old schemas had no type at all. The request exceptions cover an identical
+    Pydantic component rename and the settings diff's replacement of an
+    unrestricted object schema with the same extensible object plus known fields.
+    """
+    text = str(change.get("text", ""))
+    if _OPAQUE_TO_OBJECT_TYPE_CHANGE in text and any(
+        path in text for path in _OPAQUE_MCP_RESPONSE_REPAIR_PATHS
+    ):
+        return True
+
+    if (
+        text.startswith(f"removed `{_NONE_AUTH_INPUT_COMPONENT}` from the `")
+        and "/auth/" in text
+        and "request property `oneOf` list" in text
+    ):
+        return True
+
+    return text == _AGENT_SETTINGS_DIFF_SCHEMA_REPAIR
+
+
 def _split_breaking_changes(
     breaking_changes: list[dict],
 ) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
@@ -996,6 +1045,16 @@ def main() -> int:
             for change in other_breaking_changes
             if not _is_union_type_change_artifact(change)
         ]
+        mcp_contract_schema_repairs = [
+            change
+            for change in other_breaking_changes
+            if _is_mcp_contract_schema_repair(change)
+        ]
+        other_breaking_changes = [
+            change
+            for change in other_breaking_changes
+            if not _is_mcp_contract_schema_repair(change)
+        ]
         accepted_response_type_widening_changes = [
             change
             for change in other_breaking_changes
@@ -1105,6 +1164,15 @@ def main() -> int:
             for item in response_type_widenings:
                 print(f"  - {item.text}")
 
+        if mcp_contract_schema_repairs:
+            print(
+                f"\n::notice title={PYPI_DISTRIBUTION} REST API::"
+                "Typed historically opaque MCP/settings schemas without changing "
+                "their runtime wire format."
+            )
+            for item in mcp_contract_schema_repairs:
+                print(f"  - {item.get('text', str(item))}")
+
         if other_breaking_changes:
             print(
                 "::error "
@@ -1142,6 +1210,8 @@ def main() -> int:
                 "the accepted POST /api/cloud-proxy removal, the accepted "
                 "GET /api/vscode/url base_url default removal, additive response "
                 "oneOf expansions, and/or additive response property type widenings."
+                " It may also include wire-compatible repairs of historically "
+                "opaque MCP/settings schemas."
             )
         else:
             return 1

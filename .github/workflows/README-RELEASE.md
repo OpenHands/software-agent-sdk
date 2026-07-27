@@ -65,8 +65,10 @@ It also runs on every push to `main` as ongoing smoke coverage. It:
 
 - ✅ Builds the agent-server PyInstaller binary on a 5-runner matrix
   (linux x86_64/arm64, macOS x86_64/arm64, windows x86_64) and smoke-tests each
-- ✅ Generates a combined `SHA256SUMS` and attaches all artifacts to the GitHub
-  release as `agent-server-<version>-<os>-<arch>` on release/manual runs
+- ✅ Exports and validates the deterministic public Agent Server contract as
+  `openapi.json`, with `info.version` matching the release version
+- ✅ Generates a combined `SHA256SUMS` and attaches the binaries and
+  `openapi.json` to the GitHub release on release/manual runs
 - ✅ Verifies that the multi-arch Docker manifest
   `ghcr.io/openhands/agent-server:<image-tag>-<variant>` published by
   `server.yml` covers both `linux/amd64` and `linux/arm64` for every variant
@@ -74,9 +76,10 @@ It also runs on every push to `main` as ongoing smoke coverage. It:
 - ✅ Pulls each variant on each architecture with `--platform=linux/<arch>`,
   boots the container, and asserts `/health` responds
 
-On `push` events, `<image-tag>` is the 7-character commit SHA and binaries
-remain as workflow artifacts only. On release/manual runs, `<image-tag>` is the
-release version and the binaries are uploaded to the GitHub release.
+On `push` events, `<image-tag>` is the 7-character commit SHA and binaries plus
+`openapi.json` remain as workflow artifacts only. On release/manual runs,
+`<image-tag>` is the release version and the binaries plus `openapi.json` are
+uploaded to the GitHub release.
 
 #### Build time / runner expectations
 
