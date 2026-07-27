@@ -76,11 +76,10 @@ class PubSubForTesting:
             del self._subscribers[subscriber_id]
             self._logger.debug(f"Unsubscribed subscriber with ID: {subscriber_id}")
             return True
-        else:
-            self._logger.warning(
-                f"Attempted to unsubscribe unknown subscriber ID: {subscriber_id}"
-            )
-            return False
+        self._logger.warning(
+            f"Attempted to unsubscribe unknown subscriber ID: {subscriber_id}"
+        )
+        return False
 
     async def __call__(self, event) -> None:
         """Invoke all registered callbacks with the given event."""

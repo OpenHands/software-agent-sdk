@@ -377,9 +377,8 @@ def test_masking_persists(
             self.counter += 1
             if self.counter == 1:
                 return f"changing-secret-{self.counter}"
-            else:
-                self.raised_on_second = True
-                raise Exception("Blip occured, failed to refresh token")
+            self.raised_on_second = True
+            raise Exception("Blip occured, failed to refresh token")
 
     dynamic_secret = MyChangingFailingDynamicSecretSource()
     conversation.update_secrets(

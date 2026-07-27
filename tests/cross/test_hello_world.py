@@ -331,9 +331,8 @@ class TestHelloWorld:
                 }
                 logged_completions.append(logged_data)
                 return response
-            else:
-                # No more responses available
-                raise StopIteration("No more mock responses available")
+            # No more responses available
+            raise StopIteration("No more mock responses available")
 
         mock_completion.side_effect = capture_completion_call
 

@@ -66,7 +66,6 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
             exc_val: Exception value if an exception occurred
             exc_tb: Exception traceback if an exception occurred
         """
-        pass
 
     @abstractmethod
     def execute_command(

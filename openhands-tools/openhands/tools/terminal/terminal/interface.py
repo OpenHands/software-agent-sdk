@@ -47,9 +47,7 @@ def parse_ctrl_key(text: str) -> str | None:
     key: str | None = None
     if upper.startswith("C-"):
         key = upper[2:]
-    elif upper.startswith("CTRL-"):
-        key = upper[5:]
-    elif upper.startswith("CTRL+"):
+    elif upper.startswith("CTRL-") or upper.startswith("CTRL+"):
         key = upper[5:]
     if key and len(key) == 1 and "A" <= key <= "Z":
         return f"C-{key.lower()}"

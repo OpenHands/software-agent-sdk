@@ -641,14 +641,13 @@ def make_llm_completion(
             on_token=on_token,
             call_context=call_context,
         )
-    else:
-        return llm.completion(
-            messages=messages,
-            tools=tools or [],
-            add_security_risk_prediction=True,
-            on_token=on_token,
-            call_context=call_context,
-        )
+    return llm.completion(
+        messages=messages,
+        tools=tools or [],
+        add_security_risk_prediction=True,
+        on_token=on_token,
+        call_context=call_context,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -704,11 +703,10 @@ async def amake_llm_completion(
             on_token=on_token,
             call_context=call_context,
         )
-    else:
-        return await llm.acompletion(
-            messages=messages,
-            tools=tools or [],
-            add_security_risk_prediction=True,
-            on_token=on_token,
-            call_context=call_context,
-        )
+    return await llm.acompletion(
+        messages=messages,
+        tools=tools or [],
+        add_security_risk_prediction=True,
+        on_token=on_token,
+        call_context=call_context,
+    )

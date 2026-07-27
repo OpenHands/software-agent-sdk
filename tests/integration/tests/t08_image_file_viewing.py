@@ -59,11 +59,10 @@ class ImageFileViewingTest(BaseIntegrationTest):
                 success=True,
                 reason="Agent successfully identified yellow color in the icon",
             )
-        else:
-            return TestResult(
-                success=False,
-                reason=(
-                    f"Agent did not identify yellow color in the icon. "
-                    f"Response: {final_response[:500]}"
-                ),
-            )
+        return TestResult(
+            success=False,
+            reason=(
+                f"Agent did not identify yellow color in the icon. "
+                f"Response: {final_response[:500]}"
+            ),
+        )

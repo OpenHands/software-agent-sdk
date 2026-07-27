@@ -86,7 +86,7 @@ def _parse_name_status(changed_files: list[str]) -> list[GitChange]:
 
         # Handle copy operations (status starts with 'C' followed by
         # similarity percentage)
-        elif status.startswith("C") and len(parts) == 3:
+        if status.startswith("C") and len(parts) == 3:
             # Copy: only add the new path (original remains)
             new_path = parts[2].strip()
             changes.append(
@@ -99,7 +99,7 @@ def _parse_name_status(changed_files: list[str]) -> list[GitChange]:
             continue
 
         # Handle regular operations (M, A, D, etc.)
-        elif len(parts) == 2:
+        if len(parts) == 2:
             path = parts[1].strip()
         else:
             logger.error(f"Unexpected git diff line format: {line}")

@@ -162,7 +162,6 @@ class ToolExecutor[ActionT, ObservationT](ABC):
         this method to perform cleanup (e.g., closing connections,
         terminating processes, etc.).
         """
-        pass
 
     def interrupt(self) -> None:
         """Interrupt any in-flight execution (e.g., send Ctrl+C).
@@ -174,7 +173,6 @@ class ToolExecutor[ActionT, ObservationT](ABC):
         The default is a no-op; tools with long-running operations
         (terminal subprocesses, browser navigations, …) should override.
         """
-        pass
 
 
 class ExecutableTool(Protocol):
@@ -377,17 +375,16 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
             if isinstance(result, self.observation_type):
                 return result
             return self.observation_type.model_validate(result)
-        else:
-            # When no output schema is defined, wrap the result in Observation
-            if isinstance(result, Observation):
-                return result
-            elif isinstance(result, BaseModel):
-                return Observation.model_validate(result.model_dump())
-            elif isinstance(result, dict):
-                return Observation.model_validate(result)
-            raise TypeError(
-                "Output must be dict or BaseModel when no output schema is defined"
-            )
+        # When no output schema is defined, wrap the result in Observation
+        if isinstance(result, Observation):
+            return result
+        if isinstance(result, BaseModel):
+            return Observation.model_validate(result.model_dump())
+        if isinstance(result, dict):
+            return Observation.model_validate(result)
+        raise TypeError(
+            "Output must be dict or BaseModel when no output schema is defined"
+        )
 
     async def acall(
         self, action: ActionT, conversation: "LocalConversation | None" = None

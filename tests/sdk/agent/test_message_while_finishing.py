@@ -204,7 +204,7 @@ class TestMessageWhileFinishing:
                 object="chat.completion",
             )
 
-        elif self.step_count == 2:
+        if self.step_count == 2:
             # Step 2: Final step - sleep AND finish (multiple tool calls)
             # Record timestamp BEFORE setting flag to avoid race with butterfly thread
             self.timestamps.append(("final_step_start", time.time()))
@@ -261,28 +261,27 @@ class TestMessageWhileFinishing:
                 model="test-model",
                 object="chat.completion",
             )
-        else:
-            # Step 3: This happens because butterfly message reset FINISHED status
-            # This demonstrates the bug: messages sent during final step reset status
-            response_content = "I see the butterfly message"
-            if has_butterfly:
-                response_content += " with butterfly"
+        # Step 3: This happens because butterfly message reset FINISHED status
+        # This demonstrates the bug: messages sent during final step reset status
+        response_content = "I see the butterfly message"
+        if has_butterfly:
+            response_content += " with butterfly"
 
-            # Return a simple message response (no tool calls)
-            return ModelResponse(
-                id=f"response_step_{self.step_count}",
-                choices=[
-                    Choices(
-                        message=LiteLLMMessage(
-                            role="assistant",
-                            content=response_content,
-                        )
+        # Return a simple message response (no tool calls)
+        return ModelResponse(
+            id=f"response_step_{self.step_count}",
+            choices=[
+                Choices(
+                    message=LiteLLMMessage(
+                        role="assistant",
+                        content=response_content,
                     )
-                ],
-                created=0,
-                model="test-model",
-                object="chat.completion",
-            )
+                )
+            ],
+            created=0,
+            model="test-model",
+            object="chat.completion",
+        )
 
     def test_message_processing_fix_verification(self):
         """

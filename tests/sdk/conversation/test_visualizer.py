@@ -106,8 +106,6 @@ class VisualizerCustomAction(Action):
 class VisualizerMockObservation(Observation):
     """Mock observation for testing."""
 
-    pass
-
 
 class VisualizerMockExecutor(ToolExecutor):
     """Mock executor for testing."""

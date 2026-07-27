@@ -143,8 +143,6 @@ class BrowserAction(Action):
     enabling proper type hierarchy and eliminating the need for union types.
     """
 
-    pass
-
 
 # ============================================
 # `go_to_url`
@@ -432,8 +430,6 @@ class BrowserScrollTool(ToolDefinition[BrowserScrollAction, BrowserObservation])
 class BrowserGoBackAction(BrowserAction):
     """Schema for going back in browser history."""
 
-    pass
-
 
 BROWSER_GO_BACK_DESCRIPTION = """Go back to the previous page in browser history.
 
@@ -469,8 +465,6 @@ class BrowserGoBackTool(ToolDefinition[BrowserGoBackAction, BrowserObservation])
 # ============================================
 class BrowserListTabsAction(BrowserAction):
     """Schema for listing browser tabs."""
-
-    pass
 
 
 BROWSER_LIST_TABS_DESCRIPTION = """List all open browser tabs.
@@ -593,8 +587,6 @@ class BrowserCloseTabTool(ToolDefinition[BrowserCloseTabAction, BrowserObservati
 class BrowserGetStorageAction(BrowserAction):
     """Schema for getting browser storage (cookies, local storage, session storage)."""
 
-    pass
-
 
 BROWSER_GET_STORAGE_DESCRIPTION = """Get browser storage data including cookies,
 local storage, and session storage.
@@ -682,8 +674,6 @@ class BrowserSetStorageTool(
 class BrowserStartRecordingAction(BrowserAction):
     """Schema for starting browser session recording."""
 
-    pass
-
 
 BROWSER_START_RECORDING_DESCRIPTION = f"""Start recording the browser session.
 
@@ -731,8 +721,6 @@ class BrowserStartRecordingTool(
 # ============================================
 class BrowserStopRecordingAction(BrowserAction):
     """Schema for stopping browser session recording."""
-
-    pass
 
 
 BROWSER_STOP_RECORDING_DESCRIPTION = f"""Stop recording the browser session.

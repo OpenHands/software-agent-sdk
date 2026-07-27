@@ -162,14 +162,12 @@ class SimpleBrowsingTest(BaseIntegrationTest):
                     f"Response contained the expected content about OpenHands."
                 ),
             )
-        else:
-            return TestResult(
-                success=False,
-                reason=(
-                    "Agent did not find the answer. "
-                    f"Response: {agent_response[:200]}..."
-                ),
-            )
+        return TestResult(
+            success=False,
+            reason=(
+                f"Agent did not find the answer. Response: {agent_response[:200]}..."
+            ),
+        )
 
     def teardown(self):
         """Turn down the web server and close the conversation."""

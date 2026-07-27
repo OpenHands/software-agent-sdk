@@ -53,12 +53,11 @@ class GitHubPRBrowsingTest(BaseIntegrationTest):
                 success=True,
                 reason="Agent's final answer contains information about the PR content",
             )
-        else:
-            return TestResult(
-                success=False,
-                reason=(
-                    "Agent's final answer does not contain the expected information "
-                    "about the PR content. "
-                    f"Final answer preview: {agent_answer[:200]}..."
-                ),
-            )
+        return TestResult(
+            success=False,
+            reason=(
+                "Agent's final answer does not contain the expected information "
+                "about the PR content. "
+                f"Final answer preview: {agent_answer[:200]}..."
+            ),
+        )

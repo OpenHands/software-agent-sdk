@@ -123,10 +123,9 @@ def find_artifact_url(run_suffix: str, artifacts_dir: str) -> str | None:
                 # Create a URL that points to the GitHub Actions run page
                 # Users can download the specific artifact from there
                 return f"{server_url}/{repository}/actions/runs/{run_id}"
-            else:
-                # Fallback: if environment variables not available, return None
-                # This will prevent showing broken links
-                return None
+            # Fallback: if environment variables not available, return None
+            # This will prevent showing broken links
+            return None
 
     return None
 

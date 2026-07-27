@@ -57,9 +57,8 @@ class MultimodalRouter(RouterLLM):
         if route_to_primary:
             logger.info("Routing to the primary model...")
             return self.PRIMARY_MODEL_KEY
-        else:
-            logger.info("Routing to the secondary model...")
-            return self.SECONDARY_MODEL_KEY
+        logger.info("Routing to the secondary model...")
+        return self.SECONDARY_MODEL_KEY
 
     @model_validator(mode="after")
     def _validate_llms_for_routing(self) -> "MultimodalRouter":

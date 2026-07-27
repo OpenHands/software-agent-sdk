@@ -797,7 +797,7 @@ class TestEventServiceSendMessage:
 
     async def _mock_executor(self, *args):
         """Helper to create a mock coroutine for run_in_executor."""
-        return None
+        return
 
     @pytest.mark.asyncio
     async def test_send_message_inactive_service(self, event_service):

@@ -56,8 +56,7 @@ class TypoFixTest(BaseIntegrationTest):
         )
         if are_typos_fixed:
             return TestResult(success=True, reason="Successfully fixed all typos")
-        else:
-            return TestResult(
-                success=False,
-                reason=f"Typos were not fully corrected:\n{corrected_content}",
-            )
+        return TestResult(
+            success=False,
+            reason=f"Typos were not fully corrected:\n{corrected_content}",
+        )

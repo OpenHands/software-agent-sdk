@@ -138,9 +138,7 @@ class GraySwanAnalyzer(SecurityAnalyzerBase):
     def _get_client(self) -> httpx.Client:
         """Get or create HTTP client."""
         # Split condition to avoid AttributeError when _client is None
-        if self._client is None:
-            self._client = self._create_client()
-        elif self._client.is_closed:
+        if self._client is None or self._client.is_closed:
             self._client = self._create_client()
         return self._client
 
@@ -155,10 +153,9 @@ class GraySwanAnalyzer(SecurityAnalyzerBase):
         """
         if violation_score <= self.low_threshold:
             return SecurityRisk.LOW
-        elif violation_score <= self.medium_threshold:
+        if violation_score <= self.medium_threshold:
             return SecurityRisk.MEDIUM
-        else:
-            return SecurityRisk.HIGH
+        return SecurityRisk.HIGH
 
     def _call_grayswan_api(self, messages: list[dict[str, Any]]) -> SecurityRisk:
         """Call GraySwan API with formatted messages.
@@ -213,11 +210,8 @@ class GraySwanAnalyzer(SecurityAnalyzerBase):
                     f"(violation_score: {violation_score:.2f})"
                 )
                 return risk_level
-            else:
-                logger.error(
-                    f"GraySwan API error {response.status_code}: {response.text}"
-                )
-                return SecurityRisk.UNKNOWN
+            logger.error(f"GraySwan API error {response.status_code}: {response.text}")
+            return SecurityRisk.UNKNOWN
 
         except httpx.TimeoutException:
             logger.error("GraySwan API request timed out")

@@ -231,37 +231,36 @@ def test_conversation_continues_after_tool_error():
                 model="test-model",
                 object="chat.completion",
             )
-        else:
-            # Second call: respond with finish tool
-            return ModelResponse(
-                id="mock-response-2",
-                choices=[
-                    Choices(
-                        index=0,
-                        message=LiteLLMMessage(
-                            role="assistant",
-                            content=None,
-                            tool_calls=[
-                                ChatCompletionMessageToolCall(
-                                    id="finish-call-1",
-                                    type="function",
-                                    function=Function(
-                                        name="finish",
-                                        arguments=(
-                                            '{"message": "I see there '
-                                            'was an error. Task completed."}'
-                                        ),
+        # Second call: respond with finish tool
+        return ModelResponse(
+            id="mock-response-2",
+            choices=[
+                Choices(
+                    index=0,
+                    message=LiteLLMMessage(
+                        role="assistant",
+                        content=None,
+                        tool_calls=[
+                            ChatCompletionMessageToolCall(
+                                id="finish-call-1",
+                                type="function",
+                                function=Function(
+                                    name="finish",
+                                    arguments=(
+                                        '{"message": "I see there '
+                                        'was an error. Task completed."}'
                                     ),
-                                )
-                            ],
-                        ),
-                        finish_reason="tool_calls",
-                    )
-                ],
-                created=0,
-                model="test-model",
-                object="chat.completion",
-            )
+                                ),
+                            )
+                        ],
+                    ),
+                    finish_reason="tool_calls",
+                )
+            ],
+            created=0,
+            model="test-model",
+            object="chat.completion",
+        )
 
     collected_events = []
 

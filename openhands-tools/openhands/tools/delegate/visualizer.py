@@ -155,7 +155,7 @@ class DelegationVisualizer(DefaultConversationVisualizer):
                     title=title,
                     title_color=_SYSTEM_COLOR,
                 )
-            elif isinstance(event, ActionEvent):
+            if isinstance(event, ActionEvent):
                 # Check if action is None (non-executable)
                 if event.action is None:
                     title = f"{agent_name} Agent Action (Not Executed)"
@@ -171,13 +171,13 @@ class DelegationVisualizer(DefaultConversationVisualizer):
                         event, force_totals=not self._claim_batch_primary(event)
                     ),
                 )
-            else:  # ObservationEvent
-                title = f"{agent_name} Agent Observation"
-                return build_event_block(
-                    content=content,
-                    title=title,
-                    title_color=_OBSERVATION_COLOR,
-                )
+            # ObservationEvent
+            title = f"{agent_name} Agent Observation"
+            return build_event_block(
+                content=content,
+                title=title,
+                title_color=_OBSERVATION_COLOR,
+            )
 
         # For all other event types, use the parent implementation
         return super()._create_event_block(event)

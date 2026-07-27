@@ -39,18 +39,17 @@ class MemoryLRUCache(LRUCache):
             # For strings, len() gives character count which is what we care about
             # This is much more accurate than sys.getsizeof for our use case
             return len(value)
-        elif isinstance(value, bytes):
+        if isinstance(value, bytes):
             return len(value)
-        else:
-            # For other types, fall back to sys.getsizeof
-            # This is mainly for edge cases and won't be accurate for nested
-            # structures, but it's better than nothing
-            try:
-                import sys
+        # For other types, fall back to sys.getsizeof
+        # This is mainly for edge cases and won't be accurate for nested
+        # structures, but it's better than nothing
+        try:
+            import sys
 
-                return sys.getsizeof(value)
-            except Exception:
-                return 0
+            return sys.getsizeof(value)
+        except Exception:
+            return 0
 
     def __setitem__(self, key: Any, value: Any) -> None:
         new_size = self._get_size(value)

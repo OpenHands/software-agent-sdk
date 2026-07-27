@@ -33,14 +33,13 @@ def create_mock_http_client(conversation_id: str | None = None):
     def mock_request(method, url, **kwargs):
         if method == "POST":
             return mock_post_response
-        elif method == "GET":
+        if method == "GET":
             return mock_get_response
-        else:
-            # Default response
-            response = Mock()
-            response.raise_for_status.return_value = None
-            response.json.return_value = {}
-            return response
+        # Default response
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {}
+        return response
 
     mock_client.request = Mock(side_effect=mock_request)
     mock_client.post = Mock(return_value=mock_post_response)

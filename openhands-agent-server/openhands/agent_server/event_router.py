@@ -57,9 +57,8 @@ def normalize_datetime_to_server_timezone(dt: datetime) -> datetime:
     if dt.tzinfo is not None:
         # Timezone-aware: convert to server native timezone, then make naive
         return dt.astimezone(None).replace(tzinfo=None)
-    else:
-        # Naive datetime: assume it's already in server timezone
-        return dt
+    # Naive datetime: assume it's already in server timezone
+    return dt
 
 
 @event_router.get("/search", responses={404: {"description": "Conversation not found"}})

@@ -64,7 +64,6 @@ class ConversationVisualizerBase(ABC):
         Args:
             event: The event to visualize
         """
-        pass
 
     def create_sub_visualizer(
         self,

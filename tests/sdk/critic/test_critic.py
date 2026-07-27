@@ -21,8 +21,6 @@ from openhands.sdk.tool.schema import Action
 class DummyAction(Action):
     """A simple dummy action for testing purposes."""
 
-    pass
-
 
 def test_critic_result_success_threshold():
     """Test that CriticResult determines success based on threshold."""

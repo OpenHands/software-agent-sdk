@@ -4,8 +4,6 @@
 class MCPError(Exception):
     """Base exception for MCP-related errors."""
 
-    pass
-
 
 class MCPTimeoutError(MCPError):
     """Exception raised when MCP operations timeout."""

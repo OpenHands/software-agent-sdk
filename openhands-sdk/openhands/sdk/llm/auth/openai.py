@@ -230,9 +230,8 @@ def _extract_chatgpt_account_id(access_token: str) -> str | None:
         if account_id:
             logger.debug(f"Extracted chatgpt_account_id: {account_id}")
             return account_id
-        else:
-            logger.warning("chatgpt_account_id not found in JWT payload")
-            return None
+        logger.warning("chatgpt_account_id not found in JWT payload")
+        return None
 
     except JoseError as e:
         logger.warning(f"JWT signature verification failed: {e}")

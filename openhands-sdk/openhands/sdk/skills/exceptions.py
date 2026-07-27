@@ -1,8 +1,6 @@
 class SkillError(Exception):
     """Base exception for all skill errors."""
 
-    pass
-
 
 class SkillValidationError(SkillError):
     """Raised when there's a validation error in skill metadata."""

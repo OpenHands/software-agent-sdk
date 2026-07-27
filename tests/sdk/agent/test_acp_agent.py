@@ -2139,7 +2139,7 @@ class TestACPAgentAstep:
             # — proves we actually crossed the loop boundary.
             prompt_thread_id.append(threading.get_ident())
             mock_client.accumulated_text.append("answer")
-            return None
+            return
 
         _agent_conn(agent).prompt = _fake_prompt
         agent._session_id = "test-session"
@@ -2192,7 +2192,7 @@ class TestACPAgentAstep:
 
         async def _fake_prompt(session_id, prompt):  # noqa: ARG001
             mock_client.accumulated_text.append("answer")
-            return None
+            return
 
         _agent_conn(agent).prompt = _fake_prompt
 
@@ -2269,7 +2269,7 @@ class TestACPAgentAstep:
                 chunk.content = MagicMock(spec=TextContentBlock)
                 chunk.content.text = "tick"
                 await mock_client.session_update(session_id, chunk)
-            return None
+            return
 
         _agent_conn(agent).prompt = _fake_prompt
 
@@ -2486,7 +2486,7 @@ class TestACPAgentAstep:
                 # failed ACP tool-call events.
                 released = await asyncio.to_thread(prompt_released.wait, 10.0)
                 assert released
-                return None
+                return
 
             async def _fake_cancel(session_id):
                 assert session_id == "test-session"
@@ -2574,7 +2574,7 @@ class TestACPAgentAstep:
                         content=TextContentBlock(type="text", text="done"),
                     ),
                 )
-                return None
+                return
 
             async def _fake_cancel(session_id):
                 assert session_id == "test-session"
@@ -2706,7 +2706,7 @@ class TestACPAgentAstep:
                 caller_loop.call_soon_threadsafe(prompt_entered.set)
                 released = await asyncio.to_thread(prompt_released.wait, 10.0)
                 assert released
-                return None
+                return
 
             async def _fake_cancel(session_id):
                 assert session_id == "test-session"
@@ -2767,7 +2767,7 @@ class TestACPAgentAstep:
                 caller_loop.call_soon_threadsafe(prompt_entered.set)
                 released = await asyncio.to_thread(prompt_released.wait, 10.0)
                 assert released
-                return None
+                return
 
             async def _raise_during_cancel_send(self):  # noqa: ARG001
                 raise asyncio.CancelledError
@@ -2912,7 +2912,7 @@ class TestACPAgentAstep:
                 caller_loop.call_soon_threadsafe(prompt_entered.set)
                 released = await asyncio.to_thread(prompt_released.wait, 10.0)
                 assert released
-                return None
+                return
 
             async def _fake_cancel(session_id):
                 assert session_id == "test-session"
@@ -2980,7 +2980,7 @@ class TestACPAgentAstep:
 
         async def _fake_prompt(session_id, prompt):  # noqa: ARG001
             mock_client.accumulated_text.append("done")
-            return None
+            return
 
         _agent_conn(agent).prompt = _fake_prompt
         agent._session_id = "test-session"

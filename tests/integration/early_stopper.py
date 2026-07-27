@@ -43,7 +43,6 @@ class EarlyStopperBase(ABC):
         Returns:
             EarlyStopResult indicating whether to stop and why
         """
-        pass
 
 
 class FileEditPruner(EarlyStopperBase):

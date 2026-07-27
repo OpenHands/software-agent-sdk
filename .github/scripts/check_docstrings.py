@@ -181,11 +181,9 @@ def get_docstrings_from_file(file: Path) -> list[tuple[str, str, int]]:
             docstring = ast.get_docstring(node)
             name = file.stem
             lineno = 1
-        elif isinstance(node, ast.ClassDef):
-            docstring = ast.get_docstring(node)
-            name = node.name
-            lineno = node.lineno
-        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+        elif isinstance(node, ast.ClassDef) or isinstance(
+            node, ast.FunctionDef | ast.AsyncFunctionDef
+        ):
             docstring = ast.get_docstring(node)
             name = node.name
             lineno = node.lineno

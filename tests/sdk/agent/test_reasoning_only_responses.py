@@ -40,27 +40,26 @@ class ReasoningOnlyLLM(LLM):
                 ),
                 raw_response=MagicMock(spec=ModelResponse, id="r1"),
             )
-        else:
-            # Second call: return finish action
-            message = Message(role="assistant")
-            message.tool_calls = [
-                MessageToolCall(
-                    id="finish-call-1",
-                    name="finish",
-                    arguments='{"message": "Task completed"}',
-                    origin="completion",
-                )
-            ]
-            return LLMResponse(
-                message=message,
-                metrics=MetricsSnapshot(
-                    model_name="test",
-                    accumulated_cost=0.0,
-                    max_budget_per_task=0.0,
-                    accumulated_token_usage=TokenUsage(model="test"),
-                ),
-                raw_response=MagicMock(spec=ModelResponse, id="r2"),
+        # Second call: return finish action
+        message = Message(role="assistant")
+        message.tool_calls = [
+            MessageToolCall(
+                id="finish-call-1",
+                name="finish",
+                arguments='{"message": "Task completed"}',
+                origin="completion",
             )
+        ]
+        return LLMResponse(
+            message=message,
+            metrics=MetricsSnapshot(
+                model_name="test",
+                accumulated_cost=0.0,
+                max_budget_per_task=0.0,
+                accumulated_token_usage=TokenUsage(model="test"),
+            ),
+            raw_response=MagicMock(spec=ModelResponse, id="r2"),
+        )
 
 
 def test_agent_continues_after_reasoning_only_response():
@@ -163,27 +162,26 @@ class EmptyResponseLLM(LLM):
                 ),
                 raw_response=MagicMock(spec=ModelResponse, id="r1"),
             )
-        else:
-            # Second call: return finish action
-            message = Message(role="assistant")
-            message.tool_calls = [
-                MessageToolCall(
-                    id="finish-call-3",
-                    name="finish",
-                    arguments='{"message": "Done"}',
-                    origin="completion",
-                )
-            ]
-            return LLMResponse(
-                message=message,
-                metrics=MetricsSnapshot(
-                    model_name="test",
-                    accumulated_cost=0.0,
-                    max_budget_per_task=0.0,
-                    accumulated_token_usage=TokenUsage(model="test"),
-                ),
-                raw_response=MagicMock(spec=ModelResponse, id="r2"),
+        # Second call: return finish action
+        message = Message(role="assistant")
+        message.tool_calls = [
+            MessageToolCall(
+                id="finish-call-3",
+                name="finish",
+                arguments='{"message": "Done"}',
+                origin="completion",
             )
+        ]
+        return LLMResponse(
+            message=message,
+            metrics=MetricsSnapshot(
+                model_name="test",
+                accumulated_cost=0.0,
+                max_budget_per_task=0.0,
+                accumulated_token_usage=TokenUsage(model="test"),
+            ),
+            raw_response=MagicMock(spec=ModelResponse, id="r2"),
+        )
 
 
 def test_agent_handles_empty_response():

@@ -58,9 +58,9 @@ class TestRemoteConversation:
         def request_side_effect(method, url, **kwargs):
             if method == "POST" and url == "/api/conversations":
                 return mock_conv_response
-            elif method == "GET" and "/api/conversations/" in url and "/events" in url:
+            if method == "GET" and "/api/conversations/" in url and "/events" in url:
                 return mock_events_response
-            elif method == "GET" and url.startswith("/api/conversations/"):
+            if method == "GET" and url.startswith("/api/conversations/"):
                 # Return conversation info response with finished status
                 # (needed for run() polling to complete)
                 response = Mock()
@@ -70,32 +70,31 @@ class TestRemoteConversation:
                 conv_info["execution_status"] = "finished"
                 response.json.return_value = conv_info
                 return response
-            elif method == "POST" and "/events" in url:
+            if method == "POST" and "/events" in url:
                 # POST to events endpoint (send_message)
                 response = Mock()
                 response.status_code = 200
                 response.raise_for_status.return_value = None
                 response.json.return_value = {}
                 return response
-            elif method == "POST" and "/run" in url:
+            if method == "POST" and "/run" in url:
                 # POST to run endpoint
                 response = Mock()
                 response.raise_for_status.return_value = None
                 response.status_code = 200
                 response.json.return_value = {}
                 return response
-            elif method == "POST" or method == "PUT":
+            if method == "POST" or method == "PUT":
                 # Default success response for other POST/PUT requests
                 response = Mock()
                 response.status_code = 200
                 response.raise_for_status.return_value = None
                 response.json.return_value = {}
                 return response
-            else:
-                response = Mock()
-                response.status_code = 200
-                response.raise_for_status.return_value = None
-                return response
+            response = Mock()
+            response.status_code = 200
+            response.raise_for_status.return_value = None
+            return response
 
         mock_client_instance.request.side_effect = request_side_effect
         return mock_client_instance
@@ -528,11 +527,11 @@ class TestRemoteConversation:
                 response.status_code = 404
                 response.raise_for_status.side_effect = None
                 return response
-            elif method == "POST" and url == "/api/conversations":
+            if method == "POST" and url == "/api/conversations":
                 return mock_conv_response
-            elif method == "GET" and "/events/search" in url:
+            if method == "GET" and "/events/search" in url:
                 return mock_events_response
-            elif method == "GET" and url.startswith("/api/conversations/"):
+            if method == "GET" and url.startswith("/api/conversations/"):
                 response = Mock()
                 response.status_code = 200
                 response.raise_for_status.return_value = None
@@ -540,12 +539,11 @@ class TestRemoteConversation:
                 conv_info["execution_status"] = "finished"
                 response.json.return_value = conv_info
                 return response
-            else:
-                response = Mock()
-                response.status_code = 200
-                response.raise_for_status.return_value = None
-                response.json.return_value = {}
-                return response
+            response = Mock()
+            response.status_code = 200
+            response.raise_for_status.return_value = None
+            response.json.return_value = {}
+            return response
 
         mock_client_instance.request.side_effect = request_side_effect
 

@@ -194,13 +194,13 @@ class TelemetrySubscriber(Subscriber[Event]):
         try:
             value = getattr(event, "value", None)
             if not isinstance(value, dict):
-                return None
+                return
             stats = value.get("stats")
             if not isinstance(stats, dict):
-                return None
+                return
             per_usage = stats.get("usage_to_metrics")
             if not isinstance(per_usage, dict):
-                return None
+                return
 
             tokens = 0
             cost = 0.0

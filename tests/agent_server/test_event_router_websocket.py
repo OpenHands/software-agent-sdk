@@ -196,7 +196,7 @@ async def test_websocket_general_exception_continues_loop(
         call_count += 1
         if call_count == 1:
             raise ValueError("Some error")
-        elif call_count == 2:
+        if call_count == 2:
             raise WebSocketDisconnect()
 
     mock_websocket.receive_json.side_effect = side_effect
@@ -236,8 +236,7 @@ async def test_websocket_successful_message_processing(
         call_count += 1
         if call_count == 1:
             return message_data
-        else:
-            raise WebSocketDisconnect()
+        raise WebSocketDisconnect()
 
     mock_websocket.receive_json.side_effect = side_effect
 

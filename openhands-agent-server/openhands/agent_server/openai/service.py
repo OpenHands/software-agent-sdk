@@ -237,16 +237,16 @@ async def _wait_for_completion(
         )
         if last_status == ConversationExecutionStatus.RUNNING:
             observed_run = True
-        elif last_status.is_terminal() and (
-            allow_existing_response or observed_run or enough_new_events
-        ):
-            return last_status
-        elif observed_run and enough_new_events:
-            return last_status
         elif (
-            allow_existing_response
+            last_status.is_terminal()
+            and (allow_existing_response or observed_run or enough_new_events)
+            or observed_run
             and enough_new_events
-            and await event_service.get_agent_final_response()
+            or (
+                allow_existing_response
+                and enough_new_events
+                and await event_service.get_agent_final_response()
+            )
         ):
             return last_status
 

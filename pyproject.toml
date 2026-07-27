@@ -68,7 +68,23 @@ select = [
 # - B008: function-call-in-default-argument
 # - B039: mutable-contextvar-default
 # - RUF012: mutable-class-default
-extend-select = ["B006", "B008", "B039", "RUF012"]
+extend-select = [
+    "B006",
+    "B008",
+    "B039",
+    "RUF012",
+    # Line-reducing rules
+    "RET501",  # unnecessary-return-none
+    "RET502",  # implicit-return-value
+    "RET505",  # superfluous-else-return
+    "RET506",  # superfluous-else-raise
+    "RET507",  # superfluous-else-continue
+    "RET508",  # superfluous-else-break
+    "SIM114",  # if-with-same-arms
+    "PIE790",  # unnecessary-placeholder
+    "PIE808",  # unnecessary-range-start
+    "C420",  # unnecessary-dict-comprehension-for-iterable
+]
 
 [tool.ruff.lint.per-file-ignores]
 # Test files often have unused arguments (fixtures, mocks, interface implementations)

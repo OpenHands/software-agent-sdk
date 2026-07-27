@@ -74,8 +74,6 @@ class SkipTest(Exception):
     that may not be available in all LLMs.
     """
 
-    pass
-
 
 class TestResult(BaseModel):
     """Result of an integration test."""
@@ -294,7 +292,6 @@ class BaseIntegrationTest(ABC):
         This method should create any files, directories, or other
         resources needed for the test.
         """
-        pass
 
     def skip_if_model_matches(self, pattern: str | list[str], reason: str) -> None:
         """Skip test if the model name matches the given pattern(s).
@@ -343,7 +340,6 @@ class BaseIntegrationTest(ABC):
         Returns:
             TestResult: The result of the verification
         """
-        pass
 
     def add_judge_usage(
         self, prompt_tokens: int, completion_tokens: int, cost: float

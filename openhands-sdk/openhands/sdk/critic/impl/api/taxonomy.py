@@ -159,7 +159,7 @@ def categorize_features(
         if category == "general_context":
             # Skip general context features for now
             continue
-        elif category == "agent_behavioral_issues":
+        if category == "agent_behavioral_issues":
             result["agent_behavioral_issues"].append(feature_entry)
         elif category == "user_followup_patterns":
             result["user_followup_patterns"].append(feature_entry)

@@ -126,12 +126,11 @@ implementing?
                     f"(confidence={judgment.confidence:.2f})"
                 ),
             )
-        else:
-            return TestResult(
-                success=False,
-                reason=(
-                    "Agent behavior was inappropriate according to LLM judge. "
-                    f"Judge reasoning: {judgment.reasoning} "
-                    f"(confidence={judgment.confidence:.2f})"
-                ),
-            )
+        return TestResult(
+            success=False,
+            reason=(
+                "Agent behavior was inappropriate according to LLM judge. "
+                f"Judge reasoning: {judgment.reasoning} "
+                f"(confidence={judgment.confidence:.2f})"
+            ),
+        )

@@ -507,10 +507,9 @@ class BuildOptions(BaseModel):
         base = f"buildcache-{self.target}-{self.base_image_slug}"
         if self.git_ref in ("main", "refs/heads/main"):
             return f"{base}-main", base
-        elif self.git_ref != "unknown":
+        if self.git_ref != "unknown":
             return f"{base}-{_sanitize_branch(self.git_ref)}", base
-        else:
-            return base, base
+        return base, base
 
     @property
     def all_tags(self) -> list[str]:

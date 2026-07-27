@@ -184,7 +184,7 @@ class TaskTrackerExecutor(ToolExecutor[TaskTrackerAction, TaskTrackerObservation
                 command=action.command,
                 task_list=self._task_list,
             )
-        elif action.command == "view":
+        if action.command == "view":
             # Return the current task list
             if not self._task_list:
                 return TaskTrackerObservation.from_text(
@@ -198,16 +198,15 @@ class TaskTrackerExecutor(ToolExecutor[TaskTrackerAction, TaskTrackerObservation
                 command=action.command,
                 task_list=self._task_list,
             )
-        else:
-            return TaskTrackerObservation.from_text(
-                text=(
-                    f"Unknown command: {action.command}. "
-                    'Supported commands are "view" and "plan".'
-                ),
-                is_error=True,
-                command=action.command,
-                task_list=[],
-            )
+        return TaskTrackerObservation.from_text(
+            text=(
+                f"Unknown command: {action.command}. "
+                'Supported commands are "view" and "plan".'
+            ),
+            is_error=True,
+            command=action.command,
+            task_list=[],
+        )
 
     def _format_task_list(self, task_list: list[TaskItem]) -> str:
         """Format the task list for display."""
@@ -263,7 +262,6 @@ class TaskTrackerExecutor(ToolExecutor[TaskTrackerAction, TaskTrackerObservation
                 json.dump([task.model_dump() for task in self._task_list], f, indent=2)
         except OSError as e:
             logger.warning(f"Failed to save tasks to {tasks_file}: {e}")
-            pass
 
 
 # Tool definition with detailed description

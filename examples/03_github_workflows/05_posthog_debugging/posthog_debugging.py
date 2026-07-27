@@ -470,9 +470,8 @@ def create_unique_identifier(query: str, events_data: dict) -> str:
     if examples and examples[0].get("event_id"):
         event_id = examples[0]["event_id"]
         return f"event-id: {event_id}"
-    else:
-        # Use query as identifier
-        return f"query: {query}"
+    # Use query as identifier
+    return f"query: {query}"
 
 
 def search_existing_issue(
@@ -516,9 +515,8 @@ def search_existing_issue(
                 f"✅ Found existing open issue #{issue_number} (oldest of {len(items)})"
             )
             return issue_number
-        else:
-            print("📭 No open issue found - will create new one")
-            return None
+        print("📭 No open issue found - will create new one")
+        return None
     except (
         requests.exceptions.RequestException,
         json.JSONDecodeError,

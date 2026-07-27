@@ -4,8 +4,6 @@
 class GitError(Exception):
     """Base exception for git-related errors."""
 
-    pass
-
 
 class GitRepositoryError(GitError):
     """Exception raised when git repository operations fail."""
@@ -39,5 +37,3 @@ class GitCommandError(GitError):
 
 class GitPathError(GitError):
     """Exception raised when git path operations fail."""
-
-    pass

@@ -68,11 +68,10 @@ class PubSub[T]:
             del self._subscribers[subscriber_id]
             logger.debug(f"Unsubscribed subscriber with ID: {subscriber_id}")
             return True
-        else:
-            logger.warning(
-                f"Attempted to unsubscribe unknown subscriber ID: {subscriber_id}"
-            )
-            return False
+        logger.warning(
+            f"Attempted to unsubscribe unknown subscriber ID: {subscriber_id}"
+        )
+        return False
 
     def subscriber_ids(self) -> set[UUID]:
         """Return the ids of all currently-registered subscribers."""

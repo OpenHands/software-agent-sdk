@@ -187,9 +187,7 @@ def main() -> int:
     errors = 0
     for number, _subject in prs:
         status, detail = audit_pr(repo, number, token, trusted_bots)
-        if status == "ok":
-            ok += 1
-        elif status == "trusted-bot":
+        if status == "ok" or status == "trusted-bot":
             ok += 1
         elif status == "error":
             errors += 1

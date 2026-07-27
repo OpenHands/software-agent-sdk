@@ -73,17 +73,16 @@ class DelegateExecutor(ToolExecutor):
         # Route to appropriate handler based on command
         if action.command == "spawn":
             return self._spawn_agents(action)
-        elif action.command == "delegate":
+        if action.command == "delegate":
             return self._delegate_tasks(action)
-        else:
-            return DelegateObservation.from_text(
-                text=(
-                    f"Unsupported command: {action.command}. "
-                    "Available commands: spawn, delegate"
-                ),
-                command=action.command,
-                is_error=True,
-            )
+        return DelegateObservation.from_text(
+            text=(
+                f"Unsupported command: {action.command}. "
+                "Available commands: spawn, delegate"
+            ),
+            command=action.command,
+            is_error=True,
+        )
 
     @staticmethod
     def _format_agent_label(agent_id: str, agent_type: str) -> str:

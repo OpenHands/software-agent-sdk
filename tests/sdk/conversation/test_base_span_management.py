@@ -65,7 +65,6 @@ class MockConversation(BaseConversation):
 
     def condense(self) -> None:
         """Mock implementation of condense method."""
-        pass
 
     def execute_tool(self, tool_name: str, action: Action) -> Observation:
         """Mock implementation of execute_tool method."""

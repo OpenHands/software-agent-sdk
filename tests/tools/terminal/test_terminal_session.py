@@ -500,12 +500,10 @@ def test_command_output_continuation(terminal_type):
                     "[The command completed with exit code 0.]" in obs.metadata.suffix
                 )
                 break
-            else:
-                assert (
-                    "[The command has no new output after 1 seconds."
-                    in obs.metadata.suffix
-                )
-                assert session.prev_status == TerminalCommandStatus.NO_CHANGE_TIMEOUT
+            assert (
+                "[The command has no new output after 1 seconds." in obs.metadata.suffix
+            )
+            assert session.prev_status == TerminalCommandStatus.NO_CHANGE_TIMEOUT
 
         # Verify we've seen all numbers
         assert numbers_seen == {1, 2, 3, 4, 5}, (

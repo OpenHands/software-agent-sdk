@@ -38,10 +38,10 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     )
     for item in items:
         module_name = Path(str(item.fspath)).name
-        if module_name in _WINDOWS_UNSUPPORTED_BACKEND_TEST_MODULES:
-            item.add_marker(skip_backend)
-        elif module_name == "test_escape_filter.py" and item.name.startswith(
-            "test_session_"
+        if (
+            module_name in _WINDOWS_UNSUPPORTED_BACKEND_TEST_MODULES
+            or module_name == "test_escape_filter.py"
+            and item.name.startswith("test_session_")
         ):
             item.add_marker(skip_backend)
 

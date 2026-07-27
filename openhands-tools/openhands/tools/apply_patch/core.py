@@ -201,8 +201,7 @@ class Parser(BaseModel):
             if new_index == -1:
                 if eof:
                     raise DiffError(f"Invalid EOF Context {index}:\n{next_chunk_text}")
-                else:
-                    raise DiffError(f"Invalid Context {index}:\n{next_chunk_text}")
+                raise DiffError(f"Invalid Context {index}:\n{next_chunk_text}")
             self.fuzz += fuzz
             for ch in chunks:
                 ch.orig_index += new_index
@@ -286,7 +285,7 @@ def peek_next_section(
             break
         if s == "***":
             break
-        elif s.startswith("***"):
+        if s.startswith("***"):
             raise DiffError(f"Invalid Line: {s}")
         index += 1
         last_mode = mode

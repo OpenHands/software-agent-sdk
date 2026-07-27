@@ -99,8 +99,7 @@ class TomConsultExecutor(
         """
         if isinstance(action, SleeptimeComputeAction):
             return self._sleeptime_compute(conversation)
-        else:
-            return self._consult_tom(action, conversation)
+        return self._consult_tom(action, conversation)
 
     def _format_events(
         self,
@@ -141,23 +140,20 @@ class TomConsultExecutor(
         if conversation is not None:
             # Skip system message (first message)
             return conversation.state.agent.llm.format_messages_for_llm(messages)[1:]
-        else:
-            # If no conversation, format messages directly from events
-            from openhands.sdk.llm import TextContent
+        # If no conversation, format messages directly from events
+        from openhands.sdk.llm import TextContent
 
-            formatted_messages = []
-            for msg in messages:
-                if msg.role != "system":  # Skip system messages
-                    text_contents = [
-                        {"text": c.text}
-                        for c in msg.content
-                        if isinstance(c, TextContent)
-                    ]
-                    if text_contents:
-                        formatted_messages.append(
-                            {"role": msg.role, "content": text_contents}
-                        )
-            return formatted_messages
+        formatted_messages = []
+        for msg in messages:
+            if msg.role != "system":  # Skip system messages
+                text_contents = [
+                    {"text": c.text} for c in msg.content if isinstance(c, TextContent)
+                ]
+                if text_contents:
+                    formatted_messages.append(
+                        {"role": msg.role, "content": text_contents}
+                    )
+        return formatted_messages
 
     def _consult_tom(
         self, action: ConsultTomAction, conversation: "BaseConversation | None" = None
@@ -234,11 +230,10 @@ class TomConsultExecutor(
                     confidence=getattr(result, "confidence", None),
                     reasoning=getattr(result, "reasoning", None),
                 )
-            else:
-                logger.warning("⚠️ Tom: No consultation result received")
-                return ConsultTomObservation(
-                    suggestions="[CRITICAL] Tom agent cannot provide consultation for this user message. Do not consult ToM agent again for this message and use other actions instead."  # noqa: E501
-                )
+            logger.warning("⚠️ Tom: No consultation result received")
+            return ConsultTomObservation(
+                suggestions="[CRITICAL] Tom agent cannot provide consultation for this user message. Do not consult ToM agent again for this message and use other actions instead."  # noqa: E501
+            )
 
         except Exception as e:
             logger.error(f"❌ Tom: Error in consultation: {e}")

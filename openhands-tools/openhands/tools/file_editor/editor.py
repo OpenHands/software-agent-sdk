@@ -119,7 +119,7 @@ class FileEditor:
         self.validate_path(command, _path)
         if command == "view":
             return self.view(_path, view_range)
-        elif command == "create":
+        if command == "create":
             if file_text is None:
                 raise EditorToolParameterMissingError(command, "file_text")
             self.write_file(_path, file_text)
@@ -131,7 +131,7 @@ class FileEditor:
                 new_content=file_text,
                 prev_exist=False,
             )
-        elif command == "str_replace":
+        if command == "str_replace":
             if old_str is None:
                 raise EditorToolParameterMissingError(command, "old_str")
             if new_str is None:
@@ -144,13 +144,13 @@ class FileEditor:
                     "different.",
                 )
             return self.str_replace(_path, old_str, new_str)
-        elif command == "insert":
+        if command == "insert":
             if insert_line is None:
                 raise EditorToolParameterMissingError(command, "insert_line")
             if new_str is None:
                 raise EditorToolParameterMissingError(command, "new_str")
             return self.insert(_path, insert_line, new_str)
-        elif command == "undo_edit":
+        if command == "undo_edit":
             return self.undo_edit(_path)
 
         raise ToolError(
@@ -763,14 +763,13 @@ class FileEditor:
                         if i >= start_line:
                             lines.append(line)
                 return "".join(lines)
-            elif start_line is not None or end_line is not None:
+            if start_line is not None or end_line is not None:
                 raise ValueError(
                     "Both start_line and end_line must be provided together"
                 )
-            else:
-                # Use line-by-line reading to avoid loading entire file into memory
-                with open(path, encoding=encoding) as f:
-                    return "".join(f)
+            # Use line-by-line reading to avoid loading entire file into memory
+            with open(path, encoding=encoding) as f:
+                return "".join(f)
         except Exception as e:
             raise ToolError(f"Ran into {e} while trying to read {path}") from None
 

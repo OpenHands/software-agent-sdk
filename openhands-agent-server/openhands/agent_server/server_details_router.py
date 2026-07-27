@@ -109,9 +109,8 @@ async def ready(response: Response) -> dict[str, str]:
     """
     if _initialization_complete.is_set():
         return {"status": "ready"}
-    else:
-        response.status_code = 503
-        return {"status": "initializing", "message": "Server is still initializing"}
+    response.status_code = 503
+    return {"status": "initializing", "message": "Server is still initializing"}
 
 
 @server_details_router.get("/server_info")
