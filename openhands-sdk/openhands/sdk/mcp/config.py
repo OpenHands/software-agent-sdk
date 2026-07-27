@@ -62,7 +62,7 @@ def _serialize_secret_map(
     if value is None:
         return None
     if resolve_expose_mode(info.context) == "redact":
-        return {key: REDACTED_SECRET_VALUE for key in value}
+        return dict.fromkeys(value, REDACTED_SECRET_VALUE)
     return {
         key: cast(str | None, serialize_secret(secret, info))
         for key, secret in value.items()

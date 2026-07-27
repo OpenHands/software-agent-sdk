@@ -67,7 +67,7 @@ def _discover_examples() -> list[Path]:
             continue
         candidates.extend(sorted(directory.glob("*.py")))
     # Append any explicitly listed LLM-specific examples if present
-    for rel_path in _LLM_SPECIFIC_EXAMPLES.keys():
+    for rel_path in _LLM_SPECIFIC_EXAMPLES:
         abs_path = REPO_ROOT / rel_path
         if abs_path.exists():
             candidates.append(abs_path)

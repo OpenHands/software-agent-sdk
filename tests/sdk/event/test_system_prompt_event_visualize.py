@@ -17,13 +17,9 @@ if TYPE_CHECKING:
 class SimpleAction(Action):
     """Simple test action."""
 
-    pass
-
 
 class SimpleObservation(Observation):
     """Simple test observation."""
-
-    pass
 
 
 class SimpleExecutor(ToolExecutor):

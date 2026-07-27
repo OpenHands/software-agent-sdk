@@ -56,8 +56,6 @@ __all__ = ["TestLLM", "TestLLMExhaustedError"]
 class TestLLMExhaustedError(Exception):
     """Raised when TestLLM has no more scripted responses."""
 
-    pass
-
 
 class TestLLM(LLM):
     """A mock LLM for testing that returns scripted responses.

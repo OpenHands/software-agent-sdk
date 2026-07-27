@@ -57,9 +57,9 @@ class ToolChecker(ast.NodeVisitor):
         """Extract name from an AST node (handles Name, Attribute, Subscript)."""
         if isinstance(node, ast.Name):
             return node.id
-        elif isinstance(node, ast.Attribute):
+        if isinstance(node, ast.Attribute):
             return f"{self._get_name(node.value)}.{node.attr}"
-        elif isinstance(node, ast.Subscript):
+        if isinstance(node, ast.Subscript):
             return self._get_name(node.value)
         return ""
 

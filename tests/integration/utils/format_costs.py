@@ -18,12 +18,11 @@ def format_cost(value: float) -> str:
     if value == 0.0:
         # Handle zero as a special case
         return "$0.00"
-    elif abs(value) >= 0.01:
+    if abs(value) >= 0.01:
         # Normal rounding for typical amounts
         return f"${value:.2f}"
-    elif abs(value) >= 0.001:
+    if abs(value) >= 0.001:
         # Round small numbers to 2 significant figures
         return f"${value:.2g}"
-    else:
-        # Use scientific notation for very small numbers
-        return f"${value:.1e}"
+    # Use scientific notation for very small numbers
+    return f"${value:.1e}"

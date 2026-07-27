@@ -383,10 +383,9 @@ class TerminalSession(TerminalSessionBase):
             if get_content_before_last_match:
                 # The command output is the content before the last PS1 prompt
                 return terminal_content[: ps1_matches[0].start()]
-            else:
-                # The command output is the content after the last PS1 prompt
-                return terminal_content[ps1_matches[0].end() + 1 :]
-        elif len(ps1_matches) == 0:
+            # The command output is the content after the last PS1 prompt
+            return terminal_content[ps1_matches[0].end() + 1 :]
+        if len(ps1_matches) == 0:
             return terminal_content
         combined_output = ""
         for i in range(len(ps1_matches) - 1):

@@ -263,9 +263,8 @@ def create_unique_identifier(query: str, errors_data: dict) -> str:
     if examples and examples[0].get("issue_id"):
         issue_id = examples[0]["issue_id"]
         return f"error-id: {issue_id}"
-    else:
-        # Use query as identifier
-        return f"query: {query}"
+    # Use query as identifier
+    return f"query: {query}"
 
 
 def search_existing_issue(
@@ -304,9 +303,8 @@ def search_existing_issue(
             issue_number = items_sorted[0]["number"]
             print(f"✅ Found existing issue #{issue_number} (oldest of {len(items)})")
             return issue_number
-        else:
-            print("❌ No existing issue found")
-            return None
+        print("❌ No existing issue found")
+        return None
     except (
         requests.exceptions.RequestException,
         json.JSONDecodeError,

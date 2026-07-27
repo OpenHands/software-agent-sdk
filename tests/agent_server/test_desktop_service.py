@@ -294,7 +294,7 @@ class TestDesktopService:
             wait_calls += 1
             if wait_calls == 1:
                 raise TimeoutError()
-            return None
+            return
 
         mock_proc.wait = mock_wait
         service._proc = mock_proc

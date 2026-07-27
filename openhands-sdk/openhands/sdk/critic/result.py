@@ -44,10 +44,9 @@ class CriticResult(BaseModel):
         """Get the style for the star rating based on score."""
         if score >= 0.6:
             return "green"
-        elif score >= 0.4:
+        if score >= 0.4:
             return "yellow"
-        else:
-            return "red"
+        return "red"
 
     @property
     def visualize(self) -> Text:

@@ -35,8 +35,6 @@ class SubmitJudgmentAction(Action):
 class SubmitJudgmentObservation(Observation):
     """Observation returned after submitting judgment."""
 
-    pass
-
 
 class SubmitJudgmentExecutor(
     ToolExecutor[SubmitJudgmentAction, SubmitJudgmentObservation]
@@ -209,16 +207,15 @@ the information available, assuming the agent's behavior is correct afterward.
                 total_tokens=total_tokens,
                 cost=cost,
             )
-        else:
-            logger.error(
-                "LLM did not call the judgment tool. Response message: %s",
-                response.message.model_dump(),
-            )
-            return JudgmentResult(
-                approved=False,
-                reasoning="LLM failed to call the judgment tool",
-                confidence=0.0,
-            )
+        logger.error(
+            "LLM did not call the judgment tool. Response message: %s",
+            response.message.model_dump(),
+        )
+        return JudgmentResult(
+            approved=False,
+            reasoning="LLM failed to call the judgment tool",
+            confidence=0.0,
+        )
 
     except Exception as exc:
         logger.exception("Error during tool-based LLM judgment")

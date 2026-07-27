@@ -1205,7 +1205,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     thinking_blocks=thinking_blocks,
                     responses_reasoning_item=responses_reasoning_item,
                 )
-                return
+                return None
 
             arguments = fix_malformed_tool_arguments(arguments, tool.action_type)
             normalized_tool_call = tool_call.model_copy(
@@ -1261,7 +1261,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 thinking_blocks=thinking_blocks,
                 responses_reasoning_item=responses_reasoning_item,
             )
-            return
+            return None
 
         # Create initial action event
         action_event = ActionEvent(

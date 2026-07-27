@@ -122,8 +122,7 @@ def validate_secret(v: str | SecretStr | None, info) -> SecretStr | None:
     # Always return SecretStr
     if isinstance(v, SecretStr):
         return v
-    else:
-        return SecretStr(secret_value)
+    return SecretStr(secret_value)
 
 
 @overload

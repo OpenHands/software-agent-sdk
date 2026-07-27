@@ -399,21 +399,20 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
                 self._check_agent_server_health(agent_server_url)
             return
 
-        elif status == "STARTING":
+        if status == "STARTING":
             raise RuntimeError("Sandbox still starting")
 
-        elif status in ("ERROR", "MISSING"):
+        if status in ("ERROR", "MISSING"):
             raise ValueError(f"Sandbox failed with status: {status}")
 
-        elif status == "PAUSED":
+        if status == "PAUSED":
             # Try to resume the sandbox
             logger.info("Sandbox is paused, attempting to resume...")
             self._resume_sandbox()
             raise RuntimeError("Sandbox resuming, waiting for RUNNING status")
 
-        else:
-            logger.warning(f"Unknown sandbox status: {status}")
-            raise RuntimeError(f"Unknown sandbox status: {status}")
+        logger.warning(f"Unknown sandbox status: {status}")
+        raise RuntimeError(f"Unknown sandbox status: {status}")
 
     def _check_agent_server_health(self, agent_server_url: str) -> None:
         """Check if the agent server is healthy."""

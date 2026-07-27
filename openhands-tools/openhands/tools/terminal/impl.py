@@ -575,8 +575,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
 
         if self._pool is not None:
             return self._execute_pooled(action, conversation)
-        else:
-            return self._execute_single_session(action, conversation)
+        return self._execute_single_session(action, conversation)
 
     def interrupt(self) -> None:
         """Send Ctrl+C to all active terminal sessions.

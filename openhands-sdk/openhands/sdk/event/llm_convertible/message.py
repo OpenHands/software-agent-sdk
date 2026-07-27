@@ -148,5 +148,4 @@ class MessageEvent(LLMConvertibleEvent):
                 f"{base_str}\n  {message.role}: "
                 f"{content_preview}{skill_info}{thinking_info}"
             )
-        else:
-            return f"{base_str}\n  {message.role}: [no text content]"
+        return f"{base_str}\n  {message.role}: [no text content]"

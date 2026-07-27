@@ -32,10 +32,9 @@ def get_agent_final_response(events: Sequence[Event]) -> str:
             # Extract message from finish tool call
             if event.action is not None and isinstance(event.action, FinishAction):
                 return event.action.message
-            else:
-                break
+            break
         # Case 2: text message with no tool calls (MessageEvent)
-        elif isinstance(event, MessageEvent) and event.source == "agent":
+        if isinstance(event, MessageEvent) and event.source == "agent":
             text_parts = content_to_str(event.llm_message.content)
             return "".join(text_parts)
     return ""

@@ -36,7 +36,6 @@ class SecurityAnalyzerBase(DiscriminatedUnionMixin, ABC):
         Returns:
             ActionSecurityRisk enum indicating the risk level
         """
-        pass
 
     def analyze_event(self, event: Event) -> SecurityRisk | None:
         """Analyze an event for security risks.
@@ -72,15 +71,14 @@ class SecurityAnalyzerBase(DiscriminatedUnionMixin, ABC):
         if risk == SecurityRisk.HIGH:
             # HIGH risk actions always require confirmation
             return True
-        elif risk == SecurityRisk.UNKNOWN and not confirmation_mode:
+        if risk == SecurityRisk.UNKNOWN and not confirmation_mode:
             # UNKNOWN risk requires confirmation if no security analyzer is configured
             return True
-        elif confirmation_mode:
+        if confirmation_mode:
             # In confirmation mode, all actions require confirmation
             return True
-        else:
-            # LOW and MEDIUM risk actions don't require confirmation by default
-            return False
+        # LOW and MEDIUM risk actions don't require confirmation by default
+        return False
 
     def analyze_pending_actions(
         self, pending_actions: list[ActionEvent]

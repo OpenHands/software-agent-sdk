@@ -245,9 +245,8 @@ def _install_chromium() -> bool:
         if result.returncode == 0:
             logger.info("Chromium installation completed successfully")
             return True
-        else:
-            logger.error(f"Chromium installation failed: {result.stderr}")
-            return False
+        logger.error(f"Chromium installation failed: {result.stderr}")
+        return False
     except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
         logger.error(f"Error during Chromium installation: {e}")
         return False

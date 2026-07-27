@@ -94,12 +94,11 @@ class AsyncExecutor:
                     return await coro
 
             return portal.call(_with_timeout)
-        else:
 
-            async def _execute():
-                return await coro
+        async def _execute():
+            return await coro
 
-            return portal.call(_execute)
+        return portal.call(_execute)
 
     def close(self):
         with self._lock:

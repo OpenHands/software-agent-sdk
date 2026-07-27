@@ -13,8 +13,6 @@ from pydantic import BaseModel
 class BaseTrigger(BaseModel, ABC):
     """Base class for all trigger types."""
 
-    pass
-
 
 class KeywordTrigger(BaseTrigger):
     """Trigger for keyword-based skills.

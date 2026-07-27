@@ -173,7 +173,7 @@ class RollingCondenser(PipelinableCondenserBase, ABC):
                     # we do so immediately.
                     return view
 
-                elif request == CondensationRequirement.HARD:
+                if request == CondensationRequirement.HARD:
                     # The agent has found itself in a situation where it cannot proceed
                     # without condensation, but the condenser cannot provide one. We'll
                     # try to recover from this situation by performing a hard context
@@ -217,7 +217,7 @@ class RollingCondenser(PipelinableCondenserBase, ABC):
                 if request == CondensationRequirement.SOFT:
                     return view
 
-                elif request == CondensationRequirement.HARD:
+                if request == CondensationRequirement.HARD:
                     try:
                         hard_reset_condensation = await self.ahard_context_reset(
                             view, agent_llm=agent_llm

@@ -308,7 +308,7 @@ class EventLog(EventsListBase):
         n = 0
         while True:
             if n not in by_idx:
-                if any(i > n for i in by_idx.keys()):
+                if any(i > n for i in by_idx):
                     logger.warning(
                         "Event index gap detected: "
                         f"expect next index {n} but got {sorted(by_idx.keys())}"

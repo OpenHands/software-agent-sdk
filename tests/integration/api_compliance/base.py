@@ -70,13 +70,11 @@ class BaseAPIComplianceTest(ABC):
     @abstractmethod
     def pattern_name(self) -> str:
         """Unique identifier for the malformed pattern being tested."""
-        pass
 
     @property
     @abstractmethod
     def pattern_description(self) -> str:
         """Human-readable description of the malformed pattern."""
-        pass
 
     @abstractmethod
     def build_malformed_messages(self) -> list[Message]:
@@ -85,7 +83,6 @@ class BaseAPIComplianceTest(ABC):
         Returns:
             List of Message objects representing the malformed conversation.
         """
-        pass
 
     def needs_tools(self) -> bool:
         """Whether this test needs tool definitions sent to the API.
@@ -190,23 +187,22 @@ class BaseAPIComplianceTest(ABC):
         model_lower = model.lower()
         if "claude" in model_lower or "anthropic" in model_lower:
             return "anthropic"
-        elif "gpt" in model_lower or "openai" in model_lower:
+        if "gpt" in model_lower or "openai" in model_lower:
             return "openai"
-        elif "gemini" in model_lower or "google" in model_lower:
+        if "gemini" in model_lower or "google" in model_lower:
             return "google"
-        elif "deepseek" in model_lower:
+        if "deepseek" in model_lower:
             return "deepseek"
-        elif "kimi" in model_lower or "moonshot" in model_lower:
+        if "kimi" in model_lower or "moonshot" in model_lower:
             return "moonshot"
-        elif "qwen" in model_lower or "dashscope" in model_lower:
+        if "qwen" in model_lower or "dashscope" in model_lower:
             return "alibaba"
-        elif "glm" in model_lower:
+        if "glm" in model_lower:
             return "zhipu"
-        elif "minimax" in model_lower:
+        if "minimax" in model_lower:
             return "minimax"
-        else:
-            # Return the first part of the model name
-            return model.split("/")[0] if "/" in model else "unknown"
+        # Return the first part of the model name
+        return model.split("/")[0] if "/" in model else "unknown"
 
 
 def create_test_llm(llm_config: dict[str, Any]) -> LLM:

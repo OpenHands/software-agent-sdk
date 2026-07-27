@@ -69,7 +69,7 @@ class SecretRegistry(OpenHandsModel):
             Set of secret keys found in the text
         """
         found_keys = set()
-        for key in self.secret_sources.keys():
+        for key in self.secret_sources:
             if key.lower() in text.lower():
                 found_keys.add(key)
         return found_keys

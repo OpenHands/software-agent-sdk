@@ -136,9 +136,8 @@ def generate_title_with_llm(message: str, llm: LLM, max_length: int = 50) -> str
                 title = title[: max_length - 3] + "..."
 
             return title
-        else:
-            logger.warning("LLM returned empty response for title generation")
-            return None
+        logger.warning("LLM returned empty response for title generation")
+        return None
 
     except Exception as e:
         logger.warning(f"Error generating conversation title with LLM: {e}")

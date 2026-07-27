@@ -241,7 +241,7 @@ class DiscriminatedUnionMixin(OpenHandsModel):
                 raise ValueError(
                     f"No kinds defined for {cls.__module__}.{cls.__name__}"
                 )
-            elif len(subclasses) == 1:
+            if len(subclasses) == 1:
                 # If there is ony 1 possible implementation, then we do not need
                 # to state the kind explicitly - it can only be this!
                 kind = next(iter(subclasses))

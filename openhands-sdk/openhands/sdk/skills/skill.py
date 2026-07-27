@@ -385,8 +385,7 @@ class Skill(BaseModel):
             return cls._load_agentskills_skill(
                 path, file_content, strict=strict, skip_mcp=skip_mcp
             )
-        else:
-            return cls._load_legacy_openhands_skill(path, file_content, skill_base_dir)
+        return cls._load_legacy_openhands_skill(path, file_content, skill_base_dir)
 
     @classmethod
     def _load_agentskills_skill(
@@ -584,7 +583,7 @@ class Skill(BaseModel):
                 is_agentskills_format=is_agentskills_format,
                 **agentskills_fields,
             )
-        elif "inputs" in metadata_dict:
+        if "inputs" in metadata_dict:
             # Add a trigger for the agent name if not already present
             trigger_keyword = f"/{agent_name}"
             if trigger_keyword not in keywords:
@@ -607,7 +606,7 @@ class Skill(BaseModel):
                 **agentskills_fields,
             )
 
-        elif metadata_dict.get("triggers", None):
+        if metadata_dict.get("triggers", None):
             return Skill(
                 name=agent_name,
                 content=content,
@@ -618,18 +617,17 @@ class Skill(BaseModel):
                 is_agentskills_format=is_agentskills_format,
                 **agentskills_fields,
             )
-        else:
-            # No triggers, default to None (always active)
-            return Skill(
-                name=agent_name,
-                content=content,
-                source=to_posix_path(path),
-                trigger=None,
-                mcp_tools=mcp_tools,
-                resources=resources,
-                is_agentskills_format=is_agentskills_format,
-                **agentskills_fields,
-            )
+        # No triggers, default to None (always active)
+        return Skill(
+            name=agent_name,
+            content=content,
+            source=to_posix_path(path),
+            trigger=None,
+            mcp_tools=mcp_tools,
+            resources=resources,
+            is_agentskills_format=is_agentskills_format,
+            **agentskills_fields,
+        )
 
     @classmethod
     def _handle_third_party(cls, path: Path, file_content: str) -> Union["Skill", None]:
@@ -791,10 +789,9 @@ class Skill(BaseModel):
         """
         if self.is_agentskills_format:
             return "agentskills"
-        elif self.trigger is None:
+        if self.trigger is None:
             return "repo"
-        else:
-            return "knowledge"
+        return "knowledge"
 
     def get_triggers(self) -> list[str]:
         """Extract trigger keywords from this skill.
@@ -804,7 +801,7 @@ class Skill(BaseModel):
         """
         if isinstance(self.trigger, KeywordTrigger):
             return self.trigger.keywords
-        elif isinstance(self.trigger, TaskTrigger):
+        if isinstance(self.trigger, TaskTrigger):
             return self.trigger.triggers
         return []
 

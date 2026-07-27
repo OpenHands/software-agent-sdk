@@ -155,10 +155,9 @@ class ActionEvent(LLMConvertibleEvent):
         if self.action:
             action_name = self.action.__class__.__name__
             return f"{base_str}\n  Thought: {thought_preview}\n  Action: {action_name}"
-        else:
-            # When action is None (non-executable), show the tool call
-            call = f"{self.tool_call.name}:{self.tool_call.id}"
-            return (
-                f"{base_str}\n  Thought: {thought_preview}\n  Action: (not executed)"
-                f"\n  Call: {call}"
-            )
+        # When action is None (non-executable), show the tool call
+        call = f"{self.tool_call.name}:{self.tool_call.id}"
+        return (
+            f"{base_str}\n  Thought: {thought_preview}\n  Action: (not executed)"
+            f"\n  Call: {call}"
+        )

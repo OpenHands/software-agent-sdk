@@ -116,8 +116,7 @@ class DockerDevWorkspace(DockerWorkspace):
                 target=self.target,
                 platform=self.platform,
             )
-        elif self.server_image:
+        if self.server_image:
             # Use pre-built image
             return self.server_image
-        else:
-            raise ValueError("Either base_image or server_image must be set")
+        raise ValueError("Either base_image or server_image must be set")

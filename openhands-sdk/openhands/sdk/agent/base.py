@@ -987,4 +987,3 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         No-op by default; ACPAgent overrides to terminate subprocess.
         """
-        pass

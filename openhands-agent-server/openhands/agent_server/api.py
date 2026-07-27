@@ -498,8 +498,7 @@ def _setup_static_files(app: FastAPI, config: Config) -> None:
         index_path = config.static_files_path / "index.html"
         if index_path.exists():
             return RedirectResponse(url="/static/index.html", status_code=302)
-        else:
-            return RedirectResponse(url="/static/", status_code=302)
+        return RedirectResponse(url="/static/", status_code=302)
 
 
 def _sanitize_validation_errors(errors: Sequence[Any]) -> list[dict]:

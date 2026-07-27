@@ -66,7 +66,7 @@ class InMemoryFileStore(FileStore):
 
     def delete(self, path: str) -> None:
         try:
-            keys_to_delete = [key for key in self.files.keys() if key.startswith(path)]
+            keys_to_delete = [key for key in self.files if key.startswith(path)]
             for key in keys_to_delete:
                 del self.files[key]
             logger.debug(f"Cleared in-memory file store: {path}")

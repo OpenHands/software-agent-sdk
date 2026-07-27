@@ -477,8 +477,7 @@ def sync_public_skills() -> tuple[bool, str]:
         if result:
             _invalidate_public_skills_cache()
             return (True, "Skills repository synced successfully")
-        else:
-            return (False, "Failed to sync skills repository")
+        return (False, "Failed to sync skills repository")
     except Exception as e:
         logger.warning(f"Failed to sync skills repository: {e}")
         return (False, f"Sync failed: {str(e)}")

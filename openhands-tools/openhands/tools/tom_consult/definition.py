@@ -55,8 +55,6 @@ class SleeptimeComputeAction(Action):
     conversation history to build and update the user model.
     """
 
-    pass
-
 
 # ==================== Observation Schemas ====================
 

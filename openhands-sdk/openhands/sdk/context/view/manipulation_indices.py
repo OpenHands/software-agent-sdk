@@ -46,7 +46,7 @@ class ManipulationIndices(set[int]):
         """
         manipulation_indices = ManipulationIndices()
 
-        manipulation_indices.update(range(0, len(events)))
+        manipulation_indices.update(range(len(events)))
         manipulation_indices.add(len(events))
 
         return manipulation_indices

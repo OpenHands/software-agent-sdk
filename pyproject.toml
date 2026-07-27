@@ -68,7 +68,31 @@ select = [
 # - B008: function-call-in-default-argument
 # - B039: mutable-contextvar-default
 # - RUF012: mutable-class-default
-extend-select = ["B006", "B008", "B039", "RUF012"]
+#
+# Line-reducing rules. Only the ones ruff can currently fix without
+# --unsafe-fixes are listed; see #4224 for what was left out and why.
+# - RET501/RET502: unnecessary or implicit `return None`
+# - RET505/RET506/RET507/RET508: `else` after `return`/`raise`/`continue`/`break`
+# - SIM118: `key in dict` rather than `key in dict.keys()`
+# - PIE790: `pass`/`...` in a body that already has a docstring
+# - PIE808: unnecessary `0` start in `range`
+# - C420: `dict.fromkeys` rather than a comprehension with a constant value
+extend-select = [
+    "B006",
+    "B008",
+    "B039",
+    "RUF012",
+    "RET501",
+    "RET502",
+    "RET505",
+    "RET506",
+    "RET507",
+    "RET508",
+    "SIM118",
+    "PIE790",
+    "PIE808",
+    "C420",
+]
 
 [tool.ruff.lint.per-file-ignores]
 # Test files often have unused arguments (fixtures, mocks, interface implementations)

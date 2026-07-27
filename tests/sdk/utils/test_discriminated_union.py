@@ -44,7 +44,7 @@ class Wolf(Canine):
     def _remove_genus(cls, data):
         # Remove the genus from input as it is generated
         if not isinstance(data, dict):
-            return
+            return None
         data = dict(data)
         data.pop("genus", None)
         return data
@@ -69,7 +69,7 @@ class AnimalPack(BaseModel):
     def _remove_alpha(cls, data):
         # Remove the genus from input as it is generated
         if not isinstance(data, dict):
-            return
+            return None
         data = dict(data)
         data.pop("alpha", None)
         return data

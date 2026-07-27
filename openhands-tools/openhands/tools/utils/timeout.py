@@ -4,8 +4,6 @@ from func_timeout import FunctionTimedOut, func_timeout
 class TimeoutError(Exception):
     """Generic SDK Tool TimeoutError (wraps func-timeout)."""
 
-    pass
-
 
 def run_with_timeout(func, timeout, *args, **kwargs):
     try:

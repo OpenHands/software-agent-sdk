@@ -160,7 +160,7 @@ def test_apply_diff_on_llm_tagged_base_returns_openhands() -> None:
 
 
 def test_validate_never_returns_llm_subclass() -> None:
-    for version in range(0, AGENT_SETTINGS_SCHEMA_VERSION + 1):
+    for version in range(AGENT_SETTINGS_SCHEMA_VERSION + 1):
         result = validate_agent_settings(
             {"agent_kind": "llm", "schema_version": version, "llm": {"model": "m"}}
         )

@@ -307,7 +307,7 @@ def test_view_with_a_specific_range(editor):
         old_str="This is a test file.\nThis file is for testing purposes.",
         new_str="",
     )
-    for i in range(0, 200):
+    for i in range(200):
         _ = editor(
             command="insert",
             path=str(test_file),
@@ -860,7 +860,7 @@ def test_str_replace_and_insert_snippet_output_on_a_large_file(editor):
         old_str="This is a test file.\nThis file is for testing purposes.",
         new_str="",
     )
-    for i in range(0, 700):
+    for i in range(700):
         _ = editor(
             command="insert",
             path=str(test_file),

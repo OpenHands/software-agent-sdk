@@ -409,8 +409,6 @@ class FailingAction(Action):
 class FailingObservation(Observation):
     """Observation from failing tool."""
 
-    pass
-
 
 class FailingExecutor(ToolExecutor[FailingAction, FailingObservation]):
     """Executor that always raises an exception."""

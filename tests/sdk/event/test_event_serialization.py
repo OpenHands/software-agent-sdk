@@ -39,8 +39,6 @@ class EventsSerializationMockAction(Action):
 class EventsSerializationMockObservation(Observation):
     """Mock observation for testing."""
 
-    pass
-
 
 def test_event_base_serialization() -> None:
     """Test basic Event serialization/deserialization."""
