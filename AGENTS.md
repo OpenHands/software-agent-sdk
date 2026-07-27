@@ -43,9 +43,12 @@ This TypeScript client is based on the following source materials:
 
 ### 1. OpenAPI Specification
 
-- **Source**: [OpenHands Docs - Agent SDK OpenAPI](https://github.com/OpenHands/docs/blob/main/openapi/agent-sdk.json)
+- **Source**: The `openapi.json` artifact for the exact SDK release pinned by
+  `package.json` → `config.agentServerImage`
 - **Purpose**: Defines the complete REST API specification for the OpenHands Agent Server
-- **Usage**: Used to generate TypeScript interfaces, API client methods, and ensure complete endpoint coverage
+- **Usage**: Generates `src/generated/agent-server-schema.ts`, whose selected
+  operations and components are exposed through stable aliases and checked
+  against handwritten client methods
 
 ### 2. Python SDK Reference Implementation
 
@@ -327,6 +330,14 @@ published to GHCR). That PR's CI + integration tests run against the new image,
 so merging it means the client has been validated against that server version.
 This is independent of the npm package version — bumping the tracked server does
 **not** cut a client release.
+
+The generated transport contract in
+`src/generated/agent-server-schema.ts` comes from that same exact pin. Run
+`npm run generate:agent-server-api` after changing the pin and
+`npm run check:agent-server-api` to enforce a clean regeneration. Released SDK
+versions use the `openapi.json` release artifact. Legacy releases without the
+artifact are exported from an isolated temporary container of the exact pinned
+image. The generator never reads from an unpinned `latest` endpoint.
 
 ## Local Setup and Validation
 

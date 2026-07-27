@@ -50,6 +50,25 @@ npm install github:OpenHands/typescript-client
 
 This git-based install runs the package `prepare` script during installation so the published `dist/` entrypoints and subpath exports are built automatically.
 
+## Agent Server API contract
+
+Selected handwritten clients are statically checked against generated types in
+`src/generated/agent-server-schema.ts`. The source is the exact Agent Server
+release configured by `package.json` → `config.agentServerImage`.
+
+```bash
+npm run generate:agent-server-api
+npm run check:agent-server-api
+```
+
+The generator downloads the matching SDK release's `openapi.json`. For older
+releases that predate that artifact, it starts the exact pinned image in a
+temporary Docker container with no host mounts, exports `/openapi.json`, and
+removes the container. CI regenerates the file and fails if it differs. During
+SDK development, `AGENT_SERVER_OPENAPI_PATH=/path/to/openapi.json` can supply a
+local candidate contract while retaining the pinned image metadata in the
+generated file.
+
 ## Quick Start
 
 ### Start an AgentServer

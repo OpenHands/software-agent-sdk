@@ -6,15 +6,20 @@ import type {
   ProfileListResponse,
   ProfileMutationResponse,
   SaveProfileRequest,
-  SettingsApiResponse,
-  SettingsSchema,
-  SettingsUpdateRequest,
+  SettingsUpdateRequest as LegacySettingsUpdateRequest,
   SecretValueResponse,
   SecretsListResponse,
   UpsertSecretRequest,
   UpsertSecretResponse,
   DeleteSecretResponse,
 } from '../models/api';
+import type {
+  AgentServerConversationSettingsSchema,
+  AgentServerSettingsPatchRequest,
+  AgentServerSettingsPatchResponse,
+  AgentServerSettingsResponse,
+  AgentServerSettingsSchema,
+} from '../models/agent-server-api';
 
 export interface SettingsClientOptions {
   host: string;
@@ -44,22 +49,38 @@ export class SettingsClient {
     });
   }
 
-  async getAgentSchema(): Promise<SettingsSchema> {
-    const response = await this.client.get<SettingsSchema>('/api/settings/agent-schema');
+  async getAgentSchema(): Promise<AgentServerSettingsSchema> {
+    const response = await this.client.get<AgentServerSettingsSchema>('/api/settings/agent-schema');
     return response.data;
   }
 
   async getSettings(
     options: { exposeSecrets?: ExposeSecretsMode } = {}
-  ): Promise<SettingsApiResponse> {
-    const response = await this.client.get<SettingsApiResponse>('/api/settings', {
+  ): Promise<AgentServerSettingsResponse> {
+    const response = await this.client.get<AgentServerSettingsResponse>('/api/settings', {
       headers: options.exposeSecrets ? { 'X-Expose-Secrets': options.exposeSecrets } : undefined,
     });
     return response.data;
   }
 
-  async updateSettings(request: SettingsUpdateRequest): Promise<SettingsApiResponse> {
-    const response = await this.client.patch<SettingsApiResponse>('/api/settings', request);
+  /**
+   * @deprecated Pass `AgentServerSettingsPatchRequest` for generated
+   * contract checking. This overload keeps existing extension-shaped callers
+   * source compatible while they migrate.
+   */
+  async updateSettings(
+    request: LegacySettingsUpdateRequest
+  ): Promise<AgentServerSettingsPatchResponse>;
+  async updateSettings(
+    request: AgentServerSettingsPatchRequest
+  ): Promise<AgentServerSettingsPatchResponse>;
+  async updateSettings(
+    request: LegacySettingsUpdateRequest | AgentServerSettingsPatchRequest
+  ): Promise<AgentServerSettingsPatchResponse> {
+    const response = await this.client.patch<AgentServerSettingsPatchResponse>(
+      '/api/settings',
+      request
+    );
     return response.data;
   }
 
@@ -88,8 +109,10 @@ export class SettingsClient {
     return response.data;
   }
 
-  async getConversationSchema(): Promise<SettingsSchema> {
-    const response = await this.client.get<SettingsSchema>('/api/settings/conversation-schema');
+  async getConversationSchema(): Promise<AgentServerConversationSettingsSchema> {
+    const response = await this.client.get<AgentServerConversationSettingsSchema>(
+      '/api/settings/conversation-schema'
+    );
     return response.data;
   }
 

@@ -82,6 +82,21 @@ export type {
 } from './client/workspaces-client';
 export type { AgentServerFeatureRequirement } from './client/agent-server-compatibility';
 export type {
+  AgentServerConversationSettingsSchema,
+  AgentServerMCPOAuthCallbackRequest,
+  AgentServerMCPOAuthCallbackResponse,
+  AgentServerMCPOAuthStatusResponse,
+  AgentServerMCPStartOAuthRequest,
+  AgentServerMCPStartOAuthResponse,
+  AgentServerMCPTestRequest,
+  AgentServerMCPTestResponse,
+  AgentServerMCPToolCallResult,
+  AgentServerSettingsPatchRequest,
+  AgentServerSettingsPatchResponse,
+  AgentServerSettingsResponse,
+  AgentServerSettingsSchema,
+} from './models/agent-server-api';
+export type {
   OpenHandsClientKind,
   OpenHandsClientOptions,
   OpenHandsRequestAuthMode,
