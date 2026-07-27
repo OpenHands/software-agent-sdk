@@ -1,0 +1,18 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "draft-pull-request": true,
+  "pull-request-header": "## Release checklist\n\n- [ ] Fix any deprecation deadlines if they exist\n- [ ] Verify integration tests pass (triggered by the `integration-test` label)\n- [ ] Verify behavior tests pass (triggered by the `behavior-test` label)\n- [ ] Verify example checks pass (triggered by the `test-examples` label)\n- [ ] Run evaluation on OpenHands Index\n- [ ] Confirm any merged `release-note-required` PRs are accurately called out in the final release notes\n- [ ] Review and approve the PR",
+  "packages": {
+    ".": {
+      "release-type": "simple",
+      "changelog-type": "github",
+      "skip-changelog": true,
+      "extra-files": [
+        {"type": "toml", "path": "openhands-sdk/pyproject.toml", "jsonpath": "$.project.version"},
+        {"type": "toml", "path": "openhands-tools/pyproject.toml", "jsonpath": "$.project.version"},
+        {"type": "toml", "path": "openhands-workspace/pyproject.toml", "jsonpath": "$.project.version"},
+        {"type": "toml", "path": "openhands-agent-server/pyproject.toml", "jsonpath": "$.project.version"}
+      ]
+    }
+  }
+}

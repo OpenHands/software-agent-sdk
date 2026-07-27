@@ -1,0 +1,29 @@
+---
+name: release
+
+# Release automation via OpenHands/release-actions (release-please).
+#
+# This caller owns the trigger; the reusable workflow owns the logic. On every
+# push to main (or a release/** maintenance/freeze branch) release-please
+# maintains a DRAFT `chore(main): release X.Y.Z` PR — kept a draft by
+# `draft-pull-request: true` in release-please-config.json. Merging that PR tags
+# `vX.Y.Z` and publishes the GitHub release, which in turn fires pypi-release.yml
+# and release-binaries.yml (both trigger on release: published).
+#
+# The version is derived from Conventional Commit PR titles since the last
+# release; pr.yml enforces those titles. The caller grants the permissions the
+# reusable workflow needs (effective token = intersection of caller and callee)
+# and passes the org-level RELEASE_APP_ID / RELEASE_APP_PRIVATE_KEY through via
+# `secrets: inherit`.
+on:
+    push:
+        branches:
+            - main
+            - release/**
+jobs:
+    release-please:
+        permissions:
+            contents: write
+            pull-requests: write
+        secrets: inherit
+        uses: OpenHands/release-actions/.github/workflows/release-please.yml@v0.2.0
