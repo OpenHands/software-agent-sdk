@@ -109,6 +109,7 @@ class SkillInfo(BaseModel):
     description: str | None = None
     is_agentskills_format: bool = False
     disable_model_invocation: bool = False
+    allowed_tools: list[str] | None = None
 
 
 class SkillResources(BaseModel):
@@ -823,6 +824,7 @@ class Skill(BaseModel):
             description=self.description,
             is_agentskills_format=self.is_agentskills_format,
             disable_model_invocation=self.disable_model_invocation,
+            allowed_tools=self.allowed_tools,
         )
 
     def render_content(
