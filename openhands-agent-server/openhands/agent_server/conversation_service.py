@@ -286,6 +286,7 @@ def _resolve_agent_from_profile(
     profile_id: "UUID",
     cipher: "Cipher | None",
     mcp_config: "dict[str, MCPServer]",
+    load_memory: bool = False,
 ) -> "tuple[AgentBase, LaunchedAgentProfile]":
     """Load and resolve an agent profile by id, returning the built agent + provenance.
 
@@ -296,6 +297,11 @@ def _resolve_agent_from_profile(
             server's cipher.  Passed explicitly so this free function never
             touches the settings-store singleton (which may not have been
             initialised with the correct cipher yet).
+        load_memory: The user's global persistent-memory preference
+            (``agent_settings.agent_context.load_memory``).  An ``AgentProfile``
+            has no ``agent_context`` field, so the preference cannot ride the
+            profile — it is stamped onto the resolved agent below, else a
+            profile-launched conversation would silently ignore the setting.
 
     Raises:
         ProfileNotFound: No stored profile has ``profile_id``.
@@ -371,6 +377,15 @@ def _resolve_agent_from_profile(
     ):
         agent = agent.model_copy(
             update={"tools": [*agent.tools, Tool(name=BROWSER_TOOL_NAME)]}
+        )
+    # Persistent memory is a global user preference, not a profile field, so it
+    # is carried across the profile-resolution boundary the same way the global
+    # ``mcp_config`` is. Left untouched when off, so the resolved agent stays
+    # byte-identical for everyone who hasn't opted in.
+    if load_memory:
+        context = agent.agent_context or AgentContext()
+        agent = agent.model_copy(
+            update={"agent_context": context.model_copy(update={"load_memory": True})}
         )
     launched = LaunchedAgentProfile(
         agent_profile_id=profile.id,
@@ -1320,11 +1335,14 @@ class ConversationService:
 
             settings = get_settings_store().load() or PersistedSettings()
             mcp_config = settings.agent_settings.mcp_config
+            # ``ACPAgentSettings.agent_context`` is nullable, hence the guard.
+            stored_context = settings.agent_settings.agent_context
             resolved_agent, launched_agent_profile = await asyncio.to_thread(
                 _resolve_agent_from_profile,
                 request.agent_profile_id,
                 self.cipher,
                 mcp_config,
+                load_memory=bool(stored_context and stored_context.load_memory),
             )
             request = request.model_copy(update={"agent": resolved_agent})
 
