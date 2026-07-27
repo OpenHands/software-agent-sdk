@@ -157,7 +157,7 @@ class AsyncProcessManager:
 
 
 class HookExecutor:
-    """Executes hook commands and LLM evaluations with JSON I/O."""
+    """Executes hook commands and LLM/agent evaluations with JSON I/O."""
 
     _JSON_DECODER = json.JSONDecoder()
 
@@ -311,8 +311,7 @@ class HookExecutor:
             if isinstance(event.event_type, str)
             else event.event_type.value
         )
-        llm = self.llm
-        if llm is None:
+        if (llm := self.llm) is None:
             logger.warning(
                 f"Prompt hook has no LLM configured for event '{event_type}'"
                 " — defaulting to allow"
