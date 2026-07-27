@@ -131,9 +131,20 @@ def test_websocket_client_callback_invocation(mock_event):
     assert callback_events[0].id == mock_event.id
 
 
-def test_websocket_client_url_encodes_api_key():
-    """Test that API key special characters are URL-encoded in the WebSocket URL."""
+def test_websocket_client_sends_api_key_in_first_frame():
     captured_urls = []
+    sent_messages = []
+
+    class _MockWebSocket:
+        async def send(self, message):
+            sent_messages.append(message)
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            client._stop.set()
+            raise StopAsyncIteration
 
     class _MockAsyncContextManager:
         def __init__(self, url):
@@ -141,11 +152,7 @@ def test_websocket_client_url_encodes_api_key():
 
         async def __aenter__(self):
             captured_urls.append(self.url)
-            raise websockets.exceptions.ConnectionClosed(
-                rcvd=websockets.frames.Close(4001, "test"),
-                sent=websockets.frames.Close(4001, "test"),
-                rcvd_then_sent=False,
-            )
+            return _MockWebSocket()
 
         async def __aexit__(self, exc_type, exc, tb):
             return False
@@ -158,7 +165,7 @@ def test_websocket_client_url_encodes_api_key():
         host="http://localhost:8000",
         conversation_id="test-conv-id",
         callback=lambda event: None,
-        api_key="1+FYh/SRE=ds 8Q",
+        api_key="sk-oh-" + "a" * 64,
     )
 
     with patch(
@@ -168,7 +175,15 @@ def test_websocket_client_url_encodes_api_key():
         asyncio.run(client._client_loop())
 
     assert len(captured_urls) == 1
-    assert "session_api_key=1%2BFYh%2FSRE%3Dds%208Q" in captured_urls[0]
+    assert captured_urls[0] == ("ws://localhost:8000/sockets/events/test-conv-id")
+    assert sent_messages == [
+        json.dumps(
+            {
+                "type": "auth",
+                "session_api_key": client.api_key,
+            }
+        )
+    ]
 
 
 def _state_update_payload(event_id: str) -> str:
