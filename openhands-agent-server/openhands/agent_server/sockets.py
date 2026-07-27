@@ -445,6 +445,8 @@ async def bash_events_socket(
             try:
                 # Keep the connection alive and handle any incoming messages
                 data = await websocket.receive_json()
+                if _is_auth_control_message(data):
+                    continue
                 logger.info("Received bash request")
                 request = ExecuteBashRequest.model_validate(data)
                 await bash_service.start_bash_command(request)
@@ -493,14 +495,13 @@ async def _send_event(event: Event, websocket: WebSocket):
 
 
 def _is_auth_control_message(data: object) -> bool:
-    """Return True for ``{"type": "auth", ...}`` first-message-auth frames.
-
-    Clients that handle both legacy and first-message auth may send this
-    frame even after legacy (query/header) auth has already succeeded.
-    The post-auth receive loops must ignore it instead of validating it
-    as a regular message payload.
-    """
-    return isinstance(data, dict) and data.get("type") == "auth"
+    """Identify auth control frames that are not application payloads."""
+    return (
+        isinstance(data, dict)
+        and data.get("type") == "auth"
+        and "command" not in data
+        and "role" not in data
+    )
 
 
 async def _safe_close_websocket(

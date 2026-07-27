@@ -317,3 +317,62 @@ async def test_events_socket_first_message_auth_rejected():
     ws.accept.assert_called_once()
     # Should not proceed to subscribe
     ws.receive_json.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("session_api_keys", "session_api_key", "headers"),
+    [
+        pytest.param([], None, {}, id="no-auth"),
+        pytest.param(
+            ["sk-oh-valid"],
+            "sk-oh-valid",
+            {},
+            id="query-auth",
+        ),
+        pytest.param(
+            ["sk-oh-valid"],
+            None,
+            {"x-session-api-key": "sk-oh-valid"},
+            id="header-auth",
+        ),
+    ],
+)
+async def test_bash_socket_ignores_redundant_auth_before_command(
+    session_api_keys,
+    session_api_key,
+    headers,
+):
+    from openhands.agent_server.bash_service import BashEventService
+    from openhands.agent_server.sockets import bash_events_socket
+
+    ws = _make_mock_websocket(headers=headers)
+    ws.receive_json.side_effect = [
+        {"type": "auth", "session_api_key": "sk-oh-valid"},
+        {"command": "printf queued-command"},
+        WebSocketDisconnect(),
+    ]
+    mock_bash_service = MagicMock(spec=BashEventService)
+    mock_bash_service.subscribe_to_events = AsyncMock(return_value=uuid4())
+    mock_bash_service.unsubscribe_from_events = AsyncMock(return_value=True)
+    mock_bash_service.start_bash_command = AsyncMock()
+
+    with (
+        patch(
+            "openhands.agent_server.sockets.bash_event_service",
+            mock_bash_service,
+        ),
+        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
+    ):
+        mock_config.return_value.session_api_keys = session_api_keys
+        await bash_events_socket(
+            ws,
+            session_api_key=session_api_key,
+            resend_mode=None,
+            resend_all=False,
+        )
+
+    mock_bash_service.start_bash_command.assert_awaited_once()
+    request = mock_bash_service.start_bash_command.await_args.args[0]
+    assert request.command == "printf queued-command"
+    ws.send_json.assert_not_called()
