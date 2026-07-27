@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 
 from openhands.agent_server.openapi import build_public_openapi, serialize_openapi
+from openhands.sdk.mcp.config import MCPServer
+from openhands.sdk.settings.api_models import MCPServerPatch
 
 
 def _load_quality_module():
@@ -97,6 +99,14 @@ def test_settings_contract_exposes_typed_mcp_response_and_patch() -> None:
     assert {"$ref": "#/components/schemas/MCPServerPatch"} in schemas["MCPConfigPatch"][
         "additionalProperties"
     ]["anyOf"]
+
+
+def test_mcp_server_patch_tracks_every_canonical_server_field() -> None:
+    """Keep the sparse patch contract in lock-step with the persisted model."""
+    assert set(MCPServerPatch.model_fields) == set(MCPServer.model_fields)
+    assert all(
+        not field.is_required() for field in MCPServerPatch.model_fields.values()
+    )
 
 
 def test_weak_schema_detector_finds_recursive_and_missing_schemas() -> None:
