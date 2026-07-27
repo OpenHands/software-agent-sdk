@@ -68,6 +68,15 @@ def test_model_matches(name, pattern, expected):
         ("claude-fable-5", True),
         ("anthropic/claude-fable-5", True),
         ("litellm_proxy/anthropic/claude-fable-5", True),
+        # Kimi K3 always thinks and accepts top-level reasoning_effort, but the
+        # pinned LiteLLM metadata does not recognize it yet.
+        ("kimi-k3", True),
+        ("moonshot/kimi-k3", True),
+        ("litellm_proxy/moonshot/kimi-k3", True),
+        # LiteLLM recognizes Opus 5 directly.
+        ("claude-opus-5", True),
+        ("anthropic/claude-opus-5", True),
+        ("litellm_proxy/anthropic/claude-opus-5", True),
         # claude-opus-4-8: LiteLLM recognizes the first-party id, but not the
         # Bedrock cross-region inference ids, which must be caught by the
         # SDK-side override so temperature/top_p are stripped before the request
@@ -142,6 +151,11 @@ def test_extended_thinking_support(model, expected_extended_thinking):
         ("claude-fable-5", True),
         ("anthropic/claude-fable-5", True),
         ("litellm_proxy/anthropic/claude-fable-5", True),
+        # Claude Opus 5 supports prompt caching across raw, direct-provider,
+        # and proxy-prefixed forms.
+        ("claude-opus-5", True),
+        ("anthropic/claude-opus-5", True),
+        ("litellm_proxy/anthropic/claude-opus-5", True),
         # User-facing model names (no provider prefix)
         ("anthropic.claude-3-5-sonnet-20241022", True),
         ("anthropic.claude-3-haiku-20240307", True),
@@ -385,6 +399,10 @@ def test_prompt_cache_retention_support(model, expected_retention):
         ("kimi-k2-thinking-0905", True),
         ("Kimi-K2-Thinking", True),  # Case insensitive
         ("moonshot/kimi-k2-thinking", True),  # With provider prefix
+        ("kimi-k3", True),
+        ("Kimi-K3", True),  # Case insensitive
+        ("moonshot/kimi-k3", True),  # With provider prefix
+        ("litellm_proxy/moonshot/kimi-k3", True),  # Through proxy
         ("kimi-k2.5", True),
         ("Kimi-K2.5", True),  # Case insensitive
         # DeepSeek reasoner model

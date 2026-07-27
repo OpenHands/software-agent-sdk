@@ -100,6 +100,10 @@ def _normalized_supported_openai_params(model: str | None) -> frozenset[str]:
 # Entries should be removed once the corresponding LiteLLM release ships
 # metadata for the model.
 REASONING_EFFORT_MODELS: list[str] = [
+    # https://www.kimi.com/help/kimi-api/api-model-selection
+    # Kimi K3 always thinks and accepts top-level reasoning_effort, but the
+    # pinned LiteLLM metadata does not recognize the model yet.
+    "kimi-k3",
     # https://www.anthropic.com/news/claude-fable-5
     "claude-fable-5",
     # LiteLLM recognizes the first-party "anthropic/claude-opus-4-8" id, but not
@@ -149,6 +153,8 @@ PROMPT_CACHE_MODELS: list[str] = [
     "claude-opus-4-6",
     "claude-opus-4-7",
     "claude-opus-4-8",
+    # https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+    "claude-opus-5",
     # https://www.anthropic.com/news/claude-fable-5
     # Listed explicitly until LiteLLM metadata recognizes it.
     "claude-fable-5",
@@ -220,6 +226,7 @@ FORCE_STRING_SERIALIZER_MODELS: list[str] = [
 # Models that we should send full reasoning content
 # in the message input
 SEND_REASONING_CONTENT_MODELS: list[str] = [
+    "kimi-k3",
     "kimi-k2-thinking",
     "kimi-k2.5",
     "kimi-k2.6",
