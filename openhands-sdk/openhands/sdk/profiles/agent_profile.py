@@ -256,6 +256,14 @@ class ACPAgentProfile(AgentProfileBase):
             "resets on every update from the server."
         ),
     )
+    acp_startup_timeout: float = Field(
+        default=90.0,
+        gt=0,
+        description=(
+            "Timeout (seconds) for ACP server startup: spawn, "
+            "initialize/authenticate, and new_session()/load_session()."
+        ),
+    )
     acp_command: str | None = Field(
         default=None,
         description=(

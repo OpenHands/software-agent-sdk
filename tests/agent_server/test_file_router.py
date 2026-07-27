@@ -277,6 +277,95 @@ def test_download_trajectory_uses_python_zipfile(client, monkeypatch, tmp_path):
     assert not (conversations_path / f"{conversation_id.hex}.zip").exists()
 
 
+def test_download_trajectory_redacts_llm_and_condenser_secrets(
+    client, monkeypatch, tmp_path
+):
+    """A downloaded trajectory must never carry LLM/condenser API keys.
+
+    Covers both plaintext keys (no ``OH_SECRET_KEY`` configured) and encrypted
+    Fernet blobs (cipher configured) — neither belongs in a shareable archive.
+    """
+    conversations_path = tmp_path / "conversations"
+    conversation_id = uuid4()
+    conversation_dir = conversations_path / conversation_id.hex
+    events_dir = conversation_dir / "events"
+    events_dir.mkdir(parents=True)
+
+    plaintext_key = "sk-plaintext-main-0123456789"
+    condenser_key = "sk-plaintext-condenser-987654321"
+    encrypted_blob = "gAAAAABencrypted_condenser_blob_value"
+    encrypted_custom_secret = "gAAAAABencrypted_custom_registry_secret"
+
+    # meta.json: plaintext main key + encrypted condenser key
+    meta = {
+        "id": conversation_id.hex,
+        "agent": {
+            "llm": {"model": "gpt-4o", "api_key": plaintext_key},
+            "condenser": {"llm": {"model": "gpt-4o-mini", "api_key": encrypted_blob}},
+        },
+    }
+    (conversation_dir / "meta.json").write_text(json.dumps(meta))
+
+    # base_state.json mirrors the agent config with a plaintext condenser key,
+    # plus a cipher-encrypted custom secret whose field name ("value") is not
+    # in the LLM secret-field list.
+    base_state = {
+        "agent": {
+            "llm": {"model": "gpt-4o", "api_key": plaintext_key},
+            "condenser": {"llm": {"model": "gpt-4o-mini", "api_key": condenser_key}},
+        },
+        "secret_registry": {
+            "secret_sources": {
+                "MY_TOKEN": {"kind": "StaticSecret", "value": encrypted_custom_secret}
+            }
+        },
+    }
+    (conversation_dir / "base_state.json").write_text(json.dumps(base_state))
+
+    # A full_state event (JSONL) embedding the whole agent, plaintext keys
+    event = {
+        "kind": "ConversationStateUpdateEvent",
+        "key": "full_state",
+        "value": {
+            "agent": {
+                "llm": {"model": "gpt-4o", "api_key": plaintext_key},
+                "condenser": {
+                    "llm": {"model": "gpt-4o-mini", "api_key": condenser_key}
+                },
+            }
+        },
+    }
+    (events_dir / "event-00000.json").write_text(json.dumps(event))
+
+    monkeypatch.setattr(
+        "openhands.agent_server.file_router.get_default_config",
+        lambda: Config(session_api_keys=[], conversations_path=conversations_path),
+    )
+
+    response = client.get(f"/api/file/download-trajectory/{conversation_id}")
+    assert response.status_code == 200
+
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        blob = b"\n".join(archive.read(name) for name in archive.namelist())
+
+    # No secret material of any kind survives into the archive.
+    for secret in (
+        plaintext_key,
+        condenser_key,
+        encrypted_blob,
+        encrypted_custom_secret,
+    ):
+        assert secret.encode() not in blob
+
+    # The redaction marker is present where keys used to be, and non-secret
+    # content (model names) is preserved.
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        meta_out = json.loads(archive.read(f"{conversation_id.hex}/meta.json"))
+    assert meta_out["agent"]["llm"]["api_key"] == "**********"
+    assert meta_out["agent"]["condenser"]["llm"]["api_key"] == "**********"
+    assert meta_out["agent"]["llm"]["model"] == "gpt-4o"
+
+
 def test_download_file_with_special_characters_in_path(client, tmp_path):
     """Test download with special characters in path (via query param)."""
     test_file = tmp_path / "file with spaces.txt"

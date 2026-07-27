@@ -98,14 +98,42 @@ class RoleSection(_StaticTextSection):
 
 
 class MemorySection(_StaticTextSection):
+    """``<MEMORY>`` -- exactly one of two guidance variants fills the block:
+    the default ``AGENTS.md`` guidance, or the two-tier persistent-memory
+    guidance when ``AgentContext.load_memory`` is enabled.
+    """
+
     name = "memory"
-    body = """\
-<MEMORY>
+
+    _AGENTS_MD_GUIDANCE = """\
 * Use `AGENTS.md` under the repository root as your persistent memory for repository-specific knowledge and context.
 * Add important insights, patterns, and learnings to this file to improve future task performance.
 * This repository skill is automatically loaded for every conversation and helps maintain context across sessions.
-* For more information about skills, see: https://docs.openhands.dev/overview/skills
-</MEMORY>"""
+* For more information about skills, see: https://docs.openhands.dev/overview/skills"""
+
+    # Uses a literal ``~`` -- the static block must never contain the expanded
+    # home path (see test_static_block_has_no_dynamic_content).
+    _TWO_TIER_GUIDANCE = """\
+You have persistent memory that survives across sessions, in two tiers:
+* Project memory: `.openhands/memory/` under the workspace root — knowledge specific to this repository.
+* User memory: `~/.openhands/memory/` — knowledge and preferences that apply across all projects.
+
+Each tier contains:
+* `MEMORY.md` — a curated index of durable facts. Its content is injected into your prompt at session start (the <MEMORY_CONTEXT> block), so keep it small and high-value.
+* Daily logs (`YYYY-MM-DD.md`) — free-form working notes. They are never injected automatically; read them on demand when `MEMORY.md` points to them.
+
+Maintenance habits:
+* Near the end of a task, record what is worth keeping: append details to today's daily log, and fold only durable, broadly useful facts into `MEMORY.md` (create the directories and files if missing).
+* Keep the indexes concise (aim under ~6000 characters combined; older top content is truncated first): merge duplicates, prune stale entries, move long detail into the daily logs.
+* Do NOT record secrets or credentials. Do NOT record facts that are trivially re-discoverable (directory listings, obvious commands). Record what was expensive to learn: root causes, environment quirks, user preferences, decisions and their reasons.
+* `AGENTS.md` remains the place for instructions addressed to any agent working in this repository; memory is for what you learned yourself."""
+
+    def render(self, ctx: PromptContext) -> str | None:
+        if ctx.template_kwargs.get("memory_enabled"):
+            guidance = self._TWO_TIER_GUIDANCE
+        else:
+            guidance = self._AGENTS_MD_GUIDANCE
+        return f"<MEMORY>\n{guidance}\n</MEMORY>"
 
 
 class EfficiencySection(_StaticTextSection):

@@ -272,58 +272,71 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     api_version: str | None = Field(
         default=None,
         description="API version (e.g., Azure).",
+        json_schema_extra=field_meta(),
     )
 
     aws_access_key_id: str | SecretStr | None = Field(
         default=None,
+        json_schema_extra=field_meta(),
     )
     aws_secret_access_key: str | SecretStr | None = Field(
         default=None,
+        json_schema_extra=field_meta(),
     )
     aws_session_token: str | SecretStr | None = Field(
         default=None,
+        json_schema_extra=field_meta(),
     )
     aws_region_name: str | None = Field(
         default=None,
+        json_schema_extra=field_meta(),
     )
     aws_profile_name: str | None = Field(
         default=None,
+        json_schema_extra=field_meta(),
     )
     aws_role_name: str | None = Field(
         default=None,
+        json_schema_extra=field_meta(),
     )
     aws_session_name: str | None = Field(
         default=None,
+        json_schema_extra=field_meta(),
     )
     aws_bedrock_runtime_endpoint: str | None = Field(
         default=None,
+        json_schema_extra=field_meta(),
     )
 
     # OpenRouter uses HTTP-Referer as the app identity for rankings.
     # Keep this stable unless the OpenRouter app attribution is migrated.
     openrouter_site_url: str = Field(
         default="https://docs.all-hands.dev/",
+        json_schema_extra=field_meta(),
     )
     openrouter_app_name: str = Field(
         default="OpenHands",
+        json_schema_extra=field_meta(),
     )
 
-    num_retries: int = Field(default=5, ge=0)
-    retry_multiplier: float = Field(default=8.0, ge=0)
-    retry_min_wait: int = Field(default=8, ge=0)
-    retry_max_wait: int = Field(default=64, ge=0)
+    num_retries: int = Field(default=5, ge=0, json_schema_extra=field_meta())
+    retry_multiplier: float = Field(default=8.0, ge=0, json_schema_extra=field_meta())
+    retry_min_wait: int = Field(default=8, ge=0, json_schema_extra=field_meta())
+    retry_max_wait: int = Field(default=64, ge=0, json_schema_extra=field_meta())
 
     timeout: int | None = Field(
         default=300,
         ge=0,
         description="HTTP timeout in seconds. Default is 300s (5 minutes). "
         "Set to None to disable timeout (not recommended for production).",
+        json_schema_extra=field_meta(),
     )
 
     max_message_chars: int = Field(
         default=30_000,
         ge=1,
         description="Approx max chars in each event/content sent to the LLM.",
+        json_schema_extra=field_meta(),
     )
 
     temperature: float | None = Field(
@@ -335,6 +348,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "Set to 0.0 for deterministic outputs, "
             "or higher values (0.7-1.0) for more creative responses."
         ),
+        json_schema_extra=field_meta(),
     )
     top_p: float | None = Field(
         default=None,
@@ -345,8 +359,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "Defaults to None (uses provider default). "
             "Set to a value between 0 and 1 to control diversity of outputs."
         ),
+        json_schema_extra=field_meta(),
     )
-    top_k: float | None = Field(default=None, ge=0)
+    top_k: float | None = Field(default=None, ge=0, json_schema_extra=field_meta())
 
     max_input_tokens: int | None = Field(
         default=None,
@@ -354,11 +369,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         description="The maximum number of input tokens. "
         "Note that this is currently unused, and the value at runtime is actually"
         " the total tokens in OpenAI (e.g. 128,000 tokens for GPT-4).",
+        json_schema_extra=field_meta(),
     )
     max_output_tokens: int | None = Field(
         default=None,
         ge=1,
         description="The maximum number of output tokens. This is sent to the LLM.",
+        json_schema_extra=field_meta(),
     )
     model_canonical_name: str | None = Field(
         default=None,
@@ -372,23 +389,28 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "capability detection. If not provided, the 'model' field "
             "will be used for capability lookups."
         ),
+        json_schema_extra=field_meta(),
     )
     extra_headers: dict[str, str] | None = Field(
         default=None,
         description="Optional HTTP headers to forward to LiteLLM requests.",
+        json_schema_extra=field_meta(),
     )
     input_cost_per_token: float | None = Field(
         default=None,
         ge=0,
         description="The cost per input token. This will available in logs for user.",
+        json_schema_extra=field_meta(),
     )
     output_cost_per_token: float | None = Field(
         default=None,
         ge=0,
         description="The cost per output token. This will available in logs for user.",
+        json_schema_extra=field_meta(),
     )
     ollama_base_url: str | None = Field(
         default=None,
+        json_schema_extra=field_meta(),
     )
 
     stream: bool = Field(
@@ -398,42 +420,51 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "When enabled, the provided `on_token` callback in .completions "
             "and .responses will be invoked for each chunk of tokens."
         ),
+        json_schema_extra=field_meta(),
     )
-    drop_params: bool = Field(default=True)
+    drop_params: bool = Field(default=True, json_schema_extra=field_meta())
     modify_params: bool = Field(
         default=True,
         description="Modify params allows litellm to do transformations like adding"
         " a default message, when a message is empty.",
+        json_schema_extra=field_meta(),
     )
     disable_vision: bool | None = Field(
         default=None,
         description="If model is vision capable, this option allows to disable image "
         "processing (useful for cost reduction).",
+        json_schema_extra=field_meta(),
     )
     disable_stop_word: bool | None = Field(
         default=False,
         description="Disable using of stop word.",
+        json_schema_extra=field_meta(),
     )
     caching_prompt: bool = Field(
         default=True,
         description="Enable caching of prompts.",
+        json_schema_extra=field_meta(),
     )
     log_completions: bool = Field(
         default=False,
         description="Enable logging of completions.",
+        json_schema_extra=field_meta(),
     )
     log_completions_folder: str = Field(
         default=os.path.join(ENV_LOG_DIR, "completions"),
         description="The folder to log LLM completions to. "
         "Required if log_completions is True.",
+        json_schema_extra=field_meta(),
     )
     custom_tokenizer: str | None = Field(
         default=None,
         description="A custom tokenizer to use for token counting.",
+        json_schema_extra=field_meta(),
     )
     native_tool_calling: bool = Field(
         default=True,
         description="Whether to use native tool calling.",
+        json_schema_extra=field_meta(),
     )
     force_string_serializer: bool | None = Field(
         default=None,
@@ -443,6 +474,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "Useful for providers that do not support list content, "
             "like HuggingFace and Groq."
         ),
+        json_schema_extra=field_meta(),
     )
     inline_image_urls: bool | None = Field(
         default=None,
@@ -459,6 +491,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "litellm — otherwise images are not sent at all and there is "
             "nothing to inline."
         ),
+        json_schema_extra=field_meta(),
     )
     reasoning_effort: Literal["low", "medium", "high", "xhigh", "none"] | None = Field(
         default="high",
@@ -466,17 +499,20 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         "This is a string that can be one of 'low', 'medium', 'high', 'xhigh', "
         "or 'none'. "
         "Can apply to all reasoning models.",
+        json_schema_extra=field_meta(),
     )
     reasoning_summary: Literal["auto", "concise", "detailed"] | None = Field(
         default=None,
         description="The level of detail for reasoning summaries. "
         "This is a string that can be one of 'auto', 'concise', or 'detailed'. "
         "Requires verified OpenAI organization. Only sent when explicitly set.",
+        json_schema_extra=field_meta(),
     )
     enable_encrypted_reasoning: bool = Field(
         default=True,
         description="If True, ask for ['reasoning.encrypted_content'] "
         "in Responses API include.",
+        json_schema_extra=field_meta(),
     )
     # Prompt cache retention is filtered per model features in chat options.
     prompt_cache_retention: str | None = Field(
@@ -486,15 +522,18 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "(GPT-5+ and GPT-4.1, excluding Azure deployments); explicitly "
             "stripped for all others."
         ),
+        json_schema_extra=field_meta(),
     )
     extended_thinking_budget: int | None = Field(
         default=200_000,
         description="The budget tokens for extended thinking, "
         "supported by Anthropic models.",
+        json_schema_extra=field_meta(),
     )
     seed: int | None = Field(
         default=None,
         description="The seed to use for random number generation.",
+        json_schema_extra=field_meta(),
     )
     usage_id: str = Field(
         default="default",
@@ -503,6 +542,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "Unique usage identifier for the LLM. Used for registry lookups, "
             "telemetry, and spend tracking."
         ),
+        json_schema_extra=field_meta(),
     )
     litellm_extra_body: dict[str, Any] = Field(
         default_factory=dict,
@@ -520,6 +560,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "- Proxy routing: {'trace_version': '1.0.0', 'tags': ['agent:my-agent']} "
             "- vLLM features: {'return_token_ids': True}"
         ),
+        json_schema_extra=field_meta(),
     )
 
     fallback_strategy: FallbackStrategy | None = Field(

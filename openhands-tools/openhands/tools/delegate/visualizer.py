@@ -165,7 +165,11 @@ class DelegationVisualizer(DefaultConversationVisualizer):
                     content=content,
                     title=title,
                     title_color=_ACTION_COLOR,
-                    subtitle=self._format_metrics_subtitle(),
+                    # Siblings of a parallel tool-call batch fall back to
+                    # totals-only so the shared per-request usage isn't repeated.
+                    subtitle=self._format_metrics_subtitle(
+                        event, force_totals=not self._claim_batch_primary(event)
+                    ),
                 )
             else:  # ObservationEvent
                 title = f"{agent_name} Agent Observation"
@@ -244,5 +248,5 @@ class DelegationVisualizer(DefaultConversationVisualizer):
             content=content,
             title=title,
             title_color=role_color,
-            subtitle=self._format_metrics_subtitle(),
+            subtitle=self._format_metrics_subtitle(event),
         )

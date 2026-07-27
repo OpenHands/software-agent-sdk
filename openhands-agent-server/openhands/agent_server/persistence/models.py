@@ -126,8 +126,15 @@ class PersistedSettings(BaseModel):
     The ``misc_settings`` field is an opaque dict the agent-server persists
     on behalf of the frontend. The agent-server never reads its contents and
     has no schema for it; clients are free to store any JSON-serializable
-    structure they need (e.g. app/UI preferences, analytics consent, git
-    identity used for in-conversation commits, etc.).
+    structure they need (e.g. app/UI preferences, git identity used for
+    in-conversation commits, etc.).
+
+    One namespace inside ``misc_settings`` is a documented exception to the
+    "never read" rule: ``misc_settings.telemetry`` holds ``consent``
+    (``granted``/``denied``/``unset``) and an optional ``managed`` flag. The
+    frontend still owns the value; the agent-server only reads it, to decide
+    whether product analytics may be delivered. Nothing else in the container
+    is interpreted.
     """
 
     schema_version: int = Field(
