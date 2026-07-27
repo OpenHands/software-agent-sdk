@@ -110,11 +110,17 @@ After successful PyPI publication, the workflow will automatically create PRs to
 - **[OpenHands](https://github.com/OpenHands/OpenHands)** - Updates `openhands-sdk`, `openhands-tools`, and `openhands-agent-server` versions
 - **[OpenHands-CLI](https://github.com/OpenHands/openhands-cli)** - Updates `openhands-sdk` and `openhands-tools` versions
 - **[automation](https://github.com/OpenHands/automation)** - Updates `openhands-sdk` and `openhands-workspace` versions. Opened with a `fix:` title so the repo's release-please cuts a patch release, publishing an `openhands-automation` build pinned to this SDK (which the agent-canvas `sdk-version-sync` check requires).
-- **[typescript-client](https://github.com/OpenHands/typescript-client)** - Updates the pinned `agent-server` image tag (`config.agentServerImage`); runs as a separate job that waits on the GHCR image rather than PyPI.
+- **[typescript-client](https://github.com/OpenHands/typescript-client)** -
+  Waits for both the exact GHCR image and the release `openapi.json`, updates
+  `config.agentServerImage`, regenerates the checked-in transport types,
+  and includes an API-change summary. Required client PR CI then runs pinned
+  regeneration, type checking, and integration tests before merge.
 
 These PRs will:
 - Be created automatically with branch name `bump-sdk-X.Y.Z` (`bump-agent-server-X.Y.Z` for typescript-client)
 - Include links back to the SDK release
+- Include generated Agent Server contract changes for the exact released
+  version rather than only changing the image tag
 - Need to be reviewed and merged by the respective repository maintainers
 
 ### Step 6: Post-Release Tasks
