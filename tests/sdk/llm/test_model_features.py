@@ -142,6 +142,11 @@ def test_extended_thinking_support(model, expected_extended_thinking):
         ("claude-fable-5", True),
         ("anthropic/claude-fable-5", True),
         ("litellm_proxy/anthropic/claude-fable-5", True),
+        # claude-sonnet-5 is not matched by any claude-sonnet-4* entry and must
+        # be listed explicitly, same as claude-fable-5.
+        ("claude-sonnet-5", True),
+        ("anthropic/claude-sonnet-5", True),
+        ("litellm_proxy/anthropic/claude-sonnet-5", True),
         # User-facing model names (no provider prefix)
         ("anthropic.claude-3-5-sonnet-20241022", True),
         ("anthropic.claude-3-haiku-20240307", True),
