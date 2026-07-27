@@ -8,7 +8,6 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
-from openhands.sdk import LLM
 from openhands.sdk.agent.acp_models import ACPModelInfo
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.conversation_stats import ConversationStats
@@ -399,11 +398,6 @@ ACPConversationInfo: TypeAlias = ConversationInfo  # noqa: UP040
 ACPConversationPage: TypeAlias = ConversationPage  # noqa: UP040
 
 
-class ConversationResponse(BaseModel):
-    conversation_id: str
-    state: ConversationExecutionStatus
-
-
 class ConfirmationResponseRequest(BaseModel):
     """Payload to accept or reject a pending action."""
 
@@ -545,23 +539,6 @@ class NavigateConversationRequest(BaseModel):
             "conversation. ``None`` selects the empty tree."
         ),
     )
-
-
-class GenerateTitleRequest(BaseModel):
-    """Payload to generate a title for a conversation."""
-
-    max_length: int = Field(
-        default=50, ge=1, le=200, description="Maximum length of the generated title"
-    )
-    llm: LLM | None = Field(
-        default=None, description="Optional LLM to use for title generation"
-    )
-
-
-class GenerateTitleResponse(BaseModel):
-    """Response containing the generated conversation title."""
-
-    title: str = Field(description="The generated title for the conversation")
 
 
 class AskAgentRequest(BaseModel):
