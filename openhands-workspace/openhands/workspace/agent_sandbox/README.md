@@ -59,6 +59,11 @@ with AgentSandboxWorkspace(warmpool="openhands-pool", namespace="default") as wo
   the in-cluster DNS name when OpenHands itself runs in the cluster); no
   port-forward is started.
 
+### Testing
+
+See [`TESTING.md`](TESTING.md) for an end-to-end walkthrough: unit tests, a keyless
+workspace smoke test, and a full agent run against a local Ollama model (no API key).
+
 ### Pause / resume
 
 ```python

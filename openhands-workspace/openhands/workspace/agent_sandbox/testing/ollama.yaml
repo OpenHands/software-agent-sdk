@@ -1,0 +1,46 @@
+# In-cluster Ollama for the no-API-key agent e2e (see TESTING.md).
+# Portable across clusters: the agent server reaches it by Service DNS / ClusterIP,
+# so no host networking is involved. Models live in an emptyDir, so `ollama pull`
+# again if the pod restarts. CPU-only; size the node/model for your cluster.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: ollama }
+  template:
+    metadata:
+      labels: { app: ollama }
+    spec:
+      containers:
+        - name: ollama
+          image: ollama/ollama:latest
+          ports: [{ containerPort: 11434 }]
+          env:
+            - { name: OLLAMA_HOST, value: "0.0.0.0:11434" }
+            - { name: OLLAMA_KEEP_ALIVE, value: "-1" }
+          readinessProbe:
+            httpGet: { path: /api/tags, port: 11434 }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests: { cpu: "1", memory: 4Gi }
+            limits: { memory: 8Gi }
+          volumeMounts:
+            - { name: models, mountPath: /root/.ollama }
+      volumes:
+        - name: models
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama
+  namespace: default
+spec:
+  selector: { app: ollama }
+  ports:
+    - { port: 11434, targetPort: 11434 }
