@@ -1,8 +1,25 @@
+# Patch /dev/null for sandbox environments that block it.
+# Some libraries (dill, etc.) try to open os.devnull at import time.
+import os
+import tempfile
+
+
+try:
+    with open(os.devnull, "w"):
+        pass
+except PermissionError:
+    _tmp = tempfile.NamedTemporaryFile(delete=False, mode="w+b")
+    _tmp.close()
+    os.devnull = _tmp.name
+    try:
+        os.path.devnull = _tmp.name  # type: ignore[attr-defined]
+    except AttributeError:
+        pass
+
 import argparse
 import atexit
 import faulthandler
 import importlib
-import os
 import signal
 import sys
 from types import FrameType

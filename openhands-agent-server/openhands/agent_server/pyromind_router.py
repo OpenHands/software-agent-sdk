@@ -127,7 +127,12 @@ _DEFAULT_SKILLS_PATH = os.environ.get(
 )
 
 # Only load these skills for Pyromind (avoids loading unrelated SDK skills)
-_PYROMIND_SKILL_NAMES = ["generate-workflow-dsl", "debug-workflow", "data-cleaning"]
+_PYROMIND_SKILL_NAMES = [
+    "generate-workflow-dsl",
+    "debug-workflow",
+    "data-cleaning",
+    "data-preparation",
+]
 _PYROMIND_VALIDATE_AUTHORIZATION_SECRET = "PYROMIND_VALIDATE_AUTHORIZATION"
 _PYROMIND_VALIDATE_FORWARD_HEADERS = ("x-cluster", "accept-language")
 _PYROMIND_DEBUG_URL_TIMEOUT_SECONDS = 30.0
@@ -166,6 +171,25 @@ Skill usage rules:
   and do not inspect it afterward unless the skill explicitly requires it.
 - For requests that do not involve a current workflow, invoke a matching listed
   skill before searching the knowledge base.
+- Data processing routing (`data-cleaning` vs `data-preparation`):
+  Analyze the task semantics to decide which skill to invoke.
+  * Use `data-cleaning` when the task is about FORMAT/STRUCTURE transformation:
+    converting data to messages or DPO format, field renaming/mapping,
+    dialogue structure parsing, format validation, structural deduplication.
+    Also suitable for simple content filtering (regex, keyword, length) when
+    platform reliability (checkpoint resume, error isolation, report) matters.
+    Key signal: format conversion is the primary goal, or simple filtering
+    needs reliable execution on large Pyromind Storage datasets.
+  * Use `data-preparation` when the task is about CONTENT-level processing:
+    - Rule-based content cleaning: word count filtering, language detection,
+      MinHash/SimHash dedup, PII removal, toxicity filtering, emoji/HTML
+      removal, blocklist, spelling correction.
+    - LLM-intelligent processing: generating QA/CoT/summaries, semantic
+      quality scoring, text rewriting/refinement, multi-field reasoning.
+    Key signal: the data content itself is evaluated, filtered, or transformed.
+  * If the user explicitly names a mode ("DataFlow"/"脚本清洗"/"格式转换"),
+    follow their choice. If the intent is genuinely ambiguous after analysis,
+    ask the user to clarify before invoking either skill.
 - Treat any requested node, model, parameter, data, or topology change as a
   `generate-workflow-dsl` request, including phrases such as "换个模型跑一下"
   or "跑下 <model> 的效果". Modify and validate the DSL, then stop; do not
@@ -993,6 +1017,8 @@ async def create_pyromind_conversation(
     - Workspace pointing to a conversation-private directory
     """
     # Register default tools before agent resolution.
+    import openhands.tools.data_preparation.definition  # noqa: F401
+
     register_default_tools(enable_browser=False)
 
     # 1. Resolve knowledge base path (extra can override the default)
@@ -1075,6 +1101,9 @@ async def create_pyromind_conversation(
             Tool(name="file_editor"),
             Tool(name=WorkflowDebugTool.name, params=debug_tool.params),
             *storage_tools,
+            Tool(name="dataset_download"),
+            Tool(name="df_run_pipeline"),
+            Tool(name="df_convert"),
             validation_tool,
         ],
     )

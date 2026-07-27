@@ -34,6 +34,14 @@ This module provides the unified API for working with skills:
 """
 
 # Exceptions
+# Core skill model and loading
+from openhands.sdk.skills.catalog import (
+    SkillCatalog,
+    SkillCatalogEntry,
+    SkillCatalogError,
+    SkillResourceHandle,
+    build_skill_catalog,
+)
 from openhands.sdk.skills.exceptions import SkillError, SkillValidationError
 
 # Fetch utilities
@@ -53,16 +61,10 @@ from openhands.sdk.skills.installed import (
     uninstall_skill,
     update_skill,
 )
-
-# Core skill model and loading
-from openhands.sdk.skills.catalog import (
-    SkillCatalog,
-    SkillCatalogEntry,
-    SkillCatalogError,
-    SkillResourceHandle,
-    build_skill_catalog,
-)
 from openhands.sdk.skills.resource_router import SkillResourceRouter
+
+# Runtime / catalog / resources
+from openhands.sdk.skills.runtime import SkillReadResult, SkillRuntime
 from openhands.sdk.skills.selector import DeterministicSkillSelector, SkillSelection
 from openhands.sdk.skills.skill import (
     Skill,
@@ -91,9 +93,6 @@ from openhands.sdk.skills.types import (
     SkillKnowledge,
     SkillResponse,
 )
-
-# Runtime / catalog / resources
-from openhands.sdk.skills.runtime import SkillReadResult, SkillRuntime
 
 # Utilities
 from openhands.sdk.skills.utils import (

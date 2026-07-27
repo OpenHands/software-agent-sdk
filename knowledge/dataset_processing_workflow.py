@@ -1,3 +1,5 @@
+# ruff: noqa: F821
+# pyright: reportUndefinedVariable=false
 # workflow: Dataset Processing
 
 dataset = CloneAndCacheDataset(

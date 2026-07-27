@@ -15,7 +15,9 @@ class SkillSelection:
 class DeterministicSkillSelector:
     """Lightweight lexical selector for skill invocation."""
 
-    def select(self, query: str, catalog: SkillCatalog, limit: int = 5) -> SkillSelection:
+    def select(
+        self, query: str, catalog: SkillCatalog, limit: int = 5
+    ) -> SkillSelection:
         q = query.strip().lower()
         if not q:
             return SkillSelection(candidate_entries=[])

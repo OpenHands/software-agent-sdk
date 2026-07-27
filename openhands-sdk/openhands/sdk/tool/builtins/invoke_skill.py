@@ -93,7 +93,9 @@ class InvokeSkillExecutor(ToolExecutor):
 
     @staticmethod
     def _error(name: str, text: str) -> InvokeSkillObservation:
-        return InvokeSkillObservation.from_text(text=text, is_error=True, skill_name=name)
+        return InvokeSkillObservation.from_text(
+            text=text, is_error=True, skill_name=name
+        )
 
     def __call__(
         self,
@@ -106,7 +108,9 @@ class InvokeSkillExecutor(ToolExecutor):
         match = catalog.get(name)
         if match is None:
             available = ", ".join(sorted(s.name for s in catalog.enabled())) or "<none>"
-            return self._error(name, f"Unknown skill '{name}'. Available skills: {available}.")
+            return self._error(
+                name, f"Unknown skill '{name}'. Available skills: {available}."
+            )
         if not match.prompt_visible:
             return self._error(
                 name,
@@ -116,8 +120,12 @@ class InvokeSkillExecutor(ToolExecutor):
                 ),
             )
 
-        rendered = render_content_with_commands(match.main_prompt, working_dir=working_dir)
-        rendered = self._append_skill_location_footer(rendered, match.source, working_dir)
+        rendered = render_content_with_commands(
+            match.main_prompt, working_dir=working_dir
+        )
+        rendered = self._append_skill_location_footer(
+            rendered, match.source, working_dir
+        )
         rendered = self._append_resource_index(rendered, match)
         self._record_invocation(conversation, name)
         return InvokeSkillObservation.from_text(text=rendered, skill_name=name)

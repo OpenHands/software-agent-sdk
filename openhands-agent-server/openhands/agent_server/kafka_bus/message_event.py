@@ -13,11 +13,12 @@ Kafka 消息标准结构体 — 统一所有 Kafka 消息的外层格式。
   timestamp   — 消息产生时间 ISO 格式（可选）
   biz_code    — 业务编码（业务主键，如 instance_id / task_id，由生产者填充）
 """
+
 from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
-from typing import Any, Optional
+from typing import Any
 
 
 @dataclass
@@ -35,16 +36,16 @@ class MessageEvent:
     """
 
     data: dict[str, Any]
-    event_type: Optional[str] = None ## 消息类型
-    source_app: Optional[str] = None ## 来源app
-    cluster: Optional[str] = None ## 集群
-    message_id: Optional[str] = None ## 消息id
-    timestamp: Optional[str] = None ## 消息时间
-    biz_code: Optional[str] = None ## 业务code
-    topic: Optional[str] = None ## topic
-    env: Optional[str] = None ## 环境
-    attempt: Optional[int] = None  ## 重试次数
-    error_message: Optional[str] = None  ## 失败消息
+    event_type: str | None = None  # 消息类型
+    source_app: str | None = None  # 来源app
+    cluster: str | None = None  # 集群
+    message_id: str | None = None  # 消息id
+    timestamp: str | None = None  # 消息时间
+    biz_code: str | None = None  # 业务code
+    topic: str | None = None  # topic
+    env: str | None = None  # 环境
+    attempt: int | None = None  # 重试次数
+    error_message: str | None = None  # 失败消息
 
     def to_json(self) -> str:
         """序列化为 JSON 字符串，自动移除 None 字段保持消息精简"""
@@ -55,7 +56,7 @@ class MessageEvent:
         )
 
     @classmethod
-    def from_dict(cls, d: dict) -> "MessageEvent":
+    def from_dict(cls, d: dict) -> MessageEvent:
         """从 dict 反序列化，忽略未知字段"""
         valid_keys = cls.__dataclass_fields__.keys()
         return cls(**{k: v for k, v in d.items() if k in valid_keys})

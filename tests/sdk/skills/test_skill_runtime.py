@@ -33,9 +33,9 @@ def test_runtime_lists_selects_and_reads(tmp_path):
     runtime = make_runtime(tmp_path)
 
     assert [entry.name for entry in runtime.list()] == ["example"]
-    assert [entry.name for entry in runtime.select("workflow helper").candidate_entries] == [
-        "example"
-    ]
+    assert [
+        entry.name for entry in runtime.select("workflow helper").candidate_entries
+    ] == ["example"]
     result = runtime.read("example", "references/guide.md")
     assert result.handle.relative_path == "references/guide.md"
     assert result.handle.contents == "guide body"

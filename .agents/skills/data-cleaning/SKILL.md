@@ -1,8 +1,11 @@
 ---
 name: data-cleaning
 description: >-
-  清洗、转换、修复或校验 Pyromind Storage 中的数据集，并转换为平台支持的
-  messages 或 DPO preference JSONL。覆盖预览、平台试跑、确认、全量执行和断点恢复。
+  将 Pyromind Storage 中的数据集转换为平台训练格式（messages/DPO）：字段映射、
+  对话结构解析、格式校验、SHA-256 去重。提供断点续跑、错误隔离和 report 统计。
+  mapper 中可写简单内容过滤（regex/关键词/长度），但无预置算子、无 LLM、无跨行操作。
+  适用于“格式转换”“字段映射”“简单过滤+可靠执行”；
+  复杂内容清洗（去重/PII/语言/毒性/评分/生成）请用 data-preparation。
 ---
 
 # 数据清洗

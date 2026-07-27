@@ -44,7 +44,7 @@ _CALLBACK_PATH = "/api/pyromind/debug/callback"
 _CALLBACK_HTTP_TIMEOUT_SECONDS = 10.0
 
 _MOCK_ERROR_TEMPLATE = (
-    'Traceback (most recent call last):\n'
+    "Traceback (most recent call last):\n"
     '  File "workflow.py", line {line}, in main\n'
     "    {snippet}\n"
     "{error_type}: {message}"
@@ -97,7 +97,9 @@ class MockDebugPlatform:
             DEFAULT_FAIL_ATTEMPTS if fail_attempts is None else fail_attempts
         )
         self._callback_base_url = (
-            DEFAULT_CALLBACK_BASE_URL if callback_base_url is None else callback_base_url
+            DEFAULT_CALLBACK_BASE_URL
+            if callback_base_url is None
+            else callback_base_url
         )
 
     def submit(self, task_id: str, workflow_source: str, attempt: int) -> None:
@@ -142,8 +144,7 @@ class MockDebugPlatform:
             )
         elif response.is_error:
             logger.error(
-                "Mock debug platform's callback for task %s failed with "
-                "%s: %s",
+                "Mock debug platform's callback for task %s failed with %s: %s",
                 task_id,
                 response.status_code,
                 response.text,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Iterable
 
 from openhands.sdk.skills.skill import Skill
 
@@ -76,7 +76,9 @@ class SkillCatalogError(RuntimeError):
     pass
 
 
-def build_skill_catalog(skills: Iterable[Skill], *, authority: str = "host") -> SkillCatalog:
+def build_skill_catalog(
+    skills: Iterable[Skill], *, authority: str = "host"
+) -> SkillCatalog:
     catalog = SkillCatalog()
     for skill in skills:
         catalog.add(

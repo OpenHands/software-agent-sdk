@@ -167,9 +167,6 @@ def add_request_context_to_user(
     )
 
 
-
-
-
 def get_dev_login_user_from_headers(
     headers: Mapping[str, str],
 ) -> CurrentLoginUser | None:
