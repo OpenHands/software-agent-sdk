@@ -1,5 +1,6 @@
 """Unit tests for RemoteWorkspaceMixin class."""
 
+import logging
 from pathlib import Path
 from unittest.mock import Mock, mock_open, patch
 
@@ -205,11 +206,13 @@ def test_execute_command_generator_polling_loop(mock_time, mock_sleep):
 
 
 @patch("openhands.sdk.workspace.remote.remote_workspace_mixin.time")
-def test_execute_command_generator_timeout(mock_time):
+def test_execute_command_generator_timeout(mock_time, caplog):
     """Test _execute_command_generator handles timeout correctly."""
     mixin = RemoteWorkspaceMixinHelper(
         host="http://localhost:8000", working_dir="workspace"
     )
+    secret = "ghp_" + "b" * 36
+    caplog.set_level(logging.DEBUG)
 
     # Mock time to simulate timeout
     mock_time.time.side_effect = [
@@ -236,7 +239,11 @@ def test_execute_command_generator_timeout(mock_time):
         ]
     }
 
-    generator = mixin._execute_command_generator("slow_command", None, 30.0)
+    generator = mixin._execute_command_generator(
+        f"curl -H 'Authorization: Bearer {secret}' example.test",
+        None,
+        30.0,
+    )
 
     # Start command
     next(generator)
@@ -253,6 +260,8 @@ def test_execute_command_generator_timeout(mock_time):
         assert result.exit_code == -1
         assert result.timeout_occurred is True
         assert "timed out" in result.stderr
+    assert "Command timed out" in caplog.text
+    assert secret not in caplog.text
 
 
 def test_execute_command_generator_exception_handling():

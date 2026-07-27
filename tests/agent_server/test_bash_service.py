@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import logging
 import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -49,12 +50,17 @@ async def test_bash_timeout_runs_sigterm_trap(
     client: httpx.AsyncClient,
     bash_service: BashEventService,
     tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ):
     marker = tmp_path / "cleanup_ran"
+    secret = "ghp_" + "a" * 36
+    caplog.set_level(logging.DEBUG)
     resp = await client.post(
         "/api/bash/start_bash_command",
         json={
-            "command": f"trap 'touch {marker}; exit 0' TERM; sleep 30",
+            "command": (
+                f"LEAK_TEST={secret}; trap 'touch {marker}; exit 0' TERM; sleep 30"
+            ),
             "timeout": 1,
         },
     )
@@ -80,6 +86,8 @@ async def test_bash_timeout_runs_sigterm_trap(
 
     await asyncio.sleep(0.2)  # let the trap's filesystem write land
     assert marker.exists(), "SIGTERM trap did not run; cleanup skipped."
+    assert "Command timed out" in caplog.text
+    assert secret not in caplog.text
 
 
 # ---------------------------------------------------------------------------
