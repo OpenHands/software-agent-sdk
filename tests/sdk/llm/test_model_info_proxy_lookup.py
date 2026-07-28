@@ -13,6 +13,8 @@ aliases (claude-opus-4-8 vision still off).
 
 from unittest.mock import patch
 
+from pydantic import SecretStr
+
 from openhands.sdk.llm.utils.model_info import (
     _get_model_info_from_litellm_proxy,
     get_litellm_model_info,
@@ -111,12 +113,89 @@ def test_get_litellm_model_info_uses_proxy_match_for_provider_prefixed_id():
     assert info.get("supports_vision") is True
 
 
+def test_managed_openhands_provider_skips_proxy_lookup_without_api_key():
+    with (
+        patch("openhands.sdk.llm.utils.model_info.httpx.get") as httpx_get,
+        patch("openhands.sdk.llm.utils.model_info.get_model_info", return_value=None),
+    ):
+        for missing_key in (None, "", SecretStr("")):
+            info = get_litellm_model_info(
+                secret_api_key=missing_key,
+                base_url=None,
+                model="openhands/claude-opus-4-8",
+            )
+            assert info is None
+
+    httpx_get.assert_not_called()
+
+
+def test_managed_proxy_url_skips_lookup_without_api_key():
+    with (
+        patch("openhands.sdk.llm.utils.model_info.httpx.get") as httpx_get,
+        patch("openhands.sdk.llm.utils.model_info.get_model_info", return_value=None),
+    ):
+        info = get_litellm_model_info(
+            secret_api_key=None,
+            base_url="https://llm-proxy.app.all-hands.dev/v1/",
+            model="litellm_proxy/claude-opus-4-8",
+        )
+
+    assert info is None
+    httpx_get.assert_not_called()
+
+
+def test_authless_custom_litellm_proxy_still_queries_model_info():
+    with patch(
+        "openhands.sdk.llm.utils.model_info.httpx.get",
+        return_value=_FakeResponse(_PROXY_RESPONSE),
+    ) as httpx_get:
+        info = get_litellm_model_info(
+            secret_api_key=None,
+            base_url="https://proxy.example",
+            model="litellm_proxy/claude-opus-4-8",
+        )
+
+    assert info is not None
+    assert info.get("supports_vision") is True
+    httpx_get.assert_called_once_with(
+        "https://proxy.example/v1/model/info",
+        headers={},
+    )
+
+
+def test_custom_openhands_proxy_without_api_key_still_queries_model_info():
+    with patch(
+        "openhands.sdk.llm.utils.model_info.httpx.get",
+        return_value=_FakeResponse(_PROXY_RESPONSE),
+    ) as httpx_get:
+        info = get_litellm_model_info(
+            secret_api_key=None,
+            base_url="https://custom-openhands.example",
+            model="openhands/claude-opus-4-8",
+        )
+
+    assert info is not None
+    assert info.get("supports_vision") is True
+    httpx_get.assert_called_once_with(
+        "https://custom-openhands.example/v1/model/info",
+        headers={},
+    )
+
+
 def test_get_litellm_model_info_uses_proxy_for_openhands_provider_model():
-    with patch("openhands.sdk.llm.utils.model_info.httpx.get", _patched_httpx_get):
+    with patch(
+        "openhands.sdk.llm.utils.model_info.httpx.get",
+        return_value=_FakeResponse(_PROXY_RESPONSE),
+    ) as httpx_get:
         info = get_litellm_model_info(
             secret_api_key="k",
             base_url=None,
             model="openhands/claude-opus-4-8",
         )
+
     assert info is not None
     assert info.get("supports_vision") is True
+    httpx_get.assert_called_once_with(
+        "https://llm-proxy.app.all-hands.dev/v1/model/info",
+        headers={"Authorization": "Bearer k"},
+    )
