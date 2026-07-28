@@ -7,8 +7,8 @@ import time
 import uuid
 from collections.abc import Callable, Mapping
 from queue import Empty, Queue
-from typing import TYPE_CHECKING, SupportsIndex, overload
-from urllib.parse import quote, urlparse
+from typing import TYPE_CHECKING, Final, SupportsIndex, overload
+from urllib.parse import urlparse
 
 import httpx
 import websockets
@@ -65,6 +65,8 @@ logger = get_logger(__name__)
 
 LEGACY_CONVERSATIONS_PATH = "/api/conversations"
 FATAL_WS_CLOSE_CODES = frozenset({4001, 4004})
+_WEBSOCKET_AUTH_TYPE: Final = "auth"
+_WEBSOCKET_SESSION_API_KEY_FIELD: Final = "session_api_key"
 
 
 def _agent_kind_mismatch_message(conversation_id: ConversationID) -> str:
@@ -214,15 +216,20 @@ class WebSocketCallbackClient:
         base = f"{ws_scheme}://{parsed.netloc}{parsed.path.rstrip('/')}"
         ws_url = f"{base}/sockets/events/{self.conversation_id}"
 
-        # Add API key as query parameter if provided
-        if self.api_key:
-            ws_url += f"?session_api_key={quote(self.api_key, safe='')}"
-
         delay = 1.0
         has_connected = False
         while not self._stop.is_set():
             try:
                 async with websockets.connect(ws_url) as ws:
+                    if self.api_key:
+                        await ws.send(
+                            json.dumps(
+                                {
+                                    "type": _WEBSOCKET_AUTH_TYPE,
+                                    _WEBSOCKET_SESSION_API_KEY_FIELD: self.api_key,
+                                }
+                            )
+                        )
                     delay = 1.0
                     connection_ready = False
                     async for message in ws:
