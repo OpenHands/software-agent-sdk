@@ -57,6 +57,7 @@ class SettingsUpdatePayload(TypedDict, total=False):
     misc_settings_diff: dict[str, Any]
     active_profile: str | None
     active_agent_profile_id: str | None
+    active_meta_profile: str | None
 
 
 def _deep_merge(
@@ -157,6 +158,11 @@ class PersistedSettings(BaseModel):
             "active_profile (the active LLM profile name); additive with a "
             "default, so older settings files load with this as None."
         ),
+    )
+    active_meta_profile: str | None = Field(
+        default=None,
+        description="Name of the currently active meta-profile used for "
+        "intelligent model routing.",
     )
     misc_settings: dict[str, Any] = Field(
         default_factory=dict,
@@ -273,10 +279,62 @@ class PersistedSettings(BaseModel):
                 self.active_profile = payload["active_profile"]
             if "active_agent_profile_id" in payload:
                 self.active_agent_profile_id = payload["active_agent_profile_id"]
+
+            # Update active_meta_profile if explicitly provided (incl. None)
+            if "active_meta_profile" in payload:
+                self._apply_active_meta_profile(payload["active_meta_profile"])
+
+            # Enforce the invariant even when only ``agent_settings`` changed:
+            # switching to an agent variant that cannot attach the routing tool
+            # (e.g. ACP) must not leave a stale top-level ``active_meta_profile``
+            # claiming routing is active. (No-op when active already matches.)
+            self._clear_active_meta_profile_if_unsupported()
         finally:
             # Clear conv_merged to minimize plaintext exposure window
             if conv_merged is not None:
                 conv_merged.clear()
+
+    def _agent_supports_routing(self) -> bool:
+        """Whether the current agent variant can attach the routing tool.
+
+        OpenHands agent settings expose ``active_meta_profile`` /
+        ``enable_classify_and_switch_llm_tool``; ACP (and any other) variants do
+        not and never attach :class:`ClassifyAndSwitchLLMTool`.
+        """
+        return "active_meta_profile" in type(self.agent_settings).model_fields
+
+    def _apply_active_meta_profile(self, name: str | None) -> None:
+        """Set ``active_meta_profile`` and propagate it into agent_settings.
+
+        Propagating into the nested ``agent_settings`` is what enables/uses the
+        routing tool on the agent built from these settings (mirrors how
+        activating a profile bakes the LLM into ``agent_settings``).
+
+        The top-level field is a strict facade for the nested state, not a
+        best-effort hint: if the current agent variant cannot attach the routing
+        tool (e.g. ACP), the request is dropped and the facade cleared so
+        persisted state never claims an active router no conversation can use.
+        """
+        if not self._agent_supports_routing():
+            self.active_meta_profile = None
+            return
+        self.active_meta_profile = name
+        self.agent_settings = self.agent_settings.model_copy(
+            update={
+                "active_meta_profile": name,
+                "enable_classify_and_switch_llm_tool": name is not None,
+            }
+        )
+
+    def _clear_active_meta_profile_if_unsupported(self) -> None:
+        """Clear the facade when the agent variant cannot support routing.
+
+        Guards the agent-kind-switch path: changing ``agent_settings`` to a
+        non-routing variant (e.g. ACP) while a meta-profile is active would
+        otherwise leave the top-level ``active_meta_profile`` stale.
+        """
+        if not self._agent_supports_routing() and self.active_meta_profile is not None:
+            self.active_meta_profile = None
 
     @classmethod
     def from_persisted(

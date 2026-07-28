@@ -159,6 +159,10 @@ class SettingsResponse(BaseModel):
         default=None,
         description="Stable id of the currently active AgentProfile, if one is set.",
     )
+    active_meta_profile: str | None = Field(
+        default=None,
+        description="Name of the currently active meta-profile, if one is selected.",
+    )
     misc_settings: dict[str, Any] = Field(default_factory=dict)
 
     def get_agent_settings(self) -> AgentSettingsConfig:
@@ -207,6 +211,11 @@ class SettingsUpdateRequest(BaseModel):
         default=None,
         pattern=UUID_PATTERN,
         description="Stable id of the active AgentProfile to persist; null clears it.",
+    )
+    active_meta_profile: str | None = Field(
+        default=None,
+        pattern=PROFILE_NAME_PATTERN,
+        description="Name of the active meta-profile to persist; null clears it.",
     )
 
 

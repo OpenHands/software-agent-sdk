@@ -5,6 +5,12 @@ These are built in and are *required* for the agent to work.
 For tools that require interacting with the environment, add them to `openhands-tools`.
 """
 
+from openhands.sdk.tool.builtins.classify_and_switch_llm import (
+    ClassifyAndSwitchLLMAction,
+    ClassifyAndSwitchLLMExecutor,
+    ClassifyAndSwitchLLMObservation,
+    ClassifyAndSwitchLLMTool,
+)
 from openhands.sdk.tool.builtins.finish import (
     FinishAction,
     FinishExecutor,
@@ -50,11 +56,16 @@ BUILT_IN_TOOL_CLASSES = {
     InvokeSkillTool.__name__: InvokeSkillTool,
     SwitchLLMTool.__name__: SwitchLLMTool,
     VisionInspectTool.__name__: VisionInspectTool,
+    ClassifyAndSwitchLLMTool.__name__: ClassifyAndSwitchLLMTool,
 }
 
 __all__ = [
     "BUILT_IN_TOOLS",
     "BUILT_IN_TOOL_CLASSES",
+    "ClassifyAndSwitchLLMTool",
+    "ClassifyAndSwitchLLMAction",
+    "ClassifyAndSwitchLLMObservation",
+    "ClassifyAndSwitchLLMExecutor",
     "FinishTool",
     "FinishAction",
     "FinishObservation",

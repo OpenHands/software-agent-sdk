@@ -23,6 +23,13 @@ from openhands.sdk.llm.message import (
     ThinkingBlock,
     content_to_str,
 )
+from openhands.sdk.llm.meta_profile_store import (
+    MetaProfile,
+    MetaProfileClass,
+    MetaProfileLimitExceeded,
+    MetaProfileStore,
+    MetaProfileTargetModel,
+)
 from openhands.sdk.llm.router import RouterLLM
 from openhands.sdk.llm.streaming import (
     AsyncTokenCallbackType,
@@ -52,6 +59,11 @@ __all__ = [
     "LLMProfileLoader",
     "LLMProfileMutator",
     "LLMProfileStore",
+    "MetaProfile",
+    "MetaProfileClass",
+    "MetaProfileLimitExceeded",
+    "MetaProfileStore",
+    "MetaProfileTargetModel",
     "RouterLLM",
     "RegistryEvent",
     # Messages
