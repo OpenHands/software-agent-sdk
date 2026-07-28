@@ -18,6 +18,10 @@ from openhands.sdk.llm import LLM, ImageContent, Message, TextContent
         "litellm_proxy/anthropic/claude-sonnet-4-5-20250929",
         "litellm_proxy/gemini-2.5-flash",
         "litellm_proxy/gemini-3.1-pro-preview",
+        "kimi-k3",
+        "moonshot/kimi-k3",
+        "litellm_proxy/moonshot/kimi-k3",
+        "openhands/kimi-k3",
     ],
 )
 def test_vision_is_active_supported_models(model):
@@ -57,6 +61,7 @@ def _has_input_image(item: dict) -> bool:
         "claude-sonnet-4-5-20250929",
         "gemini-2.5-flash",
         "gemini-3.1-pro-preview",
+        "litellm_proxy/moonshot/kimi-k3",
     ],
 )
 def test_chat_serializes_images_when_vision_supported(model):

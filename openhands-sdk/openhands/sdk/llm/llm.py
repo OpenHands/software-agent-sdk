@@ -2538,8 +2538,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # remove when litellm is updated to fix https://github.com/BerriAI/litellm/issues/5608  # noqa: E501
         # Check both the full model name and the name after proxy prefix for vision support  # noqa: E501
         model_for_caps = self._model_name_for_capabilities()
+        model_features = get_features(model_for_caps)
         return (
-            supports_vision(model_for_caps)
+            getattr(model_features, "supports_vision", False)
+            or supports_vision(model_for_caps)
             or supports_vision(model_for_caps.split("/")[-1])
             or (
                 self._model_info is not None
