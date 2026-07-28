@@ -50,7 +50,9 @@ def select_chat_options(
 
     model_name = llm._model_name_for_capabilities()
     if model_features.supports_sampling_params is False or (
-        supports_reasoning_effort and "gemini" not in model_name.lower()
+        model_features.supports_sampling_params is None
+        and supports_reasoning_effort
+        and "gemini" not in model_name.lower()
     ):
         out.pop("temperature", None)
         out.pop("top_p", None)

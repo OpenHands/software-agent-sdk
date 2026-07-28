@@ -232,6 +232,29 @@ def test_chat_options_resolve_capabilities_from_canonical_alias():
     assert "thinking" not in out
 
 
+def test_chat_options_sampling_override_takes_precedence():
+    llm = DummyLLM(
+        model="litellm_proxy/future-reasoning-model",
+        model_canonical_name="anthropic/claude-sonnet-5",
+        top_k=40,
+        top_p=0.9,
+        temperature=0.7,
+        reasoning_effort="high",
+        model_info={
+            "supports_reasoning": True,
+            "supports_adaptive_thinking": True,
+        },
+        capability_overrides={"supports_sampling_params": True},
+    )
+
+    out = select_chat_options(llm, user_kwargs={}, has_tools=True)
+
+    assert out["temperature"] == 0.7
+    assert out["top_p"] == 0.9
+    assert out["top_k"] == 40
+    assert out["reasoning_effort"] == "high"
+
+
 @pytest.mark.parametrize(
     "model,provider",
     [

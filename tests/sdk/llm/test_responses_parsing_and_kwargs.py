@@ -100,9 +100,16 @@ def test_responses_options_strip_sampling_when_metadata_rejects_it():
         capability_overrides={"supports_sampling_params": False},
     )
 
-    out = select_responses_options(llm, {"temperature": 0.3}, include=None, store=None)
+    out = select_responses_options(
+        llm,
+        {"temperature": 0.3, "top_p": 0.8, "top_k": 20},
+        include=None,
+        store=None,
+    )
 
     assert "temperature" not in out
+    assert "top_p" not in out
+    assert "top_k" not in out
 
 
 def test_normalize_responses_kwargs_with_summary():

@@ -33,6 +33,8 @@ def select_responses_options(
     model_features = llm._model_features()
     if not llm.is_subscription and model_features.supports_sampling_params is False:
         out.pop("temperature", None)
+        out.pop("top_p", None)
+        out.pop("top_k", None)
     elif not llm.is_subscription and llm.temperature is not None:
         out.setdefault("temperature", llm.temperature)
     out["tool_choice"] = "auto"
