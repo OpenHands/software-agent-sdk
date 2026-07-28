@@ -326,7 +326,7 @@ def test_nonvision_model_can_inspect_workspace_image_file(monkeypatch, tmp_path)
                         id="call_vision",
                         name="inspect_image_with_vision",
                         arguments=(
-                            '{"image_path": "screenshot.png", '
+                            '{"image_index": 0, "image_path": "screenshot.png", '
                             '"question": "What is shown?"}'
                         ),
                         origin="completion",
@@ -392,7 +392,7 @@ def test_nonvision_model_can_inspect_workspace_image_file(monkeypatch, tmp_path)
     assert len(observations) == 1
     observation = cast(VisionInspectObservation, observations[0].observation)
     assert observation.image_path == "screenshot.png"
-    assert observation.image_index is None
+    assert observation.image_index == 0
 
 
 def test_workspace_image_file_must_exist(monkeypatch, tmp_path):
@@ -413,7 +413,7 @@ def test_workspace_image_file_must_exist(monkeypatch, tmp_path):
                         id="call_vision",
                         name="inspect_image_with_vision",
                         arguments=(
-                            '{"image_path": "missing.png", '
+                            '{"image_index": 0, "image_path": "missing.png", '
                             '"question": "What is shown?"}'
                         ),
                         origin="completion",

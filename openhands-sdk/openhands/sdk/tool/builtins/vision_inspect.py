@@ -39,20 +39,20 @@ SUPPORTED_WORKSPACE_IMAGE_MIME_TYPES = frozenset(
 class VisionInspectAction(Action):
     """Action for asking a vision model about an attached image."""
 
-    image_index: int | None = Field(
-        default=None,
+    image_index: int = Field(
         ge=0,
         description=(
             "Zero-based index of the image to inspect from the latest user message. "
-            "Provide exactly one of image_index or image_path."
+            "When image_path is provided, this field is kept for API compatibility "
+            "and image_path takes precedence."
         ),
     )
     image_path: str | None = Field(
         default=None,
         description=(
             "Path to an image file in the workspace to inspect. Relative paths are "
-            "resolved from the workspace root. Provide exactly one of image_index "
-            "or image_path."
+            "resolved from the workspace root. When provided, this takes precedence "
+            "over image_index."
         ),
     )
     question: str = Field(
@@ -85,9 +85,7 @@ class VisionInspectAction(Action):
 class VisionInspectObservation(Observation):
     """Observation returned after a vision model inspects an image."""
 
-    image_index: int | None = Field(
-        default=None, description="Image index that was inspected."
-    )
+    image_index: int = Field(description="Image index that was inspected.")
     image_path: str | None = Field(
         default=None, description="Workspace image path that was inspected."
     )
@@ -292,18 +290,6 @@ class VisionInspectExecutor(ToolExecutor):
         action: VisionInspectAction,
         conversation: "LocalConversation | None" = None,
     ) -> VisionInspectObservation:
-        has_image_index = action.image_index is not None
-        has_image_path = action.image_path is not None
-        if has_image_index == has_image_path:
-            return VisionInspectObservation.from_text(
-                text="Provide exactly one of image_index or image_path.",
-                is_error=True,
-                image_index=action.image_index,
-                image_path=action.image_path,
-                question=action.question,
-                profile_name=action.profile_name,
-            )
-
         if conversation is None:
             return VisionInspectObservation.from_text(
                 text="Cannot inspect images without an active conversation.",
@@ -355,7 +341,7 @@ class VisionInspectExecutor(ToolExecutor):
             image_url = image_url_or_none
         else:
             image_urls = _latest_user_image_urls(conversation)
-            if action.image_index is None or action.image_index >= len(image_urls):
+            if action.image_index >= len(image_urls):
                 return VisionInspectObservation.from_text(
                     text=(
                         f"Image index {action.image_index} is out of range. "
@@ -462,10 +448,11 @@ _DESCRIPTION_TEMPLATE = (
     "Use this when the current model cannot understand images, the latest user "
     "message includes an image or references an image file in the workspace, "
     "and visual details are needed to answer. The current model should pass "
-    "exactly one image source: image_index for an image attached to the latest "
-    "user message, or image_path for an image file in the workspace. Also pass "
-    "a specific question for the vision model. The cost of this vision model "
-    "call is tracked in the same conversation stats.\n\n"
+    "image_index for an image attached to the latest user message, or image_path "
+    "for an image file in the workspace. image_index is always required for "
+    "compatibility; when using image_path, set image_index to 0. Also pass a "
+    "specific question for the vision model. The cost of this vision model call "
+    "is tracked in the same conversation stats.\n\n"
     "Available vision-capable profiles:\n"
     "{profiles}"
 )
