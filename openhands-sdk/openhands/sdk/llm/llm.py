@@ -79,7 +79,6 @@ from litellm.types.utils import (
 )
 from litellm.utils import (
     create_pretrained_tokenizer,
-    supports_vision,
     token_counter,
 )
 
@@ -487,9 +486,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "reached through a proxy alias that hides the underlying "
             "provider (e.g. ``litellm_proxy/<custom-alias>``). Note: "
             "inlining only runs when ``vision_is_active()`` is True, so "
-            "the alias must still be recognised as vision-capable by "
-            "litellm — otherwise images are not sent at all and there is "
-            "nothing to inline."
+            "the alias must still be recognised as vision-capable by the "
+            "SDK feature registry or proxy model metadata."
         ),
         json_schema_extra=field_meta(),
     )
@@ -2521,33 +2519,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
 
     def vision_is_active(self) -> bool:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            return not self.disable_vision and self._supports_vision()
-
-    def _supports_vision(self) -> bool:
-        """Acquire from litellm if model is vision capable.
-
-        Returns:
-            bool: True if model is vision capable. Return False if model not
-                supported by litellm.
-        """
-        # litellm.supports_vision currently returns False for 'openai/gpt-...' or 'anthropic/claude-...' (with prefixes)  # noqa: E501
-        # but model_info will have the correct value for some reason.
-        # we can go with it, but we will need to keep an eye if model_info is correct for Vertex or other providers  # noqa: E501
-        # remove when litellm is updated to fix https://github.com/BerriAI/litellm/issues/5608  # noqa: E501
-        # Check both the full model name and the name after proxy prefix for vision support  # noqa: E501
-        model_for_caps = self._model_name_for_capabilities()
-        model_features = get_features(model_for_caps)
-        return (
-            model_features.supports_vision
-            or supports_vision(model_for_caps)
-            or supports_vision(model_for_caps.split("/")[-1])
-            or (
-                self._model_info is not None
-                and self._model_info.get("supports_vision", False)
-            )
-            or False  # fallback to False if model_info is None
+        return not self.disable_vision and (
+            get_features(self._model_name_for_capabilities()).supports_vision
+            or bool(self._model_info and self._model_info.get("supports_vision", False))
         )
 
     def is_caching_prompt_active(self) -> bool:

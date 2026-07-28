@@ -32,6 +32,23 @@ def test_vision_is_active_supported_models(model):
     assert llm.vision_is_active() is True
 
 
+@patch(
+    "openhands.sdk.llm.llm.get_litellm_model_info",
+    return_value={"supports_vision": True},
+)
+@patch(
+    "openhands.sdk.llm.utils.model_features.litellm_supports_vision",
+    return_value=False,
+)
+def test_proxy_model_info_can_enable_vision(_mock_sv, _mock_model_info):
+    llm = LLM(
+        model="litellm_proxy/custom-vision-model",
+        api_key=SecretStr("k"),
+        usage_id="t",
+    )
+    assert llm.vision_is_active() is True
+
+
 def _collect_image_url_parts(chat_message: dict) -> list[dict]:
     content = chat_message.get("content", [])
     return [
@@ -85,7 +102,10 @@ def test_chat_serializes_images_when_vision_supported(model):
     "openhands.sdk.llm.llm.get_litellm_model_info",
     return_value={"supports_vision": False},
 )
-@patch("openhands.sdk.llm.llm.supports_vision", return_value=False)
+@patch(
+    "openhands.sdk.llm.utils.model_features.litellm_supports_vision",
+    return_value=False,
+)
 def test_message_with_image_does_not_enable_vision_for_text_only_model(
     mock_sv, _mock_model_info
 ):
@@ -154,7 +174,10 @@ def test_disable_vision_overrides_litellm_detection():
     "openhands.sdk.llm.llm.get_litellm_model_info",
     return_value={"supports_vision": False},
 )
-@patch("openhands.sdk.llm.llm.supports_vision", return_value=False)
+@patch(
+    "openhands.sdk.llm.utils.model_features.litellm_supports_vision",
+    return_value=False,
+)
 def test_message_with_image_in_responses_does_not_include_input_image(
     mock_sv, _mock_model_info
 ):

@@ -1,8 +1,10 @@
+import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import cache
 
 from litellm import get_supported_openai_params
+from litellm.utils import supports_vision as litellm_supports_vision
 
 from openhands.sdk.llm.utils.openhands_provider import OPENHANDS_PROVIDER_PREFIX
 
@@ -56,6 +58,7 @@ class ModelFeatures:
     # True when the model's API rejects http(s) image URLs and only accepts
     # base64 ``data:`` URLs. See REQUIRES_INLINE_IMAGE_DATA_MODELS.
     requires_inline_image_data: bool
+    # Effective capability from LiteLLM metadata plus SDK overrides.
     supports_vision: bool
 
 
@@ -65,11 +68,10 @@ LITELLM_PROXY_PREFIX = "litellm_proxy/"
 DEPLOYMENT_PREFIXES = ("prod/", "dev/", "staging/", "test/")
 
 
-@cache
-def _normalized_supported_openai_params(model: str | None) -> frozenset[str]:
-    """Return LiteLLM-supported OpenAI params for a normalized model name."""
+def _normalize_model_for_litellm(model: str | None) -> str | None:
+    """Remove SDK/proxy routing prefixes before querying LiteLLM metadata."""
     if not model:
-        return frozenset()
+        return None
 
     normalized = model.strip().lower()
     for provider_prefix in (LITELLM_PROXY_PREFIX, OPENHANDS_PROVIDER_PREFIX):
@@ -82,6 +84,16 @@ def _normalized_supported_openai_params(model: str | None) -> frozenset[str]:
         if normalized.startswith(prefix):
             normalized = normalized.removeprefix(prefix)
             break
+
+    return normalized
+
+
+@cache
+def _normalized_supported_openai_params(model: str | None) -> frozenset[str]:
+    """Return LiteLLM-supported OpenAI params for a normalized model name."""
+    normalized = _normalize_model_for_litellm(model)
+    if not normalized:
+        return frozenset()
 
     params = get_supported_openai_params(
         model=normalized,
@@ -230,6 +242,18 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
 # Match token -> canonical LiteLLM ID for vision metadata overrides.
 VISION_MODEL_OVERRIDES = {"kimi-k3": "moonshot/kimi-k3"}
 
+
+@cache
+def _model_supports_vision(model: str | None) -> bool:
+    """Return whether LiteLLM or our override list marks the model as visual."""
+    if model and model_matches(model, VISION_MODEL_OVERRIDES.keys()):
+        return True
+    normalized = _normalize_model_for_litellm(model)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return bool(normalized and litellm_supports_vision(normalized))
+
+
 # Models whose API rejects http(s) image URLs and only accepts base64
 # ``data:`` URLs (or vendor-specific file IDs). When this matches, the SDK
 # fetches each image URL and inlines it as ``data:{mime};base64,...`` before
@@ -268,5 +292,5 @@ def get_features(model: str) -> ModelFeatures:
         requires_inline_image_data=model_matches(
             model, REQUIRES_INLINE_IMAGE_DATA_MODELS
         ),
-        supports_vision=model_matches(model, VISION_MODEL_OVERRIDES.keys()),
+        supports_vision=_model_supports_vision(model),
     )

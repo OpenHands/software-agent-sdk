@@ -303,6 +303,20 @@ def test_kimi_k3_supports_vision(model: str):
     assert get_features(model).supports_vision is True
 
 
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gpt-4o",
+        "openai/gpt-4o",
+        "litellm_proxy/openai/gpt-4o",
+        "openhands/gpt-4o",
+        "litellm_proxy/prod/openai/gpt-4o",
+    ],
+)
+def test_litellm_vision_support_is_exposed_as_model_feature(model: str):
+    assert get_features(model).supports_vision is True
+
+
 def test_reasoning_effort_overrides_are_not_redundant():
     for pattern, litellm_model in REASONING_EFFORT_MODEL_OVERRIDES.items():
         params = _normalized_supported_openai_params(litellm_model)
