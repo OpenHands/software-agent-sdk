@@ -1,4 +1,8 @@
+import base64
+import mimetypes
+import tempfile
 from collections.abc import Sequence
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, ClassVar, Self
 
 from pydantic import Field
@@ -14,6 +18,9 @@ from openhands.sdk.tool.tool import (
     ToolDefinition,
     ToolExecutor,
 )
+from openhands.sdk.utils.path import to_posix_path
+from openhands.sdk.workspace.base import BaseWorkspace
+from openhands.sdk.workspace.local import LocalWorkspace
 
 
 if TYPE_CHECKING:
@@ -23,6 +30,10 @@ if TYPE_CHECKING:
 
 VISION_INSPECT_TOOL_NAME = "inspect_image_with_vision"
 VISION_PROFILE_USAGE_PREFIX = "vision-profile"
+MAX_WORKSPACE_IMAGE_BYTES = 20 * 1024 * 1024
+SUPPORTED_WORKSPACE_IMAGE_MIME_TYPES = frozenset(
+    {"image/gif", "image/jpeg", "image/png", "image/webp"}
+)
 
 
 class VisionInspectAction(Action):
@@ -31,7 +42,17 @@ class VisionInspectAction(Action):
     image_index: int = Field(
         ge=0,
         description=(
-            "Zero-based index of the image to inspect from the latest user message."
+            "Zero-based index of the image to inspect from the latest user message. "
+            "When image_path is provided, this field is kept for API compatibility "
+            "and image_path takes precedence."
+        ),
+    )
+    image_path: str | None = Field(
+        default=None,
+        description=(
+            "Path to an image file in the workspace to inspect. Relative paths are "
+            "resolved from the workspace root. When provided, this takes precedence "
+            "over image_index."
         ),
     )
     question: str = Field(
@@ -50,7 +71,10 @@ class VisionInspectAction(Action):
     def visualize(self) -> Text:
         content = Text()
         content.append("Inspect image with vision: ", style="bold magenta")
-        content.append(f"image {self.image_index}")
+        if self.image_path:
+            content.append(self.image_path)
+        else:
+            content.append(f"image {self.image_index}")
         if self.profile_name:
             content.append(f" via {self.profile_name}")
         content.append("\nQuestion: ", style="bold")
@@ -62,6 +86,9 @@ class VisionInspectObservation(Observation):
     """Observation returned after a vision model inspects an image."""
 
     image_index: int = Field(description="Image index that was inspected.")
+    image_path: str | None = Field(
+        default=None, description="Workspace image path that was inspected."
+    )
     question: str = Field(description="Question asked of the vision model.")
     profile_name: str | None = Field(
         default=None, description="Vision-capable profile used for inspection."
@@ -83,7 +110,10 @@ class VisionInspectObservation(Observation):
             content.append("Failed to inspect image", style="bold red")
         else:
             content.append("Inspected image with vision", style="bold green")
-        content.append(f": image {self.image_index}")
+        if self.image_path:
+            content.append(f": {self.image_path}")
+        else:
+            content.append(f": image {self.image_index}")
         if self.profile_name:
             content.append(f" via {self.profile_name}")
         if self.answer:
@@ -143,6 +173,114 @@ def _latest_user_image_urls(conversation: "LocalConversation") -> list[str]:
     return []
 
 
+def _normalize_posix_path(path: str) -> PurePosixPath:
+    pure_path = PurePosixPath(path)
+    parts: list[str] = []
+    for part in pure_path.parts:
+        if part in ("", "/", "."):
+            continue
+        if part == "..":
+            if parts:
+                parts.pop()
+            else:
+                parts.append(part)
+            continue
+        parts.append(part)
+
+    if pure_path.is_absolute():
+        return PurePosixPath("/") / PurePosixPath(*parts)
+    return PurePosixPath(*parts)
+
+
+def _workspace_source_path(
+    workspace: BaseWorkspace,
+    image_path: str,
+) -> tuple[str | Path | None, str | None]:
+    if isinstance(workspace, LocalWorkspace):
+        root = Path(workspace.working_dir).expanduser().resolve()
+        requested = Path(image_path).expanduser()
+        if not requested.is_absolute():
+            requested = root / requested
+        try:
+            resolved = requested.resolve()
+            resolved.relative_to(root)
+        except Exception:
+            return None, f"Image path '{image_path}' is outside the workspace."
+        if not resolved.is_file():
+            return None, f"Image path '{image_path}' does not exist or is not a file."
+        return resolved, None
+
+    root = _normalize_posix_path(to_posix_path(workspace.working_dir))
+    requested = _normalize_posix_path(to_posix_path(image_path))
+    if not requested.is_absolute():
+        requested = _normalize_posix_path(str(root / requested))
+    try:
+        requested.relative_to(root)
+    except ValueError:
+        return None, f"Image path '{image_path}' is outside the workspace."
+    return str(requested), None
+
+
+def _download_workspace_image(
+    workspace: BaseWorkspace,
+    image_path: str,
+    destination: Path,
+) -> str | None:
+    source_path, error = _workspace_source_path(workspace, image_path)
+    if error is not None or source_path is None:
+        return error or "Failed to resolve workspace image path."
+
+    result = workspace.file_download(source_path, destination)
+    if not result.success:
+        return result.error or f"Failed to download image path '{image_path}'."
+    return None
+
+
+def _workspace_image_url(
+    conversation: "LocalConversation",
+    image_path: str,
+) -> tuple[str | None, str | None]:
+    workspace = conversation.state.workspace
+    workspace_dir = workspace.working_dir
+    if workspace_dir is None:
+        return None, "Cannot inspect workspace image files without a workspace."
+
+    with tempfile.TemporaryDirectory(prefix="openhands-vision-inspect-") as tmp_dir:
+        local_name = PurePosixPath(to_posix_path(image_path)).name or "image"
+        local_image_path = Path(tmp_dir) / local_name
+        error = _download_workspace_image(workspace, image_path, local_image_path)
+        if error is not None:
+            return None, error
+
+        resolved = local_image_path
+        if not resolved.is_file():
+            return None, f"Image path '{image_path}' does not exist or is not a file."
+
+        size = resolved.stat().st_size
+        if size > MAX_WORKSPACE_IMAGE_BYTES:
+            return (
+                None,
+                (
+                    f"Image path '{image_path}' is too large ({size} bytes). "
+                    f"Maximum supported size is {MAX_WORKSPACE_IMAGE_BYTES} bytes."
+                ),
+            )
+
+        mime_type = mimetypes.guess_type(resolved.name)[0]
+        if mime_type not in SUPPORTED_WORKSPACE_IMAGE_MIME_TYPES:
+            supported = ", ".join(sorted(SUPPORTED_WORKSPACE_IMAGE_MIME_TYPES))
+            return (
+                None,
+                (
+                    f"Image path '{image_path}' has unsupported MIME type "
+                    f"'{mime_type or 'unknown'}'. Supported types: {supported}."
+                ),
+            )
+
+        data = base64.b64encode(resolved.read_bytes()).decode("ascii")
+        return f"data:{mime_type};base64,{data}", None
+
+
 class VisionInspectExecutor(ToolExecutor):
     def __init__(self, profile_names: Sequence[str]) -> None:
         self._profile_names = tuple(profile_names)
@@ -157,6 +295,7 @@ class VisionInspectExecutor(ToolExecutor):
                 text="Cannot inspect images without an active conversation.",
                 is_error=True,
                 image_index=action.image_index,
+                image_path=action.image_path,
                 question=action.question,
                 profile_name=action.profile_name,
             )
@@ -169,6 +308,7 @@ class VisionInspectExecutor(ToolExecutor):
                 text="No vision-capable LLM profile is available.",
                 is_error=True,
                 image_index=action.image_index,
+                image_path=action.image_path,
                 question=action.question,
             )
         if profile_name not in self._profile_names:
@@ -179,22 +319,41 @@ class VisionInspectExecutor(ToolExecutor):
                 ),
                 is_error=True,
                 image_index=action.image_index,
+                image_path=action.image_path,
                 question=action.question,
                 profile_name=profile_name,
             )
 
-        image_urls = _latest_user_image_urls(conversation)
-        if action.image_index >= len(image_urls):
-            return VisionInspectObservation.from_text(
-                text=(
-                    f"Image index {action.image_index} is out of range. "
-                    f"The latest user message has {len(image_urls)} image(s)."
-                ),
-                is_error=True,
-                image_index=action.image_index,
-                question=action.question,
-                profile_name=profile_name,
+        image_url: str
+        if action.image_path is not None:
+            image_url_or_none, error = _workspace_image_url(
+                conversation, action.image_path
             )
+            if error is not None or image_url_or_none is None:
+                return VisionInspectObservation.from_text(
+                    text=error or "Failed to load workspace image.",
+                    is_error=True,
+                    image_index=action.image_index,
+                    image_path=action.image_path,
+                    question=action.question,
+                    profile_name=profile_name,
+                )
+            image_url = image_url_or_none
+        else:
+            image_urls = _latest_user_image_urls(conversation)
+            if action.image_index >= len(image_urls):
+                return VisionInspectObservation.from_text(
+                    text=(
+                        f"Image index {action.image_index} is out of range. "
+                        f"The latest user message has {len(image_urls)} image(s)."
+                    ),
+                    is_error=True,
+                    image_index=action.image_index,
+                    image_path=action.image_path,
+                    question=action.question,
+                    profile_name=profile_name,
+                )
+            image_url = image_urls[action.image_index]
 
         try:
             vision_llm = conversation.get_or_create_profile_llm(
@@ -209,6 +368,7 @@ class VisionInspectExecutor(ToolExecutor):
                 ),
                 is_error=True,
                 image_index=action.image_index,
+                image_path=action.image_path,
                 question=action.question,
                 profile_name=profile_name,
             )
@@ -221,6 +381,7 @@ class VisionInspectExecutor(ToolExecutor):
                 ),
                 is_error=True,
                 image_index=action.image_index,
+                image_path=action.image_path,
                 question=action.question,
                 profile_name=profile_name,
                 model=vision_llm.model,
@@ -242,7 +403,7 @@ class VisionInspectExecutor(ToolExecutor):
                 role="user",
                 content=[
                     TextContent(text=action.question),
-                    ImageContent(image_urls=[image_urls[action.image_index]]),
+                    ImageContent(image_urls=[image_url]),
                 ],
             ),
         ]
@@ -262,6 +423,7 @@ class VisionInspectExecutor(ToolExecutor):
                 text="The vision model returned no text answer.",
                 is_error=True,
                 image_index=action.image_index,
+                image_path=action.image_path,
                 question=action.question,
                 profile_name=profile_name,
                 model=vision_llm.model,
@@ -271,6 +433,7 @@ class VisionInspectExecutor(ToolExecutor):
         return VisionInspectObservation.from_text(
             text=answer,
             image_index=action.image_index,
+            image_path=action.image_path,
             question=action.question,
             profile_name=profile_name,
             model=vision_llm.model,
@@ -280,11 +443,14 @@ class VisionInspectExecutor(ToolExecutor):
 
 
 _DESCRIPTION_TEMPLATE = (
-    "Ask a saved vision-capable LLM profile to inspect an image from the latest "
-    "user message and return a text answer.\n\n"
+    "Ask a saved vision-capable LLM profile to inspect an image and return a "
+    "text answer.\n\n"
     "Use this when the current model cannot understand images, the latest user "
-    "message includes an image, and visual details are needed to answer. The "
-    "current model should pass the image_index shown in the user message and a "
+    "message includes an image or references an image file in the workspace, "
+    "and visual details are needed to answer. The current model should pass "
+    "image_index for an image attached to the latest user message, or image_path "
+    "for an image file in the workspace. image_index is always required for "
+    "compatibility; when using image_path, set image_index to 0. Also pass a "
     "specific question for the vision model. The cost of this vision model call "
     "is tracked in the same conversation stats.\n\n"
     "Available vision-capable profiles:\n"

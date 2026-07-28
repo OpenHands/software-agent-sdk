@@ -1,4 +1,6 @@
 from collections.abc import Sequence
+from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -23,7 +25,10 @@ from openhands.sdk.tool import ToolDefinition
 from openhands.sdk.tool.builtins.vision_inspect import (
     VISION_PROFILE_USAGE_PREFIX,
     VisionInspectObservation,
+    _workspace_image_url,
 )
+from openhands.sdk.workspace.base import BaseWorkspace
+from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 
 
 if TYPE_CHECKING:
@@ -56,6 +61,55 @@ class CapturingTestLLM(TestLLM):
             call_context=call_context,
             **kwargs,
         )
+
+
+class DownloadOnlyWorkspace(BaseWorkspace):
+    _downloads: list[tuple[str, str]] = PrivateAttr(default_factory=list)
+    _image_bytes: bytes = PrivateAttr()
+
+    def __init__(self, *, working_dir: str, image_bytes: bytes):
+        super().__init__(working_dir=working_dir)
+        self._image_bytes = image_bytes
+
+    @property
+    def downloads(self) -> list[tuple[str, str]]:
+        return self._downloads
+
+    def execute_command(
+        self,
+        command: str,
+        cwd: str | Path | None = None,
+        timeout: float = 30.0,
+    ) -> CommandResult:
+        raise NotImplementedError
+
+    def file_upload(
+        self,
+        source_path: str | Path,
+        destination_path: str | Path,
+    ) -> FileOperationResult:
+        raise NotImplementedError
+
+    def file_download(
+        self,
+        source_path: str | Path,
+        destination_path: str | Path,
+    ) -> FileOperationResult:
+        destination = Path(destination_path)
+        destination.write_bytes(self._image_bytes)
+        self.downloads.append((str(source_path), str(destination_path)))
+        return FileOperationResult(
+            success=True,
+            source_path=str(source_path),
+            destination_path=str(destination_path),
+            file_size=len(self._image_bytes),
+        )
+
+    def git_changes(self, path: str | Path):
+        raise NotImplementedError
+
+    def git_diff(self, path: str | Path):
+        raise NotImplementedError
 
 
 def _image_message() -> Message:
@@ -249,6 +303,186 @@ def test_nonvision_model_can_use_vision_profile_tool(monkeypatch):
     observation_content = observation.content[0]
     assert isinstance(observation_content, TextContent)
     assert "It shows a cat." in observation_content.text
+
+
+def test_nonvision_model_can_inspect_workspace_image_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "openhands.sdk.agent.base.has_vision_profile_available", lambda: True
+    )
+    monkeypatch.setattr(
+        "openhands.sdk.tool.builtins.vision_inspect._candidate_vision_profiles",
+        lambda: ["vision-profile"],
+    )
+    image_path = tmp_path / "screenshot.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    parent = TestLLM.from_messages(
+        [
+            Message(
+                role="assistant",
+                content=[TextContent(text="I will inspect the image file.")],
+                tool_calls=[
+                    MessageToolCall(
+                        id="call_vision",
+                        name="inspect_image_with_vision",
+                        arguments=(
+                            '{"image_index": 0, "image_path": "screenshot.png", '
+                            '"question": "What is shown?"}'
+                        ),
+                        origin="completion",
+                    )
+                ],
+            ),
+            Message(
+                role="assistant",
+                content=[TextContent(text="The image file shows a diagram.")],
+            ),
+        ],
+        model="text-only-model",
+        disable_vision=True,
+    )
+    vision = cast(
+        CapturingTestLLM,
+        CapturingTestLLM.from_messages(
+            [
+                Message(
+                    role="assistant",
+                    content=[TextContent(text="It shows a diagram.")],
+                )
+            ],
+            model="gpt-4o",
+        ),
+    )
+
+    def fake_get_or_create_profile_llm(self, profile_name, usage_id):
+        assert profile_name == "vision-profile"
+        assert usage_id == f"{VISION_PROFILE_USAGE_PREFIX}:vision-profile"
+        return vision
+
+    monkeypatch.setattr(
+        LocalConversation,
+        "get_or_create_profile_llm",
+        fake_get_or_create_profile_llm,
+    )
+
+    conversation = cast(
+        LocalConversation,
+        Conversation(agent=Agent(llm=parent, tools=[]), workspace=tmp_path),
+    )
+    conversation.send_message("Please inspect screenshot.png.")
+    conversation.run()
+
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    assert vision.call_count == 1
+    assert _last_agent_response_text(conversation) == "The image file shows a diagram."
+
+    vision_messages, _ = vision.calls[0]
+    vision_user = next(message for message in vision_messages if message.role == "user")
+    image_content = next(
+        content for content in vision_user.content if isinstance(content, ImageContent)
+    )
+    assert image_content.image_urls == ["data:image/png;base64,iVBORw0KGgo="]
+
+    observations = [
+        event
+        for event in conversation.state.events
+        if isinstance(event, ObservationEvent)
+        and event.tool_name == "inspect_image_with_vision"
+    ]
+    assert len(observations) == 1
+    observation = cast(VisionInspectObservation, observations[0].observation)
+    assert observation.image_path == "screenshot.png"
+    assert observation.image_index == 0
+
+
+def test_workspace_image_file_must_exist(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "openhands.sdk.agent.base.has_vision_profile_available", lambda: True
+    )
+    monkeypatch.setattr(
+        "openhands.sdk.tool.builtins.vision_inspect._candidate_vision_profiles",
+        lambda: ["vision-profile"],
+    )
+    parent = TestLLM.from_messages(
+        [
+            Message(
+                role="assistant",
+                content=[TextContent(text="I will inspect the missing image file.")],
+                tool_calls=[
+                    MessageToolCall(
+                        id="call_vision",
+                        name="inspect_image_with_vision",
+                        arguments=(
+                            '{"image_index": 0, "image_path": "missing.png", '
+                            '"question": "What is shown?"}'
+                        ),
+                        origin="completion",
+                    )
+                ],
+            ),
+            Message(
+                role="assistant",
+                content=[TextContent(text="I could not inspect the image file.")],
+            ),
+        ],
+        model="text-only-model",
+        disable_vision=True,
+    )
+    vision = TestLLM.from_messages(
+        [Message(role="assistant", content=[TextContent(text="should not run")])],
+        model="gpt-4o",
+    )
+
+    def fake_get_or_create_profile_llm(self, profile_name, usage_id):
+        return vision
+
+    monkeypatch.setattr(
+        LocalConversation,
+        "get_or_create_profile_llm",
+        fake_get_or_create_profile_llm,
+    )
+
+    conversation = cast(
+        LocalConversation,
+        Conversation(agent=Agent(llm=parent, tools=[]), workspace=tmp_path),
+    )
+    conversation.send_message("Please inspect missing.png.")
+    conversation.run()
+
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    assert vision.call_count == 0
+    observations = [
+        event
+        for event in conversation.state.events
+        if isinstance(event, ObservationEvent)
+        and event.tool_name == "inspect_image_with_vision"
+    ]
+    assert len(observations) == 1
+    observation = cast(VisionInspectObservation, observations[0].observation)
+    assert observation.is_error
+    observation_content = observation.content[0]
+    assert isinstance(observation_content, TextContent)
+    assert "does not exist or is not a file" in observation_content.text
+
+
+def test_workspace_image_file_uses_workspace_download_for_nonlocal_workspace():
+    workspace = DownloadOnlyWorkspace(
+        working_dir="/remote/workspace",
+        image_bytes=b"\x89PNG\r\n\x1a\n",
+    )
+    conversation = SimpleNamespace(state=SimpleNamespace(workspace=workspace))
+
+    image_url, error = _workspace_image_url(
+        cast(LocalConversation, conversation),
+        "screenshots/result.png",
+    )
+
+    assert error is None
+    assert image_url == "data:image/png;base64,iVBORw0KGgo="
+    assert len(workspace.downloads) == 1
+    source_path, destination_path = workspace.downloads[0]
+    assert source_path == "/remote/workspace/screenshots/result.png"
+    assert Path(destination_path).name == "result.png"
 
 
 def test_profile_helper_registers_auxiliary_vision_llm(monkeypatch):
