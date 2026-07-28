@@ -1,6 +1,10 @@
 import pytest
+from litellm.utils import supports_vision
 
 from openhands.sdk.llm.utils.model_features import (
+    REASONING_EFFORT_MODEL_OVERRIDES,
+    VISION_MODEL_OVERRIDES,
+    _normalized_supported_openai_params,
     get_features,
     model_matches,
 )
@@ -61,10 +65,7 @@ def test_model_matches(name, pattern, expected):
         ("litellm_proxy/gpt-5", True),
         ("litellm_proxy/claude-opus-4-5", True),
         ("litellm_proxy/gemini-3-flash-preview", True),
-        # SDK-side override for models LiteLLM doesn't yet recognize.
-        # claude-fable-5 must be detected as a reasoning model so the chat
-        # options layer strips temperature/top_p before the request reaches
-        # Anthropic (which rejects temperature for this model).
+        # LiteLLM recognizes Claude Fable 5 directly.
         ("claude-fable-5", True),
         ("anthropic/claude-fable-5", True),
         ("litellm_proxy/anthropic/claude-fable-5", True),
@@ -77,10 +78,7 @@ def test_model_matches(name, pattern, expected):
         ("claude-opus-5", True),
         ("anthropic/claude-opus-5", True),
         ("litellm_proxy/anthropic/claude-opus-5", True),
-        # claude-opus-4-8: LiteLLM recognizes the first-party id, but not the
-        # Bedrock cross-region inference ids, which must be caught by the
-        # SDK-side override so temperature/top_p are stripped before the request
-        # reaches Anthropic (which rejects temperature for this model).
+        # LiteLLM recognizes first-party and Bedrock Claude Opus 4.8 IDs.
         ("claude-opus-4-8", True),
         ("anthropic/claude-opus-4-8", True),
         ("bedrock/us.anthropic.claude-opus-4-8-v1:0", True),
@@ -145,9 +143,7 @@ def test_extended_thinking_support(model, expected_extended_thinking):
         ("claude-sonnet-4-6", True),
         ("claude-opus-4-5", True),
         ("claude-opus-4-6", True),
-        # claude-fable-5 supports prompt caching but is too new for LiteLLM
-        # metadata, so it must be detected via the local allowlist across the
-        # raw, provider-prefixed, and litellm_proxy-prefixed forms.
+        # Claude Fable 5 supports prompt caching across model-name forms.
         ("claude-fable-5", True),
         ("anthropic/claude-fable-5", True),
         ("litellm_proxy/anthropic/claude-fable-5", True),
@@ -305,6 +301,21 @@ def test_get_features_empty_model():
 )
 def test_kimi_k3_supports_vision(model: str):
     assert get_features(model).supports_vision is True
+
+
+def test_reasoning_effort_overrides_are_not_redundant():
+    for pattern, litellm_model in REASONING_EFFORT_MODEL_OVERRIDES.items():
+        params = _normalized_supported_openai_params(litellm_model)
+        assert "reasoning_effort" not in params, (
+            f"Remove {pattern!r}: LiteLLM now supports {litellm_model!r}"
+        )
+
+
+def test_vision_overrides_are_not_redundant():
+    for pattern, litellm_model in VISION_MODEL_OVERRIDES.items():
+        assert not supports_vision(litellm_model), (
+            f"Remove {pattern!r}: LiteLLM now supports {litellm_model!r}"
+        )
 
 
 def test_model_matches_with_provider_pattern():
