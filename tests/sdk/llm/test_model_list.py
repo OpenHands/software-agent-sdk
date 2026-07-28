@@ -115,6 +115,13 @@ def test_gpt_5_6_models_are_verified_for_openai():
     )
 
 
+def test_kimi_k3_and_claude_opus_5_are_verified():
+    assert "kimi-k3" in VERIFIED_MODELS["moonshot"]
+    assert "kimi-k3" in VERIFIED_OPENHANDS_MODELS
+    assert "claude-opus-5" in VERIFIED_MODELS["anthropic"]
+    assert "claude-opus-5" in VERIFIED_OPENHANDS_MODELS
+
+
 def test_nemotron_3_super_uses_full_infra_name():
     """The verified Nemotron Super entry must match the infra model name
     (``nemotron-3-super-120b-a12b``) and the short alias should not be listed.

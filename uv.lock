@@ -8,11 +8,11 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-07-14T17:21:09.426556Z"
+exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
-litellm = "2026-05-22T00:00:00Z"
+litellm = "2026-07-20T00:00:00Z"
 
 [manifest]
 members = [
@@ -23,7 +23,7 @@ members = [
 ]
 constraints = [
     { name = "aiohttp", specifier = ">=3.13.3" },
-    { name = "litellm", specifier = "==1.84.1" },
+    { name = "litellm", specifier = "==1.93.0" },
     { name = "lupa", specifier = ">=2.8" },
     { name = "orjson", specifier = ">=3.11.7" },
     { name = "pillow", specifier = ">=12.1.1" },
@@ -2065,7 +2065,7 @@ wheels = [
 
 [[package]]
 name = "litellm"
-version = "1.84.1"
+version = "1.93.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -2081,9 +2081,14 @@ dependencies = [
     { name = "tiktoken" },
     { name = "tokenizers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/7c/9e/ec7d92a10f3aacc7184c5531d67adc20ec0bfb180d6577fb68dc2e6f18f7/litellm-1.84.1.tar.gz", hash = "sha256:2d01b146e5206e49d1bccc224d31afc37b41b275823c27184b81afaba90464c3", size = 15105765, upload-time = "2026-05-21T02:08:02.742Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/93/e1/4f05ca4cbb4efb739c9e66a182ecd5c816bc05bf3665ec8e0fb4ab408379/litellm-1.93.0.tar.gz", hash = "sha256:140bf215e264c71601bca9c06d2436c5451bb59e1e195ea23fc2d3d87b6929ec", size = 15948866, upload-time = "2026-07-19T03:01:24.389Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1d/b0/11913b4b4d02f1fde11a2331b4122b090bd635a79cedbeeb70ef4f8f03b9/litellm-1.84.1-py3-none-any.whl", hash = "sha256:1f39e2d2d134bc0570577df846a987547efafd3c70765b00a83c456318fcdbe8", size = 16736900, upload-time = "2026-05-21T02:07:59.059Z" },
+    { url = "https://files.pythonhosted.org/packages/be/69/cabe7e747fea4c744752bd7ff8f7f208723151a63a89bb7c2437212523ff/litellm-1.93.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:3daf5c5aceb07f5d68871071e0ecdc678caccebadca9143cc00bb76f5a8c54e8", size = 20164234, upload-time = "2026-07-19T03:01:05.713Z" },
+    { url = "https://files.pythonhosted.org/packages/c5/db/6af798603c6e2cf21ad7f2edf7e95019bd859dda82284b94014d608fcd85/litellm-1.93.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:0784172435de48f66ef7ad89d421604db1ad0db1321ef7f39dbcfe6b20111417", size = 20156724, upload-time = "2026-07-19T03:01:09.037Z" },
+    { url = "https://files.pythonhosted.org/packages/f5/e1/eabe3f13d9c8b853a01377b59e78a295f34c24c36b09e5fc1c60c0167f19/litellm-1.93.0-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:23b8eea4fb8b3b6ade05e7b6085ec9ca12daffcfb38d033d0bbce9c1d5894da5", size = 20164863, upload-time = "2026-07-19T03:01:12.035Z" },
+    { url = "https://files.pythonhosted.org/packages/64/49/2db5757f7e284eb12618b547cb62dab49687ffaf1d749ca048210e3d0dbd/litellm-1.93.0-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:98c15e84d32e922a821c105308bf9ddae8700de9ed396530bee2cbb1cacf4cbb", size = 20157288, upload-time = "2026-07-19T03:01:15.395Z" },
+    { url = "https://files.pythonhosted.org/packages/0d/7f/b48d88cb32055b4ba7e51cd67e4ea13a589d4a568d33c3d0dc6994d13b83/litellm-1.93.0-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:1a476ebc340c070c982eab15b4673fa63a70f5936935f9f20e4d2acb5f35d23b", size = 20165502, upload-time = "2026-07-19T03:01:18.425Z" },
+    { url = "https://files.pythonhosted.org/packages/45/6c/65a7f916326daa151131f1fce5e254d4834127a95d53a18f1c4d238dd5c3/litellm-1.93.0-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:cd70ccd4ba3ef1a395535c287bce72d30c7d937ecca4290c0db37a00738f7ada", size = 20159007, upload-time = "2026-07-19T03:01:21.704Z" },
 ]
 
 [[package]]
@@ -2699,7 +2704,7 @@ wheels = [
 
 [[package]]
 name = "openhands-agent-server"
-version = "1.36.1"
+version = "1.38.0"
 source = { editable = "openhands-agent-server" }
 dependencies = [
     { name = "aiosqlite" },
@@ -2715,6 +2720,11 @@ dependencies = [
     { name = "wsproto" },
 ]
 
+[package.optional-dependencies]
+posthog = [
+    { name = "posthog" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.19" },
@@ -2723,16 +2733,18 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.104" },
     { name = "openai", specifier = ">=2.33.0,<3" },
     { name = "openhands-sdk", editable = "openhands-sdk" },
+    { name = "posthog", marker = "extra == 'posthog'", specifier = ">=6,<7" },
     { name = "pydantic", specifier = ">=2" },
     { name = "sqlalchemy", specifier = ">=2" },
     { name = "uvicorn", specifier = ">=0.31.1" },
     { name = "websockets", specifier = ">=12" },
     { name = "wsproto", specifier = ">=1.2.0" },
 ]
+provides-extras = ["posthog"]
 
 [[package]]
 name = "openhands-sdk"
-version = "1.36.1"
+version = "1.38.0"
 source = { editable = "openhands-sdk" }
 dependencies = [
     { name = "agent-client-protocol" },
@@ -2776,7 +2788,7 @@ requires-dist = [
     { name = "google-cloud-aiplatform", marker = "extra == 'vertex'", specifier = ">=1.38" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
     { name = "joserfc", specifier = ">=1.0.0" },
-    { name = "litellm", specifier = ">=1.84.1" },
+    { name = "litellm", specifier = ">=1.93.0" },
     { name = "lmnr", specifier = ">=0.7.56,<0.8.0" },
     { name = "pillow", specifier = ">=12.1.1" },
     { name = "pydantic", specifier = ">=2.12.5" },
@@ -2792,7 +2804,7 @@ provides-extras = ["boto3", "toolshield", "vertex"]
 
 [[package]]
 name = "openhands-tools"
-version = "1.36.1"
+version = "1.38.0"
 source = { editable = "openhands-tools" }
 dependencies = [
     { name = "binaryornot" },
@@ -2823,7 +2835,7 @@ requires-dist = [
 
 [[package]]
 name = "openhands-workspace"
-version = "1.36.1"
+version = "1.38.0"
 source = { editable = "openhands-workspace" }
 dependencies = [
     { name = "openhands-agent-server" },

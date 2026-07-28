@@ -47,7 +47,7 @@ def _make_subscription_llm() -> LLM:
         base_url="https://chatgpt.com/backend-api/codex",
         reasoning_effort="high",
     )
-    llm._is_subscription = True
+    llm.is_subscription = True
     llm.enable_encrypted_reasoning = True
     return llm
 
@@ -106,7 +106,6 @@ def test_subscription_skips_unsupported_param(param: str):
     "param,expected_value",
     [
         ("prompt_cache_retention", "24h"),
-        ("temperature", 1.0),
     ],
 )
 def test_non_subscription_keeps_scalar_param(param: str, expected_value: Any):
@@ -116,6 +115,14 @@ def test_non_subscription_keeps_scalar_param(param: str, expected_value: Any):
     assert not llm.is_subscription
     opts = select_responses_options(llm, {}, include=None, store=None)
     assert opts.get(param) == expected_value
+
+
+def test_non_subscription_does_not_invent_temperature():
+    llm = LLM(model="openai/gpt-5.2-codex", reasoning_effort="high")
+
+    opts = select_responses_options(llm, {}, include=None, store=None)
+
+    assert "temperature" not in opts
 
 
 @pytest.mark.parametrize(
@@ -390,7 +397,7 @@ def test_format_messages_reasoning_item_handling(
     can't be resolved).  Non-subscription mode must preserve them."""
     llm = LLM(model="openai/gpt-5.2-codex")
     if is_subscription:
-        llm._is_subscription = True
+        llm.is_subscription = True
 
     sys_msg, user_msg, assistant_msg, tool_msg = _make_conversation_messages()
     _, input_items = llm.format_messages_for_responses(
@@ -418,6 +425,15 @@ def test_is_subscription_survives_serialization_round_trip():
         plain.model_dump(context={"expose_secrets": True})
     )
     assert restored_plain.is_subscription is False
+
+
+def test_is_subscription_runtime_update_is_the_serialized_state():
+    llm = LLM(model="gpt-4o")
+
+    llm.is_subscription = True
+
+    assert llm.model_dump()["is_subscription"] is True
+    assert LLM.model_validate(llm.model_dump()).is_subscription is True
 
 
 def test_is_subscription_restore_respects_subclass_before_validator():

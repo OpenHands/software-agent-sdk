@@ -18,6 +18,8 @@ from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.llm.message import ImageContent, TextContent
 from openhands.sdk.mcp.client import MCPClient
+from openhands.sdk.mcp.config import MCPServer
+from openhands.sdk.mcp.utils import ToolsChangedCallback
 from openhands.sdk.tool import ToolDefinition
 from openhands.sdk.tool.builtins import ThinkTool
 from openhands.sdk.tool.registry import register_tool
@@ -244,7 +246,13 @@ class _StaticMCPClient:
 class _StaticMCPToolProvider:
     """Stands in for a live MCP server advertising two tools."""
 
-    def create_tools(self, mcp_config, timeout: float = 30.0) -> MCPClient:
+    def create_tools(
+        self,
+        mcp_config: dict[str, MCPServer],
+        timeout: float = 30.0,
+        *,
+        on_tools_changed: ToolsChangedCallback | None = None,
+    ) -> MCPClient:
         return cast(
             MCPClient,
             _StaticMCPClient([_AllowedTool.create()[0], _BlockedTool.create()[0]]),

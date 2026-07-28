@@ -302,6 +302,26 @@ class TestAgentContext:
         assert "</REPO_CONTEXT>" in result
         assert "Additional custom instructions for the system." in result
 
+    def test_get_system_message_suffix_with_memory_context(self):
+        """Resolved memory renders as a <MEMORY_CONTEXT> block in the suffix."""
+        context = AgentContext(load_memory=True).model_copy(
+            update={"memory_context": "- the API uses cursor-based pagination"}
+        )
+        result = context.get_system_message_suffix()
+        assert result is not None
+        assert "<MEMORY_CONTEXT>" in result
+        assert "- the API uses cursor-based pagination" in result
+
+    def test_to_acp_prompt_context_accepts_memory_fields(self):
+        """The memory fields are ACP-compatible and render in the ACP suffix."""
+        context = AgentContext(load_memory=True).model_copy(
+            update={"memory_context": "- remembered fact"}
+        )
+        result = context.to_acp_prompt_context()
+        assert result is not None
+        assert "<MEMORY_CONTEXT>" in result
+        assert "- remembered fact" in result
+
     def test_get_user_message_suffix_empty_query(self):
         """Test user message suffix with empty query."""
         knowledge_agent = Skill(
