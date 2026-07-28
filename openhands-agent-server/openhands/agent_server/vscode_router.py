@@ -1,7 +1,6 @@
 """VSCode router for agent server API endpoints."""
 
 from pathlib import Path
-from urllib.parse import urlencode
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -47,33 +46,18 @@ async def get_vscode_url(
             ),
         )
 
-    try:
-        workspace_base_dir = Path(vscode_service.config.workspace_path).resolve()
-        resolved = Path(workspace_dir).resolve()
-        if not resolved.is_relative_to(workspace_base_dir):
-            raise HTTPException(
-                status_code=400,
-                detail="workspace_dir must be within the workspace directory",
-            )
-        # Build the URL from the validated canonical path so that validation
-        # and consumption cannot diverge. Using the raw ``workspace_dir`` would
-        # allow encoded path traversal (e.g. ``%2e%2e``) and query-delimiter
-        # injection to bypass the check above.
-        url = vscode_service.get_vscode_url(base_url, str(resolved))
-        if url is None:
-            return VSCodeUrlResponse(url=None)
-        # Rebuild the query string from parsed parameters so the validated
-        # path is properly encoded and cannot inject query delimiters.
-        from urllib.parse import parse_qs, urlsplit, urlunsplit
-
-        parts = urlsplit(url)
-        params = parse_qs(parts.query, keep_blank_values=True)
-        # Normalize to single-value dict for round-tripping.
-        flat_params = {k: v[0] if v else "" for k, v in params.items()}
-        new_query = urlencode(flat_params)
-        url = urlunsplit(
-            (parts.scheme, parts.netloc, parts.path, new_query, parts.fragment)
+    # Validate workspace_dir before the service try-block so invalid client
+    # input receives a 400 response instead of being masked as a 500 error.
+    workspace_base_dir = Path(vscode_service.config.workspace_path).resolve()
+    resolved = Path(workspace_dir).resolve()
+    if not resolved.is_relative_to(workspace_base_dir):
+        raise HTTPException(
+            status_code=400,
+            detail="workspace_dir must be within the workspace directory",
         )
+
+    try:
+        url = vscode_service.get_vscode_url(base_url, workspace_dir)
         return VSCodeUrlResponse(url=url)
     except HTTPException:
         raise
