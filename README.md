@@ -59,6 +59,7 @@ release configured by `package.json` → `config.agentServerImage`.
 ```bash
 npm run generate:agent-server-api
 npm run check:agent-server-api
+npm run test:agent-server-api-tooling
 ```
 
 The generator downloads the matching SDK release's `openapi.json`. For older
@@ -68,6 +69,11 @@ removes the container. CI regenerates the file and fails if it differs. During
 SDK development, `AGENT_SERVER_OPENAPI_PATH=/path/to/openapi.json` can supply a
 local candidate contract while retaining the pinned image metadata in the
 generated file.
+
+Pinned PR CI is reproducible and required. A separate weekly
+`agent-server-sdk-main-audit` workflow exports the contract from one exact SDK
+`main` commit, records that SHA, and opens or updates an informational drift
+issue. Ordinary client PRs never generate from the moving SDK branch.
 
 ## Quick Start
 

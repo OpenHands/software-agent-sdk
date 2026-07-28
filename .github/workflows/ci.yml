@@ -23,6 +23,9 @@ jobs:
     - name: Install dependencies
       run: npm ci
 
+    - name: Test Agent Server contract tooling
+      run: npm run test:agent-server-api-tooling
+
     - name: Check generated Agent Server contract
       run: npm run check:agent-server-api
 

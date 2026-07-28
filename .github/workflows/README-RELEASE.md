@@ -118,10 +118,17 @@ Separate from cutting a release, the pinned `software-agent-sdk` / agent-server
 image (`config.agentServerImage` in `package.json`, plus the
 `integration-tests.yml`, `AGENTS.md`, and `README.md` mirrors) is kept current
 by the **SDK's own release automation**: when `software-agent-sdk` publishes a
-new release, it opens a `bump-agent-server-X.Y.Z` PR here (once the matching
-agent-server image is published to GHCR). That PR's CI + integration tests
-validate the client against the new server. This is independent of the npm
-package version and publishes nothing.
+new release, it waits for the matching GHCR image and exact release
+`openapi.json`, then opens a `bump-agent-server-X.Y.Z` PR containing the pin and
+generated contract changes plus an API-change summary. That PR's required
+pinned-regeneration, typecheck, and integration CI validate the client against
+the new server. This is independent of the npm package version and publishes
+nothing.
+
+The weekly `agent-server-sdk-main-audit.yml` workflow separately exports one
+exact SDK `main` commit and opens or updates an informational issue for upcoming
+drift. It records the full commit SHA and never makes ordinary client PRs depend
+on the moving branch.
 
 ## Workflow Files
 
@@ -129,3 +136,5 @@ package version and publishes nothing.
 - `.github/workflows/release.yml` — release-please release line (reusable)
 - `.github/workflows/npm-publish.yml` — npmjs.org publish on `release: published`
 - `.github/workflows/publish-github-packages.yml` — GitHub Packages publish on `release: published` (and manual recovery)
+- `.github/workflows/agent-server-sdk-main-audit.yml` — informational exact-SHA
+  preview of unreleased SDK contract drift

@@ -10,8 +10,12 @@ import { format, resolveConfig } from 'prettier';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const packageJsonPath = join(repositoryRoot, 'package.json');
-const generatedFile = join(repositoryRoot, 'src/generated/agent-server-schema.ts');
+const generatedFile = resolve(
+  repositoryRoot,
+  process.env.AGENT_SERVER_GENERATED_OUTPUT ?? 'src/generated/agent-server-schema.ts'
+);
 const explicitSchemaPath = process.env.AGENT_SERVER_OPENAPI_PATH;
+const explicitSchemaSource = process.env.AGENT_SERVER_SCHEMA_SOURCE;
 
 function getPinnedAgentServer(packageJson) {
   const image = packageJson.config?.agentServerImage;
@@ -166,7 +170,7 @@ async function main() {
     const generated = await readFile(join(generatorOutput, 'types.gen.ts'), 'utf8');
     const header = [
       '// Generated file. Do not edit by hand.',
-      `// Source image: ${image}`,
+      `// Source: ${explicitSchemaSource ?? image}`,
       `// Regenerate with: npm run generate:agent-server-api`,
       '',
     ].join('\n');

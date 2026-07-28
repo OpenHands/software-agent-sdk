@@ -114,7 +114,6 @@ src/workspace/
 - `createWorkspace({ type, options })` - Explicit type selection
 - `createWorkspaceAuto(options)` - Auto-detect based on presence of `host` option
 
-
 **Ergonomic API note**: Keep `Workspace`/`RemoteWorkspace` as the main user-facing entry point for remote execution. Lower-level bash endpoint access should hang off `workspace.bash`, while direct endpoint-specific clients belong in the secondary `@openhands/typescript-client/clients` entrypoint instead of the root SDK surface.
 
 ### LLM Architecture
@@ -223,7 +222,6 @@ await conversation.close();
 **Factory Functions**:
 
 **Ergonomic API note**: Keep `ConversationManager` as the main server-scoped entry point. Server/LLM/settings/skills/tools/VSCode/desktop operations should be reachable through manager namespaces such as `manager.server`, `manager.llm`, and `manager.desktop`; ACP-specific operations should be reachable via `manager.acp`.
-
 
 - `createConversation({ type, agent, workspace, options })` - Explicit type selection
 - `createConversationAuto(agent, workspace, options)` - Auto-detect based on workspace type
@@ -337,7 +335,11 @@ The generated transport contract in
 `npm run check:agent-server-api` to enforce a clean regeneration. Released SDK
 versions use the `openapi.json` release artifact. Legacy releases without the
 artifact are exported from an isolated temporary container of the exact pinned
-image. The generator never reads from an unpinned `latest` endpoint.
+image. Run `npm run test:agent-server-api-tooling` when changing generation or
+drift automation. The scheduled `agent-server-sdk-main-audit` records the exact
+SDK commit it tests and reports upcoming drift informationally; ordinary PR CI
+never reads from that moving target. The generator never reads from an unpinned
+`latest` endpoint.
 
 ## Local Setup and Validation
 
