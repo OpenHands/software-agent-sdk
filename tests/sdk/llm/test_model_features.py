@@ -276,6 +276,7 @@ def test_get_features_unknown_model():
     # Unknown models should have default feature values
     assert features.supports_reasoning_effort is False
     assert features.supports_prompt_cache is False
+    assert features.supports_vision is False
     assert features.supports_stop_words is True  # Most models support stop words
 
 
@@ -287,8 +288,23 @@ def test_get_features_empty_model():
     # Empty models should have default feature values
     assert features_empty.supports_reasoning_effort is False
     assert features_none.supports_reasoning_effort is False
+    assert features_empty.supports_vision is False
+    assert features_none.supports_vision is False
     assert features_empty.supports_stop_words is True
     assert features_none.supports_stop_words is True
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "kimi-k3",
+        "moonshot/kimi-k3",
+        "litellm_proxy/moonshot/kimi-k3",
+        "openhands/kimi-k3",
+    ],
+)
+def test_kimi_k3_supports_vision(model: str):
+    assert get_features(model).supports_vision is True
 
 
 def test_model_matches_with_provider_pattern():

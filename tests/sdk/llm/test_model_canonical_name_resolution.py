@@ -14,6 +14,7 @@ class DummyFeatures:
         self.force_string_serializer = False
         self.send_reasoning_content = False
         self.requires_inline_image_data = False
+        self.supports_vision = False
 
 
 def test_model_canonical_name_used_for_capabilities(monkeypatch):

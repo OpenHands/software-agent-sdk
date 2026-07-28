@@ -56,6 +56,7 @@ class ModelFeatures:
     # True when the model's API rejects http(s) image URLs and only accepts
     # base64 ``data:`` URLs. See REQUIRES_INLINE_IMAGE_DATA_MODELS.
     requires_inline_image_data: bool
+    supports_vision: bool
 
 
 LITELLM_PROXY_PREFIX = "litellm_proxy/"
@@ -236,6 +237,9 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
     "deepseek/deepseek-v4-flash",  # Dual-mode (Thinking/Non-Thinking)
 ]
 
+# Overrides for vision models missing from LiteLLM's capability metadata.
+VISION_MODELS: list[str] = ["kimi-k3"]
+
 # Models whose API rejects http(s) image URLs and only accepts base64
 # ``data:`` URLs (or vendor-specific file IDs). When this matches, the SDK
 # fetches each image URL and inlines it as ``data:{mime};base64,...`` before
@@ -274,4 +278,5 @@ def get_features(model: str) -> ModelFeatures:
         requires_inline_image_data=model_matches(
             model, REQUIRES_INLINE_IMAGE_DATA_MODELS
         ),
+        supports_vision=model_matches(model, VISION_MODELS),
     )
