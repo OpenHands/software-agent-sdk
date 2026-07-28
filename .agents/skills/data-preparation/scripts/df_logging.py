@@ -20,12 +20,12 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import (  # noqa: UP017 — platform is Python 3.10, no datetime.UTC
-    UTC,
-    datetime,
-)
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+
+_UTC = UTC  # Python 3.10 compat: datetime.UTC requires 3.11+
 
 
 class LoggingLLMServing:
@@ -70,7 +70,7 @@ class LoggingLLMServing:
         record: dict[str, Any] = {
             "seq": seq,
             "batch_id": id,
-            "timestamp": datetime.now(UTC).isoformat(),
+            "timestamp": datetime.now(_UTC).isoformat(),
             "model": model,
             "is_embedding": is_embedding,
         }

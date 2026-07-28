@@ -15,11 +15,11 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import (  # noqa: UP017 — platform is Python 3.10, no datetime.UTC
-    UTC,
-    datetime,
-)
+from datetime import UTC, datetime
 from pathlib import Path
+
+
+_UTC = UTC  # Python 3.10 compat: datetime.UTC requires 3.11+
 
 
 MAX_ERROR_SAMPLES = 20
@@ -137,7 +137,7 @@ def generate_report(log_dir: str) -> dict:
 
     report = {
         "status": overall,
-        "generated_at": datetime.now(UTC).isoformat(),
+        "generated_at": datetime.now(_UTC).isoformat(),
         "total_records_output": output_records,
         "llm_calls": {
             "total": total_calls,
