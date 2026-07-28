@@ -278,8 +278,7 @@ def _supports_explicit_prompt_cache(
     if metadata_value is True:
         provider = str((model_info or {}).get("litellm_provider", "")).lower()
         registry_key = str((model_info or {}).get("key", "")).lower()
-        # This flag controls explicit cache_control breakpoints, not implicit
-        # provider-side caching. Claude APIs use the explicit strategy.
+        # This capability covers explicit cache_control, not implicit caching.
         if (
             provider == "anthropic"
             or "claude" in model.lower()
@@ -314,12 +313,7 @@ def get_features(
     model_info: Mapping[str, Any] | None = None,
     overrides: Mapping[str, Any] | None = None,
 ) -> ModelFeatures:
-    """Resolve model features from overrides, metadata, then narrow fallbacks.
-
-    ``model_info`` may come from a LiteLLM proxy or the local LiteLLM registry.
-    Passing it through here prevents SDK model-name lists from overriding newer
-    provider metadata, especially explicit ``False`` values.
-    """
+    """Resolve model features from overrides, metadata, and fallbacks."""
     supported_params = _normalized_supported_openai_params(model)
     supports_reasoning_effort = _resolved_bool(
         "supports_reasoning_effort",

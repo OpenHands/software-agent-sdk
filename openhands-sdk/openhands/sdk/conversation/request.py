@@ -119,6 +119,13 @@ class StartConversationRequest(BaseModel):
             "generated."
         ),
     )
+    parent_conversation_id: UUID | None = Field(
+        default=None,
+        description=(
+            "Optional ID of an existing conversation that owns this one. The "
+            "parent must already exist and share this conversation's workspace."
+        ),
+    )
     confirmation_policy: ConfirmationPolicyBase = Field(
         default=NeverConfirm(),
         description="Controls when the conversation will prompt the user before "

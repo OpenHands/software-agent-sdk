@@ -62,11 +62,9 @@ def test_model_matches(name, pattern, expected):
         ("litellm_proxy/gpt-5", True),
         ("litellm_proxy/claude-opus-4-5", True),
         ("litellm_proxy/gemini-3-flash-preview", True),
-        # New adaptive models are discovered from the pinned LiteLLM registry.
         ("claude-fable-5", True),
         ("anthropic/claude-fable-5", True),
         ("litellm_proxy/anthropic/claude-fable-5", True),
-        # Provider-specific aliases are also handled by LiteLLM's registry.
         ("claude-opus-4-8", True),
         ("anthropic/claude-opus-4-8", True),
         ("bedrock/us.anthropic.claude-opus-4-8-v1:0", True),

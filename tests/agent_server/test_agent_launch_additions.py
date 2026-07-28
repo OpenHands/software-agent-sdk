@@ -55,6 +55,7 @@ def _mock_event_service(state: ConversationState) -> AsyncMock:
         updated_at=datetime.now(UTC),
         forked_from_conversation_id=None,
         forked_from_event_id=None,
+        parent_conversation_id=None,
     )
     return event_service
 

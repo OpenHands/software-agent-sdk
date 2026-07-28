@@ -20,12 +20,16 @@ class VSCodeUrlResponse(BaseModel):
 
 @vscode_router.get("/url", response_model=VSCodeUrlResponse)
 async def get_vscode_url(
-    base_url: str = "http://localhost:8001", workspace_dir: str = "workspace"
+    base_url: str | None = None, workspace_dir: str = "workspace"
 ) -> VSCodeUrlResponse:
     """Get the VSCode URL with authentication token.
 
     Args:
-        base_url: Base URL for the VSCode server (default: http://localhost:8001)
+        base_url: Base URL for the VSCode server. When omitted, the URL is
+            built from the actually configured VSCode port
+            (``http://localhost:{vscode_port}``), so callers that don't know
+            the deployment topology get a URL that matches where the server
+            really binds instead of a hardcoded ``:8001``.
         workspace_dir: Path to workspace directory
 
     Returns:

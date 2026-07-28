@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from openhands.sdk.llm.options.common import apply_defaults_if_absent
+from openhands.sdk.llm.options.common import (
+    apply_call_context,
+    apply_defaults_if_absent,
+    apply_extra_body,
+    apply_extra_headers,
+)
 
 
 if TYPE_CHECKING:
@@ -26,26 +31,13 @@ def select_responses_options(
     out = apply_defaults_if_absent(user_kwargs, defaults)
 
     model_features = llm._model_features()
-
-    # Sampling behavior for the Responses path follows the same capability
-    # metadata as chat. Do not invent a temperature for a newly released model.
     if not llm.is_subscription and model_features.supports_sampling_params is False:
         out.pop("temperature", None)
     elif not llm.is_subscription and llm.temperature is not None:
         out.setdefault("temperature", llm.temperature)
     out["tool_choice"] = "auto"
 
-    # If user didn't set extra_headers, propagate from llm config
-    if llm.extra_headers is not None and "extra_headers" not in out:
-        out["extra_headers"] = dict(llm.extra_headers)
-
-    # Inject OpenRouter HTTP-Referer / X-Title via extra_headers so we don't
-    # have to mutate os.environ (which would leak across conversations in a
-    # multi-tenant server; see issue #3138). User-supplied headers win.
-    openrouter_headers = llm._openrouter_headers()
-    if openrouter_headers:
-        existing = out.get("extra_headers") or {}
-        out["extra_headers"] = {**openrouter_headers, **existing}
+    out = apply_extra_headers(out, llm)
 
     # Store defaults to False (stateless) unless explicitly provided
     if store is not None:
@@ -87,21 +79,7 @@ def select_responses_options(
     ):
         out["prompt_cache_retention"] = llm.prompt_cache_retention
 
-    # Pass through user-provided extra_body unchanged
-    if llm.litellm_extra_body:
-        out["extra_body"] = llm.litellm_extra_body
-
-    # Inject per-conversation state from call context (#3443).
-    # Prefer explicitly threaded context; fall back to PrivateAttr for
-    # callers that don't thread (e.g. condenser's dedicated LLM).
-    ctx = call_context or llm._call_context
-    if ctx.prompt_cache_key:
-        out["prompt_cache_key"] = ctx.prompt_cache_key
-    if ctx.session_id:
-        existing = out.get("extra_headers") or {}
-        out["extra_headers"] = {
-            **existing,
-            "x-litellm-session-id": ctx.session_id,
-        }
+    out = apply_extra_body(out, llm)
+    out = apply_call_context(out, llm, call_context)
 
     return out

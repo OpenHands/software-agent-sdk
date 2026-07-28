@@ -44,6 +44,19 @@ _ERROR_COLOR = "red"
 _ACTION_COLOR = "blue"
 _MESSAGE_ASSISTANT_COLOR = _ACTION_COLOR
 
+_MESSAGE_SOURCE_TITLES = {
+    "agent": "Message from Agent",
+    "user": "Message from User",
+    "environment": "Message from Environment",
+    "hook": "Message from Hook",
+}
+_MESSAGE_SOURCE_COLORS = {
+    "agent": _MESSAGE_ASSISTANT_COLOR,
+    "user": _MESSAGE_USER_COLOR,
+    "environment": _SYSTEM_COLOR,
+    "hook": _SYSTEM_COLOR,
+}
+
 DEFAULT_HIGHLIGHT_REGEX = {
     r"^Reasoning:": f"bold {_THOUGHT_COLOR}",
     r"^Thought:": f"bold {_THOUGHT_COLOR}",
@@ -178,24 +191,16 @@ def _get_action_title(event: Event) -> str:
 
 
 def _get_message_title(event: Event) -> str:
-    """Get title for MessageEvent based on role."""
+    """Get title for MessageEvent based on event attribution."""
     if isinstance(event, MessageEvent) and event.llm_message:
-        return (
-            "Message from User"
-            if event.llm_message.role == "user"
-            else "Message from Agent"
-        )
+        return _MESSAGE_SOURCE_TITLES[event.source]
     return "Message"
 
 
 def _get_message_color(event: Event) -> str:
-    """Get color for MessageEvent based on role."""
+    """Get color for MessageEvent based on event attribution."""
     if isinstance(event, MessageEvent) and event.llm_message:
-        return (
-            _MESSAGE_USER_COLOR
-            if event.llm_message.role == "user"
-            else _MESSAGE_ASSISTANT_COLOR
-        )
+        return _MESSAGE_SOURCE_COLORS[event.source]
     return "white"
 
 
@@ -283,6 +288,9 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
         self._console = _create_console()
         self._skip_user_messages = skip_user_messages
         self._highlight_patterns = highlight_regex or {}
+        # Previous ActionEvent's response id; used by ``_claim_batch_primary``
+        # to spot parallel tool-call siblings (#4189).
+        self._last_action_response_id: str | None = None
 
     def on_event(self, event: Event) -> None:
         """Main event handler that displays events with Rich formatting."""
@@ -335,7 +343,7 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
             self._skip_user_messages
             and isinstance(event, MessageEvent)
             and event.llm_message
-            and event.llm_message.role == "user"
+            and event.source == "user"
         ):
             return None
 
@@ -355,8 +363,15 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
         # Resolve color (may be a string or callable)
         title_color = config.color(event) if callable(config.color) else config.color
 
-        # Build subtitle if needed
-        subtitle = self._format_metrics_subtitle(event) if config.show_metrics else None
+        # Build subtitle if needed. Siblings of a parallel tool-call batch fall
+        # back to totals-only so the shared per-request usage isn't repeated.
+        subtitle = (
+            self._format_metrics_subtitle(
+                event, force_totals=not self._claim_batch_primary(event)
+            )
+            if config.show_metrics
+            else None
+        )
 
         return build_event_block(
             content=content,
@@ -399,7 +414,25 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
             None,
         )
 
-    def _format_metrics_subtitle(self, event: Event | None = None) -> str | None:
+    def _claim_batch_primary(self, event: Event | None) -> bool:
+        """Whether ``event`` is the first ActionEvent of its LLM response.
+
+        Parallel tool calls share one ``llm_response_id`` and one per-request
+        ``TokenUsage``; showing it under every sibling reads as N separate
+        requests (#4189), so only the first "claims" the per-request numbers.
+        Stateful -- call once per event in render order. Batches render
+        consecutively, so tracking the previous response id is enough (O(1)).
+        """
+        if not isinstance(event, ActionEvent):
+            return True
+
+        is_primary = event.llm_response_id != self._last_action_response_id
+        self._last_action_response_id = event.llm_response_id
+        return is_primary
+
+    def _format_metrics_subtitle(
+        self, event: Event | None = None, *, force_totals: bool = False
+    ) -> str | None:
         """Format LLM metrics as a visually appealing subtitle string with icons,
         colors, and k/m abbreviations using conversation stats."""
         stats = self.conversation_stats
@@ -430,7 +463,7 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
         def fmt_rate(rate: float | None) -> str:
             return f"{rate * 100:.2f}%" if rate is not None else "N/A"
 
-        request_usage = self._find_request_usage(event)
+        request_usage = None if force_totals else self._find_request_usage(event)
         if request_usage is not None:
             input_str = (
                 f"↑ input {abbr(request_usage.prompt_tokens or 0)} "

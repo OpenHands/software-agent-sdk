@@ -239,14 +239,6 @@ def test_litellm_translates_sonnet_5_reasoning_to_adaptive_thinking(
 
 
 def test_bedrock_opus_4_8_strips_temp_top_p_without_thinking_block():
-    """Bedrock cross-region claude-opus-4-8 routes through the reasoning path.
-
-    LiteLLM metadata recognizes the Bedrock cross-region inference id. It must
-    take the reasoning_effort path (which strips temperature/top_p) and NOT the
-    manual-thinking path, which would inject the legacy
-    ``thinking.type=enabled`` block + ``interleaved-thinking`` header that
-    Anthropic now rejects for this model (see reverted #3427 / revert #3441).
-    """
     llm = DummyLLM(
         model="bedrock/us.anthropic.claude-opus-4-8-v1:0",
         top_p=1.0,  # SDK default

@@ -1,11 +1,11 @@
 import time
+from collections.abc import Mapping
 from functools import lru_cache
 from logging import getLogger
 from typing import Any
 
 import httpx
 from litellm import model_cost
-from litellm.types.utils import ModelInfo
 from litellm.utils import get_model_info
 from pydantic import SecretStr
 
@@ -15,13 +15,8 @@ from openhands.sdk.llm.utils.openhands_provider import litellm_call_kwargs
 logger = getLogger(__name__)
 
 
-def _merge_raw_model_metadata(model_info: ModelInfo) -> dict[str, Any]:
-    """Restore capability fields omitted by LiteLLM's typed ModelInfo.
-
-    LiteLLM's raw registry can add fields before its ``ModelInfo`` type exposes
-    them. Merging by the resolved registry key keeps those capabilities (for
-    example ``supports_sampling_params``) available to the SDK resolver.
-    """
+def _merge_raw_model_metadata(model_info: Mapping[str, Any]) -> dict[str, Any]:
+    """Preserve raw LiteLLM capability fields."""
     key = model_info.get("key")
     raw = model_cost.get(key) if isinstance(key, str) else None
     if not isinstance(raw, dict):

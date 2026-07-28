@@ -235,8 +235,14 @@ class WindowsTerminal(TerminalInterface):
         else:
             command = text
 
-        if enter and not command.endswith("\n"):
-            command += "\n"
+        if enter:
+            if "\n" in stripped_text or "\r" in stripped_text:
+                # PowerShell holds a multiline statement at the ">>" continuation
+                # prompt until a blank line is received, so multiline input needs a
+                # trailing empty line to execute.
+                command += "\n\n"
+            elif not command.endswith("\n"):
+                command += "\n"
         self._write_to_stdin(command)
 
     def _metadata_suffix(self) -> str:

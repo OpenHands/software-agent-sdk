@@ -296,7 +296,10 @@ class MCPTestFailure(BaseModel):
     )
 
 
-MCPTestResponse = MCPTestSuccess | MCPTestFailure
+MCPTestResponse = Annotated[
+    MCPTestSuccess | MCPTestFailure,
+    Field(discriminator="ok"),
+]
 
 
 class MCPOAuthStartResponse(BaseModel):

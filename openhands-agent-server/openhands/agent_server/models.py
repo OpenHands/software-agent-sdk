@@ -8,7 +8,6 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
-from openhands.sdk import LLM
 from openhands.sdk.agent.acp_models import ACPModelInfo
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.conversation_stats import ConversationStats
@@ -84,6 +83,7 @@ class StoredConversation(StartConversationRequest):
     # agent_profile_id is resolved into launched_agent_profile at creation; exclude from
     # the persistence payload so it does not re-appear in meta.json.
     agent_profile_id: UUID | None = Field(default=None, exclude=True)
+    required_runtime_credential_bindings: set[str] = Field(default_factory=set)
 
     id: OpenHandsUUID
     title: str | None = Field(
@@ -232,6 +232,21 @@ class _ConversationInfoBase(BaseModel):
         description=(
             "Event ID this conversation was forked at. ``None`` for non-forked "
             "conversations or whole-conversation forks."
+        ),
+    )
+    parent_conversation_id: UUID | None = Field(
+        default=None,
+        description=(
+            "ID of the conversation that owns this one. ``None`` for top-level "
+            "conversations."
+        ),
+    )
+    sub_conversation_ids: list[UUID] = Field(
+        default_factory=list,
+        description=(
+            "IDs of conversations naming this one as their parent. Derived from "
+            "the server catalog; empty on webhook payloads. Name mirrors the "
+            "Cloud API field."
         ),
     )
 
@@ -383,11 +398,6 @@ ACPConversationInfo: TypeAlias = ConversationInfo  # noqa: UP040
 ACPConversationPage: TypeAlias = ConversationPage  # noqa: UP040
 
 
-class ConversationResponse(BaseModel):
-    conversation_id: str
-    state: ConversationExecutionStatus
-
-
 class ConfirmationResponseRequest(BaseModel):
     """Payload to accept or reject a pending action."""
 
@@ -529,23 +539,6 @@ class NavigateConversationRequest(BaseModel):
             "conversation. ``None`` selects the empty tree."
         ),
     )
-
-
-class GenerateTitleRequest(BaseModel):
-    """Payload to generate a title for a conversation."""
-
-    max_length: int = Field(
-        default=50, ge=1, le=200, description="Maximum length of the generated title"
-    )
-    llm: LLM | None = Field(
-        default=None, description="Optional LLM to use for title generation"
-    )
-
-
-class GenerateTitleResponse(BaseModel):
-    """Response containing the generated conversation title."""
-
-    title: str = Field(description="The generated title for the conversation")
 
 
 class AskAgentRequest(BaseModel):

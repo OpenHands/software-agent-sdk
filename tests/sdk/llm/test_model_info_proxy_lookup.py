@@ -132,7 +132,7 @@ def test_raw_registry_capabilities_survive_typed_model_info_projection():
     }
     with patch.dict("openhands.sdk.llm.utils.model_info.model_cost", raw, clear=True):
         info = _merge_raw_model_metadata(
-            {"key": "future-model", "supports_reasoning": True}  # type: ignore[typeddict-item]
+            {"key": "future-model", "supports_reasoning": True}
         )
 
     assert info["supports_reasoning"] is True

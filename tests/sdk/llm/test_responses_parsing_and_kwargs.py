@@ -78,7 +78,6 @@ def test_normalize_responses_kwargs_policy():
     out = select_responses_options(
         llm, {"temperature": 0.3}, include=["text.output_text"], store=None
     )
-    # Explicit sampling values are preserved when metadata does not reject them.
     assert out["temperature"] == 0.3
     assert out["tool_choice"] == "auto"
     # include should contain original and encrypted_content
