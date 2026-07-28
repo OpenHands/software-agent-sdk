@@ -10,7 +10,6 @@ description: Guide for debugging failing example tests in the `test-examples` la
 The `run-examples.yml` workflow runs example scripts from `examples/` directory. Triggers:
 - Adding `test-examples` label to a PR
 - Manual workflow dispatch
-- Scheduled nightly runs
 
 ## Debugging Steps
 
