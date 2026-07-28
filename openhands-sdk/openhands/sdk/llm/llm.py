@@ -10,6 +10,7 @@ import warnings
 from collections.abc import AsyncIterable, Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
 
@@ -19,6 +20,7 @@ from pydantic import (
     Field,
     PrivateAttr,
     SecretStr,
+    computed_field,
     field_serializer,
     field_validator,
     model_validator,
@@ -121,6 +123,10 @@ from openhands.sdk.logger import ENV_LOG_DIR, get_logger
 
 
 logger = get_logger(__name__)
+_serialized_is_subscription = ContextVar(
+    "serialized_is_subscription",
+    default=False,
+)
 
 __all__ = ["LLM"]
 
@@ -606,20 +612,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         default=None,
         exclude=True,
     )
-    is_subscription: SkipJsonSchema[bool] = Field(
-        default=False,
-        description=(
-            "Whether this LLM uses subscription-based authentication. "
-            "Serialized so that subscription-specific request handling "
-            "survives transport to a remote agent-server."
-        ),
-    )
     _metrics: Metrics | None = PrivateAttr(default=None)
     # Runtime-only private attrs
     _model_info: Any = PrivateAttr(default=None)
     _tokenizer: Any = PrivateAttr(default=None)
     _chat_template_tokenizer: Any = PrivateAttr(default=None)
     _telemetry: Telemetry | None = PrivateAttr(default=None)
+    _is_subscription: bool = PrivateAttr(default=False)
     _subscription_credential_store: Any = PrivateAttr(default=None)
     _subscription_credentials: Any = PrivateAttr(default=None)
     _litellm_provider: str | None = PrivateAttr(default=None)
@@ -649,6 +648,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     # Validators
     # =========================================================================
+    @model_validator(mode="before")
+    @classmethod
+    def _capture_serialized_is_subscription(cls, data):
+        if isinstance(data, dict):
+            _serialized_is_subscription.set(bool(data.get("is_subscription")))
+        return data
+
     @field_validator(
         "api_key", "aws_access_key_id", "aws_secret_access_key", "aws_session_token"
     )
@@ -832,6 +838,35 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 metrics=self.metrics,
             )
         return self._telemetry
+
+    @computed_field(
+        return_type=bool,
+        description=(
+            "Whether this LLM uses subscription-based authentication. "
+            "Serialized so that subscription-specific request handling "
+            "survives transport to a remote agent-server."
+        ),
+    )
+    @property
+    def is_subscription(self) -> bool:
+        """Check if this LLM uses subscription-based authentication."""
+        return self._is_subscription
+
+    @is_subscription.setter
+    def is_subscription(self, value: bool) -> None:
+        self._is_subscription = value
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _restore_is_subscription(cls, data, handler):
+        token = _serialized_is_subscription.set(False)
+        try:
+            llm = handler(data)
+            if _serialized_is_subscription.get():
+                llm._is_subscription = True
+            return llm
+        finally:
+            _serialized_is_subscription.reset(token)
 
     def restore_metrics(self, metrics: Metrics) -> None:
         # Only used by ConversationStats to seed metrics
