@@ -47,7 +47,7 @@
     }
   },
   "config": {
-    "agentServerImage": "ghcr.io/openhands/agent-server:1.37.0-python"
+    "agentServerImage": "ghcr.io/openhands/agent-server:1.38.0-python"
   },
   "scripts": {
     "build": "tsc && node ./scripts/copy-json-assets.mjs && node ./scripts/rewrite-relative-imports.mjs",
@@ -55,6 +55,7 @@
     "check:agent-server-api": "node ./scripts/check-agent-server-api.mjs",
     "summarize:agent-server-api": "node ./scripts/summarize-agent-server-api.mjs",
     "test:agent-server-api-tooling": "node ./scripts/test-agent-server-api-tooling.mjs",
+    "test:endpoint-audit-tooling": "node ./scripts/test-endpoint-audit.mjs",
     "lint": "eslint src/**/*.ts",
     "lint:fix": "eslint src/**/*.ts --fix",
     "format": "prettier --write \"src/**/*.ts\" \"examples/**/*.ts\" \"scripts/**/*.mjs\"",

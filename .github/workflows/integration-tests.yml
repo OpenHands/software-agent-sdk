@@ -56,10 +56,10 @@ jobs:
         run: |
           docker run -d \
             --name agent-server \
-            -p ${{ env.AGENT_SERVER_PORT }}:8000 \
+            -p 127.0.0.1:${{ env.AGENT_SERVER_PORT }}:8000 \
             -v ${{ env.HOST_WORKSPACE_DIR }}:${{ env.AGENT_WORKSPACE_DIR }} \
             -e LOG_JSON=true \
-            ${{ env.AGENT_SERVER_IMAGE }}
+            ${{ env.AGENT_SERVER_IMAGE }} --host 0.0.0.0
 
           # Wait for container to start
           sleep 5
@@ -182,9 +182,9 @@ jobs:
           docker pull ${{ env.AGENT_SERVER_IMAGE }}
           docker run -d \
             --name agent-server \
-            -p 8010:8000 \
+            -p 127.0.0.1:8010:8000 \
             -v /tmp/agent-workspace:/workspace \
-            ${{ env.AGENT_SERVER_IMAGE }}
+            ${{ env.AGENT_SERVER_IMAGE }} --host 0.0.0.0
 
           # Wait for server
           sleep 10

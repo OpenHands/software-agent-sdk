@@ -82,7 +82,7 @@ issue. Ordinary client PRs never generate from the moving SDK branch.
 You'll need an AgentServer running somewhere for the client to connect to. You can run one in docker:
 
 ```bash
-docker run -p 8000:8000 -p 8001:8001 \
+docker run -p 127.0.0.1:8000:8000 -p 127.0.0.1:8001:8001 \
   -e OH_ENABLE_VNC=false \
   -e SESSION_API_KEY="$SESSION_API_KEY" \
   -e OH_ALLOW_CORS_ORIGINS='["*"]' \
@@ -448,14 +448,14 @@ Integration tests require a running agent-server in Docker with a mounted worksp
    chmod 777 /tmp/agent-workspace
    ```
 
-2. Start the agent-server container (software-agent-sdk v1.37.0):
+2. Start the agent-server container (software-agent-sdk v1.38.0):
 
    ```bash
    docker run -d \
      --name agent-server \
-     -p 8010:8000 \
+     -p 127.0.0.1:8010:8000 \
      -v /tmp/agent-workspace:/workspace \
-     ghcr.io/openhands/agent-server:1.37.0-python
+     ghcr.io/openhands/agent-server:1.38.0-python --host 0.0.0.0
    ```
 
 3. Wait for the server to be ready:

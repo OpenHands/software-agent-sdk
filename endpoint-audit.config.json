@@ -1,20 +1,47 @@
 {
-  "_comment": "Endpoint audit config. REPORT-ONLY: the audit runs on every PR, writes .audit/endpoint-audit.json, and posts a drift report as a PR comment, but does NOT fail CI (gate.mismatch=false). The client is reconciled against the agent-server only: any client call the agent-server does not expose is reported as off-contract. Additional `classify` specs are fetched live purely to label each off-contract call with the backend that actually serves it (e.g. cloud) vs no known backend at all; if a classify spec is unreachable its labels degrade to 'no known backend'. To make this a blocking gate, set gate.mismatch=true. See scripts/endpoint-audit.mjs.",
+  "_comment": "Endpoint audit config. REPORT-ONLY: the audit runs on every PR, writes .audit/endpoint-audit.json, and posts actionable Agent Server contract divergences as a PR comment, but does NOT fail CI. It uses the same exact pinned release artifact as generated types. Intentional client-ahead calls and routes exposed as authenticated URLs are documented below rather than reported as divergences. Clients for other backends must be excluded explicitly. To make either direction blocking, enable the corresponding gate below. See scripts/endpoint-audit.mjs.",
   "specs": [
     {
       "name": "agent-server",
       "role": "gate",
-      "url": "http://localhost:8010/openapi.json"
-    },
-    {
-      "name": "cloud",
-      "role": "classify",
-      "url": "https://app.all-hands.dev/openapi.json"
+      "source": "pinned-agent-server-release"
     }
   ],
   "clientGlobs": ["src/client", "src/conversation", "src/workspace"],
+  "excludeClientFiles": ["src/client/cloud-client.ts", "src/client/shared-client.ts"],
 
   "ignoreServerOnly": ["/v1/"],
+
+  "allowClientOnly": [
+    {
+      "endpoints": ["GET /", "GET /alive", "GET /health", "GET /ready", "GET /server_info"],
+      "reason": "Operational Agent Server endpoints intentionally excluded from the filtered public release artifact.",
+      "owner": "OpenHands runtime maintainers"
+    },
+    {
+      "endpoints": [
+        "DELETE /api/meta-profiles/{}",
+        "GET /api/meta-profiles",
+        "GET /api/meta-profiles/{}",
+        "POST /api/meta-profiles/{}",
+        "POST /api/meta-profiles/{}/activate"
+      ],
+      "reason": "Client-ahead API stacked on the pending Agent Server meta-profiles implementation.",
+      "owner": "OpenHands SDK maintainers",
+      "tracking": "https://github.com/OpenHands/software-agent-sdk/pull/3744"
+    }
+  ],
+
+  "coveredServerOperations": [
+    {
+      "endpoints": [
+        "GET /api/conversations/{}/workspace",
+        "GET /api/conversations/{}/workspace/{}"
+      ],
+      "reason": "RemoteWorkspace.startWorkspaceSession exposes these authenticated URLs for browser iframe and file requests; they are not HttpClient method calls.",
+      "owner": "OpenHands TypeScript client maintainers"
+    }
+  ],
 
   "gate": {
     "mismatch": false,
