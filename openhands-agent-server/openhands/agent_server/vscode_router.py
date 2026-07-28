@@ -8,8 +8,6 @@ from pydantic import BaseModel
 from openhands.agent_server.vscode_service import get_vscode_service
 from openhands.sdk.logger import get_logger
 
-WORKSPACE_BASE_DIR = Path("workspace").resolve()
-
 
 logger = get_logger(__name__)
 
@@ -49,14 +47,17 @@ async def get_vscode_url(
         )
 
     try:
+        workspace_base_dir = Path(vscode_service.config.workspace_path).resolve()
         resolved = Path(workspace_dir).resolve()
-        if not resolved.is_relative_to(WORKSPACE_BASE_DIR):
+        if not resolved.is_relative_to(workspace_base_dir):
             raise HTTPException(
                 status_code=400,
                 detail="workspace_dir must be within the workspace directory",
             )
         url = vscode_service.get_vscode_url(base_url, workspace_dir)
         return VSCodeUrlResponse(url=url)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting VSCode URL: {e}")
         raise HTTPException(status_code=500, detail="Failed to get VSCode URL")
