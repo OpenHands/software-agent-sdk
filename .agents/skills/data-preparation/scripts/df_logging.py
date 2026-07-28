@@ -13,19 +13,23 @@ Usage in pipeline scripts:
     # All operators use `llm` — interface is fully compatible.
 """
 
-from __future__ import annotations
+from __future__ import annotations  # noqa: I001
 
 import json
 import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+try:
+    from datetime import UTC as _UTC  # Python 3.11+
+except ImportError:
+    from datetime import timezone
 
-_UTC = UTC  # Python 3.10 compat: datetime.UTC requires 3.11+
+    _UTC = timezone.utc  # noqa: UP017 — Python 3.10
 
 
 class LoggingLLMServing:

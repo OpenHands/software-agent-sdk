@@ -10,16 +10,20 @@ Usage (called automatically by the platform command after pipeline completes):
 The report is written to ``<log_dir>/report.json``.
 """
 
-from __future__ import annotations
+from __future__ import annotations  # noqa: I001
 
 import argparse
 import json
 import sys
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 
+try:
+    from datetime import UTC as _UTC  # Python 3.11+
+except ImportError:
+    from datetime import timezone
 
-_UTC = UTC  # Python 3.10 compat: datetime.UTC requires 3.11+
+    _UTC = timezone.utc  # noqa: UP017 — Python 3.10
 
 
 MAX_ERROR_SAMPLES = 20
