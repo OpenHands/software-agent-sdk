@@ -13,6 +13,7 @@ class DummyFeatures:
         self.supports_responses_api = model == "openai/gpt-5-mini"
         self.force_string_serializer = False
         self.send_reasoning_content = False
+        self.requires_inline_image_data = False
 
 
 def test_model_canonical_name_used_for_capabilities(monkeypatch):
