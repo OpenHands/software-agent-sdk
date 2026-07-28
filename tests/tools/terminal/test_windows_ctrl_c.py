@@ -61,13 +61,8 @@ def _wait_for_powershell_process_exit(pid: int, timeout: float = 5.0) -> bool:
 
 
 @pytest.mark.timeout(20)
-def test_windows_ctrl_c_interrupt_kills_child_process_tree(tmp_path) -> None:
-    """Ctrl-C after a timeout should stop the process that kept the command alive.
-
-    This captures the behavior promised by the timeout prompt. The current
-    PowerShell backend sends CTRL_BREAK to the persistent PowerShell process, but
-    does not ensure child processes launched by the command are terminated.
-    """
+def test_windows_ctrl_c_interrupt_kills_child_process(tmp_path) -> None:
+    """Ctrl-C after a timeout stops the child that kept the command alive."""
     pid_path = tmp_path / "child.pid"
     script_path = tmp_path / "wait_on_child.ps1"
     # Use native path for PowerShell (str() gives Windows-style on Windows)
