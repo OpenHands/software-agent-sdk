@@ -2561,6 +2561,106 @@ def test_fork_conversation_duplicate_id_returns_409(
         client.app.dependency_overrides.clear()
 
 
+def test_fork_conversation_from_event_id_passed_through(
+    client, mock_conversation_service, sample_conversation_info, sample_conversation_id
+):
+    """fork with from_event_id forwards the branch point to the service."""
+    mock_conversation_service.fork_conversation.return_value = sample_conversation_info
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/fork",
+            json={"from_event_id": "evt-123"},
+        )
+
+        assert response.status_code == 201
+        _, kwargs = mock_conversation_service.fork_conversation.call_args
+        assert kwargs["from_event_id"] == "evt-123"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_fork_conversation_unknown_from_event_id_returns_404(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """fork with an unknown from_event_id surfaces as a 404."""
+    mock_conversation_service.fork_conversation.side_effect = ValueError(
+        "Unknown from_event_id: evt-missing"
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/fork",
+            json={"from_event_id": "evt-missing"},
+        )
+
+        assert response.status_code == 404
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_navigate_conversation_success(
+    client, mock_conversation_service, sample_conversation_info, sample_conversation_id
+):
+    """navigate returns the updated conversation info and forwards event_id."""
+    mock_conversation_service.navigate_conversation.return_value = (
+        sample_conversation_info
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/navigate",
+            json={"event_id": "evt-42"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["id"] == str(sample_conversation_info.id)
+        _, kwargs = mock_conversation_service.navigate_conversation.call_args
+        assert kwargs["event_id"] == "evt-42"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize("failure_mode", ["missing_conversation", "unknown_event"])
+def test_navigate_conversation_returns_404(
+    client, mock_conversation_service, sample_conversation_id, failure_mode
+):
+    """navigate returns 404 for a missing conversation or an unknown event."""
+    if failure_mode == "missing_conversation":
+        mock_conversation_service.navigate_conversation.return_value = None
+    else:
+        mock_conversation_service.navigate_conversation.side_effect = ValueError(
+            "Unknown event_id: evt-missing"
+        )
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/navigate",
+            json={"event_id": "evt-42"},
+        )
+
+        assert response.status_code == 404
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_start_conversation_client_tool_registration_error_returns_422(
     client, mock_conversation_service
 ):

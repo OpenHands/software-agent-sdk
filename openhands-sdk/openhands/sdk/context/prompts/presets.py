@@ -6,7 +6,7 @@
 reproduces ``AgentBase.static_system_message``. The ``"planning"`` preset is a
 distinct standalone composition (ported from ``system_prompt_planning.j2``) that
 omits the default OpenHands sections. The dynamic-tier sections are **shared** --
-datetime/repo/skills/suffix/secrets are preset-independent -- so a planning agent
+repo/skills/suffix/secrets/datetime are preset-independent -- so a planning agent
 with an ``agent_context`` still gets its dynamic block.
 """
 
@@ -20,6 +20,7 @@ from openhands.sdk.context.prompts.sections.dynamic import (
     CustomSecretsSection,
     CustomSuffixSection,
     DateTimeSection,
+    MemoryContextSection,
     RepoContextSection,
 )
 from openhands.sdk.context.prompts.sections.planning import PlanningSection
@@ -79,11 +80,14 @@ _DEFAULT_STATIC_SECTIONS: Final[tuple[PromptSection, ...]] = (
 _PLANNING_STATIC_SECTIONS: Final[tuple[PromptSection, ...]] = (PlanningSection(),)
 
 _DYNAMIC_SECTIONS: Final[tuple[PromptSection, ...]] = (
-    DateTimeSection(),
     RepoContextSection(),  # guard: gated repo skills present
+    MemoryContextSection(),  # guard: resolved memory present
     AvailableSkillsSection(),  # guard: available_skills_prompt
     CustomSuffixSection(),  # guard: system_message_suffix
     CustomSecretsSection(),  # guard: secret_infos present
+    # DateTimeSection is intentionally last: it is the only per-conversation
+    # volatile value, so the stable dynamic content stays a cache-friendly prefix.
+    DateTimeSection(),
 )
 
 

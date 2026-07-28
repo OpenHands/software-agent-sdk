@@ -537,7 +537,7 @@ jobs:
             - name: Pytest coverage PR comment
               if: always()
               continue-on-error: true
-              uses: MishaKav/pytest-coverage-comment@dd5b80bde6d16941f336518e92929e89069d8451 # v1
+              uses: MishaKav/pytest-coverage-comment@fd9adbdca9fdfbe2b9bfa44a7340e6a83346ce6c # v1
               with:
                   github-token: ${{ secrets.GITHUB_TOKEN }}
                   pytest-xml-coverage-path: coverage.xml

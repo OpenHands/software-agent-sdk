@@ -64,6 +64,8 @@ async def test_websocket_subscriber_call_success(mock_websocket):
 
 
 @pytest.mark.asyncio
+@pytest.mark.asyncio
+@pytest.mark.asyncio
 async def test_websocket_subscriber_call_exception(mock_websocket):
     """Test exception handling in WebSocket subscriber."""
     mock_websocket.send_json.side_effect = Exception("Connection error")

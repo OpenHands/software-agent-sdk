@@ -1,5 +1,6 @@
 """Tests for LLM completion functionality, configuration, and metrics tracking."""
 
+import asyncio
 import threading
 from collections.abc import Sequence
 from typing import Any, ClassVar
@@ -133,6 +134,126 @@ def test_litellm_modify_params_context_serializes_threads():
     assert llm_module.litellm.modify_params == original
 
 
+class _CountingLock:
+    """threading.Lock wrapper that counts successful acquires/releases.
+
+    Lets a test deterministically wait for a release that happens on a
+    different thread than the one that acquired -- here, the release scheduled
+    by the async guard's cancellation done-callback.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._counter_lock = threading.Lock()
+        self.acquired = 0
+        self.released = 0
+
+    def acquire(self, *args, **kwargs) -> bool:
+        got = self._lock.acquire(*args, **kwargs)
+        if got:
+            with self._counter_lock:
+                self.acquired += 1
+        return got
+
+    def release(self) -> None:
+        self._lock.release()
+        with self._counter_lock:
+            self.released += 1
+
+    def locked(self) -> bool:
+        return self._lock.locked()
+
+
+async def _await_condition(pred, timeout: float = 2.0) -> bool:
+    """Poll ``pred`` off-loop-friendly: yields so scheduled callbacks run."""
+    for _ in range(int(timeout / 0.01)):
+        if pred():
+            return True
+        await asyncio.sleep(0.01)
+    return pred()
+
+
+async def test_alitellm_modify_params_ctx_releases_lock_on_cancel(monkeypatch):
+    """Regression: cancelling the async modify-params guard while it waits for
+    the lock must not leak the lock.
+
+    The acquire runs on an uninterruptible worker thread, so it still takes the
+    lock after the coroutine is cancelled. If that acquisition is not released,
+    every subsequent LLM call in the process wedges forever -- worse than the
+    freeze this guard was added to fix.
+    """
+    # Isolate from the process-wide class lock so a regression here cannot
+    # wedge the rest of the suite.
+    lock = _CountingLock()
+    monkeypatch.setattr(LLM, "_litellm_modify_params_lock", lock)
+    llm = LLM.model_construct(modify_params=True)
+
+    # Simulate a concurrent *sync* holder (condenser / non-async agent step)
+    # that owns the lock for the whole round trip.
+    assert lock.acquire()
+
+    async def enter_guard():
+        async with llm._alitellm_modify_params_ctx(True):
+            pass  # never reached while the sync holder owns the lock
+
+    task = asyncio.ensure_future(enter_guard())
+    # Let the coroutine reach the blocking acquire() on the worker thread.
+    await asyncio.sleep(0.1)
+    assert not task.done()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # Release the sync holder so the (uninterruptible) worker-thread acquire
+    # can now complete -- this is what would leak the lock without the fix.
+    lock.release()
+
+    # The worker acquire completes (acquired == 2); the done-callback must then
+    # release it (released == 2). Poll deterministically on the counters rather
+    # than racing the callback for the lock's state.
+    settled = await _await_condition(lambda: lock.acquired >= 2 and lock.released >= 2)
+    assert settled, "cancelled acquire never released the lock (leak)"
+    assert not lock.locked(), "modify_params lock left held after cancellation"
+
+
+async def test_alitellm_modify_params_ctx_waits_off_event_loop(monkeypatch):
+    """The async guard must wait for the lock off the event-loop thread.
+
+    While a concurrent sync holder owns the lock, entering the guard must not
+    freeze the loop: a heartbeat coroutine keeps ticking, and the guard only
+    proceeds once the holder releases.
+    """
+    lock = threading.Lock()
+    monkeypatch.setattr(LLM, "_litellm_modify_params_lock", lock)
+    llm = LLM.model_construct(modify_params=True)
+
+    assert lock.acquire()  # sync holder
+
+    entered = asyncio.Event()
+
+    async def enter_guard():
+        async with llm._alitellm_modify_params_ctx(True):
+            entered.set()
+
+    task = asyncio.ensure_future(enter_guard())
+
+    # The loop stays responsive while the guard blocks on the held lock.
+    ticks = 0
+    for _ in range(10):
+        await asyncio.sleep(0.01)
+        ticks += 1
+    assert ticks == 10
+    assert not entered.is_set()
+    assert not task.done()
+
+    # Release -> guard acquires, runs its body, and releases cleanly.
+    lock.release()
+    await asyncio.wait_for(task, timeout=2)
+    assert entered.is_set()
+    assert not lock.locked()
+
+
 @patch("openhands.sdk.llm.llm.litellm_completion")
 def test_llm_completion_basic(mock_completion):
     """Test basic LLM completion functionality."""
@@ -167,15 +288,21 @@ def test_llm_completion_basic(mock_completion):
     assert not llm.should_mock_tool_calls(cc_tools)
 
 
-def test_llm_streaming_not_supported(default_config):
-    """Test that streaming requires an on_token callback."""
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_llm_streaming_without_callback_degrades(mock_completion, default_config):
+    """Streaming requested without an on_token callback degrades to a plain
+    non-streaming completion instead of crashing the run (#4014)."""
     llm = default_config
+    mock_completion.return_value = create_mock_response("Test response")
 
     messages = [Message(role="user", content=[TextContent(text="Hello")])]
 
-    # Streaming without callback should raise an error
-    with pytest.raises(ValueError, match="Streaming requires an on_token callback"):
-        llm.completion(messages=messages, stream=True)
+    response = llm.completion(messages=messages, stream=True)
+
+    # No stream kwarg is forwarded to litellm — the call ran non-streaming.
+    assert mock_completion.call_args.kwargs.get("stream") in (None, False)
+    assert isinstance(response.message.content[0], TextContent)
+    assert response.message.content[0].text == "Test response"
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
@@ -970,3 +1097,180 @@ async def test_acompletion_retries_without_caching_on_prompt_cache_too_small(
     # Caller kwargs preserved on the retry — without _caller_kwargs the retry
     # would silently drop them.
     assert second_call_kwargs.get("metadata") == {"trace": "abc"}
+
+
+# ---------------------------------------------------------------------------
+# Streaming path tolerance: the SDK must accept any iterable of
+# ``ModelResponseStream`` chunks, not only ``litellm.CustomStreamWrapper``.
+# Third-party litellm wrappers (e.g. lmnr's instrumentor in versions inside the
+# pinned range) can swap the container type for streaming calls, which used to
+# trip the assert in ``_transport_call`` / ``_atransport_call`` (issue #3972).
+# ---------------------------------------------------------------------------
+
+
+def _make_streaming_chunks(text: str = "Hello world!"):
+    """Build the three-chunk ``ModelResponseStream`` sequence used in tests."""
+    chunks = [
+        ModelResponseStream(
+            id="chatcmpl-test",
+            choices=[
+                StreamingChoices(
+                    finish_reason=None,
+                    index=0,
+                    delta=Delta(content="Hello", role="assistant"),
+                )
+            ],
+            created=1234567890,
+            model="gpt-4o",
+            object="chat.completion.chunk",
+        ),
+        ModelResponseStream(
+            id="chatcmpl-test",
+            choices=[
+                StreamingChoices(
+                    finish_reason=None,
+                    index=0,
+                    delta=Delta(content=" world!", role=None),
+                )
+            ],
+            created=1234567890,
+            model="gpt-4o",
+            object="chat.completion.chunk",
+        ),
+        ModelResponseStream(
+            id="chatcmpl-test",
+            choices=[
+                StreamingChoices(
+                    finish_reason="stop",
+                    index=0,
+                    delta=Delta(content=None, role=None),
+                )
+            ],
+            created=1234567890,
+            model="gpt-4o",
+            object="chat.completion.chunk",
+        ),
+    ]
+    assert "".join((c.choices[0].delta.content or "") for c in chunks) == text
+    return chunks
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm.stream_chunk_builder")
+def test_streaming_accepts_plain_iterator(mock_stream_builder, mock_completion):
+    """A sync iterator (no ``CustomStreamWrapper``) must still drive streaming.
+
+    Regression test for issue #3972: ``_transport_call`` used to assert
+    ``isinstance(ret, CustomStreamWrapper)``; when lmnr's litellm
+    instrumentation replaced the wrapper with a plain generator, the assert
+    failed before any chunk could be processed.
+    """
+    chunks = _make_streaming_chunks()
+    mock_completion.return_value = iter(chunks)
+    mock_stream_builder.return_value = create_mock_response("Hello world!")
+
+    llm = LLM(
+        usage_id="test-llm",
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        num_retries=2,
+        retry_min_wait=1,
+        retry_max_wait=2,
+    )
+
+    received: list[ModelResponseStream] = []
+    response = llm.completion(
+        messages=[Message(role="user", content=[TextContent(text="Hi")])],
+        stream=True,
+        on_token=received.append,
+    )
+
+    assert received == chunks
+    mock_stream_builder.assert_called_once()
+    assert response.message.role == "assistant"
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.litellm_acompletion", new_callable=AsyncMock)
+@patch("openhands.sdk.llm.llm.litellm.stream_chunk_builder")
+async def test_streaming_accepts_async_generator(mock_stream_builder, mock_acompletion):
+    """An async generator (not ``CustomStreamWrapper``) must still drive streaming.
+
+    Mirrors the lmnr wrapper's exact behavior from issue #3972: the wrapped
+    call returns ``process_streaming_coroutine()`` -- an ``async_generator``
+    object -- instead of ``CustomStreamWrapper``. The SDK must iterate it
+    transparently.
+    """
+
+    async def _chunks():
+        for chunk in _make_streaming_chunks():
+            yield chunk
+
+    mock_acompletion.return_value = _chunks()
+    mock_stream_builder.return_value = create_mock_response("Hello world!")
+
+    llm = LLM(
+        usage_id="test-llm",
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        num_retries=2,
+        retry_min_wait=1,
+        retry_max_wait=2,
+    )
+
+    received: list[ModelResponseStream] = []
+    response = await llm.acompletion(
+        messages=[Message(role="user", content=[TextContent(text="Hi")])],
+        stream=True,
+        on_token=received.append,
+    )
+
+    assert len(received) == 3
+    mock_stream_builder.assert_called_once()
+    assert response.message.role == "assistant"
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.litellm_acompletion", new_callable=AsyncMock)
+@patch("openhands.sdk.llm.llm.litellm.stream_chunk_builder")
+async def test_streaming_accepts_sync_generator_in_async_path(
+    mock_stream_builder, mock_acompletion
+):
+    """A sync generator returned from the async transport path must work.
+
+    Regression test for Engel's review comment on PR #3975: lmnr 0.7.47's
+    litellm wrapper wraps ``litellm.completion`` (sync) and the resulting
+    sync generator propagates back through ``litellm_acompletion``. The
+    awaited value is therefore a plain ``generator`` (no ``__aiter__``)
+    rather than an async generator. ``_atransport_call`` must detect this
+    at runtime and iterate via plain ``for`` instead of ``async for``.
+    """
+    chunks = _make_streaming_chunks()
+
+    def _return_sync_generator(*args, **kwargs):
+        # ``await litellm_acompletion(...)`` evaluates to this value in
+        # the lmnr-async case — a plain sync generator.
+        return (c for c in chunks)
+
+    mock_acompletion.side_effect = _return_sync_generator
+    mock_stream_builder.return_value = create_mock_response("Hello world!")
+
+    llm = LLM(
+        usage_id="test-llm",
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        num_retries=2,
+        retry_min_wait=1,
+        retry_max_wait=2,
+    )
+
+    received: list[ModelResponseStream] = []
+    response = await llm.acompletion(
+        messages=[Message(role="user", content=[TextContent(text="Hi")])],
+        stream=True,
+        on_token=received.append,
+    )
+
+    assert received == chunks
+    mock_stream_builder.assert_called_once()
+    assert response.message.role == "assistant"

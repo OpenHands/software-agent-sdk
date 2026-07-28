@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.event import ActionEvent, MessageEvent, ObservationEvent
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
+from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.tool import Action, Observation
 from openhands.tools.delegate import DelegationVisualizer
 
@@ -188,6 +189,61 @@ def test_delegation_visualizer_action_event():
     assert "Lodging Expert Agent Action" in str(block.renderables[0])
 
 
+def test_delegation_visualizer_action_event_shows_per_request_usage():
+    """Regression: DelegationVisualizer overrides _create_event_block and must
+    forward the event into _format_metrics_subtitle. Without it, ActionEvent
+    subtitles silently stay cumulative-only while Condensation (handled by the
+    parent class, and the only other event type carrying an llm_response_id)
+    shows per-request numbers, mixing formats within a single delegate
+    transcript (#4105)."""
+    stats = ConversationStats()
+    metrics = Metrics(model_name="test-model")
+    metrics.add_token_usage(
+        prompt_tokens=1000,
+        completion_tokens=100,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        reasoning_tokens=0,
+        context_window=8000,
+        response_id="response_1",
+    )
+    metrics.add_token_usage(
+        prompt_tokens=2000,
+        completion_tokens=200,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        reasoning_tokens=0,
+        context_window=8000,
+        response_id="response_2",
+    )
+    stats.usage_to_metrics["agent"] = metrics
+
+    visualizer = DelegationVisualizer(name="lodging_expert")
+    mock_state = MagicMock()
+    mock_state.stats = stats
+    mock_state.events = []
+    visualizer.initialize(mock_state)
+
+    action = MockDelegateAction(command="search hotels")
+    tool_call = create_tool_call("call_123", "search", {"command": "search hotels"})
+    action_event = ActionEvent(
+        thought=[TextContent(text="Searching for hotels")],
+        action=action,
+        tool_name="search",
+        tool_call_id="call_123",
+        tool_call=tool_call,
+        llm_response_id="response_2",
+    )
+
+    block = visualizer._create_event_block(action_event)
+
+    assert block is not None
+    rendered = "".join(str(r) for r in block.renderables)
+    # Per-request usage for response_2, not just the running cumulative total.
+    assert "input 2K (total 3K)" in rendered
+    assert "output 200 (total 300)" in rendered
+
+
 def test_delegation_visualizer_observation_event():
     """Test observation event shows agent name in title."""
     visualizer = DelegationVisualizer(name="main_delegator")
@@ -244,3 +300,98 @@ def test_delegation_visualizer_create_sub_visualizer_with_defaults():
     # Default values should be inherited
     assert sub_visualizer._highlight_patterns is not None  # Has default patterns
     assert sub_visualizer._skip_user_messages is False
+
+
+def test_delegation_visualizer_user_message_labels_totals():
+    """User MessageEvents carry no llm_response_id, so the delegate message
+    block can only show running totals -- they must be labeled "(total)"
+    instead of printed as bare numbers next to per-request subtitles (#4105)."""
+    stats = ConversationStats()
+    metrics = Metrics(model_name="test-model")
+    metrics.add_token_usage(
+        prompt_tokens=1000,
+        completion_tokens=100,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        reasoning_tokens=0,
+        context_window=8000,
+        response_id="response_1",
+    )
+    stats.usage_to_metrics["agent"] = metrics
+
+    visualizer = DelegationVisualizer(name="MainAgent")
+    mock_state = MagicMock()
+    mock_state.stats = stats
+    mock_state.events = []
+    visualizer.initialize(mock_state)
+
+    user_message = Message(role="user", content=[TextContent(text="Hello")])
+    user_event = MessageEvent(source="user", llm_message=user_message)
+    block = visualizer._create_message_event_block(user_event)
+
+    assert block is not None
+    rendered = "".join(str(r) for r in block.renderables)
+    assert "input (total 1K)" in rendered
+    assert "output (total 100)" in rendered
+    assert "$ (total 0.00)" in rendered
+
+
+def _delegate_batch_action(call_id: str, response_id: str) -> ActionEvent:
+    """Build an ActionEvent for a delegate parallel-batch test."""
+    return ActionEvent(
+        thought=[TextContent(text="Searching")],
+        action=MockDelegateAction(command="search"),
+        tool_name="search",
+        tool_call_id=call_id,
+        tool_call=create_tool_call(call_id, "search", {}),
+        llm_response_id=response_id,
+    )
+
+
+def test_delegation_visualizer_parallel_batch_siblings_fall_back():
+    """Parallel tool calls in a delegate transcript: only the first ActionEvent
+    of the shared-llm_response_id batch shows per-request numbers; siblings show
+    totals-only so the same usage isn't repeated under each event (#4189)."""
+    stats = ConversationStats()
+    metrics = Metrics(model_name="test-model")
+    # Prior request so the running total (3K/300) differs from this batch's
+    # per-request usage (2K/200).
+    metrics.add_token_usage(
+        prompt_tokens=1000,
+        completion_tokens=100,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        reasoning_tokens=0,
+        context_window=8000,
+        response_id="resp_prev",
+    )
+    metrics.add_token_usage(
+        prompt_tokens=2000,
+        completion_tokens=200,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        reasoning_tokens=0,
+        context_window=8000,
+        response_id="resp_batch",
+    )
+    stats.usage_to_metrics["agent"] = metrics
+
+    a1 = _delegate_batch_action("call_1", "resp_batch")
+    a2 = _delegate_batch_action("call_2", "resp_batch")
+
+    visualizer = DelegationVisualizer(name="lodging_expert")
+    mock_state = MagicMock()
+    mock_state.stats = stats
+    visualizer.initialize(mock_state)
+
+    # Rendered in stream order: a1 is the batch primary, a2 a sibling.
+    primary_block = visualizer._create_event_block(a1)
+    sibling_block = visualizer._create_event_block(a2)
+    assert primary_block is not None and sibling_block is not None
+    primary = "".join(str(r) for r in primary_block.renderables)
+    sibling = "".join(str(r) for r in sibling_block.renderables)
+
+    # Primary shows per-request usage; the sibling shows totals-only.
+    assert "input 2K (total 3K)" in primary
+    assert "input (total 3K)" in sibling
+    assert "input 2K" not in sibling

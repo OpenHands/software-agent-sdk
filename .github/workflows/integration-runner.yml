@@ -21,8 +21,8 @@ on:
                 default: all
             model_ids:
                 description: >-
-                    Comma-separated model IDs to test (resolved via OpenHands/evaluation).
-                    Example: gpt-5.5,glm-4.7. Defaults to a standard set.
+                    Comma-separated model IDs to test (resolved by the inline table).
+                    Example: gpt-5.5,claude-sonnet-4-6. Defaults to a standard set.
                 required: false
                 default: ''
                 type: string
@@ -49,8 +49,8 @@ on:
 
 env:
     N_PROCESSES: 4 # Global configuration for number of parallel processes for evaluation
-    # Default models for scheduled/label-triggered runs (resolved via OpenHands/evaluation)
-    DEFAULT_MODEL_IDS: gpt-5.5,deepseek-v4-flash,minimax-m2.7,gemini-3.1-pro
+    # Default models for scheduled/label-triggered runs (resolved by the inline table below)
+    DEFAULT_MODEL_IDS: gpt-5.5,deepseek-v4-flash,minimax-m2.7,gemini-3.1-pro,claude-sonnet-4-6
 
 jobs:
     setup-matrix:
@@ -92,8 +92,7 @@ jobs:
 
                   export MODEL_IDS
 
-                  # Resolve model configs using OpenHands/evaluation's model config.
-                  # Transform output to matrix format for integration tests.
+                  # Transform model configs to matrix format for integration tests.
                   MATRIX=$(python3 << 'EOF'
                   import json
                   import os
@@ -111,6 +110,8 @@ jobs:
                           "llm_config": {"model": "litellm_proxy/minimax/MiniMax-M2.7", "temperature": 1.0, "top_p": 0.95}},
                       "gemini-3.1-pro": {"display_name": "Gemini 3.1 Pro",
                           "llm_config": {"model": "litellm_proxy/gemini-3.1-pro-preview", "temperature": 0.0}},
+                      "claude-sonnet-4-6": {"display_name": "Claude Sonnet 4.6",
+                          "llm_config": {"model": "litellm_proxy/anthropic/claude-sonnet-4-6", "temperature": 0.0}},
                   }
 
                   model_ids = os.environ["MODEL_IDS"].split(",")

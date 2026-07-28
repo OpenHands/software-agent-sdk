@@ -157,7 +157,8 @@ class ACPProviderInfo:
     """ACP session-mode ID set right after ``session/new``.
 
     For servers with a permission-suppressing mode that is the value:
-    ``bypassPermissions`` (claude-agent-acp), ``full-access`` (codex-acp).
+    ``bypassPermissions`` (claude-agent-acp), ``agent-full-access``
+    (@agentclientprotocol/codex-acp).
     gemini-cli uses ``default`` (its ``yolo`` mode errors at init); the ACP
     bridge auto-approves permission requests, so the mode doesn't gate prompts.
     """
@@ -308,11 +309,16 @@ _CLAUDE_MODELS: tuple[ACPModelOption, ...] = (
     ACPModelOption(id="haiku", label="Claude Haiku 4.5"),
 )
 
-# Bare preset ids the ``@zed-industries/codex-acp`` 0.16 ``model`` configOptions
-# select reports at ``session/new`` (``set_config_option(configId="model")``
-# targets). The reasoning-effort tier is a *separate* ``reasoning_effort``
-# configOption on 0.16, not part of the model id, so it is not encoded here.
+# Bare preset ids advertised by the Codex app server through
+# ``@agentclientprotocol/codex-acp`` 1.1.2. The reasoning-effort tier is a
+# separate ``reasoning_effort`` configOption, not part of the model id, so it is
+# not encoded here. GPT-5.6 variants are rollout/account-dependent suggestions;
+# the adapter's live model list remains authoritative.
 _CODEX_MODELS: tuple[ACPModelOption, ...] = (
+    ACPModelOption(id="gpt-5.6", label="GPT-5.6"),
+    ACPModelOption(id="gpt-5.6-sol", label="GPT-5.6 Sol"),
+    ACPModelOption(id="gpt-5.6-terra", label="GPT-5.6 Terra"),
+    ACPModelOption(id="gpt-5.6-luna", label="GPT-5.6 Luna"),
     ACPModelOption(id="gpt-5.5", label="GPT-5.5"),
     ACPModelOption(id="gpt-5.4", label="GPT-5.4"),
     ACPModelOption(id="gpt-5.4-mini", label="GPT-5.4 Mini"),
@@ -378,11 +384,11 @@ _GEMINI_FILE_SECRETS: tuple[ACPFileSecretSpec, ...] = (
 # `ACPAgentSettings.resolve_acp_command` runs the pinned `binary_name` instead,
 # so the `@version` suffix is a no-op there.
 #
-# claude-agent-acp 0.44+ / codex-acp 0.16+ select the model via a ``model``
-# ``configOptions`` entry rather than ``session/set_model``; the SDK detects
-# which per session and applies it through the matching call.
+# claude-agent-acp 0.44+ / codex-acp select the model via a ``model``
+# ``configOptions`` entry (and retain the legacy ``session/set_model``
+# extension); the SDK detects which mechanism each session advertises.
 CLAUDE_AGENT_ACP_VERSION = "0.44.0"
-CODEX_ACP_VERSION = "0.16.0"
+CODEX_ACP_VERSION = "1.1.2"
 GEMINI_CLI_VERSION = "0.46.0"
 
 
@@ -423,11 +429,11 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             default_command=(
                 "npx",
                 "-y",
-                f"@zed-industries/codex-acp@{CODEX_ACP_VERSION}",
+                f"@agentclientprotocol/codex-acp@{CODEX_ACP_VERSION}",
             ),
             api_key_env_var="OPENAI_API_KEY",
             base_url_env_var="OPENAI_BASE_URL",
-            default_session_mode="full-access",
+            default_session_mode="agent-full-access",
             agent_name_patterns=("codex-acp",),
             supports_set_session_model=True,
             supports_runtime_model_switch=True,
@@ -526,7 +532,7 @@ def detect_acp_provider_by_command(
     *caller-controlled*: each token is reduced to its basename (last path segment,
     minus a trailing ``@version`` pin) and a provider matches only when that
     basename *starts with* one of its patterns. This accepts the real forms —
-    ``@zed-industries/codex-acp``, ``@google/gemini-cli@0.46.0``,
+    ``@agentclientprotocol/codex-acp``, ``@google/gemini-cli@0.46.0``,
     ``/opt/node_modules/.bin/codex-acp`` — while rejecting incidental substrings
     like ``my-codex-acp-wrapper`` or ``/opt/shims/not-codex-acp`` that a plain
     substring test would misattribute.

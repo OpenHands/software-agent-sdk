@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from openhands.agent_server.plugins_service import (
     MarketplacePluginInfo,
+    PluginSkillSummary,
     service_disable_plugin,
     service_enable_plugin,
     service_get_installed_plugin,
@@ -23,11 +24,13 @@ from openhands.agent_server.plugins_service import (
     service_install_plugin,
     service_list_available_plugins,
     service_list_installed_plugins,
+    service_load_plugin_contents,
+    service_plugin_contents,
     service_uninstall_plugin,
     service_update_plugin,
 )
 from openhands.sdk.extensions.fetch import ExtensionFetchError
-from openhands.sdk.plugin import InstalledPluginInfo, PluginFetchError
+from openhands.sdk.plugin import InstalledPluginInfo, Plugin, PluginFetchError
 
 
 plugins_router = APIRouter(prefix="/plugins", tags=["Plugins"])
@@ -73,6 +76,14 @@ class PluginInfo(BaseModel):
     name: str
     version: str = ""
     description: str = ""
+    path: str = Field(default="", description="Path to the plugin directory")
+    skills: list[PluginSkillSummary] = Field(
+        default_factory=list, description="Skills bundled in the plugin"
+    )
+    files: list[str] = Field(
+        default_factory=list,
+        description="Plugin files, relative to the plugin directory",
+    )
 
 
 class PluginsResponse(BaseModel):
@@ -119,6 +130,14 @@ class InstalledPluginResponse(BaseModel):
     )
     installed_at: str = Field(description="ISO 8601 timestamp of installation")
     install_path: str = Field(description="Path where the plugin is installed")
+    skills: list[PluginSkillSummary] | None = Field(
+        default=None,
+        description="Skills bundled in the plugin (None if it failed to load)",
+    )
+    files: list[str] | None = Field(
+        default=None,
+        description="Plugin files, relative to install_path (None if load failed)",
+    )
 
     @classmethod
     def from_plugin_info(cls, info: InstalledPluginInfo) -> "InstalledPluginResponse":
@@ -173,6 +192,28 @@ class MarketplaceCatalogResponse(BaseModel):
     plugins: list[MarketplacePluginInfo]
 
 
+def _installed_response(info: InstalledPluginInfo) -> InstalledPluginResponse:
+    """Build an installed-plugin response enriched with the plugin's contents."""
+    response = InstalledPluginResponse.from_plugin_info(info)
+    contents = service_load_plugin_contents(info.install_path)
+    if contents is not None:
+        response.skills, response.files = contents
+    return response
+
+
+def _plugin_info(plugin: Plugin) -> PluginInfo:
+    """Build an available-plugin summary including its contents."""
+    skills, files = service_plugin_contents(plugin)
+    return PluginInfo(
+        name=plugin.name,
+        version=plugin.version,
+        description=plugin.description,
+        path=plugin.path,
+        skills=skills,
+        files=files,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -193,12 +234,7 @@ def get_plugins(request: PluginsRequest) -> PluginsResponse:
         load_project=request.load_project,
         project_dir=request.project_dir,
     )
-    return PluginsResponse(
-        plugins=[
-            PluginInfo(name=p.name, version=p.version, description=p.description)
-            for p in plugins
-        ]
-    )
+    return PluginsResponse(plugins=[_plugin_info(p) for p in plugins])
 
 
 @plugins_router.post(
@@ -219,7 +255,7 @@ def install_plugin_endpoint(request: InstallPluginRequest) -> InstalledPluginRes
             repo_path=request.repo_path,
             force=request.force,
         )
-        return InstalledPluginResponse.from_plugin_info(info)
+        return _installed_response(info)
     except FileExistsError:
         raise HTTPException(
             status_code=409,
@@ -242,7 +278,7 @@ def list_installed_plugins_endpoint() -> InstalledPluginsListResponse:
     """List all installed plugins (enabled and disabled)."""
     plugins = service_list_installed_plugins()
     return InstalledPluginsListResponse(
-        plugins=[InstalledPluginResponse.from_plugin_info(info) for info in plugins]
+        plugins=[_installed_response(info) for info in plugins]
     )
 
 
@@ -261,7 +297,7 @@ def get_installed_plugin_endpoint(
             status_code=404,
             detail=f"Plugin '{plugin_name}' is not installed",
         )
-    return InstalledPluginResponse.from_plugin_info(info)
+    return _installed_response(info)
 
 
 @plugins_router.patch(
@@ -312,7 +348,7 @@ def refresh_plugin_endpoint(plugin_name: PluginNamePath) -> UpdatePluginResponse
         )
     return UpdatePluginResponse(
         message=f"Plugin '{plugin_name}' updated",
-        plugin=InstalledPluginResponse.from_plugin_info(info),
+        plugin=_installed_response(info),
     )
 
 

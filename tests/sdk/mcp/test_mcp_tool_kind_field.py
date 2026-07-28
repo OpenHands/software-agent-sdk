@@ -7,6 +7,7 @@ is incorrectly included in the MCP tool arguments, causing validation errors.
 import pytest
 
 from openhands.sdk.mcp import create_mcp_tools
+from openhands.sdk.mcp.config import coerce_mcp_config
 
 
 @pytest.fixture
@@ -16,7 +17,7 @@ def fetch_tool():
         "mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}
     }
     # Use longer timeout for CI environments where uvx may need to download packages
-    tools = create_mcp_tools(mcp_config, timeout=120.0)
+    tools = create_mcp_tools(coerce_mcp_config(mcp_config["mcpServers"]), timeout=120.0)
     assert len(tools) == 1
     return tools[0]
 

@@ -45,6 +45,10 @@ async def test_list_models_filtered_by_provider():
     """Test listing models filtered by provider."""
     response = await list_models(provider="openai")
     assert len(response.models) > 0
+    assert "gpt-5.6" in response.models
+    assert "gpt-5.6-sol" in response.models
+    assert "gpt-5.6-terra" in response.models
+    assert "gpt-5.6-luna" in response.models
     # Verify filtering works - there should be fewer models than unfiltered
     all_models_response = await list_models(provider=None)
     assert len(response.models) < len(all_models_response.models)
@@ -92,6 +96,7 @@ def test_models_endpoint_with_provider_filter(client):
     data = response.json()
     assert "models" in data
     assert len(data["models"]) > 0
+    assert "gpt-5.6" in data["models"]
 
 
 def test_models_endpoint_with_unknown_provider(client):
@@ -111,6 +116,7 @@ def test_verified_models_endpoint_integration(client):
     assert "models" in data
     assert "openai" in data["models"]
     assert "anthropic" in data["models"]
+    assert "gpt-5.6" in data["models"]["openai"]
 
 
 def test_openai_subscription_models_endpoint_integration(client):
@@ -119,6 +125,10 @@ def test_openai_subscription_models_endpoint_integration(client):
     assert response.status_code == 200
     data = response.json()
     assert data == {"vendor": "openai", "models": sorted(OPENAI_CODEX_MODELS)}
+    assert "gpt-5.6" in data["models"]
+    assert "gpt-5.6-sol" in data["models"]
+    assert "gpt-5.6-terra" in data["models"]
+    assert "gpt-5.6-luna" in data["models"]
     assert "gpt-5.5" in data["models"]
 
 

@@ -17,6 +17,7 @@ from openhands.agent_server.persistence import (
     get_settings_store,
 )
 from openhands.agent_server.persistence.models import SettingsUpdatePayload
+from openhands.agent_server.telemetry import notify_misc_settings_changed
 from openhands.sdk.logger import get_logger
 from openhands.sdk.settings import (
     ConversationSettings,
@@ -181,7 +182,7 @@ async def update_settings(
 
         PATCH /api/settings
         {"agent_settings_diff":
-            {"mcp_config": {"mcpServers": {"svc": {"headers": {"X-Old": null}}}}}}
+            {"mcp_config": {"svc": {"headers": {"X-Old": null}}}}}
 
     A ``null`` on a top-level *field* (e.g. ``{"confirmation_mode": null}``)
     is **not** an unset — it flows to model validation as before, so it still
@@ -220,7 +221,8 @@ async def update_settings(
 
     # Apply updates atomically with file locking
     def apply_update(settings: PersistedSettings) -> PersistedSettings:
-        settings.update(cast(SettingsUpdatePayload, update_data))
+        context = {"cipher": config.cipher} if config.cipher is not None else None
+        settings.update(cast(SettingsUpdatePayload, update_data), context=context)
         return settings
 
     client_host = request.client.host if request.client else "unknown"
@@ -238,6 +240,12 @@ async def update_settings(
                 "misc_settings_modified": "misc_settings_diff" in update_data,
             },
         )
+        # Consent lives in misc_settings.telemetry.consent, so a settings write
+        # is the only way it changes. Re-resolve before returning: a revocation
+        # must stop delivery and discard the queue while the caller is still
+        # waiting, not on the sink's next refresh.
+        if "misc_settings_diff" in update_data:
+            notify_misc_settings_changed(settings.misc_settings)
     except (ValueError, ValidationError):
         # Audit log: validation failed
         # Note: PersistedSettings.update() raises ValueError (sanitized message)

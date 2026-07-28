@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 import importlib
 import json
 import os
 import threading
 import warnings
-from collections.abc import Callable, Sequence
-from contextlib import contextmanager
+from collections.abc import AsyncIterable, Callable, Iterable, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
 
@@ -46,7 +48,6 @@ from typing import Final, cast
 
 from litellm import (
     ChatCompletionToolParam,
-    CustomStreamWrapper,
     ResponseInputParam,
     acompletion as litellm_acompletion,
     completion as litellm_completion,
@@ -61,10 +62,6 @@ from litellm.exceptions import (
 from litellm.responses.main import (
     aresponses as litellm_aresponses,
     responses as litellm_responses,
-)
-from litellm.responses.streaming_iterator import (
-    ResponsesAPIStreamingIterator,
-    SyncResponsesAPIStreamingIterator,
 )
 from litellm.types.llms.openai import (
     OutputTextDeltaEvent,
@@ -275,58 +272,71 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     api_version: str | None = Field(
         default=None,
         description="API version (e.g., Azure).",
+        json_schema_extra=field_meta(),
     )
 
     aws_access_key_id: str | SecretStr | None = Field(
         default=None,
+        json_schema_extra=field_meta(),
     )
     aws_secret_access_key: str | SecretStr | None = Field(
         default=None,
+        json_schema_extra=field_meta(),
     )
     aws_session_token: str | SecretStr | None = Field(
         default=None,
+        json_schema_extra=field_meta(),
     )
     aws_region_name: str | None = Field(
         default=None,
+        json_schema_extra=field_meta(),
     )
     aws_profile_name: str | None = Field(
         default=None,
+        json_schema_extra=field_meta(),
     )
     aws_role_name: str | None = Field(
         default=None,
+        json_schema_extra=field_meta(),
     )
     aws_session_name: str | None = Field(
         default=None,
+        json_schema_extra=field_meta(),
     )
     aws_bedrock_runtime_endpoint: str | None = Field(
         default=None,
+        json_schema_extra=field_meta(),
     )
 
     # OpenRouter uses HTTP-Referer as the app identity for rankings.
     # Keep this stable unless the OpenRouter app attribution is migrated.
     openrouter_site_url: str = Field(
         default="https://docs.all-hands.dev/",
+        json_schema_extra=field_meta(),
     )
     openrouter_app_name: str = Field(
         default="OpenHands",
+        json_schema_extra=field_meta(),
     )
 
-    num_retries: int = Field(default=5, ge=0)
-    retry_multiplier: float = Field(default=8.0, ge=0)
-    retry_min_wait: int = Field(default=8, ge=0)
-    retry_max_wait: int = Field(default=64, ge=0)
+    num_retries: int = Field(default=5, ge=0, json_schema_extra=field_meta())
+    retry_multiplier: float = Field(default=8.0, ge=0, json_schema_extra=field_meta())
+    retry_min_wait: int = Field(default=8, ge=0, json_schema_extra=field_meta())
+    retry_max_wait: int = Field(default=64, ge=0, json_schema_extra=field_meta())
 
     timeout: int | None = Field(
         default=300,
         ge=0,
         description="HTTP timeout in seconds. Default is 300s (5 minutes). "
         "Set to None to disable timeout (not recommended for production).",
+        json_schema_extra=field_meta(),
     )
 
     max_message_chars: int = Field(
         default=30_000,
         ge=1,
         description="Approx max chars in each event/content sent to the LLM.",
+        json_schema_extra=field_meta(),
     )
 
     temperature: float | None = Field(
@@ -338,6 +348,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "Set to 0.0 for deterministic outputs, "
             "or higher values (0.7-1.0) for more creative responses."
         ),
+        json_schema_extra=field_meta(),
     )
     top_p: float | None = Field(
         default=None,
@@ -348,8 +359,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "Defaults to None (uses provider default). "
             "Set to a value between 0 and 1 to control diversity of outputs."
         ),
+        json_schema_extra=field_meta(),
     )
-    top_k: float | None = Field(default=None, ge=0)
+    top_k: float | None = Field(default=None, ge=0, json_schema_extra=field_meta())
 
     max_input_tokens: int | None = Field(
         default=None,
@@ -357,11 +369,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         description="The maximum number of input tokens. "
         "Note that this is currently unused, and the value at runtime is actually"
         " the total tokens in OpenAI (e.g. 128,000 tokens for GPT-4).",
+        json_schema_extra=field_meta(),
     )
     max_output_tokens: int | None = Field(
         default=None,
         ge=1,
         description="The maximum number of output tokens. This is sent to the LLM.",
+        json_schema_extra=field_meta(),
     )
     model_canonical_name: str | None = Field(
         default=None,
@@ -375,23 +389,28 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "capability detection. If not provided, the 'model' field "
             "will be used for capability lookups."
         ),
+        json_schema_extra=field_meta(),
     )
     extra_headers: dict[str, str] | None = Field(
         default=None,
         description="Optional HTTP headers to forward to LiteLLM requests.",
+        json_schema_extra=field_meta(),
     )
     input_cost_per_token: float | None = Field(
         default=None,
         ge=0,
         description="The cost per input token. This will available in logs for user.",
+        json_schema_extra=field_meta(),
     )
     output_cost_per_token: float | None = Field(
         default=None,
         ge=0,
         description="The cost per output token. This will available in logs for user.",
+        json_schema_extra=field_meta(),
     )
     ollama_base_url: str | None = Field(
         default=None,
+        json_schema_extra=field_meta(),
     )
 
     stream: bool = Field(
@@ -401,42 +420,51 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "When enabled, the provided `on_token` callback in .completions "
             "and .responses will be invoked for each chunk of tokens."
         ),
+        json_schema_extra=field_meta(),
     )
-    drop_params: bool = Field(default=True)
+    drop_params: bool = Field(default=True, json_schema_extra=field_meta())
     modify_params: bool = Field(
         default=True,
         description="Modify params allows litellm to do transformations like adding"
         " a default message, when a message is empty.",
+        json_schema_extra=field_meta(),
     )
     disable_vision: bool | None = Field(
         default=None,
         description="If model is vision capable, this option allows to disable image "
         "processing (useful for cost reduction).",
+        json_schema_extra=field_meta(),
     )
     disable_stop_word: bool | None = Field(
         default=False,
         description="Disable using of stop word.",
+        json_schema_extra=field_meta(),
     )
     caching_prompt: bool = Field(
         default=True,
         description="Enable caching of prompts.",
+        json_schema_extra=field_meta(),
     )
     log_completions: bool = Field(
         default=False,
         description="Enable logging of completions.",
+        json_schema_extra=field_meta(),
     )
     log_completions_folder: str = Field(
         default=os.path.join(ENV_LOG_DIR, "completions"),
         description="The folder to log LLM completions to. "
         "Required if log_completions is True.",
+        json_schema_extra=field_meta(),
     )
     custom_tokenizer: str | None = Field(
         default=None,
         description="A custom tokenizer to use for token counting.",
+        json_schema_extra=field_meta(),
     )
     native_tool_calling: bool = Field(
         default=True,
         description="Whether to use native tool calling.",
+        json_schema_extra=field_meta(),
     )
     force_string_serializer: bool | None = Field(
         default=None,
@@ -446,6 +474,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "Useful for providers that do not support list content, "
             "like HuggingFace and Groq."
         ),
+        json_schema_extra=field_meta(),
     )
     inline_image_urls: bool | None = Field(
         default=None,
@@ -462,6 +491,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "litellm — otherwise images are not sent at all and there is "
             "nothing to inline."
         ),
+        json_schema_extra=field_meta(),
     )
     reasoning_effort: Literal["low", "medium", "high", "xhigh", "none"] | None = Field(
         default="high",
@@ -469,17 +499,20 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         "This is a string that can be one of 'low', 'medium', 'high', 'xhigh', "
         "or 'none'. "
         "Can apply to all reasoning models.",
+        json_schema_extra=field_meta(),
     )
     reasoning_summary: Literal["auto", "concise", "detailed"] | None = Field(
         default=None,
         description="The level of detail for reasoning summaries. "
         "This is a string that can be one of 'auto', 'concise', or 'detailed'. "
         "Requires verified OpenAI organization. Only sent when explicitly set.",
+        json_schema_extra=field_meta(),
     )
     enable_encrypted_reasoning: bool = Field(
         default=True,
         description="If True, ask for ['reasoning.encrypted_content'] "
         "in Responses API include.",
+        json_schema_extra=field_meta(),
     )
     # Prompt cache retention is filtered per model features in chat options.
     prompt_cache_retention: str | None = Field(
@@ -489,15 +522,18 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "(GPT-5+ and GPT-4.1, excluding Azure deployments); explicitly "
             "stripped for all others."
         ),
+        json_schema_extra=field_meta(),
     )
     extended_thinking_budget: int | None = Field(
         default=200_000,
         description="The budget tokens for extended thinking, "
         "supported by Anthropic models.",
+        json_schema_extra=field_meta(),
     )
     seed: int | None = Field(
         default=None,
         description="The seed to use for random number generation.",
+        json_schema_extra=field_meta(),
     )
     usage_id: str = Field(
         default="default",
@@ -506,6 +542,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "Unique usage identifier for the LLM. Used for registry lookups, "
             "telemetry, and spend tracking."
         ),
+        json_schema_extra=field_meta(),
     )
     litellm_extra_body: dict[str, Any] = Field(
         default_factory=dict,
@@ -523,6 +560,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "- Proxy routing: {'trace_version': '1.0.0', 'tags': ['agent:my-agent']} "
             "- vLLM features: {'return_token_ids': True}"
         ),
+        json_schema_extra=field_meta(),
     )
 
     fallback_strategy: FallbackStrategy | None = Field(
@@ -557,7 +595,21 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _call_context: LLMCallContext = PrivateAttr(default_factory=LLMCallContext)
     _effective_max_input_tokens: int | None = PrivateAttr(default=None)
     _effective_max_output_tokens: int | None = PrivateAttr(default=None)
-    _litellm_modify_params_lock: ClassVar[threading.RLock] = threading.RLock()
+    # Plain (non-reentrant) Lock: the async transport path acquires this off
+    # the event loop thread (see `_alitellm_modify_params_ctx`) and releases
+    # it back on the event loop thread, which an RLock would reject since it
+    # tracks a single owning thread.
+    _litellm_modify_params_lock: ClassVar[threading.Lock] = threading.Lock()
+    # Waiting on the lock from the async path is offloaded to this dedicated
+    # executor rather than the event loop's default one. The coroutine that
+    # *holds* the lock may itself need a default-executor thread to make
+    # progress before it can release (e.g. draining a synchronous stream via
+    # ``run_in_executor``); if lock-waiters shared that pool they could occupy
+    # every worker and starve the holder, deadlocking instead of just
+    # serialising. Keeping the wait on its own pool prevents that.
+    _litellm_modify_params_lock_executor: ClassVar[ThreadPoolExecutor] = (
+        ThreadPoolExecutor(thread_name_prefix="llm-modify-params-lock")
+    )
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="ignore", arbitrary_types_allowed=True
@@ -859,8 +911,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         offloaded to a thread via :func:`asyncio.loop.run_in_executor` to
         avoid blocking the event loop.
         """
-        import asyncio
-
         assert self._telemetry is not None
         self._telemetry.on_error(error)
         if self.fallback_strategy and self.fallback_strategy.should_fallback(error):
@@ -1391,9 +1441,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         _caller_kwargs = kwargs.copy()
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
-        if enable_streaming:
-            if on_token is None:
-                raise ValueError("Streaming requires an on_token callback")
+        if enable_streaming and on_token is None:
+            # Gracefully degrade to non-streaming rather than crashing a run when
+            # streaming is requested without a callback wired. See #4014.
+            logger.debug(
+                "Streaming requested without an on_token callback; "
+                "falling back to a non-streaming completion."
+            )
+            enable_streaming = False
+            kwargs.pop("stream", None)
+        elif enable_streaming:
             kwargs["stream"] = True
 
         (
@@ -1480,9 +1537,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         _caller_kwargs = kwargs.copy()
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
-        if enable_streaming:
-            if on_token is None:
-                raise ValueError("Streaming requires an on_token callback")
+        if enable_streaming and on_token is None:
+            # Gracefully degrade to non-streaming rather than crashing a run when
+            # streaming is requested without a callback wired. See #4014.
+            logger.debug(
+                "Streaming requested without an on_token callback; "
+                "falling back to a non-streaming completion."
+            )
+            enable_streaming = False
+            kwargs.pop("stream", None)
+        elif enable_streaming:
             kwargs["stream"] = True
 
         (
@@ -1586,10 +1650,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         _caller_kwargs = kwargs.copy()
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
-        if user_enable_streaming:
-            # We allow on_token to be None for subscription mode
-            if on_token is None and not self.is_subscription:
-                raise ValueError("Streaming requires an on_token callback")
+        if user_enable_streaming and on_token is None and not self.is_subscription:
+            # Gracefully degrade to non-streaming rather than crashing a run when
+            # streaming is requested without a callback wired (subscription mode
+            # is exempt — it streams internally without an on_token). See #4014.
+            logger.debug(
+                "Streaming requested without an on_token callback; "
+                "falling back to a non-streaming responses call."
+            )
+            user_enable_streaming = False
+            kwargs.pop("stream", None)
+        elif user_enable_streaming:
             kwargs["stream"] = True
 
         (
@@ -1633,12 +1704,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
                     # When stream=True, LiteLLM returns a streaming
                     # iterator rather than a single ResponsesAPIResponse.
-                    # Drain the iterator and use the completed response.
+                    # Third-party wrappers may replace LiteLLM's concrete
+                    # iterator with another iterable, so drain by protocol.
                     if final_kwargs.get("stream", False):
-                        if not isinstance(ret, SyncResponsesAPIStreamingIterator):
-                            raise AssertionError(
-                                f"Expected Responses stream iterator, got {type(ret)}"
-                            )
                         stream_callback = on_token if user_enable_streaming else None
                         # Collect output items from streaming events.
                         # Some endpoints (e.g., Codex subscription) send
@@ -1647,9 +1715,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         # accumulate them here and patch the completed
                         # response if needed.
                         collected_output_items: list[Any] = []
-                        for event in ret:
+                        completed_response = getattr(ret, "completed_response", None)
+                        stream = cast(Iterable[Any], ret)
+                        for event in stream:
                             if event is None:
                                 continue
+                            if isinstance(event, ResponseCompletedEvent):
+                                completed_response = event
                             output_item, delta_chunk = self._process_stream_event(
                                 event, emit_deltas=stream_callback is not None
                             )
@@ -1658,8 +1730,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                             if stream_callback is not None and delta_chunk is not None:
                                 stream_callback(delta_chunk)
 
+                        completed_response = getattr(
+                            ret, "completed_response", completed_response
+                        )
                         return self._finalize_stream_response(
-                            ret.completed_response, collected_output_items
+                            completed_response, collected_output_items
                         )
 
                     raise AssertionError(
@@ -1722,10 +1797,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         _caller_kwargs = kwargs.copy()
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
-        if user_enable_streaming:
-            # We allow on_token to be None for subscription mode
-            if on_token is None and not self.is_subscription:
-                raise ValueError("Streaming requires an on_token callback")
+        if user_enable_streaming and on_token is None and not self.is_subscription:
+            # Gracefully degrade to non-streaming rather than crashing a run when
+            # streaming is requested without a callback wired (subscription mode
+            # is exempt — it streams internally without an on_token). See #4014.
+            logger.debug(
+                "Streaming requested without an on_token callback; "
+                "falling back to a non-streaming responses call."
+            )
+            user_enable_streaming = False
+            kwargs.pop("stream", None)
+        elif user_enable_streaming:
             kwargs["stream"] = True
 
         (
@@ -1751,7 +1833,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             assert self._telemetry is not None
             self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
             final_kwargs = {**call_kwargs, **retry_kwargs}
-            with self._litellm_modify_params_ctx(self.modify_params):
+            async with self._alitellm_modify_params_ctx(self.modify_params):
                 with warnings.catch_warnings():
                     warnings.filterwarnings("ignore", category=DeprecationWarning)
                     auth_values = await self._aget_litellm_auth_values()
@@ -1776,13 +1858,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
                     # When stream=True, LiteLLM returns a streaming
                     # iterator rather than a single ResponsesAPIResponse.
-                    # Drain the iterator and use the completed response.
+                    # Third-party wrappers may replace LiteLLM's concrete
+                    # iterator with another sync or async iterable, so drain
+                    # by protocol.
                     if final_kwargs.get("stream", False):
-                        if not isinstance(ret, ResponsesAPIStreamingIterator):
-                            raise AssertionError(
-                                "Expected Responses async stream "
-                                f"iterator, got {type(ret)}"
-                            )
                         stream_cb = on_token if user_enable_streaming else None
                         # Collect output items from streaming events.
                         # Some endpoints (e.g., Codex subscription) send
@@ -1791,19 +1870,44 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         # accumulate them here and patch the completed
                         # response if needed.
                         collected_output_items: list[Any] = []
-                        async for event in ret:
-                            if event is None:
-                                continue
-                            output_item, delta_chunk = self._process_stream_event(
-                                event, emit_deltas=stream_cb is not None
+                        completed_response = getattr(ret, "completed_response", None)
+                        if hasattr(ret, "__aiter__"):
+                            stream = cast(AsyncIterable[Any], ret)
+                            async for event in stream:
+                                if event is None:
+                                    continue
+                                if isinstance(event, ResponseCompletedEvent):
+                                    completed_response = event
+                                output_item, delta_chunk = self._process_stream_event(
+                                    event, emit_deltas=stream_cb is not None
+                                )
+                                if output_item is not None:
+                                    collected_output_items.append(output_item)
+                                if stream_cb is not None and delta_chunk is not None:
+                                    await _invoke_token_callback(stream_cb, delta_chunk)
+                        else:
+                            loop = asyncio.get_running_loop()
+                            events: list[Any] = await loop.run_in_executor(
+                                None, list, cast(Iterable[Any], ret)
                             )
-                            if output_item is not None:
-                                collected_output_items.append(output_item)
-                            if stream_cb is not None and delta_chunk is not None:
-                                await _invoke_token_callback(stream_cb, delta_chunk)
+                            for event in events:
+                                if event is None:
+                                    continue
+                                if isinstance(event, ResponseCompletedEvent):
+                                    completed_response = event
+                                output_item, delta_chunk = self._process_stream_event(
+                                    event, emit_deltas=stream_cb is not None
+                                )
+                                if output_item is not None:
+                                    collected_output_items.append(output_item)
+                                if stream_cb is not None and delta_chunk is not None:
+                                    await _invoke_token_callback(stream_cb, delta_chunk)
 
+                        completed_response = getattr(
+                            ret, "completed_response", completed_response
+                        )
                         return self._finalize_stream_response(
-                            ret.completed_response, collected_output_items
+                            completed_response, collected_output_items
                         )
 
                     raise AssertionError(
@@ -1948,6 +2052,33 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         api_key_value, _ = await self._aget_litellm_auth_values()
         return api_key_value
 
+    @staticmethod
+    @contextmanager
+    def _suppress_transport_warnings():
+        """Filter the noisy provider/litellm warnings emitted during a
+        transport call. Shared by the sync and async transport guards."""
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", category=DeprecationWarning, module="httpx.*"
+            )
+            warnings.filterwarnings(
+                "ignore",
+                message=r".*content=.*upload.*",
+                category=DeprecationWarning,
+            )
+            warnings.filterwarnings(
+                "ignore",
+                message="There is no current event loop",
+                category=DeprecationWarning,
+            )
+            warnings.filterwarnings("ignore", category=UserWarning)
+            warnings.filterwarnings(
+                "ignore",
+                category=DeprecationWarning,
+                message="Accessing the 'model_fields' attribute.*",
+            )
+            yield
+
     @contextmanager
     def _transport_ctx(self):
         """Guard a litellm transport call.
@@ -1956,26 +2087,18 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         and the noisy provider/litellm warnings are filtered out for the call.
         """
         with self._litellm_modify_params_ctx(self.modify_params):
-            with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore", category=DeprecationWarning, module="httpx.*"
-                )
-                warnings.filterwarnings(
-                    "ignore",
-                    message=r".*content=.*upload.*",
-                    category=DeprecationWarning,
-                )
-                warnings.filterwarnings(
-                    "ignore",
-                    message="There is no current event loop",
-                    category=DeprecationWarning,
-                )
-                warnings.filterwarnings("ignore", category=UserWarning)
-                warnings.filterwarnings(
-                    "ignore",
-                    category=DeprecationWarning,
-                    message="Accessing the 'model_fields' attribute.*",
-                )
+            with self._suppress_transport_warnings():
+                yield
+
+    @asynccontextmanager
+    async def _atransport_ctx(self):
+        """Async variant of :meth:`_transport_ctx`.
+
+        See :meth:`_alitellm_modify_params_ctx` for why this must not use a
+        plain blocking ``with`` statement around the lock.
+        """
+        async with self._alitellm_modify_params_ctx(self.modify_params):
+            with self._suppress_transport_warnings():
                 yield
 
     def _prepare_transport_kwargs(
@@ -2030,9 +2153,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 )
             )
             if enable_streaming and on_token is not None:
-                assert isinstance(ret, CustomStreamWrapper)
                 chunks: list[ModelResponseStream] = []
-                for chunk in ret:
+                stream = cast(Iterable[ModelResponseStream], ret)
+                for chunk in stream:
                     on_token(chunk)
                     chunks.append(chunk)
                 ret = litellm.stream_chunk_builder(chunks, messages=messages)
@@ -2052,7 +2175,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     ) -> ModelResponse:
         """Async variant of :meth:`_transport_call`."""
         auth_values = await self._aget_litellm_auth_values()
-        with self._transport_ctx():
+        async with self._atransport_ctx():
             ret = await litellm_acompletion(
                 **self._prepare_transport_kwargs(
                     messages=messages,
@@ -2062,11 +2185,24 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 )
             )
             if enable_streaming and on_token is not None:
-                assert isinstance(ret, CustomStreamWrapper)
                 chunks: list[ModelResponseStream] = []
-                async for chunk in ret:
-                    await _invoke_token_callback(on_token, chunk)
-                    chunks.append(chunk)
+                # Some litellm wrappers (lmnr 0.7.47's instrumentor) hand
+                # back a plain sync generator from ``litellm_acompletion``
+                if hasattr(ret, "__aiter__"):
+                    stream = cast(AsyncIterable[ModelResponseStream], ret)
+                    async for chunk in stream:
+                        await _invoke_token_callback(on_token, chunk)
+                        chunks.append(chunk)
+                else:
+                    loop = asyncio.get_running_loop()
+                    synced_chunks: list[
+                        ModelResponseStream
+                    ] = await loop.run_in_executor(
+                        None, list, cast(Iterable[ModelResponseStream], ret)
+                    )
+                    for chunk in synced_chunks:
+                        await _invoke_token_callback(on_token, chunk)
+                        chunks.append(chunk)
                 ret = litellm.stream_chunk_builder(chunks, messages=messages)
 
             assert isinstance(ret, ModelResponse), (
@@ -2083,6 +2219,68 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 yield
             finally:
                 litellm.modify_params = old
+
+    @asynccontextmanager
+    async def _alitellm_modify_params_ctx(self, flag: bool):
+        """Async variant of :meth:`_litellm_modify_params_ctx`.
+
+        ``litellm.modify_params`` is a process-wide global, so the lock must
+        stay held for the full duration of the transport call, not just the
+        moment the flag is set. A plain ``with self._litellm_modify_params_lock:``
+        would work for that, but only for the sync path: entering it here
+        with a blocking ``with`` statement would hold a real OS-level lock
+        across the ``await`` below. If a concurrent *sync* transport call
+        (e.g. a condenser or non-async agent step running in a worker
+        thread) is holding that lock at the time, this coroutine's attempt
+        to acquire it blocks the event loop thread itself -- which freezes
+        every other request the server is handling until the sync call
+        finishes (this is what makes agent-server stop responding to all
+        requests while waiting on a slow/local LLM response, most visible
+        during condensation).
+
+        Acquiring via ``run_in_executor`` moves the wait for the lock onto a
+        worker thread, so the event loop stays free to serve other requests
+        while this call is blocked on a concurrent transport call. The lock
+        is a plain (non-reentrant) ``threading.Lock``, so it is safe to
+        acquire on one thread and release on another.
+
+        Cancellation subtlety: if this coroutine is cancelled while waiting
+        (conversation stop/pause, timeout), the worker thread has already
+        started ``acquire()`` and cannot be interrupted -- it will still take
+        the lock. We therefore ``shield`` the acquire so the cancellation does
+        not mark it cancelled: the shielded future still resolves to the real
+        acquire result, and a done-callback releases the lock if it was
+        actually taken. Without this the lock would be acquired with nobody to
+        release it, permanently wedging every LLM call process-wide.
+        """
+        loop = asyncio.get_running_loop()
+        acquire = loop.run_in_executor(
+            self._litellm_modify_params_lock_executor,
+            self._litellm_modify_params_lock.acquire,
+        )
+        try:
+            await asyncio.shield(acquire)
+        except asyncio.CancelledError:
+            lock = self._litellm_modify_params_lock
+
+            def _release_if_acquired(fut: asyncio.Future) -> None:
+                # ``shield`` kept ``acquire`` alive, so its result reflects
+                # whether the worker thread actually took the lock. Release it
+                # if so, since the cancelled coroutine below never will.
+                if not fut.cancelled() and fut.exception() is None:
+                    lock.release()
+
+            acquire.add_done_callback(_release_if_acquired)
+            raise
+        try:
+            old = getattr(litellm, "modify_params", None)
+            try:
+                litellm.modify_params = flag
+                yield
+            finally:
+                litellm.modify_params = old
+        finally:
+            self._litellm_modify_params_lock.release()
 
     # =========================================================================
     # Capabilities, formatting, and info
@@ -2914,10 +3112,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         - "openai": ChatGPT Plus/Pro subscription for Codex models
 
         Supported OpenAI models:
-        - gpt-5.1-codex-max
-        - gpt-5.1-codex-mini
-        - gpt-5.2
-        - gpt-5.2-codex
+        - gpt-5.6
+        - gpt-5.6-sol
+        - gpt-5.6-terra
+        - gpt-5.6-luna
+        - gpt-5.5
+        - gpt-5.4
+        - gpt-5.4-mini
 
         Args:
             vendor: The vendor/provider. Currently only "openai" is supported.
@@ -2942,10 +3143,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             from openhands.sdk import LLM
 
             # First time: opens browser for OAuth login
-            llm = LLM.subscription_login(vendor="openai", model="gpt-5.2-codex")
+            llm = LLM.subscription_login(vendor="openai", model="gpt-5.6")
 
             # Subsequent calls: reuses cached credentials
-            llm = LLM.subscription_login(vendor="openai", model="gpt-5.2-codex")
+            llm = LLM.subscription_login(vendor="openai", model="gpt-5.6")
             ```
         """
         from openhands.sdk.llm.auth.openai import subscription_login

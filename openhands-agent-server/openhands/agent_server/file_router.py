@@ -10,6 +10,7 @@ import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import IO, Annotated, Literal
+from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import (
@@ -24,12 +25,14 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
+from openhands.agent_server._secret_redaction import redacted_file_bytes
 from openhands.agent_server.config import get_default_config
 from openhands.agent_server.models import Success
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import (
     GIT_EMPTY_TREE_HASH,
+    get_git_repository_metadata,
     get_valid_ref,
     run_git_command,
     validate_git_repository,
@@ -137,12 +140,23 @@ async def _download_file(path: str) -> FileResponse:
 
 
 def _create_zip_from_directory(source_dir: Path, output_path: Path) -> None:
-    """Create a zip archive for source_dir using only Python stdlib APIs."""
+    """Create a zip archive for source_dir using only Python stdlib APIs.
+
+    Secret-bearing fields (LLM/AWS credentials) in the persisted JSON payloads
+    are redacted on the way into the archive so a downloaded trajectory never
+    leaks API keys — see ``redacted_file_bytes``.
+    """
     try:
         with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as archive:
             archive.write(source_dir, source_dir.name)
             for path in sorted(source_dir.rglob("*")):
-                archive.write(path, path.relative_to(source_dir.parent))
+                arcname = str(path.relative_to(source_dir.parent))
+                if path.is_file():
+                    redacted = redacted_file_bytes(path)
+                    if redacted is not None:
+                        archive.writestr(arcname, redacted)
+                        continue
+                archive.write(path, arcname)
     except Exception:
         output_path.unlink(missing_ok=True)
         raise
@@ -321,6 +335,11 @@ def _head_is_detached(root: Path) -> bool:
     except GitCommandError:
         return False
     return branch.strip() == "HEAD"
+
+
+def _header_safe(value: str) -> str:
+    """Percent-encode a header value."""
+    return quote(value, safe="")
 
 
 def _create_git_delta(
@@ -972,13 +991,24 @@ async def archive_directory(
             detail=f"Failed to archive directory: {str(e)}",
         )
 
-    headers: dict[str, str] | None = None
+    # Repo identity (remote / branch / HEAD) applies to both formats so a
+    # tar.gz snapshot is self-describing too; base_commit/base_ref are
+    # git-delta-only (they describe the patch's replay base).
+    headers: dict[str, str] = {}
+    if (repo_root / ".git").exists():
+        repo_metadata = await asyncio.to_thread(get_git_repository_metadata, repo_root)
+        for key, header in (
+            ("repo_remote", "X-Archive-Repo-Remote"),
+            ("branch", "X-Archive-Branch"),
+            ("head_commit", "X-Archive-Head-Commit"),
+        ):
+            if value := repo_metadata.get(key):
+                headers[header] = _header_safe(value)
+        headers["X-Archive-Repo-Root"] = _header_safe(str(repo_root))
     if base_commit:
         # Make a git-delta self-describing so consumers can replay the patch.
-        headers = {
-            "X-Archive-Base-Commit": base_commit,
-            "X-Archive-Base-Ref": base_ref or "auto",
-        }
+        headers["X-Archive-Base-Commit"] = base_commit
+        headers["X-Archive-Base-Ref"] = base_ref or "auto"
 
     return FileResponse(
         path=output_path,

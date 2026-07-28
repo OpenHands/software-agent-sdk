@@ -13,7 +13,6 @@ from openhands.agent_server.skills_service import (
     SkillLoadResult,
     create_sandbox_skill,
     discover_profile_skills,
-    discover_profile_skills_if_needed,
     load_all_skills,
     load_org_skills_from_url,
     load_registered_marketplace_skills,
@@ -21,7 +20,6 @@ from openhands.agent_server.skills_service import (
     sync_public_skills,
 )
 from openhands.sdk.marketplace.registration import MarketplaceRegistration
-from openhands.sdk.profiles import OpenHandsAgentProfile
 from openhands.sdk.skills import Skill
 
 
@@ -54,6 +52,35 @@ def _create_test_marketplace(marketplace_dir: Path) -> Path:
                 "plugins": [
                     {"name": "auto", "source": "./plugins/auto"},
                     {"name": "manual", "source": "./plugins/manual"},
+                ],
+            }
+        )
+    )
+    return marketplace_dir
+
+
+def _create_standalone_skill(skill_dir: Path, name: str) -> None:
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {name} description\n---\n{name} content"
+    )
+
+
+def _create_skills_only_marketplace(marketplace_dir: Path) -> Path:
+    """Marketplace declaring only standalone skills (no plugins)."""
+    _create_standalone_skill(marketplace_dir / "skills" / "greet", "greet")
+    _create_standalone_skill(marketplace_dir / "skills" / "commit", "commit")
+    manifest_dir = marketplace_dir / ".plugin"
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    (manifest_dir / "marketplace.json").write_text(
+        json.dumps(
+            {
+                "name": "skills-marketplace",
+                "owner": {"name": "Test Team"},
+                "plugins": [],
+                "skills": [
+                    {"name": "greet", "source": "./skills/greet"},
+                    {"name": "commit", "source": "./skills/commit"},
                 ],
             }
         )
@@ -261,15 +288,19 @@ class TestLoadAllSkills:
 
     _PATCH_TARGET = "openhands.agent_server.skills_service.load_available_skills"
 
-    def test_load_all_skills_registered_marketplaces_replace_legacy_public(
+    def test_load_all_skills_registered_marketplaces_keep_legacy_public(
         self, tmp_path: Path
     ):
-        """Registered marketplaces load public-tier plugin skills."""
         marketplace_dir = _create_test_marketplace(tmp_path / "marketplace")
+        public_skill = Skill(name="public-skill", content="public", trigger=None)
         user_skill = Skill(name="user-skill", content="user", trigger=None)
 
         with patch(
-            self._PATCH_TARGET, side_effect=[{"user-skill": user_skill}, {}]
+            self._PATCH_TARGET,
+            side_effect=[
+                {"public-skill": public_skill, "user-skill": user_skill},
+                {},
+            ],
         ) as mock_avail:
             result = load_all_skills(
                 load_public=True,
@@ -288,9 +319,11 @@ class TestLoadAllSkills:
         skill_names = {skill.name for skill in result.skills}
         assert "auto-skill" in skill_names
         assert "manual-skill" in skill_names
+        assert "public-skill" in skill_names
         assert "user-skill" in skill_names
         assert result.sources["registered_marketplaces"] == 2
-        assert mock_avail.call_args_list[0].kwargs["include_public"] is False
+        assert result.sources["sdk_base"] == 2
+        assert mock_avail.call_args_list[0].kwargs["include_public"] is True
 
     def test_load_all_skills_non_auto_registered_marketplaces_keep_legacy_public(
         self, tmp_path: Path
@@ -350,6 +383,136 @@ class TestLoadAllSkills:
         )
 
         assert [skill.name for skill in skills] == ["manual-skill"]
+
+    def test_load_registered_marketplace_skills_loads_standalone_skills(
+        self, tmp_path: Path
+    ):
+        """auto_load=True loads standalone skills, not just plugins."""
+        marketplace_dir = _create_skills_only_marketplace(tmp_path / "marketplace")
+
+        skills = load_registered_marketplace_skills(
+            [
+                MarketplaceRegistration(
+                    name="skills-only",
+                    source=str(marketplace_dir),
+                    auto_load=True,
+                )
+            ]
+        )
+
+        assert {skill.name for skill in skills} == {"greet", "commit"}
+
+    def test_load_registered_marketplace_skills_selects_listed_standalone_skills(
+        self, tmp_path: Path
+    ):
+        """A name list selects standalone skills the same way it selects plugins."""
+        marketplace_dir = _create_skills_only_marketplace(tmp_path / "marketplace")
+
+        skills = load_registered_marketplace_skills(
+            [
+                MarketplaceRegistration(
+                    name="skills-only",
+                    source=str(marketplace_dir),
+                    auto_load=["greet"],
+                )
+            ]
+        )
+
+        assert [skill.name for skill in skills] == ["greet"]
+
+    def test_load_registered_marketplace_skills_skips_standalone_when_not_auto_load(
+        self, tmp_path: Path
+    ):
+        """A skills-only marketplace without auto_load contributes nothing."""
+        marketplace_dir = _create_skills_only_marketplace(tmp_path / "marketplace")
+
+        skills = load_registered_marketplace_skills(
+            [MarketplaceRegistration(name="skills-only", source=str(marketplace_dir))]
+        )
+
+        assert skills == []
+
+    def test_load_registered_marketplace_skills_loads_plugins_and_standalone(
+        self, tmp_path: Path
+    ):
+        """A marketplace with both plugins and standalone skills loads both."""
+        marketplace_dir = tmp_path / "marketplace"
+        _create_test_plugin(marketplace_dir / "plugins" / "auto", "auto", "auto-skill")
+        _create_standalone_skill(marketplace_dir / "skills" / "greet", "greet")
+        manifest_dir = marketplace_dir / ".plugin"
+        manifest_dir.mkdir(parents=True, exist_ok=True)
+        (manifest_dir / "marketplace.json").write_text(
+            json.dumps(
+                {
+                    "name": "mixed-marketplace",
+                    "owner": {"name": "Test Team"},
+                    "plugins": [{"name": "auto", "source": "./plugins/auto"}],
+                    "skills": [{"name": "greet", "source": "./skills/greet"}],
+                }
+            )
+        )
+
+        skills = load_registered_marketplace_skills(
+            [
+                MarketplaceRegistration(
+                    name="mixed", source=str(marketplace_dir), auto_load=True
+                )
+            ]
+        )
+
+        assert {skill.name for skill in skills} == {"auto-skill", "greet"}
+
+    def test_plugin_wins_over_standalone_on_name_collision(self, tmp_path: Path):
+        """A plugin skill overrides a same-named standalone skill (catalog rule)."""
+        marketplace_dir = tmp_path / "marketplace"
+        # Plugin 'p' bundles a skill named 'shared'.
+        plugin_dir = marketplace_dir / "plugins" / "p"
+        (plugin_dir / ".plugin").mkdir(parents=True)
+        (plugin_dir / ".plugin" / "plugin.json").write_text(
+            json.dumps({"name": "p", "version": "1.0.0"})
+        )
+        (plugin_dir / "skills").mkdir()
+        (plugin_dir / "skills" / "shared.md").write_text(
+            "---\nname: shared\n---\nFROM_PLUGIN"
+        )
+        # Standalone skill also named 'shared'.
+        standalone = marketplace_dir / "skills" / "shared"
+        standalone.mkdir(parents=True)
+        (standalone / "SKILL.md").write_text(
+            "---\nname: shared\ndescription: d\n---\nFROM_STANDALONE"
+        )
+        manifest_dir = marketplace_dir / ".plugin"
+        manifest_dir.mkdir(parents=True, exist_ok=True)
+        (manifest_dir / "marketplace.json").write_text(
+            json.dumps(
+                {
+                    "name": "collision",
+                    "owner": {"name": "Test Team"},
+                    "plugins": [{"name": "p", "source": "./plugins/p"}],
+                    "skills": [{"name": "shared", "source": "./skills/shared"}],
+                }
+            )
+        )
+
+        # Marketplace auto-load is gated on load_public; the patch keeps the
+        # public tier empty so only the marketplace contributes 'shared'.
+        with patch(self._PATCH_TARGET, return_value={}):
+            result = load_all_skills(
+                load_public=True,
+                load_user=False,
+                load_project=False,
+                load_org=False,
+                registered_marketplaces=[
+                    MarketplaceRegistration(
+                        name="collision", source=str(marketplace_dir), auto_load=True
+                    )
+                ],
+            )
+
+        shared = [s for s in result.skills if s.name == "shared"]
+        assert len(shared) == 1
+        assert "FROM_PLUGIN" in shared[0].content
+        assert "FROM_STANDALONE" not in shared[0].content
 
     def test_load_registered_marketplace_skills_uses_registration_fetch_fields(
         self, tmp_path: Path
@@ -575,7 +738,7 @@ class TestLoadAllSkills:
 
 
 class TestDiscoverProfileSkills:
-    """Tests for discover_profile_skills (AgentProfile.skill_refs catalog)."""
+    """Tests for discover_profile_skills (the OpenHands profile launch catalog)."""
 
     _LOAD_ALL = "openhands.agent_server.skills_service.load_all_skills"
 
@@ -601,32 +764,6 @@ class TestDiscoverProfileSkills:
         with patch(self._LOAD_ALL, side_effect=RuntimeError("boom")):
             with pytest.raises(RuntimeError, match="boom"):
                 discover_profile_skills()
-
-
-class TestDiscoverProfileSkillsIfNeeded:
-    """Tests for the skip-discovery guard shared by start + dry-run."""
-
-    _DISCOVER = "openhands.agent_server.skills_service.discover_profile_skills"
-
-    def test_empty_skill_refs_skips_discovery(self):
-        profile = OpenHandsAgentProfile(name="p", llm_profile_ref="x", skill_refs=[])
-        with patch(self._DISCOVER) as mock_discover:
-            assert discover_profile_skills_if_needed(profile) is None
-            mock_discover.assert_not_called()
-
-    def test_null_skill_refs_discovers(self):
-        profile = OpenHandsAgentProfile(name="p", llm_profile_ref="x", skill_refs=None)
-        skills = [Skill(name="a", content="x")]
-        with patch(self._DISCOVER, return_value=skills) as mock_discover:
-            assert discover_profile_skills_if_needed(profile) == skills
-            mock_discover.assert_called_once()
-
-    def test_named_skill_refs_discovers(self):
-        profile = OpenHandsAgentProfile(name="p", llm_profile_ref="x", skill_refs=["a"])
-        skills = [Skill(name="a", content="x")]
-        with patch(self._DISCOVER, return_value=skills) as mock_discover:
-            assert discover_profile_skills_if_needed(profile) == skills
-            mock_discover.assert_called_once()
 
 
 class TestSyncPublicSkills:
