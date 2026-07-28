@@ -7,7 +7,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping
 from queue import Empty, Queue
-from typing import TYPE_CHECKING, SupportsIndex, overload
+from typing import TYPE_CHECKING, Final, SupportsIndex, overload
 from urllib.parse import urlparse
 
 import httpx
@@ -65,8 +65,8 @@ logger = get_logger(__name__)
 
 LEGACY_CONVERSATIONS_PATH = "/api/conversations"
 FATAL_WS_CLOSE_CODES = frozenset({4001, 4004})
-_WEBSOCKET_AUTH_TYPE = "auth"
-_WEBSOCKET_SESSION_API_KEY_FIELD = "session_api_key"
+_WEBSOCKET_AUTH_TYPE: Final = "auth"
+_WEBSOCKET_SESSION_API_KEY_FIELD: Final = "session_api_key"
 
 
 def _agent_kind_mismatch_message(conversation_id: ConversationID) -> str:
