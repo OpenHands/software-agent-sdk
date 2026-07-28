@@ -2540,7 +2540,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         model_for_caps = self._model_name_for_capabilities()
         model_features = get_features(model_for_caps)
         return (
-            getattr(model_features, "supports_vision", False)
+            model_features.requires_inline_image_data
             or supports_vision(model_for_caps)
             or supports_vision(model_for_caps.split("/")[-1])
             or (

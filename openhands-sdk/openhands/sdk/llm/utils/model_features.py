@@ -56,7 +56,6 @@ class ModelFeatures:
     # True when the model's API rejects http(s) image URLs and only accepts
     # base64 ``data:`` URLs. See REQUIRES_INLINE_IMAGE_DATA_MODELS.
     requires_inline_image_data: bool
-    supports_vision: bool = False
 
 
 LITELLM_PROXY_PREFIX = "litellm_proxy/"
@@ -237,15 +236,6 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
     "deepseek/deepseek-v4-flash",  # Dual-mode (Thinking/Non-Thinking)
 ]
 
-# SDK-side override for vision models that are not yet recognized by LiteLLM.
-# Entries should be removed once the corresponding LiteLLM release ships
-# capability metadata for the model.
-VISION_MODELS: list[str] = [
-    # https://www.kimi.com/help/kimi-api/api-model-selection
-    # Kimi K3 has native visual understanding.
-    "kimi-k3",
-]
-
 # Models whose API rejects http(s) image URLs and only accepts base64
 # ``data:`` URLs (or vendor-specific file IDs). When this matches, the SDK
 # fetches each image URL and inlines it as ``data:{mime};base64,...`` before
@@ -261,6 +251,9 @@ REQUIRES_INLINE_IMAGE_DATA_MODELS: tuple[str, ...] = (
     # > URL-formatted images: Not supported, currently only supports
     # > base64-encoded image content and images/videos uploaded via file ID
     "moonshot/kimi-k2.6",
+    "moonshot/kimi-k3",
+    # The OpenHands K3 route uses the same Moonshot image-input contract.
+    "openhands/kimi-k3",
 )
 
 
@@ -281,5 +274,4 @@ def get_features(model: str) -> ModelFeatures:
         requires_inline_image_data=model_matches(
             model, REQUIRES_INLINE_IMAGE_DATA_MODELS
         ),
-        supports_vision=model_matches(model, VISION_MODELS),
     )
