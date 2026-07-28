@@ -495,12 +495,11 @@ async def _send_event(event: Event, websocket: WebSocket):
 
 
 def _is_auth_control_message(data: object) -> bool:
-    """Identify auth control frames that are not application payloads."""
+    """Match redundant auth frames left unread after legacy authentication."""
     return (
         isinstance(data, dict)
         and data.get("type") == "auth"
-        and "command" not in data
-        and "role" not in data
+        and set(data) <= {"type", "session_api_key"}
     )
 
 

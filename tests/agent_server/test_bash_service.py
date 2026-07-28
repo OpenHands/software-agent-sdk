@@ -7,6 +7,7 @@ import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 from uuid import UUID
 
 import httpx
@@ -87,6 +88,25 @@ async def test_bash_timeout_runs_sigterm_trap(
     await asyncio.sleep(0.2)  # let the trap's filesystem write land
     assert marker.exists(), "SIGTERM trap did not run; cleanup skipped."
     assert "Command timed out" in caplog.text
+    assert secret not in caplog.text
+
+
+async def test_bash_execution_error_log_omits_command(
+    bash_service: BashEventService,
+    caplog: pytest.LogCaptureFixture,
+):
+    secret = "ghp_" + "e" * 36
+    caplog.set_level(logging.DEBUG)
+    command = BashCommand(command=f"printf '{secret}'")
+    failure = RuntimeError(f"failed to start command containing {secret}")
+
+    with patch(
+        "openhands.agent_server.bash_service.asyncio.create_subprocess_shell",
+        new=AsyncMock(side_effect=failure),
+    ):
+        await bash_service._execute_bash_command(command)
+
+    assert "Error executing bash command" in caplog.text
     assert secret not in caplog.text
 
 

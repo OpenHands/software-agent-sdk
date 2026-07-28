@@ -2,13 +2,17 @@
 
 import asyncio
 import json
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
 from fastapi import WebSocketDisconnect
 
-from openhands.agent_server.sockets import _accept_authenticated_websocket
+from openhands.agent_server.sockets import (
+    _accept_authenticated_websocket,
+    _is_auth_control_message,
+)
 
 
 def _make_mock_websocket(*, headers=None):
@@ -267,7 +271,7 @@ async def test_events_socket_ignores_redundant_auth_control_frame():
     ws = _make_mock_websocket()
     # First frame on the post-auth loop is the redundant auth control
     # message; second frame is a real user message; third closes the loop.
-    real_user_message = {"role": "user", "content": []}
+    real_user_message = {"type": "auth", "role": "user", "content": []}
     ws.receive_json.side_effect = [
         {"type": "auth", "session_api_key": "sk-oh-valid"},
         real_user_message,
@@ -342,14 +346,17 @@ async def test_bash_socket_ignores_redundant_auth_before_command(
     session_api_keys,
     session_api_key,
     headers,
+    caplog,
 ):
     from openhands.agent_server.bash_service import BashEventService
     from openhands.agent_server.sockets import bash_events_socket
 
+    secret = "sk-oh-" + "z" * 64
+    caplog.set_level(logging.DEBUG)
     ws = _make_mock_websocket(headers=headers)
     ws.receive_json.side_effect = [
-        {"type": "auth", "session_api_key": "sk-oh-valid"},
-        {"command": "printf queued-command"},
+        {"type": "auth", "session_api_key": secret},
+        {"type": "auth", "command": "printf queued-command"},
         WebSocketDisconnect(),
     ]
     mock_bash_service = MagicMock(spec=BashEventService)
@@ -376,3 +383,36 @@ async def test_bash_socket_ignores_redundant_auth_before_command(
     request = mock_bash_service.start_bash_command.await_args.args[0]
     assert request.command == "printf queued-command"
     ws.send_json.assert_not_called()
+    assert secret not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        pytest.param(
+            {"type": "auth", "session_api_key": "sk-oh-valid"},
+            True,
+            id="auth-frame",
+        ),
+        pytest.param({"type": "auth"}, True, id="auth-frame-without-key"),
+        pytest.param(
+            {"type": "auth", "command": "printf hi"},
+            False,
+            id="bash-payload",
+        ),
+        pytest.param(
+            {"type": "auth", "role": "user"},
+            False,
+            id="message-payload",
+        ),
+        pytest.param(
+            {"type": "auth", "unexpected": True},
+            False,
+            id="unknown-field",
+        ),
+        pytest.param({"type": "message"}, False, id="other-type"),
+        pytest.param("auth", False, id="non-object"),
+    ],
+)
+def test_auth_control_message_has_only_protocol_fields(data, expected):
+    assert _is_auth_control_message(data) is expected

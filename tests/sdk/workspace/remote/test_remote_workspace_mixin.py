@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import Mock, mock_open, patch
 
 import httpx
+import pytest
 
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 from openhands.sdk.workspace.remote.remote_workspace_mixin import RemoteWorkspaceMixin
@@ -264,19 +265,29 @@ def test_execute_command_generator_timeout(mock_time, caplog):
     assert secret not in caplog.text
 
 
-def test_execute_command_generator_exception_handling():
+def test_execute_command_generator_exception_handling(
+    caplog: pytest.LogCaptureFixture,
+):
     """Test _execute_command_generator handles exceptions correctly."""
     mixin = RemoteWorkspaceMixinHelper(
         host="http://localhost:8000", working_dir="workspace"
     )
+    secret = "ghp_" + "f" * 36
+    caplog.set_level(logging.DEBUG)
 
     # Mock response that raises an exception
     start_response = Mock()
     start_response.raise_for_status.side_effect = httpx.HTTPStatusError(
-        "Server error", request=Mock(), response=Mock()
+        f"Server rejected command containing {secret}",
+        request=Mock(),
+        response=Mock(),
     )
 
-    generator = mixin._execute_command_generator("failing_command", None, 30.0)
+    generator = mixin._execute_command_generator(
+        f"curl -H 'Authorization: Bearer {secret}' example.test",
+        None,
+        30.0,
+    )
 
     # Start command
     next(generator)
@@ -290,6 +301,8 @@ def test_execute_command_generator_exception_handling():
         assert result.exit_code == -1
         assert "Remote execution error" in result.stderr
         assert result.timeout_occurred is False
+    assert "Remote command execution failed" in caplog.text
+    assert secret not in caplog.text
 
 
 def test_file_upload_generator_basic_flow(temp_file):
