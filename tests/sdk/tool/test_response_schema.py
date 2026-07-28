@@ -1,21 +1,26 @@
 """Tests for the ``response_schema`` structured-output mechanism on tools."""
 
 import json
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, Mock
 
+import mcp.types
 import pytest
 from pydantic import BaseModel, Field, ValidationError
 
-from openhands.sdk.event import ActionEvent
+from openhands.sdk.agent.utils import fix_malformed_tool_arguments
+from openhands.sdk.event import ActionEvent, Event
 from openhands.sdk.llm import MessageToolCall
+from openhands.sdk.mcp.client import MCPClient
+from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.tool.builtins.finish import (
     FinishAction,
     FinishObservation,
     FinishTool,
 )
+from openhands.sdk.tool.client_tool import ClientTool, ClientToolSpec
 from openhands.sdk.tool.registry import register_tool, resolve_tool
 from openhands.sdk.tool.spec import Tool
-from openhands.sdk.tool.tool import ToolDefinition, _create_action_type_with_schema
+from openhands.sdk.tool.tool import ToolDefinition
 
 
 class TaskResult(BaseModel):
@@ -24,8 +29,14 @@ class TaskResult(BaseModel):
     files_changed: list[str] = Field(default_factory=list)
 
 
+class FinishPairTool(FinishTool):
+    @classmethod
+    def create(cls, conv_state=None, **params):
+        [tool] = super().create(conv_state, **params)
+        return [tool, tool]
+
+
 def _finish_with_schema(schema: type[BaseModel]) -> ToolDefinition:
-    """Resolve a FinishTool instance via the registry with response_schema set."""
     register_tool("FinishTool", FinishTool)
     [tool] = resolve_tool(
         Tool(name="FinishTool", params={"response_schema": schema}),
@@ -68,7 +79,6 @@ def test_response_schema_extends_action_schema():
     assert tool.response_schema is TaskResult
     props = tool._get_tool_schema()["properties"]
     assert {"message", "success", "summary_text", "files_changed"} <= set(props)
-    # original Pydantic descriptions are preserved for the LLM
     assert props["success"]["description"] == "Whether the task succeeded."
 
 
@@ -82,8 +92,14 @@ def test_action_from_arguments_validates_extended_payload():
             "files_changed": ["a.py", "b.py"],
         }
     )
-    assert isinstance(action, FinishAction)
+    assert type(action) is FinishAction
+    assert action.kind == "FinishAction"
     assert action.message == "done"
+    assert action.structured_output == {
+        "success": True,
+        "summary_text": "fixed bug",
+        "files_changed": ["a.py", "b.py"],
+    }
     typed = tool.parse_response(action)
     assert isinstance(typed, TaskResult)
     assert typed.success is True
@@ -125,9 +141,6 @@ def test_action_from_arguments_rejects_invalid_payload(bad_payload):
 
 
 def test_nested_pydantic_schema_roundtrips():
-    """Nested Pydantic models: descriptions flow to the LLM schema, and
-    ``parse_response`` reconstructs the full tree typed."""
-
     class Change(BaseModel):
         path: str = Field(description="File that changed.")
         lines: int = Field(description="Lines changed.")
@@ -163,6 +176,12 @@ def test_parse_response_requires_schema():
         tool.parse_response(FinishAction(message="hi"))
 
 
+def test_parse_response_requires_structured_output():
+    tool = _finish_with_schema(TaskResult)
+    with pytest.raises(ValueError, match="no structured output"):
+        tool.parse_response(FinishAction(message="hi"))
+
+
 def test_executor_still_works_with_schema():
     tool = _finish_with_schema(TaskResult)
     action = tool.action_from_arguments(
@@ -172,39 +191,50 @@ def test_executor_still_works_with_schema():
     assert isinstance(obs, FinishObservation)
 
 
-@pytest.mark.parametrize(
-    "params, expected_serialised",
-    [
-        pytest.param({"response_schema": TaskResult}, {}, id="schema-only-dropped"),
-        pytest.param(
-            {"response_schema": TaskResult, "keep_me": 7, "opts": {"a": 1}},
-            {"keep_me": 7, "opts": {"a": 1}},
-            id="schema-dropped-others-kept",
-        ),
-        pytest.param({"keep_me": 7}, {"keep_me": 7}, id="no-schema"),
-    ],
-)
-def test_tool_spec_strips_class_valued_params_on_dump(params, expected_serialised):
-    """Regression: a class-valued param must not break ``model_dump_json`` —
-    otherwise persisting conversation state crashes at ``_save_base_state``.
-    The class is runtime-only and is dropped on dump; the registry re-applies
-    it from the in-memory spec on resolve.
-    """
-    spec = Tool(name="FinishTool", params=params)
-    assert json.loads(spec.model_dump_json())["params"] == expected_serialised
+def test_tool_spec_roundtrips_response_schema():
+    spec = Tool(
+        name="FinishTool",
+        params={"response_schema": TaskResult},
+    )
+    assert spec.model_dump()["params"]["response_schema"] is TaskResult
+
+    dumped = json.loads(spec.model_dump_json())
+    assert "success" in dumped["params"]["response_schema"]["properties"]
+
+    register_tool("FinishTool", FinishTool)
+    restored = Tool.model_validate(dumped)
+    [tool] = resolve_tool(restored, conv_state=MagicMock())
+    assert isinstance(tool.response_schema, dict)
+    assert "success" in tool._get_tool_schema()["properties"]
+    action = tool.action_from_arguments(
+        {
+            "message": "done",
+            "success": True,
+            "summary_text": "fixed",
+            "files_changed": [],
+        }
+    )
+    result = tool.parse_response(action)
+    assert isinstance(result, dict)
+    assert result["success"] is True
 
 
-def test_create_action_type_with_schema_is_cached():
-    """Schema augmentation is called on every LLM serialization; it must be
-    cached, not rebuild a class every time."""
-    a = _create_action_type_with_schema(FinishAction, TaskResult)
-    b = _create_action_type_with_schema(FinishAction, TaskResult)
-    assert a is b
+def test_action_event_roundtrips_with_static_kind():
+    tool = _finish_with_schema(TaskResult)
+    event = _make_finish_event(tool, tool_name="finish")
+
+    serialized = event.model_dump_json()
+    assert "FinishActionWith" not in serialized
+    restored = Event.model_validate_json(serialized)
+
+    assert isinstance(restored, ActionEvent)
+    assert type(restored.action) is FinishAction
+    result = tool.parse_response(restored.action)
+    assert isinstance(result, TaskResult)
+    assert result.success is True
 
 
 def test_parse_last_response_ignores_other_tools():
-    """Must match on ``tool_name`` — an event from a different tool doesn't
-    count."""
     tool = _finish_with_schema(TaskResult)
     events = [
         _make_finish_event(tool, tool_name="finish"),
@@ -228,25 +258,99 @@ def test_parse_last_response_picks_most_recent():
 
 def test_field_collision_raises():
     class Bad(BaseModel):
-        message: str  # collides with FinishAction.message
+        message: str
 
-    tool = _finish_with_schema(Bad)
     with pytest.raises(ValueError, match="collide"):
-        tool._get_tool_schema()
+        _finish_with_schema(Bad)
 
 
-@pytest.mark.parametrize("reserved_name", ["summary", "security_risk"])
+@pytest.mark.parametrize(
+    "reserved_name", ["kind", "security_risk", "structured_output", "summary"]
+)
 def test_reserved_meta_field_names_raise(reserved_name):
-    """The SDK injects ``summary`` (always) and ``security_risk`` (with the
-    risk analyzer) into every action schema *after* the response-schema merge.
-    A user schema redefining them would be silently shadowed on the way out or
-    swallowed by the agent on the way back, so they are rejected up front."""
     ReservedSchema = type(
         "ReservedSchema",
         (BaseModel,),
         {"__annotations__": {reserved_name: str}},
     )
 
-    tool = _finish_with_schema(ReservedSchema)
     with pytest.raises(ValueError, match="reserved"):
-        tool._get_tool_schema()
+        _finish_with_schema(ReservedSchema)
+
+
+@pytest.mark.parametrize(
+    "schema", [TaskResult, TaskResult.model_json_schema()], ids=["model", "json"]
+)
+def test_response_fields_use_malformed_argument_repairs(schema):
+    arguments = fix_malformed_tool_arguments(
+        {"files_changed": '["a.py", "b.py"]'}, schema
+    )
+    assert arguments["files_changed"] == ["a.py", "b.py"]
+
+
+def test_response_schema_rejects_toolsets():
+    register_tool("FinishPairTool", FinishPairTool)
+    with pytest.raises(ValueError, match="exactly one tool"):
+        resolve_tool(
+            Tool(
+                name="FinishPairTool",
+                params={"response_schema": TaskResult},
+            ),
+            conv_state=MagicMock(),
+        )
+
+
+def test_client_tool_supports_response_schema():
+    tool = ClientTool.from_spec(
+        ClientToolSpec(
+            name="response_schema_client_test",
+            description="Ask a question",
+            parameters={
+                "type": "object",
+                "properties": {"question": {"type": "string"}},
+                "required": ["question"],
+            },
+        )
+    ).set_response_schema(TaskResult)
+
+    properties = tool._get_tool_schema()["properties"]
+    assert {"question", "success", "summary_text"} <= set(properties)
+    assert "success" in tool.to_mcp_tool()["inputSchema"]["properties"]
+    action = tool.action_from_arguments(
+        {
+            "question": "Proceed?",
+            "success": True,
+            "summary_text": "asked",
+            "files_changed": [],
+        }
+    )
+    assert action.structured_output is not None
+    assert action.structured_output["success"] is True
+
+
+def test_mcp_tool_supports_response_schema():
+    mcp_tool = mcp.types.Tool(
+        name="response_schema_mcp_test",
+        description="Fetch a URL",
+        inputSchema={
+            "type": "object",
+            "properties": {"url": {"type": "string"}},
+            "required": ["url"],
+        },
+    )
+    [tool] = MCPToolDefinition.create(mcp_tool, Mock(spec=MCPClient))
+    tool = tool.set_response_schema(TaskResult)
+
+    assert "success" in tool._get_tool_schema()["properties"]
+    assert "success" in tool.to_mcp_tool()["inputSchema"]["properties"]
+    action = tool.action_from_arguments(
+        {
+            "url": "https://example.com",
+            "success": True,
+            "summary_text": "fetched",
+            "files_changed": [],
+        }
+    )
+    assert action.data == {"url": "https://example.com"}
+    assert action.structured_output is not None
+    assert action.structured_output["success"] is True

@@ -1,6 +1,12 @@
 from typing import Any
 
-from pydantic import BaseModel, Field, field_serializer, field_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    SerializationInfo,
+    field_serializer,
+    field_validator,
+)
 
 
 class Tool(BaseModel):
@@ -39,9 +45,16 @@ class Tool(BaseModel):
         return v if v is not None else {}
 
     @field_serializer("params")
-    def _ser_params(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Drop non-JSON-serialisable class values (e.g. ``response_schema``
-        Pydantic classes) so the spec can be persisted as part of conversation
-        state. These runtime values are reapplied by the registry on resolve.
-        """
-        return {k: v for k, v in params.items() if not isinstance(v, type)}
+    def _serialize_params(
+        self, params: dict[str, Any], info: SerializationInfo
+    ) -> dict[str, Any]:
+        """Serialize Pydantic response schemas as JSON Schema."""
+        response_schema = params.get("response_schema")
+        if info.mode != "json" or not (
+            isinstance(response_schema, type) and issubclass(response_schema, BaseModel)
+        ):
+            return params
+        return {
+            **params,
+            "response_schema": response_schema.model_json_schema(),
+        }

@@ -155,16 +155,15 @@ def resolve_tool(
     if resolver is None:
         raise KeyError(f"ToolDefinition '{tool_spec.name}' is not registered")
 
-    # `response_schema` is a generic, tool-agnostic mechanism for structured
-    # output, so it must NOT be forwarded into the tool's own ``.create()``.
-    # Pop it *before* calling the resolver — otherwise factories with a fixed
-    # kwarg list (e.g. ``FinishTool.create`` which rejects extra params, or
-    # any ``def create(cls, conv_state, working_dir=None)``) will raise.
     params = dict(tool_spec.params)
     response_schema = params.pop("response_schema", None)
     tools = resolver(params, conv_state)
     if response_schema is not None:
-        tools = [t.set_response_schema(response_schema) for t in tools]
+        if len(tools) != 1:
+            raise ValueError(
+                "response_schema requires a spec that resolves to exactly one tool"
+            )
+        tools = [tools[0].set_response_schema(response_schema)]
     return tools
 
 
