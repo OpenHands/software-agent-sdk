@@ -13,13 +13,14 @@ class DummyFeatures:
         self.supports_responses_api = model == "openai/gpt-5-mini"
         self.force_string_serializer = False
         self.send_reasoning_content = False
+        self.requires_inline_image_data = False
+        self.supports_vision = model == "openai/gpt-5-mini"
 
 
 def test_model_canonical_name_used_for_capabilities(monkeypatch):
     """Proxy/aliased model uses model_canonical_name for capability lookups."""
 
     model_info_calls: list[str] = []
-    vision_calls: list[str] = []
     feature_calls: list[str] = []
 
     def fake_get_model_info(secret_api_key, base_url, model):
@@ -28,10 +29,6 @@ def test_model_canonical_name_used_for_capabilities(monkeypatch):
             return {"supports_vision": True, "max_input_tokens": 128000}
         return None
 
-    def fake_supports_vision(model: str) -> bool:
-        vision_calls.append(model)
-        return model.endswith("gpt-5-mini")
-
     def fake_get_features(model: str):
         feature_calls.append(model)
         return DummyFeatures(model)
@@ -39,7 +36,6 @@ def test_model_canonical_name_used_for_capabilities(monkeypatch):
     monkeypatch.setattr(
         "openhands.sdk.llm.llm.get_litellm_model_info", fake_get_model_info
     )
-    monkeypatch.setattr("openhands.sdk.llm.llm.supports_vision", fake_supports_vision)
     monkeypatch.setattr("openhands.sdk.llm.llm.get_features", fake_get_features)
 
     real_llm = LLM(model="openai/gpt-5-mini")
@@ -61,7 +57,6 @@ def test_model_canonical_name_used_for_capabilities(monkeypatch):
 
     # Ensure capability lookups invoked the canonical name at least once
     assert "openai/gpt-5-mini" in model_info_calls
-    assert "openai/gpt-5-mini" in vision_calls
     assert "openai/gpt-5-mini" in feature_calls
 
 
