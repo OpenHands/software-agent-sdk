@@ -1,8 +1,10 @@
+import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import cache
 
 from litellm import get_supported_openai_params
+from litellm.utils import supports_vision as litellm_supports_vision
 
 from openhands.sdk.llm.utils.openhands_provider import OPENHANDS_PROVIDER_PREFIX
 
@@ -56,6 +58,8 @@ class ModelFeatures:
     # True when the model's API rejects http(s) image URLs and only accepts
     # base64 ``data:`` URLs. See REQUIRES_INLINE_IMAGE_DATA_MODELS.
     requires_inline_image_data: bool
+    # Effective capability from LiteLLM metadata plus SDK overrides.
+    supports_vision: bool
 
 
 LITELLM_PROXY_PREFIX = "litellm_proxy/"
@@ -64,11 +68,10 @@ LITELLM_PROXY_PREFIX = "litellm_proxy/"
 DEPLOYMENT_PREFIXES = ("prod/", "dev/", "staging/", "test/")
 
 
-@cache
-def _normalized_supported_openai_params(model: str | None) -> frozenset[str]:
-    """Return LiteLLM-supported OpenAI params for a normalized model name."""
+def _normalize_model_for_litellm(model: str | None) -> str | None:
+    """Remove SDK/proxy routing prefixes before querying LiteLLM metadata."""
     if not model:
-        return frozenset()
+        return None
 
     normalized = model.strip().lower()
     for provider_prefix in (LITELLM_PROXY_PREFIX, OPENHANDS_PROVIDER_PREFIX):
@@ -82,6 +85,16 @@ def _normalized_supported_openai_params(model: str | None) -> frozenset[str]:
             normalized = normalized.removeprefix(prefix)
             break
 
+    return normalized
+
+
+@cache
+def _normalized_supported_openai_params(model: str | None) -> frozenset[str]:
+    """Return LiteLLM-supported OpenAI params for a normalized model name."""
+    normalized = _normalize_model_for_litellm(model)
+    if not normalized:
+        return frozenset()
+
     params = get_supported_openai_params(
         model=normalized,
         custom_llm_provider=None,
@@ -89,7 +102,7 @@ def _normalized_supported_openai_params(model: str | None) -> frozenset[str]:
     return frozenset(params or ())
 
 
-# SDK-side override allowlist for models that support the ``reasoning_effort``
+# SDK-side overrides for models that support the ``reasoning_effort``
 # parameter but are not (yet) recognized by LiteLLM's
 # ``get_supported_openai_params`` registry. Without this, brand-new model ids
 # fall through to the non-reasoning branch in ``chat_options.py`` and the SDK
@@ -97,30 +110,25 @@ def _normalized_supported_openai_params(model: str | None) -> frozenset[str]:
 # Anthropic now reject for these models with
 # ``temperature is deprecated for this model``.
 #
-# Entries should be removed once the corresponding LiteLLM release ships
-# metadata for the model.
-REASONING_EFFORT_MODELS: list[str] = [
-    # https://www.anthropic.com/news/claude-fable-5
-    "claude-fable-5",
-    # LiteLLM recognizes the first-party "anthropic/claude-opus-4-8" id, but not
-    # the Bedrock cross-region inference ids (e.g.
-    # "bedrock/us.anthropic.claude-opus-4-8-v1:0"), which fall through to the
-    # non-reasoning branch and leak temperature/top_p. List explicitly until
-    # LiteLLM ships Bedrock metadata for this model.
-    "claude-opus-4-8",
-]
+# Match token -> canonical LiteLLM ID used to detect stale overrides.
+REASONING_EFFORT_MODEL_OVERRIDES = {
+    # https://www.kimi.com/help/kimi-api/api-model-selection
+    # Kimi K3 always thinks and accepts top-level reasoning_effort, but the
+    # pinned LiteLLM metadata does not recognize the model yet.
+    "kimi-k3": "moonshot/kimi-k3",
+}
 
 
 def _supports_reasoning_effort(model: str | None) -> bool:
     """Return True if LiteLLM or our override list says the model accepts
     ``reasoning_effort``.
 
-    The override list (``REASONING_EFFORT_MODELS``) lets us recognize new
-    reasoning models before LiteLLM's metadata catches up, so the chat-options
-    layer can strip ``temperature``/``top_p`` (and forward ``reasoning_effort``)
-    before the request reaches the provider.
+    ``REASONING_EFFORT_MODEL_OVERRIDES`` lets us recognize new reasoning models
+    before LiteLLM's metadata catches up, so the chat-options layer can strip
+    ``temperature``/``top_p`` (and forward ``reasoning_effort``) before the
+    request reaches the provider.
     """
-    if model_matches(model or "", REASONING_EFFORT_MODELS):
+    if model_matches(model or "", REASONING_EFFORT_MODEL_OVERRIDES.keys()):
         return True
     return "reasoning_effort" in _normalized_supported_openai_params(model)
 
@@ -149,8 +157,9 @@ PROMPT_CACHE_MODELS: list[str] = [
     "claude-opus-4-6",
     "claude-opus-4-7",
     "claude-opus-4-8",
+    # https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+    "claude-opus-5",
     # https://www.anthropic.com/news/claude-fable-5
-    # Listed explicitly until LiteLLM metadata recognizes it.
     "claude-fable-5",
     # Do NOT add Gemini: explicit cache_control markers freeze its cache at the
     # static prefix and disable Google's implicit caching on the growing body
@@ -220,6 +229,7 @@ FORCE_STRING_SERIALIZER_MODELS: list[str] = [
 # Models that we should send full reasoning content
 # in the message input
 SEND_REASONING_CONTENT_MODELS: list[str] = [
+    "kimi-k3",
     "kimi-k2-thinking",
     "kimi-k2.5",
     "kimi-k2.6",
@@ -228,6 +238,21 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
     "deepseek/deepseek-v4-pro",  # Dual-mode (Thinking/Non-Thinking)
     "deepseek/deepseek-v4-flash",  # Dual-mode (Thinking/Non-Thinking)
 ]
+
+# Match token -> canonical LiteLLM ID for vision metadata overrides.
+VISION_MODEL_OVERRIDES = {"kimi-k3": "moonshot/kimi-k3"}
+
+
+@cache
+def _model_supports_vision(model: str | None) -> bool:
+    """Return whether LiteLLM or our override list marks the model as visual."""
+    if model and model_matches(model, VISION_MODEL_OVERRIDES.keys()):
+        return True
+    normalized = _normalize_model_for_litellm(model)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return bool(normalized and litellm_supports_vision(normalized))
+
 
 # Models whose API rejects http(s) image URLs and only accepts base64
 # ``data:`` URLs (or vendor-specific file IDs). When this matches, the SDK
@@ -244,6 +269,9 @@ REQUIRES_INLINE_IMAGE_DATA_MODELS: tuple[str, ...] = (
     # > URL-formatted images: Not supported, currently only supports
     # > base64-encoded image content and images/videos uploaded via file ID
     "moonshot/kimi-k2.6",
+    "moonshot/kimi-k3",
+    # The OpenHands K3 route uses the same Moonshot image-input contract.
+    "openhands/kimi-k3",
 )
 
 
@@ -264,4 +292,5 @@ def get_features(model: str) -> ModelFeatures:
         requires_inline_image_data=model_matches(
             model, REQUIRES_INLINE_IMAGE_DATA_MODELS
         ),
+        supports_vision=_model_supports_vision(model),
     )

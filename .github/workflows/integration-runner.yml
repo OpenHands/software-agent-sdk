@@ -112,6 +112,10 @@ jobs:
                           "llm_config": {"model": "litellm_proxy/gemini-3.1-pro-preview", "temperature": 0.0}},
                       "claude-sonnet-4-6": {"display_name": "Claude Sonnet 4.6",
                           "llm_config": {"model": "litellm_proxy/anthropic/claude-sonnet-4-6", "temperature": 0.0}},
+                      "kimi-k3": {"display_name": "Kimi K3",
+                          "llm_config": {"model": "litellm_proxy/moonshot/kimi-k3", "reasoning_effort": "high"}},
+                      "claude-opus-5": {"display_name": "Claude Opus 5",
+                          "llm_config": {"model": "litellm_proxy/anthropic/claude-opus-5", "reasoning_effort": "high"}},
                   }
 
                   model_ids = os.environ["MODEL_IDS"].split(",")
@@ -511,4 +515,3 @@ jobs:
                       **Commit:** ${{ github.sha }}
 
                       ${{ steps.read_report.outputs.report }}
-

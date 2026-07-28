@@ -12,6 +12,8 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    GetCoreSchemaHandler,
+    GetJsonSchemaHandler,
     SecretStr,
     SerializationInfo,
     TypeAdapter,
@@ -21,6 +23,8 @@ from pydantic import (
     model_serializer,
     model_validator,
 )
+from pydantic.json_schema import JsonSchemaValue
+from pydantic_core import CoreSchema
 
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import (
@@ -90,10 +94,34 @@ def _drop_empty_fields(value: object) -> object:
     return {key: item for key, item in value.items() if item is not None and item != {}}
 
 
+def _without_compact_serializer(core_schema: CoreSchema) -> CoreSchema:
+    schema_without_serializer = copy.copy(cast(dict[str, Any], core_schema))
+    current = schema_without_serializer
+    while current.get("type") != "model":
+        inner = current.get("schema")
+        if not isinstance(inner, dict):
+            return core_schema
+        copied_inner = copy.copy(inner)
+        current["schema"] = copied_inner
+        current = copied_inner
+    current.pop("serialization", None)
+    return cast(CoreSchema, schema_without_serializer)
+
+
 class _MCPBaseModel(BaseModel):
     @model_serializer(mode="wrap")
     def _serialize_compact(self, handler, _info: SerializationInfo) -> object:
         return _drop_empty_fields(handler(self))
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls,
+        core_schema: CoreSchema,
+        handler: GetJsonSchemaHandler,
+    ) -> JsonSchemaValue:
+        if handler.mode != "serialization":
+            return handler(core_schema)
+        return handler(_without_compact_serializer(core_schema))
 
 
 class MCPNoneAuthCredential(_MCPBaseModel):
@@ -280,9 +308,51 @@ class MCPOAuthAuthentication(_MCPBaseModel):
         return _serialize_optional_secret(value, info)
 
 
+class _MCPOAuthTokenStateDict(dict[str, Any]):
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls,
+        _source_type: Any,
+        handler: GetCoreSchemaHandler,
+    ) -> CoreSchema:
+        return handler(dict[str, Any])
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls,
+        _core_schema: CoreSchema,
+        handler: GetJsonSchemaHandler,
+    ) -> JsonSchemaValue:
+        return handler(
+            _without_compact_serializer(MCPOAuthTokenState.__pydantic_core_schema__)
+        )
+
+
+class _MCPOAuthClientInfoStateDict(dict[str, Any]):
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls,
+        _source_type: Any,
+        handler: GetCoreSchemaHandler,
+    ) -> CoreSchema:
+        return handler(dict[str, Any])
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls,
+        _core_schema: CoreSchema,
+        handler: GetJsonSchemaHandler,
+    ) -> JsonSchemaValue:
+        return handler(
+            _without_compact_serializer(
+                MCPOAuthClientInfoState.__pydantic_core_schema__
+            )
+        )
+
+
 class MCPOAuthStateResponse(_MCPBaseModel):
-    tokens: dict[str, Any] | None = None
-    client_info: dict[str, Any] | None = None
+    tokens: _MCPOAuthTokenStateDict | None = None
+    client_info: _MCPOAuthClientInfoStateDict | None = None
     token_expires_at: float | None = None
 
 
