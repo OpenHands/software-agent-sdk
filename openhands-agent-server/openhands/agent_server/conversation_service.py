@@ -78,6 +78,10 @@ if TYPE_CHECKING:
 CONVERSATION_WORKTREE_ROOT = Path("/tmp/conversation-worktrees")
 
 
+class CredentialBindingActivationRequired(RuntimeError):
+    pass
+
+
 def _build_worktree_guidance(
     *,
     source_workspace: Path,
@@ -282,6 +286,7 @@ def _resolve_agent_from_profile(
     profile_id: "UUID",
     cipher: "Cipher | None",
     mcp_config: "dict[str, MCPServer]",
+    load_memory: bool = False,
 ) -> "tuple[AgentBase, LaunchedAgentProfile]":
     """Load and resolve an agent profile by id, returning the built agent + provenance.
 
@@ -292,6 +297,11 @@ def _resolve_agent_from_profile(
             server's cipher.  Passed explicitly so this free function never
             touches the settings-store singleton (which may not have been
             initialised with the correct cipher yet).
+        load_memory: The user's global persistent-memory preference
+            (``agent_settings.agent_context.load_memory``).  An ``AgentProfile``
+            has no ``agent_context`` field, so the preference cannot ride the
+            profile — it is stamped onto the resolved agent below, else a
+            profile-launched conversation would silently ignore the setting.
 
     Raises:
         ProfileNotFound: No stored profile has ``profile_id``.
@@ -367,6 +377,15 @@ def _resolve_agent_from_profile(
     ):
         agent = agent.model_copy(
             update={"tools": [*agent.tools, Tool(name=BROWSER_TOOL_NAME)]}
+        )
+    # Persistent memory is a global user preference, not a profile field, so it
+    # is carried across the profile-resolution boundary the same way the global
+    # ``mcp_config`` is. Left untouched when off, so the resolved agent stays
+    # byte-identical for everyone who hasn't opted in.
+    if load_memory:
+        context = agent.agent_context or AgentContext()
+        agent = agent.model_copy(
+            update={"agent_context": context.model_copy(update={"load_memory": True})}
         )
     launched = LaunchedAgentProfile(
         agent_profile_id=profile.id,
@@ -685,6 +704,35 @@ class ConversationService:
                 binding
             )
 
+    async def prepare_for_sandbox_pause(self) -> None:
+        async with self._lifecycle_lock:
+            event_services = self._event_services
+            if event_services is None:
+                raise ValueError("inactive_service")
+            active_services = tuple(event_services.items())
+            results = await asyncio.gather(
+                *(
+                    event_service.__aexit__(None, None, None)
+                    for _, event_service in active_services
+                ),
+                return_exceptions=True,
+            )
+            first_error: BaseException | None = None
+            for (conversation_id, event_service), result in zip(
+                active_services, results, strict=True
+            ):
+                if isinstance(result, BaseException):
+                    if first_error is None:
+                        first_error = result
+                    continue
+                record = self._conversation_records.get(conversation_id)
+                if record is not None:
+                    record.stored = event_service.stored
+                event_services.pop(conversation_id, None)
+            if first_error is not None:
+                raise first_error
+            self._credential_bindings = {}
+
     @staticmethod
     def _is_codex_agent(agent: AgentBase | None) -> bool:
         return isinstance(agent, ACPAgent) and agent.acp_server == "codex"
@@ -884,7 +932,10 @@ class ConversationService:
             return await self._get_or_load_event_service_locked(conversation_id)
 
     async def _get_or_load_event_service_locked(
-        self, conversation_id: UUID
+        self,
+        conversation_id: UUID,
+        *,
+        require_runtime_bindings: bool = True,
     ) -> EventService | None:
         event_services = self._event_services
         if event_services is None:
@@ -899,6 +950,15 @@ class ConversationService:
         record = self._conversation_records.get(conversation_id)
         if record is None:
             return None
+
+        pending_bindings = self._credential_bindings.get(conversation_id, {})
+        missing_bindings = (
+            record.stored.required_runtime_credential_bindings - pending_bindings.keys()
+        )
+        if require_runtime_bindings and missing_bindings:
+            raise CredentialBindingActivationRequired(
+                "credential_binding_activation_required"
+            )
 
         await asyncio.to_thread(self._prepare_persisted_runtime, record.stored)
         try:
@@ -1275,11 +1335,14 @@ class ConversationService:
 
             settings = get_settings_store().load() or PersistedSettings()
             mcp_config = settings.agent_settings.mcp_config
+            # ``ACPAgentSettings.agent_context`` is nullable, hence the guard.
+            stored_context = settings.agent_settings.agent_context
             resolved_agent, launched_agent_profile = await asyncio.to_thread(
                 _resolve_agent_from_profile,
                 request.agent_profile_id,
                 self.cipher,
                 mcp_config,
+                load_memory=bool(stored_context and stored_context.load_memory),
             )
             request = request.model_copy(update={"agent": resolved_agent})
 
@@ -1466,7 +1529,8 @@ class ConversationService:
             if event_services is None:
                 raise ValueError("inactive_service")
             event_service = await self._get_or_load_event_service_locked(
-                conversation_id
+                conversation_id,
+                require_runtime_bindings=False,
             )
             if event_service is None:
                 return False

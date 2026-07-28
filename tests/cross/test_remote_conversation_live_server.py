@@ -57,6 +57,7 @@ def live_server_env(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     import_modules: str | None = None,
+    session_api_keys: list[str] | None = None,
 ) -> Generator[dict]:
     """Launch a real FastAPI server backed by temp workspace and conversations.
 
@@ -97,7 +98,7 @@ def live_server_env(
     )
 
     cfg = {
-        "session_api_keys": [],  # disable auth for tests
+        "session_api_keys": session_api_keys or [],
         "conversations_path": str(conversations_path),
         "workspace_path": str(workspace_path),
     }
@@ -171,9 +172,48 @@ def test_health_endpoints_return_ok_json(server_env):
             assert response.json() == {"status": "ok"}
 
 
+def test_prepare_for_sandbox_pause_drains_conversations(server_env):
+    agent = Agent(
+        llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
+        tools=[],
+    )
+    payload = {
+        "agent": agent.model_dump(mode="json", context={"expose_secrets": True}),
+        "workspace": {"working_dir": "/tmp/workspace/project"},
+    }
+    with httpx.Client(base_url=server_env["host"]) as client:
+        start = client.post("/api/conversations", json=payload, timeout=10.0)
+        start.raise_for_status()
+        conversation_id = UUID(start.json()["id"])
+        assert conversation_id in server_env["conversation_service"]._event_services
+
+        response = client.post(
+            "/api/conversations/prepare-for-sandbox-pause",
+            timeout=10.0,
+        )
+
+    assert response.status_code == 204
+    assert conversation_id not in server_env["conversation_service"]._event_services
+    assert conversation_id in server_env["conversation_service"]._conversation_records
+
+
 @pytest.fixture
 def server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[dict]:
     with live_server_env(tmp_path, monkeypatch) as env:
+        yield env
+
+
+@pytest.fixture
+def authenticated_server_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Generator[dict]:
+    api_key = "test-websocket-auth-key"
+    with live_server_env(
+        tmp_path,
+        monkeypatch,
+        session_api_keys=[api_key],
+    ) as env:
+        env["api_key"] = api_key
         yield env
 
 
@@ -231,6 +271,28 @@ def patched_llm(monkeypatch: pytest.MonkeyPatch) -> None:
         return fake_completion(self, messages, tools, **kwargs)
 
     monkeypatch.setattr(LLM, "acompletion", fake_acompletion, raising=True)
+
+
+def test_remote_conversation_websocket_first_message_auth(
+    authenticated_server_env,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("OPENHANDS_REMOTE_WS_READY_TIMEOUT", "2")
+    agent = Agent(
+        llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
+        tools=[],
+    )
+    workspace = RemoteWorkspace(
+        host=authenticated_server_env["host"],
+        working_dir="/tmp/workspace/project",
+        api_key=authenticated_server_env["api_key"],
+    )
+
+    conversation: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+    try:
+        assert conversation.id
+    finally:
+        conversation.close()
 
 
 def test_preloaded_custom_tool_resolves_in_live_server(
