@@ -20,7 +20,10 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import UTC, datetime
+from datetime import (  # noqa: UP017 — platform is Python 3.10, no datetime.UTC
+    UTC,
+    datetime,
+)
 from pathlib import Path
 from typing import Any
 

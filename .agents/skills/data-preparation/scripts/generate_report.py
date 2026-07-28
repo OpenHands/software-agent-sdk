@@ -15,7 +15,10 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import UTC, datetime
+from datetime import (  # noqa: UP017 — platform is Python 3.10, no datetime.UTC
+    UTC,
+    datetime,
+)
 from pathlib import Path
 
 
