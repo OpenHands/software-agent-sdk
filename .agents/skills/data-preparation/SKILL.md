@@ -9,16 +9,62 @@ description: >-
 
 # 数据准备
 
-所有数据读取、DataFlow 清洗和上传动作都在本地工作区执行，通过标准工具进行，不与 DataFlow 平台服务交互。
+试跑在本地工作区执行（快速验证逻辑），全量执行提交到 Pyromind 平台异步运行。
+
+## 强制约束（MANDATORY）
+
+1. **所有文件写入必须在 `public_data/data-preparation/` 下**。不要访问、创建或修改 `.agents/`、项目源码、或任何 `public_data/` 之外的路径。
+2. **优先使用本文档的 API 签名，避免不必要的源码内省**。本文档已覆盖常用算子的完整签名和用法，绝大多数任务无需查看 DataFlow 源码。仅当文档确实未覆盖某个算子或参数时，才用 `inspect.getsource` 等手段查看具体实现，且查看后立即编写代码，不要反复探索。
+3. **`df_logging.py` 和 `generate_report.py` 由工具自动投递**。`df_run_pipeline` 执行时会自动将这两个文件复制到 pipeline 同目录，Agent 不需要手动创建、复制或读取它们。只需在 pipeline.py 中 `from df_logging import LoggingLLMServing` 即可。
+4. **不要用终端探索环境**。不要执行 `pip list`、`python -c "import ..."` 来验证依赖是否安装——`df_run_pipeline` 会自动检查并报错。
 
 ## 工作流
 
 1. 如果用户提供 HuggingFace 数据集 ID，先用 `dataset_download` 下载前 5 条预览，让用户确认字段结构、split 和 config。下载路径放在 `public_data/data-preparation/`，注意：**output_path 必须是相对于 workspace 根目录的路径**，比如 `public_data/data-preparation/sample.jsonl`，不要加 `conversations/<id>/` 前缀。
 2. 确认要生成/清洗的目标后，根据「算子选择决策表」选择合适算子，编写 pipeline.py。
-3. 先用 `df_run_pipeline` 执行，传 `limit=3` 或仅 3 条样本，检查输出是否符合预期。
-4. 确认后用完整输入执行 `df_run_pipeline`。
-5. 用 `df_convert` 把 `processed.jsonl` 转换为 `messages.jsonl` 或 `preference.jsonl`。
-6. 用 `upload_file_to_pyromind` 把最终产物上传到 Pyromind Storage。
+   **必须使用 `LoggingLLMServing` 包装 LLM 实例**（见下方「脚本契约」）。
+3. 准备试跑数据：根据 `preview_dataset` 看到的数据结构，手动构造 3-5 条 sample.jsonl 作为试跑输入。
+4. 本地试跑：用 `df_run_pipeline` 执行 pipeline.py + sample.jsonl，检查输出是否符合预期。
+5. **向用户展示试跑结果，等待用户确认**。展示内容：
+   - 试跑输出的前 2-3 条样本（直接读取输出文件）
+   - 简要说明算子逻辑和预期效果
+   - 明确询问：“试跑结果符合预期吗？确认后我将提交平台执行全量数据。”
+   - **用户未确认前不得提交平台。**
+6. 用户确认后，提交平台全量执行：
+   a. 用 `upload_file_to_pyromind` 上传 pipeline.py 到 Storage。
+   b. 用 `df_submit_pipeline` 提交异步执行（传 `script_path`、`input_path`）。
+7. 收到平台 callback 后，按顺序检查产物：
+   a. `preview_dataset(output_dir/report.json)` — 检查执行状态、LLM 调用统计和错误率。
+   b. 如有异常：`preview_dataset(output_dir/llm_calls.jsonl)` — 定位具体失败的 LLM 调用。
+   c. 确认成功：`preview_dataset(output_dir/processed.jsonl)` — 抽样检查输出质量。
+8. 如需格式转换：用 `df_convert`（小数据集本地转换）或重新提交带 `convert_format` 的 run。
+9. 用 `upload_file_to_pyromind` 把最终产物上传到 Pyromind Storage（如尚未在平台上）。
+
+## 脚本契约
+
+pipeline.py 必须遵循以下契约：
+
+```python
+import os, sys
+from df_logging import LoggingLLMServing  # 工具自动投递，无需手动创建
+
+# LLM 初始化（凭证由平台/工具自动注入环境变量）
+raw_llm = APILLMServing_request(
+    api_url=os.environ["DF_API_URL"],
+    model_name=os.environ["DF_MODEL_NAME"],
+    key_name_of_api_key="DF_API_KEY",
+)
+llm = LoggingLLMServing(raw_llm)  # 必须包装，记录全量 LLM 调用
+
+# 入口契约: pipeline.py <input_path> <output_path>
+if __name__ == "__main__":
+    input_path = sys.argv[1]
+    output_path = sys.argv[2] if len(sys.argv) > 2 else "processed.jsonl"
+    main(input_path, output_path)
+```
+
+- `DF_LOG_DIR` 环境变量指向输出目录，`LoggingLLMServing` 自动写入 `llm_calls.jsonl`。
+- 本地试跑时 `LoggingLLMServing` 同样可用（`df_run_pipeline` 自动投递 `df_logging.py` 到 pipeline 同目录）。
 
 ---
 

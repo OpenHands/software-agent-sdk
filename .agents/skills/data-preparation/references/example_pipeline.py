@@ -10,6 +10,7 @@ Key API notes:
 - input_key / output_key are parameters of run(), NOT the constructor
 - generator.run() returns the output_key string, NOT a storage object
 - After run(), data is buffered at the next step; call storage.step() then read()
+- LoggingLLMServing wraps the LLM to record all calls (required for platform runs)
 """
 
 import importlib.util
@@ -41,6 +42,7 @@ APILLMServing_request = _mod.APILLMServing_request
 
 from dataflow.operators.core_text import PromptedGenerator  # noqa: E402
 from dataflow.utils.storage import LazyFileStorage  # noqa: E402
+from df_logging import LoggingLLMServing  # noqa: E402
 
 
 SYSTEM_PROMPT = (
@@ -61,8 +63,10 @@ def main(input_path: str, output_path: str) -> None:
     storage = LazyFileStorage(str(input_file), cache_type="jsonl")
     storage = storage.step()
 
-    # 2. Initialize LLM from environment variables (injected by df_run_pipeline)
-    llm = APILLMServing_request(
+    # 2. Initialize LLM from environment variables (injected by df_run_pipeline
+    #    or the platform runner). Wrap with LoggingLLMServing for full call
+    #    traceability (writes llm_calls.jsonl to DF_LOG_DIR).
+    raw_llm = APILLMServing_request(
         api_url=os.environ.get(
             "DF_API_URL", "https://api.openai.com/v1/chat/completions"
         ),
@@ -71,6 +75,7 @@ def main(input_path: str, output_path: str) -> None:
         temperature=0.0,
         max_workers=8,
     )
+    llm = LoggingLLMServing(raw_llm)
 
     # 3. Generator: add CoT reasoning
     #    Constructor only accepts: llm_serving, system_prompt, user_prompt, json_schema

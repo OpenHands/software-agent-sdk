@@ -67,6 +67,7 @@ from openhands.sdk.security.defense_in_depth import PatternSecurityAnalyzer
 from openhands.sdk.skills import Skill, load_skills_from_dir
 from openhands.sdk.tool.builtins import SkillsListTool, SkillsReadTool
 from openhands.sdk.workspace import LocalWorkspace
+from openhands.tools.data_preparation import DfSubmitPipelineTool
 from openhands.tools.preset.codex import get_codex_agent
 from openhands.tools.preset.default import register_default_tools
 from openhands.tools.pyromind_cleaning import RunDatasetCleaningTool
@@ -466,11 +467,18 @@ def _build_pyromind_storage_tools(
     if "secret_headers" in params:
         cleaning_params["storage_secret_headers"] = dict(params["secret_headers"])
 
+    # DataFlow platform submission tool params (mirrors cleaning pattern)
+    preparation_params: dict[str, Any] = dict(cleaning_params)
+    preparation_params["runtime_dir"] = str(
+        Path(skills_path) / "data-preparation" / "scripts"
+    )
+
     return (
         [
             Tool(name=PreviewDatasetTool.name, params=dict(params)),
             Tool(name=UploadFileToPyromindTool.name, params=dict(params)),
             Tool(name=RunDatasetCleaningTool.name, params=cleaning_params),
+            Tool(name=DfSubmitPipelineTool.name, params=preparation_params),
             Tool(name=PreviewRemoteDatasetTool.name, params={}),
         ],
         secrets,
@@ -1018,6 +1026,7 @@ async def create_pyromind_conversation(
     """
     # Register default tools before agent resolution.
     import openhands.tools.data_preparation.definition  # noqa: F401
+    import openhands.tools.data_preparation.platform_submit  # noqa: F401
 
     register_default_tools(enable_browser=False)
 
@@ -1102,7 +1111,14 @@ async def create_pyromind_conversation(
             Tool(name=WorkflowDebugTool.name, params=debug_tool.params),
             *storage_tools,
             Tool(name="dataset_download"),
-            Tool(name="df_run_pipeline"),
+            Tool(
+                name="df_run_pipeline",
+                params={
+                    "runtime_dir": str(
+                        Path(skills_path) / "data-preparation" / "scripts"
+                    )
+                },
+            ),
             Tool(name="df_convert"),
             validation_tool,
         ],

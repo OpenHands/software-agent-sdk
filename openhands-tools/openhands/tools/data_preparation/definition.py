@@ -43,6 +43,9 @@ from openhands.tools.data_preparation.runner import (
 from openhands.tools.utils import default_path_access_policy
 
 
+RUNTIME_FILENAMES = ("df_logging.py", "generate_report.py")
+
+
 logger = logging.getLogger(__name__)
 
 _HF_ROWS_API = "https://datasets-server.huggingface.co"
@@ -435,6 +438,19 @@ class DfRunPipelineObservation(Observation):
 
 
 class DfRunPipelineExecutor(ToolExecutor):
+    def __init__(self, *, runtime_dir: str | None = None) -> None:
+        self._runtime_dir = Path(runtime_dir) if runtime_dir else None
+
+    def _stage_runtime_files(self, target_dir: Path) -> None:
+        """Copy runtime helpers (df_logging.py etc.) next to the pipeline."""
+        if self._runtime_dir is None:
+            return
+        for filename in RUNTIME_FILENAMES:
+            src = self._runtime_dir / filename
+            dst = target_dir / filename
+            if src.is_file():
+                dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+
     def __call__(
         self, action: DfRunPipelineAction, conversation: Any = None
     ) -> DfRunPipelineObservation:
@@ -457,6 +473,8 @@ class DfRunPipelineExecutor(ToolExecutor):
                 ),
                 is_error=True,
             )
+
+        self._stage_runtime_files(pipeline.parent)
 
         env_extra = build_dataflow_env(conversation)
         rc, stdout, stderr = run_dataflow_python(
@@ -484,8 +502,13 @@ class DfRunPipelineTool(ToolDefinition[DfRunPipelineAction, DfRunPipelineObserva
     def create(
         cls,
         conv_state: ConversationState | None = None,  # noqa: ARG003
-        **params: Any,  # noqa: ARG003
+        **params: Any,
     ) -> Sequence[Self]:
+        runtime_dir_value = params.pop("runtime_dir", None)
+        runtime_dir = str(runtime_dir_value) if runtime_dir_value is not None else None
+        if params:
+            names = ", ".join(sorted(params))
+            raise ValueError(f"DfRunPipelineTool got unknown params: {names}")
         return [
             cls(
                 description=(
@@ -493,13 +516,15 @@ class DfRunPipelineTool(ToolDefinition[DfRunPipelineAction, DfRunPipelineObserva
                     "isolated subprocess. LLM credentials from the conversation's "
                     "own LLM config are injected as DF_API_KEY / DF_API_URL / "
                     "DF_MODEL_NAME environment variables — the script must read "
-                    "them, never hardcode secrets. Contract: `pipeline.py "
-                    "<input.jsonl> [cache_dir]`; relative paths resolve against "
-                    "the pipeline directory."
+                    "them, never hardcode secrets. Runtime helpers (df_logging.py, "
+                    "generate_report.py) are auto-staged next to the pipeline — "
+                    "the agent must NOT create or copy them manually. Contract: "
+                    "`pipeline.py <input.jsonl> [cache_dir]`; relative paths "
+                    "resolve against the pipeline directory."
                 ),
                 action_type=DfRunPipelineAction,
                 observation_type=DfRunPipelineObservation,
-                executor=DfRunPipelineExecutor(),
+                executor=DfRunPipelineExecutor(runtime_dir=runtime_dir),
             )
         ]
 
