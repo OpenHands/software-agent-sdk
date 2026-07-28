@@ -42,6 +42,7 @@ from openhands.agent_server.event_router import normalize_datetime_to_server_tim
 from openhands.agent_server.models import (
     BashError,
     BashEventBase,
+    BashOutput,
     ExecuteBashRequest,
     ServerErrorEvent,
 )
@@ -546,16 +547,39 @@ class _WebSocketSubscriber(Subscriber):
 
 
 async def _send_bash_event(event: BashEventBase, websocket: WebSocket):
+    metadata: dict[str, str | int | None] = {
+        "kind": event.kind,
+        "event_id": str(event.id),
+        "command_id": None,
+        "order": None,
+        "exit_code": None,
+    }
+    if isinstance(event, BashOutput):
+        metadata.update(
+            command_id=str(event.command_id),
+            order=event.order,
+            exit_code=event.exit_code,
+        )
+
     if not _is_websocket_connected(websocket):
-        logger.debug("skip_sending_bash_event_socket_disconnected: %r", event)
+        logger.debug("skip_sending_bash_event_socket_disconnected: %s", metadata)
         return
     try:
         dumped = event.model_dump(mode="json")
         await websocket.send_json(dumped)
     except (RuntimeError, WebSocketDisconnect) as e:
-        logger.debug("error_sending_bash_event_disconnected: %r (%s)", event, e)
-    except Exception:
-        logger.exception("error_sending_bash_event: %r", event, stack_info=True)
+        logger.debug(
+            "error_sending_bash_event_disconnected: %s (error_type=%s)",
+            metadata,
+            type(e).__name__,
+        )
+    except Exception as e:
+        logger.error(
+            "error_sending_bash_event: %s (error_type=%s)",
+            metadata,
+            type(e).__name__,
+            stack_info=True,
+        )
 
 
 @dataclass
