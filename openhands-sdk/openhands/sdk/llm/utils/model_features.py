@@ -1,8 +1,11 @@
-from collections.abc import Iterable
+import warnings
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from functools import cache
+from typing import Any, Literal
 
 from litellm import get_supported_openai_params
+from litellm.utils import supports_vision as litellm_supports_vision
 
 from openhands.sdk.llm.utils.openhands_provider import OPENHANDS_PROVIDER_PREFIX
 
@@ -46,6 +49,8 @@ def apply_ordered_model_rules(model: str, rules: list[str]) -> bool:
 @dataclass(frozen=True)
 class ModelFeatures:
     supports_reasoning_effort: bool
+    thinking_mode: Literal["adaptive", "manual", "none", "unknown"]
+    supports_sampling_params: bool | None
     supports_extended_thinking: bool
     supports_prompt_cache: bool
     supports_stop_words: bool
@@ -56,6 +61,8 @@ class ModelFeatures:
     # True when the model's API rejects http(s) image URLs and only accepts
     # base64 ``data:`` URLs. See REQUIRES_INLINE_IMAGE_DATA_MODELS.
     requires_inline_image_data: bool
+    # Effective capability from LiteLLM metadata plus SDK overrides.
+    supports_vision: bool
 
 
 LITELLM_PROXY_PREFIX = "litellm_proxy/"
@@ -64,11 +71,10 @@ LITELLM_PROXY_PREFIX = "litellm_proxy/"
 DEPLOYMENT_PREFIXES = ("prod/", "dev/", "staging/", "test/")
 
 
-@cache
-def _normalized_supported_openai_params(model: str | None) -> frozenset[str]:
-    """Return LiteLLM-supported OpenAI params for a normalized model name."""
+def _normalize_model_for_litellm(model: str | None) -> str | None:
+    """Remove SDK/proxy routing prefixes before querying LiteLLM metadata."""
     if not model:
-        return frozenset()
+        return None
 
     normalized = model.strip().lower()
     for provider_prefix in (LITELLM_PROXY_PREFIX, OPENHANDS_PROVIDER_PREFIX):
@@ -82,6 +88,16 @@ def _normalized_supported_openai_params(model: str | None) -> frozenset[str]:
             normalized = normalized.removeprefix(prefix)
             break
 
+    return normalized
+
+
+@cache
+def _normalized_supported_openai_params(model: str | None) -> frozenset[str]:
+    """Return LiteLLM-supported OpenAI params for a normalized model name."""
+    normalized = _normalize_model_for_litellm(model)
+    if not normalized:
+        return frozenset()
+
     params = get_supported_openai_params(
         model=normalized,
         custom_llm_provider=None,
@@ -89,40 +105,9 @@ def _normalized_supported_openai_params(model: str | None) -> frozenset[str]:
     return frozenset(params or ())
 
 
-# SDK-side override allowlist for models that support the ``reasoning_effort``
-# parameter but are not (yet) recognized by LiteLLM's
-# ``get_supported_openai_params`` registry. Without this, brand-new model ids
-# fall through to the non-reasoning branch in ``chat_options.py`` and the SDK
-# leaves ``temperature``/``top_p`` in the request, which providers like
-# Anthropic now reject for these models with
-# ``temperature is deprecated for this model``.
-#
-# Entries should be removed once the corresponding LiteLLM release ships
-# metadata for the model.
-REASONING_EFFORT_MODELS: list[str] = [
-    # https://www.anthropic.com/news/claude-fable-5
-    "claude-fable-5",
-    # LiteLLM recognizes the first-party "anthropic/claude-opus-4-8" id, but not
-    # the Bedrock cross-region inference ids (e.g.
-    # "bedrock/us.anthropic.claude-opus-4-8-v1:0"), which fall through to the
-    # non-reasoning branch and leak temperature/top_p. List explicitly until
-    # LiteLLM ships Bedrock metadata for this model.
-    "claude-opus-4-8",
-]
-
-
-def _supports_reasoning_effort(model: str | None) -> bool:
-    """Return True if LiteLLM or our override list says the model accepts
-    ``reasoning_effort``.
-
-    The override list (``REASONING_EFFORT_MODELS``) lets us recognize new
-    reasoning models before LiteLLM's metadata catches up, so the chat-options
-    layer can strip ``temperature``/``top_p`` (and forward ``reasoning_effort``)
-    before the request reaches the provider.
-    """
-    if model_matches(model or "", REASONING_EFFORT_MODELS):
-        return True
-    return "reasoning_effort" in _normalized_supported_openai_params(model)
+REASONING_EFFORT_MODEL_OVERRIDES = {
+    "kimi-k3": "moonshot/kimi-k3",
+}
 
 
 EXTENDED_THINKING_MODELS: list[str] = [
@@ -149,8 +134,9 @@ PROMPT_CACHE_MODELS: list[str] = [
     "claude-opus-4-6",
     "claude-opus-4-7",
     "claude-opus-4-8",
+    # https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+    "claude-opus-5",
     # https://www.anthropic.com/news/claude-fable-5
-    # Listed explicitly until LiteLLM metadata recognizes it.
     "claude-fable-5",
     # Do NOT add Gemini: explicit cache_control markers freeze its cache at the
     # static prefix and disable Google's implicit caching on the growing body
@@ -220,6 +206,7 @@ FORCE_STRING_SERIALIZER_MODELS: list[str] = [
 # Models that we should send full reasoning content
 # in the message input
 SEND_REASONING_CONTENT_MODELS: list[str] = [
+    "kimi-k3",
     "kimi-k2-thinking",
     "kimi-k2.5",
     "kimi-k2.6",
@@ -228,6 +215,21 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
     "deepseek/deepseek-v4-pro",  # Dual-mode (Thinking/Non-Thinking)
     "deepseek/deepseek-v4-flash",  # Dual-mode (Thinking/Non-Thinking)
 ]
+
+# Match token -> canonical LiteLLM ID for vision metadata overrides.
+VISION_MODEL_OVERRIDES = {"kimi-k3": "moonshot/kimi-k3"}
+
+
+@cache
+def _model_supports_vision(model: str | None) -> bool:
+    """Return whether LiteLLM or our override list marks the model as visual."""
+    if model and model_matches(model, VISION_MODEL_OVERRIDES.keys()):
+        return True
+    normalized = _normalize_model_for_litellm(model)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return bool(normalized and litellm_supports_vision(normalized))
+
 
 # Models whose API rejects http(s) image URLs and only accepts base64
 # ``data:`` URLs (or vendor-specific file IDs). When this matches, the SDK
@@ -244,24 +246,161 @@ REQUIRES_INLINE_IMAGE_DATA_MODELS: tuple[str, ...] = (
     # > URL-formatted images: Not supported, currently only supports
     # > base64-encoded image content and images/videos uploaded via file ID
     "moonshot/kimi-k2.6",
+    "moonshot/kimi-k3",
+    # The OpenHands K3 route uses the same Moonshot image-input contract.
+    "openhands/kimi-k3",
 )
 
 
-def get_features(model: str) -> ModelFeatures:
-    """Get model features."""
+def _optional_bool(source: Mapping[str, Any] | None, key: str) -> bool | None:
+    if source is None:
+        return None
+    value = source.get(key)
+    return value if isinstance(value, bool) else None
+
+
+def _resolved_bool(
+    key: str,
+    *,
+    overrides: Mapping[str, Any] | None,
+    metadata: Mapping[str, Any] | None,
+    fallback: bool,
+    metadata_key: str | None = None,
+) -> bool:
+    """Resolve a boolean capability without losing an explicit ``False``."""
+    override = _optional_bool(overrides, key)
+    if override is not None:
+        return override
+    discovered = _optional_bool(metadata, metadata_key or key)
+    if discovered is not None:
+        return discovered
+    return fallback
+
+
+def _thinking_mode(
+    model: str,
+    model_info: Mapping[str, Any] | None,
+    overrides: Mapping[str, Any] | None,
+) -> Literal["adaptive", "manual", "none", "unknown"]:
+    if overrides is not None:
+        override = overrides.get("thinking_mode")
+        if override in {"adaptive", "manual", "none", "unknown"}:
+            return override
+
+    adaptive = _optional_bool(model_info, "supports_adaptive_thinking")
+    if adaptive is True:
+        return "adaptive"
+
+    supports_reasoning = _optional_bool(model_info, "supports_reasoning")
+    if supports_reasoning is False:
+        return "none"
+    if model_matches(model, EXTENDED_THINKING_MODELS):
+        return "manual"
+    if supports_reasoning is True:
+        return "unknown"
+    return "none"
+
+
+def _supports_explicit_prompt_cache(
+    model: str,
+    model_info: Mapping[str, Any] | None,
+    overrides: Mapping[str, Any] | None,
+) -> bool:
+    override = _optional_bool(overrides, "supports_prompt_cache")
+    if override is not None:
+        return override
+
+    metadata_value = _optional_bool(model_info, "supports_prompt_caching")
+    if metadata_value is False:
+        return False
+    if metadata_value is True:
+        provider = str((model_info or {}).get("litellm_provider", "")).lower()
+        registry_key = str((model_info or {}).get("key", "")).lower()
+        # This capability covers explicit cache_control, not implicit caching.
+        if (
+            provider == "anthropic"
+            or "claude" in model.lower()
+            or "claude" in registry_key
+            or "anthropic" in registry_key
+        ):
+            return True
+
+    return model_matches(model, PROMPT_CACHE_MODELS)
+
+
+def _supports_responses_api(
+    model: str,
+    model_info: Mapping[str, Any] | None,
+    overrides: Mapping[str, Any] | None,
+) -> bool:
+    override = _optional_bool(overrides, "supports_responses_api")
+    if override is not None:
+        return override
+
+    endpoints = (model_info or {}).get("supported_endpoints")
+    if isinstance(endpoints, (list, tuple)):
+        if "/v1/responses" in endpoints:
+            return True
+        # A supplied endpoint list is authoritative, including its omissions.
+        return False
+    return model_matches(model, RESPONSES_API_MODELS)
+
+
+def get_features(
+    model: str,
+    model_info: Mapping[str, Any] | None = None,
+    overrides: Mapping[str, Any] | None = None,
+) -> ModelFeatures:
+    """Resolve model features from overrides, metadata, and fallbacks."""
+    supported_params = _normalized_supported_openai_params(model)
+    supports_reasoning_effort = _resolved_bool(
+        "supports_reasoning_effort",
+        overrides=overrides,
+        metadata=model_info,
+        metadata_key="supports_reasoning",
+        fallback=(
+            model_matches(model, REASONING_EFFORT_MODEL_OVERRIDES)
+            or "reasoning_effort" in supported_params
+        ),
+    )
+    thinking_mode = _thinking_mode(model, model_info, overrides)
+    supports_sampling_params = _optional_bool(overrides, "supports_sampling_params")
+    if supports_sampling_params is None:
+        supports_sampling_params = _optional_bool(
+            model_info, "supports_sampling_params"
+        )
+
     return ModelFeatures(
-        supports_reasoning_effort=_supports_reasoning_effort(model),
-        supports_extended_thinking=model_matches(model, EXTENDED_THINKING_MODELS),
-        supports_prompt_cache=model_matches(model, PROMPT_CACHE_MODELS),
-        supports_stop_words=not model_matches(model, SUPPORTS_STOP_WORDS_FALSE_MODELS),
-        supports_responses_api=model_matches(model, RESPONSES_API_MODELS),
+        supports_reasoning_effort=supports_reasoning_effort,
+        thinking_mode=thinking_mode,
+        supports_sampling_params=supports_sampling_params,
+        supports_extended_thinking=thinking_mode == "manual",
+        supports_prompt_cache=_supports_explicit_prompt_cache(
+            model, model_info, overrides
+        ),
+        supports_stop_words=_resolved_bool(
+            "supports_stop_words",
+            overrides=overrides,
+            metadata=model_info,
+            fallback=not model_matches(model, SUPPORTS_STOP_WORDS_FALSE_MODELS),
+        ),
+        supports_responses_api=_supports_responses_api(model, model_info, overrides),
         force_string_serializer=model_matches(model, FORCE_STRING_SERIALIZER_MODELS),
         send_reasoning_content=model_matches(model, SEND_REASONING_CONTENT_MODELS),
         # Extended prompt_cache_retention support follows ordered include/exclude rules.
-        supports_prompt_cache_retention=apply_ordered_model_rules(
-            model, PROMPT_CACHE_RETENTION_MODELS
+        supports_prompt_cache_retention=_resolved_bool(
+            "supports_prompt_cache_retention",
+            overrides=overrides,
+            metadata=model_info,
+            fallback=apply_ordered_model_rules(model, PROMPT_CACHE_RETENTION_MODELS),
         ),
         requires_inline_image_data=model_matches(
             model, REQUIRES_INLINE_IMAGE_DATA_MODELS
+        ),
+        supports_vision=_resolved_bool(
+            "supports_vision",
+            overrides=overrides,
+            metadata=model_info,
+            fallback=_model_supports_vision(model),
         ),
     )

@@ -527,6 +527,14 @@ jobs:
         env:
             GH_TOKEN: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
         steps:
+            - name: Checkout SDK release tooling
+              uses: actions/checkout@v7
+
+            - name: Install Node.js
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 22
+
             - name: Get version
               id: get_version
               env:
@@ -564,13 +572,52 @@ jobs:
                     exit 1
                   fi
 
-            - name: Open bump PR in typescript-client
+            - name: Obtain exact OpenAPI release artifact
+              id: openapi
               env:
                   VERSION: ${{ steps.get_version.outputs.version }}
               run: |
                   set -euo pipefail
+                  ARTIFACT_DIR="$RUNNER_TEMP/agent-server-$VERSION-openapi"
+                  OPENAPI_PATH="$ARTIFACT_DIR/openapi.json"
+                  mkdir -p "$ARTIFACT_DIR"
+
+                  MAX_ATTEMPTS=90
+                  SLEEP_SECONDS=20
+                  ATTEMPT=1
+                  echo "⏳ Waiting for openapi.json on SDK release v${VERSION}..."
+                  while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+                    if gh release download "v$VERSION" \
+                      --repo "${{ github.repository }}" \
+                      --pattern openapi.json \
+                      --dir "$ARTIFACT_DIR" \
+                      --clobber > /dev/null 2>&1; then
+                      jq -e --arg version "$VERSION" \
+                        '.info.version == $version' "$OPENAPI_PATH" > /dev/null
+                      echo "✅ Downloaded exact OpenAPI artifact for v$VERSION"
+                      echo "path=$OPENAPI_PATH" >> "$GITHUB_OUTPUT"
+                      break
+                    fi
+                    echo "  Attempt $ATTEMPT/$MAX_ATTEMPTS: artifact not ready, waiting ${SLEEP_SECONDS}s..."
+                    sleep "$SLEEP_SECONDS"
+                    ATTEMPT=$((ATTEMPT + 1))
+                  done
+
+                  if [ $ATTEMPT -gt $MAX_ATTEMPTS ]; then
+                    echo "❌ Timeout waiting for SDK release v${VERSION} openapi.json"
+                    exit 1
+                  fi
+
+            - name: Open bump PR in typescript-client
+              env:
+                  VERSION: ${{ steps.get_version.outputs.version }}
+                  OPENAPI_PATH: ${{ steps.openapi.outputs.path }}
+              run: |
+                  set -euo pipefail
                   REPO="OpenHands/typescript-client"
                   BRANCH="bump-agent-server-$VERSION"
+                  BEFORE_SCHEMA="$RUNNER_TEMP/agent-server-schema-before.ts"
+                  API_SUMMARY="$RUNNER_TEMP/agent-server-api-summary.md"
 
                   git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" ts-client
                   cd ts-client
@@ -596,21 +643,31 @@ jobs:
                     exit 0
                   fi
 
-                  for f in package.json .github/workflows/integration-tests.yml AGENTS.md README.md; do
-                    sed -i \
-                      -e "s#agent-server:${CURRENT}-python#agent-server:${VERSION}-python#g" \
-                      -e "s#software-agent-sdk v${CURRENT}#software-agent-sdk v${VERSION}#g" \
-                      -e "s#\`v${CURRENT}\`#\`v${VERSION}\`#g" \
-                      "$f"
-                  done
+                  cp src/generated/agent-server-schema.ts "$BEFORE_SCHEMA"
+                  npm ci
+                  python "$GITHUB_WORKSPACE/.github/scripts/prepare_typescript_client_agent_server_bump.py" \
+                    --client-root "$PWD" \
+                    --version "$VERSION" \
+                    --openapi "$OPENAPI_PATH"
+                  AGENT_SERVER_OPENAPI_PATH="$OPENAPI_PATH" \
+                    npm run generate:agent-server-api
+                  npm run summarize:agent-server-api -- \
+                    --before "$BEFORE_SCHEMA" \
+                    --after src/generated/agent-server-schema.ts \
+                    --output "$API_SUMMARY"
 
                   if git diff --quiet; then
                     echo "⚠️ No changes produced — versions may already match"
                     exit 0
                   fi
 
-                  git add package.json .github/workflows/integration-tests.yml AGENTS.md README.md
-                  git commit -m "Bump agent-server (software-agent-sdk) to v$VERSION"
+                  git add \
+                    package.json \
+                    .github/workflows/integration-tests.yml \
+                    AGENTS.md \
+                    README.md \
+                    src/generated/agent-server-schema.ts
+                  git commit -m "chore: agent-server (software-agent-sdk) to v$VERSION"
                   git push -u origin "$BRANCH"
 
                   EXISTING_PR=$(gh pr list --repo "$REPO" --head "$BRANCH" --json number --jq '.[0].number')
@@ -625,6 +682,10 @@ jobs:
                   Updates the pinned OpenHands software-agent-sdk / agent-server image from v${CURRENT} to v${VERSION} (package.json config.agentServerImage, plus the integration-tests.yml, AGENTS.md, and README.md mirrors).
 
                   CI + integration tests on this PR run against ghcr.io/openhands/agent-server:${VERSION}-python, validating the client against the new server before merge. This does not release the npm package.
+
+                  ## Agent Server API change summary
+
+                  $(cat "$API_SUMMARY")
 
                   Triggered by: software-agent-sdk v${VERSION} — https://github.com/OpenHands/software-agent-sdk/releases/tag/v${VERSION}
 

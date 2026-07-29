@@ -35,6 +35,7 @@ from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
     DefaultConversationVisualizer,
 )
+from openhands.sdk.credential import CredentialBindingError
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
@@ -58,7 +59,11 @@ from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
 from openhands.sdk.marketplace.registry import MarketplaceRegistry
 from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config, dump_mcp_config
-from openhands.sdk.mcp.utils import DefaultMCPToolProvider, MCPToolProvider
+from openhands.sdk.mcp.utils import (
+    DefaultMCPToolProvider,
+    MCPToolProvider,
+    ToolsChangedCallback,
+)
 from openhands.sdk.observability.laminar import observe
 from openhands.sdk.plugin import (
     Plugin,
@@ -72,7 +77,12 @@ from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
-from openhands.sdk.skills import load_available_skills, merge_skills_by_name
+from openhands.sdk.skills import (
+    Skill,
+    load_available_skills,
+    load_marketplace_standalone_skills,
+    merge_skills_by_name,
+)
 from openhands.sdk.skills.utils import (
     expand_mcp_variables,
     expand_variable_references,
@@ -154,6 +164,7 @@ class LocalConversation(BaseConversation):
     _stuck_detector: StuckDetector | None
     llm_registry: LLMRegistry
     _cleanup_initiated: bool
+    _cleanup_complete: bool
     _hook_processor: HookEventProcessor | None
     delete_on_close: bool = True
     _arun_task: asyncio.Task[None] | None
@@ -267,6 +278,7 @@ class LocalConversation(BaseConversation):
         # Mark cleanup as initiated as early as possible to avoid races or partially
         # initialized instances during interpreter shutdown.
         self._cleanup_initiated = False
+        self._cleanup_complete = False
         self._arun_task = None
         self._cancel_token = None
         self._prompt_cache_key = prompt_cache_key
@@ -850,6 +862,7 @@ class LocalConversation(BaseConversation):
 
         # Track whether we have plugins or MCP config to process
         has_mcp_config = bool(merged_mcp)
+        marketplace_skills_loaded = False
 
         plugins_to_load: list[tuple[PluginSource, bool]] = []
         if merged_context is not None and merged_context.registered_marketplaces:
@@ -865,9 +878,12 @@ class LocalConversation(BaseConversation):
                 for registration in merged_context.registered_marketplaces
             ]
             registry = MarketplaceRegistry(registrations)
+            marketplace_skills: list[Skill] = []
             for registration in registry.get_auto_load_registrations():
                 try:
-                    marketplace, _ = registry.get_marketplace(registration.name)
+                    marketplace, marketplace_path = registry.get_marketplace(
+                        registration.name
+                    )
                 except Exception:
                     logger.warning(
                         "Failed to load marketplace '%s'; continuing without it",
@@ -885,6 +901,23 @@ class LocalConversation(BaseConversation):
                             True,
                         )
                     )
+                # Standalone skills. Merged below as low precedence; plugins
+                # loaded afterwards override same-named skills, matching the
+                # catalog.
+                marketplace_skills.extend(
+                    load_marketplace_standalone_skills(
+                        marketplace, marketplace_path, registration
+                    )
+                )
+            if marketplace_skills:
+                merged_context = merged_context.model_copy(
+                    update={
+                        "skills": merge_skills_by_name(
+                            merged_context.skills, marketplace_skills
+                        )
+                    }
+                )
+                marketplace_skills_loaded = True
 
         if self._plugin_specs:
             plugins_to_load.extend((spec, False) for spec in self._plugin_specs)
@@ -1075,6 +1108,7 @@ class LocalConversation(BaseConversation):
             or has_mcp_config
             or project_skills_loaded
             or ambient_plugins_loaded
+            or marketplace_skills_loaded
             or memory_loaded
         ):
             self.agent = self.agent.model_copy(
@@ -1208,19 +1242,27 @@ class LocalConversation(BaseConversation):
         self._hook_processor.run_session_start()
 
     def _runtime_mcp_tools(
-        self, mcp_config: dict[str, MCPServer]
+        self,
+        mcp_config: dict[str, MCPServer],
+        *,
+        on_tools_changed: ToolsChangedCallback | None = None,
     ) -> list[ToolDefinition]:
         if not mcp_config:
             return []
         client = self._mcp_tool_provider.create_tools(
-            mcp_config, _RUNTIME_MCP_TIMEOUT_SECS
+            mcp_config,
+            _RUNTIME_MCP_TIMEOUT_SECS,
+            on_tools_changed=on_tools_changed,
         )
         return list(client.tools)
 
     def _runtime_mcp_tools_for_agent(self) -> list[ToolDefinition]:
         if not self.agent.supports_openhands_tools or not self.agent.mcp_config:
             return []
-        return self._runtime_mcp_tools(self.agent.mcp_config)
+        return self._runtime_mcp_tools(
+            self.agent.mcp_config,
+            on_tools_changed=self.agent._on_mcp_tools_changed,
+        )
 
     def _runtime_skill_tools_for_agent(self) -> list[ToolDefinition]:
         agent_context = self.agent.agent_context
@@ -1627,6 +1669,8 @@ class LocalConversation(BaseConversation):
             old_agent = self.agent
             new_agent = old_agent.model_copy(update={"acp_model": model})
             if live:
+                new_agent._register_atexit_cleanup(replace=True)
+                new_agent._bind_file_credential_masking()
                 old_agent.release_runtime()
             # ``self.agent`` is the live reference used by subsequent ``step()``
             # calls; ``self._state.agent`` is what the autosave path serializes
@@ -2537,41 +2581,44 @@ class LocalConversation(BaseConversation):
 
     def close(self) -> None:
         """Close the conversation and clean up all tool executors."""
-        # Remove the atexit reference so the conversation object can be GC'd
-        # after close. atexit.unregister is a no-op if not registered.
-        atexit.unregister(self.close)
-        # Use getattr for safety - object may be partially constructed
-        if getattr(self, "_cleanup_initiated", False):
+        if getattr(self, "_cleanup_complete", False):
             return
-        self._cleanup_initiated = True
-        logger.debug("Closing conversation and cleaning up tool executors")
-        hook_processor = getattr(self, "_hook_processor", None)
-        if hook_processor is not None:
-            hook_processor.run_session_end()
-        try:
-            self._end_observability_span()
-        except AttributeError:
-            # Object may be partially constructed; span fields may be missing.
-            pass
+        first_attempt = not getattr(self, "_cleanup_initiated", False)
+        if first_attempt:
+            self._cleanup_initiated = True
+            logger.debug("Closing conversation and cleaning up tool executors")
+            hook_processor = getattr(self, "_hook_processor", None)
+            if hook_processor is not None:
+                hook_processor.run_session_end()
+            try:
+                self._end_observability_span()
+            except AttributeError:
+                pass
         # Clean up agent resources (e.g., ACPAgent subprocess)
+        agent_error: Exception | None = None
         try:
             self.agent.close()
         except Exception as e:
             logger.warning(f"Error closing agent: {e}")
+            agent_error = e
         # Always close tool executors — they hold runtime resources
         # (subprocesses, connections, etc.) that must be released regardless
         # of whether the conversation data is preserved (delete_on_close).
-        with contextlib.suppress(AttributeError, RuntimeError):
-            # Agent not initialized or partially constructed → skip
-            for tool in self.agent.tools_map.values():
-                with contextlib.suppress(NotImplementedError):
-                    try:
-                        executable_tool = tool.as_executable()
-                        executable_tool.executor.close()
-                    except Exception as e:
-                        logger.warning(
-                            f"Error closing executor for tool '{tool.name}': {e}"
-                        )
+        if first_attempt:
+            with contextlib.suppress(AttributeError, RuntimeError):
+                for tool in self.agent.tools_map.values():
+                    with contextlib.suppress(NotImplementedError):
+                        try:
+                            executable_tool = tool.as_executable()
+                            executable_tool.executor.close()
+                        except Exception as e:
+                            logger.warning(
+                                f"Error closing executor for tool '{tool.name}': {e}"
+                            )
+        if isinstance(agent_error, CredentialBindingError):
+            raise agent_error
+        self._cleanup_complete = True
+        atexit.unregister(self.close)
 
     def ask_agent(self, question: str) -> str:
         """Ask the agent a simple, stateless question and get a direct LLM response.
