@@ -473,10 +473,11 @@ def test_analyzer_name_and_encoding_low(command: str, desc: str):
 # Documented residue (strict xfails): nested command-string payloads
 #
 # When the whole install lives inside an inner command string -- `bash -c
-# "npm install lodahs"`, `sh -c 'npm i loadsh'`, `echo "npm install lodahs"` --
-# the tree-sitter view treats that inner string as a single opaque argument to
-# the OUTER command (bash/sh/echo). It is never re-parsed as a command, so the
-# install is invisible to the analyzer and stays LOW (the safe default).
+# "npm install lodahs"`, `sh -c 'npm i loadsh'`, `npx -c 'npm install lodahs'`,
+# `echo "npm install lodahs"` -- the tree-sitter view treats that inner string as
+# a single opaque argument to the outer command. It is never re-parsed as a
+# command, so the install is invisible to the analyzer and stays LOW (the safe
+# default).
 #
 # Closing these needs recursive command-string parsing: recognising `-c`/`-lc`
 # shells (and `echo`-style sinks) and re-parsing their string argument as a
@@ -489,6 +490,7 @@ def test_analyzer_name_and_encoding_low(command: str, desc: str):
 _NESTED_COMMAND_STRING_RESIDUE = [
     ('bash -c "npm install lodahs"', "bash_dash_c_double_quoted"),
     ("sh -c 'npm i loadsh'", "sh_dash_c_single_quoted"),
+    ("npx -c 'npm install lodahs'", "npx_dash_c_inner_install"),
     ('echo "npm install lodahs"', "echo_double_quoted_install"),
 ]
 
@@ -497,7 +499,7 @@ _NESTED_COMMAND_STRING_RESIDUE = [
     strict=True,
     reason=(
         "Install lives inside an inner command string; the AST treats it as one"
-        " opaque argument to the outer bash/sh/echo. Needs recursive"
+        " opaque argument to the outer command. Needs recursive"
         " command-string parsing (re-parse the -c / echoed string as a nested"
         " program) -- out of scope for the current shared AST view; cf. the"
         " #2721 migration scope."
@@ -517,32 +519,34 @@ def test_analyzer_nested_command_string_residue_xfail(command: str, desc: str):
 
 
 # ---------------------------------------------------------------------------
-# Pathologically nested / chained input never crashes the seam (DoS hardening)
+# Pathologically nested / chained input never looks benign (DoS hardening)
 #
 # Hundreds of nested `$()` levels or chained operators build a parse tree deep
-# enough that the recursive tree-sitter-bash walkers raise RecursionError. The
-# analyzer widens its fail-open guard (alongside UnicodeEncodeError) to catch it
-# and return LOW, so adversarial noise is a documented non-finding, never an
-# exception escaping the security seam (where the ensemble would fail closed to
-# HIGH). A real install in a moderately-chained command still raises HIGH.
+# enough that the recursive tree-sitter-bash walkers cannot finish. Oversized
+# commands are bounded before parsing. Both cases return UNKNOWN so
+# `ConfirmRisky` asks a human instead of treating an unresolved command as LOW.
 # ---------------------------------------------------------------------------
 
-_PATHOLOGICAL_LOW_CASES = [
-    (" && ".join("ls" for _ in range(1500)), "deeply_chained_operators"),
+_PATHOLOGICAL_UNKNOWN_CASES = [
+    (
+        " && ".join([*("true" for _ in range(1500)), "npm install lodahs"]),
+        "deeply_chained_install",
+    ),
     ("x" + "$(" * 200 + "echo" + ")" * 200, "deeply_nested_command_substitution"),
+    ("npm install lodahs #" + "x" * 100_000, "padded_oversized_install"),
 ]
 
 
 @pytest.mark.parametrize(
     "command,desc",
-    _PATHOLOGICAL_LOW_CASES,
-    ids=[c[1] for c in _PATHOLOGICAL_LOW_CASES],
+    _PATHOLOGICAL_UNKNOWN_CASES,
+    ids=[c[1] for c in _PATHOLOGICAL_UNKNOWN_CASES],
 )
-def test_pathological_input_does_not_raise_and_stays_low(command: str, desc: str):
+def test_incomplete_analysis_returns_unknown(command: str, desc: str):
     analyzer = SupplyChainSecurityAnalyzer()
-    # Must not raise RecursionError; treated as a non-finding -> LOW.
     risk = analyzer.security_risk(make_action(command))
-    assert risk == SecurityRisk.LOW, f"{desc}: expected LOW, got {risk}"
+    assert risk == SecurityRisk.UNKNOWN, f"{desc}: expected UNKNOWN, got {risk}"
+    assert ConfirmRisky().should_confirm(risk) is True
 
 
 def test_moderately_chained_real_install_still_high():

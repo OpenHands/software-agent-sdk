@@ -14,8 +14,9 @@ tree-sitter-bash command view (``openhands.sdk.security._shell_ast``) rather tha
 a hand-rolled char scanner, so command chaining, pipes, path-qualified managers
 and subshells parse structurally. The entry point
 :func:`find_typosquat_installs` returns one finding per distinct flagged
-package; the caller decides what to do (the analyzer raises the risk to
-``HIGH`` so a human is asked, never a hard deny).
+package. If an unresolved parser state or resource limit prevents a complete
+analysis, it raises :class:`SupplyChainAnalysisIncompleteError` instead of
+returning a benign-looking empty result.
 
 Hardening:
 
@@ -77,12 +78,12 @@ before exec) and what it leaves opaque is an explicit, honest boundary:
 from __future__ import annotations
 
 import re
+import shlex
 import unicodedata
 from dataclasses import dataclass
 
 from tree_sitter import Node
 
-from openhands.sdk.logger import get_logger
 from openhands.sdk.security._shell_ast import (
     ShellCommand,
     ShellWord,
@@ -92,18 +93,14 @@ from openhands.sdk.security._shell_ast import (
 )
 
 
-logger = get_logger(__name__)
-
 # Generous upper bound on the command length we will parse. The recursive
 # tree-sitter-bash walkers in the shared ``_shell_ast`` view (and the operand
 # decoders here) descend per nested ``$()`` level or chained operator, so a
 # pathologically nested/chained command (hundreds of ``$()`` levels or
 # operators) can exhaust the Python recursion stack. A real install command is
 # at most a few hundred bytes; this cap is set far above any legitimate command
-# (a chained build line, a long scoped-package install) so it never drops a real
-# command, only an absurd one whose only purpose is to blow the stack. Even
-# above the cap, :func:`find_typosquat_installs` would still not crash (the
-# RecursionError below is caught), but skipping the parse avoids the wasted work.
+# (a chained build line, a long scoped-package install). Inputs above the cap
+# are reported as incomplete rather than parsed or treated as benign.
 _MAX_COMMAND_LENGTH = 100_000
 
 
@@ -203,6 +200,71 @@ _WRAPPER_COMMANDS: frozenset[str] = frozenset(
         "xargs",
     }
 )
+
+_WRAPPER_VALUE_TAKING_OPTIONS: dict[str, frozenset[str]] = {
+    "sudo": frozenset(
+        {
+            "-C",
+            "-D",
+            "-g",
+            "-h",
+            "-p",
+            "-R",
+            "-r",
+            "-T",
+            "-t",
+            "-U",
+            "-u",
+            "--chdir",
+            "--chroot",
+            "--close-from",
+            "--command-timeout",
+            "--group",
+            "--host",
+            "--other-user",
+            "--prompt",
+            "--role",
+            "--type",
+            "--user",
+        }
+    ),
+    "doas": frozenset({"-a", "-C", "-u"}),
+    "env": frozenset({"-a", "-C", "-u", "--argv0", "--chdir", "--unset"}),
+    "time": frozenset({"-f", "-o", "--format", "--output"}),
+    "nice": frozenset({"-n", "--adjustment"}),
+    "nohup": frozenset(),
+    "stdbuf": frozenset({"-e", "-i", "-o", "--error", "--input", "--output"}),
+    "command": frozenset(),
+    "xargs": frozenset(
+        {
+            "-a",
+            "-d",
+            "-E",
+            "-I",
+            "-J",
+            "-L",
+            "-n",
+            "-P",
+            "-R",
+            "-S",
+            "-s",
+            "--arg-file",
+            "--delimiter",
+            "--eof",
+            "--max-args",
+            "--max-chars",
+            "--max-lines",
+            "--max-procs",
+            "--process-slot-var",
+            "--replace",
+        }
+    ),
+}
+
+_ENV_SPLIT_OPTIONS: frozenset[str] = frozenset({"-S", "--split-string"})
+_WRAPPERS_ACCEPTING_ASSIGNMENTS: frozenset[str] = frozenset({"env", "sudo"})
+_MAX_WRAPPER_DEPTH = 64
+_MAX_ENV_SPLIT_EXPANSIONS = 64
 
 # Package managers that install dependencies.
 _PACKAGE_MANAGERS: frozenset[str] = frozenset({"npm", "npm.cmd", "yarn", "pnpm", "bun"})
@@ -582,8 +644,12 @@ _REDIRECTION_TOKENS: frozenset[str] = frozenset({">", ">>", "<"})
 
 
 # ---------------------------------------------------------------------------
-# Finding type
+# Result and error types
 # ---------------------------------------------------------------------------
+
+
+class SupplyChainAnalysisIncompleteError(RuntimeError):
+    """Raised when the parser cannot complete a reliable command analysis."""
 
 
 @dataclass(frozen=True)
@@ -812,55 +878,50 @@ def find_typosquat_installs(command: str) -> list[TyposquatFinding]:
     (``has_error``) is tolerated: tree-sitter recovers and still surfaces the
     operands.
 
-    Known limitation (never a crash, always fail-open to "no finding"):
-    pathologically nested or chained input -- hundreds of ``$(...)`` levels
-    (``x$($($(...)))``) or hundreds of chained operators
-    (``ls && ls && ... && ls``) -- builds a parse tree so deep that the
-    recursive tree-sitter-bash walkers in the shared ``_shell_ast`` view exhaust
-    the Python recursion stack. Such input is NOT analyzed: it is treated as
-    "no finding" (returns ``[]``) and never raises. An absurdly large command
-    (beyond :data:`_MAX_COMMAND_LENGTH`, far above any legitimate install line)
-    is short-circuited to ``[]`` for the same reason, and a ``RecursionError``
-    from the parse/walk is caught and turned into ``[]`` as a defensive backstop,
-    so nothing escapes this seam. This is a deliberate, documented boundary: not
-    analyzing adversarially-nested noise is acceptable; a crash in the security
-    seam is not.
+    Raises :class:`SupplyChainAnalysisIncompleteError` when an unresolved parser
+    state or resource limit prevents complete analysis. Callers must not mistake
+    those cases for a benign empty finding list.
     """
-    # Generous early guard: an absurdly large command cannot be a real install
-    # line and only risks blowing the recursive walkers, so skip it as "no
-    # finding". The cap is set far above any legitimate command, so it never
-    # drops a real long install (see _MAX_COMMAND_LENGTH).
     if len(command) > _MAX_COMMAND_LENGTH:
-        logger.debug(
-            "Supply-chain check skipped: command length %d exceeds %d; "
-            "treating as no finding.",
-            len(command),
-            _MAX_COMMAND_LENGTH,
+        raise SupplyChainAnalysisIncompleteError(
+            f"command length {len(command)} exceeds analysis limit "
+            f"{_MAX_COMMAND_LENGTH}"
         )
-        return []
+
+    normalized_command = _join_line_continuations(_normalize(command))
+    if len(normalized_command) > _MAX_COMMAND_LENGTH:
+        raise SupplyChainAnalysisIncompleteError(
+            f"normalized command length {len(normalized_command)} exceeds "
+            f"analysis limit {_MAX_COMMAND_LENGTH}"
+        )
 
     findings: list[TyposquatFinding] = []
     seen: set[str] = set()
+    incomplete_error: SupplyChainAnalysisIncompleteError | None = None
     try:
-        program = parse_shell_program(_join_line_continuations(_normalize(command)))
+        program = parse_shell_program(normalized_command)
         for cmd in iter_commands(program):
-            for pkg in _collect_packages_from_command(cmd):
+            try:
+                packages = _collect_packages_from_command(cmd)
+            except SupplyChainAnalysisIncompleteError as exc:
+                incomplete_error = incomplete_error or exc
+                continue
+
+            for pkg in packages:
                 name = _normalize_package_name(pkg)
                 suggestion = _find_typosquat_target(name)
                 if suggestion is None or name in seen:
                     continue
                 seen.add(name)
                 findings.append(TyposquatFinding(package=name, suggestion=suggestion))
-    except RecursionError:
-        # Pathologically nested/chained input (hundreds of $() levels or chained
-        # operators) builds a parse tree so deep the recursive walkers in the
-        # shared _shell_ast view exhaust the stack. Fail open to "no finding":
-        # such adversarial noise is not analyzed, but it never crashes the seam.
-        logger.debug(
-            "Supply-chain check skipped: command is too deeply nested/chained to "
-            "parse without exhausting the recursion stack; treating as no finding."
-        )
-        return []
+    except RecursionError as exc:
+        if findings:
+            return findings
+        raise SupplyChainAnalysisIncompleteError(
+            "command is too deeply nested or chained for complete analysis"
+        ) from exc
+    if incomplete_error is not None and not findings:
+        raise incomplete_error
     return findings
 
 
@@ -892,21 +953,9 @@ def _collect_packages_from_command(cmd: ShellCommand) -> list[str]:
             return []
 
     words = list(cmd.words)
-    base, words = _peel_wrappers(base, words)
+    base, recovered = _peel_wrappers(base, words)
     if base is None:
         return []
-
-    # Flatten each word into the argv token(s) the shell would pass. A normal
-    # word yields one token; an unknowable word yields a single sentinel that
-    # occupies the slot but can never be a flag, redirection, subcommand keyword
-    # or package spec; a static comma-brace word (``lo{a,}dsh``) yields one token
-    # per expansion (``loadsh``, ``lodsh``), exactly as bash expands it before
-    # exec. This keeps the install/runner routing functions operating on a plain
-    # ``list[str]`` while preserving positional semantics (an opaque runner
-    # target still stops collection with no target).
-    recovered: list[str] = []
-    for word in words:
-        recovered.extend(_recover_word_tokens(word))
 
     if base in _RUNNERS:
         # Standalone runners are npm/bun flavored. The npm-only value flags
@@ -967,36 +1016,151 @@ def _decode_command_name(cmd: ShellCommand) -> str | None:
 _OPAQUE_SENTINEL = "\x00"
 
 
-def _peel_wrappers(
-    base: str, words: list[ShellWord]
-) -> tuple[str | None, list[ShellWord]]:
-    """Strip wrapper binaries (``sudo``/``env``/...) and re-derive the binary.
+_WrapperArg = ShellWord | str
 
-    The AST does not unwrap ``sudo npm ...`` or ``env FOO=bar npm ...``: the
-    command name is ``sudo``/``env`` and the real binary is the first operand.
-    While the basename is a wrapper, drop it, then drop any leading ``-`` flags
-    and ``KEY=VALUE`` env-assignment-shaped words, and promote the first
-    remaining plain word to the new binary (POSIX basename, one quote pair
-    stripped). Returns ``(None, [])`` if no real binary follows the wrapper.
-    """
-    while base in _WRAPPER_COMMANDS:
+
+def _peel_wrappers(base: str, words: list[ShellWord]) -> tuple[str | None, list[str]]:
+    """Strip wrapper binaries and recover the remaining command argv."""
+    args: list[_WrapperArg] = list(words)
+    env_split_expansions = 0
+
+    for _ in range(_MAX_WRAPPER_DEPTH):
+        if base not in _WRAPPER_COMMANDS:
+            recovered: list[str] = []
+            for arg in args:
+                if isinstance(arg, str):
+                    recovered.append(arg)
+                else:
+                    recovered.extend(_recover_word_tokens(arg))
+            return base, recovered
+
         i = 0
-        n = len(words)
-        while i < n and (
-            words[i].text.startswith("-")
-            or _is_env_assignment(_strip_one_quote_pair(words[i].text))
+        while i < len(args):
+            token = _static_wrapper_arg(args[i])
+            if token is None:
+                raise SupplyChainAnalysisIncompleteError(
+                    f"cannot resolve an argument to the {base} wrapper"
+                )
+
+            if token == "--":
+                i += 1
+                break
+
+            split_value, consumed = _env_split_value(base, token, args, i)
+            if split_value is not None:
+                env_split_expansions += 1
+                if env_split_expansions > _MAX_ENV_SPLIT_EXPANSIONS:
+                    raise SupplyChainAnalysisIncompleteError(
+                        "env split-string expansion limit exceeded"
+                    )
+                args[i : i + consumed] = _split_env_string(split_value)
+                continue
+
+            if token.startswith("-") and token != "-":
+                i += 1
+                if _wrapper_option_consumes_next(base, token):
+                    if i >= len(args):
+                        return None, []
+                    i += 1
+                continue
+
+            if base in _WRAPPERS_ACCEPTING_ASSIGNMENTS and _is_env_assignment(token):
+                i += 1
+                continue
+            break
+
+        if i >= len(args):
+            return None, []
+
+        binary_value = _static_wrapper_arg(args[i])
+        binary_basename = (
+            _strip_path_prefix(binary_value) if binary_value is not None else None
+        )
+        if binary_basename is None or not _PACKAGE_SPEC_RE.match(binary_basename):
+            raise SupplyChainAnalysisIncompleteError(
+                f"cannot resolve the command executed by the {base} wrapper"
+            )
+        base = binary_basename
+        args = args[i + 1 :]
+
+    raise SupplyChainAnalysisIncompleteError("wrapper nesting limit exceeded")
+
+
+def _static_wrapper_arg(arg: _WrapperArg) -> str | None:
+    """Return a wrapper argument's static shell value, if knowable."""
+    if isinstance(arg, str):
+        return arg
+    if not arg.opaque:
+        return arg.text
+    return _decode_shell_literal(arg.node)
+
+
+def _wrapper_option_consumes_next(wrapper: str, token: str) -> bool:
+    """Return whether a bare wrapper option consumes the following argv item."""
+    value_options = _WRAPPER_VALUE_TAKING_OPTIONS[wrapper]
+    if token.startswith("--"):
+        return "=" not in token and token in value_options
+
+    for offset, option_char in enumerate(token[1:], start=1):
+        if f"-{option_char}" in value_options:
+            return offset == len(token) - 1
+    return False
+
+
+def _env_split_value(
+    wrapper: str, token: str, args: list[_WrapperArg], index: int
+) -> tuple[str | None, int]:
+    """Extract an env split-string option value and its consumed argv count."""
+    if wrapper != "env":
+        return None, 0
+
+    if token in _ENV_SPLIT_OPTIONS:
+        if index + 1 >= len(args):
+            raise SupplyChainAnalysisIncompleteError("env split-string has no value")
+        value = _static_wrapper_arg(args[index + 1])
+        if value is None:
+            raise SupplyChainAnalysisIncompleteError(
+                "env split-string contains runtime expansion"
+            )
+        return value, 2
+
+    if token.startswith("--split-string="):
+        return token.partition("=")[2], 1
+
+    if token.startswith("-") and not token.startswith("--"):
+        short_options = token[1:]
+        split_index = short_options.find("S")
+        if split_index != -1 and all(
+            option in "0iv" for option in short_options[:split_index]
         ):
-            i += 1
-        if i >= n:
-            return None, []
-        binary_word = words[i]
-        binary_value = _recover_word(binary_word)
-        if binary_value is None:
-            # Opaque binary after the wrapper -- unknowable.
-            return None, []
-        base = _strip_path_prefix(binary_value)
-        words = words[i + 1 :]
-    return base, words
+            attached_value = short_options[split_index + 1 :]
+            if attached_value:
+                return attached_value, 1
+            if index + 1 >= len(args):
+                raise SupplyChainAnalysisIncompleteError(
+                    "env split-string has no value"
+                )
+            value = _static_wrapper_arg(args[index + 1])
+            if value is None:
+                raise SupplyChainAnalysisIncompleteError(
+                    "env split-string contains runtime expansion"
+                )
+            return value, 2
+    return None, 0
+
+
+def _split_env_string(value: str) -> list[str]:
+    """Split a statically known env ``-S`` operand into argv tokens."""
+    if any(char in value for char in ("#", "$", "\\")):
+        raise SupplyChainAnalysisIncompleteError(
+            "env split-string uses unsupported dynamic or escape syntax"
+        )
+    try:
+        return shlex.split(value, comments=False, posix=True)
+    except ValueError as exc:
+        raise SupplyChainAnalysisIncompleteError(
+            "env split-string has invalid quoting"
+        ) from exc
 
 
 def _recover_word(word: ShellWord) -> str | None:
@@ -1733,12 +1897,16 @@ def _is_package_spec(token: str) -> bool:
 
 
 def _normalize_package_name(spec: str) -> str:
-    """Strip a trailing ``@version`` while keeping the scope; lowercase.
+    """Resolve an npm alias, strip a trailing version, and lowercase.
 
     ``@scope/pkg@1.2.3`` -> ``@scope/pkg``; ``lodash@4`` -> ``lodash``;
-    ``@scope/pkg`` -> ``@scope/pkg``.
+    ``alias@npm:lodash@4`` -> ``lodash``.
     """
     name = spec
+    alias_separator = name.find("@", 1)
+    if alias_separator != -1 and name.lower().startswith("@npm:", alias_separator):
+        name = name[alias_separator + len("@npm:") :]
+
     if name.startswith("@"):
         slash = name.find("/")
         if slash != -1:

@@ -13,7 +13,9 @@ import pytest
 
 from openhands.sdk.security._shell_ast import iter_commands, parse_shell_program
 from openhands.sdk.security.supply_chain.parser import (
+    _MAX_COMMAND_LENGTH,
     POPULAR_PACKAGES,
+    SupplyChainAnalysisIncompleteError,
     TyposquatFinding,
     _expand_static_braces,
     _is_env_assignment,
@@ -81,6 +83,85 @@ class TestNpmInstallDetection:
 
     def test_flags_typosquat_of_typescript_missing_letter(self):
         assert_flags("npm install typscript", "typescript")
+
+
+# ---------------------------------------------------------------------------
+# Command wrappers
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sudo -u node npm install lodahs",
+        "doas -u node npm install lodahs",
+        "env -u FOO npm install lodahs",
+        "time -f %E npm install lodahs",
+        "nice -n 10 npm install lodahs",
+        "stdbuf -o L npm install lodahs",
+        "xargs -n 1 npm install lodahs",
+        "xargs -J % npm install lodahs",
+        "xargs -R 1 npm install lodahs",
+        "xargs -S 255 npm install lodahs",
+    ],
+)
+def test_wrapper_value_options_do_not_hide_package_manager(command: str):
+    assert_flags(command, "lodash")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sudo -unode npm install lodahs",
+        "env --unset=FOO npm install lodahs",
+        "nice --adjustment=10 npm install lodahs",
+        "stdbuf --output=L npm install lodahs",
+        "xargs -n1 npm install lodahs",
+    ],
+)
+def test_attached_wrapper_option_values_do_not_hide_package_manager(command: str):
+    assert_flags(command, "lodash")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "env -S npm install lodahs",
+        "env -S 'npm install lodahs'",
+        "env -iS 'npm install lodahs'",
+        "env -vS'npm install lodahs'",
+        "env --split-string='npm install lodahs'",
+    ],
+)
+def test_env_static_split_string_is_resolved(command: str):
+    assert_flags(command, "lodash")
+
+
+def test_runtime_env_split_string_is_incomplete():
+    with pytest.raises(SupplyChainAnalysisIncompleteError):
+        find_typosquat_installs('env -S "$COMMAND install lodahs"')
+
+
+def test_static_typosquat_finding_wins_over_later_incomplete_command():
+    assert_flags(
+        'npm install lodahs; env -S "$COMMAND install lodash"',
+        "lodash",
+    )
+
+
+def test_wrapper_option_terminator_and_nesting_reach_package_manager():
+    assert_flags(
+        "sudo -u node -- env -u FOO nice -n 10 -- npm install lodahs",
+        "lodash",
+    )
+
+
+def test_path_qualified_manager_behind_wrapper_is_reached():
+    assert_flags("sudo -- /usr/local/bin/npm install lodahs", "lodash")
+
+
+def test_wrapper_option_value_is_not_promoted_to_package_manager():
+    assert_clean("sudo -u npm install lodahs")
 
 
 # ---------------------------------------------------------------------------
@@ -510,6 +591,18 @@ class TestPackageNameNormalization:
 
     def test_normalize_lowercases(self):
         assert _normalize_package_name("LoDaHs") == "lodahs"
+
+    def test_flags_typosquat_npm_alias_target(self):
+        assert_flags("npm install lodash@npm:loadsh", "lodash")
+
+    def test_ignores_alias_name_when_npm_target_is_popular(self):
+        assert_clean("npm install loadsh@npm:lodash")
+
+    def test_normalize_scoped_versioned_npm_alias_target(self):
+        assert (
+            _normalize_package_name("@scope/alias@npm:@target/pkg@1.2.3")
+            == "@target/pkg"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1153,32 +1246,33 @@ class TestBraceExpansion:
 #
 # The recursive tree-sitter-bash walkers in the shared `_shell_ast` view descend
 # per nested `$()` level and per chained operator, so hundreds of either can
-# exhaust the Python recursion stack and raise RecursionError. `find_typosquat_
-# installs` must NEVER let that escape: it catches the RecursionError (and
-# short-circuits absurdly large commands) and returns [] -- "no finding" -- so a
-# crafted command can only ever fail to be analyzed, not crash the seam. This is
-# a documented limitation, not a guess: such adversarial noise stays clean.
+# exhaust the Python recursion stack. The parser translates that implementation
+# error, and its command-length bound, into an explicit incomplete-analysis
+# result so callers cannot mistake an unresolved command for a benign one.
 # ---------------------------------------------------------------------------
 
 
-class TestPathologicalInputDoesNotCrash:
-    def test_deeply_chained_operators_return_empty_without_raising(self):
-        # 1500 `&&`-chained commands build a deep right-leaning parse tree.
-        command = " && ".join("ls" for _ in range(1500))
-        # No exception, and nothing flagged (none of these is an install).
-        assert find_typosquat_installs(command) == []
+class TestPathologicalInputIsIncomplete:
+    def test_deeply_chained_install_is_not_treated_as_benign(self):
+        command = " && ".join([*("true" for _ in range(1500)), "npm install lodahs"])
+        with pytest.raises(SupplyChainAnalysisIncompleteError):
+            find_typosquat_installs(command)
 
-    def test_deeply_nested_command_substitution_returns_empty(self):
-        # 200 levels of `$( ... )` nesting; the walkers would otherwise recurse
-        # past the stack limit. Must return [] without raising.
+    def test_deeply_nested_command_substitution_is_incomplete(self):
         command = "x" + "$(" * 200 + "echo" + ")" * 200
-        assert find_typosquat_installs(command) == []
+        with pytest.raises(SupplyChainAnalysisIncompleteError):
+            find_typosquat_installs(command)
 
-    def test_absurdly_large_command_is_short_circuited(self):
-        # Beyond _MAX_COMMAND_LENGTH the command is skipped as "no finding"
-        # before parsing, so even a huge input cannot blow the walkers.
-        command = "ls " * 50_000  # well over the 100k-char guard
-        assert find_typosquat_installs(command) == []
+    def test_padded_install_over_length_limit_is_incomplete(self):
+        command = "npm install lodahs #" + "x" * _MAX_COMMAND_LENGTH
+        with pytest.raises(SupplyChainAnalysisIncompleteError):
+            find_typosquat_installs(command)
+
+    def test_nfkc_expansion_over_length_limit_is_incomplete(self):
+        command = "npm install lodahs #" + "ﬃ" * (_MAX_COMMAND_LENGTH // 2)
+        assert len(command) < _MAX_COMMAND_LENGTH
+        with pytest.raises(SupplyChainAnalysisIncompleteError):
+            find_typosquat_installs(command)
 
     def test_moderately_chained_real_install_still_flags(self):
         # The guard must NOT drop a legitimate long command: a real typosquat

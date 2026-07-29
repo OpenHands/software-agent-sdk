@@ -32,7 +32,10 @@ from openhands.sdk.event import ActionEvent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.risk import SecurityRisk
-from openhands.sdk.security.supply_chain.parser import find_typosquat_installs
+from openhands.sdk.security.supply_chain.parser import (
+    SupplyChainAnalysisIncompleteError,
+    find_typosquat_installs,
+)
 
 
 logger = get_logger(__name__)
@@ -66,12 +69,12 @@ class SupplyChainSecurityAnalyzer(SecurityAnalyzerBase):
 
     Use this when an agent can run shell commands and you want to catch the
     one-edit-off dependency install that pattern and policy-rail analyzers do
-    not see. It returns ``SecurityRisk.HIGH`` on a likely typosquat and
-    ``SecurityRisk.LOW`` otherwise -- it never blocks on its own. The check is
-    deterministic and offline: it scans only the command string of the action
-    (the ``"command"`` key of the tool-call arguments), never the agent's
-    reasoning text, so merely *mentioning* ``lodahs`` in a thought does not
-    trip it.
+    not see. It returns ``SecurityRisk.HIGH`` on a likely typosquat,
+    ``SecurityRisk.UNKNOWN`` when the command cannot be analyzed completely,
+    and ``SecurityRisk.LOW`` otherwise. The check is deterministic and offline:
+    it scans only the command string of the action (the ``"command"`` key of the
+    tool-call arguments), never the agent's reasoning text, so merely
+    *mentioning* ``lodahs`` in a thought does not trip it.
 
     The extraction layer runs on the shared tree-sitter-bash command view, so
     command chaining, pipes, subshells and path-qualified managers parse
@@ -115,20 +118,15 @@ class SupplyChainSecurityAnalyzer(SecurityAnalyzerBase):
     """
 
     def security_risk(self, action: ActionEvent) -> SecurityRisk:
-        """Return ``HIGH`` if the command installs a likely typosquat, else
-        ``LOW``.
+        """Return ``HIGH`` for a typosquat and ``UNKNOWN`` if analysis is incomplete.
 
         The command string is handed straight to ``find_typosquat_installs``,
         which normalizes it (stripping zero-width/bidi/format characters and
         NFKC-folding fullwidth glyphs) so an attacker cannot hide ``lodahs``
         behind an invisible character or fullwidth ``ｎｐｍ`` before parsing it on
-        the shared tree-sitter view. A crafted lone-surrogate command can make
-        the UTF-8 strict encode in the parser raise ``UnicodeEncodeError``, and a
-        pathologically nested/chained command (hundreds of ``$()`` levels or
-        chained operators) can make the recursive tree-sitter-bash walkers raise
-        ``RecursionError``; both are caught and treated as LOW so the analyzer
-        never raises out of the security seam. That adversarially-nested input is
-        a known limitation: it is not analyzed and stays LOW, never a crash.
+        the shared tree-sitter view. A lone-surrogate command cannot be encoded
+        for execution and stays LOW. Oversized or pathologically nested/chained
+        input that cannot be analyzed completely returns UNKNOWN.
         """
         command = _command_string(action)
         if not command:
@@ -136,20 +134,15 @@ class SupplyChainSecurityAnalyzer(SecurityAnalyzerBase):
 
         try:
             findings = find_typosquat_installs(command)
-        except (UnicodeEncodeError, RecursionError):
-            # Intentional fail-open. UnicodeEncodeError: a lone-surrogate command
-            # cannot be UTF-8 encoded to run, so there is no real install to
-            # flag. RecursionError: pathologically nested/chained input (hundreds
-            # of $() levels or chained operators) exhausts the recursion stack in
-            # the shared parser's recursive walkers, so it is not analyzed (a
-            # known limitation) rather than crashing the seam. Either way, there
-            # is nothing to flag -- stay LOW.
+        except UnicodeEncodeError:
             logger.debug(
-                "Supply-chain check skipped: command is not UTF-8 encodable "
-                "(lone surrogate) or too deeply nested/chained to parse; "
+                "Supply-chain check skipped: command is not UTF-8 encodable; "
                 "treating as LOW."
             )
             return SecurityRisk.LOW
+        except SupplyChainAnalysisIncompleteError as exc:
+            logger.debug("Supply-chain analysis incomplete: %s", exc)
+            return SecurityRisk.UNKNOWN
         if findings:
             logger.debug(
                 "Supply-chain typosquat flagged: %s",
