@@ -43,7 +43,7 @@ logger = get_logger(__name__)
 # while this router uses relative paths. The paths are intentionally separate
 # to match their respective contexts (router prefix vs full URL path).
 SETTINGS_PATH = ""  # -> /api/settings
-MCP_SERVER_PATH = "/mcp/{settings_key:path}"  # -> /api/settings/mcp/{settings_key}
+MCP_SERVER_PATH = "/mcp/{settings_key}"  # -> /api/settings/mcp/{settings_key}
 SECRETS_PATH = "/secrets"  # -> /api/settings/secrets
 SECRET_VALUE_PATH = "/secrets/{name}"  # -> /api/settings/secrets/{name}
 

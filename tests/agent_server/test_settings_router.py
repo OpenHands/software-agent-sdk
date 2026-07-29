@@ -915,6 +915,32 @@ def test_mcp_server_crud_endpoints_enforce_key_preconditions(client_with_setting
     assert plaintext["github"]["url"] == "https://github.example/mcp"
 
 
+def test_mcp_server_crud_endpoints_normalize_key_paths(client_with_settings):
+    server = {"transport": "http", "url": "https://github.example/mcp"}
+    created = client_with_settings.post("/api/settings/mcp/github", json=server)
+    assert created.status_code == 201, created.text
+
+    trailing_slash = client_with_settings.post(
+        "/api/settings/mcp/github/",
+        json=server,
+        follow_redirects=False,
+    )
+    assert trailing_slash.status_code == 307
+    assert trailing_slash.headers["location"].endswith("/api/settings/mcp/github")
+
+    empty_key = client_with_settings.post(
+        "/api/settings/mcp/",
+        json=server,
+        follow_redirects=False,
+    )
+    assert empty_key.status_code == 404
+
+    mcp_config = client_with_settings.get("/api/settings").json()["agent_settings"][
+        "mcp_config"
+    ]
+    assert set(mcp_config) == {"github"}
+
+
 def test_patch_settings_empty_payload_returns_400(client_with_settings):
     """PATCH /api/settings with empty payload returns 400."""
     response = client_with_settings.patch("/api/settings", json={})
