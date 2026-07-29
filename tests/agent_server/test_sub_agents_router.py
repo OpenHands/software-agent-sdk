@@ -94,7 +94,9 @@ def test_get_sub_agents_exposes_full_frontmatter(client, tmp_path: Path):
         "max_budget_per_run: 1.5\n"
         "profile_store_dir: /tmp/profiles\n"
         "mcp_config:\n"
-        "  fetch:\n    command: uvx\n    args:\n      - mcp-server-fetch\n"
+        "  fetch:\n    command: uvx\n    args:\n"
+        "      - --with\n      - mcp==1.29.0\n"
+        "      - mcp-server-fetch==2026.7.10\n"
         "condenser: none\n"
         "custom_key: custom_value\n"
         "---\n\n"
@@ -114,7 +116,14 @@ def test_get_sub_agents_exposes_full_frontmatter(client, tmp_path: Path):
     assert agent["max_budget_per_run"] == 1.5
     assert agent["profile_store_dir"] == "/tmp/profiles"
     assert agent["mcp_config"] == {
-        "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}
+        "fetch": {
+            "command": "uvx",
+            "args": [
+                "--with",
+                "mcp==1.29.0",
+                "mcp-server-fetch==2026.7.10",
+            ],
+        }
     }
     # condenser: none -> a NoOpCondenser is serialized (not null)
     assert agent["condenser"] is not None

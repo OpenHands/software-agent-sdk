@@ -831,6 +831,116 @@ def test_patch_settings_encrypts_mcp_env_and_headers_on_disk(
     assert servers["remote"]["headers"] == {"X-Api-Key": "tok-router-secret"}
 
 
+def test_mcp_server_crud_endpoints_preserve_sibling_credentials(client_with_settings):
+    github = client_with_settings.post(
+        "/api/settings/mcp/github",
+        json={
+            "transport": "http",
+            "url": "https://github.example/mcp",
+            "auth": {"strategy": "bearer", "value": "github-secret"},
+        },
+    )
+    assert github.status_code == 201, github.text
+    assert github.json()["agent_settings"]["mcp_config"]["github"]["auth"] == {
+        "strategy": "bearer",
+        "value": "**********",
+    }
+
+    docs = client_with_settings.post(
+        "/api/settings/mcp/docs",
+        json={"transport": "http", "url": "https://docs.example/mcp"},
+    )
+    assert docs.status_code == 201, docs.text
+
+    updated_docs = client_with_settings.patch(
+        "/api/settings/mcp/docs",
+        json={"description": "Documentation"},
+    )
+    assert updated_docs.status_code == 200, updated_docs.text
+
+    plaintext = client_with_settings.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()["agent_settings"]["mcp_config"]
+    assert plaintext["github"]["auth"]["value"] == "github-secret"
+    assert plaintext["docs"]["description"] == "Documentation"
+
+    deleted_docs = client_with_settings.delete("/api/settings/mcp/docs")
+    assert deleted_docs.status_code == 200, deleted_docs.text
+    assert set(deleted_docs.json()["agent_settings"]["mcp_config"]) == {"github"}
+
+    replaced_auth = client_with_settings.patch(
+        "/api/settings/mcp/github",
+        json={"auth": {"strategy": "bearer", "value": "new-github-secret"}},
+    )
+    assert replaced_auth.status_code == 200, replaced_auth.text
+    plaintext = client_with_settings.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()["agent_settings"]["mcp_config"]
+    assert plaintext["github"]["auth"]["value"] == "new-github-secret"
+
+    cleared_auth = client_with_settings.patch(
+        "/api/settings/mcp/github",
+        json={"auth": None},
+    )
+    assert cleared_auth.status_code == 200, cleared_auth.text
+    assert "auth" not in cleared_auth.json()["agent_settings"]["mcp_config"]["github"]
+
+
+def test_mcp_server_crud_endpoints_enforce_key_preconditions(client_with_settings):
+    created = client_with_settings.post(
+        "/api/settings/mcp/github",
+        json={"transport": "http", "url": "https://github.example/mcp"},
+    )
+    assert created.status_code == 201, created.text
+
+    duplicate = client_with_settings.post(
+        "/api/settings/mcp/github",
+        json={"transport": "http", "url": "https://replacement.example/mcp"},
+    )
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"] == "MCP server 'github' already exists"
+
+    missing_patch = client_with_settings.patch(
+        "/api/settings/mcp/missing",
+        json={"description": "Missing"},
+    )
+    assert missing_patch.status_code == 404
+
+    missing_delete = client_with_settings.delete("/api/settings/mcp/missing")
+    assert missing_delete.status_code == 404
+
+    plaintext = client_with_settings.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()["agent_settings"]["mcp_config"]
+    assert plaintext["github"]["url"] == "https://github.example/mcp"
+
+
+def test_mcp_server_crud_endpoints_normalize_key_paths(client_with_settings):
+    server = {"transport": "http", "url": "https://github.example/mcp"}
+    created = client_with_settings.post("/api/settings/mcp/github", json=server)
+    assert created.status_code == 201, created.text
+
+    trailing_slash = client_with_settings.post(
+        "/api/settings/mcp/github/",
+        json=server,
+        follow_redirects=False,
+    )
+    assert trailing_slash.status_code == 307
+    assert trailing_slash.headers["location"].endswith("/api/settings/mcp/github")
+
+    empty_key = client_with_settings.post(
+        "/api/settings/mcp/",
+        json=server,
+        follow_redirects=False,
+    )
+    assert empty_key.status_code == 404
+
+    mcp_config = client_with_settings.get("/api/settings").json()["agent_settings"][
+        "mcp_config"
+    ]
+    assert set(mcp_config) == {"github"}
+
+
 def test_patch_settings_empty_payload_returns_400(client_with_settings):
     """PATCH /api/settings with empty payload returns 400."""
     response = client_with_settings.patch("/api/settings", json={})

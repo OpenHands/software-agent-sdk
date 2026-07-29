@@ -213,7 +213,7 @@ def test_consent_is_never_read_from_inside_a_settings_lock():
     """
     import openhands.agent_server.settings_router as router_mod
 
-    src = inspect.getsource(router_mod.update_settings)
+    src = inspect.getsource(router_mod._apply_settings_update)
     update_at = src.index("store.update(")
     notify_at = src.index("notify_misc_settings_changed(")
     assert update_at < notify_at, (
