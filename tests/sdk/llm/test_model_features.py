@@ -8,6 +8,7 @@ from openhands.sdk.llm.utils.model_features import (
     get_features,
     model_matches,
 )
+from openhands.sdk.llm.utils.model_info import get_litellm_model_info
 
 
 @pytest.mark.parametrize(
@@ -65,20 +66,15 @@ def test_model_matches(name, pattern, expected):
         ("litellm_proxy/gpt-5", True),
         ("litellm_proxy/claude-opus-4-5", True),
         ("litellm_proxy/gemini-3-flash-preview", True),
-        # LiteLLM recognizes Claude Fable 5 directly.
         ("claude-fable-5", True),
         ("anthropic/claude-fable-5", True),
         ("litellm_proxy/anthropic/claude-fable-5", True),
-        # Kimi K3 always thinks and accepts top-level reasoning_effort, but the
-        # pinned LiteLLM metadata does not recognize it yet.
         ("kimi-k3", True),
         ("moonshot/kimi-k3", True),
         ("litellm_proxy/moonshot/kimi-k3", True),
-        # LiteLLM recognizes Opus 5 directly.
         ("claude-opus-5", True),
         ("anthropic/claude-opus-5", True),
         ("litellm_proxy/anthropic/claude-opus-5", True),
-        # LiteLLM recognizes first-party and Bedrock Claude Opus 4.8 IDs.
         ("claude-opus-4-8", True),
         ("anthropic/claude-opus-4-8", True),
         ("bedrock/us.anthropic.claude-opus-4-8-v1:0", True),
@@ -274,6 +270,103 @@ def test_get_features_unknown_model():
     assert features.supports_prompt_cache is False
     assert features.supports_vision is False
     assert features.supports_stop_words is True  # Most models support stop words
+
+
+def test_metadata_drives_adaptive_thinking_and_sampling():
+    features = get_features(
+        "anthropic/claude-sonnet-5",
+        model_info={
+            "litellm_provider": "anthropic",
+            "supports_reasoning": True,
+            "supports_adaptive_thinking": True,
+            "supports_sampling_params": False,
+            "supports_prompt_caching": True,
+        },
+    )
+
+    assert features.supports_reasoning_effort is True
+    assert features.thinking_mode == "adaptive"
+    assert features.supports_extended_thinking is False
+    assert features.supports_sampling_params is False
+    assert features.supports_prompt_cache is True
+
+
+def test_gemini_metadata_does_not_enable_explicit_prompt_cache():
+    features = get_features(
+        "litellm_proxy/gemini-3.1-pro-preview",
+        model_info={
+            "key": "gemini-3.1-pro-preview",
+            "litellm_provider": "vertex_ai",
+            "supports_prompt_caching": True,
+        },
+    )
+
+    assert features.supports_prompt_cache is False
+
+
+def test_sampling_support_uses_preserved_litellm_metadata():
+    model_info = get_litellm_model_info(
+        secret_api_key=None,
+        base_url=None,
+        model="anthropic/claude-sonnet-5",
+    )
+    assert model_info is not None
+
+    features = get_features(
+        "anthropic/claude-sonnet-5",
+        model_info=model_info,
+    )
+
+    assert features.supports_sampling_params is False
+
+
+def test_metadata_false_takes_precedence_over_name_fallbacks():
+    features = get_features(
+        "openai/gpt-5",
+        model_info={
+            "supports_reasoning": False,
+            "supports_prompt_caching": False,
+            "supported_endpoints": [],
+        },
+    )
+
+    assert features.supports_reasoning_effort is False
+    assert features.supports_prompt_cache is False
+    assert features.supports_responses_api is False
+
+
+def test_capability_overrides_take_precedence_over_metadata():
+    features = get_features(
+        "proxy/future-model",
+        model_info={
+            "supports_reasoning": False,
+            "supports_adaptive_thinking": False,
+            "supports_sampling_params": True,
+            "supports_vision": False,
+        },
+        overrides={
+            "supports_reasoning_effort": True,
+            "thinking_mode": "adaptive",
+            "supports_sampling_params": False,
+            "supports_responses_api": True,
+            "supports_vision": True,
+        },
+    )
+
+    assert features.supports_reasoning_effort is True
+    assert features.thinking_mode == "adaptive"
+    assert features.supports_sampling_params is False
+    assert features.supports_responses_api is True
+    assert features.supports_vision is True
+
+
+def test_responses_api_is_discovered_from_model_metadata():
+    features = get_features(
+        "proxy/future-model",
+        model_info={"supported_endpoints": ["/v1/chat/completions", "/v1/responses"]},
+    )
+
+    assert features.supports_responses_api is True
 
 
 def test_get_features_empty_model():
