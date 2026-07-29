@@ -5,10 +5,15 @@ import pytest
 from pydantic import PrivateAttr
 
 from openhands.sdk.agent import Agent
-from openhands.sdk.context.condenser.base import CondenserBase
+from openhands.sdk.context.condenser.base import (
+    CondensationRequirement,
+    CondenserBase,
+    RollingCondenser,
+)
 from openhands.sdk.context.view import View
 from openhands.sdk.conversation import Conversation
-from openhands.sdk.event.condenser import CondensationRequest
+from openhands.sdk.event.condenser import Condensation, CondensationRequest
+from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.exceptions import (
     LLMContextWindowExceedError,
@@ -80,6 +85,97 @@ class HandlesRequestsCondenser(CondenserBase):
 
     def handles_condensation_requests(self) -> bool:
         return True
+
+
+class AlwaysCondensingCondenser(RollingCondenser):
+    fail: bool = False
+
+    def condensation_requirement(
+        self, view: View, agent_llm: LLM | None = None
+    ) -> CondensationRequirement | None:
+        return CondensationRequirement.SOFT
+
+    def get_condensation(
+        self, view: View, agent_llm: LLM | None = None
+    ) -> Condensation:
+        if self.fail:
+            raise RuntimeError("summary failed")
+        return Condensation(
+            forgotten_event_ids=set(),
+            llm_response_id="summary-response",
+        )
+
+
+def _condensation_statuses(events: list) -> list[str]:
+    return [
+        event.value["status"]
+        for event in events
+        if isinstance(event, ConversationStateUpdateEvent)
+        and event.key == "context_condensation"
+    ]
+
+
+def test_agent_emits_condensation_lifecycle_events(caplog) -> None:
+    agent = Agent(
+        llm=LLM(model="test-model", usage_id="test-llm"),
+        tools=[],
+        condenser=AlwaysCondensingCondenser(),
+    )
+    conversation = Conversation(agent=agent)
+    conversation._ensure_agent_ready()
+    seen: list = []
+
+    agent.step(conversation, on_event=seen.append)
+
+    assert _condensation_statuses(seen) == ["started", "completed"]
+    condensation_index, condensation = next(
+        (index, event)
+        for index, event in enumerate(seen)
+        if isinstance(event, Condensation)
+    )
+    completed_index = next(
+        index
+        for index, event in enumerate(seen)
+        if isinstance(event, ConversationStateUpdateEvent)
+        and event.key == "context_condensation"
+        and event.value["status"] == "completed"
+    )
+    assert condensation_index < completed_index
+    assert any(
+        f"event_id={condensation.id}" in record.message for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_agent_emits_async_condensation_lifecycle_events() -> None:
+    agent = Agent(
+        llm=LLM(model="test-model", usage_id="test-llm"),
+        tools=[],
+        condenser=AlwaysCondensingCondenser(),
+    )
+    conversation = Conversation(agent=agent)
+    conversation._ensure_agent_ready()
+    seen: list = []
+
+    await agent.astep(conversation, on_event=seen.append)
+
+    assert _condensation_statuses(seen) == ["started", "completed"]
+
+
+def test_agent_clears_condensation_status_after_failure() -> None:
+    agent = Agent(
+        llm=LLM(model="test-model", usage_id="test-llm"),
+        tools=[],
+        condenser=AlwaysCondensingCondenser(fail=True),
+    )
+    conversation = Conversation(agent=agent)
+    conversation._ensure_agent_ready()
+    seen: list = []
+
+    with pytest.raises(RuntimeError, match="summary failed"):
+        agent.step(conversation, on_event=seen.append)
+
+    assert _condensation_statuses(seen) == ["started", "failed"]
 
 
 @pytest.mark.parametrize("force_responses", [True, False])

@@ -645,6 +645,9 @@ def test_llm_create_agent_builds_condenser_when_enabled() -> None:
             enabled=True,
             max_size=100,
             max_tokens=5000,
+            auto_compact_ratio=0.8,
+            summary_input_ratio=0.5,
+            max_summary_retries=3,
             keep_first=3,
             minimum_progress=0.2,
             hard_context_reset_max_retries=7,
@@ -657,6 +660,9 @@ def test_llm_create_agent_builds_condenser_when_enabled() -> None:
     assert isinstance(agent.condenser, LLMSummarizingCondenser)
     assert agent.condenser.max_size == 100
     assert agent.condenser.max_tokens == 5000
+    assert agent.condenser.auto_compact_ratio == 0.8
+    assert agent.condenser.summary_input_ratio == 0.5
+    assert agent.condenser.max_summary_retries == 3
     assert agent.condenser.keep_first == 3
     assert agent.condenser.minimum_progress == 0.2
     assert agent.condenser.hard_context_reset_max_retries == 7

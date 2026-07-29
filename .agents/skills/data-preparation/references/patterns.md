@@ -4,6 +4,7 @@
 仅展示 `main()` 函数体内的算子编排逻辑，导入和 shim 部分参见
 [算子与脚本约定](operators.md) 及 [example_pipeline.py](example_pipeline.py)。
 注意：GeneralFilter 的 lambda 中使用了 `pd.to_numeric`，脚本顶部需 `import pandas as pd`。
+所有使用 LLM 的模式必须用 `LoggingLLMServing` 包装（`from df_logging import LoggingLLMServing`），确保全量调用可追溯。
 
 ---
 
@@ -18,12 +19,13 @@ def main(input_path, output_path):
     storage = LazyFileStorage(input_path, cache_type="jsonl")
     storage = storage.step()
 
-    llm = APILLMServing_request(
+    raw_llm = APILLMServing_request(
         api_url=os.environ["DF_API_URL"],
         model_name=os.environ["DF_MODEL_NAME"],
         key_name_of_api_key="DF_API_KEY",
         max_workers=8,
     )
+    llm = LoggingLLMServing(raw_llm)
 
     # 步骤 1: 生成
     generator = PromptedGenerator(
@@ -65,12 +67,13 @@ def main(input_path, output_path):
     storage = LazyFileStorage(input_path, cache_type="jsonl")
     storage = storage.step()
 
-    llm = APILLMServing_request(
+    raw_llm = APILLMServing_request(
         api_url=os.environ["DF_API_URL"],
         model_name=os.environ["DF_MODEL_NAME"],
         key_name_of_api_key="DF_API_KEY",
         max_workers=8,
     )
+    llm = LoggingLLMServing(raw_llm)
 
     # 步骤 1: 多字段组合评分
     prompt_template = FormatStrPrompt(
@@ -124,12 +127,13 @@ def main(input_path, output_path):
     storage = LazyFileStorage(input_path, cache_type="jsonl")
     storage = storage.step()
 
-    llm = APILLMServing_request(
+    raw_llm = APILLMServing_request(
         api_url=os.environ["DF_API_URL"],
         model_name=os.environ["DF_MODEL_NAME"],
         key_name_of_api_key="DF_API_KEY",
         max_workers=8,
     )
+    llm = LoggingLLMServing(raw_llm)
 
     # 步骤 1: 初始评分
     init_scorer = PromptedGenerator(

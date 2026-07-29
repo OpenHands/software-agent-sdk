@@ -9,19 +9,26 @@ description: >-
 
 # 数据准备
 
-在本地会话工作区完成内容级数据准备。中间文件放在
-`public_data/data-preparation/`，工具路径相对于 workspace 根目录。
+在本地会话工作区试跑，用户确认后将全量任务提交到 Pyromind 平台异步执行。
+所有中间文件写入 `public_data/data-preparation/`；工具路径相对于 workspace 根目录。
+不要修改项目源码或 skill 文件，也不要用终端探测依赖；`df_run_pipeline` 会检查运行环境。
 
 ## 核心流程
 
 `原始数据 → manifest.jsonl → processed.jsonl → 训练文件`
 
 - 检查用户目标、样本、字段和相关规则，形成字段策略与验证方式。
+- HuggingFace 数据先用 `dataset_download` 下载少量样本，确认 split、config 和字段；
+  `output_path` 使用 `public_data/data-preparation/` 下的 workspace 相对路径。
 - 输入适配、内容处理和格式转换保持为可独立重跑的阶段。
 - 默认首次抽样最多 3 条，写入 `processed.sample.jsonl`；这只是模型行为提示，
   不是运行时门控。用户明确要求全量时可直接生成 `processed.jsonl`。
-- 处理完成后单独调用 `df_convert`，并重新加载最终训练文件验证。
-- 仅在用户要求时上传。
+- 使用 DataFlow LLM 的 pipeline 必须用 `LoggingLLMServing` 包装 serving；
+  `df_run_pipeline` 自动把 `df_logging.py` 和 `generate_report.py` 投递到脚本目录。
+- 展示试跑样本和处理逻辑，用户确认前不得提交平台全量任务。
+- 确认后上传 pipeline 和输入数据，用 `df_submit_pipeline` 提交。收到 callback 后依次检查
+  `report.json`、异常时的 `llm_calls.jsonl`，以及 `processed.jsonl`。
+- 处理完成后调用 `df_convert`，并重新加载最终训练文件验证；已在平台生成的产物无需重复上传。
 
 ## 决策规则
 

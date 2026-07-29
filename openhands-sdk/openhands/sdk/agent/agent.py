@@ -28,6 +28,10 @@ from openhands.sdk.agent.utils import (
     parse_tool_call_arguments,
     prepare_llm_messages,
 )
+from openhands.sdk.context.condenser.base import (
+    CondensationRequirement,
+    RollingCondenser,
+)
 from openhands.sdk.context.prompts.presets import create_registry
 from openhands.sdk.conversation import (
     CancellationToken,
@@ -51,6 +55,7 @@ from openhands.sdk.event.condenser import (
     Condensation,
     CondensationRequest,
 )
+from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.llm import (
     LLMResponse,
     Message,
@@ -92,6 +97,28 @@ from openhands.sdk.tool.builtins import (
 
 logger = get_logger(__name__)
 maybe_init_laminar()
+
+CONTEXT_CONDENSATION_STATE_KEY = "context_condensation"
+
+
+def _emit_condensation_status(
+    on_event: ConversationCallbackType,
+    status: str,
+    *,
+    requirement: CondensationRequirement | None = None,
+    condensation_id: str | None = None,
+) -> None:
+    value: dict[str, str] = {"status": status}
+    if requirement is not None:
+        value["requirement"] = requirement.value
+    if condensation_id is not None:
+        value["condensation_id"] = condensation_id
+    on_event(
+        ConversationStateUpdateEvent(
+            key=CONTEXT_CONDENSATION_STATE_KEY,
+            value=value,
+        )
+    )
 
 
 def _tool_has_summary_param(tool: ToolDefinition) -> bool:
@@ -335,6 +362,13 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         self._parallel_executor = ParallelToolExecutor(
             max_workers=self.tool_concurrency_limit
         )
+
+    def _condensation_requirement(
+        self, state: ConversationState
+    ) -> CondensationRequirement | None:
+        if not isinstance(self.condenser, RollingCondenser):
+            return None
+        return self.condenser.condensation_requirement(state.view, agent_llm=self.llm)
 
     @model_validator(mode="before")
     @classmethod
@@ -580,14 +614,42 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
 
         # Prepare LLM messages from the cached, incrementally-maintained view.
         # See https://github.com/OpenHands/software-agent-sdk/issues/3053.
-        _messages_or_condensation = prepare_llm_messages(
-            state.view, condenser=self.condenser, llm=self.llm
-        )
+        condensation_requirement = self._condensation_requirement(state)
+        if condensation_requirement is not None:
+            _emit_condensation_status(
+                on_event,
+                "started",
+                requirement=condensation_requirement,
+            )
+        try:
+            _messages_or_condensation = prepare_llm_messages(
+                state.view, condenser=self.condenser, llm=self.llm
+            )
+        except BaseException:
+            if condensation_requirement is not None:
+                _emit_condensation_status(on_event, "failed")
+            raise
 
         # Process condensation event before agent sampels another action
         if isinstance(_messages_or_condensation, Condensation):
             on_event(_messages_or_condensation)
+            logger.info(
+                "[perf] agent.step conversation_id=%s outcome=condensation "
+                "event_id=%s n_forgotten=%d",
+                state.id,
+                _messages_or_condensation.id,
+                len(_messages_or_condensation.forgotten_event_ids),
+            )
+            if condensation_requirement is not None:
+                _emit_condensation_status(
+                    on_event,
+                    "completed",
+                    condensation_id=_messages_or_condensation.id,
+                )
             return
+
+        if condensation_requirement is not None:
+            _emit_condensation_status(on_event, "skipped")
 
         _messages = _messages_or_condensation
 
@@ -762,21 +824,45 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         # Prepare LLM messages from the cached, incrementally-maintained view.
         # See https://github.com/OpenHands/software-agent-sdk/issues/3053.
         prepare_t0 = time.monotonic()
-        _messages_or_condensation = await aprepare_llm_messages(
-            state.view, condenser=self.condenser, llm=self.llm
-        )
+        condensation_requirement = self._condensation_requirement(state)
+        if condensation_requirement is not None:
+            _emit_condensation_status(
+                on_event,
+                "started",
+                requirement=condensation_requirement,
+            )
+        try:
+            _messages_or_condensation = await aprepare_llm_messages(
+                state.view, condenser=self.condenser, llm=self.llm
+            )
+        except BaseException:
+            if condensation_requirement is not None:
+                _emit_condensation_status(on_event, "failed")
+            raise
         prepare_ms = (time.monotonic() - prepare_t0) * 1000
 
         if isinstance(_messages_or_condensation, Condensation):
             on_event(_messages_or_condensation)
+            if condensation_requirement is not None:
+                _emit_condensation_status(
+                    on_event,
+                    "completed",
+                    condensation_id=_messages_or_condensation.id,
+                )
             logger.info(
                 "[perf] agent.astep conversation_id=%s outcome=condensation "
-                "prepare_ms=%.1f llm_ms=0.0 tools_ms=0.0 total_ms=%.1f",
+                "event_id=%s n_forgotten=%d prepare_ms=%.1f llm_ms=0.0 "
+                "tools_ms=0.0 total_ms=%.1f",
                 state.id,
+                _messages_or_condensation.id,
+                len(_messages_or_condensation.forgotten_event_ids),
                 prepare_ms,
                 (time.monotonic() - step_t0) * 1000,
             )
             return
+
+        if condensation_requirement is not None:
+            _emit_condensation_status(on_event, "skipped")
 
         _messages = _messages_or_condensation
 

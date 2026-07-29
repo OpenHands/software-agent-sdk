@@ -299,12 +299,59 @@ class LLMSummarizingCondenserSettings(CondenserSettings):
         default=None,
         gt=0,
         description=(
-            "Maximum number of tokens allowed before the condenser runs. "
-            "When unset, condensation is only based on event count."
+            "Maximum number of tokens allowed before the condenser runs. When unset, "
+            "the limit is derived from the agent model input window."
         ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Max tokens",
+                prominence=SettingProminence.MINOR,
+                depends_on=("enabled",),
+            ).model_dump()
+        },
+    )
+    auto_compact_ratio: float = Field(
+        default=0.9,
+        gt=0.0,
+        lt=1.0,
+        description=(
+            "Fraction of the agent model input window at which condensation starts "
+            "when max_tokens is unset."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Auto-compact ratio",
+                prominence=SettingProminence.MINOR,
+                depends_on=("enabled",),
+            ).model_dump()
+        },
+    )
+    summary_input_ratio: float = Field(
+        default=0.6,
+        gt=0.0,
+        lt=1.0,
+        description=(
+            "Maximum fraction of the summarizer model input window used by the "
+            "condensation prompt."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Summary input ratio",
+                prominence=SettingProminence.MINOR,
+                depends_on=("enabled",),
+            ).model_dump()
+        },
+    )
+    max_summary_retries: int = Field(
+        default=5,
+        ge=0,
+        description=(
+            "Maximum oldest-first trimming retries when summarization exceeds its "
+            "context window."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Summary retries",
                 prominence=SettingProminence.MINOR,
                 depends_on=("enabled",),
             ).model_dump()
