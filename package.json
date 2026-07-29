@@ -1,6 +1,6 @@
 {
   "name": "@openhands/typescript-client",
-  "version": "1.35.0",
+  "version": "1.36.0",
   "description": "TypeScript client for OpenHands Agent Server",
   "main": "dist/index.js",
   "module": "dist/index.js",
