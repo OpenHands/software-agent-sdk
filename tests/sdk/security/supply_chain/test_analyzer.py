@@ -3,8 +3,9 @@
 Mirrors the make_action helper pattern from
 tests/sdk/security/defense_in_depth/test_pattern.py: an ActionEvent whose
 tool_call.arguments is json.dumps({"command": cmd}). Confirms the analyzer
-returns HIGH on a typosquat install and LOW otherwise, scans only the
-executable corpus (not reasoning text), and never hard-denies.
+returns HIGH on a typosquat install, UNKNOWN when executable shell source is
+not analyzed, and LOW otherwise. It scans only the executable corpus (not
+reasoning text) and never hard-denies.
 """
 
 from __future__ import annotations
@@ -66,6 +67,16 @@ _HIGH_CASES = [
     ("npx expres", "runner target"),
     ("npx --package=lodahs some-bin", "runner --package="),
     ("npx -p lodahs some-bin", "runner -p name"),
+    (
+        "npx --package lodash --package lodahs some-bin",
+        "runner repeated package flags",
+    ),
+    ("npm exec some-bin --package lodahs", "npm exec option after positional"),
+    ("npx --call='echo safe' --package=lodahs", "runner call before package"),
+    ("npx --package='lodahs' some-bin", "quoted runner package option"),
+    ("npx --registry=$URL lodahs", "runtime equals flag before target"),
+    ("npx --script-shell /bin/sh lodahs", "runner value option before target"),
+    ("npx --package={lodash,lodahs} some-bin", "brace-expanded package options"),
     ("bunx expres", "bunx runner"),
     ("yarn add lodahs", "yarn add"),
     ("pnpm add lodahs", "pnpm add"),
@@ -124,6 +135,8 @@ _LOW_CASES = [
     ("ls /tmp", "ls"),
     ("pip install requestss", "non-npm manager out of scope"),
     ("npx --some-flag value lodahs", "runner first positional is the target"),
+    ("npx -c lodahs", "runner call string is not an inferred package"),
+    ("npm exec lodahs -c 'echo safe'", "invalid positional plus call form"),
     ("npm --tag loadsh install lodash", "tag eats typosquat value, lodash legit"),
     ("npm run build install lodahs", "run is a real subcommand, scan stops"),
     ("npm --foo bar baz lodahs", "no real subcommand after skips stays clean"),
@@ -299,7 +312,10 @@ def test_analyzer_ast_high(command: str, desc: str):
 
 _AST_LOW_CASES = [
     ('echo "npm install lodahs"', "whole install inside a double-quoted string"),
-    ('bash -c "npm install lodahs"', "bash -c inner string is opaque"),
+    ('bash -- -c "npm install lodahs"', "-- makes -c a script filename"),
+    ('bash -nc "npm install lodahs"', "noexec suppresses command execution"),
+    ('bash -o noexec -c "npm install lodahs"', "named noexec option"),
+    ('bash -c ""', "empty command string"),
     ("$(echo npm) install lodahs", "opaque outer command name skipped"),
 ]
 
@@ -311,6 +327,60 @@ def test_analyzer_ast_low(command: str, desc: str):
     analyzer = SupplyChainSecurityAnalyzer()
     risk = analyzer.security_risk(make_action(command))
     assert risk == SecurityRisk.LOW, f"{desc}: expected LOW, got {risk}"
+
+
+_EXECUTABLE_COMMAND_STRING_UNKNOWN_CASES = [
+    ('bash -c "npm install lodahs"', "bash -c static payload"),
+    ("sh -lc 'npm i loadsh'", "sh combined option cluster"),
+    ("sh -O extglob -c 'npm install lodahs'", "implementation-dependent sh option"),
+    ("/bin/dash -ec 'npm install lodahs'", "path-qualified dash"),
+    ("zsh --no-rcs -fc 'npm install lodahs'", "zsh leading option"),
+    ("bash -T -c 'npm install lodahs'", "bash boolean option before -c"),
+    ("zsh -R -c 'npm install lodahs'", "zsh boolean option before -c"),
+    ("sh +c 'npm install lodahs'", "plus-prefixed command option"),
+    ("bash -oc pipefail 'npm install lodahs'", "combined value and command flags"),
+    ("bash -xO extglob -c 'npm install lodahs'", "clustered bash value option"),
+    ("zsh -oNO_RCS -c 'npm install lodahs'", "attached zsh option value"),
+    ("ksh -o nounset -lc 'npm install lodahs'", "ksh value option"),
+    ("ksh -T 1 -c 'npm install lodahs'", "ksh trace value option"),
+    ("ksh -T1 -c 'npm install lodahs'", "attached ksh trace value"),
+    ('bash "-c" "npm install lodahs"', "quoted invocation option"),
+    ("b\"a\"sh \\-lc 'npm install lodahs'", "statically obfuscated shell argv"),
+    (
+        "sudo -u node /bin/bash -lc 'npm install lodahs'",
+        "wrapped path-qualified bash",
+    ),
+    ('bash -c "$COMMAND"', "runtime command-string payload"),
+    ('bash "$FLAGS" -c "npm install lodahs"', "runtime invocation option"),
+    ("exec -a worker bash -lc 'npm install lodahs'", "exec wrapper"),
+    ('bash -c "echo safe"', "benign but unanalysed executable payload"),
+]
+
+
+@pytest.mark.parametrize(
+    "command,desc",
+    _EXECUTABLE_COMMAND_STRING_UNKNOWN_CASES,
+    ids=[c[1] for c in _EXECUTABLE_COMMAND_STRING_UNKNOWN_CASES],
+)
+def test_executable_command_string_requires_confirmation(command: str, desc: str):
+    analyzer = SupplyChainSecurityAnalyzer()
+    risk = analyzer.security_risk(make_action(command))
+    assert risk == SecurityRisk.UNKNOWN, f"{desc}: expected UNKNOWN, got {risk}"
+    assert ConfirmRisky().should_confirm(risk) is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'bash -c "$COMMAND"; npm install lodahs',
+        'npm install lodahs; bash -c "$COMMAND"',
+    ],
+)
+def test_typosquat_finding_wins_over_incomplete_command_string(command: str):
+    analyzer = SupplyChainSecurityAnalyzer()
+    risk = analyzer.security_risk(make_action(command))
+    assert risk == SecurityRisk.HIGH
+    assert ConfirmRisky().should_confirm(risk) is True
 
 
 def test_lone_surrogate_command_does_not_raise():
@@ -470,39 +540,26 @@ def test_analyzer_name_and_encoding_low(command: str, desc: str):
 
 
 # ---------------------------------------------------------------------------
-# Documented residue (strict xfails): nested command-string payloads
+# Documented residue (strict xfail): npm runner command-string payload
 #
-# When the whole install lives inside an inner command string -- `bash -c
-# "npm install lodahs"`, `sh -c 'npm i loadsh'`, `npx -c 'npm install lodahs'`,
-# `echo "npm install lodahs"` -- the tree-sitter view treats that inner string as
-# a single opaque argument to the outer command. It is never re-parsed as a
-# command, so the install is invisible to the analyzer and stays LOW (the safe
-# default).
-#
-# Closing these needs recursive command-string parsing: recognising `-c`/`-lc`
-# shells (and `echo`-style sinks) and re-parsing their string argument as a
-# nested program. That is out of scope for the current shared AST view; it is
-# the same recursion the #2721 migration scopes for the pattern analyzer. These
-# are marked xfail(strict=True) so they flip to passing -- and fail loudly as
-# stale -- the moment that recursion lands.
+# `npx -c 'npm install lodahs'` remains runner-specific residue. POSIX-style
+# shell `-c` payloads are handled separately above and return UNKNOWN; ordinary
+# echo arguments are inert data and correctly remain LOW.
 # ---------------------------------------------------------------------------
 
 _NESTED_COMMAND_STRING_RESIDUE = [
-    ('bash -c "npm install lodahs"', "bash_dash_c_double_quoted"),
-    ("sh -c 'npm i loadsh'", "sh_dash_c_single_quoted"),
     ("npx -c 'npm install lodahs'", "npx_dash_c_inner_install"),
-    ('echo "npm install lodahs"', "echo_double_quoted_install"),
+    ("npx --call='npm install lodahs'", "npx_call_inner_install"),
+    ("npm exec -c 'npm install lodahs'", "npm_exec_dash_c_inner_install"),
+    ("npm x --call='npm install lodahs'", "npm_x_call_inner_install"),
 ]
 
 
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "Install lives inside an inner command string; the AST treats it as one"
-        " opaque argument to the outer command. Needs recursive"
-        " command-string parsing (re-parse the -c / echoed string as a nested"
-        " program) -- out of scope for the current shared AST view; cf. the"
-        " #2721 migration scope."
+        "Install lives inside an npm runner command string; runner-specific"
+        " call-string parsing is out of scope for the current shared AST view."
     ),
 )
 @pytest.mark.parametrize(
@@ -512,8 +569,6 @@ _NESTED_COMMAND_STRING_RESIDUE = [
 )
 def test_analyzer_nested_command_string_residue_xfail(command: str, desc: str):
     analyzer = SupplyChainSecurityAnalyzer()
-    # Aspirational: the inner install SHOULD raise HIGH once command strings are
-    # parsed recursively. Today it stays LOW (opaque), so this xfails.
     risk = analyzer.security_risk(make_action(command))
     assert risk == SecurityRisk.HIGH
 

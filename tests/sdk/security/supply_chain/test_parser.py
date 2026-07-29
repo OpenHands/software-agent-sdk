@@ -164,6 +164,79 @@ def test_wrapper_option_value_is_not_promoted_to_package_manager():
     assert_clean("sudo -u npm install lodahs")
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        'bash -c "npm install lodahs"',
+        "sh -lc 'npm i loadsh'",
+        "sh -O extglob -c 'npm install lodahs'",
+        "sh --rcfile /tmp/nope -c 'npm install lodahs'",
+        "/bin/dash -ec 'npm install lodahs'",
+        "zsh --no-rcs -fc 'npm install lodahs'",
+        "bash -T -c 'npm install lodahs'",
+        "zsh -R -c 'npm install lodahs'",
+        "zsh -O -c 'npm install lodahs'",
+        "zsh +O -c 'npm install lodahs'",
+        "sh +c 'npm install lodahs'",
+        "bash -oc pipefail 'npm install lodahs'",
+        "bash +oc pipefail 'npm install lodahs'",
+        "bash -Oc extglob 'npm install lodahs'",
+        "bash -xO extglob -c 'npm install lodahs'",
+        "bash -Ox extglob -c 'npm install lodahs'",
+        "zsh -xo nounset -c 'npm install lodahs'",
+        "zsh -oNO_RCS -c 'npm install lodahs'",
+        "zsh +oRCS -c 'npm install lodahs'",
+        "ksh -o nounset -lc 'npm install lodahs'",
+        "ksh -oerrexit -c 'npm install lodahs'",
+        "ksh +oerrexit -c 'npm install lodahs'",
+        "ksh -T 1 -c 'npm install lodahs'",
+        "ksh -xT 1 -c 'npm install lodahs'",
+        "ksh -T1 -c 'npm install lodahs'",
+        "ksh -xT1 -c 'npm install lodahs'",
+        "bash -O extglob -c 'npm install lodahs'",
+        'bash "-c" "npm install lodahs"',
+        "b\"a\"sh \\-lc 'npm install lodahs'",
+        'bash "$FLAGS" -c "npm install lodahs"',
+        'bash "$FLAG" "npm install lodahs"',
+        "exec -a worker bash -lc 'npm install lodahs'",
+        "sudo -u node /bin/bash -lc 'npm install lodahs'",
+        "env -S 'bash -lc \"npm install lodahs\"'",
+    ],
+)
+def test_executable_shell_command_strings_are_incomplete(command: str):
+    with pytest.raises(
+        SupplyChainAnalysisIncompleteError,
+        match="may execute a command string that was not recursively analyzed",
+    ):
+        find_typosquat_installs(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "bash -c",
+        "bash -c ''",
+        "bash -nc 'npm install lodahs'",
+        "bash -o noexec -c 'npm install lodahs'",
+        "bash -- -c 'npm install lodahs'",
+        "bash script.sh -c 'npm install lodahs'",
+    ],
+)
+def test_nonexecuted_shell_command_string_arguments_are_clean(command: str):
+    assert_clean(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'bash -c "$COMMAND"; npm install lodahs',
+        'npm install lodahs; bash -c "$COMMAND"',
+    ],
+)
+def test_static_finding_wins_over_incomplete_shell_command(command: str):
+    assert_flags(command, "lodash")
+
+
 # ---------------------------------------------------------------------------
 # Chained commands
 # ---------------------------------------------------------------------------
@@ -218,6 +291,53 @@ class TestRunners:
 
     def test_flags_bun_x_runner_target(self):
         assert_flags("bun x expres", "express")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "npx --package lodash --package lodahs some-bin",
+        "npx --package lodahs --package lodash some-bin",
+        "npx -p lodash -p lodahs some-bin",
+        "npx --package=lodash --package=lodahs some-bin",
+        "npm exec --package lodash --package lodahs -- some-bin",
+        "npm exec some-bin --package lodahs",
+        "npm exec some-bin -p lodahs",
+        "npm x some-bin --package=lodahs",
+        "npx -c 'echo safe' --package lodahs",
+        "npx --call='echo safe' --package=lodahs",
+        "npx -c='echo safe' --package lodahs",
+        "npx --package='lodahs' some-bin",
+        'npx "--package=lodahs" some-bin',
+        "npm exec --package='lodahs' -- some-bin",
+        "npx --registry=$URL lodahs",
+        "npx --package=$PKG --package lodahs some-bin",
+        "npx --script-shell /bin/sh lodahs",
+        "npx --shell /bin/sh lodahs",
+        "npx --node-options trace lodahs",
+        "npx --package={lodash,lodahs} some-bin",
+        "npx --package=lo{dah,da}s some-bin",
+        "npm exec --package={lodash,lodahs} -- some-bin",
+    ],
+)
+def test_runner_collects_every_explicit_package(command: str):
+    assert_flags(command, "lodash")
+
+
+def test_standalone_npx_stops_parsing_options_after_target():
+    assert_clean("npx lodash --package lodahs")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "npx -c lodahs",
+        "npm exec -c lodahs",
+        "npm exec lodahs -c 'echo safe'",
+    ],
+)
+def test_runner_call_string_is_not_an_inferred_package(command: str):
+    assert_clean(command)
 
 
 # ---------------------------------------------------------------------------
@@ -788,11 +908,6 @@ class TestAstStructural:
     def test_whole_install_inside_double_quoted_string_is_inert(self):
         # The entire install is one echo argument (a string), not a command.
         assert_clean('echo "npm install lodahs"')
-
-    def test_bash_dash_c_inner_string_is_opaque(self):
-        # Known coverage limitation: the inner -c string is an opaque argument
-        # to bash and is not surfaced as a command by the AST view.
-        assert_clean('bash -c "npm install lodahs"')
 
     def test_opaque_outer_command_name_is_skipped(self):
         # The outer command name $(echo npm) is opaque -> that command is

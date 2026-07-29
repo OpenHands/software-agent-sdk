@@ -14,7 +14,8 @@ and hands it to
 encoding-evasion and parses it offline with the shared tree-sitter-bash view (no
 network, no disk). It returns ``SecurityRisk.HIGH`` when an install/runner
 target is one edit away from a curated popular package. It never hard-denies;
-pairing it with ``ConfirmRisky`` asks a human to make the call.
+recognized incomplete-analysis conditions return ``SecurityRisk.UNKNOWN``.
+Pairing it with ``ConfirmRisky`` asks a human to make the call.
 
 Unlike the pattern/policy analyzers in ``defense_in_depth``, this analyzer does
 not import their private extraction/normalization helpers. It scans ONLY the
@@ -89,18 +90,27 @@ class SupplyChainSecurityAnalyzer(SecurityAnalyzerBase):
       ``$'...'`` escapes, line-continuation joining, and bounded static
       comma-brace expansion (``lo{a,}dsh`` -> ``loadsh``/``lodsh``, each checked).
 
-    What stays LOW because it cannot be resolved statically:
+    What stays LOW because no risky package identity can be proved:
 
-    - runtime expansion -- shell variables (``$PKG``), command/process
+    - runtime expansion in package-manager operands -- shell variables
+      (``$PKG``), command/process
       substitution (``$(...)``, ```...```, ``<(...)``) and arithmetic
       substitution: the installed name is unknowable offline;
     - homoglyphs / Unicode confusables: only invisible/zero-width characters and
       fullwidth NFKC folds are normalized, not look-alike letters;
-    - an install nested inside an inner command string (``bash -c '...'``,
-      ``echo '...'``): treated as one opaque argument to the outer command (the
-      documented xfail residue), pending recursive command-string parsing;
+    - inert quoted data such as ``echo 'npm install lodahs'``: the string is an
+      argument, not an executable command;
+    - npm runner call strings such as ``npx -c 'npm install lodahs'``: their
+      CLI-specific argv semantics remain documented strict-xfail residue;
     - brace forms outside the bounded comma case: ranges (``{1..3}``), nested
       braces, and a brace touching a quote or variable stay opaque.
+
+    A recognized POSIX-style shell invocation that selects an executable
+    command string (``bash -c '...'``, ``sh -lc '...'``) returns UNKNOWN rather
+    than LOW. Recursive command-string parsing is intentionally outside this
+    analyzer's current scope, so ``ConfirmRisky`` applies its configurable
+    fallback instead of silently allowing the command. Oversized or
+    pathologically nested/chained input follows the same UNKNOWN boundary.
 
     It flags the typosquats it can prove statically and is explicit about what it
     does not catch; it never blocks on its own.
@@ -126,7 +136,8 @@ class SupplyChainSecurityAnalyzer(SecurityAnalyzerBase):
         behind an invisible character or fullwidth ``ｎｐｍ`` before parsing it on
         the shared tree-sitter view. A lone-surrogate command cannot be encoded
         for execution and stays LOW. Oversized or pathologically nested/chained
-        input that cannot be analyzed completely returns UNKNOWN.
+        input, including a recognized shell ``-c`` command string that is not
+        recursively parsed, returns UNKNOWN.
         """
         command = _command_string(action)
         if not command:

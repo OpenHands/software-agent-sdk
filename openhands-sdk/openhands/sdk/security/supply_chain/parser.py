@@ -50,14 +50,19 @@ before exec) and what it leaves opaque is an explicit, honest boundary:
   backslash unescaping (``lo\\adsh``), interior-quote concatenation
   (``lo""adsh``), ANSI-C ``$'...'`` escapes, line-continuation joining
   (``loa\\<newline>dsh``), and the static comma-brace expansion above.
-- OUT OF SCOPE (stays LOW, never decoded): any runtime expansion -- shell
+- OUT OF SCOPE (stays LOW, never decoded): package-manager operands containing
+  runtime expansion -- shell
   variables (``$PKG``), command/process substitution (``$(...)``, ```...```,
   ``<(...)``) and arithmetic substitution (``$((...))``); homoglyphs and other
   Unicode confusables (only invisible/zero-width characters and fullwidth NFKC
-  folds are normalized, not look-alike letters); and an install nested inside an
-  inner command string such as ``bash -c '...'`` (treated as one opaque
-  argument). This module flags the typosquats it can prove statically; it does
-  not claim to catch every obfuscation.
+  folds are normalized, not look-alike letters); and npm runner call strings
+  such as ``npx -c '...'``. The runner cases are pinned as strict xfails while
+  their CLI-specific argv semantics remain out of scope. Ordinary string data
+  such as ``echo 'npm install lodahs'`` is inert and LOW.
+- INCOMPLETE (the analyzer returns ``SecurityRisk.UNKNOWN``): an executable
+  command string selected by a recognized POSIX-style shell invocation (for
+  example, ``bash -c '...'``). Recursive command-string parsing remains out of
+  scope, but the executable payload is not misclassified as benign.
 
 - dispatch on the package-manager binary POSIX basename (path prefix stripped
   by the AST, ``/usr/bin/npm`` -> ``npm``);
@@ -192,6 +197,7 @@ _WRAPPER_COMMANDS: frozenset[str] = frozenset(
         "sudo",
         "doas",
         "env",
+        "exec",
         "time",
         "nice",
         "nohup",
@@ -230,6 +236,7 @@ _WRAPPER_VALUE_TAKING_OPTIONS: dict[str, frozenset[str]] = {
     ),
     "doas": frozenset({"-a", "-C", "-u"}),
     "env": frozenset({"-a", "-C", "-u", "--argv0", "--chdir", "--unset"}),
+    "exec": frozenset({"-a"}),
     "time": frozenset({"-f", "-o", "--format", "--output"}),
     "nice": frozenset({"-n", "--adjustment"}),
     "nohup": frozenset(),
@@ -272,6 +279,51 @@ _PACKAGE_MANAGERS: frozenset[str] = frozenset({"npm", "npm.cmd", "yarn", "pnpm",
 # Standalone package runners (npx-like) where the executed package is the
 # target.
 _RUNNERS: frozenset[str] = frozenset({"npx", "npx.cmd", "bunx", "bunx.cmd"})
+_RUNNER_CALL_OPTIONS: frozenset[str] = frozenset({"-c", "--call"})
+
+# POSIX-style shells whose ``-c`` invocation option executes a command string.
+# Shells with materially different invocation grammars (fish, csh/tcsh,
+# PowerShell) are intentionally excluded rather than guessed at.
+_COMMAND_STRING_SHELLS: frozenset[str] = frozenset(
+    {
+        "ash",
+        "bash",
+        "dash",
+        "ksh",
+        "ksh93",
+        "mksh",
+        "rbash",
+        "rksh",
+        "rzsh",
+        "sh",
+        "zsh",
+    }
+)
+
+_COMMON_SHELL_VALUE_OPTIONS: frozenset[str] = frozenset({"-o", "+o"})
+_BASH_VALUE_OPTIONS = _COMMON_SHELL_VALUE_OPTIONS | frozenset(
+    {"-O", "+O", "--init-file", "--rcfile"}
+)
+_KSH_VALUE_OPTIONS = _COMMON_SHELL_VALUE_OPTIONS | frozenset({"-R", "-T"})
+_SHELL_VALUE_OPTIONS: dict[str, frozenset[str]] = {
+    "ash": _COMMON_SHELL_VALUE_OPTIONS,
+    "bash": _BASH_VALUE_OPTIONS,
+    "dash": _COMMON_SHELL_VALUE_OPTIONS,
+    "ksh": _KSH_VALUE_OPTIONS,
+    "ksh93": _KSH_VALUE_OPTIONS,
+    "mksh": _COMMON_SHELL_VALUE_OPTIONS | frozenset({"-T"}),
+    "rbash": _BASH_VALUE_OPTIONS,
+    "rksh": _KSH_VALUE_OPTIONS,
+    "rzsh": _COMMON_SHELL_VALUE_OPTIONS,
+    "sh": _COMMON_SHELL_VALUE_OPTIONS,
+    "zsh": _COMMON_SHELL_VALUE_OPTIONS,
+}
+
+# ``sh`` is an implementation-selected shell name. Options outside the POSIX
+# invocation grammar have implementation-specific arity, so their presence is
+# incomplete rather than guessed from whichever shell provides ``sh`` locally.
+_POSIX_SH_INVOCATION_FLAGS: frozenset[str] = frozenset("abCefhimnuvxcs")
+_SHELL_CLUSTER_FLAGS: frozenset[str] = frozenset("abCDefhiklmnrstuvxcBDHPORT")
 
 # Install subcommands per manager that collect package args.
 _INSTALL_SUBCOMMANDS: dict[str, frozenset[str]] = {
@@ -630,12 +682,17 @@ _SHARED_VALUE_TAKING_FLAGS: frozenset[str] = frozenset(
 #   value-taking under npm. pnpm/yarn/bun do not define them; leaving them out
 #   for those managers keeps an unrelated bare ``--omit foo pkg`` from eating
 #   ``foo`` there. (npm uses these to select dependency groups.)
+# - ``--script-shell`` / legacy npx ``--shell`` / ``--node-options``: npm/npx
+#   string configuration values that must not be promoted to runner targets.
 _NPM_ONLY_VALUE_TAKING_FLAGS: frozenset[str] = frozenset(
     {
         "--workspace",
         "-w",
         "--omit",
         "--include",
+        "--script-shell",
+        "--shell",
+        "--node-options",
     }
 )
 
@@ -930,6 +987,9 @@ def find_typosquat_installs(command: str) -> list[TyposquatFinding]:
 # ---------------------------------------------------------------------------
 
 
+_WrapperArg = ShellWord | str
+
+
 def _collect_packages_from_command(cmd: ShellCommand) -> list[str]:
     """Dispatch a single parsed command and collect its install/runner targets.
 
@@ -953,9 +1013,16 @@ def _collect_packages_from_command(cmd: ShellCommand) -> list[str]:
             return []
 
     words = list(cmd.words)
-    base, recovered = _peel_wrappers(base, words)
+    base, args = _peel_wrappers(base, words)
     if base is None:
         return []
+
+    if _has_unresolved_shell_command_string(base, args):
+        raise SupplyChainAnalysisIncompleteError(
+            f"{base} may execute a command string that was not recursively analyzed"
+        )
+
+    recovered = _recover_command_args(args)
 
     if base in _RUNNERS:
         # Standalone runners are npm/bun flavored. The npm-only value flags
@@ -970,6 +1037,100 @@ def _collect_packages_from_command(cmd: ShellCommand) -> list[str]:
         return _collect_manager_packages(manager, recovered)
 
     return []
+
+
+def _has_unresolved_shell_command_string(base: str, args: list[_WrapperArg]) -> bool:
+    """Return whether ``base`` may execute an unanalysed command string.
+
+    POSIX-style shells continue parsing invocation options until the first
+    operand, even when ``c`` appeared in an earlier short-option cluster. A
+    leading ``--`` ends option parsing, while one after ``-c`` ends the options
+    and leaves the following operand as the command string. Only the presence
+    of an effective payload is classified here; its contents remain opaque and
+    therefore make the overall supply-chain analysis incomplete. An opaque
+    invocation argument before the operand boundary is incomplete as well,
+    because its runtime value can select ``-c`` or terminate option parsing.
+    """
+    if base not in _COMMAND_STRING_SHELLS:
+        return False
+
+    value_options = _SHELL_VALUE_OPTIONS[base]
+    command_string_mode = False
+    noexec = False
+    i = 0
+    while i < len(args):
+        token = _static_wrapper_arg(args[i])
+        if token is None:
+            return True
+
+        if token == "--" or token == "-":
+            i += 1
+            break
+
+        if token.startswith("--"):
+            if base == "sh":
+                return True
+            i += 1
+            if token in value_options:
+                i += 1
+            continue
+
+        if token.startswith(("-", "+")) and token not in {"-", "+"}:
+            option_prefix = token[0]
+            flags = token[1:]
+            if base == "sh" and any(
+                flag not in _POSIX_SH_INVOCATION_FLAGS and flag != "o" for flag in flags
+            ):
+                return True
+            command_string_mode = command_string_mode or "c" in flags
+            if "n" in flags:
+                noexec = option_prefix == "-"
+            if base in {"bash", "rbash"} and option_prefix == "-" and "D" in flags:
+                noexec = True
+
+            value_option, consumes_next = _shell_value_option(token, value_options)
+            i += 1
+            if value_option is not None:
+                if not consumes_next:
+                    return True
+                if i >= len(args):
+                    break
+                value = _static_wrapper_arg(args[i])
+                if value is None:
+                    return True
+                if value_option in {"-o", "+o"} and value == "noexec":
+                    noexec = value_option == "-o"
+                i += 1
+            continue
+
+        break
+
+    if not command_string_mode or noexec or i >= len(args):
+        return False
+    payload = _static_wrapper_arg(args[i])
+    return payload is None or bool(payload.strip())
+
+
+def _shell_value_option(
+    token: str, value_options: frozenset[str]
+) -> tuple[str | None, bool]:
+    """Return a value option and whether its value is the next argv item."""
+    if token in value_options:
+        return token, True
+
+    for option in value_options:
+        if len(option) != 2 or option[0] != token[0]:
+            continue
+        option_index = token[1:].find(option[1])
+        if option_index == -1:
+            continue
+        suffix = token[option_index + 2 :]
+        consumes_next = not suffix or (
+            all(flag in _SHELL_CLUSTER_FLAGS for flag in suffix)
+            and (len(suffix) == 1 or "c" in suffix)
+        )
+        return option, consumes_next
+    return None, False
 
 
 def _decode_command_name(cmd: ShellCommand) -> str | None:
@@ -1016,23 +1177,16 @@ def _decode_command_name(cmd: ShellCommand) -> str | None:
 _OPAQUE_SENTINEL = "\x00"
 
 
-_WrapperArg = ShellWord | str
-
-
-def _peel_wrappers(base: str, words: list[ShellWord]) -> tuple[str | None, list[str]]:
+def _peel_wrappers(
+    base: str, words: list[ShellWord]
+) -> tuple[str | None, list[_WrapperArg]]:
     """Strip wrapper binaries and recover the remaining command argv."""
     args: list[_WrapperArg] = list(words)
     env_split_expansions = 0
 
     for _ in range(_MAX_WRAPPER_DEPTH):
         if base not in _WRAPPER_COMMANDS:
-            recovered: list[str] = []
-            for arg in args:
-                if isinstance(arg, str):
-                    recovered.append(arg)
-                else:
-                    recovered.extend(_recover_word_tokens(arg))
-            return base, recovered
+            return base, args
 
         i = 0
         while i < len(args):
@@ -1084,6 +1238,17 @@ def _peel_wrappers(base: str, words: list[ShellWord]) -> tuple[str | None, list[
         args = args[i + 1 :]
 
     raise SupplyChainAnalysisIncompleteError("wrapper nesting limit exceeded")
+
+
+def _recover_command_args(args: list[_WrapperArg]) -> list[str]:
+    """Recover package-manager argv after launcher-specific inspection."""
+    recovered: list[str] = []
+    for arg in args:
+        if isinstance(arg, str):
+            recovered.append(arg)
+        else:
+            recovered.extend(_recover_word_tokens(arg))
+    return recovered
 
 
 def _static_wrapper_arg(arg: _WrapperArg) -> str | None:
@@ -1195,10 +1360,10 @@ def _recover_word(word: ShellWord) -> str | None:
 def _recover_word_tokens(word: ShellWord) -> list[str]:
     """Recover the argv token(s) a single word would pass to the binary.
 
-    Most words map to exactly one token: a known static value when
-    :func:`_recover_word` can recover it, or the single :data:`_OPAQUE_SENTINEL`
-    when it cannot (a runtime expansion, an embedded space, a leftover
-    metacharacter -- unknowable, so it occupies the slot but is never collected).
+    Most words map to exactly one token: their arbitrary static shell value, or
+    the single :data:`_OPAQUE_SENTINEL` when runtime expansion makes the value
+    unknowable. A statically known ``--flag=`` prefix is retained even when its
+    value is opaque, so a runtime option value cannot hide later argv items.
 
     The one word that maps to *several* tokens is a static comma-brace word like
     ``lo{a,}dsh``: bash expands it to ``loadsh`` and ``lodsh`` (two argv tokens)
@@ -1213,11 +1378,17 @@ def _recover_word_tokens(word: ShellWord) -> list[str]:
     """
     expansions = _expand_static_braces(word)
     if expansions is not None:
-        return [exp for exp in expansions if _PACKAGE_SPEC_RE.match(exp)] or [
-            _OPAQUE_SENTINEL
-        ]
+        return expansions or [_OPAQUE_SENTINEL]
     value = _recover_word(word)
-    return [value if value is not None else _OPAQUE_SENTINEL]
+    if value is not None:
+        return [value]
+    static_value = _static_wrapper_arg(word)
+    if static_value is not None:
+        return [static_value]
+    opaque_option = re.match(r"^(--[a-z0-9][a-z0-9-]*|-[a-z])=", word.text, re.I)
+    if opaque_option is not None:
+        return [f"{opaque_option.group(1)}={_OPAQUE_SENTINEL}"]
+    return [_OPAQUE_SENTINEL]
 
 
 # ---------------------------------------------------------------------------
@@ -1253,9 +1424,10 @@ _MAX_BRACE_GROUPS = 8
 # Characters allowed in a pure static comma-brace word. Anything else (a
 # backslash, whitespace, a shell metacharacter) means the word is not a clean
 # static brace operand, so expansion bails and the word stays opaque. Package
-# specs use ascii letters/digits and ``. _ - / @``; braces add ``{ } ,``.
+# specs and option assignments use ascii letters/digits and ``. _ - / @ =``;
+# braces add ``{ } ,``.
 _BRACE_WORD_CHARS: frozenset[str] = frozenset(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-/@{},"
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-/@={,}"
 )
 
 
@@ -1729,7 +1901,11 @@ def _collect_manager_packages(manager: str, args: list[str]) -> list[str]:
     if subcommand in install_subs:
         return _collect_install_packages(rest, manager)
     if subcommand in runner_subs:
-        return _collect_runner_target(rest, manager)
+        return _collect_runner_target(
+            rest,
+            manager,
+            scan_options_after_positionals=manager == "npm",
+        )
     return []
 
 
@@ -1832,47 +2008,83 @@ def _collect_install_packages(args: list[str], manager: str) -> list[str]:
     return packages
 
 
-def _collect_runner_target(args: list[str], manager: str) -> list[str]:
-    """Return the single executed package for a runner invocation.
+def _collect_runner_target(
+    args: list[str],
+    manager: str,
+    *,
+    scan_options_after_positionals: bool = False,
+) -> list[str]:
+    """Return packages fetched for a runner invocation.
 
-    Honors ``-p``/``--package`` and ``--package=NAME``/``-p=NAME``, whose value
-    is the package to execute. Otherwise it applies the shared
-    :func:`_consumes_next_value` rule (manager-aware) to skip known value-taking
-    flags and treats every other flag as boolean, then returns the FIRST
-    positional token as the executed package -- the typosquat target. Trailing
-    positionals are arguments to that program, never install targets
-    (``npx create-react-app my-app`` -> ``create-react-app``; an unknown long
-    flag swallows no value, so ``npx --some-flag value lodahs`` yields ``value``).
+    Every explicit ``-p``/``--package`` value is fetched, so repeated flags are
+    accumulated rather than allowing an earlier legitimate package to mask a
+    later typosquat. Without explicit packages, the first positional is the
+    inferred package. Standalone npx stops option parsing at that positional;
+    npm ``exec``/``x`` continues parsing options until ``--``.
     """
+    explicit_packages: list[str] = []
+    positional_target: str | None = None
+    has_call_string = False
+    options_enabled = True
     i = 0
     n = len(args)
     while i < n:
         token = args[i]
 
-        if token.startswith("--package="):
-            return [token[len("--package=") :]]
-        if token.startswith("-p="):
-            return [token[len("-p=") :]]
-        if token in ("-p", "--package"):
-            if i + 1 < n:
-                return [args[i + 1]]
-            return []
+        if options_enabled and token == "--":
+            options_enabled = False
+            i += 1
+            continue
+
+        if options_enabled:
+            if token.startswith(("--call=", "-c=")):
+                has_call_string = True
+                i += 1
+                continue
+            if token in _RUNNER_CALL_OPTIONS:
+                has_call_string = True
+                if i + 1 >= n:
+                    return []
+                i += 2
+                continue
+            if token.startswith("--package="):
+                explicit_packages.append(token[len("--package=") :])
+                i += 1
+                continue
+            if token.startswith("-p="):
+                explicit_packages.append(token[len("-p=") :])
+                i += 1
+                continue
+            if token in ("-p", "--package"):
+                if i + 1 < n:
+                    explicit_packages.append(args[i + 1])
+                    i += 2
+                    continue
+                break
 
         if token in _REDIRECTION_TOKENS:
             i += 1
             continue
 
-        if token.startswith("-"):
+        if options_enabled and token.startswith("-"):
             if _consumes_next_value(token, manager):
                 i += 1
             i += 1
             continue
 
-        if _is_package_spec(token):
-            return [token]
-        return []
+        if positional_target is None and _is_package_spec(token):
+            positional_target = token
+        if not scan_options_after_positionals:
+            break
+        i += 1
 
-    return []
+    if has_call_string and positional_target is not None:
+        return []
+    if explicit_packages:
+        return explicit_packages
+    if has_call_string:
+        return []
+    return [positional_target] if positional_target is not None else []
 
 
 # ---------------------------------------------------------------------------
@@ -1883,17 +2095,10 @@ def _collect_runner_target(args: list[str], manager: str) -> list[str]:
 def _is_package_spec(token: str) -> bool:
     """Report whether ``token`` can be a package spec.
 
-    True when the first character is ascii-alphanumeric or ``_``, or when it
-    is a scoped name starting ``@`` that contains ``/``.
+    The runner/manager argv layer preserves arbitrary static strings, so the
+    package boundary applies the same strict shape used by literal recovery.
     """
-    if not token:
-        return False
-    first = token[0]
-    if first == "_" or first.isascii() and first.isalnum():
-        return True
-    if first == "@" and "/" in token:
-        return True
-    return False
+    return _PACKAGE_SPEC_RE.match(token) is not None
 
 
 def _normalize_package_name(spec: str) -> str:
