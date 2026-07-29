@@ -28,6 +28,7 @@ from openhands.sdk.mcp.config import (
     MCPNoneAuthCredential,
     MCPOAuthAuthCredential,
     coerce_mcp_config,
+    to_fastmcp_mcp_config,
 )
 from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
 from openhands.sdk.mcp.utils import _prepare_mcp_config
@@ -246,6 +247,58 @@ def test_create_mcp_tools_rejects_external_config_shapes():
     fastmcp_config = FastMCPConfig.model_validate(config)
     with pytest.raises(TypeError, match="dict\\[str, MCPServer\\]"):
         create_mcp_tools(fastmcp_config)  # type: ignore[arg-type]
+
+
+def test_create_mcp_tools_skips_disabled_servers():
+    """A server the user switched off is never connected to."""
+    config = {
+        "mcpServers": {
+            "kept": {"url": "https://kept.example.com/mcp"},
+            "switched_off": {
+                "url": "https://switched-off.example.com/mcp",
+                "enabled": False,
+            },
+        }
+    }
+
+    with patch("openhands.sdk.mcp.utils.MCPClient") as mock_client_class:
+        create_mcp_tools(native_mcp_config(config))
+
+    prepared = mock_client_class.call_args.args[0]
+    assert list(prepared.mcpServers) == ["kept"]
+
+
+def test_create_mcp_tools_all_servers_disabled():
+    """Disabling every server is reported by name, not as "no servers defined"."""
+    config = {
+        "mcpServers": {
+            "switched_off": {
+                "url": "https://switched-off.example.com/mcp",
+                "enabled": False,
+            }
+        }
+    }
+
+    with pytest.raises(ValueError, match="switched_off"):
+        create_mcp_tools(native_mcp_config(config))
+
+
+def test_to_fastmcp_mcp_config_strips_enabled():
+    """``enabled`` is OpenHands-side only, and FastMCP would absorb it silently."""
+    config = native_mcp_config(
+        {
+            "mcpServers": {
+                "switched_off": {
+                    "url": "https://switched-off.example.com/mcp",
+                    "enabled": False,
+                }
+            }
+        }
+    )
+
+    prepared = to_fastmcp_mcp_config(config)
+
+    assert "enabled" not in prepared["mcpServers"]["switched_off"]
 
 
 def test_prepare_mcp_config_converts_bare_oauth_credential():
