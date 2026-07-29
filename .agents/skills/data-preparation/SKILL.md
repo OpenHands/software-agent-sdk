@@ -14,25 +14,28 @@ description: >-
 ## 强制约束（MANDATORY）
 
 1. **所有文件写入必须在 `public_data/data-preparation/` 下**。不要访问、创建或修改 `.agents/`、项目源码、或任何 `public_data/` 之外的路径。
-2. **优先使用本文档的 API 签名，避免不必要的源码内省**。本文档已覆盖常用算子的完整签名和用法，绝大多数任务无需查看 DataFlow 源码。仅当文档确实未覆盖某个算子或参数时，才用 `inspect.getsource` 等手段查看具体实现，且查看后立即编写代码，不要反复探索。
+2. **本文档已自包含所有必要信息，不要读取 `references/` 目录**。本文档覆盖了算子签名、脚本模板、CLI 契约的完整内容。仅当用户明确要求查看示例或文档确实未覆盖某个冷门算子时，才用 `inspect.getsource` 查看源码，且查看后立即编写代码。
 3. **`df_logging.py` 和 `generate_report.py` 由工具自动投递**。`df_run_pipeline` 执行时会自动将这两个文件复制到 pipeline 同目录，Agent 不需要手动创建、复制或读取它们。只需在 pipeline.py 中 `from df_logging import LoggingLLMServing` 即可。
 4. **不要用终端探索环境**。不要执行 `pip list`、`python -c "import ..."` 来验证依赖是否安装——`df_run_pipeline` 会自动检查并报错。
+5. **路径规范**：所有 `file_editor` 和 `terminal` 操作使用 conversation workspace 的绝对路径（即 `public_data/data-preparation/` 的完整路径）。不要依赖 terminal 的 cwd，不要 `cd` 到相对路径。
+6. **不要创建中间脚本**。样本数据直接用 `file_editor` 创建文件，不要写 `make_sample.py` 之类的生成脚本再用 terminal 执行。
 
 ## 工作流
 
 1. 如果用户提供 HuggingFace 数据集 ID，先用 `dataset_download` 下载前 5 条预览，让用户确认字段结构、split 和 config。下载路径放在 `public_data/data-preparation/`，注意：**output_path 必须是相对于 workspace 根目录的路径**，比如 `public_data/data-preparation/sample.jsonl`，不要加 `conversations/<id>/` 前缀。
 2. 确认要生成/清洗的目标后，根据「算子选择决策表」选择合适算子，编写 pipeline.py。
    **必须使用 `LoggingLLMServing` 包装 LLM 实例**（见下方「脚本契约」）。
-3. 准备试跑数据：根据 `preview_dataset` 看到的数据结构，手动构造 3-5 条 sample.jsonl 作为试跑输入。
-4. 本地试跑：用 `df_run_pipeline` 执行 pipeline.py + sample.jsonl，检查输出是否符合预期。
-5. **向用户展示试跑结果，等待用户确认**。展示内容：
+3. 准备试跑数据：根据 `preview_dataset` 看到的数据结构，**直接用 `file_editor` 创建** 3-5 条 sample 文件（如 `sample.jsonl` 或 `sample.txt`）作为试跑输入。不要写中间生成脚本。
+4. 本地试跑：用 `df_run_pipeline` 执行 pipeline.py + sample 文件，检查输出是否符合预期。
+5. **（MANDATORY）试跑成功后必须向用户展示结果并询问是否提交平台**。展示内容：
    - 试跑输出的前 2-3 条样本（直接读取输出文件）
    - 简要说明算子逻辑和预期效果
-   - 明确询问：“试跑结果符合预期吗？确认后我将提交平台执行全量数据。”
+   - 明确询问："试跑结果符合预期吗？确认后我将提交平台执行全量数据。"
    - **用户未确认前不得提交平台。**
+   - **不要跳过此步骤**——即使试跑结果看起来正确，也必须等用户确认。
 6. 用户确认后，提交平台全量执行：
-   a. 用 `upload_file_to_pyromind` 上传 pipeline.py 到 Storage。
-   b. 用 `df_submit_pipeline` 提交异步执行（传 `script_path`、`input_path`）。
+   用 `df_submit_pipeline` 提交异步执行（传本地 `script_path` 和 Storage `input_path`）。
+   工具内部会自动生成 run_id、创建 output_dir、上传 pipeline.py 和 runtime 文件到 Storage，无需手动调用 `upload_file_to_pyromind`。
 7. 收到平台 callback 后，按顺序检查产物：
    a. `preview_dataset(output_dir/report.json)` — 检查执行状态、LLM 调用统计和错误率。
    b. 如有异常：`preview_dataset(output_dir/llm_calls.jsonl)` — 定位具体失败的 LLM 调用。
@@ -438,7 +441,9 @@ data = storage.read(output_type="dict")
 
 ---
 
-## 参考文件
+## 参考文件（通常不需要读取）
+
+以下文件仅供参考，本文档已包含所有必要信息。仅在用户明确要求或遇到冷门算子时才查阅：
 
 - `references/example_pipeline.py` — 完整可运行的单算子示例
 - `references/patterns.md` — 3 种常见模式的代码片段
