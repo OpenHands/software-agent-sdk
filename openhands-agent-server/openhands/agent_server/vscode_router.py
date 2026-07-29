@@ -91,6 +91,7 @@ async def get_vscode_url(
         # API-level assertion to prevent regression: a valid request must
         # never produce an error status (the route returns 200 on success).
         assert response is not None
+        assert response.url is None or response.url.startswith(("http://", "https://"))
         return response
     except HTTPException:
         raise
