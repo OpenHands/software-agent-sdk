@@ -2484,7 +2484,7 @@ describe('Auxiliary API clients', () => {
     const request = {
       name: 'superhuman-mail',
       server: {
-        transport: 'http' as const,
+        type: 'http' as const,
         url: 'https://mcp.mail.superhuman.com/mcp',
         auth: {
           strategy: 'oauth2' as const,

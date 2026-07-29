@@ -464,6 +464,7 @@ export interface HooksResponse {
   hook_config?: HookConfig | null;
 }
 
+/** @deprecated Use `AgentServerMCPTestRequest["server"]` for MCP test payloads. */
 export interface StdioMCPServerSpec {
   type: 'stdio';
   command: string;
@@ -474,10 +475,12 @@ export interface StdioMCPServerSpec {
 
 export type RemoteMCPServerType = 'http' | 'shttp' | 'streamable-http' | 'sse';
 
+/** @deprecated Use `AgentServerMCPTestRequest["server"]` for MCP test payloads. */
 export interface RemoteMCPServerSpec {
   type: RemoteMCPServerType;
   url: string;
   headers?: Record<string, string>;
+  /** @deprecated Use the tagged `auth` credential instead. */
   api_key?: string | null;
   auth?: MCPAuthCredential | null;
   timeout?: number | null;
@@ -538,13 +541,16 @@ export interface MCPServer {
   auth?: MCPAuthCredential | null;
 }
 
+/** @deprecated Use `AgentServerMCPTestRequest["server"]` for MCP test payloads. */
 export type MCPServerSpec = StdioMCPServerSpec | RemoteMCPServerSpec | MCPServer;
 
+/** @deprecated Use `AgentServerMCPToolCall`. */
 export interface MCPToolCallSpec {
   name: string;
   arguments?: Record<string, unknown>;
 }
 
+/** @deprecated Use `AgentServerMCPTestRequest`. */
 export interface MCPTestRequest {
   server: MCPServerSpec;
   name?: string;
@@ -552,6 +558,7 @@ export interface MCPTestRequest {
   tool_call?: MCPToolCallSpec | null;
 }
 
+/** @deprecated Use `AgentServerMCPToolCallResult`. */
 export interface MCPToolCallResult {
   is_error: boolean;
   text: string;
@@ -573,8 +580,10 @@ export interface MCPTestFailure {
   error_kind: MCPTestFailureKind;
 }
 
+/** @deprecated Use `AgentServerMCPTestResponse`. */
 export type MCPTestResponse = MCPTestSuccess | MCPTestFailure;
 
+/** @deprecated Use `AgentServerMCPStartOAuthResponse`. */
 export interface MCPOAuthStartResponse {
   ok: boolean;
   job_id?: string | null;
@@ -585,6 +594,7 @@ export interface MCPOAuthStartResponse {
 
 export type MCPOAuthProbeStatus = 'pending' | 'authorizing' | 'succeeded' | 'failed';
 
+/** @deprecated Use `AgentServerMCPOAuthStatusResponse`. */
 export interface MCPOAuthStatusResponse {
   ok: boolean;
   status: MCPOAuthProbeStatus;
@@ -598,6 +608,7 @@ export interface MCPOAuthStatusResponse {
   error_kind?: MCPTestFailureKind | null;
 }
 
+/** @deprecated Use `AgentServerMCPOAuthCallbackRequest`. */
 export interface MCPOAuthCallbackRequest {
   callback_url: string;
 }

@@ -9,6 +9,7 @@ import type {
   GetConversationSettingsSchemaApiSettingsConversationSchemaGetResponse,
   GetMcpOauthStatusApiMcpOauthStatusJobIdGetResponse,
   GetSettingsApiSettingsGetResponse,
+  McpToolCallSpec,
   McpToolCallResult,
   StartMcpOauthApiMcpOauthStartPostData,
   StartMcpOauthApiMcpOauthStartPostResponse,
@@ -29,6 +30,7 @@ export type AgentServerSettingsPatchResponse = UpdateSettingsApiSettingsPatchRes
 
 export type AgentServerMCPTestRequest = TestMcpServerApiMcpTestPostData['body'];
 export type AgentServerMCPTestResponse = TestMcpServerApiMcpTestPostResponse;
+export type AgentServerMCPToolCall = McpToolCallSpec;
 export type AgentServerMCPStartOAuthRequest = StartMcpOauthApiMcpOauthStartPostData['body'];
 export type AgentServerMCPStartOAuthResponse = StartMcpOauthApiMcpOauthStartPostResponse;
 export type AgentServerMCPOAuthStatusResponse = GetMcpOauthStatusApiMcpOauthStatusJobIdGetResponse;

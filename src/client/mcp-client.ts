@@ -4,11 +4,18 @@ import {
 } from './agent-server-compatibility';
 import { HttpClient } from './http-client';
 import type {
-  MCPOAuthCallbackRequest,
-  MCPOAuthStartResponse,
-  MCPOAuthStatusResponse,
-  MCPTestRequest,
-  MCPTestResponse,
+  AgentServerMCPOAuthCallbackRequest,
+  AgentServerMCPOAuthCallbackResponse,
+  AgentServerMCPOAuthStatusResponse,
+  AgentServerMCPStartOAuthRequest,
+  AgentServerMCPStartOAuthResponse,
+  AgentServerMCPTestRequest,
+  AgentServerMCPTestResponse,
+} from '../models/agent-server-api';
+import type {
+  MCPOAuthStartResponse as LegacyMCPOAuthStartResponse,
+  MCPTestRequest as LegacyMCPTestRequest,
+  MCPTestResponse as LegacyMCPTestResponse,
 } from '../models/api';
 
 export interface MCPClientOptions {
@@ -32,17 +39,35 @@ export class MCPClient {
     });
   }
 
-  async testServer(request: MCPTestRequest): Promise<MCPTestResponse> {
+  async testServer(request: AgentServerMCPTestRequest): Promise<AgentServerMCPTestResponse>;
+  /**
+   * @deprecated Pass `AgentServerMCPTestRequest`. This overload only keeps
+   * older request payloads source compatible while callers migrate.
+   */
+  async testServer(request: LegacyMCPTestRequest): Promise<LegacyMCPTestResponse>;
+  async testServer(
+    request: LegacyMCPTestRequest | AgentServerMCPTestRequest
+  ): Promise<LegacyMCPTestResponse | AgentServerMCPTestResponse> {
     await assertAgentServerSupports(this.client, AgentServerFeatureRequirements.mcpTest);
-    const response = await this.client.post<MCPTestResponse>('/api/mcp/test', request, {
+    const response = await this.client.post<AgentServerMCPTestResponse>('/api/mcp/test', request, {
       timeout: (request.timeout ?? 15) * 1000 + 5000,
     });
     return response.data;
   }
 
-  async startOAuth(request: MCPTestRequest): Promise<MCPOAuthStartResponse> {
+  async startOAuth(
+    request: AgentServerMCPStartOAuthRequest
+  ): Promise<AgentServerMCPStartOAuthResponse>;
+  /**
+   * @deprecated Pass `AgentServerMCPStartOAuthRequest`. This overload only
+   * keeps older request payloads source compatible while callers migrate.
+   */
+  async startOAuth(request: LegacyMCPTestRequest): Promise<LegacyMCPOAuthStartResponse>;
+  async startOAuth(
+    request: LegacyMCPTestRequest | AgentServerMCPStartOAuthRequest
+  ): Promise<LegacyMCPOAuthStartResponse | AgentServerMCPStartOAuthResponse> {
     await assertAgentServerSupports(this.client, AgentServerFeatureRequirements.mcpOAuth);
-    const response = await this.client.post<MCPOAuthStartResponse>(
+    const response = await this.client.post<AgentServerMCPStartOAuthResponse>(
       '/api/mcp/oauth/start',
       request,
       {
@@ -52,9 +77,9 @@ export class MCPClient {
     return response.data;
   }
 
-  async getOAuthStatus(jobId: string): Promise<MCPOAuthStatusResponse> {
+  async getOAuthStatus(jobId: string): Promise<AgentServerMCPOAuthStatusResponse> {
     await assertAgentServerSupports(this.client, AgentServerFeatureRequirements.mcpOAuth);
-    const response = await this.client.get<MCPOAuthStatusResponse>(
+    const response = await this.client.get<AgentServerMCPOAuthStatusResponse>(
       `/api/mcp/oauth/status/${encodeURIComponent(jobId)}`
     );
     return response.data;
@@ -62,10 +87,10 @@ export class MCPClient {
 
   async submitOAuthCallback(
     jobId: string,
-    request: MCPOAuthCallbackRequest
-  ): Promise<MCPOAuthStatusResponse> {
+    request: AgentServerMCPOAuthCallbackRequest
+  ): Promise<AgentServerMCPOAuthCallbackResponse> {
     await assertAgentServerSupports(this.client, AgentServerFeatureRequirements.mcpOAuth);
-    const response = await this.client.post<MCPOAuthStatusResponse>(
+    const response = await this.client.post<AgentServerMCPOAuthCallbackResponse>(
       `/api/mcp/oauth/callback/${encodeURIComponent(jobId)}`,
       request
     );

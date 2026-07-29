@@ -90,12 +90,26 @@ export type {
   AgentServerMCPStartOAuthResponse,
   AgentServerMCPTestRequest,
   AgentServerMCPTestResponse,
+  AgentServerMCPToolCall,
   AgentServerMCPToolCallResult,
   AgentServerSettingsPatchRequest,
   AgentServerSettingsPatchResponse,
   AgentServerSettingsResponse,
   AgentServerSettingsSchema,
 } from './models/agent-server-api';
+export type {
+  MCPAuthCredential,
+  MCPConfig,
+  MCPConfigPatch,
+  MCPOAuthAuthentication,
+  MCPOAuthState,
+  MCPServer,
+  MCPServerPatch,
+  MCPTransport,
+  RemoteMCPServer,
+  RemoteMCPTransport,
+  StdioMCPServer,
+} from './models/mcp-settings';
 export type {
   OpenHandsClientKind,
   OpenHandsClientOptions,
