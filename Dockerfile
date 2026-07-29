@@ -234,6 +234,7 @@ COPY --chown=${USERNAME}:${USERNAME} --from=knowledge-sync /sync/knowledge /agen
 RUN chmod +x /usr/local/bin/openhands-agent-server
 # DataFlow venv for df_run_pipeline local trial runs
 RUN python3 -m venv ${HOME}/dataflow-venv \
+    && ${HOME}/dataflow-venv/bin/pip install --upgrade pip setuptools wheel \
     && ${HOME}/dataflow-venv/bin/pip install --no-cache-dir open-dataflow==1.0.10
 ENV DATAFLOW_PYTHON=/home/openhands/dataflow-venv/bin/python
 # Fix library path to use system GCC libraries instead of bundled ones
