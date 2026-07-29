@@ -3,9 +3,11 @@
 import asyncio
 import logging
 import socket
+import sys
 import threading
 import time
 from collections.abc import Generator
+from pathlib import Path
 from typing import Literal
 from unittest.mock import MagicMock, patch
 
@@ -26,6 +28,7 @@ from openhands.sdk.mcp.config import (
     MCPNoneAuthCredential,
     MCPOAuthAuthCredential,
     coerce_mcp_config,
+    to_fastmcp_mcp_config,
 )
 from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
 from openhands.sdk.mcp.utils import _prepare_mcp_config
@@ -38,6 +41,19 @@ MCPTransport = Literal["http", "streamable-http", "sse"]
 
 def native_mcp_config(config: dict) -> dict:
     return coerce_mcp_config(config["mcpServers"])
+
+
+def stdio_fetch_mcp_config() -> dict:
+    repo_root = Path(__file__).resolve().parents[3]
+    return {
+        "mcpServers": {
+            "fetch": {
+                "command": sys.executable,
+                "args": ["-m", "tests.sdk.mcp.stdio_test_server"],
+                "cwd": str(repo_root),
+            }
+        }
+    }
 
 
 @pytest.mark.parametrize(
@@ -231,6 +247,58 @@ def test_create_mcp_tools_rejects_external_config_shapes():
     fastmcp_config = FastMCPConfig.model_validate(config)
     with pytest.raises(TypeError, match="dict\\[str, MCPServer\\]"):
         create_mcp_tools(fastmcp_config)  # type: ignore[arg-type]
+
+
+def test_create_mcp_tools_skips_disabled_servers():
+    """A server the user switched off is never connected to."""
+    config = {
+        "mcpServers": {
+            "kept": {"url": "https://kept.example.com/mcp"},
+            "switched_off": {
+                "url": "https://switched-off.example.com/mcp",
+                "enabled": False,
+            },
+        }
+    }
+
+    with patch("openhands.sdk.mcp.utils.MCPClient") as mock_client_class:
+        create_mcp_tools(native_mcp_config(config))
+
+    prepared = mock_client_class.call_args.args[0]
+    assert list(prepared.mcpServers) == ["kept"]
+
+
+def test_create_mcp_tools_all_servers_disabled():
+    """Disabling every server is reported by name, not as "no servers defined"."""
+    config = {
+        "mcpServers": {
+            "switched_off": {
+                "url": "https://switched-off.example.com/mcp",
+                "enabled": False,
+            }
+        }
+    }
+
+    with pytest.raises(ValueError, match="switched_off"):
+        create_mcp_tools(native_mcp_config(config))
+
+
+def test_to_fastmcp_mcp_config_strips_enabled():
+    """``enabled`` is OpenHands-side only, and FastMCP would absorb it silently."""
+    config = native_mcp_config(
+        {
+            "mcpServers": {
+                "switched_off": {
+                    "url": "https://switched-off.example.com/mcp",
+                    "enabled": False,
+                }
+            }
+        }
+    )
+
+    prepared = to_fastmcp_mcp_config(config)
+
+    assert "enabled" not in prepared["mcpServers"]["switched_off"]
 
 
 def test_prepare_mcp_config_converts_bare_oauth_credential():
@@ -583,21 +651,9 @@ def test_create_mcp_tools_connection_to_nonexistent_server():
 
 def test_create_mcp_tools_stdio_server():
     """Test creating MCP tools from a native server map."""
-    mcp_config = {
-        "mcpServers": {
-            "fetch": {
-                "command": "uvx",
-                "args": [
-                    "--with",
-                    "mcp==1.29.0",
-                    "mcp-server-fetch==2026.7.10",
-                ],
-            }
-        }
-    }
+    mcp_config = stdio_fetch_mcp_config()
 
-    # Use longer timeout for CI environments where uvx may need to download packages
-    tools = create_mcp_tools(native_mcp_config(mcp_config), timeout=120.0)
+    tools = create_mcp_tools(native_mcp_config(mcp_config), timeout=10.0)
     assert len(tools) == 1
     assert tools[0].name == "fetch"
 

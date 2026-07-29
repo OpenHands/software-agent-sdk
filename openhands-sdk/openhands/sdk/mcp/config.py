@@ -511,6 +511,15 @@ class MCPServer(_MCPBaseModel):
     keep_alive: bool | None = None
     headers: dict[str, SecretStr] | None = None
     auth: MCPAuthCredential | None = None
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether this server is exposed to the agent. A disabled server "
+            "stays fully configured -- including its secrets -- but is skipped "
+            "when MCP tools are created and when servers are forwarded to an "
+            "ACP subprocess."
+        ),
+    )
 
     @field_validator("env", "headers", mode="after")
     @classmethod
@@ -645,6 +654,12 @@ def _normalize_server_for_fastmcp(
     server: Mapping[str, Any],
 ) -> dict[str, Any]:
     server = copy.deepcopy(dict(server))
+    # ``enabled`` is an OpenHands-side flag; FastMCP server models are
+    # ``extra="allow"``, so leaving it in would be silently absorbed rather
+    # than rejected. Callers are expected to have dropped disabled servers
+    # already (see ``enabled_mcp_servers``) -- this only keeps the key from
+    # leaking through the public ``to_fastmcp_mcp_config`` boundary.
+    server.pop("enabled", None)
     auth = server.pop("auth", None)
     raw_headers = server.get("headers")
     headers = dict(raw_headers) if isinstance(raw_headers, Mapping) else {}
@@ -706,6 +721,19 @@ def dump_mcp_config(
         )
         for name, server in mcp_config.items()
     }
+
+
+def enabled_mcp_servers(
+    mcp_config: Mapping[str, MCPServer],
+) -> dict[str, MCPServer]:
+    """Drop servers the user has switched off.
+
+    Disabled servers stay in the settings map (so their configuration and
+    secrets survive) but must never reach a live MCP connection, whether the
+    agent turns them into SDK tools or an ACP subprocess connects to them
+    itself.
+    """
+    return {name: server for name, server in mcp_config.items() if server.enabled}
 
 
 def to_fastmcp_mcp_config(

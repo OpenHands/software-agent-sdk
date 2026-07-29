@@ -127,7 +127,6 @@ These PRs will:
 
 - [ ] Merge the release PR to main
 - [ ] Review and merge the auto-created version bump PRs in OpenHands, OpenHands-CLI, automation, and typescript-client (merging the automation PR triggers its release-please release PR; merge that too to publish the pinned `openhands-automation`)
-- [ ] Run evaluation on OpenHands Index (manual step)
 - [ ] Announce the release
 
 ## Manual PyPI Release (If Needed)
@@ -192,6 +191,5 @@ For reference, the previous manual release checklist was:
 - [ ] Tag "test-examples" and make sure example checks all pass
 - [ ] Draft a new release
 - [ ] Use workflow to publish to PyPI on tag `v1.X.X`
-- [ ] Evaluation on OpenHands Index
 
 Most of these steps are now automated!
