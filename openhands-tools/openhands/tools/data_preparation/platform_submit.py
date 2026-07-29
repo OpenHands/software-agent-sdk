@@ -54,8 +54,10 @@ TOOL_DESCRIPTION = """\
 Submit a DataFlow pipeline for asynchronous execution on Pyromind platform.
 
 Call this only after the user has confirmed a successful local trial run
-(`df_run_pipeline` with sample data). The pipeline script must already be
-uploaded to Pyromind Storage via `upload_file_to_pyromind`.
+(`df_run_pipeline` with sample data). Pass the local pipeline script path
+as `script_path`; the tool automatically uploads it (along with runtime
+helpers) to a per-run output directory on Storage — no need to call
+`upload_file_to_pyromind` separately.
 
 The tool creates a one-node CustomCommandNode workflow that:
 1. Creates a venv and installs open-dataflow

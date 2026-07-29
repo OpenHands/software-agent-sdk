@@ -10,8 +10,18 @@ description: >-
 # 数据准备
 
 在本地会话工作区试跑，用户确认后将全量任务提交到 Pyromind 平台异步执行。
-所有中间文件写入 `public_data/data-preparation/`；工具路径相对于 workspace 根目录。
-不要修改项目源码或 skill 文件，也不要用终端探测依赖；`df_run_pipeline` 会检查运行环境。
+
+**强制约束：**
+- 所有中间文件写入 `public_data/data-preparation/`。
+- `file_editor` 和 `terminal` 使用 conversation workspace 的绝对路径；工具参数
+  （`df_run_pipeline`、`dataset_download` 等）使用 workspace 相对路径。不要依赖
+  terminal cwd，不要 `cd` 到相对路径。
+- 样本数据直接用 `file_editor` 创建文件，不要写 `make_sample.py` 之类的中间脚本
+  再用 terminal 执行。
+- 不要修改项目源码或 skill 文件，也不要用终端探测依赖；`df_run_pipeline` 会检查
+  运行环境。
+- 本文档的流程和决策规则已自包含。仅在编写 pipeline 需要算子签名或脚本模板时才
+  读取 `references/` 下的文件，不要为了理解流程而读取。
 
 ## 核心流程
 
@@ -25,9 +35,13 @@ description: >-
   不是运行时门控。用户明确要求全量时可直接生成 `processed.jsonl`。
 - 使用 DataFlow LLM 的 pipeline 必须用 `LoggingLLMServing` 包装 serving；
   `df_run_pipeline` 自动把 `df_logging.py` 和 `generate_report.py` 投递到脚本目录。
-- 展示试跑样本和处理逻辑，用户确认前不得提交平台全量任务。
-- 确认后上传 pipeline 和输入数据，用 `df_submit_pipeline` 提交。收到 callback 后依次检查
-  `report.json`、异常时的 `llm_calls.jsonl`，以及 `processed.jsonl`。
+- 试跑成功后**必须主动**向用户展示样本结果并询问：“试跑结果符合预期吗？确认后
+  我将提交平台执行全量数据。”不要跳过此步骤，即使结果看起来正确也必须等用户
+  明确确认后才能提交。
+- 确认后调用 `df_submit_pipeline`（传本地 `script_path` 和 Storage `input_path`）；
+  工具内部自动生成 run_id、上传 pipeline 和 runtime 文件到 Storage，无需手动调
+  `upload_file_to_pyromind`。收到 callback 后依次检查 `report.json`、异常时的
+  `llm_calls.jsonl`，以及 `processed.jsonl`。
 - 处理完成后调用 `df_convert`，并重新加载最终训练文件验证；已在平台生成的产物无需重复上传。
 
 ## 决策规则
