@@ -7,14 +7,14 @@ members = ["openhands-sdk", "openhands-tools", "openhands-workspace", "openhands
 exclude-newer = "7 days"  # Avoid packages uploaded in the last 7 days.
 exclude-newer-package = { litellm = "2026-07-20T00:00:00Z" }  # Bump or remove when upgrading litellm past 1.93.0
 constraint-dependencies = [
-    "starlette>=0.49.1",  # CVE-2025-62727
-    "aiohttp>=3.13.3",  # CVE-2025-69223 + 7 others
-    "urllib3>=2.6.3",  # CVE-2026-21441, CVE-2025-66471, CVE-2025-66418
-    "protobuf>=6.33.5",  # CVE-2026-0994
-    "pillow>=12.1.1",  # CVE-2026-25990
-    "orjson>=3.11.7",  # CVE-2025-67221
-    "rich>=14.3.3", # Version 14.3.2 essentially has a denial-of-service vulnerability which is outlined in https://github.com/Textualize/rich/issues/3958
-    "lupa>=2.8",  # CVE-2026-34444
+    "starlette==1.3.1",  # CVE-2025-62727
+    "aiohttp==3.13.4",  # CVE-2025-69223 + 7 others
+    "urllib3==2.7.0",  # CVE-2026-21441, CVE-2025-66471, CVE-2025-66418
+    "protobuf==6.33.5",  # CVE-2026-0994
+    "pillow==12.2.0",  # CVE-2026-25990
+    "orjson==3.11.7",  # CVE-2025-67221
+    "rich==14.3.3", # Version 14.3.2 essentially has a denial-of-service vulnerability which is outlined in https://github.com/Textualize/rich/issues/3958
+    "lupa==2.8",  # CVE-2026-34444
     "litellm==1.93.0",  # Workspace lock target for the requested LiteLLM upgrade
 ]
 

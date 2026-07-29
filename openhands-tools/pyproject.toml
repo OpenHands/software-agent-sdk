@@ -5,16 +5,16 @@ description = "OpenHands Tools - Runtime tools for AI agents"
 
 requires-python = ">=3.12"
 dependencies = [
-    "openhands-sdk",
-    "tree-sitter>=0.24",
-    "tree-sitter-bash>=0.23",
-    "binaryornot>=0.4.4",
-    "cachetools",
-    "libtmux>=0.53.0",
-    "pydantic>=2.11.7",
-    "browser-use>=0.8.0",
-    "func-timeout>=4.3.5",
-    "tom-swe>=1.0.3",
+    "openhands-sdk==1.38.0",
+    "tree-sitter==0.25.2",
+    "tree-sitter-bash==0.25.1",
+    "binaryornot==0.4.4",
+    "cachetools==5.5.2",
+    "libtmux==0.53.0",
+    "pydantic==2.12.5",
+    "browser-use==0.11.9",
+    "func-timeout==4.3.5",
+    "tom-swe==1.0.3",
 ]
 
 [project.urls]
