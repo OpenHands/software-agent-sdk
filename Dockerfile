@@ -233,9 +233,10 @@ COPY --chown=${USERNAME}:${USERNAME} --from=builder /agent-server/.agents /agent
 COPY --chown=${USERNAME}:${USERNAME} --from=knowledge-sync /sync/knowledge /agent-server/knowledge
 RUN chmod +x /usr/local/bin/openhands-agent-server
 # DataFlow venv for df_run_pipeline local trial runs
-RUN python3 -m venv ${HOME}/dataflow-venv \
-    && ${HOME}/dataflow-venv/bin/pip install --upgrade pip setuptools wheel \
-    && ${HOME}/dataflow-venv/bin/pip install --no-cache-dir open-dataflow==1.0.10
+# preshed (open-dataflow dep) has no cp313 linux wheel; use Python 3.12
+RUN uv python install 3.12 \
+    && uv venv --python 3.12 ${HOME}/dataflow-venv \
+    && uv pip install --python ${HOME}/dataflow-venv/bin/python open-dataflow==1.0.10
 ENV DATAFLOW_PYTHON=/home/openhands/dataflow-venv/bin/python
 # Fix library path to use system GCC libraries instead of bundled ones
 ENV LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu:/usr/lib:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
