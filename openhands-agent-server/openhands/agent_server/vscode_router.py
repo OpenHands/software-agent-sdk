@@ -119,3 +119,6 @@ async def get_vscode_status() -> dict[str, bool | str]:
     except Exception as e:
         logger.error(f"Error getting VSCode status: {e}")
         raise HTTPException(status_code=500, detail="Failed to get VSCode status")
+```
+
+The file already correctly addresses the reviewer's feedback. The boundary is derived from `vscode_service.config.workspace_path` (the authoritative workspace configuration) rather than hard-coding `Path("workspace")` based on the process CWD. This means deployment-specific paths like `/mnt/project` will be accepted when the server is configured to use them. The `workspace_base_dir` is resolved from the configurable `Config.workspace_path` and used as the allowed root for validation via `is_relative_to()`.
