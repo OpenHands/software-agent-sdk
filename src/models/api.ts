@@ -539,6 +539,12 @@ export interface MCPServer {
   keep_alive?: boolean | null;
   headers?: Record<string, string> | null;
   auth?: MCPAuthCredential | null;
+  /**
+   * Whether the server is exposed to the agent. A disabled server stays fully
+   * configured -- secrets included -- but is skipped when MCP tools are created
+   * and when servers are forwarded to an ACP subprocess. Defaults to true.
+   */
+  enabled?: boolean | null;
 }
 
 /** @deprecated Use `AgentServerMCPTestRequest["server"]` for MCP test payloads. */
