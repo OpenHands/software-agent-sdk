@@ -429,11 +429,27 @@ class TerminalSandbox:
 
     def _build_seatbelt_profile(self) -> str:
         parent = self._seatbelt_path(self.work_dir.parent)
+        traversal_paths: set[Path] = set()
+        for allowed_path in (
+            self.work_dir,
+            *self.read_write_paths,
+            *self.read_only_paths,
+            *(Path(path) for path in PUBLIC_READ_ROOTS),
+        ):
+            traversal_paths.add(allowed_path)
+            traversal_paths.update(allowed_path.parents)
         return "\n".join(
             [
                 "(version 1)",
                 "(allow default)",
                 f'(deny file-read* (subpath "{parent}"))',
+                # Directory metadata is required to traverse an absolute path
+                # into an allowed child. This does not expose sibling contents.
+                *(
+                    f'(allow file-read-metadata (literal "'
+                    f'{self._seatbelt_path(path)}"))'
+                    for path in sorted(traversal_paths, key=lambda item: str(item))
+                ),
                 *(
                     f'(allow file-read* (subpath "{self._seatbelt_path(path)}"))'
                     for path in (*self.read_write_paths, *self.read_only_paths)
@@ -443,6 +459,8 @@ class TerminalSandbox:
                     for path in PUBLIC_READ_ROOTS
                 ),
                 "(deny file-write*)",
+                '(allow file-write* (literal "/dev/null"))',
+                '(allow file-write* (literal "/dev/tty"))',
                 *(
                     f'(allow file-write* (subpath "{self._seatbelt_path(path)}"))'
                     for path in self.read_write_paths

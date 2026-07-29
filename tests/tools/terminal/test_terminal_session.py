@@ -26,6 +26,9 @@ from openhands.tools.terminal.terminal import (
     TerminalCommandStatus,
     create_terminal_session,
 )
+from openhands.tools.terminal.terminal.terminal_session import (
+    _remove_command_prefix,
+)
 
 from .conftest import get_no_change_timeout_suffix
 
@@ -35,6 +38,38 @@ logger = get_logger(__name__)
 # Parametrize tests to run on all available terminal types
 terminal_types = ["tmux", "subprocess"]
 parametrize_terminal_types = pytest.mark.parametrize("terminal_type", terminal_types)
+
+
+def test_remove_command_prefix_handles_pty_wrapping() -> None:
+    command = "find public_data/exports -maxdepth 3 -type f"
+    wrapped_echo = (
+        "find public_data/exports -maxd\n"
+        "epth 3 -type f\r\n"
+        "public_data/exports/a.jpg\r\n"
+    )
+
+    assert _remove_command_prefix(wrapped_echo, command) == (
+        "public_data/exports/a.jpg\r\n"
+    )
+
+
+def test_remove_command_prefix_handles_ansi_cursor_redraw() -> None:
+    command = "find public_data/exports -maxdepth 3 -type f"
+    wrapped_echo = (
+        "\x1b[?2004hfind public_data/exports -maxd\x1b[12D\n"
+        "epth 3 -type f\x1b[K\x1b[?2004l\r\n"
+        "public_data/exports/a.jpg\r\n"
+    )
+
+    assert _remove_command_prefix(wrapped_echo, command) == (
+        "public_data/exports/a.jpg\r\n"
+    )
+
+
+def test_remove_command_prefix_keeps_unrelated_output() -> None:
+    output = "findings are ready\n"
+
+    assert _remove_command_prefix(output, "find files") == output
 
 
 @parametrize_terminal_types
@@ -57,6 +92,29 @@ def test_session_initialization(terminal_type):
     )
     session.initialize()
     session.close()
+
+
+def test_shell_startup_file_cannot_override_session_work_dir(
+    tmp_path, monkeypatch
+) -> None:
+    home = tmp_path / "home"
+    work_dir = tmp_path / "session workspace"
+    home.mkdir()
+    work_dir.mkdir()
+    (home / ".bashrc").write_text("cd /\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    session = create_terminal_session(
+        work_dir=str(work_dir),
+        terminal_type="subprocess",
+        sandbox_mode="off",
+    )
+    try:
+        session.initialize()
+        obs = session.execute(TerminalAction(command="pwd"))
+        assert obs.metadata.working_dir == str(work_dir)
+        assert obs.text.strip() == str(work_dir)
+    finally:
+        session.close()
 
 
 @parametrize_terminal_types
@@ -194,7 +252,9 @@ def test_truncation_preserves_metadata_in_llm_content(monkeypatch, terminal_type
 
     trailing = obs.metadata.suffix
     if obs.metadata.working_dir:
-        trailing += f"\n[Current working directory: {obs.metadata.working_dir}]"
+        trailing += (
+            f"\n[Persistent terminal cwd for next command: {obs.metadata.working_dir}]"
+        )
     if obs.metadata.py_interpreter_path:
         trailing += f"\n[Python interpreter: {obs.metadata.py_interpreter_path}]"
     if obs.metadata.exit_code != -1:

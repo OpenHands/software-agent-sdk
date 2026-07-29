@@ -41,6 +41,7 @@ from openhands.sdk.event import (
     CondensationRequest,
     Event,
     InterruptEvent,
+    LLMRetryEvent,
     MessageEvent,
     ObservationEvent,
     PauseEvent,
@@ -85,6 +86,7 @@ from openhands.sdk.tool.builtins import InvokeSkillTool
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.redact import redact_text_secrets
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -323,6 +325,13 @@ class LocalConversation(BaseConversation):
             # (see BaseConversation.compose_callbacks usage inside `with self._state:`
             # regions), so updating state here is thread-safe.
             self._state.events.append(e)
+            logger.info(
+                "[event] conversation_id=%s event_id=%s kind=%s event_index=%d",
+                self._state.id,
+                e.id,
+                e.__class__.__name__,
+                len(self._state.events) - 1,
+            )
             # Track user MessageEvent IDs here so hook callbacks (which may
             # synthesize or alter user messages) are captured in one place.
             if isinstance(e, MessageEvent) and e.source == "user":
@@ -1216,6 +1225,25 @@ class LocalConversation(BaseConversation):
         return LLMCallContext(
             prompt_cache_key=self._prompt_cache_key or conv_id,
             session_id=conv_id,
+            retry_listener=self._on_llm_retry,
+        )
+
+    def _on_llm_retry(
+        self,
+        attempt_number: int,
+        max_attempts: int,
+        error: BaseException | None,
+    ) -> None:
+        """Expose retry progress without adding content to the LLM transcript."""
+
+        detail = redact_text_secrets(str(error or "Unknown LLM error"))[:1000]
+        self._on_event(
+            LLMRetryEvent(
+                attempt=attempt_number,
+                max_attempts=max_attempts,
+                error_type=type(error).__name__ if error is not None else "LLMError",
+                detail=detail,
+            )
         )
 
     def _bind_conversation_context(self, llm: LLM) -> None:
@@ -1849,6 +1877,7 @@ class LocalConversation(BaseConversation):
                         # state-mutating tools (e.g. switch_llm) running on
                         # worker threads skip re-acquiring it instead of
                         # deadlocking while this await holds it (#3485).
+                        step_event_start = len(self._state.events)
                         self._step_holds_state_lock = True
                         step_t0 = time.monotonic()
                         try:
@@ -1859,14 +1888,19 @@ class LocalConversation(BaseConversation):
                             )
                         finally:
                             self._step_holds_state_lock = False
+                        step_event_ids = ",".join(
+                            str(event.id)
+                            for event in self._state.events[step_event_start:]
+                        )
                         iteration += 1
                         logger.info(
                             "[perf] conversation.arun iteration=%d "
-                            "step_ms=%.1f status=%s conversation_id=%s",
+                            "step_ms=%.1f status=%s conversation_id=%s event_ids=%s",
                             iteration,
                             (time.monotonic() - step_t0) * 1000,
                             self._state.execution_status,
                             self._state.id,
+                            step_event_ids or "-",
                         )
 
                         if (

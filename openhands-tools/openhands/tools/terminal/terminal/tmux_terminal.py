@@ -1,5 +1,7 @@
 """Tmux-based terminal backend implementation."""
 
+import os
+import shlex
 import time
 import uuid
 
@@ -125,8 +127,10 @@ class TmuxTerminal(TerminalInterface):
 
         # Configure bash to use simple PS1 and disable PS2
         # Disable history expansion to avoid ! mangling
+        work_dir = shlex.quote(os.path.abspath(self.work_dir))
         self.pane.send_keys(
-            f'set +H; export PROMPT_COMMAND=\'export PS1="{self.PS1}"\'; export PS2=""'
+            f"set +H; export PROMPT_COMMAND='export PS1=\"{self.PS1}\"'; "
+            f'export PS2=""; cd -- {work_dir}'
         )
         time.sleep(0.1)  # Wait for command to take effect
 

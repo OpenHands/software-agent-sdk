@@ -205,6 +205,7 @@ class LLMCallContext:
 
     prompt_cache_key: str | None = None
     session_id: str | None = None
+    retry_listener: Callable[[int, int, BaseException | None], None] | None = None
 
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
@@ -909,15 +910,27 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
     def _make_retry_decorator(
         self,
+        call_context: LLMCallContext | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Return a configured retry decorator using this LLM's retry settings."""
+        context_listener = (call_context or self._call_context).retry_listener
+
+        def listener(
+            attempt_number: int,
+            num_retries: int,
+            error: BaseException | None,
+        ) -> None:
+            self._retry_listener_fn(attempt_number, num_retries, error)
+            if context_listener is not None:
+                context_listener(attempt_number, num_retries, error)
+
         return self.retry_decorator(
             num_retries=self.num_retries,
             retry_exceptions=LLM_RETRY_EXCEPTIONS,
             retry_min_wait=self.retry_min_wait,
             retry_max_wait=self.retry_max_wait,
             retry_multiplier=self.retry_multiplier,
-            retry_listener=self._retry_listener_fn,
+            retry_listener=listener,
         )
 
     def _build_completion_result(self, resp: ModelResponse) -> LLMResponse:
@@ -1433,7 +1446,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             call_context=call_context,
         )
 
-        @self._make_retry_decorator()
+        @self._make_retry_decorator(call_context)
         def _one_attempt(**retry_kwargs: Any) -> ModelResponse:
             assert self._telemetry is not None
             self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
@@ -1522,7 +1535,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             call_context=call_context,
         )
 
-        @self._make_retry_decorator()
+        @self._make_retry_decorator(call_context)
         async def _one_attempt(**retry_kwargs: Any) -> ModelResponse:
             assert self._telemetry is not None
             self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
@@ -1631,7 +1644,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             call_context=call_context,
         )
 
-        @self._make_retry_decorator()
+        @self._make_retry_decorator(call_context)
         def _one_attempt(**retry_kwargs: Any) -> ResponsesAPIResponse:
             assert self._telemetry is not None
             self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
@@ -1767,7 +1780,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             call_context=call_context,
         )
 
-        @self._make_retry_decorator()
+        @self._make_retry_decorator(call_context)
         async def _one_attempt(
             **retry_kwargs: Any,
         ) -> ResponsesAPIResponse:

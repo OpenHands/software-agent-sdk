@@ -3,6 +3,7 @@
 import os
 import platform
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -197,8 +198,10 @@ class SubprocessTerminal(TerminalInterface):
         self._initialized: bool = True
 
         # Configure bash: disable history expansion, set up PS1/PS2 prompts
+        work_dir = shlex.quote(os.path.abspath(self.work_dir))
         init_cmd = (
-            f'set +H; export PROMPT_COMMAND=\'export PS1="{self.PS1}"\'; export PS2=""'
+            f"set +H; export PROMPT_COMMAND='export PS1=\"{self.PS1}\"'; "
+            f'export PS2=""; cd -- {work_dir}'
         ).encode("utf-8", "ignore")
 
         self._write_pty(init_cmd + ENTER)

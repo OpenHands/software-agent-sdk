@@ -29,6 +29,7 @@ from openhands.sdk.llm import (
     MetricsSnapshot,
     TextContent,
 )
+from openhands.sdk.llm.exceptions import LLMContextWindowExceedError
 
 
 def message_event(content: str) -> MessageEvent:
@@ -116,6 +117,16 @@ def test_default_values(mock_llm: LLM) -> None:
     # Default keep_first should be 2 (reduced from 4 to leave more room for
     # condensation)
     assert condenser.keep_first == 2
+
+
+def test_test_max_size_environment_override(mock_llm: LLM) -> None:
+    with patch(
+        "openhands.sdk.context.condenser.llm_summarizing_condenser.os.getenv",
+        return_value="12",
+    ):
+        condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=240, keep_first=2)
+
+    assert condenser.max_size == 12
 
 
 def test_should_condense(mock_llm: LLM) -> None:
@@ -343,6 +354,106 @@ def test_condense_with_token_limit_exceeded(mock_llm: LLM) -> None:
 
     # Verify forgotten events were calculated based on token reduction
     assert len(result.forgotten_event_ids) > 0
+
+
+def test_token_limit_defaults_to_agent_context_window(mock_llm: LLM) -> None:
+    condenser = LLMSummarizingCondenser(
+        llm=mock_llm,
+        max_size=1000,
+        auto_compact_ratio=0.9,
+    )
+    agent_llm = MagicMock(spec=LLM)
+    cast(Any, agent_llm).effective_max_input_tokens = 100
+    cast(MagicMock, agent_llm.get_token_count).return_value = 90
+    view = View.from_events([message_event("content")])
+
+    reasons = condenser.get_condensation_reasons(view, agent_llm=agent_llm)
+
+    assert reasons == {Reason.TOKENS}
+    assert condenser._effective_max_tokens(agent_llm) == 90
+
+
+def test_explicit_token_limit_overrides_agent_context_window(mock_llm: LLM) -> None:
+    condenser = LLMSummarizingCondenser(
+        llm=mock_llm,
+        max_tokens=80,
+        auto_compact_ratio=0.5,
+    )
+    agent_llm = MagicMock(spec=LLM)
+    cast(Any, agent_llm).effective_max_input_tokens = 1000
+
+    assert condenser._effective_max_tokens(agent_llm) == 80
+
+
+def test_summary_input_budget_drops_oldest_events(mock_llm: LLM) -> None:
+    cast(Any, mock_llm).effective_max_input_tokens = 100
+
+    def token_count(messages, **_kwargs):
+        prompt = messages[0].content[0].text
+        return 100 if "oldest event" in prompt else 10
+
+    cast(MagicMock, mock_llm.get_token_count).side_effect = token_count
+    condenser = LLMSummarizingCondenser(
+        llm=mock_llm,
+        summary_input_ratio=0.5,
+    )
+    events = [message_event("oldest event"), message_event("recent event")]
+
+    result = condenser._generate_condensation(events, summary_offset=0)
+
+    assert result.summary == "Summary of forgotten events"
+    messages = cast(MagicMock, mock_llm.completion).call_args.kwargs["messages"]
+    prompt = messages[0].content[0].text
+    assert "oldest event" not in prompt
+    assert "recent event" in prompt
+
+
+def test_summary_context_overflow_trims_oldest_event_and_retries(
+    mock_llm: LLM,
+) -> None:
+    success_response = cast(Any, mock_llm).completion.return_value
+    cast(MagicMock, mock_llm.completion).side_effect = [
+        LLMContextWindowExceedError(),
+        success_response,
+    ]
+    condenser = LLMSummarizingCondenser(llm=mock_llm)
+    events = [message_event("oldest event"), message_event("recent event")]
+
+    result = condenser._generate_condensation(events, summary_offset=0)
+
+    assert result.summary == "Summary of forgotten events"
+    completion_mock = cast(MagicMock, mock_llm.completion)
+    assert completion_mock.call_count == 2
+    first_prompt = (
+        completion_mock.call_args_list[0].kwargs["messages"][0].content[0].text
+    )
+    second_prompt = (
+        completion_mock.call_args_list[1].kwargs["messages"][0].content[0].text
+    )
+    assert "oldest event" in first_prompt
+    assert "oldest event" not in second_prompt
+    assert "recent event" in second_prompt
+
+
+@pytest.mark.asyncio
+async def test_async_summary_context_overflow_trims_and_retries(
+    mock_llm: LLM,
+) -> None:
+    success_response = cast(Any, mock_llm).completion.return_value
+    acompletion = cast(AsyncMock, mock_llm.acompletion)
+    acompletion.side_effect = [LLMContextWindowExceedError(), success_response]
+    condenser = LLMSummarizingCondenser(llm=mock_llm)
+    events = [message_event("oldest event"), message_event("recent event")]
+
+    result = await condenser._agenerate_condensation(events, summary_offset=0)
+
+    assert result.summary == "Summary of forgotten events"
+    assert acompletion.await_count == 2
+    first_prompt = acompletion.call_args_list[0].kwargs["messages"][0].content[0].text
+    second_prompt = acompletion.call_args_list[1].kwargs["messages"][0].content[0].text
+    assert "oldest event" in first_prompt
+    assert "oldest event" not in second_prompt
+    assert "recent event" in second_prompt
 
 
 def test_condense_with_request_and_events_reasons(mock_llm: LLM) -> None:

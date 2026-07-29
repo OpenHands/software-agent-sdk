@@ -32,6 +32,8 @@ from openhands.tools.terminal.utils.escape_filter import TerminalQueryFilter
 
 logger = get_logger(__name__)
 
+_ANSI_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
 
 class TerminalCommandStatus(Enum):
     """Status of a terminal command execution."""
@@ -44,7 +46,54 @@ class TerminalCommandStatus(Enum):
 
 
 def _remove_command_prefix(command_output: str, command: str) -> str:
-    return command_output.lstrip().removeprefix(command.lstrip()).lstrip()
+    output = command_output.lstrip()
+    expected = command.lstrip()
+    if not expected:
+        return output
+    if output.startswith(expected):
+        return output[len(expected) :].lstrip()
+
+    # PTYs render a long echoed command at the terminal width. Depending on
+    # the backend, the visual wrap can be captured as newlines or spaces in
+    # the middle of a token. Cursor movement and erase sequences may also be
+    # inserted while the interactive shell redraws the line. Match the echoed
+    # prefix while ignoring those display-only additions; never normalize the
+    # remaining command output.
+    output_index = 0
+    expected_index = 0
+
+    def skip_display_artifacts(index: int) -> int:
+        while index < len(output):
+            ansi_match = _ANSI_CSI_RE.match(output, index)
+            if ansi_match:
+                index = ansi_match.end()
+                continue
+            if output[index].isspace():
+                index += 1
+                continue
+            break
+        return index
+
+    while expected_index < len(expected):
+        if expected[expected_index].isspace():
+            original_index = output_index
+            output_index = skip_display_artifacts(output_index)
+            if output_index == original_index:
+                return output
+            while expected_index < len(expected) and expected[expected_index].isspace():
+                expected_index += 1
+            continue
+
+        output_index = skip_display_artifacts(output_index)
+        if (
+            output_index >= len(output)
+            or output[output_index] != expected[expected_index]
+        ):
+            return output
+        output_index += 1
+        expected_index += 1
+    output_index = skip_display_artifacts(output_index)
+    return output[output_index:].lstrip()
 
 
 def _remove_powershell_echo(command_output: str, command: str) -> str:

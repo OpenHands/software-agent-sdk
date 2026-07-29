@@ -40,7 +40,10 @@ class ConversationDefaultCallbackDummyAgent(AgentBase):
         )
 
 
-def test_default_callback_appends_on_init():
+def test_default_callback_appends_on_init(caplog):
+    caplog.set_level(
+        "INFO", logger="openhands.sdk.conversation.impl.local_conversation"
+    )
     agent = ConversationDefaultCallbackDummyAgent()
     events_seen: list[str] = []
 
@@ -54,6 +57,12 @@ def test_default_callback_appends_on_init():
     assert len(conversation.state.events) == 1
     assert isinstance(conversation.state.events[0], SystemPromptEvent)
     assert conversation.state.events[0].id in events_seen
+    event = conversation.state.events[0]
+    assert any(
+        f"event_id={event.id}" in record.message
+        and "kind=SystemPromptEvent" in record.message
+        for record in caplog.records
+    )
 
 
 def test_send_message_appends_once():

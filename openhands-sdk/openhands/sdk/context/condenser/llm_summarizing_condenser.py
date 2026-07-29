@@ -2,7 +2,7 @@ import os
 import time
 from collections.abc import Sequence
 from enum import Enum
-from typing import Final
+from typing import Any, Final
 
 from pydantic import Field, model_validator
 
@@ -20,12 +20,15 @@ from openhands.sdk.context.view import View
 from openhands.sdk.event.base import LLMConvertibleEvent
 from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm.exceptions import LLMContextWindowExceedError
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import observe
 from openhands.sdk.utils import maybe_truncate
 
 
 logger = get_logger(__name__)
+
+_TEST_MAX_SIZE_ENV: Final[str] = "OH_CONDENSER_TEST_MAX_SIZE"
 
 
 class Reason(Enum):
@@ -48,6 +51,21 @@ class LLMSummarizingCondenser(RollingCondenser):
     llm: LLM
     max_size: int = Field(default=240, gt=0)
     max_tokens: int | None = None
+    auto_compact_ratio: float = Field(default=0.9, gt=0.0, lt=1.0)
+    """Fraction of the agent model's input window at which token-based
+    condensation starts when ``max_tokens`` is not configured explicitly.
+    """
+
+    summary_input_ratio: float = Field(default=0.6, gt=0.0, lt=1.0)
+    """Maximum fraction of the summarizer model's input window used by the
+    condensation prompt. The remaining window is reserved for output and provider
+    overhead.
+    """
+
+    max_summary_retries: int = Field(default=5, ge=0)
+    """Maximum number of oldest-first trims after the summarizer reports context
+    overflow.
+    """
 
     keep_first: int = Field(default=2, ge=0)
     """Minimum number of events to preserve at the start of the view. The first
@@ -70,6 +88,29 @@ class LLMSummarizingCondenser(RollingCondenser):
     """When performing hard context reset, if the summarization fails, reduce the max
     size of each event string by this factor and retry.
     """
+
+    @model_validator(mode="before")
+    @classmethod
+    def _apply_test_max_size_override(cls, data: Any) -> Any:
+        raw_max_size = os.getenv(_TEST_MAX_SIZE_ENV)
+        if raw_max_size is None or not isinstance(data, dict):
+            return data
+
+        try:
+            max_size = int(raw_max_size)
+        except ValueError as e:
+            raise ValueError(f"{_TEST_MAX_SIZE_ENV} must be a positive integer") from e
+        if max_size <= 0:
+            raise ValueError(f"{_TEST_MAX_SIZE_ENV} must be a positive integer")
+
+        logger.warning(
+            "Overriding condenser max_size from %s to %d via %s. "
+            "This environment variable is intended for local testing only.",
+            data.get("max_size", "default"),
+            max_size,
+            _TEST_MAX_SIZE_ENV,
+        )
+        return {**data, "max_size": max_size}
 
     @model_validator(mode="after")
     def validate_keep_first_vs_max_size(self):
@@ -94,6 +135,23 @@ class LLMSummarizingCondenser(RollingCondenser):
     def handles_condensation_requests(self) -> bool:
         return True
 
+    def _effective_max_tokens(self, agent_llm: LLM | None) -> int | None:
+        if self.max_tokens is not None:
+            return self.max_tokens
+        if agent_llm is None:
+            return None
+
+        context_window = agent_llm.effective_max_input_tokens
+        if not isinstance(context_window, int) or isinstance(context_window, bool):
+            return None
+        return max(1, int(context_window * self.auto_compact_ratio))
+
+    def _summary_input_limit(self) -> int | None:
+        context_window = self.llm.effective_max_input_tokens
+        if not isinstance(context_window, int) or isinstance(context_window, bool):
+            return None
+        return max(1, int(context_window * self.summary_input_ratio))
+
     def get_condensation_reasons(
         self, view: View, agent_llm: LLM | None = None
     ) -> set[Reason]:
@@ -113,15 +171,16 @@ class LLMSummarizingCondenser(RollingCondenser):
         if view.unhandled_condensation_request:
             reasons.add(Reason.REQUEST)
 
-        # Reason 2: Token limit is provided and exceeded.
-        if self.max_tokens and agent_llm:
+        # Reason 2: An explicit or model-derived token limit is exceeded.
+        effective_max_tokens = self._effective_max_tokens(agent_llm)
+        if effective_max_tokens is not None and agent_llm is not None:
             total_tokens = get_total_token_count(view.events, agent_llm)
-            if total_tokens > self.max_tokens:
+            if total_tokens >= effective_max_tokens:
                 logger.info(
                     "Condenser token limit exceeded: total_tokens=%d max_tokens=%d "
                     "events=%d",
                     total_tokens,
-                    self.max_tokens,
+                    effective_max_tokens,
                     len(view),
                 )
                 reasons.add(Reason.TOKENS)
@@ -185,36 +244,40 @@ class LLMSummarizingCondenser(RollingCondenser):
         """
         assert len(forgotten_events) > 0, "No events to condense."
 
-        # Convert events to strings for the template
         event_strings = [
             maybe_truncate(str(forgotten_event), truncate_after=max_event_str_length)
             for forgotten_event in forgotten_events
         ]
+        event_strings = self._fit_summary_input(event_strings)
 
-        prompt = render_template(
-            os.path.join(os.path.dirname(__file__), "prompts"),
-            "summarizing_prompt.j2",
-            events=event_strings,
-        )
-
-        messages = [Message(role="user", content=[TextContent(text=prompt)])]
-
-        # Do not pass extra_body explicitly. The LLM handles forwarding
-        # litellm_extra_body only when it is non-empty.
-        try:
-            llm_t0 = time.monotonic()
-            llm_response = self.llm.completion(
-                messages=messages,
-            )
-            logger.info(
-                "[perf] condenser.summarize llm_ms=%.1f n_forgotten=%d",
-                (time.monotonic() - llm_t0) * 1000,
-                len(forgotten_events),
-            )
-        except Exception as e:
-            raise NoCondensationAvailableException(
-                f"Summarization LLM call failed: {e}"
-            ) from e
+        retries = 0
+        while True:
+            messages = self._summary_messages(event_strings)
+            try:
+                llm_t0 = time.monotonic()
+                # Do not pass extra_body explicitly. The LLM handles forwarding
+                # litellm_extra_body only when it is non-empty.
+                llm_response = self.llm.completion(messages=messages)
+                llm_ms = (time.monotonic() - llm_t0) * 1000
+                break
+            except LLMContextWindowExceedError as e:
+                if retries >= self.max_summary_retries or not self._trim_summary_input(
+                    event_strings
+                ):
+                    raise NoCondensationAvailableException(
+                        f"Summarization LLM call failed: {e}"
+                    ) from e
+                retries += 1
+                logger.warning(
+                    "Summarization context window exceeded; trimmed oldest summary "
+                    "input and retrying (%d/%d).",
+                    retries,
+                    self.max_summary_retries,
+                )
+            except Exception as e:
+                raise NoCondensationAvailableException(
+                    f"Summarization LLM call failed: {e}"
+                ) from e
 
         # Extract summary from the LLMResponse message
         summary = None
@@ -223,12 +286,72 @@ class LLMSummarizingCondenser(RollingCondenser):
             if isinstance(first_content, TextContent):
                 summary = first_content.text
 
-        return Condensation(
+        condensation = Condensation(
             forgotten_event_ids={event.id for event in forgotten_events},
             summary=summary,
             summary_offset=summary_offset,
             llm_response_id=llm_response.id,
         )
+        logger.info(
+            "[perf] condenser.summarize event_id=%s llm_response_id=%s "
+            "llm_ms=%.1f n_forgotten=%d n_summary_events=%d retries=%d",
+            condensation.id,
+            llm_response.id,
+            llm_ms,
+            len(forgotten_events),
+            len(event_strings),
+            retries,
+        )
+        return condensation
+
+    def _summary_messages(self, event_strings: Sequence[str]) -> list[Message]:
+        prompt = render_template(
+            os.path.join(os.path.dirname(__file__), "prompts"),
+            "summarizing_prompt.j2",
+            events=event_strings,
+        )
+        return [Message(role="user", content=[TextContent(text=prompt)])]
+
+    def _summary_token_count(self, event_strings: Sequence[str]) -> int | None:
+        token_count = self.llm.get_token_count(self._summary_messages(event_strings))
+        if not isinstance(token_count, int) or isinstance(token_count, bool):
+            return None
+        return token_count
+
+    def _fit_summary_input(self, event_strings: list[str]) -> list[str]:
+        limit = self._summary_input_limit()
+        if limit is None:
+            return event_strings
+
+        fitted = event_strings.copy()
+        while len(fitted) > 1:
+            token_count = self._summary_token_count(fitted)
+            if token_count is None or token_count <= limit:
+                return fitted
+            fitted.pop(0)
+
+        token_count = self._summary_token_count(fitted)
+        if token_count is None or token_count <= limit:
+            return fitted
+
+        while self._trim_summary_input(fitted):
+            token_count = self._summary_token_count(fitted)
+            if token_count is None or token_count <= limit:
+                break
+        return fitted
+
+    @staticmethod
+    def _trim_summary_input(event_strings: list[str]) -> bool:
+        if len(event_strings) > 1:
+            event_strings.pop(0)
+            return True
+        if not event_strings or len(event_strings[0]) <= 1:
+            return False
+
+        current = event_strings[0]
+        next_length = max(1, int(len(current) * 0.8))
+        event_strings[0] = maybe_truncate(current, truncate_after=next_length)
+        return event_strings[0] != current
 
     def _get_forgotten_events(
         self, view: View, agent_llm: LLM | None = None
@@ -261,13 +384,13 @@ class LLMSummarizingCondenser(RollingCondenser):
 
         if Reason.TOKENS in reasons:
             # Compute the number of tokens we need to eliminate to be under half the
-            # max_tokens value. We know max_tokens and the agent LLM are not None here
-            # because we can't have Reason.TOKENS without them.
-            assert self.max_tokens is not None
+            # effective limit. The limit may be explicit or derived from the model.
             assert agent_llm is not None
+            effective_max_tokens = self._effective_max_tokens(agent_llm)
+            assert effective_max_tokens is not None
 
             total_tokens = get_total_token_count(view.events, agent_llm)
-            tokens_to_reduce = total_tokens - (self.max_tokens // 2)
+            tokens_to_reduce = total_tokens - (effective_max_tokens // 2)
 
             suffix_events_to_keep.add(
                 get_suffix_length_for_token_reduction(
@@ -393,26 +516,34 @@ class LLMSummarizingCondenser(RollingCondenser):
             maybe_truncate(str(fe), truncate_after=max_event_str_length)
             for fe in forgotten_events
         ]
+        event_strings = self._fit_summary_input(event_strings)
 
-        prompt = render_template(
-            os.path.join(os.path.dirname(__file__), "prompts"),
-            "summarizing_prompt.j2",
-            events=event_strings,
-        )
-
-        messages = [Message(role="user", content=[TextContent(text=prompt)])]
-        try:
-            llm_t0 = time.monotonic()
-            llm_response = await self.llm.acompletion(messages=messages)
-            logger.info(
-                "[perf] condenser.asummarize llm_ms=%.1f n_forgotten=%d",
-                (time.monotonic() - llm_t0) * 1000,
-                len(forgotten_events),
-            )
-        except Exception as e:
-            raise NoCondensationAvailableException(
-                f"Summarization LLM call failed: {e}"
-            ) from e
+        retries = 0
+        while True:
+            messages = self._summary_messages(event_strings)
+            try:
+                llm_t0 = time.monotonic()
+                llm_response = await self.llm.acompletion(messages=messages)
+                llm_ms = (time.monotonic() - llm_t0) * 1000
+                break
+            except LLMContextWindowExceedError as e:
+                if retries >= self.max_summary_retries or not self._trim_summary_input(
+                    event_strings
+                ):
+                    raise NoCondensationAvailableException(
+                        f"Summarization LLM call failed: {e}"
+                    ) from e
+                retries += 1
+                logger.warning(
+                    "Async summarization context window exceeded; trimmed oldest "
+                    "summary input and retrying (%d/%d).",
+                    retries,
+                    self.max_summary_retries,
+                )
+            except Exception as e:
+                raise NoCondensationAvailableException(
+                    f"Summarization LLM call failed: {e}"
+                ) from e
 
         summary = None
         if llm_response.message.content:
@@ -420,12 +551,23 @@ class LLMSummarizingCondenser(RollingCondenser):
             if isinstance(first_content, TextContent):
                 summary = first_content.text
 
-        return Condensation(
+        condensation = Condensation(
             forgotten_event_ids={event.id for event in forgotten_events},
             summary=summary,
             summary_offset=summary_offset,
             llm_response_id=llm_response.id,
         )
+        logger.info(
+            "[perf] condenser.asummarize event_id=%s llm_response_id=%s "
+            "llm_ms=%.1f n_forgotten=%d n_summary_events=%d retries=%d",
+            condensation.id,
+            llm_response.id,
+            llm_ms,
+            len(forgotten_events),
+            len(event_strings),
+            retries,
+        )
+        return condensation
 
     async def aget_condensation(
         self, view: View, agent_llm: LLM | None = None

@@ -132,6 +132,7 @@ class ParallelToolExecutor:
 
         batch_t0 = time.monotonic()
         tool_names = ",".join(ae.tool_name for ae in action_events)
+        action_event_ids = ",".join(str(ae.id) for ae in action_events)
 
         def _resolve(ae: ActionEvent) -> ToolDefinition | None:
             return tools.get(ae.tool_name) if tools else None
@@ -164,7 +165,9 @@ class ParallelToolExecutor:
                 )
 
         logger.info(
-            "[perf] tools.aexecute_batch batch_ms=%.1f n_tools=%d tools=%s",
+            "[perf] tools.aexecute_batch action_event_ids=%s batch_ms=%.1f "
+            "n_tools=%d tools=%s",
+            action_event_ids,
             (time.monotonic() - batch_t0) * 1000,
             len(action_events),
             tool_names,
@@ -208,7 +211,8 @@ class ParallelToolExecutor:
         try:
             result = await fut
             logger.info(
-                "[perf] tools.arun_safe tool=%s tool_ms=%.1f",
+                "[perf] tools.arun_safe action_event_id=%s tool=%s tool_ms=%.1f",
+                action.id,
                 action.tool_name,
                 (time.monotonic() - tool_t0) * 1000,
             )
@@ -227,7 +231,9 @@ class ParallelToolExecutor:
                         exc_info=True,
                     )
             logger.info(
-                "[perf] tools.arun_safe tool=%s tool_ms=%.1f outcome=cancelled",
+                "[perf] tools.arun_safe action_event_id=%s tool=%s tool_ms=%.1f "
+                "outcome=cancelled",
+                action.id,
                 action.tool_name,
                 (time.monotonic() - tool_t0) * 1000,
             )
