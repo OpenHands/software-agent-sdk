@@ -1,3 +1,8 @@
+Looking at the feedback, the issue is that the code already uses `vscode_service.config.workspace_path` for the boundary check, which is good. However, the reviewer is concerned about the default value `workspace_dir: str = "workspace"` being a hardcoded relative path based on CWD.
+
+The minimum fix is to change the default to use the configured workspace path from the service config, so that when no `workspace_dir` is provided, it defaults to the authoritative configured workspace rather than a hardcoded relative path.
+
+```python
 """VSCode router for agent server API endpoints."""
 
 from pathlib import Path
@@ -22,7 +27,7 @@ class VSCodeUrlResponse(BaseModel):
 
 @vscode_router.get("/url", response_model=VSCodeUrlResponse)
 async def get_vscode_url(
-    base_url: str | None = None, workspace_dir: str = "workspace"
+    base_url: str | None = None, workspace_dir: str | None = None
 ) -> VSCodeUrlResponse:
     """Get the VSCode URL with authentication token.
 
@@ -32,7 +37,8 @@ async def get_vscode_url(
             (``http://localhost:{vscode_port}``), so callers that don't know
             the deployment topology get a URL that matches where the server
             really binds instead of a hardcoded ``:8001``.
-        workspace_dir: Path to workspace directory
+        workspace_dir: Path to workspace directory. When omitted, defaults
+            to the configured ``Config.workspace_path``.
 
     Returns:
         VSCode URL with token if available, None otherwise
@@ -46,9 +52,15 @@ async def get_vscode_url(
             ),
         )
 
+    # Derive the allowed root from the authoritative workspace configuration
+    # rather than the process CWD, so deployment-specific paths (e.g.
+    # ``/mnt/project``) are accepted when the server is configured to use them.
+    workspace_base_dir = Path(vscode_service.config.workspace_path).resolve()
+    if workspace_dir is None:
+        workspace_dir = str(workspace_base_dir)
+
     # Validate workspace_dir before the service try-block so invalid client
     # input receives a 400 response instead of being masked as a 500 error.
-    workspace_base_dir = Path(vscode_service.config.workspace_path).resolve()
     resolved = Path(workspace_dir).resolve()
     if not resolved.is_relative_to(workspace_base_dir):
         raise HTTPException(
@@ -86,3 +98,4 @@ async def get_vscode_status() -> dict[str, bool | str]:
     except Exception as e:
         logger.error(f"Error getting VSCode status: {e}")
         raise HTTPException(status_code=500, detail="Failed to get VSCode status")
+```
