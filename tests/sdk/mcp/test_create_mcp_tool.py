@@ -3,9 +3,11 @@
 import asyncio
 import logging
 import socket
+import sys
 import threading
 import time
 from collections.abc import Generator
+from pathlib import Path
 from typing import Literal
 from unittest.mock import MagicMock, patch
 
@@ -38,6 +40,19 @@ MCPTransport = Literal["http", "streamable-http", "sse"]
 
 def native_mcp_config(config: dict) -> dict:
     return coerce_mcp_config(config["mcpServers"])
+
+
+def stdio_fetch_mcp_config() -> dict:
+    repo_root = Path(__file__).resolve().parents[3]
+    return {
+        "mcpServers": {
+            "fetch": {
+                "command": sys.executable,
+                "args": ["-m", "tests.sdk.mcp.stdio_test_server"],
+                "cwd": str(repo_root),
+            }
+        }
+    }
 
 
 @pytest.mark.parametrize(
@@ -583,12 +598,9 @@ def test_create_mcp_tools_connection_to_nonexistent_server():
 
 def test_create_mcp_tools_stdio_server():
     """Test creating MCP tools from a native server map."""
-    mcp_config = {
-        "mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}
-    }
+    mcp_config = stdio_fetch_mcp_config()
 
-    # Use longer timeout for CI environments where uvx may need to download packages
-    tools = create_mcp_tools(native_mcp_config(mcp_config), timeout=120.0)
+    tools = create_mcp_tools(native_mcp_config(mcp_config), timeout=10.0)
     assert len(tools) == 1
     assert tools[0].name == "fetch"
 
