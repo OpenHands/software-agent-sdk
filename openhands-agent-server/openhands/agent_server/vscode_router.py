@@ -1,11 +1,7 @@
-Looking at the feedback, the issue is that the code already uses `vscode_service.config.workspace_path` for the boundary check, which is good. However, the reviewer is concerned about the default value `workspace_dir: str = "workspace"` being a hardcoded relative path based on CWD.
-
-The minimum fix is to change the default to use the configured workspace path from the service config, so that when no `workspace_dir` is provided, it defaults to the authoritative configured workspace rather than a hardcoded relative path.
-
-```python
 """VSCode router for agent server API endpoints."""
 
 from pathlib import Path
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -69,7 +65,28 @@ async def get_vscode_url(
         )
 
     try:
-        url = vscode_service.get_vscode_url(base_url, workspace_dir)
+        url = vscode_service.get_vscode_url(base_url, str(resolved))
+        # Rebuild the folder query parameter from the validated canonical path
+        # so that URL-encoded traversal sequences (e.g. ``%2e%2e``) cannot
+        # bypass the boundary check and reach the VSCode server verbatim.
+        if url is not None and "folder=" in url:
+            base, _, query = url.partition("?")
+            params: dict[str, str] = {}
+            token: str | None = None
+            for pair in query.split("&"):
+                if not pair:
+                    continue
+                key, sep, value = pair.partition("=")
+                if key == "folder":
+                    params["folder"] = str(resolved)
+                elif key == "token":
+                    token = value
+                else:
+                    params[key] = value
+            query_str = urlencode(params)
+            if token is not None:
+                query_str = f"{query_str}&token={token}" if query_str else f"token={token}"
+            url = f"{base}?{query_str}" if query_str else base
         return VSCodeUrlResponse(url=url)
     except HTTPException:
         raise
@@ -98,4 +115,3 @@ async def get_vscode_status() -> dict[str, bool | str]:
     except Exception as e:
         logger.error(f"Error getting VSCode status: {e}")
         raise HTTPException(status_code=500, detail="Failed to get VSCode status")
-```
