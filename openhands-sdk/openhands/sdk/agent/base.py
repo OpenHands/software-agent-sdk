@@ -133,7 +133,18 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     mcp_config: dict[str, MCPServer] = Field(
         default_factory=dict,
         description="Optional MCP servers to expose as tools.",
-        examples=[{"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}],
+        examples=[
+            {
+                "fetch": {
+                    "command": "uvx",
+                    "args": [
+                        "--with",
+                        "mcp==1.29.0",
+                        "mcp-server-fetch==2026.7.10",
+                    ],
+                }
+            }
+        ],
     )
     filter_tools_regex: str | None = Field(
         default=None,

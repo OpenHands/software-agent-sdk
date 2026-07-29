@@ -101,6 +101,33 @@ def test_settings_contract_exposes_typed_mcp_response_and_patch() -> None:
     ]["anyOf"]
 
 
+def test_mcp_server_crud_operations_use_canonical_contract_types() -> None:
+    document = build_public_openapi()
+    operations = document["paths"]["/api/settings/mcp/{settings_key}"]
+
+    create = operations["post"]
+    assert create["requestBody"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/MCPServer-Input"
+    }
+    assert create["responses"]["201"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/SettingsResponse"
+    }
+
+    patch = operations["patch"]
+    assert patch["requestBody"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/MCPServerPatch"
+    }
+    assert patch["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/SettingsResponse"
+    }
+
+    delete = operations["delete"]
+    assert "requestBody" not in delete
+    assert delete["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/SettingsResponse"
+    }
+
+
 def test_mcp_server_patch_tracks_every_canonical_server_field() -> None:
     """Keep the sparse patch contract in lock-step with the persisted model."""
     assert set(MCPServerPatch.model_fields) == set(MCPServer.model_fields)
