@@ -14,7 +14,16 @@ from openhands.sdk.mcp.config import coerce_mcp_config
 def fetch_tool():
     """Create a real MCP fetch tool using the mcp-server-fetch package."""
     mcp_config = {
-        "mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}
+        "mcpServers": {
+            "fetch": {
+                "command": "uvx",
+                "args": [
+                    "--with",
+                    "mcp==1.29.0",
+                    "mcp-server-fetch==2026.7.10",
+                ],
+            }
+        }
     }
     # Use longer timeout for CI environments where uvx may need to download packages
     tools = create_mcp_tools(coerce_mcp_config(mcp_config["mcpServers"]), timeout=120.0)

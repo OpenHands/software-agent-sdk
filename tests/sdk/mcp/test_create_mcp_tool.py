@@ -584,7 +584,16 @@ def test_create_mcp_tools_connection_to_nonexistent_server():
 def test_create_mcp_tools_stdio_server():
     """Test creating MCP tools from a native server map."""
     mcp_config = {
-        "mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}
+        "mcpServers": {
+            "fetch": {
+                "command": "uvx",
+                "args": [
+                    "--with",
+                    "mcp==1.29.0",
+                    "mcp-server-fetch==2026.7.10",
+                ],
+            }
+        }
     }
 
     # Use longer timeout for CI environments where uvx may need to download packages
