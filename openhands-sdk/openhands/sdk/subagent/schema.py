@@ -254,7 +254,18 @@ class AgentDefinition(BaseModel):
     mcp_config: dict[str, MCPServer] | None = Field(
         default=None,
         description="MCP servers for this agent.",
-        examples=[{"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}],
+        examples=[
+            {
+                "fetch": {
+                    "command": "uvx",
+                    "args": [
+                        "--with",
+                        "mcp==1.29.0",
+                        "mcp-server-fetch==2026.7.10",
+                    ],
+                }
+            }
+        ],
     )
     mcp_servers: dict[str, Any] | None = Field(
         default=None,
@@ -262,7 +273,18 @@ class AgentDefinition(BaseModel):
             "Deprecated compatibility alias for mcp_config. "
             "Use mcp_config for new clients."
         ),
-        examples=[{"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}],
+        examples=[
+            {
+                "fetch": {
+                    "command": "uvx",
+                    "args": [
+                        "--with",
+                        "mcp==1.29.0",
+                        "mcp-server-fetch==2026.7.10",
+                    ],
+                }
+            }
+        ],
     )
     profile_store_dir: str | None = Field(
         default=None,
