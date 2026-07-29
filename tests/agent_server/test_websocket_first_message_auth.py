@@ -386,6 +386,102 @@ async def test_bash_socket_ignores_redundant_auth_before_command(
     assert secret not in caplog.text
 
 
+@pytest.mark.asyncio
+async def test_bash_socket_validation_error_log_omits_payload(caplog):
+    from openhands.agent_server.bash_service import BashEventService
+    from openhands.agent_server.sockets import bash_events_socket
+
+    secret = "ghp_" + "j" * 36
+    caplog.set_level(logging.DEBUG, logger="openhands.agent_server.sockets")
+    ws = _make_mock_websocket()
+    ws.receive_json.side_effect = [
+        {"command": {"credential": secret}},
+        WebSocketDisconnect(),
+    ]
+    mock_bash_service = MagicMock(spec=BashEventService)
+    mock_bash_service.subscribe_to_events = AsyncMock(return_value=uuid4())
+    mock_bash_service.unsubscribe_from_events = AsyncMock(return_value=True)
+    mock_bash_service.start_bash_command = AsyncMock()
+
+    with (
+        patch(
+            "openhands.agent_server.sockets.bash_event_service",
+            mock_bash_service,
+        ),
+        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
+    ):
+        mock_config.return_value.session_api_keys = []
+        await bash_events_socket(
+            ws,
+            session_api_key=None,
+            resend_mode=None,
+            resend_all=False,
+        )
+
+    mock_bash_service.start_bash_command.assert_not_awaited()
+    mock_bash_service.unsubscribe_from_events.assert_awaited_once()
+    ws.send_json.assert_awaited_once()
+    assert ws.send_json.await_args.args[0]["code"] == "ValidationError"
+    assert "error_in_bash_event_subscription" in caplog.text
+    assert "ValidationError" in caplog.text
+    assert secret not in caplog.text
+    error_record = next(
+        record
+        for record in caplog.records
+        if "error_in_bash_event_subscription" in record.getMessage()
+    )
+    assert error_record.exc_info is None
+    assert error_record.stack_info is None
+
+
+@pytest.mark.asyncio
+async def test_bash_socket_error_send_failure_log_omits_exceptions(caplog):
+    from openhands.agent_server.bash_service import BashEventService
+    from openhands.agent_server.sockets import bash_events_socket
+
+    payload_secret = "ghp_" + "k" * 36
+    send_secret = "sk-oh-" + "l" * 64
+    caplog.set_level(logging.DEBUG, logger="openhands.agent_server.sockets")
+    ws = _make_mock_websocket()
+    ws.receive_json.return_value = {"command": {"credential": payload_secret}}
+    ws.send_json.side_effect = RuntimeError(f"send failed with {send_secret}")
+    mock_bash_service = MagicMock(spec=BashEventService)
+    mock_bash_service.subscribe_to_events = AsyncMock(return_value=uuid4())
+    mock_bash_service.unsubscribe_from_events = AsyncMock(return_value=True)
+    mock_bash_service.start_bash_command = AsyncMock()
+
+    with (
+        patch(
+            "openhands.agent_server.sockets.bash_event_service",
+            mock_bash_service,
+        ),
+        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
+    ):
+        mock_config.return_value.session_api_keys = []
+        await bash_events_socket(
+            ws,
+            session_api_key=None,
+            resend_mode=None,
+            resend_all=False,
+        )
+
+    mock_bash_service.start_bash_command.assert_not_awaited()
+    mock_bash_service.unsubscribe_from_events.assert_awaited_once()
+    ws.close.assert_awaited_once()
+    assert "error_sending_bash_error" in caplog.text
+    assert "ValidationError" in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert payload_secret not in caplog.text
+    assert send_secret not in caplog.text
+    error_record = next(
+        record
+        for record in caplog.records
+        if "error_sending_bash_error" in record.getMessage()
+    )
+    assert error_record.exc_info is None
+    assert error_record.stack_info is None
+
+
 @pytest.mark.parametrize(
     ("data", "expected"),
     [

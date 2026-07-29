@@ -455,7 +455,6 @@ async def bash_events_socket(
                 logger.info("Bash websocket disconnected")
                 return
             except Exception as e:
-                # Something went wrong - Tell the client so they can handle it
                 try:
                     error_event = BashError(
                         code=e.__class__.__name__,
@@ -463,16 +462,16 @@ async def bash_events_socket(
                     )
                     dumped = error_event.model_dump(mode="json")
                     await websocket.send_json(dumped)
-                    # Log after - if send event raises an error logging is handled
-                    # in the except block
-                    logger.exception(
-                        "error_in_bash_event_subscription", stack_info=True
+                    logger.error(
+                        "error_in_bash_event_subscription (error_type=%s)",
+                        type(e).__name__,
                     )
-                except Exception:
-                    # Sending the error event failed - likely a closed socket
-                    logger.info("Base websocket disconnected")
+                except Exception as send_error:
+                    logger.info("Bash websocket disconnected")
                     logger.debug(
-                        "error_sending_bash_error", exc_info=True, stack_info=True
+                        "error_sending_bash_error (error_type=%s, send_error_type=%s)",
+                        type(e).__name__,
+                        type(send_error).__name__,
                     )
                     await _safe_close_websocket(websocket)
                     return
