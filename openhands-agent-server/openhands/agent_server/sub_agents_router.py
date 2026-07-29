@@ -109,7 +109,7 @@ class SubAgentInfo(BaseModel):
     @field_serializer("mcp_config", "mcp_servers")
     def _serialize_mcp_config(
         self, value: dict[str, MCPServer] | None, info: SerializationInfo
-    ) -> dict[str, dict[str, Any]] | None:
+    ):
         if value is None:
             return None
         return dump_mcp_config(value, context=info.context or {})
