@@ -1020,7 +1020,7 @@ async def create_pyromind_conversation(
     The server assembles:
     - A codex-style base agent (prompt + tools) via ``get_codex_agent``
     - Pyromind KB-retrieval instructions layered on top via ``custom_instructions``
-    - Tools: codex set (terminal + apply_patch + task_tracker) + grep and
+    - Tools: codex set (terminal + apply_patch + update_plan) + grep and
       file_editor for KB search (grep finds files, file_editor views them)
     - Workspace pointing to a conversation-private directory
     """

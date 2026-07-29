@@ -381,6 +381,7 @@ async def test_pyromind_conversation_uses_conversation_workspace(tmp_path):
     assert "terminal" in tool_names
     assert "grep" in tool_names
     assert "file_editor" in tool_names
+    assert "update_plan" in tool_names
     assert SkillsListTool.__name__ not in tool_names
     assert SkillsReadTool.__name__ not in tool_names
     assert RunWorkflowTool.name not in tool_names

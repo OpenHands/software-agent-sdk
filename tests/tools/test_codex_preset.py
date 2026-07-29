@@ -85,11 +85,18 @@ def test_codex_prompt_renders_key_sections() -> None:
 
     assert "## General" in prompt
     assert "## Editing constraints" in prompt
-    assert "## Task tracking" in prompt
+    assert "## Planning" in prompt
+    assert "## `update_plan`" in prompt
+    assert prompt.index("## Editing constraints") < prompt.index("## Planning")
+    assert prompt.index("## Planning") < prompt.index("## Special user requests")
+    assert "meaningful, logically ordered steps" in prompt
+    assert "Do not let the plan go stale" in prompt
+    assert "multi-stage Pyromind workflow" in prompt
+    assert "complete plan snapshot" in prompt
     assert "## Presenting your work and final message" in prompt
     assert "## apply_patch" in prompt
     # Tool references must match the codex preset's actual tools.
-    assert "task_tracker" in prompt
+    assert "update_plan" in prompt
     assert "apply_patch" in prompt
     assert "terminal" in prompt
 
