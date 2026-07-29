@@ -2115,6 +2115,7 @@ def test_settings_and_secrets_api_with_live_server(server_env):
     Validates the full REST API for settings and secrets management
     through the live agent-server, including:
     - GET/PATCH settings
+    - POST/PATCH/DELETE MCP servers
     - GET/PUT/DELETE secrets
     - Secret name validation
     - Encryption/decryption round-trip
@@ -2137,6 +2138,26 @@ def test_settings_and_secrets_api_with_live_server(server_env):
         assert patch_resp.status_code == 200
         patched = patch_resp.json()
         assert patched["agent_settings"]["llm"]["model"] == "gpt-4o"
+
+        create_mcp_resp = client.post(
+            "/api/settings/mcp/docs",
+            json={"transport": "http", "url": "https://docs.example/mcp"},
+        )
+        assert create_mcp_resp.status_code == 201
+
+        patch_mcp_resp = client.patch(
+            "/api/settings/mcp/docs",
+            json={"description": "Documentation"},
+        )
+        assert patch_mcp_resp.status_code == 200
+        assert (
+            patch_mcp_resp.json()["agent_settings"]["mcp_config"]["docs"]["description"]
+            == "Documentation"
+        )
+
+        delete_mcp_resp = client.delete("/api/settings/mcp/docs")
+        assert delete_mcp_resp.status_code == 200
+        assert "docs" not in delete_mcp_resp.json()["agent_settings"]["mcp_config"]
 
         # ── Test secrets CRUD endpoints ────────────────────────────────────
         # List secrets (should be empty initially)

@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from functools import lru_cache
 from typing import cast
 
@@ -19,6 +20,7 @@ from openhands.agent_server.persistence import (
 from openhands.agent_server.persistence.models import SettingsUpdatePayload
 from openhands.agent_server.telemetry import notify_misc_settings_changed
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.settings import (
     ConversationSettings,
     SecretCreateRequest,
@@ -29,6 +31,7 @@ from openhands.sdk.settings import (
     SettingsUpdateRequest,
     export_agent_settings_schema,
 )
+from openhands.sdk.settings.api_models import MCPServerPatch
 
 
 logger = get_logger(__name__)
@@ -40,6 +43,7 @@ logger = get_logger(__name__)
 # while this router uses relative paths. The paths are intentionally separate
 # to match their respective contexts (router prefix vs full URL path).
 SETTINGS_PATH = ""  # -> /api/settings
+MCP_SERVER_PATH = "/mcp/{settings_key}"  # -> /api/settings/mcp/{settings_key}
 SECRETS_PATH = "/secrets"  # -> /api/settings/secrets
 SECRET_VALUE_PATH = "/secrets/{name}"  # -> /api/settings/secrets/{name}
 
@@ -198,9 +202,6 @@ async def update_settings(
     Raises:
         HTTPException: 400 if the update payload contains invalid values.
     """
-    config = get_config(request)
-    store = get_settings_store(config)
-
     update_data = payload.model_dump(exclude_none=True)
     # exclude_none drops an explicit null, so re-add nullable pointers when the
     # client set them (including to None) to allow clearing.
@@ -219,12 +220,27 @@ async def update_settings(
             ),
         )
 
+    return _apply_settings_update(
+        request,
+        cast(SettingsUpdatePayload, update_data),
+    )
+
+
+def _apply_settings_update(
+    request: Request,
+    update_data: SettingsUpdatePayload,
+    before_update: Callable[[PersistedSettings], None] | None = None,
+) -> SettingsResponse:
     # Apply updates atomically with file locking
     def apply_update(settings: PersistedSettings) -> PersistedSettings:
+        if before_update is not None:
+            before_update(settings)
         context = {"cipher": config.cipher} if config.cipher is not None else None
-        settings.update(cast(SettingsUpdatePayload, update_data), context=context)
+        settings.update(update_data, context=context)
         return settings
 
+    config = get_config(request)
+    store = get_settings_store(config)
     client_host = request.client.host if request.client else "unknown"
     try:
         settings = store.update(apply_update)
@@ -272,7 +288,7 @@ async def update_settings(
         logger.error("Settings update failed - file I/O error")
         raise HTTPException(status_code=500, detail="Failed to update settings")
 
-    # Don't expose secrets in PATCH response (consistent with GET behavior)
+    # Don't expose secrets in mutation responses (consistent with GET behavior)
     return SettingsResponse(
         agent_settings=settings.agent_settings.model_dump(mode="json"),
         conversation_settings=settings.conversation_settings.model_dump(mode="json"),
@@ -280,6 +296,87 @@ async def update_settings(
         active_profile=settings.active_profile,
         active_agent_profile_id=settings.active_agent_profile_id,
         misc_settings=settings.misc_settings,
+    )
+
+
+def _require_mcp_server_absent(settings: PersistedSettings, settings_key: str) -> None:
+    if settings_key in settings.agent_settings.mcp_config:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"MCP server '{settings_key}' already exists",
+        )
+
+
+def _require_mcp_server_present(settings: PersistedSettings, settings_key: str) -> None:
+    if settings_key not in settings.agent_settings.mcp_config:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"MCP server '{settings_key}' was not found",
+        )
+
+
+@settings_router.post(
+    MCP_SERVER_PATH,
+    response_model=SettingsResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_mcp_server(
+    request: Request,
+    settings_key: str,
+    server: MCPServer,
+) -> SettingsResponse:
+    """Create one named MCP server without replacing an existing map entry."""
+    server_data = server.model_dump(
+        mode="python",
+        context={"expose_secrets": "plaintext"},
+        exclude_none=True,
+        exclude_defaults=True,
+    )
+    update_data = cast(
+        SettingsUpdatePayload,
+        {"agent_settings_diff": {"mcp_config": {settings_key: server_data}}},
+    )
+    return _apply_settings_update(
+        request,
+        update_data,
+        lambda settings: _require_mcp_server_absent(settings, settings_key),
+    )
+
+
+@settings_router.patch(MCP_SERVER_PATH, response_model=SettingsResponse)
+async def patch_mcp_server(
+    request: Request,
+    settings_key: str,
+    patch: MCPServerPatch,
+) -> SettingsResponse:
+    """Sparsely update one existing named MCP server."""
+    patch_data = patch.model_dump(
+        mode="python",
+        context={"expose_secrets": "plaintext"},
+        exclude_unset=True,
+    )
+    update_data = cast(
+        SettingsUpdatePayload,
+        {"agent_settings_diff": {"mcp_config": {settings_key: patch_data}}},
+    )
+    return _apply_settings_update(
+        request,
+        update_data,
+        lambda settings: _require_mcp_server_present(settings, settings_key),
+    )
+
+
+@settings_router.delete(MCP_SERVER_PATH, response_model=SettingsResponse)
+async def delete_mcp_server(request: Request, settings_key: str) -> SettingsResponse:
+    """Delete one existing named MCP server without altering sibling entries."""
+    update_data = cast(
+        SettingsUpdatePayload,
+        {"agent_settings_diff": {"mcp_config": {settings_key: None}}},
+    )
+    return _apply_settings_update(
+        request,
+        update_data,
+        lambda settings: _require_mcp_server_present(settings, settings_key),
     )
 
 
