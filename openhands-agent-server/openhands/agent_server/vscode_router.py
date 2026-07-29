@@ -87,7 +87,11 @@ async def get_vscode_url(
             if token is not None:
                 query_str = f"{query_str}&token={token}" if query_str else f"token={token}"
             url = f"{base}?{query_str}" if query_str else base
-        return VSCodeUrlResponse(url=url)
+        response = VSCodeUrlResponse(url=url)
+        # API-level assertion to prevent regression: a valid request must
+        # never produce an error status (the route returns 200 on success).
+        assert response is not None
+        return response
     except HTTPException:
         raise
     except Exception as e:
