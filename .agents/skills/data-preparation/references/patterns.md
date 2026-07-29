@@ -1,7 +1,8 @@
 # DataFlow Pipeline 常见模式
 
 以下代码片段都已适配本环境（importlib shim + LazyFileStorage + 环境变量凭证）。
-仅展示 `main()` 函数体内的算子编排逻辑，导入和 shim 部分参见 SKILL.md 脚本约定。
+仅展示 `main()` 函数体内的算子编排逻辑，导入和 shim 部分参见
+[算子与脚本约定](operators.md) 及 [example_pipeline.py](example_pipeline.py)。
 注意：GeneralFilter 的 lambda 中使用了 `pd.to_numeric`，脚本顶部需 `import pandas as pd`。
 
 ---

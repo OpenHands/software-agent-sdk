@@ -18,6 +18,7 @@ from openhands.sdk.event.llm_convertible import (
     SystemPromptEvent,
     UserRejectObservation,
 )
+from openhands.sdk.event.llm_retry import LLMRetryEvent
 from openhands.sdk.event.resume_transcript import (
     RESUME_CONTEXT_MARKER,
     render_resume_transcript,
@@ -50,6 +51,7 @@ __all__ = [
     "ConversationStateUpdateEvent",
     "HookExecutionEvent",
     "LLMCompletionLogEvent",
+    "LLMRetryEvent",
     "EventID",
     "ToolCallID",
     "RESUME_CONTEXT_MARKER",

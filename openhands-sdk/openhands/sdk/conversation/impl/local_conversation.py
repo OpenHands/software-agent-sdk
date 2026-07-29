@@ -41,6 +41,7 @@ from openhands.sdk.event import (
     CondensationRequest,
     Event,
     InterruptEvent,
+    LLMRetryEvent,
     MessageEvent,
     ObservationEvent,
     PauseEvent,
@@ -85,6 +86,7 @@ from openhands.sdk.tool.builtins import InvokeSkillTool
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.redact import redact_text_secrets
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -1216,6 +1218,25 @@ class LocalConversation(BaseConversation):
         return LLMCallContext(
             prompt_cache_key=self._prompt_cache_key or conv_id,
             session_id=conv_id,
+            retry_listener=self._on_llm_retry,
+        )
+
+    def _on_llm_retry(
+        self,
+        attempt_number: int,
+        max_attempts: int,
+        error: BaseException | None,
+    ) -> None:
+        """Expose retry progress without adding content to the LLM transcript."""
+
+        detail = redact_text_secrets(str(error or "Unknown LLM error"))[:1000]
+        self._on_event(
+            LLMRetryEvent(
+                attempt=attempt_number,
+                max_attempts=max_attempts,
+                error_type=type(error).__name__ if error is not None else "LLMError",
+                detail=detail,
+            )
         )
 
     def _bind_conversation_context(self, llm: LLM) -> None:

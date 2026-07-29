@@ -1,4 +1,7 @@
 import json
+import platform
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -164,9 +167,13 @@ def test_seatbelt_profile_denies_sibling_directory(
     assert sandbox._seatbelt_profile is not None
     profile = sandbox._seatbelt_profile.read_text()
     assert f'(deny file-read* (subpath "{tmp_path}"))' in profile
+    assert f'(allow file-read-metadata (literal "{tmp_path}"))' in profile
+    assert f'(allow file-read-metadata (literal "{current}"))' in profile
     assert f'(allow file-read* (subpath "{current}"))' in profile
     assert '(allow file-read* (subpath "/agent-server/knowledge"))' in profile
     assert '(allow file-read* (subpath "/agent-server/.agents/skills"))' in profile
+    assert '(allow file-write* (literal "/dev/null"))' in profile
+    assert '(allow file-write* (literal "/dev/tty"))' in profile
     assert sandbox.wrap_command(["/bin/bash", "-i"])[:3] == [
         "/usr/bin/sandbox-exec",
         "-f",
@@ -203,11 +210,83 @@ def test_seatbelt_profile_blocks_meta_json_in_conversation_workspace(
     events_path = str(conv_dir / "events")
     public_data_path = str(conv_dir / "public_data")
     assert f'(deny file-read* (subpath "{tmp_path / "conversations"}"))' in profile
+    assert (
+        f'(allow file-read-metadata (literal "{tmp_path / "conversations"}"))'
+        in profile
+    )
+    assert f'(allow file-read-metadata (literal "{conv_dir}"))' in profile
     assert f'(allow file-read* (subpath "{events_path}"))' in profile
     assert f'(allow file-read* (subpath "{public_data_path}"))' in profile
     meta_path = str(conv_dir / "meta.json")
     assert f'(allow file-read* (subpath "{meta_path}"))' not in profile
     assert f'(allow file-read* (subpath "{conv_dir}"))' not in profile
+
+
+@pytest.mark.skipif(
+    platform.system() != "Darwin" or shutil.which("sandbox-exec") is None,
+    reason="requires macOS sandbox-exec",
+)
+def test_seatbelt_allows_persistent_shell_paths_but_denies_siblings(
+    tmp_path: Path,
+) -> None:
+    conversations = tmp_path / "conversations"
+    conv_dir = conversations / "current"
+    public_data = conv_dir / "public_data"
+    events = conv_dir / "events"
+    sibling = conversations / "sibling"
+    public_data.mkdir(parents=True)
+    events.mkdir()
+    sibling.mkdir()
+    (sibling / "secret.txt").write_text("secret")
+    sandbox = TerminalSandbox(
+        str(conv_dir),
+        "required",
+        read_only_paths=("events",),
+        read_write_paths=("public_data",),
+    )
+    sandbox.prepare()
+    try:
+        allowed = subprocess.run(
+            sandbox.wrap_command(
+                [
+                    "/bin/bash",
+                    "--noprofile",
+                    "--norc",
+                    "-c",
+                    (f'pwd; echo ok 2>/dev/null; mkdir -p "{public_data / "nested"}"'),
+                ]
+            ),
+            cwd=conv_dir,
+            capture_output=True,
+            text=True,
+        )
+        if (
+            allowed.returncode == 71
+            and "sandbox_apply: Operation not permitted" in allowed.stderr
+        ):
+            pytest.skip("current process cannot create a nested Seatbelt sandbox")
+        assert allowed.returncode == 0, allowed.stderr
+        assert str(conv_dir) in allowed.stdout
+        assert (public_data / "nested").is_dir()
+
+        denied = subprocess.run(
+            sandbox.wrap_command(
+                [
+                    "/bin/bash",
+                    "--noprofile",
+                    "--norc",
+                    "-c",
+                    f'cat "{sibling / "secret.txt"}"',
+                ]
+            ),
+            cwd=conv_dir,
+            capture_output=True,
+            text=True,
+        )
+        assert denied.returncode != 0
+        assert "secret" not in denied.stdout
+    finally:
+        sandbox.cleanup()
 
 
 def test_sandbox_resolves_relative_subpaths_against_work_dir(

@@ -27,6 +27,11 @@ export OPENAI_API_KEY
 # LiteLLM requires a provider prefix (e.g. openai/) for custom OpenAI-compatible endpoints.
 export LLM_MODEL="${LLM_MODEL:-openai/glm-5.2-fp8}"
 
+export DF_API_BASE_URL=https://openrouter.ai/api/v1
+export DF_API_URL=https://openrouter.ai/api/v1/chat/completions
+export DF_MODEL_NAME=google/gemma-4-31b-it
+export DF_API_KEY="${OPENROUTER_API_KEY}"
+
 # ----------------------------------------------------------
 # Agent Server Configuration
 # ----------------------------------------------------------

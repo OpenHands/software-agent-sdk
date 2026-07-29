@@ -19,6 +19,7 @@ dependencies = [
     "py-landlock>=0.1.1; sys_platform == 'linux'",
     "pyromind-sdk==0.1.7rc1; python_full_version < '3.14'",
     "huggingface_hub>=0.25",
+    "pillow>=12.1.1",
     "pyarrow>=17.0",
 ]
 

@@ -6,6 +6,8 @@ tmux session, enabling concurrent command execution across panes.
 
 from __future__ import annotations
 
+import os
+import shlex
 import threading
 import time
 import uuid
@@ -204,8 +206,10 @@ class TmuxPanePool:
 
         # Configure PS1 (same as TmuxTerminal.initialize)
         ps1 = terminal.PS1
+        work_dir = shlex.quote(os.path.abspath(self.work_dir))
         active_pane.send_keys(
-            f'set +H; export PROMPT_COMMAND=\'export PS1="{ps1}"\'; export PS2=""'
+            f"set +H; export PROMPT_COMMAND='export PS1=\"{ps1}\"'; "
+            f'export PS2=""; cd -- {work_dir}'
         )
         time.sleep(0.1)
         terminal._initialized = True

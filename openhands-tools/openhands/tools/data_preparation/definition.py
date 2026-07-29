@@ -7,8 +7,9 @@ These tools implement the local data-preparation loop:
 2. ``df_run_pipeline`` executes an agent-authored DataFlow pipeline script in
    an isolated subprocess, injecting LLM credentials from the conversation's
    own LLM config (never hardcoded in the script).
-3. ``df_convert`` turns processed JSONL into Pyromind-supported ``messages``
-   or ``preference`` (DPO) format, ready for ``upload_file_to_pyromind``.
+3. ``df_convert`` turns processed JSONL into Pyromind-supported ``messages``,
+   ``preference`` (DPO), embedded TRL vision SFT, or flat path-based vision
+   SFT format, ready for upload.
 """
 
 from __future__ import annotations
@@ -17,11 +18,12 @@ import json
 import logging
 import os
 from collections.abc import Sequence
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Literal, Self
 
 import httpx
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from rich.text import Text
 
 from openhands.sdk.conversation.state import ConversationState
@@ -39,6 +41,7 @@ from openhands.tools.data_preparation.runner import (
     check_dataflow_installed,
     resolve_dataflow_python,
     run_dataflow_python,
+    summarize_dataflow_env,
 )
 from openhands.tools.utils import default_path_access_policy
 
@@ -391,9 +394,9 @@ class DfRunPipelineAction(Action):
     args: list[str] = Field(
         default_factory=list,
         description=(
-            "Positional arguments forwarded to the pipeline script, e.g. "
-            "['sample.jsonl', './cache']. The pipeline contract is "
-            "`pipeline.py <input.jsonl> [cache_dir]`."
+            "Positional arguments forwarded to the pipeline script. Their meaning "
+            "is defined by that script; multimodal templates use input path, "
+            "output path, and optional limit."
         ),
     )
     timeout: int = Field(default=3600, ge=60, le=7200, description="Timeout seconds.")
@@ -458,7 +461,14 @@ class DfRunPipelineExecutor(ToolExecutor):
                 is_error=True,
             )
 
-        env_extra = build_dataflow_env(conversation)
+        try:
+            env_extra = build_dataflow_env(conversation)
+        except ValueError as exc:
+            return DfRunPipelineObservation.from_text(
+                text=f"Invalid DataFlow model configuration: {exc}",
+                is_error=True,
+            )
+        config_summary = summarize_dataflow_env(env_extra)
         rc, stdout, stderr = run_dataflow_python(
             python,
             [str(pipeline), *action.args],
@@ -468,6 +478,7 @@ class DfRunPipelineExecutor(ToolExecutor):
         )
         return DfRunPipelineObservation.from_text(
             text=(
+                f"DataFlow model: {config_summary}\n"
                 f"exit_code={rc}\n"
                 f"--- stdout (tail) ---\n{stdout[-_LOG_TAIL_CHARS:]}\n"
                 f"--- stderr (tail) ---\n{stderr[-_LOG_TAIL_CHARS:]}"
@@ -489,12 +500,10 @@ class DfRunPipelineTool(ToolDefinition[DfRunPipelineAction, DfRunPipelineObserva
         return [
             cls(
                 description=(
-                    "Run an agent-authored DataFlow pipeline script in an "
-                    "isolated subprocess. LLM credentials from the conversation's "
-                    "own LLM config are injected as DF_API_KEY / DF_API_URL / "
-                    "DF_MODEL_NAME environment variables — the script must read "
-                    "them, never hardcode secrets. Contract: `pipeline.py "
-                    "<input.jsonl> [cache_dir]`; relative paths resolve against "
+                    "Run an agent-authored DataFlow script in an isolated "
+                    "subprocess. The script reads server-provided DF_* model "
+                    "settings and returns only textual status/output; image content "
+                    "is read by the DataFlow VLM. Relative arguments resolve from "
                     "the pipeline directory."
                 ),
                 action_type=DfRunPipelineAction,
@@ -523,13 +532,22 @@ class DfConvertAction(Action):
     )
     output_path: str = Field(
         description=(
-            "Workspace-relative output JSONL path, e.g."
-            " 'public_data/data-preparation/messages.jsonl'."
+            "Workspace-relative output path. Use .jsonl for messages/preference "
+            "or .parquet for trl_vision_sft/vision_sft_flat."
         )
     )
-    format: Literal["messages", "preference"] = Field(
+    format: Literal[
+        "messages",
+        "preference",
+        "trl_vision_sft",
+        "vision_sft_flat",
+    ] = Field(
         default="messages",
-        description="'messages' for SFT chat format; 'preference' for DPO pairs.",
+        description=(
+            "'messages' for text SFT, 'preference' for DPO pairs, or "
+            "'trl_vision_sft' for embedded multimodal conversational SFT, or "
+            "'vision_sft_flat' for path-based flat visual SFT."
+        ),
     )
     text_field: str = Field(default="text", description="User-turn field.")
     reasoning_field: str = Field(
@@ -544,26 +562,83 @@ class DfConvertAction(Action):
     )
     chosen_field: str = Field(default="chosen")
     rejected_field: str = Field(default="rejected")
+    prompt_field: str = Field(
+        default="training_prompt",
+        description="User prompt field for trl_vision_sft.",
+    )
+    response_field: str = Field(
+        default="training_response",
+        description="Assistant response field for trl_vision_sft.",
+    )
+    images_field: str = Field(
+        default="image_paths",
+        description="Ordered image path list field for trl_vision_sft.",
+    )
+    image_labels_field: str = Field(
+        default="image_labels",
+        description="Optional ordered image role list field for trl_vision_sft.",
+    )
+    id_field: str = Field(
+        default="sample_id",
+        description="Unique sample identifier field for vision_sft_flat.",
+    )
+    system_prompt_field: str = Field(
+        default="training_system_prompt",
+        description="System prompt field for vision_sft_flat.",
+    )
 
-    @field_validator("input_path", "output_path")
+    @field_validator("input_path")
     @classmethod
-    def _validate_jsonl(cls, value: str) -> str:
+    def _validate_input_jsonl(cls, value: str) -> str:
         if not value.endswith(".jsonl"):
-            raise ValueError("path must end with '.jsonl'")
+            raise ValueError("input_path must end with '.jsonl'")
         return value
+
+    @model_validator(mode="after")
+    def _validate_output_suffix(self) -> Self:
+        expected = (
+            ".parquet"
+            if self.format in {"trl_vision_sft", "vision_sft_flat"}
+            else ".jsonl"
+        )
+        if not self.output_path.endswith(expected):
+            raise ValueError(
+                f"output_path must end with '{expected}' for format '{self.format}'"
+            )
+        return self
 
 
 class DfConvertObservation(Observation):
     converted: int = Field(default=0)
     skipped: int = Field(default=0)
+    output_path: str = Field(default="")
+    columns: list[str] = Field(default_factory=list)
+    column_schema: dict[str, str] = Field(default_factory=dict)
+    image_path_mode: str | None = Field(default=None)
 
     @property
     def to_llm_content(self) -> Sequence[TextContent]:
-        return [TextContent(text=f"converted={self.converted} skipped={self.skipped}")]
+        return [
+            TextContent(
+                text=(
+                    f"converted={self.converted} skipped={self.skipped} "
+                    f"output_path={self.output_path} "
+                    f"column_schema={self.column_schema}"
+                    + (
+                        f" image_path_mode={self.image_path_mode}"
+                        if self.image_path_mode
+                        else ""
+                    )
+                )
+            )
+        ]
 
     @property
     def visualize(self) -> Text:
-        return Text(f"Converted {self.converted} records ({self.skipped} skipped)")
+        return Text(
+            f"Converted {self.converted} records ({self.skipped} skipped)"
+            f" -> {self.output_path}; columns={self.columns}"
+        )
 
 
 def _to_messages(
@@ -592,6 +667,336 @@ def _to_preference(
     if not prompt or not chosen or not rejected:
         return None
     return {"prompt": prompt, "chosen": chosen, "rejected": rejected}
+
+
+def _stringify_training_value(value: Any) -> str | None:
+    if isinstance(value, str):
+        value = value.strip()
+        return value or None
+    if value is None:
+        return None
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _validate_tagged_training_response(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("training response must be a string")
+    if (
+        value.count("<think>") != 1
+        or value.count("</think>") != 1
+        or value.count("<answer>") != 1
+        or value.count("</answer>") != 1
+    ):
+        raise ValueError("training response must contain each required tag once")
+    prefix = "<think>"
+    separator = "</think>\n\n<answer>"
+    suffix = "</answer>"
+    if not value.startswith(prefix) or not value.endswith(suffix):
+        raise ValueError("training response has invalid tag order")
+    body = value[len(prefix) : -len(suffix)]
+    if separator not in body:
+        raise ValueError("training response has invalid tag order")
+    think, answer = body.split(separator, maxsplit=1)
+    if not think.strip() or not answer.strip():
+        raise ValueError("training response think and answer must be non-empty")
+    return value
+
+
+def _resolve_training_image(
+    source: Path,
+    raw_path: Any,
+    workspace_root: Path,
+) -> dict[str, Any]:
+    from PIL import Image
+
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        raise ValueError("image path must be a non-empty string")
+    candidate = Path(raw_path)
+    resolved = (
+        candidate.resolve()
+        if candidate.is_absolute()
+        else (source.parent / candidate).resolve()
+    )
+    try:
+        resolved.relative_to(workspace_root)
+    except ValueError as exc:
+        raise ValueError(f"image path is outside the workspace: {raw_path}") from exc
+    if not resolved.is_file():
+        raise ValueError(f"missing image: {raw_path}")
+    if resolved.suffix.lower() not in {".jpg", ".jpeg", ".png"}:
+        raise ValueError(f"unsupported image format: {raw_path}")
+    payload = resolved.read_bytes()
+    with Image.open(BytesIO(payload)) as image:
+        image.verify()
+    return {"bytes": payload, "path": resolved.name}
+
+
+def _validate_flat_training_image(
+    source: Path,
+    raw_path: Any,
+    workspace_root: Path,
+) -> str:
+    from PIL import Image
+
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        raise ValueError("image path must be a non-empty string")
+    candidate = Path(raw_path)
+    resolved = (
+        candidate.resolve()
+        if candidate.is_absolute()
+        else (source.parent / candidate).resolve()
+    )
+    try:
+        resolved.relative_to(workspace_root)
+    except ValueError as exc:
+        raise ValueError(f"image path is outside the workspace: {raw_path}") from exc
+    if not resolved.is_file():
+        raise ValueError(f"missing image: {raw_path}")
+    with Image.open(resolved) as image:
+        image.verify()
+    return raw_path
+
+
+def _to_trl_vision_sft(
+    record: dict[str, Any],
+    action: DfConvertAction,
+    *,
+    source: Path,
+    workspace_root: Path,
+) -> dict[str, Any] | None:
+    prompt = _stringify_training_value(record.get(action.prompt_field))
+    response = _stringify_training_value(record.get(action.response_field))
+    raw_images = record.get(action.images_field)
+    if not prompt or not response or not isinstance(raw_images, list) or not raw_images:
+        return None
+
+    raw_labels = record.get(action.image_labels_field)
+    if raw_labels is None:
+        labels = [""] * len(raw_images)
+    elif isinstance(raw_labels, list) and len(raw_labels) == len(raw_images):
+        labels = [
+            str(label).strip() if label is not None else "" for label in raw_labels
+        ]
+    else:
+        return None
+
+    images = [
+        _resolve_training_image(source, image_path, workspace_root)
+        for image_path in raw_images
+    ]
+    user_content: list[dict[str, str | None]] = [{"type": "text", "text": prompt}]
+    for label in labels:
+        if label:
+            user_content.append({"type": "text", "text": label})
+        user_content.append({"type": "image", "text": None})
+
+    messages: list[dict[str, Any]] = []
+    if action.system_prompt:
+        messages.append(
+            {
+                "role": "system",
+                "content": [{"type": "text", "text": action.system_prompt}],
+            }
+        )
+    messages.extend(
+        [
+            {"role": "user", "content": user_content},
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": response}],
+            },
+        ]
+    )
+    return {"messages": messages, "images": images}
+
+
+def _trl_vision_schema():
+    import pyarrow as pa
+
+    image = pa.struct(
+        [
+            pa.field("bytes", pa.binary()),
+            pa.field("path", pa.string()),
+        ]
+    )
+    content = pa.struct(
+        [
+            pa.field("type", pa.string()),
+            pa.field("text", pa.string()),
+        ]
+    )
+    message = pa.struct(
+        [
+            pa.field("role", pa.string()),
+            pa.field("content", pa.list_(content)),
+        ]
+    )
+    features = {
+        "images": {"feature": {"_type": "Image"}, "_type": "List"},
+        "messages": {
+            "feature": {
+                "role": {"dtype": "string", "_type": "Value"},
+                "content": {
+                    "feature": {
+                        "type": {"dtype": "string", "_type": "Value"},
+                        "text": {"dtype": "string", "_type": "Value"},
+                    },
+                    "_type": "List",
+                },
+            },
+            "_type": "List",
+        },
+    }
+    metadata = {
+        b"huggingface": json.dumps(
+            {"info": {"features": features}},
+            separators=(",", ":"),
+        ).encode()
+    }
+    return pa.schema(
+        [
+            pa.field("messages", pa.list_(message)),
+            pa.field("images", pa.list_(image)),
+        ],
+        metadata=metadata,
+    )
+
+
+def _convert_trl_vision_records(
+    source: Path,
+    target: Path,
+    action: DfConvertAction,
+    *,
+    workspace_root: Path,
+) -> tuple[int, int]:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    rows: list[dict[str, Any]] = []
+    skipped = 0
+    with source.open("r", encoding="utf-8") as reader:
+        for line in reader:
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            out = _to_trl_vision_sft(
+                record,
+                action,
+                source=source,
+                workspace_root=workspace_root,
+            )
+            if out is None:
+                skipped += 1
+                continue
+            rows.append(out)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    table = pa.Table.from_pylist(rows, schema=_trl_vision_schema())
+    pq.write_table(table, target)
+    reloaded = pq.read_table(target)
+    if reloaded.num_rows != len(rows):
+        raise ValueError(
+            "Parquet verification failed: "
+            f"wrote {len(rows)} rows but reloaded {reloaded.num_rows}"
+        )
+    return len(rows), skipped
+
+
+def _vision_sft_flat_schema():
+    import pyarrow as pa
+
+    return pa.schema(
+        [
+            pa.field("id", pa.string(), nullable=False),
+            pa.field("image_path", pa.string(), nullable=False),
+            pa.field("images", pa.list_(pa.string()), nullable=False),
+            pa.field("system_prompt", pa.string(), nullable=False),
+            pa.field("user_prompt", pa.string(), nullable=False),
+            pa.field("gt", pa.string(), nullable=False),
+        ]
+    )
+
+
+def _required_string_field(record: dict[str, Any], field: str) -> str:
+    value = record.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} must be a non-empty string")
+    return value
+
+
+def _convert_vision_sft_flat_records(
+    source: Path,
+    target: Path,
+    action: DfConvertAction,
+    *,
+    workspace_root: Path,
+) -> tuple[int, int]:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    rows: list[dict[str, Any]] = []
+    sample_ids: set[str] = set()
+    with source.open("r", encoding="utf-8") as reader:
+        for line_number, line in enumerate(reader, start=1):
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            if not isinstance(record, dict):
+                raise ValueError(f"line {line_number}: record must be an object")
+
+            sample_id = _required_string_field(record, action.id_field)
+            if sample_id in sample_ids:
+                raise ValueError(f"duplicate {action.id_field}: {sample_id}")
+            sample_ids.add(sample_id)
+
+            raw_images = record.get(action.images_field)
+            if not isinstance(raw_images, list) or not raw_images:
+                raise ValueError(
+                    f"line {line_number}: {action.images_field} must be a "
+                    "non-empty list"
+                )
+            images = [
+                _validate_flat_training_image(source, raw_path, workspace_root)
+                for raw_path in raw_images
+            ]
+            response = _validate_tagged_training_response(
+                record.get(action.response_field)
+            )
+            rows.append(
+                {
+                    "id": sample_id,
+                    "image_path": images[0],
+                    "images": images,
+                    "system_prompt": _required_string_field(
+                        record, action.system_prompt_field
+                    ),
+                    "user_prompt": _required_string_field(record, action.prompt_field),
+                    "gt": response,
+                }
+            )
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    expected_columns = [
+        "id",
+        "image_path",
+        "images",
+        "system_prompt",
+        "user_prompt",
+        "gt",
+    ]
+    table = pa.Table.from_pylist(rows, schema=_vision_sft_flat_schema())
+    pq.write_table(table, target)
+    reloaded = pq.read_table(target)
+    if reloaded.num_rows != len(rows):
+        raise ValueError(
+            "Parquet verification failed: "
+            f"wrote {len(rows)} rows but reloaded {reloaded.num_rows}"
+        )
+    if reloaded.column_names != expected_columns:
+        raise ValueError(
+            "Parquet verification failed: "
+            f"expected columns {expected_columns}, got {reloaded.column_names}"
+        )
+    return len(rows), 0
 
 
 def _convert_records(
@@ -627,14 +1032,81 @@ class DfConvertExecutor(ToolExecutor):
         try:
             source = _resolve_workspace_path(conversation, action.input_path)
             target = _resolve_output_path(conversation, action.output_path)
-            converted, skipped = _convert_records(source, target, action)
+            if action.format in {"trl_vision_sft", "vision_sft_flat"}:
+                workspace_root = Path(conversation.workspace.working_dir).resolve()
+                if action.format == "trl_vision_sft":
+                    converted, skipped = _convert_trl_vision_records(
+                        source,
+                        target,
+                        action,
+                        workspace_root=workspace_root,
+                    )
+                else:
+                    converted, skipped = _convert_vision_sft_flat_records(
+                        source,
+                        target,
+                        action,
+                        workspace_root=workspace_root,
+                    )
+            else:
+                converted, skipped = _convert_records(source, target, action)
+            columns_by_format = {
+                "messages": ["messages"],
+                "preference": ["prompt", "chosen", "rejected"],
+                "trl_vision_sft": ["messages", "images"],
+                "vision_sft_flat": [
+                    "id",
+                    "image_path",
+                    "images",
+                    "system_prompt",
+                    "user_prompt",
+                    "gt",
+                ],
+            }
+            columns = columns_by_format[action.format]
+            schemas_by_format = {
+                "messages": {"messages": "list<message>"},
+                "preference": {
+                    "prompt": "string",
+                    "chosen": "string",
+                    "rejected": "string",
+                },
+                "trl_vision_sft": {
+                    "messages": "list<message>",
+                    "images": "list<image>",
+                },
+                "vision_sft_flat": {
+                    "id": "string",
+                    "image_path": "string",
+                    "images": "list<string>",
+                    "system_prompt": "string",
+                    "user_prompt": "string",
+                    "gt": "string",
+                },
+            }
+            column_schema = schemas_by_format[action.format]
+            image_path_mode = (
+                "ordered paths (not embedded)"
+                if action.format == "vision_sft_flat"
+                else None
+            )
             return DfConvertObservation.from_text(
                 text=(
                     f"Converted {converted} records -> {target} "
-                    f"({skipped} skipped as incomplete)"
+                    f"({skipped} skipped as incomplete); "
+                    f"column_schema={column_schema}"
+                    + (
+                        f"; image_path_mode={image_path_mode}"
+                        if image_path_mode
+                        else ""
+                    )
                 ),
                 converted=converted,
                 skipped=skipped,
+                output_path=str(target),
+                columns=columns,
+                column_schema=column_schema,
+                image_path_mode=image_path_mode,
             )
         except Exception as exc:
             return DfConvertObservation.from_text(
@@ -655,7 +1127,11 @@ class DfConvertTool(ToolDefinition[DfConvertAction, DfConvertObservation]):
                     "Convert a processed JSONL into a Pyromind-supported training "
                     "format: 'messages' (SFT, optional reasoning_content CoT + "
                     "final_answer merged into the assistant turn) or 'preference' "
-                    "(DPO prompt/chosen/rejected). Upload the result with "
+                    "(DPO prompt/chosen/rejected), or 'trl_vision_sft' "
+                    "(legacy multimodal messages plus embedded images), or "
+                    "'vision_sft_flat' (id, ordered image paths, prompts, and "
+                    "tagged ground truth in Parquet). Conversion verifies image "
+                    "decoding and reloads the final artifact. Upload the result with "
                     "upload_file_to_pyromind."
                 ),
                 action_type=DfConvertAction,

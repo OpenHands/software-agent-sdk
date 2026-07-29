@@ -11,6 +11,7 @@ from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
+from openhands.sdk.event import LLMRetryEvent
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm import LLMCallContext
 from openhands.sdk.llm.options.chat_options import select_chat_options
@@ -161,6 +162,21 @@ def test_conversation_binds_context_to_shared_agent():
     ctx = agent.llm._call_context
     assert ctx.prompt_cache_key == str(conv.id)
     assert ctx.session_id == str(conv.id)
+
+
+def test_conversation_call_context_surfaces_redacted_retry_event():
+    conv = Conversation(agent=_agent())
+    listener = conv.get_llm_call_context().retry_listener
+    assert listener is not None
+
+    listener(1, 5, ValueError("api_key=super-secret"))
+
+    event = conv.state.events[-1]
+    assert isinstance(event, LLMRetryEvent)
+    assert event.attempt == 1
+    assert event.max_attempts == 5
+    assert event.error_type == "ValueError"
+    assert "super-secret" not in event.detail
 
 
 def test_sequential_conversations_rebind_both_fields():

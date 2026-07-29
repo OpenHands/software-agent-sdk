@@ -256,3 +256,42 @@ def test_retry_listener_callback(mock_litellm_completion, default_config):
         assert isinstance(err, APIConnectionError)
         assert attempt >= 1
         assert max_attempts == default_config.num_retries
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_call_context_retry_listener_is_isolated_per_call(
+    mock_litellm_completion,
+    default_config,
+):
+    from openhands.sdk.llm.llm import LLMCallContext
+
+    retry_calls = []
+    mock_litellm_completion.side_effect = [
+        APIConnectionError(
+            message="Connection failed",
+            llm_provider="test_provider",
+            model="test_model",
+        ),
+        create_mock_response("Success after retry"),
+    ]
+    llm = LLM(
+        usage_id="test-llm",
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        num_retries=2,
+        retry_min_wait=0,
+        retry_max_wait=0,
+    )
+
+    llm.completion(
+        messages=[Message(role="user", content=[TextContent(text="Hello!")])],
+        call_context=LLMCallContext(
+            retry_listener=lambda attempt, maximum, error: retry_calls.append(
+                (attempt, maximum, error)
+            )
+        ),
+    )
+
+    assert len(retry_calls) == 1
+    assert retry_calls[0][0:2] == (1, default_config.num_retries)
+    assert isinstance(retry_calls[0][2], APIConnectionError)

@@ -192,7 +192,10 @@ class TerminalObservation(Observation):
 
         ret = f"{self.metadata.prefix}{content_text}{self.metadata.suffix}"
         if self.metadata.working_dir:
-            ret += f"\n[Current working directory: {self.metadata.working_dir}]"
+            ret += (
+                "\n[Persistent terminal cwd for next command: "
+                f"{self.metadata.working_dir}]"
+            )
         if self.metadata.py_interpreter_path:
             ret += f"\n[Python interpreter: {self.metadata.py_interpreter_path}]"
         if self.metadata.exit_code != -1:
