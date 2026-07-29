@@ -23,8 +23,13 @@ signal.signal(signal.SIGINT, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt(
 def _print_action_preview(pending_actions) -> None:
     print(f"\n🔍 Agent created {len(pending_actions)} action(s) awaiting confirmation:")
     for i, action in enumerate(pending_actions, start=1):
+        # Prefer the LLM-provided natural-language summary as the headline,
+        # keeping the raw action snippet as secondary detail so users can
+        # still see exactly what will run before approving.
+        headline = action.summary or "(no summary provided)"
         snippet = str(action.action)[:100].replace("\n", " ")
-        print(f"  {i}. {action.tool_name}: {snippet}...")
+        print(f"  {i}. [{action.tool_name}] {headline}")
+        print(f"     {snippet}...")
 
 
 def confirm_in_console(pending_actions) -> bool:
@@ -83,7 +88,7 @@ def run_until_finished(conversation: BaseConversation, confirmer: Callable) -> N
 # Configure LLM
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
-model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
+model = os.getenv("LLM_MODEL", "gpt-5.5")
 base_url = os.getenv("LLM_BASE_URL")
 llm = LLM(
     usage_id="agent",

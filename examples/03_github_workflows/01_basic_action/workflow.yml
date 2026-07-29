@@ -33,7 +33,7 @@ jobs:
             # Option 2: Use direct text for the prompt
             PROMPT_STRING: ''
             # PROMPT_STRING: 'Check for outdated dependencies and create a PR'
-            LLM_MODEL: openhands/claude-sonnet-4-5-20250929
+            LLM_MODEL: gpt-5.5
             LLM_BASE_URL: ''
         steps:
             - name: Checkout repository

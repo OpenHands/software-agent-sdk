@@ -10,6 +10,7 @@ and run the parametrized tests for each one.
 """
 
 import os
+import subprocess
 import tempfile
 import time
 
@@ -1093,3 +1094,45 @@ def test_bash_remove_prefix(terminal_type):
             assert "git remote -v" not in obs.text
         finally:
             session.close()
+
+
+@parametrize_terminal_types
+def test_pager_does_not_hijack_terminal(tmp_path, terminal_type):
+    """Pagers (git log/diff/man/...) must not capture the PTY.
+
+    Commands that auto-launch ``less`` on a TTY used to wedge the session: the
+    pager held the terminal and every subsequent command was delivered to it
+    instead of the shell. Disabling pagers at the session level keeps the next
+    command's output its own. See issue #3660.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    # One large file so `git log -p` output exceeds a screen and a pager,
+    # if launched, would stay open waiting for input.
+    (repo / "module.py").write_text(
+        "".join(f"# line {i}\n" for i in range(800))
+        + "\ndef encode(payload):\n    pass\n"
+    )
+    for cmd in (
+        ["git", "init", "-q"],
+        ["git", "add", "-A"],
+        ["git", "-c", "user.email=a@b.c", "-c", "user.name=x", "commit", "-qm", "init"],
+    ):
+        subprocess.run(cmd, cwd=repo, check=True)
+
+    session = create_terminal_session(
+        work_dir=str(repo), no_change_timeout_seconds=2, terminal_type=terminal_type
+    )
+    session.initialize()
+    try:
+        # Without the fix this opens a pager and never returns to the prompt.
+        _run_bash_action(session, "git log -p")
+
+        # The follow-up command must return its OWN output, not the stale
+        # paged git-log screen.
+        obs = _run_bash_action(session, "grep -n 'def encode' module.py")
+        assert obs.metadata.exit_code == 0
+        assert "def encode" in obs.text
+        assert "diff --git" not in obs.text
+    finally:
+        session.close()

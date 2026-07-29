@@ -10,8 +10,6 @@ on:
                 description: Reason for manual trigger
                 required: true
                 default: ''
-    schedule:
-        - cron: 30 22 * * * # Runs at 10:30pm UTC every day
 
 permissions:
     contents: read
@@ -20,15 +18,13 @@ permissions:
 
 jobs:
     test-examples:
-        # Schedule trigger only runs in the main repository, not in forks
-        if: github.event.label.name == 'test-examples' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && 
-            github.repository == 'OpenHands/software-agent-sdk')
+        if: github.event.label.name == 'test-examples' || github.event_name == 'workflow_dispatch'
         runs-on: ubuntu-24.04
         timeout-minutes: 60
         steps:
             - name: Wait for agent server to finish build
               if: github.event_name == 'pull_request'
-              uses: lewagon/wait-on-check-action@v1.7.0
+              uses: lewagon/wait-on-check-action@9312864dfbc9fd208e9c0417843430751c042800 # v1.7.0
               with:
                   ref: ${{ github.event.pull_request.head.ref }}
                   check-name: Build & Push (python-amd64)
@@ -36,13 +32,13 @@ jobs:
                   wait-interval: 10
 
             - name: Checkout
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
               with:
                   ref: ${{ github.event.pull_request.head.ref }}
                   repository: ${{ github.event.pull_request.head.repo.full_name }}
 
             - name: Install uv
-              uses: astral-sh/setup-uv@v7
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
               with:
                   enable-cache: true
                   python-version: '3.13'
@@ -53,7 +49,7 @@ jobs:
                   node-version: '22'
 
             - name: Setup Apptainer
-              uses: eWaterCycle/setup-apptainer@v2
+              uses: eWaterCycle/setup-apptainer@3f706d898c9db585b1d741b4692e66755f3a1b40 # v2
               with:
                   apptainer-version: 1.3.6
 
@@ -172,7 +168,7 @@ jobs:
                       exit $EXIT_CODE
                   fi
             - name: Read examples report for issue comment
-              if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+              if: github.event_name == 'workflow_dispatch'
               id: read_report
               shell: bash
               run: |
@@ -186,13 +182,13 @@ jobs:
                   fi
 
             - name: Comment with results on tracker issue
-              if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-              uses: KeisukeYamashita/create-comment@v1
+              if: github.event_name == 'workflow_dispatch'
+              uses: KeisukeYamashita/create-comment@1d95d97d7b1b73ab66e5ca931610e4e10ddc5eed # v1
               with:
-                  number: 976
+                  number: 3950
                   unique: false
                   comment: |
-                      **Trigger:** ${{ github.event_name == 'schedule' && 'Nightly Scheduled Run' || format('Manual Trigger: {0}', github.event.inputs.reason) }}
+                      **Trigger:** ${{ format('Manual Trigger: {0}', github.event.inputs.reason) }}
                       **Commit:** ${{ github.sha }}
                       **Workflow Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 

@@ -2,16 +2,20 @@
 
 import time
 import uuid
+from collections.abc import Mapping
 
 import libtmux
 
 from openhands.sdk.logger import get_logger
-from openhands.sdk.utils import sanitized_env
 from openhands.tools.terminal.constants import (
     HISTORY_LIMIT,
     TMUX_SESSION_HEIGHT,
     TMUX_SESSION_WIDTH,
     TMUX_SOCKET_NAME,
+)
+from openhands.tools.terminal.env import (
+    build_terminal_env,
+    normalize_terminal_env,
 )
 from openhands.tools.terminal.metadata import CmdOutputMetadata
 from openhands.tools.terminal.terminal import TerminalInterface
@@ -57,16 +61,22 @@ class TmuxTerminal(TerminalInterface):
         self,
         work_dir: str,
         username: str | None = None,
+        env: Mapping[str, str] | None = None,
     ):
         super().__init__(work_dir, username)
         self.PS1 = CmdOutputMetadata.to_ps1_prompt()
+        self._env = normalize_terminal_env(env)
 
     def initialize(self) -> None:
         """Initialize the tmux terminal session."""
         if self._initialized:
             return
 
-        env = sanitized_env()
+        env = build_terminal_env(self._env)
+        # Disable interactive pagers (git, man, systemctl, ...) so commands that
+        # auto-launch `less` on a TTY don't capture the pane and wedge the session.
+        env.setdefault("GIT_PAGER", "cat")
+        env.setdefault("PAGER", "cat")
         # Use a dedicated socket to isolate OpenHands sessions from the user's tmux
         self.server = libtmux.Server(socket_name=TMUX_SOCKET_NAME, environment=env)
         _shell_command = "/bin/bash"

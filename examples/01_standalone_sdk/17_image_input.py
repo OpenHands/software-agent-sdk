@@ -47,7 +47,7 @@ def _make_png_data_url(width: int, height: int, color: str = "red") -> str:
 # Configure LLM (vision-capable model)
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
-model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
+model = os.getenv("LLM_MODEL", "gpt-5.5")
 base_url = os.getenv("LLM_BASE_URL")
 llm = LLM(
     usage_id="vision-llm",
@@ -83,7 +83,7 @@ conversation = Conversation(
 )
 
 # ── Part 1: single URL image ──────────────────────────────────────────────
-IMAGE_URL = "https://github.com/OpenHands/docs/raw/main/openhands/static/img/logo.png"
+IMAGE_URL = "https://www.python.org/static/opengraph-icon-200x200.png"
 
 conversation.send_message(
     Message(

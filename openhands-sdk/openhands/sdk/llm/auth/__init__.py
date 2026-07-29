@@ -12,6 +12,7 @@ from openhands.sdk.llm.auth.openai import (
     OPENAI_CODEX_MODELS,
     OpenAISubscriptionAuth,
     SupportedVendor,
+    create_subscription_llm_from_config,
     inject_system_prefix,
     transform_for_subscription,
 )
@@ -23,6 +24,7 @@ __all__ = [
     "OpenAISubscriptionAuth",
     "OPENAI_CODEX_MODELS",
     "SupportedVendor",
+    "create_subscription_llm_from_config",
     "inject_system_prefix",
     "transform_for_subscription",
 ]

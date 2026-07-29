@@ -19,13 +19,19 @@ jobs:
             SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
         steps:
             - name: Checkout
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
 
             - name: Get version from release or input
               id: get_version
+              env:
+                  VERSION_INPUT: ${{ github.event.inputs.version }}
               run: |
-                  VERSION="${{ github.event.inputs.version }}"
-                  echo "version=$VERSION" >> $GITHUB_OUTPUT
+                  VERSION="$VERSION_INPUT"
+                  if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                    echo "❌ Invalid version format. Expected: X.Y.Z (e.g., 1.2.3)"
+                    exit 1
+                  fi
+                  echo "version=$VERSION" >> "$GITHUB_OUTPUT"
                   echo "📦 Version: $VERSION"
 
             - name: Validate version
@@ -39,7 +45,7 @@ jobs:
                   echo "📦 Creating version bump PRs for version: $VERSION"
 
             - name: Install uv
-              uses: astral-sh/setup-uv@v7
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
               with:
                   version: latest
                   python-version: '3.12'
@@ -91,84 +97,13 @@ jobs:
 
                   echo "✅ All packages are resolvable on PyPI!"
 
-            # OpenHands-CLI step runs first since it's simpler and less error-prone
-            - name: Create PR for OpenHands-CLI repo
-              env:
-                  VERSION: ${{ steps.get_version.outputs.version }}
-              run: |
-                  set -euo pipefail
-
-                  REPO="OpenHands/openhands-cli"
-                  BRANCH="bump-sdk-$VERSION"
-
-                  echo "🔄 Creating PR for $REPO..."
-
-                  # Clone the repo
-                  git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" openhands-cli-repo
-                  cd openhands-cli-repo
-
-                  # Configure git
-                  git config user.name "github-actions[bot]"
-                  git config user.email "github-actions[bot]@users.noreply.github.com"
-
-                  # Check if branch already exists on remote
-                  if git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
-                    echo "⚠️ Branch $BRANCH already exists, checking out existing branch"
-                    git fetch origin "$BRANCH"
-                    git checkout "$BRANCH"
-                  else
-                    # Create branch
-                    git checkout -b "$BRANCH"
-                  fi
-
-                  # OpenHands-CLI currently requires Python 3.12, so resolve with that interpreter.
-                  # The target repo uses exclude-newer-package to exempt openhands-sdk/tools
-                  # from its 7-day freshness guardrail, so no UV_EXCLUDE_NEWER override
-                  # is needed — doing so would actually break the per-package exemptions.
-                  # We use --no-cache to avoid stale index data from just-published packages.
-                  uv add --python 3.12 --no-cache \
-                    "openhands-sdk==$VERSION" \
-                    "openhands-tools==$VERSION"
-
-                  # Check if there are changes
-                  if git diff --quiet; then
-                    echo "⚠️ No changes detected in $REPO - versions may already be up to date"
-                    exit 0
-                  fi
-
-                  # Commit and push
-                  git add pyproject.toml uv.lock
-                  git commit -m "Bump openhands-sdk, openhands-tools to $VERSION" \
-                    -m "Automated version bump after PyPI release." \
-                    -m "Co-authored-by: openhands <openhands@all-hands.dev>"
-                  git push -u origin "$BRANCH"
-
-                  # Check if PR already exists
-                  EXISTING_PR=$(gh pr list --repo "$REPO" --head "$BRANCH" --json number --jq '.[0].number')
-                  if [ -n "$EXISTING_PR" ]; then
-                    echo "✅ PR #$EXISTING_PR already exists for $REPO"
-                  else
-                    # Create PR
-                    gh pr create \
-                      --repo "$REPO" \
-                      --title "Bump SDK packages to v$VERSION" \
-                      --body "## Automated Version Bump
-
-                  This PR updates the following packages to version **$VERSION**:
-                  - \`openhands-sdk\`
-                  - \`openhands-tools\`
-
-                  **Triggered by:** Release of [software-agent-sdk v$VERSION](https://github.com/OpenHands/software-agent-sdk/releases/tag/v$VERSION)
-
-                  ---
-                  _This PR was automatically created by the version-bump-prs workflow._" \
-                      --base main \
-                      --head "$BRANCH"
-
-                    echo "✅ PR created for $REPO"
-                  fi
-
             - name: Create PR for OpenHands repo
+              id: openhands_pr
+              # continue-on-error keeps the sibling "Create PR" steps below
+              # independent: each bumps an unrelated repo, so one failing must
+              # not skip the rest. Failures are surfaced in the Summary step via
+              # steps.<id>.outcome.
+              continue-on-error: true
               env:
                   VERSION: ${{ steps.get_version.outputs.version }}
               run: |
@@ -259,6 +194,10 @@ jobs:
                   sed -i -E 's/"openhands-tools==[^"]*"/"openhands-tools=='"$VERSION"'"/' pyproject.toml
                   sed -i -E 's/"openhands-agent-server==[^"]*"/"openhands-agent-server=='"$VERSION"'"/' pyproject.toml
 
+                  # Update mypy additional_dependencies pins so type-checking uses the same SDK version
+                  sed -i -E 's/"openhands-sdk==[^"]*"/"openhands-sdk=='"$VERSION"'"/' "$PYPROJECT_FMT_CONFIG"
+                  sed -i -E 's/"openhands-tools==[^"]*"/"openhands-tools=='"$VERSION"'"/' "$PYPROJECT_FMT_CONFIG"
+
                   echo "✅ Updated pyproject.toml"
 
                   # 2. Regenerate poetry.lock with the new versions
@@ -266,6 +205,29 @@ jobs:
                   # in the lock file (the --no-update flag was removed in Poetry 2.x)
                   echo "📝 Regenerating poetry.lock..."
                   poetry lock
+
+                  # 2b. Regenerate enterprise/poetry.lock so its transitive SDK pins
+                  # match the root. enterprise/pyproject.toml depends on the root via
+                  # `openhands-ai = { path = "../", develop = true }`, but it keeps its
+                  # OWN poetry.lock that pins openhands-sdk/tools/agent-server. Without
+                  # this step the enterprise lockfile drifts behind (see PR #14409 that
+                  # had to be opened manually after PR #14350 missed it).
+                  # --no-cache invalidates the stale build of the path-installed
+                  # openhands-ai package; without it Poetry leaves the entries pinned
+                  # at the previous version.
+                  if [ -f "enterprise/poetry.lock" ] && [ -f "enterprise/pyproject.toml" ]; then
+                    echo "📝 Regenerating enterprise/poetry.lock..."
+                    (cd enterprise && poetry lock --no-cache)
+                    echo "✅ Updated enterprise/poetry.lock"
+                  fi
+
+                  echo "📝 Regenerating uv.lock..."
+                  # --no-config bypasses ~/.config/uv/uv.toml where setup-uv writes its
+                  # 7-day freshness guardrail. Unlike --exclude-newer=<date>, it does not
+                  # bake a timestamp into uv.lock's [options] section (which would create
+                  # noise in every future bump PR).
+                  uv lock --no-cache --no-config
+                  echo "✅ Updated uv.lock"
 
                   # 3. Update the version in sandbox_spec_service.py
                   echo "🔧 Updating AGENT_SERVER_IMAGE..."
@@ -291,15 +253,108 @@ jobs:
                   fi
 
                   # Commit and push
-                  git add pyproject.toml poetry.lock "$SANDBOX_SPEC_FILE" "$PYPROJECT_FMT_CONFIG"
+                  git add pyproject.toml poetry.lock uv.lock "$SANDBOX_SPEC_FILE" "$PYPROJECT_FMT_CONFIG"
+                  if [ -f "enterprise/poetry.lock" ]; then
+                    git add enterprise/poetry.lock
+                  fi
                   git commit -m "Bump openhands-sdk, openhands-tools, openhands-agent-server to $VERSION" \
                     -m "Automated version bump after PyPI release." \
                     -m "" \
                     -m "Changes:" \
                     -m "- Updated SDK packages to v$VERSION with exact pins in pyproject.toml" \
                     -m "- Regenerated poetry.lock" \
+                    -m "- Regenerated enterprise/poetry.lock to keep transitive SDK pins aligned" \
+                    -m "- Regenerated uv.lock" \
                     -m "- Updated AGENT_SERVER_IMAGE to ${VERSION}" \
+                    -m "- Updated mypy additional_dependencies pins in pre-commit config" \
                     -m "" \
+                    -m "Co-authored-by: openhands <openhands@all-hands.dev>"
+                  git push -u origin "$BRANCH"
+
+                  # Check if PR already exists
+                  EXISTING_PR=$(gh pr list --repo "$REPO" --head "$BRANCH" --json number --jq '.[0].number')
+                  if [ -n "$EXISTING_PR" ]; then
+                    echo "✅ PR #$EXISTING_PR already exists for $REPO"
+                  else
+                    # Create PR
+                    gh pr create \
+                      --repo "$REPO" \
+                      --title "chore: bump SDK packages to v$VERSION" \
+                      --body "## Automated Version Bump
+
+                  This PR updates the following packages to version **$VERSION**:
+                  - \`openhands-sdk\`
+                  - \`openhands-tools\`
+                  - \`openhands-agent-server\`
+
+                  ### Changes
+                  - Updated SDK packages in \`pyproject.toml\` with exact pins
+                  - Regenerated \`poetry.lock\` with the target repo's Poetry version
+                  - Regenerated \`enterprise/poetry.lock\` so its transitive SDK pins match the root
+                  - Regenerated \`uv.lock\` to match the updated SDK versions
+                  - Updated \`AGENT_SERVER_IMAGE\` to \`${VERSION}\` in \`sandbox_spec_service.py\`
+                  - Updated mypy \`additional_dependencies\` pins in \`.pre-commit-config.yaml\`
+
+                  **Triggered by:** Release of [software-agent-sdk v$VERSION](https://github.com/OpenHands/software-agent-sdk/releases/tag/v$VERSION)
+
+                  ---
+                  _This PR was automatically created by the version-bump-prs workflow._" \
+                      --base main \
+                      --head "$BRANCH"
+
+                    echo "✅ PR created for $REPO"
+                  fi
+
+            - name: Create PR for OpenHands-CLI repo
+              id: cli_pr
+              continue-on-error: true
+              env:
+                  VERSION: ${{ steps.get_version.outputs.version }}
+              run: |
+                  set -euo pipefail
+
+                  REPO="OpenHands/openhands-cli"
+                  BRANCH="bump-sdk-$VERSION"
+
+                  echo "🔄 Creating PR for $REPO..."
+
+                  # Clone the repo
+                  git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" openhands-cli-repo
+                  cd openhands-cli-repo
+
+                  # Configure git
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
+
+                  # Check if branch already exists on remote
+                  if git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
+                    echo "⚠️ Branch $BRANCH already exists, checking out existing branch"
+                    git fetch origin "$BRANCH"
+                    git checkout "$BRANCH"
+                  else
+                    # Create branch
+                    git checkout -b "$BRANCH"
+                  fi
+
+                  # OpenHands-CLI currently requires Python 3.12, so resolve with that interpreter.
+                  # The target repo uses exclude-newer-package to exempt openhands-sdk/tools
+                  # from its 7-day freshness guardrail, so no UV_EXCLUDE_NEWER override
+                  # is needed — doing so would actually break the per-package exemptions.
+                  # We use --no-cache to avoid stale index data from just-published packages.
+                  uv add --python 3.12 --no-cache \
+                    "openhands-sdk==$VERSION" \
+                    "openhands-tools==$VERSION"
+
+                  # Check if there are changes
+                  if git diff --quiet; then
+                    echo "⚠️ No changes detected in $REPO - versions may already be up to date"
+                    exit 0
+                  fi
+
+                  # Commit and push
+                  git add pyproject.toml uv.lock
+                  git commit -m "Bump openhands-sdk, openhands-tools to $VERSION" \
+                    -m "Automated version bump after PyPI release." \
                     -m "Co-authored-by: openhands <openhands@all-hands.dev>"
                   git push -u origin "$BRANCH"
 
@@ -317,12 +372,98 @@ jobs:
                   This PR updates the following packages to version **$VERSION**:
                   - \`openhands-sdk\`
                   - \`openhands-tools\`
-                  - \`openhands-agent-server\`
 
-                  ### Changes
-                  - Updated SDK packages in \`pyproject.toml\` with exact pins
-                  - Regenerated \`poetry.lock\` with the target repo's Poetry version
-                  - Updated \`AGENT_SERVER_IMAGE\` to \`${VERSION}\` in \`sandbox_spec_service.py\`
+                  **Triggered by:** Release of [software-agent-sdk v$VERSION](https://github.com/OpenHands/software-agent-sdk/releases/tag/v$VERSION)
+
+                  ---
+                  _This PR was automatically created by the version-bump-prs workflow._" \
+                      --base main \
+                      --head "$BRANCH"
+
+                    echo "✅ PR created for $REPO"
+                  fi
+
+            - name: Create PR for automation repo
+              id: automation_pr
+              continue-on-error: true
+              env:
+                  VERSION: ${{ steps.get_version.outputs.version }}
+              run: |
+                  set -euo pipefail
+
+                  REPO="OpenHands/automation"
+                  BRANCH="bump-sdk-$VERSION"
+
+                  echo "🔄 Creating PR for $REPO..."
+
+                  # Clone the repo
+                  git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" automation-repo
+                  cd automation-repo
+
+                  # Configure git
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
+
+                  # Check if branch already exists on remote
+                  if git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
+                    echo "⚠️ Branch $BRANCH already exists, checking out existing branch"
+                    git fetch origin "$BRANCH"
+                    git checkout "$BRANCH"
+                  else
+                    # Create branch
+                    git checkout -b "$BRANCH"
+                  fi
+
+                  # automation pins openhands-sdk + openhands-workspace as exact
+                  # PEP 621 dependencies and keeps a uv.lock. Update the pins with
+                  # sed (exact, no normalization), then regenerate the lock.
+                  echo "📝 Updating pyproject.toml SDK pins..."
+                  sed -i -E 's/"openhands-sdk==[^"]*"/"openhands-sdk=='"$VERSION"'"/' pyproject.toml
+                  sed -i -E 's/"openhands-workspace==[^"]*"/"openhands-workspace=='"$VERSION"'"/' pyproject.toml
+
+                  # --no-config bypasses ~/.config/uv/uv.toml where setup-uv writes
+                  # its 7-day freshness guardrail (automation has no
+                  # exclude-newer-package exemption of its own); --no-cache avoids
+                  # stale index data from the just-published packages.
+                  echo "📝 Regenerating uv.lock..."
+                  uv lock --no-cache --no-config
+
+                  # Check if there are changes
+                  if git diff --quiet; then
+                    echo "⚠️ No changes detected in $REPO - versions may already be up to date"
+                    exit 0
+                  fi
+
+                  # Commit and push. Use a Conventional Commit `fix:` subject so the
+                  # target repo's release-please opens a release PR on merge — that
+                  # published openhands-automation is what unblocks agent-canvas's
+                  # sdk-version-sync check.
+                  git add pyproject.toml uv.lock
+                  git commit -m "fix: bump SDK to $VERSION" \
+                    -m "Bump openhands-sdk, openhands-workspace to $VERSION (regenerated uv.lock)." \
+                    -m "Automated version bump after PyPI release." \
+                    -m "Co-authored-by: openhands <openhands@all-hands.dev>"
+                  git push -u origin "$BRANCH"
+
+                  # Check if PR already exists
+                  EXISTING_PR=$(gh pr list --repo "$REPO" --head "$BRANCH" --json number --jq '.[0].number')
+                  if [ -n "$EXISTING_PR" ]; then
+                    echo "✅ PR #$EXISTING_PR already exists for $REPO"
+                  else
+                    # Create PR with a `chore:` title to match the automation
+                    # repo's bump-PR convention (and the other steps here).
+                    # release-please still cuts a patch release: the repo squashes
+                    # single-commit PRs using the commit message (the `fix:` subject
+                    # above), not the PR title (squash_title_source is
+                    # COMMIT_OR_PR_TITLE).
+                    gh pr create \
+                      --repo "$REPO" \
+                      --title "chore: bump SDK to $VERSION" \
+                      --body "## Automated Version Bump
+
+                  This PR updates the following packages to version **$VERSION**:
+                  - \`openhands-sdk\`
+                  - \`openhands-workspace\`
 
                   **Triggered by:** Release of [software-agent-sdk v$VERSION](https://github.com/OpenHands/software-agent-sdk/releases/tag/v$VERSION)
 
@@ -337,20 +478,237 @@ jobs:
             - name: Summary
               env:
                   VERSION: ${{ steps.get_version.outputs.version }}
+                  OPENHANDS_OUTCOME: ${{ steps.openhands_pr.outcome }}
+                  CLI_OUTCOME: ${{ steps.cli_pr.outcome }}
+                  AUTOMATION_OUTCOME: ${{ steps.automation_pr.outcome }}
               run: |
-                  echo "## ✅ Version Bump PRs Created" >> $GITHUB_STEP_SUMMARY
+                  echo "## Version Bump PRs" >> $GITHUB_STEP_SUMMARY
                   echo "" >> $GITHUB_STEP_SUMMARY
-                  echo "PRs have been created to bump SDK packages to version **$VERSION**:" >> $GITHUB_STEP_SUMMARY
+                  echo "Results of bumping SDK packages to version **$VERSION**:" >> $GITHUB_STEP_SUMMARY
                   echo "" >> $GITHUB_STEP_SUMMARY
-                  echo "- [OpenHands](https://github.com/OpenHands/OpenHands/pulls?q=is%3Apr+bump-sdk-$VERSION)" >> $GITHUB_STEP_SUMMARY
-                  echo "- [OpenHands-CLI](https://github.com/OpenHands/openhands-cli/pulls?q=is%3Apr+bump-sdk-$VERSION)" >> $GITHUB_STEP_SUMMARY
+
+                  # The "Create PR" steps use continue-on-error, so surface any
+                  # failure here instead of silently linking to a PR that was
+                  # never created.
+                  if [ "$OPENHANDS_OUTCOME" = "failure" ]; then
+                    echo "- ⚠️ **OpenHands PR creation FAILED** — see the \"Create PR for OpenHands repo\" step logs" >> $GITHUB_STEP_SUMMARY
+                  else
+                    echo "- [OpenHands](https://github.com/OpenHands/OpenHands/pulls?q=is%3Apr+bump-sdk-$VERSION)" >> $GITHUB_STEP_SUMMARY
+                  fi
+                  if [ "$CLI_OUTCOME" = "failure" ]; then
+                    echo "- ⚠️ **OpenHands-CLI PR creation FAILED** — see the \"Create PR for OpenHands-CLI repo\" step logs" >> $GITHUB_STEP_SUMMARY
+                  else
+                    echo "- [OpenHands-CLI](https://github.com/OpenHands/openhands-cli/pulls?q=is%3Apr+bump-sdk-$VERSION)" >> $GITHUB_STEP_SUMMARY
+                  fi
+                  if [ "$AUTOMATION_OUTCOME" = "failure" ]; then
+                    echo "- ⚠️ **automation PR creation FAILED** — see the \"Create PR for automation repo\" step logs" >> $GITHUB_STEP_SUMMARY
+                  else
+                    echo "- [automation](https://github.com/OpenHands/automation/pulls?q=is%3Apr+bump-sdk-$VERSION)" >> $GITHUB_STEP_SUMMARY
+                  fi
 
             - name: Notify Slack
               if: env.SLACK_BOT_TOKEN != ''
-              uses: slackapi/slack-github-action@v3.0.3
+              uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c # v3.0.3
               with:
                   method: chat.postMessage
                   token: ${{ env.SLACK_BOT_TOKEN }}
                   payload: |
                       channel: C08E1SYKEM9
-                      text: "🚀 *SDK v${{ steps.get_version.outputs.version }} published to PyPI!*\n\nVersion bump PRs created:\n• <https://github.com/OpenHands/OpenHands/pulls?q=is%3Apr+bump-sdk-${{ steps.get_version.outputs.version }}|OpenHands>\n• <https://github.com/OpenHands/openhands-cli/pulls?q=is%3Apr+bump-sdk-${{ steps.get_version.outputs.version }}|OpenHands-CLI>\n\n<https://github.com/OpenHands/software-agent-sdk/releases/tag/v${{ steps.get_version.outputs.version }}|View Release>"
+                      text: "🚀 *SDK v${{ steps.get_version.outputs.version }} published to PyPI!*\n\nVersion bump PRs created:\n• <https://github.com/OpenHands/OpenHands/pulls?q=is%3Apr+bump-sdk-${{ steps.get_version.outputs.version }}|OpenHands>\n• <https://github.com/OpenHands/openhands-cli/pulls?q=is%3Apr+bump-sdk-${{ steps.get_version.outputs.version }}|OpenHands-CLI>\n• <https://github.com/OpenHands/automation/pulls?q=is%3Apr+bump-sdk-${{ steps.get_version.outputs.version }}|automation>\n\n<https://github.com/OpenHands/software-agent-sdk/releases/tag/v${{ steps.get_version.outputs.version }}|View Release>"
+
+    bump-typescript-client:
+        # Open a PR in OpenHands/typescript-client bumping the pinned
+        # agent-server image (package.json -> config.agentServerImage) to this
+        # release. The agent-server image tag <version>-python corresponds 1:1
+        # to the SDK release vX.Y.Z. Runs independently of the package bumps
+        # above so it can't affect the OpenHands / openhands-cli PRs.
+        runs-on: ubuntu-24.04
+        timeout-minutes: 60
+        env:
+            GH_TOKEN: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
+        steps:
+            - name: Checkout SDK release tooling
+              uses: actions/checkout@v7
+
+            - name: Install Node.js
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 22
+
+            - name: Get version
+              id: get_version
+              env:
+                  VERSION_INPUT: ${{ github.event.inputs.version }}
+              run: |
+                  VERSION="$VERSION_INPUT"
+                  if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                    echo "❌ Invalid version format. Expected: X.Y.Z (e.g., 1.30.0)"
+                    exit 1
+                  fi
+                  echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+                  echo "📦 Version: $VERSION"
+
+            - name: Wait for agent-server image in GHCR
+              env:
+                  VERSION: ${{ steps.get_version.outputs.version }}
+              run: |
+                  set -euo pipefail
+                  IMAGE="ghcr.io/openhands/agent-server:${VERSION}-python"
+                  MAX_ATTEMPTS=90
+                  SLEEP_SECONDS=30
+                  echo "⏳ Waiting for ${IMAGE} to be published..."
+                  ATTEMPT=1
+                  while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+                    if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
+                      echo "✅ ${IMAGE} is published"
+                      break
+                    fi
+                    echo "  Attempt $ATTEMPT/$MAX_ATTEMPTS: not ready, waiting ${SLEEP_SECONDS}s..."
+                    sleep $SLEEP_SECONDS
+                    ATTEMPT=$((ATTEMPT + 1))
+                  done
+                  if [ $ATTEMPT -gt $MAX_ATTEMPTS ]; then
+                    echo "❌ Timeout waiting for ${IMAGE} (server.yml may still be building or failed)"
+                    exit 1
+                  fi
+
+            - name: Obtain exact OpenAPI release artifact
+              id: openapi
+              env:
+                  VERSION: ${{ steps.get_version.outputs.version }}
+              run: |
+                  set -euo pipefail
+                  ARTIFACT_DIR="$RUNNER_TEMP/agent-server-$VERSION-openapi"
+                  OPENAPI_PATH="$ARTIFACT_DIR/openapi.json"
+                  mkdir -p "$ARTIFACT_DIR"
+
+                  MAX_ATTEMPTS=90
+                  SLEEP_SECONDS=20
+                  ATTEMPT=1
+                  echo "⏳ Waiting for openapi.json on SDK release v${VERSION}..."
+                  while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+                    if gh release download "v$VERSION" \
+                      --repo "${{ github.repository }}" \
+                      --pattern openapi.json \
+                      --dir "$ARTIFACT_DIR" \
+                      --clobber > /dev/null 2>&1; then
+                      jq -e --arg version "$VERSION" \
+                        '.info.version == $version' "$OPENAPI_PATH" > /dev/null
+                      echo "✅ Downloaded exact OpenAPI artifact for v$VERSION"
+                      echo "path=$OPENAPI_PATH" >> "$GITHUB_OUTPUT"
+                      break
+                    fi
+                    echo "  Attempt $ATTEMPT/$MAX_ATTEMPTS: artifact not ready, waiting ${SLEEP_SECONDS}s..."
+                    sleep "$SLEEP_SECONDS"
+                    ATTEMPT=$((ATTEMPT + 1))
+                  done
+
+                  if [ $ATTEMPT -gt $MAX_ATTEMPTS ]; then
+                    echo "❌ Timeout waiting for SDK release v${VERSION} openapi.json"
+                    exit 1
+                  fi
+
+            - name: Open bump PR in typescript-client
+              env:
+                  VERSION: ${{ steps.get_version.outputs.version }}
+                  OPENAPI_PATH: ${{ steps.openapi.outputs.path }}
+              run: |
+                  set -euo pipefail
+                  REPO="OpenHands/typescript-client"
+                  BRANCH="bump-agent-server-$VERSION"
+                  BEFORE_SCHEMA="$RUNNER_TEMP/agent-server-schema-before.ts"
+                  API_SUMMARY="$RUNNER_TEMP/agent-server-api-summary.md"
+
+                  git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" ts-client
+                  cd ts-client
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
+
+                  if git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
+                    echo "⚠️ Branch $BRANCH exists, checking it out"
+                    git fetch origin "$BRANCH"
+                    git checkout "$BRANCH"
+                  else
+                    git checkout -b "$BRANCH"
+                  fi
+
+                  # Source of truth for the currently-pinned version.
+                  CURRENT=$(grep -oE 'agent-server:[0-9]+\.[0-9]+\.[0-9]+-python' package.json | head -1 | sed -E 's/.*:([0-9.]+)-python/\1/')
+                  if [ -z "$CURRENT" ]; then
+                    echo "❌ Could not determine current agent-server version from package.json"
+                    exit 1
+                  fi
+                  if [ "$CURRENT" = "$VERSION" ]; then
+                    echo "✅ typescript-client already pinned to $VERSION — nothing to do"
+                    exit 0
+                  fi
+
+                  cp src/generated/agent-server-schema.ts "$BEFORE_SCHEMA"
+                  npm ci
+                  python "$GITHUB_WORKSPACE/.github/scripts/prepare_typescript_client_agent_server_bump.py" \
+                    --client-root "$PWD" \
+                    --version "$VERSION" \
+                    --openapi "$OPENAPI_PATH"
+                  AGENT_SERVER_OPENAPI_PATH="$OPENAPI_PATH" \
+                    npm run generate:agent-server-api
+                  npm run summarize:agent-server-api -- \
+                    --before "$BEFORE_SCHEMA" \
+                    --after src/generated/agent-server-schema.ts \
+                    --output "$API_SUMMARY"
+
+                  if git diff --quiet; then
+                    echo "⚠️ No changes produced — versions may already match"
+                    exit 0
+                  fi
+
+                  git add \
+                    package.json \
+                    .github/workflows/integration-tests.yml \
+                    AGENTS.md \
+                    README.md \
+                    src/generated/agent-server-schema.ts
+                  git commit -m "chore: agent-server (software-agent-sdk) to v$VERSION"
+                  git push -u origin "$BRANCH"
+
+                  EXISTING_PR=$(gh pr list --repo "$REPO" --head "$BRANCH" --json number --jq '.[0].number')
+                  if [ -n "$EXISTING_PR" ]; then
+                    echo "✅ PR #$EXISTING_PR already exists for $REPO"
+                    exit 0
+                  fi
+
+                  cat > pr_body.md <<EOF
+                  ## Bump tracked agent-server / SDK version
+
+                  Updates the pinned OpenHands software-agent-sdk / agent-server image from v${CURRENT} to v${VERSION} (package.json config.agentServerImage, plus the integration-tests.yml, AGENTS.md, and README.md mirrors).
+
+                  CI + integration tests on this PR run against ghcr.io/openhands/agent-server:${VERSION}-python, validating the client against the new server before merge. This does not release the npm package.
+
+                  ## Agent Server API change summary
+
+                  $(cat "$API_SUMMARY")
+
+                  Triggered by: software-agent-sdk v${VERSION} — https://github.com/OpenHands/software-agent-sdk/releases/tag/v${VERSION}
+
+                  ---
+                  Automatically created by the version-bump-prs workflow.
+                  EOF
+
+                  gh pr create \
+                    --repo "$REPO" \
+                    --base main \
+                    --head "$BRANCH" \
+                    --title "chore: agent-server (software-agent-sdk) to v$VERSION" \
+                    --body-file pr_body.md
+                  echo "✅ PR created for $REPO"
+
+            - name: Summary
+              env:
+                  VERSION: ${{ steps.get_version.outputs.version }}
+              run: |
+                  {
+                    echo "## ✅ typescript-client agent-server bump"
+                    echo ""
+                    echo "Bumped the tracked agent-server image to **v$VERSION**:"
+                    echo ""
+                    echo "- [typescript-client](https://github.com/OpenHands/typescript-client/pulls?q=is%3Apr+bump-agent-server-$VERSION)"
+                  } >> "$GITHUB_STEP_SUMMARY"

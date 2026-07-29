@@ -18,7 +18,7 @@ from openhands.sdk import LLM, LLMProfileStore
 
 SCRIPT_DIR = Path(__file__).parent
 EXAMPLE_PROFILES_DIR = SCRIPT_DIR / "profiles"
-DEFAULT_MODEL = "anthropic/claude-sonnet-4-5-20250929"
+DEFAULT_MODEL = "gpt-5.5"
 
 
 profile_store_dir = Path(tempfile.mkdtemp()) / "profiles"

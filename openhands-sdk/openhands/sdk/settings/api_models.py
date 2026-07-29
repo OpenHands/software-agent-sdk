@@ -14,21 +14,43 @@ Client-side usage:
     ``get_conversation_settings()``) to parse the raw dicts into typed models.
 
 Note on dict fields:
-    ``SettingsResponse`` uses ``dict[str, Any]`` for ``agent_settings`` and
-    ``conversation_settings`` rather than typed models because the server needs
-    to control how secrets are serialized (plaintext/encrypted/redacted) via
-    serialization context. Typed Pydantic fields would lose this context during
-    FastAPI's automatic JSON serialization.
+    ``SettingsResponse`` keeps ``agent_settings`` and ``conversation_settings``
+    as dictionaries because the server needs to control how secrets are serialized
+    (plaintext/encrypted/redacted) via serialization context. Typed Pydantic fields
+    would lose this context during FastAPI's automatic JSON serialization.
 
-    Clients that need type safety should use the accessor methods which validate
-    the dicts into ``AgentSettingsConfig`` and ``ConversationSettings``.
+    The ``agent_settings`` dictionary has a separate OpenAPI schema that exposes
+    known contract fields such as ``mcp_config`` while retaining an extension
+    surface. Clients that need runtime type safety should use the accessor methods
+    which validate the dictionaries into ``AgentSettingsConfig`` and
+    ``ConversationSettings``.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
-from pydantic import BaseModel, SecretStr
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    GetJsonSchemaHandler,
+    RootModel,
+    SecretStr,
+)
+from pydantic.json_schema import JsonSchemaValue
+from pydantic_core import CoreSchema
+
+from openhands.sdk.llm.llm_profile_store import PROFILE_NAME_PATTERN
+from openhands.sdk.mcp.config import MCPAuthCredential, MCPServer, MCPTransport
+
+
+# An AgentProfile's stable id is a UUID (the pointer target); reject malformed
+# values at the HTTP layer, mirroring ``active_profile``'s name pattern.
+UUID_PATTERN = (
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 
 
 if TYPE_CHECKING:
@@ -38,11 +60,78 @@ if TYPE_CHECKING:
 # ── Settings API Models ───────────────────────────────────────────────────
 
 
+class MCPConfig(RootModel[dict[str, MCPServer]]):
+    """Canonical persisted MCP server map keyed by stable server name."""
+
+
+class MCPServerPatch(BaseModel):
+    """Sparse RFC 7386 merge patch for one persisted MCP server."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: str | None = Field(default=None, min_length=1)
+    transport: MCPTransport | None = None
+    command: str | None = Field(default=None, min_length=1)
+    args: list[str] | None = None
+    env: dict[str, SecretStr | None] | None = None
+    cwd: str | None = None
+    description: str | None = None
+    icon: str | None = None
+    timeout: float | None = None
+    sse_read_timeout: float | None = None
+    keep_alive: bool | None = None
+    headers: dict[str, SecretStr | None] | None = None
+    auth: MCPAuthCredential | None = None
+
+
+class MCPConfigPatch(RootModel[dict[str, MCPServerPatch | None]]):
+    """Sparse MCP map patch; a null map value deletes that named server."""
+
+
+class _AgentSettingsContract(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    schema_version: int | None = Field(default=None, ge=1)
+    agent_kind: Literal["openhands", "acp"] | None = None
+    mcp_config: MCPConfig
+
+
+class _AgentSettingsPatchContract(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    mcp_config: MCPConfigPatch | None = None
+
+
+class _AgentSettingsJsonSchema:
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls,
+        _core_schema: CoreSchema,
+        handler: GetJsonSchemaHandler,
+    ) -> JsonSchemaValue:
+        return handler(_AgentSettingsContract.__pydantic_core_schema__)
+
+
+class _AgentSettingsPatchJsonSchema:
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls,
+        _core_schema: CoreSchema,
+        handler: GetJsonSchemaHandler,
+    ) -> JsonSchemaValue:
+        return handler(_AgentSettingsPatchContract.__pydantic_core_schema__)
+
+
+AgentSettingsDict = Annotated[dict[str, Any], _AgentSettingsJsonSchema]
+AgentSettingsPatchDict = Annotated[dict[str, Any], _AgentSettingsPatchJsonSchema]
+
+
 class SettingsResponse(BaseModel):
     """Response model for GET /api/settings.
 
     Contains the full settings payload including agent configuration,
-    conversation settings, and a flag indicating if an LLM API key is set.
+    conversation settings, active LLM profile, miscellaneous frontend-owned
+    settings, and a flag indicating whether an LLM API key is set.
 
     The ``agent_settings`` and ``conversation_settings`` fields are raw dicts
     because the server controls secret serialization via context. Use the
@@ -53,11 +142,24 @@ class SettingsResponse(BaseModel):
         response = SettingsResponse.model_validate(api_response.json())
         agent = response.get_agent_settings()  # Returns AgentSettingsConfig
         conv = response.get_conversation_settings()  # Returns ConversationSettings
+
+    ``misc_settings`` is an opaque container for frontend-owned data that the
+    agent-server persists but does not interpret — see the docstring of
+    :class:`PersistedSettings.misc_settings`.
     """
 
-    agent_settings: dict[str, Any]
+    agent_settings: AgentSettingsDict
     conversation_settings: dict[str, Any]
     llm_api_key_is_set: bool
+    active_profile: str | None = Field(
+        default=None,
+        description="Name of the currently active LLM profile, if one is selected.",
+    )
+    active_agent_profile_id: str | None = Field(
+        default=None,
+        description="Stable id of the currently active AgentProfile, if one is set.",
+    )
+    misc_settings: dict[str, Any] = Field(default_factory=dict)
 
     def get_agent_settings(self) -> AgentSettingsConfig:
         """Parse and validate ``agent_settings`` into a typed model.
@@ -78,18 +180,34 @@ class SettingsResponse(BaseModel):
         """
         from .model import ConversationSettings
 
-        return ConversationSettings.model_validate(self.conversation_settings)
+        return ConversationSettings.from_persisted(self.conversation_settings)
 
 
 class SettingsUpdateRequest(BaseModel):
     """Request model for PATCH /api/settings.
 
     Supports partial updates via diff objects that are deep-merged with
-    existing settings.
+    existing settings. ``misc_settings_diff`` is deep-merged into the
+    persisted ``misc_settings`` block with the same semantics as
+    ``agent_settings_diff`` and ``conversation_settings_diff``: nested dicts
+    merge recursively, and lists are replaced wholesale rather than merged.
+    Because ``misc_settings`` is opaque to the agent-server, callers are
+    responsible for the shape of what they store there.
     """
 
-    agent_settings_diff: dict[str, Any] | None = None
+    agent_settings_diff: AgentSettingsPatchDict | None = None
     conversation_settings_diff: dict[str, Any] | None = None
+    misc_settings_diff: dict[str, Any] | None = None
+    active_profile: str | None = Field(
+        default=None,
+        pattern=PROFILE_NAME_PATTERN,
+        description="Name of the active LLM profile to persist; null clears it.",
+    )
+    active_agent_profile_id: str | None = Field(
+        default=None,
+        pattern=UUID_PATTERN,
+        description="Stable id of the active AgentProfile to persist; null clears it.",
+    )
 
 
 # ── Secrets API Models ────────────────────────────────────────────────────

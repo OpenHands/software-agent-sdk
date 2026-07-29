@@ -13,6 +13,7 @@ from litellm.types.utils import CostPerToken, ModelResponse, Usage
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from openhands.sdk.llm.utils.metrics import Metrics
+from openhands.sdk.llm.utils.openhands_provider import litellm_call_kwargs
 from openhands.sdk.logger import get_logger
 
 
@@ -269,14 +270,13 @@ class Telemetry(BaseModel):
         except Exception as e:
             logger.debug(f"Failed to get cost from LiteLLM headers: {e}")
 
-        # move on to litellm cost calculator
-        # Handle model name properly - if it doesn't contain "/", use as-is
-        if "/" in self.model_name:
-            provider, bare = self.model_name.split("/", 1)
+        model = litellm_call_kwargs(self.model_name, None)["model"]
+        if "/" in model:
+            provider, bare = model.split("/", 1)
             extra_kwargs["model"] = bare
             extra_kwargs["custom_llm_provider"] = provider
         else:
-            extra_kwargs["model"] = self.model_name
+            extra_kwargs["model"] = model
         try:
             return float(
                 litellm_completion_cost(completion_response=resp, **extra_kwargs)

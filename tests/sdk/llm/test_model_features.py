@@ -1,9 +1,14 @@
 import pytest
+from litellm.utils import supports_vision
 
 from openhands.sdk.llm.utils.model_features import (
+    REASONING_EFFORT_MODEL_OVERRIDES,
+    VISION_MODEL_OVERRIDES,
+    _normalized_supported_openai_params,
     get_features,
     model_matches,
 )
+from openhands.sdk.llm.utils.model_info import get_litellm_model_info
 
 
 @pytest.mark.parametrize(
@@ -61,6 +66,21 @@ def test_model_matches(name, pattern, expected):
         ("litellm_proxy/gpt-5", True),
         ("litellm_proxy/claude-opus-4-5", True),
         ("litellm_proxy/gemini-3-flash-preview", True),
+        ("claude-fable-5", True),
+        ("anthropic/claude-fable-5", True),
+        ("litellm_proxy/anthropic/claude-fable-5", True),
+        ("kimi-k3", True),
+        ("moonshot/kimi-k3", True),
+        ("litellm_proxy/moonshot/kimi-k3", True),
+        ("claude-opus-5", True),
+        ("anthropic/claude-opus-5", True),
+        ("litellm_proxy/anthropic/claude-opus-5", True),
+        ("claude-opus-4-8", True),
+        ("anthropic/claude-opus-4-8", True),
+        ("bedrock/us.anthropic.claude-opus-4-8-v1:0", True),
+        ("bedrock/eu.anthropic.claude-opus-4-8-v1:0", True),
+        ("bedrock/apac.anthropic.claude-opus-4-8-v1:0", True),
+        ("bedrock/global.anthropic.claude-opus-4-8-v1:0", True),
         # LiteLLM proxy with deployment path prefixes (prod/, dev/, staging/, test/)
         ("litellm_proxy/prod/claude-opus-4-5-20251101", True),
         ("litellm_proxy/dev/claude-opus-4-5", True),
@@ -119,14 +139,24 @@ def test_extended_thinking_support(model, expected_extended_thinking):
         ("claude-sonnet-4-6", True),
         ("claude-opus-4-5", True),
         ("claude-opus-4-6", True),
+        # Claude Fable 5 supports prompt caching across model-name forms.
+        ("claude-fable-5", True),
+        ("anthropic/claude-fable-5", True),
+        ("litellm_proxy/anthropic/claude-fable-5", True),
+        # Claude Opus 5 supports prompt caching across raw, direct-provider,
+        # and proxy-prefixed forms.
+        ("claude-opus-5", True),
+        ("anthropic/claude-opus-5", True),
+        ("litellm_proxy/anthropic/claude-opus-5", True),
         # User-facing model names (no provider prefix)
         ("anthropic.claude-3-5-sonnet-20241022", True),
         ("anthropic.claude-3-haiku-20240307", True),
         ("anthropic.claude-3-opus-20240229", True),
-        # Gemini explicit context caching through LiteLLM.
-        ("gemini-2.5-pro", True),
-        ("gemini-3.1-pro-preview", True),
-        ("litellm_proxy/gemini-3.1-pro-preview", True),
+        # Gemini must NOT use explicit cache_control markers: they freeze the
+        # cache at the static prefix and disable Google's implicit caching.
+        ("gemini-2.5-pro", False),
+        ("gemini-3.1-pro-preview", False),
+        ("litellm_proxy/gemini-3.1-pro-preview", False),
         ("gpt-4o", False),  # OpenAI doesn't support explicit prompt caching
         ("gemini-1.5-pro", False),
         ("unknown-model", False),
@@ -238,7 +268,105 @@ def test_get_features_unknown_model():
     # Unknown models should have default feature values
     assert features.supports_reasoning_effort is False
     assert features.supports_prompt_cache is False
+    assert features.supports_vision is False
     assert features.supports_stop_words is True  # Most models support stop words
+
+
+def test_metadata_drives_adaptive_thinking_and_sampling():
+    features = get_features(
+        "anthropic/claude-sonnet-5",
+        model_info={
+            "litellm_provider": "anthropic",
+            "supports_reasoning": True,
+            "supports_adaptive_thinking": True,
+            "supports_sampling_params": False,
+            "supports_prompt_caching": True,
+        },
+    )
+
+    assert features.supports_reasoning_effort is True
+    assert features.thinking_mode == "adaptive"
+    assert features.supports_extended_thinking is False
+    assert features.supports_sampling_params is False
+    assert features.supports_prompt_cache is True
+
+
+def test_gemini_metadata_does_not_enable_explicit_prompt_cache():
+    features = get_features(
+        "litellm_proxy/gemini-3.1-pro-preview",
+        model_info={
+            "key": "gemini-3.1-pro-preview",
+            "litellm_provider": "vertex_ai",
+            "supports_prompt_caching": True,
+        },
+    )
+
+    assert features.supports_prompt_cache is False
+
+
+def test_sampling_support_uses_preserved_litellm_metadata():
+    model_info = get_litellm_model_info(
+        secret_api_key=None,
+        base_url=None,
+        model="anthropic/claude-sonnet-5",
+    )
+    assert model_info is not None
+
+    features = get_features(
+        "anthropic/claude-sonnet-5",
+        model_info=model_info,
+    )
+
+    assert features.supports_sampling_params is False
+
+
+def test_metadata_false_takes_precedence_over_name_fallbacks():
+    features = get_features(
+        "openai/gpt-5",
+        model_info={
+            "supports_reasoning": False,
+            "supports_prompt_caching": False,
+            "supported_endpoints": [],
+        },
+    )
+
+    assert features.supports_reasoning_effort is False
+    assert features.supports_prompt_cache is False
+    assert features.supports_responses_api is False
+
+
+def test_capability_overrides_take_precedence_over_metadata():
+    features = get_features(
+        "proxy/future-model",
+        model_info={
+            "supports_reasoning": False,
+            "supports_adaptive_thinking": False,
+            "supports_sampling_params": True,
+            "supports_vision": False,
+        },
+        overrides={
+            "supports_reasoning_effort": True,
+            "thinking_mode": "adaptive",
+            "supports_sampling_params": False,
+            "supports_responses_api": True,
+            "supports_vision": True,
+        },
+    )
+
+    assert features.supports_reasoning_effort is True
+    assert features.thinking_mode == "adaptive"
+    assert features.supports_sampling_params is False
+    assert features.supports_responses_api is True
+    assert features.supports_vision is True
+
+
+def test_responses_api_is_discovered_from_model_metadata():
+    features = get_features(
+        "proxy/future-model",
+        model_info={"supported_endpoints": ["/v1/chat/completions", "/v1/responses"]},
+    )
+
+    assert features.supports_responses_api is True
 
 
 def test_get_features_empty_model():
@@ -249,8 +377,52 @@ def test_get_features_empty_model():
     # Empty models should have default feature values
     assert features_empty.supports_reasoning_effort is False
     assert features_none.supports_reasoning_effort is False
+    assert features_empty.supports_vision is False
+    assert features_none.supports_vision is False
     assert features_empty.supports_stop_words is True
     assert features_none.supports_stop_words is True
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "kimi-k3",
+        "moonshot/kimi-k3",
+        "litellm_proxy/moonshot/kimi-k3",
+        "openhands/kimi-k3",
+    ],
+)
+def test_kimi_k3_supports_vision(model: str):
+    assert get_features(model).supports_vision is True
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gpt-4o",
+        "openai/gpt-4o",
+        "litellm_proxy/openai/gpt-4o",
+        "openhands/gpt-4o",
+        "litellm_proxy/prod/openai/gpt-4o",
+    ],
+)
+def test_litellm_vision_support_is_exposed_as_model_feature(model: str):
+    assert get_features(model).supports_vision is True
+
+
+def test_reasoning_effort_overrides_are_not_redundant():
+    for pattern, litellm_model in REASONING_EFFORT_MODEL_OVERRIDES.items():
+        params = _normalized_supported_openai_params(litellm_model)
+        assert "reasoning_effort" not in params, (
+            f"Remove {pattern!r}: LiteLLM now supports {litellm_model!r}"
+        )
+
+
+def test_vision_overrides_are_not_redundant():
+    for pattern, litellm_model in VISION_MODEL_OVERRIDES.items():
+        assert not supports_vision(litellm_model), (
+            f"Remove {pattern!r}: LiteLLM now supports {litellm_model!r}"
+        )
 
 
 def test_model_matches_with_provider_pattern():
@@ -361,6 +533,10 @@ def test_prompt_cache_retention_support(model, expected_retention):
         ("kimi-k2-thinking-0905", True),
         ("Kimi-K2-Thinking", True),  # Case insensitive
         ("moonshot/kimi-k2-thinking", True),  # With provider prefix
+        ("kimi-k3", True),
+        ("Kimi-K3", True),  # Case insensitive
+        ("moonshot/kimi-k3", True),  # With provider prefix
+        ("litellm_proxy/moonshot/kimi-k3", True),  # Through proxy
         ("kimi-k2.5", True),
         ("Kimi-K2.5", True),  # Case insensitive
         # DeepSeek reasoner model

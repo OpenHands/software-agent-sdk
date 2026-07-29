@@ -8,14 +8,28 @@ agent-server.
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal, cast
 from uuid import UUID
 
-from pydantic import BaseModel, Discriminator, Field, Tag
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Discriminator,
+    Field,
+    Tag,
+    field_serializer,
+    model_validator,
+)
 
-from openhands.sdk.agent.acp_agent import ACPAgent
-from openhands.sdk.agent.agent import Agent
-from openhands.sdk.conversation.types import ConversationTags
+from openhands.sdk.agent.acp_agent import ACPAgent as ACPAgent
+from openhands.sdk.agent.agent import Agent as Agent
+from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.conversation.types import (
+    ConversationObservabilityMetadata,
+    ConversationObservabilitySpanName,
+    ConversationObservabilityTags,
+    ConversationTags,
+)
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm.message import ImageContent, Message, TextContent
 from openhands.sdk.plugin import PluginSource
@@ -26,6 +40,7 @@ from openhands.sdk.security.confirmation_policy import (
     NeverConfirm,
 )
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.utils.models import kind_of
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -60,8 +75,30 @@ class SendMessageRequest(BaseModel):
         return Message(role=self.role, content=self.content)
 
 
-class _StartConversationRequestBase(BaseModel):
-    """Common conversation creation fields shared by conversation contracts."""
+class AgentLaunchAdditions(BaseModel):
+    """Add deployment context after agent resolution."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    system_message_suffix_append: str | None = Field(
+        default=None,
+        max_length=32768,
+        description=(
+            "Deployment-controlled text appended to the resolved agent's "
+            "system-message suffix."
+        ),
+    )
+
+
+class StartConversationRequest(BaseModel):
+    """Payload to create a new conversation.
+
+    Supports any concrete :class:`AgentBase` implementation, including regular
+    OpenHands agents and ACP agents. Clients may provide either a concrete
+    ``agent`` payload or an ``agent_settings`` payload; when ``agent_settings``
+    is provided without ``agent``, the settings are validated with the
+    ``agent_kind`` discriminator and converted to the appropriate agent type.
+    """
 
     workspace: LocalWorkspace = Field(
         ...,
@@ -80,6 +117,13 @@ class _StartConversationRequestBase(BaseModel):
         description=(
             "Optional conversation ID. If not provided, a random UUID will be "
             "generated."
+        ),
+    )
+    parent_conversation_id: UUID | None = Field(
+        default=None,
+        description=(
+            "Optional ID of an existing conversation that owns this one. The "
+            "parent must already exist and share this conversation's workspace."
         ),
     )
     confirmation_policy: ConfirmationPolicyBase = Field(
@@ -130,11 +174,28 @@ class _StartConversationRequestBase(BaseModel):
             "to register the tools for this conversation."
         ),
     )
+    client_tools: list[ClientToolSpec] = Field(
+        default_factory=list,
+        description=(
+            "Tools defined by the client via JSON spec. These tools have "
+            "no server-side executor — when the agent calls them, an "
+            "ActionEvent is emitted over the WebSocket and the client "
+            "handles execution. The SDK returns an acknowledgment "
+            "observation immediately."
+        ),
+    )
+    agent_launch_additions: AgentLaunchAdditions | None = Field(
+        default=None,
+        description=(
+            "Deployment context applied after agent or Agent Profile "
+            "resolution. The stored Agent Profile is not modified."
+        ),
+    )
     agent_definitions: list[AgentDefinition] = Field(
         default_factory=list,
         description=(
             "Agent definitions from the client's registry. These are "
-            "registered on the server so that DelegateTool and TaskSetTool "
+            "registered on the server so that task tools "
             "can see user-registered subagents."
         ),
     )
@@ -163,6 +224,38 @@ class _StartConversationRequestBase(BaseModel):
             "alphanumeric. Values are arbitrary strings up to 256 characters."
         ),
     )
+    user_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional user ID supplied by the hosting deployment, used to "
+            "correlate this conversation with the identity that deployment "
+            "already established. When set it is passed to "
+            "Laminar.set_trace_user_id() so traces can be queried by user, "
+            "and — where a host has enabled product analytics — it is reused "
+            "verbatim as the analytics correlation id so events attach to the "
+            "existing person rather than creating a duplicate identity. It is "
+            "never generated by the SDK, and is omitted entirely when unset."
+        ),
+    )
+    observability_metadata: ConversationObservabilityMetadata = Field(
+        default_factory=dict,
+        description=(
+            "Trace-level metadata to attach to observability backends. Values must "
+            "be scalars or homogeneous scalar lists supported by OpenTelemetry."
+        ),
+    )
+    observability_tags: ConversationObservabilityTags = Field(
+        default_factory=list,
+        description="Tags to attach to the conversation root observability span.",
+    )
+    observability_span_name: ConversationObservabilitySpanName = Field(
+        default="conversation",
+        description=(
+            "Optional named child span to emit under the conversation root. Use "
+            "stable, low-cardinality names because observability backends may use "
+            "span names for grouping or signal routing."
+        ),
+    )
     autotitle: bool = Field(
         default=True,
         description=(
@@ -183,17 +276,77 @@ class _StartConversationRequestBase(BaseModel):
         ),
     )
 
+    agent_settings: dict[str, Any] | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Optional agent settings payload. If `agent` is omitted, this is "
+            "validated with the AgentSettingsBase `agent_kind` discriminator and "
+            "used to construct the concrete agent."
+        ),
+    )
+    agent_profile_id: UUID | None = Field(
+        default=None,
+        description=(
+            "Optional agent profile ID. When set, the agent-server resolves the "
+            "referenced profile server-side (stores + cipher are required) and "
+            "builds the agent from it. Mutually exclusive with `agent` and "
+            "`agent_settings`. The SDK validator enforces exclusivity only — "
+            "resolution happens in conversation_service, not here."
+        ),
+    )
+    agent: AgentBase = Field(default=cast(AgentBase, None))
 
-class StartConversationRequest(_StartConversationRequestBase):
-    """Payload to create a new conversation.
+    @model_validator(mode="before")
+    @classmethod
+    def _populate_agent_from_settings(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        payload = dict(data)
+        has_profile_id = payload.get("agent_profile_id") is not None
+        has_agent = payload.get("agent") is not None
+        has_agent_settings = payload.get("agent_settings") is not None
+        if has_profile_id and (has_agent or has_agent_settings):
+            raise ValueError(
+                "`agent_profile_id` is mutually exclusive with"
+                " `agent` and `agent_settings`"
+            )
+        if not has_profile_id:
+            if payload.get("agent") is None and has_agent_settings:
+                from openhands.sdk.settings.model import validate_agent_settings
 
-    Contains an Agent configuration along with conversation-specific options.
+                try:
+                    payload["agent"] = validate_agent_settings(
+                        payload["agent_settings"]
+                    ).create_agent()
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(str(exc)) from exc
+            elif isinstance(payload.get("agent"), dict):
+                agent_payload = dict(payload["agent"])
+                if "kind" not in agent_payload and "llm" in agent_payload:
+                    agent_payload["kind"] = "Agent"
+                payload["agent"] = agent_payload
+        return payload
+
+    @model_validator(mode="after")
+    def _require_agent(self) -> StartConversationRequest:
+        if self.agent is None and self.agent_profile_id is None:
+            raise ValueError(
+                "One of `agent`, `agent_settings`, or"
+                " `agent_profile_id` must be provided"
+            )
+        return self
+
+    @field_serializer("agent", mode="wrap")
+    def _serialize_agent(self, value: AgentBase | None, handler: Any) -> Any:
+        if value is None:
+            return None
+        return handler(value)
+
+
+class StartACPConversationRequest(StartConversationRequest):
+    """Deprecated compatibility alias for ACP-capable start requests.
+
+    Use :class:`StartConversationRequest` instead. It now supports both regular
+    OpenHands agents and ACP agents through the same request contract.
     """
-
-    agent: Agent
-
-
-class StartACPConversationRequest(_StartConversationRequestBase):
-    """Payload to create a conversation with ACP-capable agent support."""
-
-    agent: ACPEnabledAgent

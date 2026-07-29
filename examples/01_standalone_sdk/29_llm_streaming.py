@@ -20,7 +20,7 @@ api_key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
 if not api_key:
     raise RuntimeError("Set LLM_API_KEY or OPENAI_API_KEY in your environment.")
 
-model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
+model = os.getenv("LLM_MODEL", "gpt-5.5")
 base_url = os.getenv("LLM_BASE_URL")
 llm = LLM(
     model=model,

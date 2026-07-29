@@ -24,7 +24,7 @@ class DesktopService:
 
     async def start(self) -> bool:
         """Start the VNC desktop stack."""
-        if self.is_running():
+        if await asyncio.to_thread(self.is_running):
             logger.info("Desktop already running")
             return True
 
@@ -64,35 +64,38 @@ class DesktopService:
         try:
             # Roughly equivalent to: pgrep -f "Xvnc .*:1"
             xvnc_running = (
-                subprocess.run(
+                await asyncio.to_thread(
+                    subprocess.run,
                     ["pgrep", "-f", f"Xvnc .*{display}"],
                     capture_output=True,
                     text=True,
                     timeout=3,
                     env=env,
-                ).returncode
-                == 0
-            )
+                )
+            ).returncode == 0
         except Exception:
             xvnc_running = False
 
         if not xvnc_running:
             logger.info("Starting TigerVNC on %s (%s)...", display, vnc_geometry)
             # vncserver <DISPLAY> -geometry <geom> -depth 24 -localhost yes
-            rc = subprocess.run(
-                [
-                    "vncserver",
-                    display,
-                    "-geometry",
-                    vnc_geometry,
-                    "-depth",
-                    "24",
-                    "-localhost",
-                    "yes",
-                    "-SecurityTypes",
-                    "None",
-                ],
-                env=env,
+            rc = (
+                await asyncio.to_thread(
+                    subprocess.run,
+                    [
+                        "vncserver",
+                        display,
+                        "-geometry",
+                        vnc_geometry,
+                        "-depth",
+                        "24",
+                        "-localhost",
+                        "yes",
+                        "-SecurityTypes",
+                        "None",
+                    ],
+                    env=env,
+                )
             ).returncode
             if rc != 0:
                 logger.error("vncserver failed with rc=%s", rc)
@@ -102,15 +105,15 @@ class DesktopService:
         # Equivalent to: pgrep -f "[n]ovnc_proxy .*--listen .*<port>"
         try:
             novnc_running = (
-                subprocess.run(
+                await asyncio.to_thread(
+                    subprocess.run,
                     ["pgrep", "-f", rf"novnc_proxy .*--listen .*{self.novnc_port}"],
                     capture_output=True,
                     text=True,
                     timeout=3,
                     env=env,
-                ).returncode
-                == 0
-            )
+                )
+            ).returncode == 0
         except Exception:
             novnc_running = False
 
@@ -152,7 +155,9 @@ class DesktopService:
         await asyncio.sleep(2)
 
         # Final sanity: either our managed noVNC is alive or Xvnc is alive
-        if (self._proc and self._proc.returncode is None) or self.is_running():
+        if (self._proc and self._proc.returncode is None) or await asyncio.to_thread(
+            self.is_running
+        ):
             logger.info("Desktop started successfully")
             return True
 

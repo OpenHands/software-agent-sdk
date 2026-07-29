@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.request import urlopen
 
 import httpx
 import tenacity
-from pydantic import Field, PrivateAttr
+from pydantic import Field, PrivateAttr, SecretStr
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.config import MCPServer, MCPTransport
 from openhands.sdk.workspace.remote.base import RemoteWorkspace
 from openhands.sdk.workspace.repo import CloneResult, RepoMapping, RepoSource
 
@@ -34,6 +36,12 @@ _MAX_RETRIES = 3
 
 # Default port the agent-server listens on inside a Cloud Runtime
 DEFAULT_AGENT_SERVER_PORT = 60000
+
+
+def _mcp_api_key_headers(api_key: object) -> dict[str, SecretStr] | None:
+    if not api_key:
+        return None
+    return {"Authorization": SecretStr(f"Bearer {api_key}")}
 
 
 def _is_retryable_error(error: BaseException) -> bool:
@@ -569,15 +577,17 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         retry=tenacity.retry_if_exception(_is_retryable_error),
         reraise=True,
     )
-    def get_llm(self, **llm_kwargs: Any) -> LLM:
+    def get_llm(self, profile_name: str | None = None, **llm_kwargs: Any) -> LLM:
         """Fetch LLM settings from the user's SaaS account and return an LLM.
 
         Calls ``GET /api/v1/users/me?expose_secrets=true`` to retrieve the
-        user's LLM configuration (model, api_key, base_url) and returns a
-        fully usable ``LLM`` instance.  Retries up to 3 times on transient
-        errors (network issues, server 5xx).
+        user's LLM configuration or a named LLM profile and returns a fully
+        usable ``LLM`` instance. Retries up to 3 times on transient errors
+        (network issues, server 5xx).
 
         Args:
+            profile_name: Optional LLM profile name. When provided, loads that
+                named profile instead of the default SaaS LLM fields.
             **llm_kwargs: Additional keyword arguments passed to the LLM
                 constructor, allowing overrides of any LLM parameter
                 (e.g. ``model``, ``temperature``).
@@ -586,12 +596,13 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             An LLM instance configured with the user's SaaS credentials.
 
         Raises:
+            FileNotFoundError: If ``profile_name`` does not exist.
             httpx.HTTPStatusError: If the API request fails.
             RuntimeError: If the sandbox is not running.
 
         Example:
             >>> with OpenHandsCloudWorkspace(...) as workspace:
-            ...     llm = workspace.get_llm()
+            ...     llm = workspace.get_llm(profile_name="fast")
             ...     agent = Agent(llm=llm, tools=get_default_tools())
         """
         from openhands.sdk.llm.llm import LLM
@@ -607,13 +618,28 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         )
         data = resp.json()
 
-        kwargs: dict[str, Any] = {}
-        if data.get("llm_model"):
-            kwargs["model"] = data["llm_model"]
-        if data.get("llm_api_key"):
-            kwargs["api_key"] = data["llm_api_key"]
-        if data.get("llm_base_url"):
-            kwargs["base_url"] = data["llm_base_url"]
+        if profile_name:
+            profiles_payload = data.get("llm_profiles") or {}
+            profiles = (
+                profiles_payload.get("profiles")
+                if isinstance(profiles_payload, dict)
+                else None
+            )
+            profile_config = (
+                profiles.get(profile_name) if isinstance(profiles, dict) else None
+            )
+            if not isinstance(profile_config, dict):
+                raise FileNotFoundError(f"LLM profile '{profile_name}' not found")
+            kwargs = dict(profile_config)
+            kwargs["usage_id"] = f"profile:{profile_name}"
+        else:
+            kwargs = {}
+            if data.get("llm_model"):
+                kwargs["model"] = data["llm_model"]
+            if data.get("llm_api_key"):
+                kwargs["api_key"] = data["llm_api_key"]
+            if data.get("llm_base_url"):
+                kwargs["base_url"] = data["llm_base_url"]
 
         # User-provided kwargs take precedence
         kwargs.update(llm_kwargs)
@@ -678,17 +704,15 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         retry=tenacity.retry_if_exception(_is_retryable_error),
         reraise=True,
     )
-    def get_mcp_config(self) -> dict[str, Any]:
-        """Fetch MCP configuration from the user's SaaS account.
+    def get_mcp_config(self) -> dict[str, MCPServer]:
+        """Fetch MCP servers from the user's SaaS account.
 
         Calls ``GET /api/v1/users/me`` to retrieve the user's MCP configuration
-        and transforms it into the format expected by the SDK Agent and
-        ``fastmcp.mcp_config.MCPConfig``.
+        and transforms it into the native server map expected by the SDK Agent.
 
         Returns:
-            A dictionary with ``mcpServers`` key containing server configurations
-            (compatible with ``MCPConfig.model_validate()``), or an empty dict
-            if no MCP config is set.
+            A dictionary mapping server names to server configurations, or an
+            empty dict if no MCP servers are configured.
 
         Raises:
             httpx.HTTPStatusError: If the API request fails.
@@ -699,10 +723,6 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             ...     llm = workspace.get_llm()
             ...     mcp_config = workspace.get_mcp_config()
             ...     agent = Agent(llm=llm, mcp_config=mcp_config, tools=...)
-            ...
-            ...     # Or validate as MCPConfig:
-            ...     from fastmcp.mcp_config import MCPConfig
-            ...     config = MCPConfig.model_validate(mcp_config)
         """
         if not self._sandbox_id:
             raise RuntimeError("Sandbox is not running")
@@ -714,55 +734,38 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         )
         data = resp.json()
 
-        mcp_config_data = data.get("mcp_config")
-        if not mcp_config_data:
+        cloud_mcp_config = data.get("mcp_config")
+        if not isinstance(cloud_mcp_config, Mapping):
             return {}
 
-        mcp_servers: dict[str, dict[str, Any]] = {}
+        mcp_config: dict[str, MCPServer] = {}
 
-        # Transform SSE servers → RemoteMCPServer format
-        for i, sse_server in enumerate(mcp_config_data.get("sse_servers") or []):
-            server_config: dict[str, Any] = {
-                "url": sse_server["url"],
-                "transport": "sse",
-            }
-            if sse_server.get("api_key"):
-                server_config["headers"] = {
-                    "Authorization": f"Bearer {sse_server['api_key']}"
-                }
-            server_name = f"sse_{i}"
-            mcp_servers[server_name] = server_config
+        server_sources: tuple[tuple[str, str | None, MCPTransport | None], ...] = (
+            ("sse_servers", "sse", "sse"),
+            ("shttp_servers", "shttp", "streamable-http"),
+            ("stdio_servers", None, None),
+        )
+        for source, name_prefix, transport in server_sources:
+            for index, server in enumerate(cloud_mcp_config.get(source) or []):
+                if transport is None:
+                    mcp_config[server["name"]] = MCPServer(
+                        command=server["command"],
+                        args=server.get("args", []),
+                        env=server.get("env"),
+                    )
+                    continue
 
-        # Transform SHTTP servers → RemoteMCPServer format
-        for i, shttp_server in enumerate(mcp_config_data.get("shttp_servers") or []):
-            server_config = {
-                "url": shttp_server["url"],
-                "transport": "streamable-http",
-            }
-            if shttp_server.get("api_key"):
-                server_config["headers"] = {
-                    "Authorization": f"Bearer {shttp_server['api_key']}"
-                }
-            if shttp_server.get("timeout"):
-                server_config["timeout"] = shttp_server["timeout"]
-            server_name = f"shttp_{i}"
-            mcp_servers[server_name] = server_config
+                assert name_prefix is not None
+                mcp_config[f"{name_prefix}_{index}"] = MCPServer(
+                    url=server["url"],
+                    transport=transport,
+                    headers=_mcp_api_key_headers(server.get("api_key")),
+                    timeout=server.get("timeout")
+                    if transport == "streamable-http"
+                    else None,
+                )
 
-        # Transform STDIO servers → StdioMCPServer format
-        for stdio_server in mcp_config_data.get("stdio_servers") or []:
-            server_config = {
-                "command": stdio_server["command"],
-                "args": stdio_server.get("args", []),
-            }
-            if stdio_server.get("env"):
-                server_config["env"] = stdio_server["env"]
-            # STDIO servers have an explicit name field
-            mcp_servers[stdio_server["name"]] = server_config
-
-        if not mcp_servers:
-            return {}
-
-        return {"mcpServers": mcp_servers}
+        return mcp_config
 
     @tenacity.retry(
         stop=tenacity.stop_after_attempt(_MAX_RETRIES),

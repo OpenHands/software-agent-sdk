@@ -178,6 +178,85 @@ def test_agent_without_bash_throws_warning(llm):
     conversation.close()
 
 
+# ---------------------------------------------------------------------------
+# agent_context.secrets → secret_registry lift (canvas / TypeScript gap fix)
+# ---------------------------------------------------------------------------
+
+
+def test_agent_context_secrets_seeded_into_registry_at_init(llm, tmp_path):
+    """agent_context.secrets land in secret_registry without any request.secrets.
+
+    Covers callers (e.g. canvas / TypeScript) that build StartConversationRequest
+    directly without going through create_request(), so agent_context.secrets
+    would otherwise only be visible via the _start_acp_server() drain.
+    """
+    agent = Agent(
+        llm=llm,
+        tools=[],
+        agent_context=AgentContext(
+            secrets={"ANTHROPIC_API_KEY": StaticSecret(value=SecretStr("sk-from-ctx"))}
+        ),
+    )
+    conv = LocalConversation(agent, workspace=str(tmp_path))
+    try:
+        registry = conv.state.secret_registry
+        assert registry.get_secret_value("ANTHROPIC_API_KEY") == "sk-from-ctx"
+    finally:
+        conv.close()
+
+
+def test_request_secrets_win_over_agent_context_secrets_on_collision(llm, tmp_path):
+    """request.secrets overrides agent_context.secrets when both name the same key.
+
+    request.secrets is the canonical channel and must have higher priority.
+    """
+    agent = Agent(
+        llm=llm,
+        tools=[],
+        agent_context=AgentContext(
+            secrets={"ANTHROPIC_API_KEY": StaticSecret(value=SecretStr("sk-from-ctx"))}
+        ),
+    )
+    request_secrets = {
+        "ANTHROPIC_API_KEY": StaticSecret(value=SecretStr("sk-from-request"))
+    }
+    conv = LocalConversation(agent, workspace=str(tmp_path), secrets=request_secrets)
+    try:
+        registry = conv.state.secret_registry
+        assert registry.get_secret_value("ANTHROPIC_API_KEY") == "sk-from-request"
+    finally:
+        conv.close()
+
+
+def test_agent_context_and_request_secrets_are_merged(llm, tmp_path):
+    """Non-conflicting keys from both channels appear in secret_registry."""
+    agent = Agent(
+        llm=llm,
+        tools=[],
+        agent_context=AgentContext(
+            secrets={"ANTHROPIC_API_KEY": StaticSecret(value=SecretStr("sk-provider"))}
+        ),
+    )
+    request_secrets = {"GITHUB_TOKEN": StaticSecret(value=SecretStr("ghp-panel"))}
+    conv = LocalConversation(agent, workspace=str(tmp_path), secrets=request_secrets)
+    try:
+        registry = conv.state.secret_registry
+        assert registry.get_secret_value("ANTHROPIC_API_KEY") == "sk-provider"
+        assert registry.get_secret_value("GITHUB_TOKEN") == "ghp-panel"
+    finally:
+        conv.close()
+
+
+def test_no_agent_context_does_not_raise(llm, tmp_path):
+    """Conversation init succeeds when agent has no agent_context."""
+    agent = Agent(llm=llm, tools=[], agent_context=None)
+    conv = LocalConversation(agent, workspace=str(tmp_path))
+    try:
+        assert conv.state.secret_registry.get_secret_value("NONEXISTENT") is None
+    finally:
+        conv.close()
+
+
 def test_agent_secrets_integration_workflow(
     conversation: LocalConversation, terminal_executor: TerminalExecutor, agent: Agent
 ):

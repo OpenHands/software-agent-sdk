@@ -280,7 +280,7 @@ def main():
     parser.add_argument("--output-dir", help="Output directory for test data")
     parser.add_argument(
         "--fncall-model",
-        default="litellm_proxy/anthropic/claude-sonnet-4-20250514",
+        default="litellm_proxy/openai/gpt-5.5",
         help="Function calling model",
     )
     parser.add_argument(

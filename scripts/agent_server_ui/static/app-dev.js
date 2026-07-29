@@ -562,7 +562,7 @@ class OpenHandsWebChat {
             const requestBody = {
                 agent: {
                     llm: {
-                        model: "litellm_proxy/anthropic/claude-sonnet-4-5-20250929",
+                        model: "litellm_proxy/openai/gpt-5.5",
                         base_url: "https://llm-proxy.eval.all-hands.dev",
                         api_key: "placeholder" // This should be set via environment variable
                     },

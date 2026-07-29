@@ -1,33 +1,14 @@
-"""Delegate tool definitions for OpenHands agents.
+"""Delegate action and observation models for OpenHands agents."""
 
-.. deprecated:: 1.16.0
-    DelegateTool is deprecated in favor of TaskToolSet. Use TaskToolSet for
-    sub-agent delegation. DelegateTool will be removed in version 1.23.0.
-"""
-
-import pathlib
-from collections.abc import Sequence
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 from pydantic import Field
 
-from openhands.sdk.context.prompts import render_template
-from openhands.sdk.tool import register_tool
 from openhands.sdk.tool.tool import (
     Action,
     Observation,
-    ToolAnnotations,
-    ToolDefinition,
 )
-from openhands.sdk.utils.deprecation import warn_deprecated
 
-
-if TYPE_CHECKING:
-    from openhands.sdk.conversation.state import ConversationState
-    from openhands.tools.delegate.impl import ConfirmationHandler
-
-
-PROMPT_DIR = pathlib.Path(__file__).parent / "templates"
 
 CommandLiteral = Literal["spawn", "delegate"]
 
@@ -64,87 +45,3 @@ class DelegateObservation(Observation):
     """Observation from delegation operations."""
 
     command: CommandLiteral = Field(description="The command that was executed")
-
-
-class DelegateTool(ToolDefinition[DelegateAction, DelegateObservation]):
-    """A ToolDefinition subclass that automatically initializes a DelegateExecutor.
-
-    .. deprecated:: 1.16.0
-        DelegateTool is deprecated in favor of TaskToolSet. Use TaskToolSet for
-        sub-agent delegation. DelegateTool will be removed in version 1.23.0.
-    """
-
-    @classmethod
-    def create(
-        cls,
-        conv_state: "ConversationState",
-        max_children: int = 5,
-        confirmation_handler: "ConfirmationHandler | None" = None,
-    ) -> Sequence["DelegateTool"]:
-        """Initialize DelegateTool with a DelegateExecutor.
-
-        .. deprecated:: 1.16.0
-            Use TaskToolSet instead. DelegateTool will be removed in version 1.23.0.
-
-        Args:
-            conv_state: Conversation state (used to get workspace location)
-            max_children: Maximum number of concurrent sub-agents (default: 5)
-            confirmation_handler: Optional callback invoked when a sub-agent's
-                confirmation policy requires user approval.  Receives
-                `(agent_id, pending_actions)` and must return `True` to
-                approve or `False` to reject.  When `None`, pending actions
-                are auto-approved.
-
-        Returns:
-            List containing a single delegate tool definition
-        """
-        warn_deprecated(
-            "DelegateTool",
-            deprecated_in="1.16.0",
-            removed_in="1.23.0",
-            details="Use TaskToolSet instead for sub-agent delegation.",
-        )
-
-        # Import here to avoid circular imports
-        from openhands.sdk.subagent import get_factory_info
-        from openhands.tools.delegate.impl import DelegateExecutor
-
-        # Get agent info
-        agent_types_info = get_factory_info()
-
-        # Create dynamic description with workspace and agent type info
-        workspace_path = conv_state.workspace.working_dir
-        tool_description = render_template(
-            prompt_dir=str(PROMPT_DIR),
-            template_name="delegate_tool_description.j2",
-            agent_types_info=agent_types_info,
-            workspace_path=workspace_path,
-        )
-
-        # Initialize the executor without parent conversation
-        # (will be set on first call)
-        executor = DelegateExecutor(
-            max_children=max_children,
-            confirmation_handler=confirmation_handler,
-        )
-
-        # Initialize the parent Tool with the executor
-        return [
-            cls(
-                action_type=DelegateAction,
-                observation_type=DelegateObservation,
-                description=tool_description,
-                annotations=ToolAnnotations(
-                    title="delegate",
-                    readOnlyHint=False,
-                    destructiveHint=False,
-                    idempotentHint=False,
-                    openWorldHint=True,
-                ),
-                executor=executor,
-            )
-        ]
-
-
-# Automatically register the tool when this module is imported
-register_tool(DelegateTool.name, DelegateTool)

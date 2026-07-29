@@ -26,19 +26,33 @@ Policies enforced:
      OpenAPI description must declare a scheduled removal version that has been
      reached by the current package version.
 
-3) Additive response oneOf/anyOf expansion is allowed
-   - Adding new members to ``oneOf`` or ``anyOf`` discriminated unions in response
-     schemas is a normal evolution for extensible event-stream APIs.  Clients MUST
+3) Additive request/response oneOf/anyOf expansion is allowed
+   - Adding new members to ``oneOf`` or ``anyOf`` discriminated unions in request
+     or response schemas is a normal evolution for extensible APIs. Clients MUST
      handle unknown discriminator values gracefully (skip/ignore).
-   - oasdiff flags ``response-body-one-of-added`` and
-     ``response-property-one-of-added`` as ERR; this script downgrades them to
-     informational notices.
+   - oasdiff can report union widening as ERR plus secondary type-change or
+     property-removal artifacts for fields that still exist on one union member;
+     this script downgrades those artifacts to informational notices.
 
-4) No in-place contract breakage
+4) Additive response property type widening is allowed with release notes
+   - If a response property's old type remains valid and the schema only adds more
+     accepted types, the check passes and the workflow marks the PR
+     release-note-required.
+
+5) Schema-only repairs of previously opaque MCP/settings locations are allowed
+   - The runtime already returned MCP objects at these locations, but historical
+     OpenAPI described them as empty/unconstrained schemas. Giving those existing
+     objects their real shape is not a wire-format change.
+   - Pydantic may also collapse identical validation/serialization components;
+     replacing ``MCPNoneAuthCredential-Input`` with the structurally identical
+     ``MCPNoneAuthCredential`` is a component-name repair, not a union removal.
+
+6) No in-place contract breakage
    - Breaking REST contract changes that are not removals of previously-deprecated
-     operations/properties or additive oneOf expansions fail the check. REST clients
-     need 5 minor releases of runway, so incompatible replacements must ship
-     additively or behind a versioned contract until the scheduled removal version.
+     operations/properties, additive oneOf expansions, or additive response property
+     type widenings fail the check. REST clients need 5 minor releases of runway, so
+     incompatible replacements must ship additively or behind a versioned contract
+     until the scheduled removal version.
 
 If the baseline release schema can't be generated (e.g., missing tag / repo issues),
 the script emits a warning and exits successfully to avoid flaky CI.
@@ -47,16 +61,21 @@ the script emits a warning and exits successfully to avoid flaky CI.
 from __future__ import annotations
 
 import ast
+import copy
 import json
+import os
 import re
 import subprocess
 import sys
 import tempfile
 import tomllib
 import urllib.request
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from packaging import version as pkg_version
+
+from openhands.agent_server.openapi import filter_public_openapi
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -79,7 +98,19 @@ HTTP_METHODS = {
     "head",
     "trace",
 }
-PUBLIC_REST_PATH_PREFIX = "/api/"
+AGENT_SERVER_REST_API_BASE_REF_ENV = "AGENT_SERVER_REST_API_BASE_REF"
+RESPONSE_TYPE_WIDENING_REPORT_ENV = "AGENT_SERVER_REST_TYPE_WIDENING_REPORT_PATH"
+
+
+@dataclass(frozen=True)
+class ResponsePropertyTypeWidening:
+    property_path: str
+    added_types: str
+    media_type: str
+    response_status: str
+    text: str
+
+
 ROUTE_DECORATOR_NAMES = HTTP_METHODS | {"api_route"}
 OPENAPI_PROGRAM = """
 import json
@@ -294,14 +325,14 @@ def _find_sdk_deprecated_fastapi_routes(repo_root: Path) -> list[str]:
 
 
 def _filter_public_rest_openapi(schema: dict) -> dict:
-    filtered_schema = dict(schema)
-    filtered_schema["paths"] = {
-        path: path_item
-        for path, path_item in schema.get("paths", {}).items()
-        if path == PUBLIC_REST_PATH_PREFIX.rstrip("/")
-        or path.startswith(PUBLIC_REST_PATH_PREFIX)
-    }
-    return filtered_schema
+    # Compatibility checks retain the historical component set so an approved,
+    # deprecated property can still be inspected after the route that referenced
+    # it is removed. Release artifacts use the pruned, canonical mode instead.
+    return filter_public_openapi(
+        schema,
+        prune_schemas=False,
+        add_contract_components=False,
+    )
 
 
 def _find_deprecation_policy_errors(schema: dict) -> list[str]:
@@ -452,7 +483,10 @@ def _iter_schema_properties(schema: dict):
 
 def _removed_property_name(change: dict) -> str | None:
     text = str(change.get("text", ""))
-    match = re.search(r"(?:request property|optional property) `([^`]+)`", text)
+    match = re.search(
+        r"(?:request property|optional property|required property) `([^`]+)`",
+        text,
+    )
     if match is None:
         return None
     return match.group(1).rstrip("/").rsplit("/", maxsplit=1)[-1]
@@ -546,6 +580,202 @@ _ADDITIVE_RESPONSE_ONEOF_IDS = frozenset(
 )
 
 
+_ADDITIVE_RESPONSE_BODY_ONEOF_IDS = frozenset(
+    {
+        "response-body-one-of-added",
+        "response-body-any-of-added",
+    }
+)
+
+
+# oasdiff rule IDs for enum-value additions in response schemas.
+_RESPONSE_ENUM_VALUE_ADDED_IDS = frozenset(
+    {
+        "response-property-enum-value-added",
+        "response-write-only-property-enum-value-added",
+    }
+)
+_RESPONSE_PROPERTY_TYPE_WIDENING_RE = re.compile(
+    r"response property `(?P<property_path>[^`]+)` list-of-types was widened "
+    r"by adding types `(?P<added_types>[^`]+)` to media type "
+    r"`(?P<media_type>[^`]+)` of response `(?P<response_status>[^`]+)`"
+)
+
+
+def _parse_response_property_type_widening(
+    change: dict,
+) -> ResponsePropertyTypeWidening | None:
+    text = str(change.get("text", ""))
+    match = _RESPONSE_PROPERTY_TYPE_WIDENING_RE.search(text)
+    if match is None:
+        return None
+    return ResponsePropertyTypeWidening(text=text, **match.groupdict())
+
+
+def _is_additive_response_property_type_widening(change: dict) -> bool:
+    return _parse_response_property_type_widening(change) is not None
+
+
+def _response_type_widening_report_items(
+    changes: list[dict],
+) -> list[ResponsePropertyTypeWidening]:
+    items: list[ResponsePropertyTypeWidening] = []
+    for change in changes:
+        widening = _parse_response_property_type_widening(change)
+        if widening is not None:
+            items.append(widening)
+    return items
+
+
+# Response properties that are known extensible discriminated-union discriminators
+# and may therefore grow new enum values additively. Adding a HookType value
+# (e.g. "agent") to a hook definition's `type` is safe because hook configs are an
+# extensible union and clients must tolerate unknown discriminator values. This is
+# intentionally scoped to the hook discriminator so an ordinary new response enum
+# value elsewhere (a new status/mode/etc.) is still treated as a breaking change.
+_EXTENSIBLE_DISCRIMINATOR_PROPERTY_RE = re.compile(
+    r"HookConfig\b.*\bhooks/items/type\b"
+)
+_ACCEPTED_CLOUD_PROXY_PATH_REMOVAL_ID = "api-path-removed-without-deprecation"
+_ACCEPTED_CLOUD_PROXY_REMOVAL_PATH = "/api/cloud-proxy"
+_ACCEPTED_CLOUD_PROXY_REMOVAL_METHOD = "post"
+_ACCEPTED_CLOUD_PROXY_REMOVAL_OPERATION_ID = "cloud_proxy_api_cloud_proxy_post"
+
+_ACCEPTED_VSCODE_BASE_URL_DEFAULT_REMOVAL_ID = "request-parameter-default-value-removed"
+_ACCEPTED_VSCODE_BASE_URL_DEFAULT_REMOVAL_PATH = "/api/vscode/url"
+_ACCEPTED_VSCODE_BASE_URL_DEFAULT_REMOVAL_METHOD = "get"
+_ACCEPTED_VSCODE_BASE_URL_DEFAULT_REMOVAL_OPERATION_ID = (
+    "get_vscode_url_api_vscode_url_get"
+)
+_ACCEPTED_VSCODE_BASE_URL_DEFAULT_REMOVAL_PARAM_RE = re.compile(
+    r"request parameter `base_url`, default value `http://localhost:8001` "
+    r"was removed"
+)
+
+
+def _is_accepted_vscode_base_url_default_removal(change: dict) -> bool:
+    """Return True for the accepted /api/vscode/url base_url default removal.
+
+    Maintainers accepted this documented-default removal in PR #4181: the
+    ``base_url`` query parameter stays optional, only the server-side fallback
+    changed (from a hardcoded ``http://localhost:8001`` to the actually
+    configured VSCode port). Requests that omit ``base_url`` keep working, so
+    no client contract is broken.
+    """
+    return (
+        str(change.get("id", "")) == _ACCEPTED_VSCODE_BASE_URL_DEFAULT_REMOVAL_ID
+        and str(change.get("path", ""))
+        == _ACCEPTED_VSCODE_BASE_URL_DEFAULT_REMOVAL_PATH
+        and str(change.get("operation", "")).lower()
+        == _ACCEPTED_VSCODE_BASE_URL_DEFAULT_REMOVAL_METHOD
+        and str(change.get("operationId", ""))
+        == _ACCEPTED_VSCODE_BASE_URL_DEFAULT_REMOVAL_OPERATION_ID
+        and bool(
+            _ACCEPTED_VSCODE_BASE_URL_DEFAULT_REMOVAL_PARAM_RE.search(
+                str(change.get("text", ""))
+            )
+        )
+    )
+
+
+def _is_accepted_cloud_proxy_removal(operation: dict) -> bool:
+    """Return True for the accepted /api/cloud-proxy removal from PR #3326."""
+    path = str(operation.get("path", ""))
+    method = str(operation.get("method", "")).lower()
+    return (
+        path == _ACCEPTED_CLOUD_PROXY_REMOVAL_PATH
+        and method == _ACCEPTED_CLOUD_PROXY_REMOVAL_METHOD
+        and operation.get("deprecated", False) is False
+    )
+
+
+def _is_accepted_cloud_proxy_path_removal(change: dict) -> bool:
+    """Return True for oasdiff's accepted /api/cloud-proxy path-removal shape."""
+    return (
+        str(change.get("id", "")) == _ACCEPTED_CLOUD_PROXY_PATH_REMOVAL_ID
+        and str(change.get("path", "")) == _ACCEPTED_CLOUD_PROXY_REMOVAL_PATH
+        and str(change.get("operation", "")).lower()
+        == _ACCEPTED_CLOUD_PROXY_REMOVAL_METHOD
+        and str(change.get("operationId", ""))
+        == _ACCEPTED_CLOUD_PROXY_REMOVAL_OPERATION_ID
+    )
+
+
+def _is_additive_discriminator_enum_value(change: dict) -> bool:
+    """Return True for additive enum values on a known extensible discriminator.
+
+    Adding a value to a response enum is normally breaking (generated clients may
+    treat the enum exhaustively), so this is scoped narrowly to the hook config
+    discriminator union rather than allowlisting every response enum addition.
+    """
+    if str(change.get("id", "")) not in _RESPONSE_ENUM_VALUE_ADDED_IDS:
+        return False
+    text = str(change.get("text", ""))
+    return bool(_EXTENSIBLE_DISCRIMINATOR_PROPERTY_RE.search(text))
+
+
+def _is_union_property_removal_artifact(change: dict) -> bool:
+    """Return True for property removals that are artifacts of union widening.
+
+    When a request or response schema is widened from a concrete object schema
+    to an additive oneOf/anyOf union, oasdiff can emit secondary "removed
+    property" reports for the original object's fields even though the original
+    schema is still present as one union member.
+    """
+    change_id = str(change.get("id", "")).lower()
+    text = str(change.get("text", "")).lower()
+    return (
+        "removed" in change_id
+        and "property" in change_id
+        and ("from the response" in text or "request property" in text)
+    )
+
+
+def _is_union_type_change_artifact(change: dict) -> bool:
+    text = str(change.get("text", "")).lower()
+    return "type/format changed from `object`/`` to ``/``" in text
+
+
+_OPAQUE_MCP_RESPONSE_REPAIR_PATHS = (
+    "/mcp_config/",
+    "/mcp_servers/",
+    "oauth_state/",
+)
+_OPAQUE_TO_OBJECT_TYPE_CHANGE = (
+    "response's property type/format changed from ``/`` to `object`/``"
+)
+_NONE_AUTH_INPUT_COMPONENT = "#/components/schemas/MCPNoneAuthCredential-Input"
+_AGENT_SETTINGS_DIFF_SCHEMA_REPAIR = (
+    "removed `subschema #1` from the `agent_settings_diff` request property "
+    "`anyOf` list"
+)
+
+
+def _is_mcp_contract_schema_repair(change: dict) -> bool:
+    """Recognize wire-compatible repairs of historically opaque MCP schemas.
+
+    This is deliberately narrower than accepting arbitrary type changes. The
+    response exception only covers MCP settings and OAuth state locations whose
+    old schemas had no type at all. The request exceptions cover an identical
+    Pydantic component rename and the settings diff's replacement of an
+    unrestricted object schema with the same extensible object plus known fields.
+    """
+    text = str(change.get("text", ""))
+    if _OPAQUE_TO_OBJECT_TYPE_CHANGE in text and any(
+        path in text for path in _OPAQUE_MCP_RESPONSE_REPAIR_PATHS
+    ):
+        return True
+
+    if (
+        text.startswith(f"removed `{_NONE_AUTH_INPUT_COMPONENT}` from the `")
+        and "/auth/" in text
+        and "request property `oneOf` list" in text
+    ):
+        return True
+
+    return text == _AGENT_SETTINGS_DIFF_SCHEMA_REPAIR
+
+
 def _split_breaking_changes(
     breaking_changes: list[dict],
 ) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
@@ -573,7 +803,9 @@ def _split_breaking_changes(
             removed_schema_properties.append(change)
             continue
 
-        if change_id in _ADDITIVE_RESPONSE_ONEOF_IDS:
+        if change_id in _ADDITIVE_RESPONSE_ONEOF_IDS or (
+            _is_additive_discriminator_enum_value(change)
+        ):
             additive_response_oneof.append(change)
             continue
 
@@ -668,6 +900,55 @@ def _run_oasdiff_breakage_check(
     return breaking_changes, result.returncode
 
 
+def _find_response_property_type_widenings(
+    prev_schema: dict,
+    current_schema: dict,
+) -> list[ResponsePropertyTypeWidening]:
+    previous = _normalize_openapi_for_oasdiff(copy.deepcopy(prev_schema))
+    current = _normalize_openapi_for_oasdiff(copy.deepcopy(current_schema))
+    with tempfile.TemporaryDirectory(prefix="oasdiff-type-widening-") as tmp:
+        tmp_path = Path(tmp)
+        prev_spec_file = tmp_path / "prev_spec.json"
+        cur_spec_file = tmp_path / "cur_spec.json"
+        prev_spec_file.write_text(json.dumps(previous, indent=2))
+        cur_spec_file.write_text(json.dumps(current, indent=2))
+        breaking_changes, _ = _run_oasdiff_breakage_check(prev_spec_file, cur_spec_file)
+    return _response_type_widening_report_items(breaking_changes)
+
+
+def _collect_response_property_type_widenings_since_ref(
+    base_ref: str,
+    current_schema: dict,
+) -> list[ResponsePropertyTypeWidening] | None:
+    base_schema = _generate_openapi_for_git_ref(base_ref)
+    if base_schema is None:
+        return None
+    base_schema = _filter_public_rest_openapi(base_schema)
+    return _find_response_property_type_widenings(base_schema, current_schema)
+
+
+def _write_response_type_widening_report(
+    changes: list[ResponsePropertyTypeWidening],
+    *,
+    changes_since_base: list[ResponsePropertyTypeWidening] | None = None,
+) -> None:
+    report_path = os.environ.get(RESPONSE_TYPE_WIDENING_REPORT_ENV, "").strip()
+    if not report_path:
+        return
+
+    report = {
+        "additive_response_property_type_widenings": [
+            asdict(change) for change in changes
+        ]
+    }
+    if changes_since_base is not None:
+        report["additive_response_property_type_widenings_since_base"] = [
+            asdict(change) for change in changes_since_base
+        ]
+
+    Path(report_path).write_text(json.dumps(report, indent=2) + "\n")
+
+
 def main() -> int:
     current_version = _read_version_from_pyproject(AGENT_SERVER_PYPROJECT)
     baseline_version = _get_baseline_version(PYPI_DISTRIBUTION, current_version)
@@ -706,12 +987,22 @@ def main() -> int:
         tmp_path = Path(tmp)
         prev_spec_file = tmp_path / "prev_spec.json"
         cur_spec_file = tmp_path / "cur_spec.json"
-
         prev_spec_file.write_text(json.dumps(prev_schema, indent=2))
         cur_spec_file.write_text(json.dumps(current_schema, indent=2))
 
         breaking_changes, exit_code = _run_oasdiff_breakage_check(
             prev_spec_file, cur_spec_file
+        )
+
+    response_type_widenings: list[ResponsePropertyTypeWidening] = []
+    response_type_widenings_since_base: list[ResponsePropertyTypeWidening] | None = None
+    report_path = os.environ.get(RESPONSE_TYPE_WIDENING_REPORT_ENV, "").strip()
+    base_ref = os.environ.get(AGENT_SERVER_REST_API_BASE_REF_ENV, "").strip()
+    if report_path and base_ref:
+        response_type_widenings_since_base = (
+            _collect_response_property_type_widenings_since_ref(
+                base_ref, current_schema
+            )
         )
 
     if not breaking_changes:
@@ -722,6 +1013,11 @@ def main() -> int:
                 f"oasdiff returned exit code {exit_code} but no breaking changes "
                 "in JSON format. There may be warnings only."
             )
+        _write_response_type_widening_report(
+            response_type_widenings,
+            changes_since_base=response_type_widenings_since_base,
+        )
+
     else:
         (
             removed_operations,
@@ -729,6 +1025,81 @@ def main() -> int:
             additive_response_oneof,
             other_breaking_changes,
         ) = _split_breaking_changes(breaking_changes)
+        response_union_artifacts = [
+            change
+            for change in removed_schema_properties
+            if _is_union_property_removal_artifact(change)
+        ]
+        removed_schema_properties = [
+            change
+            for change in removed_schema_properties
+            if not _is_union_property_removal_artifact(change)
+        ]
+        union_type_artifacts = [
+            change
+            for change in other_breaking_changes
+            if _is_union_type_change_artifact(change)
+        ]
+        other_breaking_changes = [
+            change
+            for change in other_breaking_changes
+            if not _is_union_type_change_artifact(change)
+        ]
+        mcp_contract_schema_repairs = [
+            change
+            for change in other_breaking_changes
+            if _is_mcp_contract_schema_repair(change)
+        ]
+        other_breaking_changes = [
+            change
+            for change in other_breaking_changes
+            if not _is_mcp_contract_schema_repair(change)
+        ]
+        accepted_response_type_widening_changes = [
+            change
+            for change in other_breaking_changes
+            if _is_additive_response_property_type_widening(change)
+        ]
+        other_breaking_changes = [
+            change
+            for change in other_breaking_changes
+            if not _is_additive_response_property_type_widening(change)
+        ]
+        response_type_widenings = _response_type_widening_report_items(
+            accepted_response_type_widening_changes
+        )
+
+        accepted_cloud_proxy_removals = [
+            operation
+            for operation in removed_operations
+            if _is_accepted_cloud_proxy_removal(operation)
+        ]
+        removed_operations = [
+            operation
+            for operation in removed_operations
+            if not _is_accepted_cloud_proxy_removal(operation)
+        ]
+        accepted_cloud_proxy_path_removals = [
+            change
+            for change in other_breaking_changes
+            if _is_accepted_cloud_proxy_path_removal(change)
+        ]
+        other_breaking_changes = [
+            change
+            for change in other_breaking_changes
+            if not _is_accepted_cloud_proxy_path_removal(change)
+        ]
+        accepted_vscode_base_url_default_removals = [
+            change
+            for change in other_breaking_changes
+            if _is_accepted_vscode_base_url_default_removal(change)
+        ]
+        other_breaking_changes = [
+            change
+            for change in other_breaking_changes
+            if not _is_accepted_vscode_base_url_default_removal(change)
+        ]
+
         removal_errors = _validate_removed_operations(
             removed_operations,
             prev_schema,
@@ -743,14 +1114,63 @@ def main() -> int:
         for error in removal_errors + property_removal_errors:
             print(f"::error title={PYPI_DISTRIBUTION} REST API::{error}")
 
+        if accepted_cloud_proxy_removals or accepted_cloud_proxy_path_removals:
+            print(
+                f"\n::notice title={PYPI_DISTRIBUTION} REST API::"
+                "Accepted removal of POST /api/cloud-proxy. Maintainers "
+                "explicitly accepted this REST break in PR #3326, and that PR "
+                "is labeled release-note-required."
+            )
+
+        if accepted_vscode_base_url_default_removals:
+            print(
+                f"\n::notice title={PYPI_DISTRIBUTION} REST API::"
+                "Accepted removal of the documented default for the optional "
+                "`base_url` query parameter of GET /api/vscode/url (PR #4181). "
+                "The parameter stays optional; only the server-side fallback "
+                "changed, so requests that omit it keep working."
+            )
+
         if additive_response_oneof:
             print(
                 f"\n::notice title={PYPI_DISTRIBUTION} REST API::"
-                "Additive oneOf/anyOf expansion detected in response schemas. "
-                "This is expected for extensible discriminated-union APIs and "
-                "does not break backward compatibility."
+                "Additive oneOf/anyOf expansion or enum-value additions detected "
+                "in response schemas. This is expected for extensible "
+                "discriminated-union APIs and does not break backward "
+                "compatibility."
             )
             for item in additive_response_oneof:
+                print(f"  - {item.get('text', str(item))}")
+            if response_union_artifacts:
+                print(
+                    "  - ignored "
+                    f"{len(response_union_artifacts)} request/response-property "
+                    "removal artifact(s) caused by union widening"
+                )
+            if union_type_artifacts:
+                print(
+                    "  - ignored "
+                    f"{len(union_type_artifacts)} request/response type-change "
+                    "artifact(s) caused by union widening"
+                )
+
+        if response_type_widenings:
+            print(
+                f"\n::notice title={PYPI_DISTRIBUTION} REST API::"
+                "Additive response property type widenings detected. The previous "
+                "type remains valid, so these changes are accepted with a "
+                "release-note-required label."
+            )
+            for item in response_type_widenings:
+                print(f"  - {item.text}")
+
+        if mcp_contract_schema_repairs:
+            print(
+                f"\n::notice title={PYPI_DISTRIBUTION} REST API::"
+                "Typed historically opaque MCP/settings schemas without changing "
+                "their runtime wire format."
+            )
+            for item in mcp_contract_schema_repairs:
                 print(f"  - {item.get('text', str(item))}")
 
         if other_breaking_changes:
@@ -758,21 +1178,40 @@ def main() -> int:
                 "::error "
                 f"title={PYPI_DISTRIBUTION} REST API::Detected breaking REST API "
                 "changes other than removing previously-deprecated operations/"
-                "properties or additive response oneOf expansions. "
+                "properties, additive response oneOf expansions, or additive "
+                "response property type widenings. "
                 "REST contract changes must preserve compatibility for 5 minor "
                 "releases; keep the old contract available until its scheduled "
                 "removal version."
+            )
+        elif (
+            response_union_artifacts or union_type_artifacts
+        ) and not additive_response_oneof:
+            print(
+                f"\n::notice title={PYPI_DISTRIBUTION} REST API::"
+                f"Ignored {len(response_union_artifacts)} property-removal and "
+                f"{len(union_type_artifacts)} type-change artifact(s) reported "
+                "while widening schemas."
             )
 
         print("\nBreaking REST API changes detected compared to baseline release:")
         for text in breaking_changes:
             print(f"- {text.get('text', str(text))}")
 
+        _write_response_type_widening_report(
+            response_type_widenings,
+            changes_since_base=response_type_widenings_since_base,
+        )
+
         if not (removal_errors or property_removal_errors or other_breaking_changes):
             print(
                 "Breaking changes are limited to previously-deprecated operations "
                 "or properties whose scheduled removal versions have been reached, "
-                "and/or additive response oneOf expansions."
+                "the accepted POST /api/cloud-proxy removal, the accepted "
+                "GET /api/vscode/url base_url default removal, additive response "
+                "oneOf expansions, and/or additive response property type widenings."
+                " It may also include wire-compatible repairs of historically "
+                "opaque MCP/settings schemas."
             )
         else:
             return 1

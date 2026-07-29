@@ -232,7 +232,7 @@ if __name__ == "__main__":
         print("Running install and lifecycle demos only...")
         llm = None
     else:
-        model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
+        model = os.getenv("LLM_MODEL", "gpt-5.5")
         llm = LLM(
             usage_id="plugin-demo",
             model=model,

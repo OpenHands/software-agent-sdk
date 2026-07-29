@@ -19,7 +19,7 @@ from openhands.tools.terminal import TerminalTool
 
 # Configure LLM and Agent
 api_key = os.getenv("LLM_API_KEY")
-model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
+model = os.getenv("LLM_MODEL", "gpt-5.5")
 base_url = os.getenv("LLM_BASE_URL")
 llm = LLM(
     model=model,

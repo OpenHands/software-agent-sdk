@@ -55,7 +55,7 @@ jobs:
             todo-count: ${{ steps.scan.outputs.todo-count }}
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
               with:
                   fetch-depth: 0 # Full history for better context
 
@@ -71,11 +71,14 @@ jobs:
 
             - name: Scan for TODOs
               id: scan
+              env:
+                  TODO_IDENTIFIER_INPUT: ${{ github.event.inputs.todo_identifier || 'TODO(openhands)' }}
+                  MAX_TODOS_INPUT: ${{ github.event.inputs.max_todos || '3' }}
               run: |
                   echo "Scanning for TODO comments..."
 
                   # Run the scanner and capture output
-                  TODO_IDENTIFIER="${{ github.event.inputs.todo_identifier || 'TODO(openhands)' }}"
+                  TODO_IDENTIFIER="$TODO_IDENTIFIER_INPUT"
                   python /tmp/scanner.py . --identifier "$TODO_IDENTIFIER" > todos.json
 
                   # Count TODOs
@@ -84,7 +87,7 @@ jobs:
                   echo "Found $TODO_COUNT $TODO_IDENTIFIER items"
 
                   # Limit the number of TODOs to process
-                  MAX_TODOS="${{ github.event.inputs.max_todos || '3' }}"
+                  MAX_TODOS="$MAX_TODOS_INPUT"
                   if [ "$TODO_COUNT" -gt "$MAX_TODOS" ]; then
                     echo "Limiting to first $MAX_TODOS TODOs"
                     python -c "
@@ -127,7 +130,7 @@ jobs:
             max-parallel: 1 # Process one TODO at a time to avoid conflicts
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
               with:
                   fetch-depth: 0
                   token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
@@ -143,7 +146,7 @@ jobs:
                   python-version: '3.13'
 
             - name: Install uv
-              uses: astral-sh/setup-uv@v7
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
               with:
                   enable-cache: true
 
@@ -167,7 +170,7 @@ jobs:
 
             - name: Process TODO
               env:
-                  LLM_MODEL: litellm_proxy/claude-sonnet-4-5-20250929
+                  LLM_MODEL: litellm_proxy/openai/gpt-5.5
                   LLM_BASE_URL: https://llm-proxy.app.all-hands.dev
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
                   GITHUB_TOKEN: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
@@ -175,6 +178,7 @@ jobs:
                   TODO_FILE: ${{ matrix.todo.file }}
                   TODO_LINE: ${{ matrix.todo.line }}
                   TODO_DESCRIPTION: ${{ matrix.todo.description }}
+                  BASE_REF: ${{ github.event.pull_request.base.ref || github.ref_name }}
                   PYTHONPATH: ''
               run: |
                   echo "Processing TODO: $TODO_DESCRIPTION"
@@ -282,17 +286,19 @@ jobs:
                   ---
                   *This PR was created automatically by the TODO Management workflow.*"
 
+                  PR_PAYLOAD=$(jq -n \
+                    --arg title "$PR_TITLE" \
+                    --arg body "$PR_BODY" \
+                    --arg head "$BRANCH_NAME" \
+                    --arg base "$BASE_REF" \
+                    '{title: $title, body: $body, head: $head, base: $base}')
+
                   # Create PR using GitHub CLI or API
                   curl -X POST \
                     -H "Authorization: token $GITHUB_TOKEN" \
                     -H "Accept: application/vnd.github.v3+json" \
                     "https://api.github.com/repos/${{ github.repository }}/pulls" \
-                    -d "{
-                      \"title\": \"$PR_TITLE\",
-                      \"body\": \"$PR_BODY\",
-                      \"head\": \"$BRANCH_NAME\",
-                      \"base\": \"${{ github.ref_name }}\"
-                    }"
+                    -d "$PR_PAYLOAD"
 
     summary:
         needs: [scan-todos, process-todos]

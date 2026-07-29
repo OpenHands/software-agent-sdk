@@ -7,6 +7,7 @@ from openhands.sdk.llm.utils.unverified_models import (
 )
 from openhands.sdk.llm.utils.verified_models import (
     VERIFIED_MODELS,
+    VERIFIED_OPENAI_MODELS,
     VERIFIED_OPENHANDS_MODELS,
 )
 
@@ -106,6 +107,44 @@ def test_openhands_models_all_have_provider_list():
     assert not missing, (
         f"Models in VERIFIED_OPENHANDS_MODELS missing from any provider list: {missing}"
     )
+
+
+def test_gpt_5_6_models_are_verified_for_openai():
+    assert {"gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}.issubset(
+        VERIFIED_OPENAI_MODELS
+    )
+
+
+def test_kimi_k3_and_claude_opus_5_are_verified():
+    assert "kimi-k3" in VERIFIED_MODELS["moonshot"]
+    assert "kimi-k3" in VERIFIED_OPENHANDS_MODELS
+    assert "claude-opus-5" in VERIFIED_MODELS["anthropic"]
+    assert "claude-opus-5" in VERIFIED_OPENHANDS_MODELS
+
+
+def test_nemotron_3_super_uses_full_infra_name():
+    """The verified Nemotron Super entry must match the infra model name
+    (``nemotron-3-super-120b-a12b``) and the short alias should not be listed.
+    """
+    full_name = "nemotron-3-super-120b-a12b"
+    assert full_name in VERIFIED_MODELS["nvidia"]
+    assert full_name in VERIFIED_OPENHANDS_MODELS
+    for provider, models in VERIFIED_MODELS.items():
+        assert "nemotron-3-super" not in models, (
+            f"Short alias 'nemotron-3-super' should not be in provider {provider!r}"
+        )
+
+
+def test_claude_opus_4_5_uses_full_infra_name():
+    """The OpenHands proxy serves the dated snapshot ``claude-opus-4-5-20251101``;
+    the bare alias ``claude-opus-4-5`` is not a valid proxy model name and must
+    not be offered under the OpenHands provider.
+    """
+    assert "claude-opus-4-5-20251101" in VERIFIED_OPENHANDS_MODELS
+    # Scope is intentionally narrower than test_nemotron_3_super_uses_full_infra_name
+    # (which loops over all providers): VERIFIED_ANTHROPIC_MODELS legitimately keeps
+    # the bare alias because direct-Anthropic BYOK may accept it.
+    assert "claude-opus-4-5" not in VERIFIED_OPENHANDS_MODELS
 
 
 def test_trinity_model_is_openhands_only():

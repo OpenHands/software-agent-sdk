@@ -1,25 +1,37 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from openhands.sdk.llm.options.common import apply_defaults_if_absent
-from openhands.sdk.llm.utils.model_features import get_features
+from openhands.sdk.llm.options.common import (
+    apply_call_context,
+    apply_defaults_if_absent,
+    apply_extra_body,
+    apply_extra_headers,
+)
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.llm.llm import LLMCallContext
 
 
 def select_chat_options(
-    llm, user_kwargs: dict[str, Any], has_tools: bool
+    llm,
+    user_kwargs: dict[str, Any],
+    has_tools: bool,
+    call_context: LLMCallContext | None = None,
 ) -> dict[str, Any]:
     """Behavior-preserving extraction of _normalize_call_kwargs.
 
     This keeps the exact provider-aware mappings and precedence.
     """
     # First pass: apply simple defaults without touching user-supplied values
+    max_output_tokens = llm.effective_max_output_tokens
     defaults: dict[str, Any] = {
         "top_k": llm.top_k,
         "top_p": llm.top_p,
         "temperature": llm.temperature,
         # OpenAI-compatible param is `max_completion_tokens`
-        "max_completion_tokens": llm.max_output_tokens,
+        "max_completion_tokens": max_output_tokens,
     }
     out = apply_defaults_if_absent(user_kwargs, defaults)
 
@@ -28,45 +40,43 @@ def select_chat_options(
         if "max_completion_tokens" in out:
             out["max_tokens"] = out.pop("max_completion_tokens")
 
-    # If user didn't set extra_headers, propagate from llm config
-    if llm.extra_headers is not None and "extra_headers" not in out:
-        out["extra_headers"] = dict(llm.extra_headers)
+    out = apply_extra_headers(out, llm)
 
-    # Reasoning-model quirks
-    supports_reasoning_effort = get_features(llm.model).supports_reasoning_effort
+    model_features = llm._model_features()
+    supports_reasoning_effort = model_features.supports_reasoning_effort
     if supports_reasoning_effort:
-        # LiteLLM automatically handles reasoning_effort for all models, including
-        # Claude Opus 4.5 (maps to output_config and adds beta header automatically)
         if llm.reasoning_effort is not None:
             out["reasoning_effort"] = llm.reasoning_effort
 
-        # All reasoning models ignore temp/top_p, except Gemini
-        if "gemini" not in llm.model.lower():
-            out.pop("temperature", None)
-            out.pop("top_p", None)
+    model_name = llm._model_name_for_capabilities()
+    if model_features.supports_sampling_params is False or (
+        model_features.supports_sampling_params is None
+        and supports_reasoning_effort
+        and "gemini" not in model_name.lower()
+    ):
+        out.pop("temperature", None)
+        out.pop("top_p", None)
+        out.pop("top_k", None)
 
-    # Extended thinking models
-    if get_features(llm.model).supports_extended_thinking:
-        if llm.extended_thinking_budget:
-            # Anthropic throws errors if thinking budget equals or exceeds max output
-            # tokens -- force the thinking budget lower if there's a conflict
-            budget_tokens = min(llm.extended_thinking_budget, llm.max_output_tokens - 1)
+    if model_features.thinking_mode == "manual":
+        if llm.extended_thinking_budget and max_output_tokens:
+            budget_tokens = min(
+                llm.extended_thinking_budget,
+                max_output_tokens - 1,
+            )
             out["thinking"] = {
                 "type": "enabled",
                 "budget_tokens": budget_tokens,
             }
-            # Enable interleaved thinking
-            # Merge default header with any user-provided headers; user wins on conflict
             existing = out.get("extra_headers") or {}
             out["extra_headers"] = {
                 "anthropic-beta": "interleaved-thinking-2025-05-14",
                 **existing,
             }
-            # Fix litellm behavior
-            out["max_tokens"] = llm.max_output_tokens
-        # Anthropic models ignore temp/top_p
+            out["max_tokens"] = max_output_tokens
         out.pop("temperature", None)
         out.pop("top_p", None)
+        out.pop("top_k", None)
 
     # Tools: if not using native, strip tool_choice so we don't confuse providers
     if not has_tools:
@@ -74,17 +84,10 @@ def select_chat_options(
         out.pop("tool_choice", None)
 
     # Send prompt_cache_retention only if model supports it
-    if (
-        get_features(llm.model).supports_prompt_cache_retention
-        and llm.prompt_cache_retention
-    ):
+    if model_features.supports_prompt_cache_retention and llm.prompt_cache_retention:
         out["prompt_cache_retention"] = llm.prompt_cache_retention
 
-    # Pass through user-provided extra_body unchanged
-    if llm.litellm_extra_body:
-        out["extra_body"] = llm.litellm_extra_body
-
-    if llm._prompt_cache_key:
-        out["prompt_cache_key"] = llm._prompt_cache_key
+    out = apply_extra_body(out, llm)
+    out = apply_call_context(out, llm, call_context)
 
     return out

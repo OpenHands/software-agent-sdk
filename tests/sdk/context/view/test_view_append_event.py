@@ -71,7 +71,7 @@ class TestAppendCondensation:
             view.append_event(msg)
 
         condensation = Condensation(
-            forgotten_event_ids=[msgs[0].id, msgs[2].id],
+            forgotten_event_ids={msgs[0].id, msgs[2].id},
             llm_response_id="resp_1",
         )
         view.append_event(condensation)
@@ -86,7 +86,7 @@ class TestAppendCondensation:
             view.append_event(msg)
 
         condensation = Condensation(
-            forgotten_event_ids=[m.id for m in msgs],
+            forgotten_event_ids={m.id for m in msgs},
             llm_response_id="resp_1",
         )
         view.append_event(condensation)
@@ -97,7 +97,7 @@ class TestAppendCondensation:
     def test_condensation_on_empty_view(self) -> None:
         view = View()
         condensation = Condensation(
-            forgotten_event_ids=[],
+            forgotten_event_ids=set(),
             llm_response_id="resp_1",
         )
         view.append_event(condensation)
@@ -111,7 +111,7 @@ class TestAppendCondensation:
             view.append_event(msg)
 
         condensation = Condensation(
-            forgotten_event_ids=[],
+            forgotten_event_ids=set(),
             llm_response_id="resp_1",
         )
         view.append_event(condensation)
@@ -126,7 +126,7 @@ class TestAppendCondensation:
             view.append_event(msg)
 
         condensation = Condensation(
-            forgotten_event_ids=[msgs[0].id],
+            forgotten_event_ids={msgs[0].id},
             summary="Summary of msg 0",
             summary_offset=0,
             llm_response_id="resp_1",
@@ -146,7 +146,7 @@ class TestAppendCondensation:
             view.append_event(msg)
 
         condensation = Condensation(
-            forgotten_event_ids=[],
+            forgotten_event_ids=set(),
             summary="End summary",
             summary_offset=2,
             llm_response_id="resp_1",
@@ -167,7 +167,7 @@ class TestAppendCondensation:
         assert view.unhandled_condensation_request is True
 
         view.append_event(
-            Condensation(forgotten_event_ids=[], llm_response_id="resp_1")
+            Condensation(forgotten_event_ids=set(), llm_response_id="resp_1")
         )
 
         assert view.unhandled_condensation_request is False
@@ -179,7 +179,7 @@ class TestAppendCondensation:
         assert view.unhandled_condensation_request is False
 
         view.append_event(
-            Condensation(forgotten_event_ids=[], llm_response_id="resp_1")
+            Condensation(forgotten_event_ids=set(), llm_response_id="resp_1")
         )
 
         assert view.unhandled_condensation_request is False
@@ -188,7 +188,7 @@ class TestAppendCondensation:
         view = View()
         view.append_event(message_event("msg"))
         view.append_event(
-            Condensation(forgotten_event_ids=[], llm_response_id="resp_1")
+            Condensation(forgotten_event_ids=set(), llm_response_id="resp_1")
         )
 
         for event in view.events:
@@ -263,7 +263,7 @@ class TestAppendEventInteractions:
         assert view.unhandled_condensation_request is True
 
         view.append_event(
-            Condensation(forgotten_event_ids=[], llm_response_id="resp_1")
+            Condensation(forgotten_event_ids=set(), llm_response_id="resp_1")
         )
 
         assert view.unhandled_condensation_request is False
@@ -272,7 +272,7 @@ class TestAppendEventInteractions:
         view = View()
         view.append_event(message_event("msg 0"))
         view.append_event(
-            Condensation(forgotten_event_ids=[], llm_response_id="resp_1")
+            Condensation(forgotten_event_ids=set(), llm_response_id="resp_1")
         )
 
         assert view.unhandled_condensation_request is False
@@ -289,7 +289,7 @@ class TestAppendEventInteractions:
 
         view.append_event(
             Condensation(
-                forgotten_event_ids=[msgs[0].id, msgs[1].id],
+                forgotten_event_ids={msgs[0].id, msgs[1].id},
                 llm_response_id="resp_1",
             )
         )
@@ -298,7 +298,7 @@ class TestAppendEventInteractions:
 
         view.append_event(
             Condensation(
-                forgotten_event_ids=[msgs[2].id],
+                forgotten_event_ids={msgs[2].id},
                 llm_response_id="resp_2",
             )
         )
@@ -313,7 +313,7 @@ class TestAppendEventInteractions:
         view.append_event(msg0)
         view.append_event(
             Condensation(
-                forgotten_event_ids=[msg0.id],
+                forgotten_event_ids={msg0.id},
                 summary="Summary of msg 0",
                 summary_offset=0,
                 llm_response_id="resp_1",
@@ -360,7 +360,7 @@ class TestAppendEventInteractions:
         # Condensation handles the request
         view.append_event(
             Condensation(
-                forgotten_event_ids=[msgs[0].id, msgs[1].id],
+                forgotten_event_ids={msgs[0].id, msgs[1].id},
                 summary="Summary of early messages",
                 summary_offset=0,
                 llm_response_id="resp_1",

@@ -17,7 +17,7 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - name: Checkout
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
 
             - name: Verify test directories
               run: |
@@ -70,12 +70,12 @@ jobs:
         runs-on: blacksmith-2vcpu-ubuntu-2404
         steps:
             - name: Checkout
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
               with: {fetch-depth: 0}
 
             - name: Detect sdk changes
               id: changed
-              uses: tj-actions/changed-files@v47
+              uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
               with:
                   files: |
                       openhands-sdk/**
@@ -86,7 +86,7 @@ jobs:
 
             - name: Install uv
               if: steps.changed.outputs.any_changed == 'true'
-              uses: astral-sh/setup-uv@v7
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
               with:
                   enable-cache: true
                   python-version: '3.13'
@@ -140,12 +140,12 @@ jobs:
         timeout-minutes: 15
         steps:
             - name: Checkout
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
               with: {fetch-depth: 0}
 
             - name: Detect tools changes
               id: changed
-              uses: tj-actions/changed-files@v47
+              uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
               with:
                   files: |
                       openhands-tools/**
@@ -156,7 +156,7 @@ jobs:
 
             - name: Install uv
               if: steps.changed.outputs.any_changed == 'true'
-              uses: astral-sh/setup-uv@v7
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
               with:
                   enable-cache: true
                   python-version: '3.13'
@@ -200,12 +200,12 @@ jobs:
             PYTHONUTF8: '1'
         steps:
             - name: Checkout
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
               with: {fetch-depth: 0}
 
             - name: Detect Windows-relevant changes
               id: changed
-              uses: tj-actions/changed-files@v47
+              uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
               with:
                   files: |
                       openhands-tools/**
@@ -216,7 +216,7 @@ jobs:
 
             - name: Install uv
               if: steps.changed.outputs.any_changed == 'true'
-              uses: astral-sh/setup-uv@v7
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
               with:
                   enable-cache: true
                   python-version: '3.13'
@@ -272,12 +272,12 @@ jobs:
         runs-on: blacksmith-2vcpu-ubuntu-2404
         steps:
             - name: Checkout
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
               with: {fetch-depth: 0}
 
             - name: Detect Agent Server changes
               id: changed
-              uses: tj-actions/changed-files@v47
+              uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
               with:
                   files: |
                       openhands-agent-server/**
@@ -288,7 +288,7 @@ jobs:
 
             - name: Install uv
               if: steps.changed.outputs.any_changed == 'true'
-              uses: astral-sh/setup-uv@v7
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
               with:
                   enable-cache: true
                   python-version: '3.13'
@@ -325,16 +325,58 @@ jobs:
                   path: coverage-agent-server.dat
                   if-no-files-found: warn
 
+    agent-server-stress-tests:
+        runs-on: blacksmith-2vcpu-ubuntu-2404
+        timeout-minutes: 10
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v7
+              with: {fetch-depth: 0}
+
+            - name: Detect Agent Server changes
+              id: changed
+              uses: tj-actions/changed-files@v47
+              with:
+                  files: |
+                      openhands-agent-server/**
+                      tests/agent_server/stress/**
+                      pyproject.toml
+                      uv.lock
+                      .github/workflows/tests.yml
+
+            - name: Install uv
+              if: steps.changed.outputs.any_changed == 'true'
+              uses: astral-sh/setup-uv@v7
+              with:
+                  enable-cache: true
+                  python-version: '3.13'
+
+            - name: Install deps
+              if: steps.changed.outputs.any_changed == 'true'
+              run: uv sync --frozen --group dev
+
+            - name: Run Agent Server stress tests
+              if: steps.changed.outputs.any_changed == 'true'
+              run: |
+                  # Stress suite is opt-in (excluded by `-m 'not stress'` in
+                  # addopts); pass `-m stress` to select it. No xdist: tests
+                  # assert on resource budgets (RSS, FDs, wall-clock latency)
+                  # and parallel execution would invalidate the probes.
+                  CI=true uv run python -m pytest -vvs \
+                    -m stress \
+                    --durations=10 \
+                    tests/agent_server/stress
+
     workspace-tests:
         runs-on: blacksmith-2vcpu-ubuntu-2404
         steps:
             - name: Checkout
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
               with: {fetch-depth: 0}
 
             - name: Detect workspace changes
               id: changed
-              uses: tj-actions/changed-files@v47
+              uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
               with:
                   files: |
                       openhands-workspace/**
@@ -345,7 +387,7 @@ jobs:
 
             - name: Install uv
               if: steps.changed.outputs.any_changed == 'true'
-              uses: astral-sh/setup-uv@v7
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
               with:
                   enable-cache: true
                   python-version: '3.13'
@@ -384,12 +426,12 @@ jobs:
         runs-on: blacksmith-2vcpu-ubuntu-2404
         steps:
             - name: Checkout
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
               with: {fetch-depth: 0}
 
             - name: Detect cross changes
               id: changed
-              uses: tj-actions/changed-files@v47
+              uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
               with:
                   files: |
                       tests/**
@@ -400,7 +442,7 @@ jobs:
 
             - name: Install uv
               if: steps.changed.outputs.any_changed == 'true'
-              uses: astral-sh/setup-uv@v7
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
               with:
                   enable-cache: true
                   python-version: '3.13'
@@ -443,10 +485,10 @@ jobs:
         if: always() && github.event_name == 'pull_request'
         steps:
             - name: Checkout
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
 
             - name: Install uv
-              uses: astral-sh/setup-uv@v7
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
               with:
                   enable-cache: true
                   python-version: '3.13'
@@ -495,7 +537,7 @@ jobs:
             - name: Pytest coverage PR comment
               if: always()
               continue-on-error: true
-              uses: MishaKav/pytest-coverage-comment@v1
+              uses: MishaKav/pytest-coverage-comment@fd9adbdca9fdfbe2b9bfa44a7340e6a83346ce6c # v1
               with:
                   github-token: ${{ secrets.GITHUB_TOKEN }}
                   pytest-xml-coverage-path: coverage.xml

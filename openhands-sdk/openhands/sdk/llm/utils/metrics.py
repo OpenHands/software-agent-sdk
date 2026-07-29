@@ -90,6 +90,24 @@ class MetricsSnapshot(BaseModel):
         default=None, description="Accumulated token usage across all calls"
     )
 
+    @property
+    def cache_hit_rate(self) -> float | None:
+        """Fraction of accumulated input tokens served from cache (0.0-1.0).
+
+        None when there is no input to measure. litellm/OpenAI count cached
+        reads inside ``prompt_tokens`` (the denominator); ACP reports them
+        separately, so when ``cache_read_tokens`` exceeds ``prompt_tokens`` the
+        denominator is their sum.
+        """
+        usage = self.accumulated_token_usage
+        if usage is None:
+            return None
+        prompt, cache_read = usage.prompt_tokens, usage.cache_read_tokens
+        denom = prompt + cache_read if cache_read > prompt else prompt
+        if denom <= 0:
+            return None
+        return cache_read / denom
+
 
 @final
 class Metrics(MetricsSnapshot):

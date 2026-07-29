@@ -6,7 +6,16 @@ import time
 
 import pytest
 
+from openhands.tools.terminal.constants import (
+    TMUX_SESSION_HEIGHT,
+    TMUX_SESSION_WIDTH,
+)
 from openhands.tools.terminal.terminal.tmux_pane_pool import TmuxPanePool
+
+
+def test_tmux_session_viewport_is_bounded():
+    assert TMUX_SESSION_WIDTH <= 256
+    assert TMUX_SESSION_HEIGHT <= 200
 
 
 @pytest.fixture

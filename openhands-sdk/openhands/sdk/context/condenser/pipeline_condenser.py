@@ -50,6 +50,17 @@ class PipelineCondenser(CondenserBase):
             result = condenser.condense(result, agent_llm=agent_llm)
         return result
 
+    async def acondense(
+        self, view: View, agent_llm: LLM | None = None
+    ) -> View | Condensation:
+        """Async variant of :meth:`condense`."""
+        result: View | Condensation = view
+        for condenser in self.condensers:
+            if isinstance(result, Condensation):
+                break
+            result = await condenser.acondense(result, agent_llm=agent_llm)
+        return result
+
     def handles_condensation_requests(self) -> bool:
         return any(
             condenser.handles_condensation_requests() for condenser in self.condensers

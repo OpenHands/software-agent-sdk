@@ -39,11 +39,12 @@ from pydantic import ConfigDict, Field, PrivateAttr
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.llm_response import LLMResponse
 from openhands.sdk.llm.message import Message
-from openhands.sdk.llm.streaming import TokenCallbackType
+from openhands.sdk.llm.streaming import AnyTokenCallbackType, TokenCallbackType
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot, TokenUsage
 
 
 if TYPE_CHECKING:
+    from openhands.sdk.llm.llm import LLMCallContext
     from openhands.sdk.tool.tool import ToolDefinition
 
 from collections import deque
@@ -156,9 +157,9 @@ class TestLLM(LLM):
         self,
         messages: list[Message],  # noqa: ARG002
         tools: Sequence[ToolDefinition] | None = None,  # noqa: ARG002
-        _return_metrics: bool = False,
         add_security_risk_prediction: bool = False,  # noqa: ARG002
         on_token: TokenCallbackType | None = None,  # noqa: ARG002
+        call_context: LLMCallContext | None = None,  # noqa: ARG002
         **kwargs: Any,  # noqa: ARG002
     ) -> LLMResponse:
         """Return the next scripted response.
@@ -166,7 +167,6 @@ class TestLLM(LLM):
         Args:
             messages: Input messages (ignored, but required for API compatibility)
             tools: Available tools (ignored)
-            _return_metrics: Whether to return metrics (ignored)
             add_security_risk_prediction: Add security risk field (ignored)
             on_token: Streaming callback (ignored)
             **kwargs: Additional arguments (ignored)
@@ -202,15 +202,48 @@ class TestLLM(LLM):
             raw_response=raw_response,
         )
 
+    async def acompletion(
+        self,
+        messages: list[Message],
+        tools: Sequence[ToolDefinition] | None = None,
+        add_security_risk_prediction: bool = False,
+        on_token: AnyTokenCallbackType | None = None,  # noqa: ARG002
+        call_context: LLMCallContext | None = None,  # noqa: ARG002
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Async variant that delegates to the synchronous :meth:`completion`.
+
+        Runs the sync call in an executor so the event loop is not
+        blocked, even though the underlying ``deque.popleft()`` is
+        effectively instantaneous.
+
+        ``on_token`` is accepted for API compatibility but not forwarded
+        because :meth:`completion` ignores it and the type union
+        (sync | async callback) is not assignable to the sync-only
+        signature.
+        """
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self.completion(
+                messages=messages,
+                tools=tools,
+                add_security_risk_prediction=add_security_risk_prediction,
+                **kwargs,
+            ),
+        )
+
     def responses(
         self,
         messages: list[Message],
         tools: Sequence[ToolDefinition] | None = None,
         include: list[str] | None = None,  # noqa: ARG002
         store: bool | None = None,  # noqa: ARG002
-        _return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
         on_token: TokenCallbackType | None = None,
+        call_context: LLMCallContext | None = None,  # noqa: ARG002
         **kwargs: Any,
     ) -> LLMResponse:
         """Return the next scripted response (delegates to completion).
@@ -221,7 +254,6 @@ class TestLLM(LLM):
         return self.completion(
             messages=messages,
             tools=tools,
-            _return_metrics=_return_metrics,
             add_security_risk_prediction=add_security_risk_prediction,
             on_token=on_token,
             **kwargs,

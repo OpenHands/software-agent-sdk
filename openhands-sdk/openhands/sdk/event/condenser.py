@@ -11,8 +11,8 @@ from openhands.sdk.llm import Message, TextContent
 class Condensation(Event):
     """This action indicates a condensation of the conversation history is happening."""
 
-    forgotten_event_ids: list[EventID] = Field(
-        default_factory=list,
+    forgotten_event_ids: set[EventID] = Field(
+        default_factory=set,
         description="The IDs of the events that are being forgotten "
         "(removed from the `View` given to the LLM).",
     )

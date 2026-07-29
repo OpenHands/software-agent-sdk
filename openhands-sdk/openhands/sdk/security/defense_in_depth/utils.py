@@ -46,6 +46,35 @@ _EXTRACT_HARD_CAP = 30_000
 # ---------------------------------------------------------------------------
 
 
+class _BoundedSegments:
+    """Append-only segment buffer with a joined-length cap.
+
+    Tracks the length of the eventual ``" ".join(segments)`` string and
+    silently drops or truncates appends that would exceed ``cap``. Each
+    ``add()`` call charges one char for the space separator that will
+    precede the segment in the joined output (except the first), so
+    ``len(" ".join(self.segments)) <= cap`` holds even when many short
+    segments are produced (a JSON object with single-char leaves would
+    otherwise inflate the joined length via separators).
+    """
+
+    def __init__(self, cap: int) -> None:
+        self.cap = cap
+        self.segments: list[str] = []
+        self._total = 0
+
+    def add(self, text: str) -> None:
+        """Append text, truncating to remaining budget; skip if full."""
+        separator_len = 1 if self.segments else 0
+        remaining = self.cap - self._total - separator_len
+        if remaining <= 0:
+            return
+        if len(text) > remaining:
+            text = text[:remaining]
+        self.segments.append(text)
+        self._total += len(text) + separator_len
+
+
 def _walk_json_strings(obj: Any) -> list[str]:
     """Recursively collect leaf strings from a parsed JSON structure.
 
@@ -75,70 +104,64 @@ def _walk_json_strings(obj: Any) -> list[str]:
 def _extract_exec_segments(action: ActionEvent) -> list[str]:
     """Extract segments from fields that describe what the agent will *do*.
 
-    Only executable fields: tool_name, tool_call.name, tool_call.arguments
-    (JSON leaf strings). Shell/permission/exec patterns and policy rails
-    scan this corpus exclusively.
-    """
-    segments: list[str] = []
-    total = 0
+    Only executable fields: tool_call.arguments (JSON leaf strings), tool_name,
+    tool_call.name. Shell/permission/exec patterns and policy rails scan this
+    corpus exclusively.
 
-    def _add(text: str) -> None:
-        nonlocal total
-        remaining = _EXTRACT_HARD_CAP - total
-        if remaining <= 0:
-            return
-        if len(text) > remaining:
-            text = text[:remaining]
-        segments.append(text)
-        total += len(text)
+    Arguments is extracted first because it is the primary attack surface for
+    indirect prompt injection payloads. Putting it ahead of tool_name and
+    tool_call.name guarantees arguments always receives scanning budget even
+    when an earlier field is adversarially large. tool_name has no length
+    validation anywhere in the SDK; a 30K hallucinated name would otherwise
+    consume the full budget and hide the arguments payload.
+    """
+    buf = _BoundedSegments(_EXTRACT_HARD_CAP)
+
+    # Arguments first: primary attack surface for prompt-injection payloads.
+    if action.tool_call and action.tool_call.arguments:
+        try:
+            parsed = json.loads(action.tool_call.arguments)
+            for leaf in _walk_json_strings(parsed):
+                buf.add(leaf)
+        except (json.JSONDecodeError, TypeError, RecursionError):
+            buf.add(action.tool_call.arguments)
 
     if action.tool_name:
-        _add(action.tool_name)
+        buf.add(action.tool_name)
 
-    if action.tool_call:
-        if action.tool_call.name:
-            _add(action.tool_call.name)
-        if action.tool_call.arguments:
-            try:
-                parsed = json.loads(action.tool_call.arguments)
-                for leaf in _walk_json_strings(parsed):
-                    _add(leaf)
-            except (json.JSONDecodeError, TypeError, RecursionError):
-                _add(action.tool_call.arguments)
+    if action.tool_call and action.tool_call.name:
+        buf.add(action.tool_call.name)
 
-    return segments
+    return buf.segments
 
 
 def _extract_text_segments(action: ActionEvent) -> list[str]:
     """Extract segments from fields that describe what the agent *thought*.
 
-    Thought, reasoning_content, and summary are only scanned for injection
+    Summary, reasoning_content, and thought are only scanned for injection
     and social-engineering patterns, never for shell-destructive patterns.
-    """
-    segments: list[str] = []
-    total = 0
 
-    def _add(text: str) -> None:
-        nonlocal total
-        remaining = _EXTRACT_HARD_CAP - total
-        if remaining <= 0:
-            return
-        if len(text) > remaining:
-            text = text[:remaining]
-        segments.append(text)
-        total += len(text)
+    Summary is extracted first because it describes the action the agent is
+    about to take. Putting it ahead of reasoning_content and thought
+    guarantees summary always receives scanning budget even when the agent
+    emits multiple long thoughts or a large reasoning trace. thought is a
+    list of TextContent; multiple 10K entries would otherwise collectively
+    exhaust the 30K budget and hide summary from the injection scanners.
+    """
+    buf = _BoundedSegments(_EXTRACT_HARD_CAP)
+
+    # Summary first: describes the action the agent is about to take.
+    if action.summary:
+        buf.add(action.summary)
+
+    if action.reasoning_content:
+        buf.add(action.reasoning_content)
 
     for t in action.thought:
         if t.text:
-            _add(t.text)
+            buf.add(t.text)
 
-    if action.reasoning_content:
-        _add(action.reasoning_content)
-
-    if action.summary:
-        _add(action.summary)
-
-    return segments
+    return buf.segments
 
 
 def _extract_segments(action: ActionEvent) -> list[str]:
@@ -147,13 +170,26 @@ def _extract_segments(action: ActionEvent) -> list[str]:
 
 
 def _extract_content(action: ActionEvent) -> str:
-    """Flat string from all fields -- the all-field scanning surface."""
-    return " ".join(_extract_segments(action))[:_EXTRACT_HARD_CAP]
+    """Flat string from all fields -- the all-field scanning surface.
+
+    Length is bounded by ``2 * _EXTRACT_HARD_CAP + 1``: the per-corpus
+    caps in ``_extract_exec_segments`` and ``_extract_text_segments``
+    track joined length including separators, so each corpus's
+    ``" ".join(segments)`` is ≤ ``_EXTRACT_HARD_CAP``. The single space
+    between the two joined corpora adds 1. No outer slice is applied:
+    doing so would drop the text corpus when exec fills its budget,
+    defeating the summary-first guarantee in the composed analyzer path.
+    """
+    return " ".join(_extract_segments(action))
 
 
 def _extract_exec_content(action: ActionEvent) -> str:
-    """Flat string from executable fields only -- the shell-pattern surface."""
-    return " ".join(_extract_exec_segments(action))[:_EXTRACT_HARD_CAP]
+    """Flat string from executable fields only -- the shell-pattern surface.
+
+    Length is bounded by ``_EXTRACT_HARD_CAP``: the per-corpus cap in
+    ``_extract_exec_segments`` tracks joined length including separators.
+    """
+    return " ".join(_extract_exec_segments(action))
 
 
 # ---------------------------------------------------------------------------

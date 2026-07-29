@@ -42,7 +42,7 @@ assert api_key, "LLM_API_KEY required"
 # provider endpoint, or specify the provider's direct URL.
 llm = LLM(
     usage_id="agent",
-    model=os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929"),
+    model=os.getenv("LLM_MODEL", "gpt-5.5"),
     base_url=os.getenv("LLM_BASE_URL") or None,
     api_key=SecretStr(api_key),
 )

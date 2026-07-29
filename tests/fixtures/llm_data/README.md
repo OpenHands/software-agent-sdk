@@ -94,7 +94,7 @@ python tests/fixtures/llm_data/test_data_generator.py --api-key YOUR_API_KEY --v
 # Custom models and messages
 python tests/fixtures/llm_data/test_data_generator.py \
   --api-key YOUR_API_KEY \
-  --fncall-model "litellm_proxy/anthropic/claude-sonnet-4-20250514" \
+  --fncall-model "litellm_proxy/openai/gpt-5.5" \
   --nonfncall-model "litellm_proxy/deepseek/deepseek-chat" \
   --user-message "Create a Python script that calculates fibonacci numbers"
 ```

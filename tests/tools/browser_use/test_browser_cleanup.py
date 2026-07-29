@@ -1,9 +1,11 @@
 """Tests for browser tool executor cleanup and resource management."""
 
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from openhands.tools.browser_use import BrowserToolSet
 from openhands.tools.browser_use.impl import BrowserToolExecutor
 
 
@@ -121,6 +123,97 @@ class TestBrowserCleanup:
         mock_executor._async_executor.close = MagicMock()
 
         mock_executor.close()
+
+        mock_executor._async_executor.close.assert_called_once()
+
+    def test_close_method_releases_shared_executor(self, mock_executor):
+        """Test that closing the shared executor clears the singleton reference."""
+        BrowserToolSet._shared_executor = mock_executor
+
+        try:
+            mock_executor.close()
+            assert BrowserToolSet._shared_executor is None
+        finally:
+            BrowserToolSet._shared_executor = None
+
+    def test_concurrent_close_serializes_shared_cleanup(self, mock_executor):
+        """Concurrent closes must not release create lock before cleanup ends."""
+        first_detached = threading.Event()
+        first_can_continue = threading.Event()
+        cleanup_started = threading.Event()
+        cleanup_can_finish = threading.Event()
+        second_detach_entered = threading.Event()
+        detach_call_count = 0
+
+        def controlled_detach():
+            nonlocal detach_call_count
+            detach_call_count += 1
+            if detach_call_count == 1:
+                BrowserToolSet._shared_executor_creation_lock.acquire()
+                BrowserToolSet._shared_executor = None
+                first_detached.set()
+                assert first_can_continue.wait(timeout=2)
+                return True
+
+            second_detach_entered.set()
+            return False
+
+        def blocked_cleanup(*args, **kwargs):
+            cleanup_started.set()
+            assert cleanup_can_finish.wait(timeout=2)
+
+        mock_executor._detach_shared_executor_for_close = MagicMock(
+            side_effect=controlled_detach
+        )
+        mock_executor._async_executor.run_async = MagicMock(side_effect=blocked_cleanup)
+        BrowserToolSet._shared_executor = mock_executor
+
+        first_close = threading.Thread(target=mock_executor.close)
+        first_close.start()
+        assert first_detached.wait(timeout=2)
+
+        second_close = threading.Thread(target=mock_executor.close)
+        second_close.start()
+        assert not second_detach_entered.wait(timeout=0.1)
+        assert mock_executor._async_executor.run_async.call_count == 0
+
+        first_can_continue.set()
+        assert cleanup_started.wait(timeout=2)
+        assert BrowserToolSet._shared_executor_creation_lock.locked()
+
+        cleanup_can_finish.set()
+        first_close.join(timeout=2)
+        second_close.join(timeout=2)
+
+        assert not first_close.is_alive()
+        assert not second_close.is_alive()
+        assert mock_executor._async_executor.run_async.call_count == 1
+        assert mock_executor._async_executor.close.call_count == 1
+        assert BrowserToolSet._shared_executor is None
+
+    def test_close_method_stale_executor_does_not_acquire_shared_lock(
+        self,
+        mock_executor,
+        monkeypatch,
+    ):
+        """Stale executor finalizers should not contend with create()'s lock."""
+
+        class FailOnEnterLock:
+            def __enter__(self):
+                raise AssertionError("stale executor tried to acquire shared lock")
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+        BrowserToolSet._shared_executor = None
+        monkeypatch.setattr(
+            BrowserToolSet,
+            "_shared_executor_lock",
+            FailOnEnterLock(),
+        )
+
+        mock_executor.close()
+        assert BrowserToolSet._shared_executor is None
 
         mock_executor._async_executor.close.assert_called_once()
 

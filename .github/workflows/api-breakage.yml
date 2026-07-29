@@ -16,11 +16,11 @@ jobs:
             pull-requests: write
         steps:
             - name: Checkout
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
               with:
                   fetch-depth: 0
             - name: Install uv
-              uses: astral-sh/setup-uv@v7
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
               with:
                   enable-cache: true
             - name: Install workspace deps (dev)
@@ -33,6 +33,7 @@ jobs:
                   ACP_VERSION_CHECK_BASE_REF: ${{ github.event_name == 'pull_request' && github.base_ref || github.event.before }}
                   ACP_VERSION_CHECK_SKIP: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.body || '', 'skip-acp-check') 
                       }}
+                  SDK_API_BREAKAGE_REPORT_PATH: sdk-api-breakage-report.json
               run: |
                   uv run python .github/scripts/check_sdk_api_breakage.py 2>&1 | tee api-breakage.log
                   exit_code=${PIPESTATUS[0]}
@@ -44,9 +45,11 @@ jobs:
                   EXIT_CODE: ${{ steps.api_breakage.outputs.exit_code }}
                   IS_FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
                   LOG_PATH: api-breakage.log
+                  REPORT_PATH: sdk-api-breakage-report.json
                   RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
               run: |
                   python3 <<'PY' >> "$GITHUB_STEP_SUMMARY"
+                  import json
                   import os
                   from pathlib import Path
 
@@ -55,6 +58,16 @@ jobs:
                   run_url = os.environ['RUN_URL']
                   status = '✅ **PASSED**' if exit_code == 0 else '❌ **FAILED**'
 
+                  try:
+                      report = json.loads(Path(os.environ['REPORT_PATH']).read_text())
+                  except Exception:
+                      report = {}
+                  default_changes = report.get('field_default_changes', [])
+                  default_changes_since_base = report.get(
+                      'field_default_changes_since_base',
+                      default_changes,
+                  )
+
                   print(f'## Python API breakage checks — {status}')
                   print()
                   print(f"**Result:** {status}")
@@ -62,6 +75,40 @@ jobs:
                       print()
                       print('> ⚠️ Breaking API changes or policy violations detected.')
                   print()
+
+                  if default_changes_since_base:
+                      print('### Behavioral default changes detected')
+                      print()
+                      print(
+                          'These public `Field(default=...)` changes were introduced '
+                          'by this changeset and were auto-marked with the '
+                          '`release-note-required` label:'
+                      )
+                      print()
+                      for change in default_changes_since_base:
+                          print(
+                              '- `{object_path}`: `{old_default}` → `{new_default}`'.format(
+                                  **change,
+                              )
+                          )
+                      print()
+                  elif default_changes:
+                      print('### Behavioral default changes detected')
+                      print()
+                      print(
+                          'These public `Field(default=...)` changes differ from the '
+                          'latest released baseline, but they were already present '
+                          'before this changeset, so the workflow did not add the '
+                          '`release-note-required` label on this run:'
+                      )
+                      print()
+                      for change in default_changes:
+                          print(
+                              '- `{object_path}`: `{old_default}` → `{new_default}`'.format(
+                                  **change,
+                              )
+                          )
+                      print()
 
                   if is_fork:
                       print(
@@ -90,12 +137,59 @@ jobs:
                   print(f'[Action log]({run_url})')
                   PY
 
+            - name: Sync release-note-required label
+              if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+              uses: actions/github-script@v9
+              env:
+                  REPORT_PATH: sdk-api-breakage-report.json
+              with:
+                  script: |
+                      const fs = require('fs');
+
+                      let defaultChangesSinceBase = [];
+                      try {
+                        const report = JSON.parse(fs.readFileSync(process.env.REPORT_PATH, 'utf8'));
+                        defaultChangesSinceBase = report.field_default_changes_since_base || report.field_default_changes || [];
+                      } catch (_error) {
+                        defaultChangesSinceBase = [];
+                      }
+
+                      const { owner, repo } = context.repo;
+                      const issue_number = context.issue.number;
+                      const label = 'release-note-required';
+                      const { data: currentLabels } = await github.rest.issues.listLabelsOnIssue({
+                        owner,
+                        repo,
+                        issue_number,
+                        per_page: 100,
+                      });
+                      const hasLabel = currentLabels.some((item) => item.name === label);
+
+                      if (defaultChangesSinceBase.length > 0 && !hasLabel) {
+                        await github.rest.issues.addLabels({
+                          owner,
+                          repo,
+                          issue_number,
+                          labels: [label],
+                        });
+                      }
+
+                      if (defaultChangesSinceBase.length === 0 && hasLabel) {
+                        await github.rest.issues.removeLabel({
+                          owner,
+                          repo,
+                          issue_number,
+                          name: label,
+                        });
+                      }
+
             - name: Post API breakage report to PR
               if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
               uses: actions/github-script@v9
               env:
                   EXIT_CODE: ${{ steps.api_breakage.outputs.exit_code }}
                   LOG_PATH: api-breakage.log
+                  REPORT_PATH: sdk-api-breakage-report.json
               with:
                   script: |
                       const fs = require('fs');
@@ -104,6 +198,17 @@ jobs:
                       const exitCode = Number(process.env.EXIT_CODE || '0');
                       const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
                       const status = exitCode === 0 ? '✅ **PASSED**' : '❌ **FAILED**';
+
+                      let defaultChanges = [];
+                      let defaultChangesSinceBase = [];
+                      try {
+                        const report = JSON.parse(fs.readFileSync(process.env.REPORT_PATH, 'utf8'));
+                        defaultChanges = report.field_default_changes || [];
+                        defaultChangesSinceBase = report.field_default_changes_since_base || defaultChanges;
+                      } catch (_error) {
+                        defaultChanges = [];
+                        defaultChangesSinceBase = [];
+                      }
 
                       let body = `${marker}\n## Python API breakage checks — ${status}\n\n**Result:** ${status}\n`;
 
@@ -118,6 +223,20 @@ jobs:
 
                         const excerpt = log.slice(0, 1000).replace(/```/g, '``\\`');
                         body += `\n<details><summary>Log excerpt (first 1000 characters)</summary>\n\n\`\`\`text\n${excerpt}\n\`\`\`\n\n</details>\n`;
+                      }
+
+                      if (defaultChangesSinceBase.length > 0) {
+                        body += '\n### Behavioral default changes detected\n\n';
+                        body += 'These public `Field(default=...)` changes were introduced by this PR and were auto-marked with the `release-note-required` label:\n\n';
+                        for (const change of defaultChangesSinceBase) {
+                          body += `- \`${change.object_path}\`: \`${change.old_default}\` → \`${change.new_default}\`\n`;
+                        }
+                      } else if (defaultChanges.length > 0) {
+                        body += '\n### Behavioral default changes detected\n\n';
+                        body += 'These public `Field(default=...)` changes differ from the latest released baseline, but they were already present on the base branch, so this PR was not auto-marked with the `release-note-required` label:\n\n';
+                        for (const change of defaultChanges) {
+                          body += `- \`${change.object_path}\`: \`${change.old_default}\` → \`${change.new_default}\`\n`;
+                        }
                       }
 
                       body += `\n[Action log](${runUrl})\n`;

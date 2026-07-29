@@ -12,7 +12,7 @@ from openhands.sdk.critic.impl.api.taxonomy import categorize_features
 
 
 if TYPE_CHECKING:
-    from openhands.sdk.event import LLMConvertibleEvent, SystemPromptEvent
+    from openhands.sdk.event import LLMConvertibleEvent
 
 
 def _format_feature_list(features: list[dict[str, Any]]) -> str:

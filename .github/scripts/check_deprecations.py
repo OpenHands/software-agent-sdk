@@ -2,10 +2,12 @@
 """Static analysis for deprecation deadlines.
 
 This script scans Python deprecation metadata (`deprecated`, `warn_deprecated`,
-`warn_cleanup`) and agent-server REST routes marked `deprecated=True`. If the
-current project version has reached or passed a feature's removal marker, the
-script fails with a helpful summary so legacy shims and overdue deprecated REST
-endpoints are cleaned up before release.
+`warn_cleanup`) and agent-server REST routes marked `deprecated=True`. It fails
+when a version-based deprecation schedule provides less than 5 minor releases of
+runway, or when the current project version has reached or passed a feature's
+removal marker. This catches invalid schedules when they are introduced and later
+ensures legacy shims and overdue deprecated REST endpoints are cleaned up before
+release.
 """
 
 from __future__ import annotations
@@ -41,6 +43,7 @@ ROUTE_DECORATOR_NAMES = {
 }
 HTTP_METHODS = ROUTE_DECORATOR_NAMES - {"api_route"}
 
+DEPRECATION_RUNWAY_MINOR_RELEASES = 5
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -473,6 +476,46 @@ def _version_ge(current: str, target: str) -> bool:
         ) from exc
 
 
+def _minimum_removed_in(deprecated_in: str) -> str:
+    parsed = pkg_version.parse(deprecated_in)
+    if not isinstance(parsed, pkg_version.Version):
+        raise SystemExit(f"Invalid deprecated_in version: {deprecated_in!r}")
+    return f"{parsed.major}.{parsed.minor + DEPRECATION_RUNWAY_MINOR_RELEASES}.0"
+
+
+def _runway_error(record: DeprecationRecord) -> str | None:
+    if record.kind == "cleanup_call" or record.removed_in is None:
+        return None
+    if isinstance(record.removed_in, date):
+        return None
+    if record.deprecated_in is None:
+        return (
+            f"{record.identifier} does not declare deprecated_in; version-based "
+            "deprecations must provide an explicit runway."
+        )
+
+    try:
+        minimum_removed_in = _minimum_removed_in(record.deprecated_in)
+        if pkg_version.parse(str(record.removed_in)) >= pkg_version.parse(
+            minimum_removed_in
+        ):
+            return None
+    except pkg_version.InvalidVersion as exc:
+        raise SystemExit(
+            f"Invalid deprecation schedule at {record.path}:{record.line}: "
+            f"deprecated_in={record.deprecated_in!r}, "
+            f"removed_in={record.removed_in!r}"
+        ) from exc
+
+    return (
+        f"{record.identifier} uses an invalid deprecation schedule: "
+        f"deprecated_in={record.deprecated_in} and "
+        f"removed_in={record.removed_in}. Deprecations require at least "
+        f"{DEPRECATION_RUNWAY_MINOR_RELEASES} minor releases of runway "
+        f"(minimum removed_in: {minimum_removed_in})."
+    )
+
+
 def _should_fail(current_version: str, record: DeprecationRecord) -> bool:
     removed = record.removed_in
     if removed is None:
@@ -517,6 +560,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     argv = list(argv or [])
 
     overdue: list[DeprecationRecord] = []
+    invalid_runway: list[tuple[DeprecationRecord, str]] = []
     total_records = 0
     package_summaries: list[tuple[str, str, int]] = []
 
@@ -542,12 +586,27 @@ def main(argv: Sequence[str] | None = None) -> int:
             records.extend(_collect_rest_route_records(files, package=package.name))
 
         overdue.extend(r for r in records if _should_fail(current_version, r))
+        invalid_runway.extend(
+            (record, error)
+            for record in records
+            if (error := _runway_error(record)) is not None
+        )
         total_records += len(records)
         package_summaries.append((package.name, current_version, len(records)))
 
-    if overdue:
+    if overdue or invalid_runway:
         deprecated_items = [r for r in overdue if r.kind != "cleanup_call"]
         cleanup_items = [r for r in overdue if r.kind == "cleanup_call"]
+
+        if invalid_runway:
+            print(
+                "The following deprecation schedules provide less than "
+                f"{DEPRECATION_RUNWAY_MINOR_RELEASES} minor releases of runway:\n"
+            )
+            for record, error in invalid_runway:
+                print(_format_record(record))
+                print(f"  error:         {error}")
+                print()
 
         if deprecated_items:
             print(
@@ -573,6 +632,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(
                 "Remove the listed workarounds before publishing a version that "
                 "meets or exceeds their cleanup deadline."
+            )
+        if invalid_runway:
+            print(
+                "Move each removal target far enough out, or remove the invalid "
+                "deprecation metadata before merging."
             )
         return 1
 

@@ -43,6 +43,7 @@ BENCHMARKS = [
     "commit0",
     "swebenchmultimodal",
     "terminalbench",
+    "programbench",
 ]
 TOOL_PRESETS = ["default", "gemini", "gpt5", "planning"]
 AGENT_TYPES = ["default", "acp-claude", "acp-codex"]

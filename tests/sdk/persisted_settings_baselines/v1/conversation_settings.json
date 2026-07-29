@@ -1,0 +1,11 @@
+{
+  "__expected__": {
+    "max_iterations": 321,
+    "confirmation_mode": true,
+    "security_analyzer": "llm"
+  },
+  "schema_version": 1,
+  "max_iterations": 321,
+  "confirmation_mode": true,
+  "security_analyzer": "llm"
+}

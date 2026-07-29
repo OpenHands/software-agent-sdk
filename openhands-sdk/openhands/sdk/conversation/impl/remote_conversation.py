@@ -5,13 +5,14 @@ import os
 import threading
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from queue import Empty, Queue
-from typing import TYPE_CHECKING, SupportsIndex, overload
+from typing import TYPE_CHECKING, Final, SupportsIndex, overload
 from urllib.parse import urlparse
 
 import httpx
 import websockets
+from websockets.exceptions import ConnectionClosed
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.base import BaseConversation, ConversationStateProtocol
@@ -32,6 +33,7 @@ from openhands.sdk.conversation.types import (
     ConversationCallbackType,
     ConversationID,
     StuckDetectionThresholds,
+    TraceMetadataValue,
 )
 from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
@@ -45,6 +47,7 @@ from openhands.sdk.event.conversation_state import (
     ConversationStateUpdateEvent,
 )
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
+from openhands.sdk.event.types import EventID
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.logger import DEBUG, get_logger
@@ -53,6 +56,7 @@ from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
+from openhands.sdk.tool.client_tool import ClientTool, ClientToolSpec
 from openhands.sdk.utils.redact import http_error_log_content
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
@@ -60,13 +64,15 @@ from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 logger = get_logger(__name__)
 
 LEGACY_CONVERSATIONS_PATH = "/api/conversations"
-ACP_CONVERSATIONS_PATH = "/api/acp/conversations"
+FATAL_WS_CLOSE_CODES = frozenset({4001, 4004})
+_WEBSOCKET_AUTH_TYPE: Final = "auth"
+_WEBSOCKET_SESSION_API_KEY_FIELD: Final = "session_api_key"
 
 
 def _agent_kind_mismatch_message(conversation_id: ConversationID) -> str:
     return (
-        f"Conversation {conversation_id} was started with an ACP agent. "
-        "Attach with ACPAgent or use /api/acp/conversations."
+        f"Conversation {conversation_id} was started with a different agent kind. "
+        "Attach with a matching agent type."
     )
 
 
@@ -76,6 +82,19 @@ def _validate_remote_agent(agent_data: dict) -> AgentBase:
 
         return ACPAgent.model_validate(agent_data)
     return AgentBase.model_validate(agent_data)
+
+
+def _websocket_close_code(exc: ConnectionClosed) -> int | None:
+    for close_frame in (exc.rcvd, exc.sent):
+        if close_frame is not None:
+            return close_frame.code
+    return None
+
+
+def _is_fatal_websocket_close(
+    exc: ConnectionClosed,
+) -> bool:
+    return _websocket_close_code(exc) in FATAL_WS_CLOSE_CODES
 
 
 def _send_request(
@@ -112,6 +131,7 @@ class WebSocketCallbackClient:
     host: str
     conversation_id: str
     callback: ConversationCallbackType
+    on_reconnect: Callable[[], object] | None
     api_key: str | None
     _thread: threading.Thread | None
     _stop: threading.Event
@@ -123,11 +143,13 @@ class WebSocketCallbackClient:
         conversation_id: str,
         callback: ConversationCallbackType,
         api_key: str | None = None,
+        on_reconnect: Callable[[], object] | None = None,
     ):
         self.host = host
         self.conversation_id = conversation_id
         self.callback = callback
         self.api_key = api_key
+        self.on_reconnect = on_reconnect
         self._thread = None
         self._stop = threading.Event()
         self._ready = threading.Event()
@@ -194,15 +216,22 @@ class WebSocketCallbackClient:
         base = f"{ws_scheme}://{parsed.netloc}{parsed.path.rstrip('/')}"
         ws_url = f"{base}/sockets/events/{self.conversation_id}"
 
-        # Add API key as query parameter if provided
-        if self.api_key:
-            ws_url += f"?session_api_key={self.api_key}"
-
         delay = 1.0
+        has_connected = False
         while not self._stop.is_set():
             try:
                 async with websockets.connect(ws_url) as ws:
+                    if self.api_key:
+                        await ws.send(
+                            json.dumps(
+                                {
+                                    "type": _WEBSOCKET_AUTH_TYPE,
+                                    _WEBSOCKET_SESSION_API_KEY_FIELD: self.api_key,
+                                }
+                            )
+                        )
                     delay = 1.0
+                    connection_ready = False
                     async for message in ws:
                         if self._stop.is_set():
                             break
@@ -213,21 +242,48 @@ class WebSocketCallbackClient:
                             # The server sends this immediately after subscription
                             if (
                                 isinstance(event, ConversationStateUpdateEvent)
-                                and not self._ready.is_set()
+                                and not connection_ready
                             ):
-                                self._ready.set()
+                                connection_ready = True
+                                if has_connected:
+                                    await self._handle_reconnect()
+                                else:
+                                    has_connected = True
+                                    self._ready.set()
 
                             self.callback(event)
                         except Exception:
                             logger.exception(
                                 "ws_event_processing_error", stack_info=True
                             )
-            except websockets.exceptions.ConnectionClosed:
-                break
+            except ConnectionClosed as exc:
+                if _is_fatal_websocket_close(exc):
+                    logger.debug("ws_connection_closed_fatal", exc_info=True)
+                    self._stop.set()
+                    break
+                logger.debug("ws_connection_closed_retry", exc_info=True)
+                await self._sleep_before_retry(delay)
+                delay = min(delay * 2, 30.0)
             except Exception:
                 logger.debug("ws_connect_retry", exc_info=True)
-                await asyncio.sleep(delay)
+                await self._sleep_before_retry(delay)
                 delay = min(delay * 2, 30.0)
+
+    async def _handle_reconnect(self) -> None:
+        if not self.on_reconnect:
+            return
+        try:
+            await asyncio.to_thread(self.on_reconnect)
+        except Exception:
+            logger.exception("ws_reconnect_callback_error", stack_info=True)
+
+    async def _sleep_before_retry(self, delay: float) -> None:
+        deadline = time.monotonic() + delay
+        while not self._stop.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            await asyncio.sleep(min(0.1, remaining))
 
 
 class RemoteEventsList(EventsListBase):
@@ -347,10 +403,14 @@ class RemoteEventsList(EventsListBase):
 
     def _add_event_unsafe(self, event: Event) -> None:
         """Add event to cache without acquiring lock (caller must hold lock)."""
-        # ACP streaming emits one ACPToolCallEvent per ToolCallProgress, each
-        # carrying the full cumulative stdout so far — O(n²) memory growth.
-        # Deduplicate by tool_call_id: replace the existing entry in-place so
-        # only the latest (most complete) snapshot is kept.
+        # ACP emits two ACPToolCallEvents per call — an early ``started`` event
+        # and one terminal (``completed`` / ``failed``) event — the
+        # action->observation pair for a tool call. Merge by tool_call_id:
+        # replace the ``started`` entry in-place with the terminal one so a
+        # single card updates from running to its result, mirroring how an
+        # ObservationEvent supersedes its ActionEvent. (The source no longer
+        # fans out one frame per cumulative-output ToolCallProgress, so this is
+        # an O(1) two-event merge, not an O(n²) dedup.)
         if isinstance(event, ACPToolCallEvent):
             existing_id = self._acp_tool_call_id_to_event_id.get(event.tool_call_id)
             if existing_id is not None:
@@ -642,7 +702,8 @@ class RemoteConversation(BaseConversation):
     workspace: RemoteWorkspace
     _client: httpx.Client
     _cleanup_initiated: bool
-    _terminal_status_queue: Queue[str]  # Thread-safe queue for terminal status from WS
+    _terminal_status_queue: Queue[str]
+    _run_armed: threading.Event
     _conversation_info_base_path: str
     _conversation_action_base_path: str
     delete_on_close: bool = False
@@ -666,6 +727,11 @@ class RemoteConversation(BaseConversation):
         secrets: Mapping[str, SecretValue] | None = None,
         delete_on_close: bool = False,
         tags: dict[str, str] | None = None,
+        user_id: str | None = None,
+        client_tools: list[ClientToolSpec] | None = None,
+        observability_metadata: dict[str, TraceMetadataValue] | None = None,
+        observability_tags: list[str] | None = None,
+        observability_span_name: str = "conversation",
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
@@ -694,6 +760,15 @@ class RemoteConversation(BaseConversation):
             secrets: Optional secrets to initialize the conversation with
             tags: Optional key-value tags for the conversation. Keys must be
                   lowercase alphanumeric, values up to 256 characters.
+            user_id: Optional user ID to associate with observability traces
+            client_tools: Optional list of client-defined tool specs. These tools
+                      have no server-side executor — when the agent calls them an
+                      ActionEvent is emitted over the WebSocket and the client
+                      handles execution via callbacks.
+            observability_metadata: Optional trace metadata for observability backends.
+            observability_tags: Optional root span tags for observability backends.
+            observability_span_name: Optional child span name for observability
+                      backends. The root span remains named "conversation".
         """
         super().__init__()  # Initialize base class with span tracking
         self.agent = agent
@@ -701,14 +776,17 @@ class RemoteConversation(BaseConversation):
         self.max_iteration_per_run = max_iteration_per_run
         self.workspace = workspace
         self._client = workspace.client
-        self._conversation_info_base_path = (
-            ACP_CONVERSATIONS_PATH
-            if agent.agent_kind == "acp"
-            else LEGACY_CONVERSATIONS_PATH
-        )
+        self._conversation_info_base_path = LEGACY_CONVERSATIONS_PATH
         self._conversation_action_base_path = LEGACY_CONVERSATIONS_PATH
         self._cleanup_initiated = False
         self._terminal_status_queue: Queue[str] = Queue()
+        self._run_armed = threading.Event()
+
+        # Client tool specs the server already has persisted for this
+        # conversation (populated when re-attaching to an existing one). These
+        # must be registered locally before the initial event sync so that
+        # persisted ``ClientAction_*`` events can be deserialized.
+        attached_client_tools: list[ClientToolSpec] = []
 
         should_create = conversation_id is None
         if conversation_id is not None:
@@ -720,18 +798,21 @@ class RemoteConversation(BaseConversation):
                 acceptable_status_codes={404},
             )
             if resp.status_code == 404:
-                if agent.agent_kind != "acp":
-                    acp_resp = _send_request(
-                        self._client,
-                        "GET",
-                        f"{ACP_CONVERSATIONS_PATH}/{conversation_id}",
-                        acceptable_status_codes={404},
-                    )
-                    if acp_resp.status_code != 404:
-                        raise ValueError(_agent_kind_mismatch_message(conversation_id))
                 # Conversation doesn't exist, we'll create it
                 should_create = True
             else:
+                info = resp.json()
+                agent_payload = info.get("agent")
+                if agent_payload is not None:
+                    remote_agent = _validate_remote_agent(agent_payload)
+                    if remote_agent.agent_kind != agent.agent_kind:
+                        raise ValueError(_agent_kind_mismatch_message(conversation_id))
+                # Capture persisted client tool specs so we can register their
+                # dynamic action types before RemoteState syncs events.
+                for raw_spec in info.get("client_tools") or []:
+                    attached_client_tools.append(
+                        ClientToolSpec.model_validate(raw_spec)
+                    )
                 # Conversation exists, use the provided ID
                 self._id = conversation_id
 
@@ -766,9 +847,25 @@ class RemoteConversation(BaseConversation):
                 "plugins": [p.model_dump() for p in plugins] if plugins else None,
                 # Include hook_config for server-side hooks
                 "hook_config": hook_config.model_dump() if hook_config else None,
-                # Include tags if provided
-                "tags": tags or {},
+                # Include client-defined tool specs (no server-side executor)
+                "client_tools": (
+                    [s.model_dump(mode="json") for s in client_tools]
+                    if client_tools
+                    else []
+                ),
+                # Include tags and observability metadata if provided
+                "tags": tags if tags is not None else {},
+                "observability_metadata": observability_metadata
+                if observability_metadata is not None
+                else {},
+                "observability_tags": observability_tags
+                if observability_tags is not None
+                else [],
+                "observability_span_name": observability_span_name,
+                "user_id": user_id,
             }
+            if user_id:
+                payload["user_id"] = user_id
             if stuck_detection_thresholds is not None:
                 # Convert to StuckDetectionThresholds if dict, then serialize
                 if isinstance(stuck_detection_thresholds, Mapping):
@@ -797,6 +894,18 @@ class RemoteConversation(BaseConversation):
             self._id = uuid.UUID(cid)
 
             workspace.register_conversation(str(self._id))
+
+        # Register client tool action types locally so WebSocket/persisted
+        # events with ClientAction_* action_type can be deserialized by the
+        # event loop. This must cover both the specs the caller passed in and
+        # the specs the server already had persisted (when re-attaching), so a
+        # plain reattach by conversation_id can still sync persisted events.
+        seen_client_tool_names: set[str] = set()
+        for spec in [*(client_tools or []), *attached_client_tools]:
+            if spec.name in seen_client_tool_names:
+                continue
+            seen_client_tool_names.add(spec.name)
+            ClientTool.from_spec(spec)
 
         # Initialize the remote state
         self._state = RemoteState(
@@ -839,17 +948,47 @@ class RemoteConversation(BaseConversation):
             # No visualization (visualizer is None)
             self._visualizer = None
 
-        # Add a callback that signals when run completes via WebSocket
-        # This ensures we wait for all events to be delivered before run() returns
+        # Add a callback that signals when run completes via WebSocket.
+        # The server's post-run full-state snapshot is the only authoritative
+        # WebSocket success signal. Per-field FINISHED is a hint because stop
+        # hooks can still revert it; per-field ERROR/STUCK remain immediate.
         def run_complete_callback(event: Event) -> None:
-            if isinstance(event, ConversationStateUpdateEvent):
-                if event.key == "execution_status":
-                    try:
-                        status = ConversationExecutionStatus(event.value)
-                        if status.is_terminal():
-                            self._terminal_status_queue.put(event.value)
-                    except ValueError:
-                        pass  # Unknown status value, ignore
+            if not isinstance(event, ConversationStateUpdateEvent):
+                return
+
+            if event.key == "execution_status":
+                try:
+                    status = ConversationExecutionStatus(event.value)
+                except ValueError:
+                    return
+                if status in (
+                    ConversationExecutionStatus.ERROR,
+                    ConversationExecutionStatus.STUCK,
+                ):
+                    self._terminal_status_queue.put(status.value)
+                return
+
+            if event.key != FULL_STATE_KEY:
+                return
+
+            # Only accept full-state snapshots as run-completion signals when a
+            # run is actually in progress. The WS subscription delivers an
+            # initial full-state snapshot during connect(); if that snapshot
+            # carries a non-RUNNING status (e.g. "idle"), it could be picked up
+            # by _wait_for_run_completion() as the completion signal for the
+            # *next* run() invocation, causing blocking=True to return before the
+            # server has actually finished.
+            if not self._run_armed.is_set():
+                return
+
+            raw_status = event.value.get("execution_status")
+            try:
+                status = ConversationExecutionStatus(raw_status)
+            except ValueError:
+                return
+
+            if status != ConversationExecutionStatus.RUNNING:
+                self._terminal_status_queue.put(status.value)
 
         # Compose all callbacks into a single callback
         all_callbacks = self._callbacks + [run_complete_callback]
@@ -861,24 +1000,39 @@ class RemoteConversation(BaseConversation):
             conversation_id=str(self._id),
             callback=composed_callback,
             api_key=self.workspace.api_key,
+            on_reconnect=self._state.events.reconcile,
         )
         self._ws_client.start()
 
         # Wait for WebSocket subscription to complete before allowing operations.
         # This ensures events emitted during send_message() are not missed.
         # The server sends a ConversationStateUpdateEvent after subscription.
-        ws_timeout = 30.0
+        ws_timeout = float(os.getenv("OPENHANDS_REMOTE_WS_READY_TIMEOUT", "30"))
         if not self._ws_client.wait_until_ready(timeout=ws_timeout):
-            try:
-                self._ws_client.stop()
-            except Exception:
-                pass
-            finally:
-                self._ws_client = None
-            raise WebSocketConnectionError(
-                conversation_id=self._id,
-                timeout=ws_timeout,
-            )
+            if os.getenv("OPENHANDS_REMOTE_WS_READY_REQUIRED", "true").lower() in (
+                "0",
+                "false",
+                "no",
+            ):
+                logger.warning(
+                    "WebSocket subscription did not become ready within %.1f "
+                    "seconds for conversation %s; continuing after REST "
+                    "reconciliation because OPENHANDS_REMOTE_WS_READY_REQUIRED "
+                    "is false.",
+                    ws_timeout,
+                    self._id,
+                )
+            else:
+                try:
+                    self._ws_client.stop()
+                except Exception:
+                    pass
+                finally:
+                    self._ws_client = None
+                raise WebSocketConnectionError(
+                    conversation_id=self._id,
+                    timeout=ws_timeout,
+                )
 
         # Reconcile events after WebSocket is ready to catch any events that
         # were emitted between the initial REST sync and WebSocket subscription.
@@ -891,7 +1045,14 @@ class RemoteConversation(BaseConversation):
             secret_values: dict[str, SecretValue] = {k: v for k, v in secrets.items()}
             self.update_secrets(secret_values)
 
-        self._start_observability_span(str(self._id))
+        self._start_observability_span(
+            str(self._id),
+            span_name=observability_span_name,
+            user_id=user_id,
+            metadata=observability_metadata,
+            tags=observability_tags,
+            conversation_tags=tags,
+        )
         # All hooks (including SessionStart/SessionEnd) are executed server-side.
         # hook_config is sent in the creation payload.
         self.delete_on_close = delete_on_close
@@ -921,7 +1082,7 @@ class RemoteConversation(BaseConversation):
                 log_dir = target_llm.log_completions_folder
                 os.makedirs(log_dir, exist_ok=True)
                 log_path = os.path.join(log_dir, event.filename)
-                with open(log_path, "w") as f:
+                with open(log_path, "w", encoding="utf-8") as f:
                     f.write(event.log_data)
                 logger.debug(f"Wrote LLM completion log to {log_path}")
             except Exception as e:
@@ -992,13 +1153,12 @@ class RemoteConversation(BaseConversation):
         Raises:
             ConversationRunError: If the run fails or times out.
         """
-        # Drain any stale terminal status events from previous runs.
-        # This prevents stale events from causing early returns.
-        while True:
-            try:
-                self._terminal_status_queue.get_nowait()
-            except Empty:
-                break
+        # Disarm and drain any stale terminal status events from previous runs
+        # before arming for the new one. _run_armed gates full-state WS snapshots
+        # in run_complete_callback; clearing it here prevents the initial WS
+        # subscription snapshot from being mistaken for the post-run snapshot.
+        self._run_armed.clear()
+        self._drain_terminal_status_queue()
 
         # Trigger a run on the server using the dedicated run endpoint.
         # Let the server tell us if it's already running (409), avoiding an extra GET.
@@ -1020,7 +1180,13 @@ class RemoteConversation(BaseConversation):
             logger.info(f"run() triggered successfully: {resp}")
 
         if blocking:
-            self._wait_for_run_completion(poll_interval, timeout)
+            # Arm after POST so that only WS full-state snapshots arriving
+            # after the run was triggered are treated as run-completion signals.
+            self._run_armed.set()
+            try:
+                self._wait_for_run_completion(poll_interval, timeout)
+            finally:
+                self._run_armed.clear()
 
     def _wait_for_run_completion(
         self,
@@ -1035,9 +1201,9 @@ class RemoteConversation(BaseConversation):
         status before WebSocket delivers the final events.
 
         As a fallback, it also polls the server periodically. If the WebSocket
-        is delayed or disconnected, we return after multiple consecutive polls
-        show a terminal status, and reconcile events to catch any that were
-        missed via WebSocket.
+        is delayed or disconnected, polling still surfaces ERROR/STUCK promptly.
+        A REST-only FINISHED status is not authoritative because stop hooks can
+        still revert it to RUNNING before the server-side run task exits.
 
         Args:
             poll_interval: Time in seconds between status polls (fallback).
@@ -1049,14 +1215,19 @@ class RemoteConversation(BaseConversation):
                 responses are retried until timeout.
         """
         start_time = time.monotonic()
-        consecutive_terminal_polls = 0
-        # Return after this many consecutive terminal polls (fallback for WS issues).
-        # We use 3 polls to balance latency vs reliability:
-        # - 1 poll could be a transient state during shutdown
-        # - 2 polls might still catch a race condition
-        # - 3 polls (with default 1s interval = 3s total) provides high confidence
-        #   that the run is truly complete while keeping fallback latency reasonable
-        TERMINAL_POLL_THRESHOLD = 3
+        terminal_poll_count = 0
+        # Log a warning after this many consecutive REST terminal polls without a
+        # post-run WS snapshot. This is a health signal, not a return path —
+        # returning immediately on REST FINISHED would reintroduce the stop-hook race.
+        TERMINAL_POLL_WARNING_THRESHOLD = 3
+        # Time-based hard fallback: accept REST-confirmed terminal status after
+        # the server has been reporting terminal for at least this many seconds
+        # without a post-run WS snapshot. Stop hooks are fast (seconds); 30 s
+        # is a safe bound regardless of poll_interval. This prevents an
+        # indefinite hang when the WS snapshot is never delivered (e.g., socket
+        # dropped after the run finishes on the server).
+        TERMINAL_HARD_FALLBACK_SECS = 30.0
+        terminal_first_seen_at: float | None = None
 
         while True:
             elapsed = time.monotonic() - start_time
@@ -1070,20 +1241,23 @@ class RemoteConversation(BaseConversation):
                 )
 
             # Wait for either:
-            # 1. WebSocket delivers terminal status event (preferred)
-            # 2. Poll interval expires (fallback - check status via REST)
+            # 1. WebSocket delivers a run-completion signal
+            # 2. Poll interval expires (fall through to REST poll)
             try:
                 ws_status = self._terminal_status_queue.get(timeout=poll_interval)
-                # Handle ERROR/STUCK states - raises ConversationRunError
+                # Raises ConversationRunError on ERROR/STUCK; no-op otherwise.
                 self._handle_conversation_status(ws_status)
-
                 logger.info(
-                    "Run completed via WebSocket notification "
+                    "Run completed via post-run WebSocket state update "
                     "(status: %s, elapsed: %.1fs)",
                     ws_status,
                     elapsed,
                 )
-                self._state.refresh_from_server()
+                # The server publishes the full ConversationStateUpdateEvent after
+                # conversation.run()/arun() exits and pending events are flushed,
+                # so non-running statuses from that snapshot are authoritative
+                # run-complete signals.
+                self._state.events.reconcile()
                 return
             except Empty:
                 pass  # Queue.get() timed out, fall through to REST polling
@@ -1095,36 +1269,65 @@ class RemoteConversation(BaseConversation):
                 status = self._poll_status_once()
             except Exception as exc:
                 self._handle_poll_exception(exc)
-                consecutive_terminal_polls = 0  # Reset on error
+                # Reset on error: we cannot confirm the server is still in a
+                # terminal state after a failed poll, so conservatively restart
+                # the hard-fallback timer. In the degenerate case where polls
+                # alternate between terminal and exception, the 30 s threshold
+                # slides; this is intentional — we prefer a false-negative wait
+                # over a false-positive early return.
+                terminal_poll_count = 0
+                terminal_first_seen_at = None
             else:
                 # Raises ConversationRunError for ERROR/STUCK states
                 self._handle_conversation_status(status)
 
-                # Track consecutive terminal polls as a fallback for WS issues.
-                # If WebSocket is delayed/disconnected, we return after multiple
-                # consecutive polls confirm the terminal status.
                 if status and ConversationExecutionStatus(status).is_terminal():
-                    consecutive_terminal_polls += 1
-                    if consecutive_terminal_polls >= TERMINAL_POLL_THRESHOLD:
-                        logger.info(
-                            "Run completed via REST fallback after %d consecutive "
-                            "terminal polls (status: %s, elapsed: %.1fs). "
-                            "Refreshing final state and reconciling events...",
-                            consecutive_terminal_polls,
+                    # ERROR/STUCK have already been handled above. FINISHED from
+                    # REST is advisory because stop hooks can still veto it;
+                    # prefer waiting for the server's post-run WebSocket state update.
+                    terminal_poll_count += 1
+                    now = time.monotonic()
+                    if terminal_first_seen_at is None:
+                        terminal_first_seen_at = now
+                    if terminal_poll_count == TERMINAL_POLL_WARNING_THRESHOLD:
+                        logger.warning(
+                            "REST has reported terminal status %s for %d polls "
+                            "without a post-run WebSocket snapshot; continuing "
+                            "to wait for the authoritative snapshot "
+                            "(elapsed: %.1fs)",
                             status,
+                            terminal_poll_count,
                             elapsed,
                         )
-                        final_info = self._state.refresh_from_server()
-                        self._handle_conversation_status(
-                            final_info.get("execution_status")
+                    terminal_secs = now - terminal_first_seen_at
+                    if terminal_secs >= TERMINAL_HARD_FALLBACK_SECS:
+                        logger.warning(
+                            "REST has reported terminal status %s for %.0fs "
+                            "with no post-run WebSocket snapshot; accepting as "
+                            "final to avoid an indefinite hang (elapsed: %.1fs). "
+                            "This may indicate a WebSocket delivery issue.",
+                            status,
+                            terminal_secs,
+                            elapsed,
                         )
-                        # Reconcile events to catch any that were missed via WS.
-                        # This is only called in the fallback path, so it doesn't
-                        # add overhead in the common case where WS works.
+                        self._state.refresh_from_server()
                         self._state.events.reconcile()
                         return
                 else:
-                    consecutive_terminal_polls = 0
+                    terminal_poll_count = 0
+                    terminal_first_seen_at = None
+
+    def _drain_terminal_status_queue(self) -> None:
+        """Empty the WS terminal-status hint queue.
+
+        Called at the start of run() (before arming) to discard any stale
+        signals left over from a previous run invocation.
+        """
+        while True:
+            try:
+                self._terminal_status_queue.get_nowait()
+            except Empty:
+                break
 
     def _poll_status_once(self) -> str | None:
         """Fetch the current execution status from the remote conversation."""
@@ -1237,6 +1440,21 @@ class RemoteConversation(BaseConversation):
             f"{self._conversation_action_base_path}/{self._id}/pause",
         )
 
+    def interrupt(self) -> None:
+        _send_request(
+            self._client,
+            "POST",
+            f"{self._conversation_action_base_path}/{self._id}/interrupt",
+        )
+
+    def load_plugin(self, plugin_ref: str) -> None:
+        _send_request(
+            self._client,
+            "POST",
+            f"{self._conversation_action_base_path}/{self._id}/load_plugin",
+            json={"plugin_ref": plugin_ref},
+        )
+
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None:
         from openhands.sdk.secret.secrets import SecretSource
 
@@ -1337,6 +1555,7 @@ class RemoteConversation(BaseConversation):
         title: str | None = None,
         tags: dict[str, str] | None = None,
         reset_metrics: bool = True,
+        from_event_id: EventID | None = None,
     ) -> "RemoteConversation":
         """Fork this conversation on the remote agent server.
 
@@ -1353,6 +1572,9 @@ class RemoteConversation(BaseConversation):
             tags: Optional tags for the forked conversation.
             reset_metrics: If ``True`` (default), cost/token stats start
                 fresh on the fork.
+            from_event_id: If set, fork only the branch up to and including this
+                event (``path_to_root``) and set the fork's HEAD there. If
+                ``None`` (default), copy the whole conversation.
 
         Returns:
             A new ``RemoteConversation`` backed by the forked server-side
@@ -1360,6 +1582,8 @@ class RemoteConversation(BaseConversation):
 
         Raises:
             NotImplementedError: If ``agent`` is provided.
+            httpx.HTTPStatusError: If the server rejects the request (e.g. 404
+                for an unknown ``from_event_id``).
         """
         if agent is not None:
             raise NotImplementedError(
@@ -1374,6 +1598,8 @@ class RemoteConversation(BaseConversation):
             body["title"] = title
         if tags is not None:
             body["tags"] = tags
+        if from_event_id is not None:
+            body["from_event_id"] = from_event_id
 
         resp = _send_request(
             self._client,
@@ -1401,6 +1627,29 @@ class RemoteConversation(BaseConversation):
             delete_on_close=self.delete_on_close,
             tags=server_tags,
         )
+
+    def navigate_to(self, event_id: EventID | None) -> None:
+        """Move the conversation HEAD to an existing event on the remote server.
+
+        Posts to the server's ``/navigate`` route, which re-roots the active
+        branch in place (no new conversation). The cached state is refreshed so
+        a subsequent ``state`` read reflects the new HEAD — ``leaf_event_id`` is
+        not broadcast over the WebSocket.
+
+        Args:
+            event_id: Event to make the new HEAD, or ``None`` for the empty tree.
+
+        Raises:
+            httpx.HTTPStatusError: If the server rejects the event id (e.g. 404
+                for an unknown event).
+        """
+        _send_request(
+            self._client,
+            "POST",
+            f"{self._conversation_action_base_path}/{self._id}/navigate",
+            json={"event_id": event_id},
+        )
+        self._state.refresh_from_server()
 
     def execute_tool(self, tool_name: str, action: "Action") -> "Observation":
         """Execute a tool directly without going through the agent loop.

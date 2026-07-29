@@ -252,6 +252,54 @@ async def test_events_socket_first_message_auth_e2e():
 
 
 @pytest.mark.asyncio
+async def test_events_socket_ignores_redundant_auth_control_frame():
+    """A redundant ``{"type": "auth", ...}`` frame after legacy auth is ignored.
+
+    Regression for issue #3127: mixed-mode clients can authenticate via the
+    legacy query param / header and *also* send a first-message auth frame.
+    The post-auth receive loop must skip that frame instead of validating
+    it as a ``Message`` (which fails on the missing ``role`` field and
+    emits a noisy ``ServerErrorEvent``).
+    """
+    from openhands.agent_server.event_service import EventService
+    from openhands.agent_server.sockets import events_socket
+
+    ws = _make_mock_websocket()
+    # First frame on the post-auth loop is the redundant auth control
+    # message; second frame is a real user message; third closes the loop.
+    real_user_message = {"role": "user", "content": []}
+    ws.receive_json.side_effect = [
+        {"type": "auth", "session_api_key": "sk-oh-valid"},
+        real_user_message,
+        WebSocketDisconnect(),
+    ]
+
+    mock_event_service = MagicMock(spec=EventService)
+    mock_event_service.subscribe_to_events = AsyncMock(return_value=uuid4())
+    mock_event_service.unsubscribe_from_events = AsyncMock(return_value=True)
+    mock_event_service.send_message = AsyncMock()
+
+    with (
+        patch(
+            "openhands.agent_server.sockets.conversation_service"
+        ) as mock_conv_service,
+        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
+    ):
+        mock_config.return_value.session_api_keys = ["sk-oh-valid"]
+        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+
+        # Authenticate via legacy query param so receive_text is never called.
+        await events_socket(uuid4(), ws, session_api_key="sk-oh-valid")
+
+    # No ServerErrorEvent should be emitted for the auth control frame.
+    ws.send_json.assert_not_called()
+    # send_message is only called for the real user message, exactly once.
+    assert mock_event_service.send_message.await_count == 1
+    sent_message = mock_event_service.send_message.await_args.args[0]
+    assert sent_message.role == "user"
+
+
+@pytest.mark.asyncio
 async def test_events_socket_first_message_auth_rejected():
     """events_socket returns early when first-message auth fails."""
     from openhands.agent_server.sockets import events_socket

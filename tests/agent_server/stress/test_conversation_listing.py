@@ -15,6 +15,7 @@ Why N=2000 and not 10k:
 """
 
 import asyncio
+import os
 import statistics
 import time
 from uuid import UUID
@@ -216,14 +217,22 @@ async def test_pagination_is_correct_and_bounded(
     assert count_resp.status_code == 200
     assert count_resp.json() == n
 
-    # 3. First-page latency budget.
+    # 3. First-page latency budget. On shared CI runners (2-vCPU) the
+    # constant-time-per-item work is meaningfully slower than on developer
+    # laptops, so loosen the absolute ceiling under CI=true. A real O(N)
+    # regression at N=2000 produces a 10-100x slowdown, so 4x headroom
+    # still catches it loudly. The deep-page check below is already a
+    # ratio (relative-to-baseline) and stays portable.
+    p95_budget = CONVERSATION_LISTING.p95_first_page_s * (
+        4.0 if os.getenv("CI") else 1.0
+    )
     first_page_samples = [
         await _time_first_page(client, page_size=page_size) for _ in range(10)
     ]
     p95_first = statistics.quantiles(first_page_samples, n=20)[-1]
-    assert p95_first < CONVERSATION_LISTING.p95_first_page_s, (
-        f"first-page p95 {p95_first:.3f}s > budget "
-        f"{CONVERSATION_LISTING.p95_first_page_s}s. Listing has likely gone "
+    assert p95_first < p95_budget, (
+        f"first-page p95 {p95_first:.3f}s > budget {p95_budget}s "
+        f"(CI={'on' if os.getenv('CI') else 'off'}). Listing has likely gone "
         f"O(N)."
     )
 

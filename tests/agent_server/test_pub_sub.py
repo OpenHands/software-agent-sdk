@@ -84,13 +84,20 @@ class PubSubForTesting:
 
     async def __call__(self, event) -> None:
         """Invoke all registered callbacks with the given event."""
-        for subscriber_id, subscriber in list(self._subscribers.items()):
+        subscribers = list(self._subscribers.items())
+        if not subscribers:
+            return
+
+        async def _notify(subscriber_id, subscriber):
             try:
                 await subscriber(event)
             except Exception as e:
                 self._logger.error(
-                    f"Error in subscriber {subscriber_id}: {e}", exc_info=True
+                    f"Error in subscriber {subscriber_id}: {e}",
+                    exc_info=True,
                 )
+
+        await asyncio.gather(*[_notify(sid, sub) for sid, sub in subscribers])
 
     async def close(self):
         await asyncio.gather(
@@ -422,6 +429,41 @@ class TestPubSubCall:
         assert len(pubsub._logger.error_calls) == 1
         assert "Error in subscriber" in pubsub._logger.error_calls[0][0]
         assert pubsub._logger.error_calls[0][1] is True  # exc_info=True
+
+
+class _TimedSubscriber(SubscriberForTesting):
+    """Subscriber that records delivery wall-time after an artificial delay."""
+
+    def __init__(self, name: str, delay: float, log: list[tuple[str, float]]):
+        self.name = name
+        self.delay = delay
+        self.log = log
+
+    async def __call__(self, event):
+        start = asyncio.get_event_loop().time()
+        await asyncio.sleep(self.delay)
+        self.log.append((self.name, asyncio.get_event_loop().time() - start))
+
+
+class TestPubSubConcurrentDispatch:
+    """Test that __call__ dispatches to subscribers concurrently."""
+
+    @pytest.mark.asyncio
+    async def test_slow_subscriber_does_not_block_others(self, pubsub):
+        """A slow subscriber must not delay delivery to faster ones."""
+        delivery_log: list[tuple[str, float]] = []
+
+        pubsub.subscribe(_TimedSubscriber("slow", 0.2, delivery_log))
+        pubsub.subscribe(_TimedSubscriber("fast", 0.0, delivery_log))
+
+        start = asyncio.get_event_loop().time()
+        await pubsub(MockEvent())
+        elapsed = asyncio.get_event_loop().time() - start
+
+        # Both subscribers were called
+        assert len(delivery_log) == 2
+        # Wall time ≈ 0.2s (concurrent), not ≈ 0.2s+ (sequential)
+        assert elapsed < 0.3
 
 
 class TestPubSubEventIsolation:
@@ -810,3 +852,53 @@ class TestPubSubIntegration:
             assert subscriber.close_called is True
 
         assert len(pubsub._subscribers) == 0
+
+
+class TestPubSubMaxSubscribers:
+    """Tests for the max_subscribers limit using the real PubSub class."""
+
+    async def test_subscribe_rejected_at_limit(self):
+        from openhands.agent_server.pub_sub import (
+            MaxSubscribersError,
+            PubSub,
+            Subscriber,
+        )
+
+        class _Sub(Subscriber[str]):
+            async def __call__(self, event: str) -> None:
+                pass
+
+        pubsub: PubSub[str] = PubSub(max_subscribers=2)
+        pubsub.subscribe(_Sub())
+        pubsub.subscribe(_Sub())
+
+        with pytest.raises(MaxSubscribersError):
+            pubsub.subscribe(_Sub())
+
+    async def test_subscribe_allowed_after_unsubscribe(self):
+        from openhands.agent_server.pub_sub import PubSub, Subscriber
+
+        class _Sub(Subscriber[str]):
+            async def __call__(self, event: str) -> None:
+                pass
+
+        pubsub: PubSub[str] = PubSub(max_subscribers=2)
+        id_a = pubsub.subscribe(_Sub())
+        pubsub.subscribe(_Sub())
+        pubsub.unsubscribe(id_a)
+
+        # Slot freed — should succeed
+        pubsub.subscribe(_Sub())
+        assert len(pubsub._subscribers) == 2
+
+    async def test_no_limit_when_none(self):
+        from openhands.agent_server.pub_sub import PubSub, Subscriber
+
+        class _Sub(Subscriber[str]):
+            async def __call__(self, event: str) -> None:
+                pass
+
+        pubsub: PubSub[str] = PubSub(max_subscribers=None)
+        for _ in range(100):
+            pubsub.subscribe(_Sub())
+        assert len(pubsub._subscribers) == 100

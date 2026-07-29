@@ -1,4 +1,5 @@
 from openhands.sdk.conversation.base import BaseConversation
+from openhands.sdk.conversation.cancellation import CancellationToken
 from openhands.sdk.conversation.conversation import Conversation
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.events_list_base import EventsListBase
@@ -28,6 +29,7 @@ from openhands.sdk.conversation.visualizer import (
 
 
 __all__ = [
+    "CancellationToken",
     "Conversation",
     "BaseConversation",
     "ConversationState",

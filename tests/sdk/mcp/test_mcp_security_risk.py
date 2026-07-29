@@ -95,6 +95,38 @@ def test_mcp_tool_to_openai_with_security_risk():
     )
 
 
+def test_mcp_tool_to_responses_with_security_risk():
+    """Test that MCP Responses schema includes security_risk correctly."""
+    mcp_tool_def = mcp.types.Tool(
+        name="fetch_fetch",
+        description="Fetch a URL",
+        inputSchema={
+            "type": "object",
+            "properties": {"url": {"type": "string", "description": "URL to fetch"}},
+            "required": ["url"],
+        },
+    )
+
+    mock_client = MockMCPClient()
+    tools = MCPToolDefinition.create(mcp_tool=mcp_tool_def, mcp_client=mock_client)
+    tool = tools[0]
+
+    responses_tool = tool.to_responses_tool(add_security_risk_prediction=True)
+
+    params = responses_tool["parameters"]
+    assert isinstance(params, dict)
+    properties = params["properties"]
+    assert isinstance(properties, dict)
+    required = params.get("required", [])
+    assert isinstance(required, list)
+
+    assert "url" in properties
+    assert "security_risk" in properties
+    assert "data" not in properties
+    assert "url" in required
+    assert "security_risk" not in required
+
+
 def test_mcp_tool_action_from_arguments_with_security_risk():
     """Test that action_from_arguments works correctly with security_risk popped.
 

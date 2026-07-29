@@ -37,7 +37,7 @@ def test_multiple_summaries_at_different_offsets() -> None:
 
     condensation1 = Condensation(
         id="condensation-1",
-        forgotten_event_ids=[message_events[0].id],
+        forgotten_event_ids={message_events[0].id},
         summary="Summary of event 0",
         summary_offset=0,
         llm_response_id="condensation_1",
@@ -45,7 +45,7 @@ def test_multiple_summaries_at_different_offsets() -> None:
 
     condensation2 = Condensation(
         id="condensation-2",
-        forgotten_event_ids=[message_events[2].id],
+        forgotten_event_ids={message_events[2].id},
         summary="Summary of event 2",
         summary_offset=2,
         llm_response_id="condensation_2",
@@ -86,7 +86,7 @@ def test_multiple_summaries_from_sequential_condensations() -> None:
 
     condensation1 = Condensation(
         id="condensation-1",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="First summary",
         summary_offset=0,
         llm_response_id="condensation_1",
@@ -94,7 +94,7 @@ def test_multiple_summaries_from_sequential_condensations() -> None:
 
     condensation2 = Condensation(
         id="condensation-2",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="Second summary",
         summary_offset=3,
         llm_response_id="condensation_2",
@@ -102,7 +102,7 @@ def test_multiple_summaries_from_sequential_condensations() -> None:
 
     condensation3 = Condensation(
         id="condensation-3",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="Third summary",
         summary_offset=5,
         llm_response_id="condensation_3",
@@ -147,7 +147,7 @@ def test_summaries_preserve_order_and_content() -> None:
 
     condensation1 = Condensation(
         id="cond-1",
-        forgotten_event_ids=[messages[0].id],
+        forgotten_event_ids={messages[0].id},
         summary="Summary A",
         summary_offset=0,
         llm_response_id="cond_1",
@@ -155,7 +155,7 @@ def test_summaries_preserve_order_and_content() -> None:
 
     condensation2 = Condensation(
         id="cond-2",
-        forgotten_event_ids=[messages[2].id],
+        forgotten_event_ids={messages[2].id},
         summary="Summary B",
         summary_offset=2,
         llm_response_id="cond_2",
@@ -209,7 +209,7 @@ def test_forget_first_summary_keeps_second() -> None:
 
     condensation1 = Condensation(
         id="cond-1",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="Summary A",
         summary_offset=0,
         llm_response_id="cond_1",
@@ -217,7 +217,7 @@ def test_forget_first_summary_keeps_second() -> None:
 
     condensation2 = Condensation(
         id="cond-2",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="Summary B",
         summary_offset=2,
         llm_response_id="cond_2",
@@ -229,7 +229,7 @@ def test_forget_first_summary_keeps_second() -> None:
 
     condensation3 = Condensation(
         id="cond-3",
-        forgotten_event_ids=[summary_a_id],
+        forgotten_event_ids={summary_a_id},
         summary=None,
         summary_offset=None,
         llm_response_id="cond_3",
@@ -264,7 +264,7 @@ def test_forget_middle_summary_keeps_others() -> None:
 
     condensation1 = Condensation(
         id="cond-1",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="Summary A",
         summary_offset=0,
         llm_response_id="cond_1",
@@ -272,7 +272,7 @@ def test_forget_middle_summary_keeps_others() -> None:
 
     condensation2 = Condensation(
         id="cond-2",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="Summary B",
         summary_offset=2,
         llm_response_id="cond_2",
@@ -280,7 +280,7 @@ def test_forget_middle_summary_keeps_others() -> None:
 
     condensation3 = Condensation(
         id="cond-3",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="Summary C",
         summary_offset=4,
         llm_response_id="cond_3",
@@ -290,7 +290,7 @@ def test_forget_middle_summary_keeps_others() -> None:
 
     condensation4 = Condensation(
         id="cond-4",
-        forgotten_event_ids=[summary_b_id],
+        forgotten_event_ids={summary_b_id},
         summary=None,
         llm_response_id="cond_4",
     )
@@ -327,7 +327,7 @@ def test_forget_most_recent_summary() -> None:
 
     condensation1 = Condensation(
         id="cond-1",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="Summary A",
         summary_offset=0,
         llm_response_id="cond_1",
@@ -335,7 +335,7 @@ def test_forget_most_recent_summary() -> None:
 
     condensation2 = Condensation(
         id="cond-2",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="Summary B",
         summary_offset=1,
         llm_response_id="cond_2",
@@ -345,7 +345,7 @@ def test_forget_most_recent_summary() -> None:
 
     condensation3 = Condensation(
         id="cond-3",
-        forgotten_event_ids=[summary_b_id],
+        forgotten_event_ids={summary_b_id},
         summary=None,
         llm_response_id="cond_3",
     )
@@ -375,7 +375,7 @@ def test_forget_summary_adjusts_later_summary_positions() -> None:
 
     condensation1 = Condensation(
         id="cond-1",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="Summary at position 0",
         summary_offset=0,
         llm_response_id="cond_1",
@@ -383,7 +383,7 @@ def test_forget_summary_adjusts_later_summary_positions() -> None:
 
     condensation2 = Condensation(
         id="cond-2",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="Summary at position 2",
         summary_offset=2,
         llm_response_id="cond_2",
@@ -393,7 +393,7 @@ def test_forget_summary_adjusts_later_summary_positions() -> None:
 
     condensation3 = Condensation(
         id="cond-3",
-        forgotten_event_ids=[summary_1_id],
+        forgotten_event_ids={summary_1_id},
         summary=None,
         llm_response_id="cond_3",
     )
@@ -432,7 +432,7 @@ def test_forget_multiple_summaries_simultaneously() -> None:
 
     condensation1 = Condensation(
         id="cond-1",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="Summary A",
         summary_offset=0,
         llm_response_id="cond_1",
@@ -440,7 +440,7 @@ def test_forget_multiple_summaries_simultaneously() -> None:
 
     condensation2 = Condensation(
         id="cond-2",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="Summary B",
         summary_offset=2,
         llm_response_id="cond_2",
@@ -448,7 +448,7 @@ def test_forget_multiple_summaries_simultaneously() -> None:
 
     condensation3 = Condensation(
         id="cond-3",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="Summary C",
         summary_offset=4,
         llm_response_id="cond_3",
@@ -459,7 +459,7 @@ def test_forget_multiple_summaries_simultaneously() -> None:
 
     condensation4 = Condensation(
         id="cond-4",
-        forgotten_event_ids=[summary_a_id, summary_c_id],
+        forgotten_event_ids={summary_a_id, summary_c_id},
         summary=None,
         llm_response_id="cond_4",
     )
@@ -492,7 +492,7 @@ def test_forget_all_summaries() -> None:
 
     condensation1 = Condensation(
         id="cond-1",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="Summary A",
         summary_offset=0,
         llm_response_id="cond_1",
@@ -500,7 +500,7 @@ def test_forget_all_summaries() -> None:
 
     condensation2 = Condensation(
         id="cond-2",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="Summary B",
         summary_offset=2,
         llm_response_id="cond_2",
@@ -511,7 +511,7 @@ def test_forget_all_summaries() -> None:
 
     condensation3 = Condensation(
         id="cond-3",
-        forgotten_event_ids=[summary_a_id, summary_b_id],
+        forgotten_event_ids={summary_a_id, summary_b_id},
         summary=None,
         llm_response_id="cond_3",
     )
@@ -546,7 +546,7 @@ def test_sequential_condensations_each_forget_summary() -> None:
 
     condensation1 = Condensation(
         id="cond-1",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="Summary 1",
         summary_offset=0,
         llm_response_id="cond_1",
@@ -554,7 +554,7 @@ def test_sequential_condensations_each_forget_summary() -> None:
 
     condensation2 = Condensation(
         id="cond-2",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="Summary 2",
         summary_offset=2,
         llm_response_id="cond_2",
@@ -562,7 +562,7 @@ def test_sequential_condensations_each_forget_summary() -> None:
 
     condensation3 = Condensation(
         id="cond-3",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="Summary 3",
         summary_offset=4,
         llm_response_id="cond_3",
@@ -573,14 +573,14 @@ def test_sequential_condensations_each_forget_summary() -> None:
 
     condensation4 = Condensation(
         id="cond-4",
-        forgotten_event_ids=[summary_1_id],
+        forgotten_event_ids={summary_1_id},
         summary=None,
         llm_response_id="cond_4",
     )
 
     condensation5 = Condensation(
         id="cond-5",
-        forgotten_event_ids=[summary_2_id],
+        forgotten_event_ids={summary_2_id},
         summary=None,
         llm_response_id="cond_5",
     )
@@ -620,7 +620,7 @@ def test_summary_events_have_stable_identifiers() -> None:
 
     condensation1 = Condensation(
         id="stable-condensation",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="Stable summary",
         summary_offset=0,
         llm_response_id="stable_condensation",
@@ -654,7 +654,7 @@ def test_condensation_tracks_its_summary_event() -> None:
 
     condensation1 = Condensation(
         id="cond-A",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="First",
         summary_offset=0,
         llm_response_id="cond_A",
@@ -662,7 +662,7 @@ def test_condensation_tracks_its_summary_event() -> None:
 
     condensation2 = Condensation(
         id="cond-B",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="Second",
         summary_offset=2,
         llm_response_id="cond_B",
@@ -698,7 +698,7 @@ def test_can_reference_summary_from_previous_condensation() -> None:
     # First condensation creates a summary
     condensation1 = Condensation(
         id="cond-1",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="To be forgotten",
         summary_offset=0,
         llm_response_id="cond_original",
@@ -716,7 +716,7 @@ def test_can_reference_summary_from_previous_condensation() -> None:
     # Second condensation references and forgets that summary
     condensation2 = Condensation(
         id="cond-2",
-        forgotten_event_ids=[summary_id],
+        forgotten_event_ids={summary_id},
         summary="New summary",
         summary_offset=0,
         llm_response_id="cond_new",
@@ -749,7 +749,7 @@ def test_summary_offset_is_absolute_in_final_view() -> None:
 
     condensation1 = Condensation(
         id="cond-1",
-        forgotten_event_ids=[messages[0].id, messages[1].id],
+        forgotten_event_ids={messages[0].id, messages[1].id},
         summary="Summary at offset 1",
         summary_offset=1,
         llm_response_id="cond_1",
@@ -789,7 +789,7 @@ def test_summary_offset_zero_inserts_at_beginning() -> None:
 
     condensation1 = Condensation(
         id="cond-1",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="At the start",
         summary_offset=0,
         llm_response_id="cond_1",
@@ -809,7 +809,7 @@ def test_summary_offset_at_end_of_events() -> None:
 
     condensation1 = Condensation(
         id="cond-1",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="At the end",
         summary_offset=3,  # After all 3 messages
         llm_response_id="cond_1",
@@ -834,7 +834,7 @@ def test_multiple_summaries_with_same_offset() -> None:
 
     condensation1 = Condensation(
         id="cond-1",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="First at offset 1",
         summary_offset=1,
         llm_response_id="cond_1",
@@ -842,7 +842,7 @@ def test_multiple_summaries_with_same_offset() -> None:
 
     condensation2 = Condensation(
         id="cond-2",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="Second at offset 1",
         summary_offset=1,
         llm_response_id="cond_2",
@@ -878,7 +878,7 @@ def test_forget_events_and_summary_together() -> None:
 
     condensation1 = Condensation(
         id="cond-1",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="Old summary",
         summary_offset=1,
         llm_response_id="cond_1",
@@ -888,7 +888,7 @@ def test_forget_events_and_summary_together() -> None:
 
     condensation2 = Condensation(
         id="cond-2",
-        forgotten_event_ids=[messages[0].id, messages[2].id, old_summary_id],
+        forgotten_event_ids={messages[0].id, messages[2].id, old_summary_id},
         summary="New summary",
         summary_offset=0,
         llm_response_id="cond_2",
@@ -927,7 +927,7 @@ def test_summary_offset_remains_valid_after_forgetting_events() -> None:
     # Forget first two messages, add summary at offset 2
     condensation1 = Condensation(
         id="cond-1",
-        forgotten_event_ids=[messages[0].id, messages[1].id],
+        forgotten_event_ids={messages[0].id, messages[1].id},
         summary="Summary after forgetting",
         summary_offset=2,
         llm_response_id="cond_1",
@@ -965,7 +965,7 @@ def test_interleaved_events_and_summaries() -> None:
 
     condensation1 = Condensation(
         id="cond-1",
-        forgotten_event_ids=[messages[1].id],
+        forgotten_event_ids={messages[1].id},
         summary="Summary A",
         summary_offset=1,
         llm_response_id="cond_1",
@@ -973,7 +973,7 @@ def test_interleaved_events_and_summaries() -> None:
 
     condensation2 = Condensation(
         id="cond-2",
-        forgotten_event_ids=[messages[3].id],
+        forgotten_event_ids={messages[3].id},
         summary="Summary B",
         summary_offset=3,
         llm_response_id="cond_2",
@@ -1027,7 +1027,7 @@ def test_condensation_without_summary_no_summary_event_created() -> None:
 
     condensation1 = Condensation(
         id="cond-1",
-        forgotten_event_ids=[messages[1].id],
+        forgotten_event_ids={messages[1].id},
         summary=None,  # No summary
         summary_offset=None,
         llm_response_id="cond_1",
@@ -1052,7 +1052,7 @@ def test_empty_view_with_only_summaries() -> None:
 
     condensation1 = Condensation(
         id="cond-1",
-        forgotten_event_ids=[messages[0].id, messages[1].id, messages[2].id],
+        forgotten_event_ids={messages[0].id, messages[1].id, messages[2].id},
         summary="Only summary remains",
         summary_offset=0,
         llm_response_id="cond_1",
@@ -1076,7 +1076,7 @@ def test_forget_nonexistent_summary_is_noop() -> None:
 
     condensation1 = Condensation(
         id="cond-1",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="Existing summary",
         summary_offset=0,
         llm_response_id="cond_1",
@@ -1085,7 +1085,7 @@ def test_forget_nonexistent_summary_is_noop() -> None:
     # Try to forget a summary that doesn't exist
     condensation2 = Condensation(
         id="cond-2",
-        forgotten_event_ids=["nonexistent_summary_id"],
+        forgotten_event_ids={"nonexistent_summary_id"},
         summary=None,
         llm_response_id="cond_2",
     )
@@ -1111,7 +1111,7 @@ def test_multiple_condensations_same_summary_offset() -> None:
 
     condensation1 = Condensation(
         id="cond-1",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="First at 1",
         summary_offset=1,
         llm_response_id="cond_1",
@@ -1119,7 +1119,7 @@ def test_multiple_condensations_same_summary_offset() -> None:
 
     condensation2 = Condensation(
         id="cond-2",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="Second at 1",
         summary_offset=1,
         llm_response_id="cond_2",
@@ -1127,7 +1127,7 @@ def test_multiple_condensations_same_summary_offset() -> None:
 
     condensation3 = Condensation(
         id="cond-3",
-        forgotten_event_ids=[],
+        forgotten_event_ids=set(),
         summary="Third at 1",
         summary_offset=1,
         llm_response_id="cond_3",

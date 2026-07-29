@@ -14,6 +14,7 @@ import httpx
 import pytest
 from pydantic import SecretStr
 
+from openhands.sdk.mcp.config import dump_mcp_config
 from openhands.sdk.secret import LookupSecret
 from openhands.workspace.cloud.workspace import OpenHandsCloudWorkspace
 
@@ -37,7 +38,9 @@ def mock_workspace():
     # Simulate a running sandbox
     workspace._sandbox_id = SANDBOX_ID
     workspace._session_api_key = SESSION_KEY
-    return workspace
+    yield workspace
+    workspace._sandbox_id = None
+    workspace._session_api_key = None
 
 
 class TestGetLLM:
@@ -88,6 +91,68 @@ class TestGetLLM:
         assert llm.model == "gpt-4o"
         assert llm.temperature == 0.5
         assert isinstance(llm.api_key, SecretStr)
+
+    def test_get_llm_with_profile_name(self, mock_workspace):
+        """get_llm can load a named profile from SaaS metadata."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "llm_model": "anthropic/claude-sonnet-4-20250514",
+            "llm_api_key": "sk-default-key",
+            "llm_base_url": None,
+            "llm_profiles": {
+                "profiles": {
+                    "fast": {
+                        "model": "openai/gpt-4o",
+                        "api_key": "sk-profile-key",
+                        "base_url": "https://litellm.example.com",
+                        "usage_id": "default",
+                    }
+                },
+                "active_profile": "fast",
+            },
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(
+            mock_workspace, "_send_api_request", return_value=mock_response
+        ) as mock_req:
+            llm = mock_workspace.get_llm(profile_name="fast", temperature=0.3)
+
+        mock_req.assert_called_once_with(
+            "GET",
+            f"{CLOUD_URL}/api/v1/users/me",
+            params={"expose_secrets": "true"},
+            headers={"X-Session-API-Key": SESSION_KEY},
+        )
+        assert llm.model == "openai/gpt-4o"
+        assert llm.temperature == 0.3
+        assert isinstance(llm.api_key, SecretStr)
+        assert llm.api_key.get_secret_value() == "sk-profile-key"
+        assert llm.base_url == "https://litellm.example.com"
+        assert llm.usage_id == "profile:fast"
+
+        with patch.object(
+            mock_workspace, "_send_api_request", return_value=mock_response
+        ):
+            llm_with_override = mock_workspace.get_llm(
+                profile_name="fast", usage_id="custom-usage"
+            )
+
+        assert llm_with_override.usage_id == "custom-usage"
+
+    def test_get_llm_missing_profile_raises(self, mock_workspace):
+        """get_llm raises FileNotFoundError for unknown SaaS profiles."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "llm_profiles": {"profiles": {"fast": {"model": "gpt-4o"}}}
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(
+            mock_workspace, "_send_api_request", return_value=mock_response
+        ):
+            with pytest.raises(FileNotFoundError, match="missing"):
+                mock_workspace.get_llm(profile_name="missing")
 
     def test_get_llm_no_api_key_still_works(self, mock_workspace):
         """If no API key is configured, the LLM gets api_key=None."""
@@ -190,11 +255,11 @@ class TestGetSecrets:
             mock_workspace.get_secrets()
 
 
-class TestGetMcpConfig:
+class TestGetMcpServers:
     """Tests for OpenHandsCloudWorkspace.get_mcp_config()."""
 
     def test_get_mcp_config_returns_empty_when_no_config(self, mock_workspace):
-        """get_mcp_config returns empty dict when no MCP config is set."""
+        """get_mcp_config returns empty dict when no MCP servers is set."""
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "llm_model": "gpt-4o",
@@ -235,14 +300,15 @@ class TestGetMcpConfig:
             headers={"X-Session-API-Key": SESSION_KEY},
         )
 
-        assert "mcpServers" in mcp_config
-        servers = mcp_config["mcpServers"]
+        servers = dump_mcp_config(mcp_config)
         assert len(servers) == 2
 
         # First SSE server with API key
         assert servers["sse_0"]["url"] == "https://sse.example.com/mcp"
         assert servers["sse_0"]["transport"] == "sse"
-        assert servers["sse_0"]["headers"]["Authorization"] == "Bearer sse-key-123"
+        sse_headers = servers["sse_0"]["headers"]
+        assert isinstance(sse_headers, dict)
+        assert sse_headers["Authorization"] == "Bearer sse-key-123"
 
         # Second SSE server without API key
         assert servers["sse_1"]["url"] == "https://sse2.example.com/mcp"
@@ -272,12 +338,14 @@ class TestGetMcpConfig:
         ):
             mcp_config = mock_workspace.get_mcp_config()
 
-        servers = mcp_config["mcpServers"]
+        servers = dump_mcp_config(mcp_config)
         assert len(servers) == 1
 
         assert servers["shttp_0"]["url"] == "https://shttp.example.com/mcp"
         assert servers["shttp_0"]["transport"] == "streamable-http"
-        assert servers["shttp_0"]["headers"]["Authorization"] == "Bearer shttp-key"
+        shttp_headers = servers["shttp_0"]["headers"]
+        assert isinstance(shttp_headers, dict)
+        assert shttp_headers["Authorization"] == "Bearer shttp-key"
         assert servers["shttp_0"]["timeout"] == 120
 
     def test_get_mcp_config_transforms_stdio_servers(self, mock_workspace):
@@ -304,7 +372,7 @@ class TestGetMcpConfig:
         ):
             mcp_config = mock_workspace.get_mcp_config()
 
-        servers = mcp_config["mcpServers"]
+        servers = dump_mcp_config(mcp_config)
         assert len(servers) == 1
 
         # STDIO servers use their explicit name
@@ -336,7 +404,7 @@ class TestGetMcpConfig:
         ):
             mcp_config = mock_workspace.get_mcp_config()
 
-        servers = mcp_config["mcpServers"]
+        servers = dump_mcp_config(mcp_config)
         assert len(servers) == 3
         assert "sse_0" in servers
         assert "shttp_0" in servers
@@ -367,10 +435,8 @@ class TestGetMcpConfig:
 
         assert mcp_config == {}
 
-    def test_get_mcp_config_is_mcpconfig_compatible(self, mock_workspace):
-        """get_mcp_config returns dict that can be validated by fastmcp.MCPConfig."""
-        from fastmcp.mcp_config import MCPConfig
-
+    def test_get_mcp_config_is_native_settings_compatible(self, mock_workspace):
+        """get_mcp_config returns a native SDK MCP server map."""
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "mcp_config": {
@@ -392,12 +458,11 @@ class TestGetMcpConfig:
         ):
             mcp_config_dict = mock_workspace.get_mcp_config()
 
-        # Should be parseable by MCPConfig
-        config = MCPConfig.model_validate(mcp_config_dict)
-        assert len(config.mcpServers) == 3
-        assert "sse_0" in config.mcpServers
-        assert "shttp_0" in config.mcpServers
-        assert "fetch" in config.mcpServers
+        config = mcp_config_dict
+        assert len(config) == 3
+        assert "sse_0" in config
+        assert "shttp_0" in config
+        assert "fetch" in config
 
 
 class TestRetry:

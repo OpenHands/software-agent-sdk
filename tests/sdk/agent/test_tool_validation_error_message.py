@@ -1,5 +1,6 @@
 """Test that tool validation error messages are concise and don't include values."""
 
+import json
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Self
 from unittest.mock import patch
@@ -204,6 +205,14 @@ def test_unparseable_json_error_message():
     error_msg = error_events[0].error
     assert "validation_test_tool" in error_msg
     assert "unparseable JSON" in error_msg
+
+    action_events = [e for e in collected_events if isinstance(e, ActionEvent)]
+    assert len(action_events) == 1
+    sanitized_args = json.loads(action_events[0].tool_call.arguments)
+    assert sanitized_args == {
+        "_openhands_malformed_tool_call": True,
+        "error": error_msg,
+    }
 
 
 def _mock_llm_response_factory(tool_args: str):

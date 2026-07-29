@@ -27,7 +27,7 @@ class ComplianceTestResult(BaseModel):
 
     pattern_name: str = Field(description="Name of the malformed pattern tested")
     model: str = Field(description="Full model path (e.g., litellm_proxy/...)")
-    model_id: str = Field(description="Short model ID for display (e.g., gpt-5.2)")
+    model_id: str = Field(description="Short model ID for display (e.g., gpt-5.5)")
     provider: str = Field(description="Provider name (anthropic, openai, etc.)")
     response_type: APIResponse = Field(description="How the API responded")
     error_message: str | None = Field(

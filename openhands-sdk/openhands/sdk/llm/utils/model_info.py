@@ -1,14 +1,27 @@
 import time
+from collections.abc import Mapping
 from functools import lru_cache
 from logging import getLogger
+from typing import Any
 
 import httpx
-from litellm.types.utils import ModelInfo
+from litellm import model_cost
 from litellm.utils import get_model_info
 from pydantic import SecretStr
 
+from openhands.sdk.llm.utils.openhands_provider import litellm_call_kwargs
+
 
 logger = getLogger(__name__)
+
+
+def _merge_raw_model_metadata(model_info: Mapping[str, Any]) -> dict[str, Any]:
+    """Preserve raw LiteLLM capability fields."""
+    key = model_info.get("key")
+    raw = model_cost.get(key) if isinstance(key, str) else None
+    if not isinstance(raw, dict):
+        return dict(model_info)
+    return {**raw, **model_info}
 
 
 @lru_cache
@@ -28,11 +41,20 @@ def _get_model_info_from_litellm_proxy(
 
         response = httpx.get(f"{base_url}/v1/model/info", headers=headers)
         data = response.json().get("data", [])
+        # Match against either the public alias (`model_name`) or the
+        # underlying provider/model_name form (`litellm_params.model`). The proxy itself
+        # accepts requests by either form, and our proxy configs often
+        # advertise a short alias (e.g. `claude-opus-4-8`) for a provider
+        # id (`anthropic/claude-opus-4-8`). Without the second match,
+        # `model_info` overrides set on the proxy are invisible to clients
+        # that address the model by its provider id.
+        stripped = model.removeprefix("litellm_proxy/")
         current = next(
             (
                 info
                 for info in data
-                if info["model_name"] == model.removeprefix("litellm_proxy/")
+                if info.get("model_name") == stripped
+                or info.get("litellm_params", {}).get("model") == stripped
             ),
             None,
         )
@@ -50,13 +72,17 @@ def _get_model_info_from_litellm_proxy(
 
 def get_litellm_model_info(
     secret_api_key: SecretStr | str | None, base_url: str | None, model: str
-) -> ModelInfo | None:
+) -> dict[str, Any] | None:
+    call_kwargs = litellm_call_kwargs(model, base_url)
+    model = call_kwargs["model"]
+    base_url = call_kwargs["api_base"]
+
     # Try to get model info via openrouter or litellm proxy first
     try:
         if model.startswith("openrouter"):
             model_info = get_model_info(model)
             if model_info:
-                return model_info
+                return _merge_raw_model_metadata(model_info)
     except Exception as e:
         logger.debug(f"get_model_info(openrouter) failed: {e}")
 
@@ -77,13 +103,13 @@ def get_litellm_model_info(
     try:
         model_info = get_model_info(model.split(":")[0])
         if model_info:
-            return model_info
+            return _merge_raw_model_metadata(model_info)
     except Exception:
         pass
     try:
         model_info = get_model_info(model.split("/")[-1])
         if model_info:
-            return model_info
+            return _merge_raw_model_metadata(model_info)
     except Exception:
         pass
 

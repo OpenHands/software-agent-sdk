@@ -38,7 +38,7 @@ jobs:
             - name: Run QA Changes
               uses: OpenHands/extensions/plugins/qa-changes@main
               with:
-                  llm-model: litellm_proxy/claude-sonnet-4-5-20250929
+                  llm-model: litellm_proxy/openai/gpt-5.5
                   llm-base-url: https://llm-proxy.app.all-hands.dev
                   max-budget: '10.0'
                   timeout-minutes: '30'

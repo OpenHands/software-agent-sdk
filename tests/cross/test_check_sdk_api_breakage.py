@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,11 +33,15 @@ _prod = _load_prod_module()
 PackageConfig = _prod.PackageConfig
 DeprecationMetadata = _prod.DeprecationMetadata
 DeprecatedSymbols = _prod.DeprecatedSymbols
+FieldDefaultChange = _prod.FieldDefaultChange
 _parse_version = _prod._parse_version
 _check_version_bump = _prod._check_version_bump
 _find_deprecated_symbols = _prod._find_deprecated_symbols
+_field_default_repr = _prod._field_default_repr
+_is_field_default_only_change = _prod._is_field_default_only_change
 _is_field_metadata_only_change = _prod._is_field_metadata_only_change
 _was_deprecated = _prod._was_deprecated
+_is_accepted_removed_member = _prod._is_accepted_removed_member
 get_pypi_baseline_version = _prod.get_pypi_baseline_version
 
 # Reusable test config matching the _write_pkg_init helper
@@ -102,6 +107,44 @@ def test_get_pypi_baseline_version_falls_back_to_previous(monkeypatch):
     _mock_pypi_releases(monkeypatch, ["1.0.0", "1.1.0"])
 
     assert get_pypi_baseline_version("openhands-sdk", "1.2.0") == "1.1.0"
+
+
+def _git(repo_root: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout
+
+
+def _init_git_repo(tmp_path: Path) -> Path:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    _git(repo_root, "init", "-b", "main")
+    _git(repo_root, "config", "user.name", "Test User")
+    _git(repo_root, "config", "user.email", "test@example.com")
+    return repo_root
+
+
+def _write_repo_sdk_model(repo_root: Path, default: str) -> None:
+    pkg = repo_root / "openhands-sdk" / "openhands" / "sdk"
+    pkg.mkdir(parents=True, exist_ok=True)
+    (pkg.parent / "__init__.py").write_text("")
+    (pkg / "__init__.py").write_text(
+        "__all__ = ['Config']\n"
+        "from pydantic import BaseModel, Field\n\n"
+        "class Config(BaseModel):\n"
+        f"    model: str = Field(default={default!r})\n"
+    )
+
+
+def _commit_all(repo_root: Path, message: str) -> str:
+    _git(repo_root, "add", ".")
+    _git(repo_root, "commit", "-m", message)
+    return _git(repo_root, "rev-parse", "HEAD").strip()
 
 
 def test_griffe_breakage_removed_attribute_requires_minor_bump(tmp_path):
@@ -191,6 +234,50 @@ def test_removal_with_warn_deprecated_is_not_undeprecated(tmp_path):
         new_root,
         _SDK_CFG,
     )
+    assert total_breaks == 1
+    assert undeprecated == 0
+
+
+def test_find_deprecated_symbols_reads_export_registry(tmp_path):
+    """``_DEPRECATED_SDK_EXPORTS`` registry entries are recognized as deprecated
+    top-level symbols (the SDK's data-driven mechanism for renamed import
+    aliases such as ``LLMAgentSettings``)."""
+    src = tmp_path / "openhands" / "sdk"
+    src.mkdir(parents=True)
+    (src / "__init__.py").write_text(
+        "_DEPRECATED_SDK_EXPORTS: dict[str, dict[str, str]] = {\n"
+        "    'LLMAgentSettings': {'deprecated_in': '1.19.0',"
+        " 'removed_in': '1.24.0'},\n"
+        "}\n"
+    )
+
+    found = _find_deprecated_symbols(tmp_path)
+
+    assert "LLMAgentSettings" in found.top_level
+    assert found.metadata["LLMAgentSettings"].deprecated_in == "1.19.0"
+    assert found.metadata["LLMAgentSettings"].removed_in == "1.24.0"
+
+
+def test_removal_via_export_registry_is_not_undeprecated(tmp_path):
+    """An export deprecated only through the ``_DEPRECATED_SDK_EXPORTS`` registry
+    dict can be removed on schedule without being flagged as an undeprecated
+    removal -- the registry is the only place its deprecation is statically
+    visible (no ``@deprecated`` decorator; f-string ``warn_deprecated`` name)."""
+    old_pkg = _write_pkg_init(tmp_path, "old", ["Foo", "Bar"])
+    old_init = old_pkg / "__init__.py"
+    old_init.write_text(
+        old_init.read_text()
+        + "\n_DEPRECATED_SDK_EXPORTS: dict[str, dict[str, str]] = {\n"
+        + "    'Bar': {'deprecated_in': '1.0', 'removed_in': '2.0'},\n"
+        + "}\n"
+    )
+    _write_pkg_init(tmp_path, "new", ["Foo"])
+
+    old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])
+    new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
+
+    total_breaks, undeprecated = _prod._compute_breakages(old_root, new_root, _SDK_CFG)
+
     assert total_breaks == 1
     assert undeprecated == 0
 
@@ -466,6 +553,70 @@ def test_workspace_removed_export_is_breaking(tmp_path):
     assert undeprecated == 1
 
 
+def test_accepted_docker_mount_dir_member_removal_detection_is_exact():
+    assert _is_accepted_removed_member(
+        "openhands.workspace", "DockerWorkspace.mount_dir"
+    )
+    assert _is_accepted_removed_member(
+        "openhands.workspace", "DockerDevWorkspace.mount_dir"
+    )
+    assert not _is_accepted_removed_member(
+        "openhands.workspace", "ApptainerWorkspace.mount_dir"
+    )
+    assert not _is_accepted_removed_member("openhands.sdk", "DockerWorkspace.mount_dir")
+
+
+def test_accepted_docker_mount_dir_removal_is_not_breaking(tmp_path, capsys):
+    ws_cfg = PackageConfig(
+        package="openhands.workspace",
+        distribution="openhands-workspace",
+        source_dir="openhands-workspace",
+    )
+    old_pkg = _write_pkg_init(
+        tmp_path,
+        "old",
+        ["DockerWorkspace", "DockerDevWorkspace"],
+        module_parts=("openhands", "workspace"),
+    )
+    new_pkg = _write_pkg_init(
+        tmp_path,
+        "new",
+        ["DockerWorkspace", "DockerDevWorkspace"],
+        module_parts=("openhands", "workspace"),
+    )
+
+    old_pkg.joinpath("__init__.py").write_text(
+        old_pkg.joinpath("__init__.py").read_text()
+        + "\nfrom pydantic import BaseModel, Field\n\n"
+        + "class DockerWorkspace(BaseModel):\n"
+        + "    mount_dir: str | None = Field(default=None)\n\n"
+        + "class DockerDevWorkspace(DockerWorkspace):\n"
+        + "    pass\n"
+    )
+    new_pkg.joinpath("__init__.py").write_text(
+        new_pkg.joinpath("__init__.py").read_text()
+        + "\nfrom pydantic import BaseModel\n\n"
+        + "class DockerWorkspace(BaseModel):\n"
+        + "    pass\n\n"
+        + "class DockerDevWorkspace(DockerWorkspace):\n"
+        + "    pass\n"
+    )
+
+    old_root = griffe.load("openhands.workspace", search_paths=[str(tmp_path / "old")])
+    new_root = griffe.load("openhands.workspace", search_paths=[str(tmp_path / "new")])
+
+    total_breaks, removal_policy_errors = _prod._compute_breakages(
+        old_root,
+        new_root,
+        ws_cfg,
+    )
+
+    assert total_breaks == 0
+    assert removal_policy_errors == 0
+    captured = capsys.readouterr()
+    assert "Accepted removal of DockerWorkspace.mount_dir" in captured.out
+
+
 def test_unresolved_alias_exports_do_not_crash_breakage_detection(tmp_path):
     """Unresolvable aliases should not abort checking other exports.
 
@@ -533,6 +684,48 @@ def test_is_field_metadata_only_change_default_changed():
     old = "Field(default=False, description='desc')"
     new = "Field(default=True, description='desc')"
     assert _is_field_metadata_only_change(old, new) is False
+
+
+def test_is_field_default_only_change_detects_keyword_default_change():
+    """Changing only Field default value is classified separately."""
+    old = "Field(default='claude-sonnet-4-20250514', description='desc')"
+    new = "Field(default='gpt-5.5', description='desc')"
+
+    assert _is_field_default_only_change(old, new) is True
+
+
+def test_is_field_default_only_change_detects_keyword_default_factory_change():
+    """Changing only Field default_factory is classified separately."""
+    old = "Field(default_factory=datetime.now, description='desc')"
+    new = (
+        "Field(default_factory=lambda: datetime.now().astimezone(), description='new')"
+    )
+
+    assert _is_field_default_only_change(old, new) is True
+
+
+def test_is_field_default_only_change_ignores_other_runtime_changes():
+    """Changing non-default runtime kwargs is not a default-only change."""
+    old = "Field(default='claude-sonnet-4-20250514', alias='model')"
+    new = "Field(default='gpt-5.5', alias='llm_model')"
+
+    assert _is_field_default_only_change(old, new) is False
+
+
+def test_field_default_repr_supports_positional_default():
+    """Positional Field defaults are normalized for reporting."""
+    assert (
+        _field_default_repr("Field('gpt-5.5', description='Model name.')")
+        == "'gpt-5.5'"
+    )
+
+
+def test_field_default_repr_supports_default_factory():
+    """Field default_factory values are normalized for reporting."""
+    assert (
+        _field_default_repr("Field(default_factory=datetime.now, description='desc')")
+        == "datetime.now"
+    )
 
 
 def test_is_field_metadata_only_change_not_field():
@@ -786,6 +979,98 @@ def test_field_multiline_description_with_quotes_is_not_breaking(tmp_path):
     assert undeprecated == 0
 
 
+def test_field_default_change_is_reported_but_not_breaking(tmp_path):
+    """Public Field default changes should be collected for release notes."""
+    old_pkg = _write_pkg_init(tmp_path, "old", ["Config"])
+    new_pkg = _write_pkg_init(tmp_path, "new", ["Config"])
+
+    old_init = old_pkg / "__init__.py"
+    new_init = new_pkg / "__init__.py"
+
+    old_init.write_text(
+        old_init.read_text()
+        + "\nfrom pydantic import BaseModel, Field\n\n"
+        + "class Config(BaseModel):\n"
+        + "    model: str = Field(default='claude-sonnet-4-20250514')\n"
+    )
+    new_init.write_text(
+        new_init.read_text()
+        + "\nfrom pydantic import BaseModel, Field\n\n"
+        + "class Config(BaseModel):\n"
+        + "    model: str = Field(default='gpt-5.5')\n"
+    )
+
+    old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])
+    new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
+
+    field_default_changes: list[FieldDefaultChange] = []
+    total_breaks, undeprecated = _prod._compute_breakages(
+        old_root,
+        new_root,
+        _SDK_CFG,
+        field_default_changes=field_default_changes,
+    )
+
+    assert total_breaks == 0
+    assert undeprecated == 0
+    assert field_default_changes == [
+        _prod.FieldDefaultChange(
+            package="openhands.sdk",
+            object_path="openhands.sdk.Config.model",
+            old_default="'claude-sonnet-4-20250514'",
+            new_default="'gpt-5.5'",
+        )
+    ]
+
+
+def test_field_default_factory_change_is_reported_but_not_breaking(tmp_path):
+    """Public Field default_factory changes should be collected for release notes."""
+    old_pkg = _write_pkg_init(tmp_path, "old", ["Config"])
+    new_pkg = _write_pkg_init(tmp_path, "new", ["Config"])
+
+    old_init = old_pkg / "__init__.py"
+    new_init = new_pkg / "__init__.py"
+
+    old_init.write_text(
+        old_init.read_text()
+        + "\nfrom datetime import datetime\n"
+        + "from pydantic import BaseModel, Field\n\n"
+        + "class Config(BaseModel):\n"
+        + "    current_datetime: datetime = Field(default_factory=datetime.now)\n"
+    )
+    new_init.write_text(
+        new_init.read_text()
+        + "\nfrom datetime import datetime\n"
+        + "from pydantic import BaseModel, Field\n\n"
+        + "class Config(BaseModel):\n"
+        + "    current_datetime: datetime = Field(\n"
+        + "        default_factory=lambda: datetime.now().astimezone(),\n"
+        + "    )\n"
+    )
+
+    old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])
+    new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
+
+    field_default_changes: list[FieldDefaultChange] = []
+    total_breaks, undeprecated = _prod._compute_breakages(
+        old_root,
+        new_root,
+        _SDK_CFG,
+        field_default_changes=field_default_changes,
+    )
+
+    assert total_breaks == 0
+    assert undeprecated == 0
+    assert field_default_changes == [
+        _prod.FieldDefaultChange(
+            package="openhands.sdk",
+            object_path="openhands.sdk.Config.current_datetime",
+            old_default="datetime.now",
+            new_default="lambda: datetime.now().astimezone()",
+        )
+    ]
+
+
 def test_field_json_schema_extra_dict_is_not_breaking(tmp_path):
     """Adding json_schema_extra with a dict value should not be breaking."""
     old_pkg = _write_pkg_init(tmp_path, "old", ["Config"])
@@ -915,3 +1200,166 @@ def test_subclass_member_deprecated_on_base_is_not_undeprecated(tmp_path):
     # The removal should NOT be flagged as undeprecated because
     # Base.old_method carried a @deprecated marker
     assert undeprecated == 0
+
+
+def test_collect_field_default_changes_since_ref_reports_pr_introduced_change(tmp_path):
+    repo_root = _init_git_repo(tmp_path)
+    _write_repo_sdk_model(repo_root, "claude-sonnet-4-20250514")
+    base_ref = _commit_all(repo_root, "Base version")
+
+    _write_repo_sdk_model(repo_root, "gpt-5.5")
+    _commit_all(repo_root, "Change default")
+
+    changes = _prod._collect_field_default_changes_since_ref(
+        griffe,
+        str(repo_root),
+        base_ref,
+        _SDK_CFG,
+    )
+
+    assert changes == [
+        FieldDefaultChange(
+            package="openhands.sdk",
+            object_path="openhands.sdk.Config.model",
+            old_default="'claude-sonnet-4-20250514'",
+            new_default="'gpt-5.5'",
+        )
+    ]
+
+
+def test_collect_field_default_changes_since_ref_ignores_preexisting_change(tmp_path):
+    repo_root = _init_git_repo(tmp_path)
+    _write_repo_sdk_model(repo_root, "claude-sonnet-4-20250514")
+    _commit_all(repo_root, "Base version")
+
+    _write_repo_sdk_model(repo_root, "gpt-5.5")
+    _commit_all(repo_root, "Introduce default change on main")
+
+    _git(repo_root, "checkout", "-b", "feature/unrelated")
+    (repo_root / "README.md").write_text("Unrelated change\n")
+    _commit_all(repo_root, "Unrelated change")
+
+    changes = _prod._collect_field_default_changes_since_ref(
+        griffe,
+        str(repo_root),
+        "main",
+        _SDK_CFG,
+    )
+
+    assert changes == []
+
+
+def test_collect_field_default_changes_since_ref_returns_none_on_load_failure(tmp_path):
+    repo_root = _init_git_repo(tmp_path)
+    _write_repo_sdk_model(repo_root, "gpt-5.5")
+    _commit_all(repo_root, "Current version")
+
+    changes = _prod._collect_field_default_changes_since_ref(
+        griffe,
+        str(repo_root),
+        "missing-ref",
+        _SDK_CFG,
+    )
+
+    assert changes is None
+
+
+def test_collect_field_default_changes_since_ref_is_quiet_for_structural_changes(
+    tmp_path, capsys
+):
+    repo_root = _init_git_repo(tmp_path)
+    pkg = repo_root / "openhands-sdk" / "openhands" / "sdk"
+    pkg.mkdir(parents=True, exist_ok=True)
+    (pkg.parent / "__init__.py").write_text("")
+    (pkg / "__init__.py").write_text(
+        "__all__ = ['Config']\n"
+        "from pydantic import BaseModel, Field\n\n"
+        "class Config(BaseModel):\n"
+        "    model: str = Field(default='gpt-5.5')\n"
+        "    enabled: bool = True\n"
+    )
+    base_ref = _commit_all(repo_root, "Base version")
+
+    (pkg / "__init__.py").write_text(
+        "__all__ = ['Config']\n"
+        "from pydantic import BaseModel, Field\n\n"
+        "class Config(BaseModel):\n"
+        "    model: str = Field(default='gpt-5.5')\n"
+    )
+    _commit_all(repo_root, "Remove non-default API")
+
+    changes = _prod._collect_field_default_changes_since_ref(
+        griffe,
+        str(repo_root),
+        base_ref,
+        _SDK_CFG,
+    )
+
+    captured = capsys.readouterr()
+    assert changes == []
+    assert "::error" not in captured.out
+
+
+def test_write_field_default_change_report_includes_base_ref_changes(
+    tmp_path, monkeypatch
+):
+    report_path = tmp_path / "report.json"
+    monkeypatch.setenv(_prod.FIELD_DEFAULT_CHANGE_REPORT_ENV, str(report_path))
+
+    changes = [
+        FieldDefaultChange(
+            package="openhands.sdk",
+            object_path="openhands.sdk.Config.model",
+            old_default="'claude-sonnet-4-20250514'",
+            new_default="'gpt-5.5'",
+        )
+    ]
+
+    _prod._write_field_default_change_report(
+        changes,
+        field_default_changes_since_base=[],
+    )
+
+    assert json.loads(report_path.read_text()) == {
+        "field_default_changes": [
+            {
+                "package": "openhands.sdk",
+                "object_path": "openhands.sdk.Config.model",
+                "old_default": "'claude-sonnet-4-20250514'",
+                "new_default": "'gpt-5.5'",
+            }
+        ],
+        "field_default_changes_since_base": [],
+    }
+
+
+def test_write_field_default_change_report_omits_unavailable_base_ref(
+    tmp_path, monkeypatch
+):
+    report_path = tmp_path / "report.json"
+    monkeypatch.setenv(_prod.FIELD_DEFAULT_CHANGE_REPORT_ENV, str(report_path))
+
+    changes = [
+        FieldDefaultChange(
+            package="openhands.sdk",
+            object_path="openhands.sdk.Config.model",
+            old_default="'claude-sonnet-4-20250514'",
+            new_default="'gpt-5.5'",
+        )
+    ]
+
+    _prod._write_field_default_change_report(
+        changes,
+        field_default_changes_since_base=None,
+    )
+
+    assert json.loads(report_path.read_text()) == {
+        "field_default_changes": [
+            {
+                "package": "openhands.sdk",
+                "object_path": "openhands.sdk.Config.model",
+                "old_default": "'claude-sonnet-4-20250514'",
+                "new_default": "'gpt-5.5'",
+            }
+        ],
+    }

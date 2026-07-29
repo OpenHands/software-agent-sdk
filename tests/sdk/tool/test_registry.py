@@ -2,7 +2,6 @@ from collections.abc import Sequence
 from unittest.mock import MagicMock
 
 import pytest
-from deprecation import DeprecatedWarning
 
 from openhands.sdk import register_tool
 from openhands.sdk.conversation.state import ConversationState
@@ -94,15 +93,12 @@ def _hello_tool_factory(conv_state=None, **params) -> list[ToolDefinition]:
     return list(_SimpleHelloTool.create(conv_state, **params))
 
 
-def test_register_and_resolve_callable_factory():
-    with pytest.warns(DeprecatedWarning, match=r"register_tool\(callable_factory\)"):
-        register_tool("say_hello", _hello_tool_factory)
-
-    tools = resolve_tool(Tool(name="say_hello"), _create_mock_conv_state())
-    assert len(tools) == 1
-    assert isinstance(tools[0], ToolDefinition)
-    assert tools[0].name == "__simple_hello"
-    assert "say_hello" in list_usable_tools()
+def test_register_tool_rejects_callable_factory():
+    # Callable factories were removed in v1.24.0; register_tool now accepts only
+    # a ToolDefinition instance or a ToolDefinition subclass. Passing a callable
+    # is now both a static type error and a runtime TypeError.
+    with pytest.raises(TypeError, match=r"only accepts"):
+        register_tool("say_hello", _hello_tool_factory)  # type: ignore[arg-type]
 
 
 def test_register_tool_type_respects_is_usable():

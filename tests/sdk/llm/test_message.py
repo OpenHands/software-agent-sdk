@@ -1,6 +1,9 @@
 from unittest.mock import patch
 
 import pytest
+from litellm.types.utils import Message as LiteLLMMessage
+
+from openhands.sdk.llm.message import Message
 
 
 # Default serialization options for to_chat_dict() - tests can override as needed
@@ -197,10 +200,31 @@ def test_message_tool_calls_strip_blank_list_content():
     assert "content" not in result
 
 
+def test_empty_assistant_message_uses_string_content_in_list_serializer():
+    """List-serialized empty assistant messages should keep string content."""
+    message = Message(role="assistant", content=[])
+
+    result = message.to_chat_dict(
+        **{**DEFAULT_SERIALIZATION_OPTS, "function_calling_enabled": True}
+    )
+
+    assert result == {"content": "", "role": "assistant"}
+
+
+def test_empty_assistant_from_llm_chat_message_uses_string_content_in_list_serializer():
+    """Empty assistant LLM responses should keep string content."""
+    litellm_message = LiteLLMMessage(role="assistant", content=None)
+    message = Message.from_llm_chat_message(litellm_message)
+
+    result = message.to_chat_dict(
+        **{**DEFAULT_SERIALIZATION_OPTS, "function_calling_enabled": True}
+    )
+
+    assert result == {"content": "", "role": "assistant"}
+
+
 def test_message_from_llm_chat_message_function_role_error():
     """Test Message.from_llm_chat_message with function role raises error."""
-    from litellm.types.utils import Message as LiteLLMMessage
-
     from openhands.sdk.llm.message import Message
 
     litellm_message = LiteLLMMessage(role="function", content="Function response")  # type: ignore
@@ -211,8 +235,6 @@ def test_message_from_llm_chat_message_function_role_error():
 
 def test_message_from_llm_chat_message_with_non_string_content():
     """Test Message.from_llm_chat_message with non-string content."""
-    from litellm.types.utils import Message as LiteLLMMessage
-
     from openhands.sdk.llm.message import Message
 
     # Create a message with non-string content (None or list)

@@ -35,7 +35,14 @@ from openhands.sdk.context.condenser.llm_summarizing_condenser import (
 )
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.event import ActionEvent, MessageEvent
+from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+from openhands.sdk.event.types import ROOT_PARENT_ID
 from openhands.sdk.llm import LLM
+from openhands.sdk.llm.utils.openhands_provider import (
+    LITELLM_PROXY_PREFIX,
+    OPENHANDS_LLM_PROXY_BASE_URL,
+    OPENHANDS_PROVIDER_PREFIX,
+)
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.security.risk import SecurityRisk
 from openhands.sdk.tool import Tool, register_tool
@@ -92,6 +99,16 @@ class RestoreLifecycle:
             }
         finally:
             conversation.close()
+
+    def base_state_path(self) -> Path:
+        assert self.conversation_id is not None, "Call run_initial_session() first"
+        return self.persistence_base_dir / self.conversation_id.hex / "base_state.json"
+
+    def read_base_state(self) -> dict[str, Any]:
+        return json.loads(self.base_state_path().read_text())
+
+    def write_base_state(self, payload: dict[str, Any]) -> None:
+        self.base_state_path().write_text(json.dumps(payload))
 
     def restore(self, agent: Agent) -> LocalConversation:
         assert self.conversation_id is not None, "Call run_initial_session() first"
@@ -183,6 +200,22 @@ def _tool_call_response(
         model=model,
         object="chat.completion",
     )
+
+
+def _rewrite_openhands_llms_to_legacy_proxy(value: Any) -> None:
+    if isinstance(value, dict):
+        model = value.get("model")
+        if isinstance(model, str) and model.startswith(OPENHANDS_PROVIDER_PREFIX):
+            model_name = model.removeprefix(OPENHANDS_PROVIDER_PREFIX)
+            value["model"] = f"{LITELLM_PROXY_PREFIX}{model_name}"
+            value["base_url"] = OPENHANDS_LLM_PROXY_BASE_URL
+        for child in value.values():
+            _rewrite_openhands_llms_to_legacy_proxy(child)
+        return
+
+    if isinstance(value, list):
+        for child in value:
+            _rewrite_openhands_llms_to_legacy_proxy(child)
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
@@ -630,6 +663,119 @@ def test_conversation_restore_succeeds_when_llm_condenser_and_skills_change(
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
+def test_openhands_provider_restore_writes_public_model_shape(mock_completion):
+    captured_completion_kwargs: list[dict[str, Any]] = []
+
+    def capture_completion(*_args: Any, **kwargs: Any):
+        captured_completion_kwargs.append(kwargs)
+        return create_mock_litellm_response(
+            content="Acknowledged.", finish_reason="stop"
+        )
+
+    mock_completion.side_effect = capture_completion
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        base = Path(temp_dir)
+        lifecycle = RestoreLifecycle(
+            workspace_dir=base / "workspace",
+            persistence_base_dir=base / "persist",
+        )
+        lifecycle.workspace_dir.mkdir(parents=True, exist_ok=True)
+        lifecycle.persistence_base_dir.mkdir(parents=True, exist_ok=True)
+
+        tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
+        agent = _agent(
+            llm_model="openhands/claude-opus-4-8",
+            tools=tools,
+            condenser_max_size=80,
+            skill_name="skill-v1",
+            skill_keyword="alpha",
+        )
+
+        lifecycle.run_initial_session(agent)
+
+        base_state = lifecycle.read_base_state()
+        llm_payload = base_state["agent"]["llm"]
+        assert llm_payload["model"] == "openhands/claude-opus-4-8"
+        assert "base_url" not in llm_payload
+
+        assert captured_completion_kwargs[-1]["model"] == (
+            "litellm_proxy/claude-opus-4-8"
+        )
+        assert (
+            captured_completion_kwargs[-1]["api_base"] == OPENHANDS_LLM_PROXY_BASE_URL
+        )
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_conversation_restore_rewrites_legacy_openhands_proxy_snapshot(
+    mock_completion,
+):
+    captured_completion_kwargs: list[dict[str, Any]] = []
+
+    def capture_completion(*_args: Any, **kwargs: Any):
+        captured_completion_kwargs.append(kwargs)
+        return create_mock_litellm_response(
+            content="Acknowledged.", finish_reason="stop"
+        )
+
+    mock_completion.side_effect = capture_completion
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        base = Path(temp_dir)
+        lifecycle = RestoreLifecycle(
+            workspace_dir=base / "workspace",
+            persistence_base_dir=base / "persist",
+        )
+        lifecycle.workspace_dir.mkdir(parents=True, exist_ok=True)
+        lifecycle.persistence_base_dir.mkdir(parents=True, exist_ok=True)
+
+        tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
+        persisted_agent = _agent(
+            llm_model="openhands/claude-opus-4-8",
+            tools=tools,
+            condenser_max_size=80,
+            skill_name="skill-v1",
+            skill_keyword="alpha",
+        )
+        initial = lifecycle.run_initial_session(persisted_agent)
+
+        legacy_base_state = lifecycle.read_base_state()
+        _rewrite_openhands_llms_to_legacy_proxy(legacy_base_state["agent"])
+        lifecycle.write_base_state(legacy_base_state)
+
+        runtime_agent = _agent(
+            llm_model="openhands/claude-opus-4-8",
+            tools=tools,
+            condenser_max_size=80,
+            skill_name="skill-v1",
+            skill_keyword="alpha",
+        )
+
+        restored = lifecycle.restore(runtime_agent)
+        try:
+            assert restored.id == initial["conversation_id"]
+            assert len(restored.state.events) == initial["event_count"]
+            assert restored.agent.llm.model == "openhands/claude-opus-4-8"
+
+            restored_base_state = lifecycle.read_base_state()
+            restored_llm_payload = restored_base_state["agent"]["llm"]
+            assert restored_llm_payload["model"] == "openhands/claude-opus-4-8"
+            assert "base_url" not in restored_llm_payload
+
+            lifecycle.send_and_run(restored, "Third message")
+            assert captured_completion_kwargs[-1]["model"] == (
+                "litellm_proxy/claude-opus-4-8"
+            )
+            assert (
+                captured_completion_kwargs[-1]["api_base"]
+                == OPENHANDS_LLM_PROXY_BASE_URL
+            )
+        finally:
+            restored.close()
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
 def test_restore_reasoning_effort_none_strips_temperature(mock_completion):
     """Reasoning models should accept reasoning_effort and ignore temperature/top_p."""
 
@@ -685,5 +831,164 @@ def test_restore_reasoning_effort_none_strips_temperature(mock_completion):
             assert last_call["reasoning_effort"] == "none"
             assert "temperature" not in last_call
             assert "top_p" not in last_call
+        finally:
+            restored.close()
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_restore_pre_event_tree_conversation_with_artifact_tail_keeps_history(
+    mock_completion,
+):
+    """Resuming a pre-event-tree conversation whose tail is a startup artifact
+    must keep the full history (#4057).
+
+    Older agent-servers (pre event-tree) wrote events without ``parent_id`` and
+    never persisted ``leaf_event_id``. We reproduce that shape from a *real* run:
+    strip ``parent_id`` off every event and drop the tree HEAD markers from
+    ``base_state``, then append the kind of non-tree artifact a newer server
+    writes onto the tail during an interrupted startup (a
+    ``ConversationStateUpdateEvent`` carrying a ``parent_id``). On resume the
+    agent must load the whole prior history and chain onto its real tail, rather
+    than stamping the next event a false ``__root__`` that orphans everything.
+    """
+    mock_completion.return_value = create_mock_litellm_response(
+        content="Acknowledged.", finish_reason="stop"
+    )
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        base = Path(temp_dir)
+        lifecycle = RestoreLifecycle(
+            workspace_dir=base / "workspace",
+            persistence_base_dir=base / "persist",
+        )
+        lifecycle.workspace_dir.mkdir(parents=True, exist_ok=True)
+        lifecycle.persistence_base_dir.mkdir(parents=True, exist_ok=True)
+
+        tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
+        agent = _agent(
+            llm_model="gpt-4o-mini",
+            tools=tools,
+            condenser_max_size=80,
+            skill_name="skill-v1",
+            skill_keyword="alpha",
+        )
+
+        # 1) Produce a realistic event log by actually running a session.
+        lifecycle.run_initial_session(agent)
+        assert lifecycle.conversation_id is not None
+        events_dir = (
+            lifecycle.persistence_base_dir / lifecycle.conversation_id.hex / "events"
+        )
+        event_files = sorted(
+            events_dir.glob("event-*.json"),
+            key=lambda p: int(p.name.split("-")[1]),
+        )
+        assert len(event_files) >= 3
+        original_ids = [json.loads(p.read_text())["id"] for p in event_files]
+
+        # 2) Downgrade to the pre-event-tree shape: strip parent_id off every
+        #    event and drop the tree HEAD markers older servers never wrote.
+        for p in event_files:
+            data = json.loads(p.read_text())
+            data.pop("parent_id", None)
+            p.write_text(json.dumps(data))
+        base_state = lifecycle.read_base_state()
+        base_state.pop("leaf_event_id", None)
+        base_state.pop("head_is_empty", None)
+        lifecycle.write_base_state(base_state)
+
+        # 3) Append the interrupted-startup artifact: a non-tree event a newer
+        #    server chained onto the legacy tail (it carries a parent_id).
+        artifact = ConversationStateUpdateEvent(
+            parent_id=original_ids[-1], key="execution_status", value="idle"
+        )
+        artifact_path = events_dir / f"event-{len(event_files):05d}-{artifact.id}.json"
+        artifact_path.write_text(artifact.model_dump_json(exclude_none=True))
+
+        # 4) Resume under the current (tree-aware) code.
+        restored = lifecycle.restore(agent)
+        try:
+            # The whole prior history is the active branch (nothing orphaned);
+            # the non-tree artifact is not on it.
+            active_ids = [e.id for e in restored.state.active_branch()]
+            assert active_ids == original_ids
+
+            # Continuing chains onto the real legacy tail, not a false __root__.
+            restored.send_message("Third message")
+            new_event = restored.state.events[-1]
+            assert new_event.parent_id == original_ids[-1]
+            assert new_event.parent_id != ROOT_PARENT_ID
+            reachable = {e.id for e in restored.state.events.path_to_root(new_event.id)}
+            assert set(original_ids).issubset(reachable)
+        finally:
+            restored.close()
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_restore_event_tree_conversation_keeps_history(mock_completion):
+    """Control for the pre-event-tree case: a normal 1.33.0+ restore is unaffected.
+
+    A conversation persisted by an event-tree server (events carry ``parent_id``,
+    ``base_state`` persists ``leaf_event_id``) is restored *without* any downgrade
+    and must keep its full history and chain onto the real tail. Because
+    ``leaf_event_id`` is set, ``_resolve_active_leaf`` returns it directly and the
+    legacy-resume path the #4057 fix touches is never entered — this guards that
+    normal restore stays intact.
+    """
+    mock_completion.return_value = create_mock_litellm_response(
+        content="Acknowledged.", finish_reason="stop"
+    )
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        base = Path(temp_dir)
+        lifecycle = RestoreLifecycle(
+            workspace_dir=base / "workspace",
+            persistence_base_dir=base / "persist",
+        )
+        lifecycle.workspace_dir.mkdir(parents=True, exist_ok=True)
+        lifecycle.persistence_base_dir.mkdir(parents=True, exist_ok=True)
+
+        tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
+        agent = _agent(
+            llm_model="gpt-4o-mini",
+            tools=tools,
+            condenser_max_size=80,
+            skill_name="skill-v1",
+            skill_keyword="alpha",
+        )
+
+        lifecycle.run_initial_session(agent)
+        assert lifecycle.conversation_id is not None
+        events_dir = (
+            lifecycle.persistence_base_dir / lifecycle.conversation_id.hex / "events"
+        )
+        event_files = sorted(
+            events_dir.glob("event-*.json"),
+            key=lambda p: int(p.name.split("-")[1]),
+        )
+        assert len(event_files) >= 3
+        original_ids = [json.loads(p.read_text())["id"] for p in event_files]
+
+        # This IS the modern (event-tree) on-disk shape — leaf persisted and
+        # events carry parent_id (contrast the pre-event-tree test above). No
+        # downgrade, no injected artifact.
+        assert "leaf_event_id" in lifecycle.read_base_state()
+        assert json.loads(event_files[0].read_text()).get("parent_id") is None
+        assert json.loads(event_files[-1].read_text()).get("parent_id") is not None
+
+        restored = lifecycle.restore(agent)
+        try:
+            # HEAD is the persisted leaf; the whole history is the active branch.
+            assert restored.state.leaf_event_id == original_ids[-1]
+            active_ids = [e.id for e in restored.state.active_branch()]
+            assert active_ids == original_ids
+
+            # Continuing chains onto the real tail, exactly as before the fix.
+            restored.send_message("Third message")
+            new_event = restored.state.events[-1]
+            assert new_event.parent_id == original_ids[-1]
+            assert new_event.parent_id != ROOT_PARENT_ID
+            reachable = {e.id for e in restored.state.events.path_to_root(new_event.id)}
+            assert set(original_ids).issubset(reachable)
         finally:
             restored.close()

@@ -88,10 +88,6 @@ def get_llm_profile_names() -> list[str]:
     return [summary["name"] for summary in LLMProfileStore().list_summaries()]
 
 
-def has_llm_profiles() -> bool:
-    return bool(get_llm_profile_names())
-
-
 def _format_profiles(profile_names: Sequence[str]) -> str:
     if not profile_names:
         return "- No saved LLM profiles are currently available."

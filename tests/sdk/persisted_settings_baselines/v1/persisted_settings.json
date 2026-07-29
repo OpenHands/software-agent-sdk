@@ -1,0 +1,39 @@
+{
+  "__expected__": {
+    "active_profile": "fixture-profile",
+    "agent_settings.agent_kind": "openhands",
+    "agent_settings.llm.model": "fixture-persisted-llm",
+    "agent_settings.tools": [
+      {
+        "name": "TerminalTool",
+        "params": {}
+      }
+    ],
+    "conversation_settings.max_iterations": 200,
+    "conversation_settings.confirmation_mode": true
+  },
+  "schema_version": 1,
+  "agent_settings": {
+    "schema_version": 1,
+    "agent_kind": "llm",
+    "llm": {
+      "model": "fixture-persisted-llm"
+    },
+    "tools": [
+      {
+        "name": "TerminalTool",
+        "params": {}
+      }
+    ],
+    "verification": {
+      "critic_enabled": true
+    }
+  },
+  "conversation_settings": {
+    "schema_version": 1,
+    "max_iterations": 200,
+    "confirmation_mode": true,
+    "security_analyzer": "llm"
+  },
+  "active_profile": "fixture-profile"
+}

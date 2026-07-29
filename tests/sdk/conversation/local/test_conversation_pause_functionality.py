@@ -112,11 +112,6 @@ class PauseFunctionalityTestTool(
         ]
 
 
-def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
-    """Factory function for creating test tools."""
-    return PauseFunctionalityTestTool.create(conv_state, **params)
-
-
 class BlockingTestTool(
     ToolDefinition[PauseFunctionalityMockAction, PauseFunctionalityMockObservation]
 ):
@@ -150,7 +145,7 @@ class TestPauseFunctionality:
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
 
-        register_tool("test_tool", _make_tool)
+        register_tool("test_tool", PauseFunctionalityTestTool)
 
         self.agent: Agent = Agent(
             llm=self.llm,
@@ -369,12 +364,8 @@ class TestPauseFunctionality:
     def test_pause_while_running_continuous_actions(self, mock_completion):
         step_entered = threading.Event()
 
-        def _make_blocking_tool(conv_state=None, **kwargs) -> Sequence[ToolDefinition]:
-            return BlockingTestTool.create(
-                conv_state, step_entered=step_entered, **kwargs
-            )
-
-        register_tool("test_tool", _make_blocking_tool)
+        blocking_tool = BlockingTestTool.create(step_entered=step_entered)[0]
+        register_tool("test_tool", blocking_tool)
         agent = Agent(
             llm=self.llm,
             tools=[Tool(name="test_tool")],

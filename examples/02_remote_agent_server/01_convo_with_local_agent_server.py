@@ -1,12 +1,10 @@
 import os
-import subprocess
-import sys
 import tempfile
-import threading
 import time
 from pathlib import Path
 
 from pydantic import SecretStr
+from scripts.utils import ManagedAPIServer
 
 from openhands.sdk import LLM, Conversation, RemoteConversation, Workspace, get_logger
 from openhands.sdk.event import ConversationStateUpdateEvent, HookExecutionEvent
@@ -20,119 +18,12 @@ logger = get_logger(__name__)
 HOOK_SCRIPTS_DIR = Path(__file__).parent / "hook_scripts"
 
 
-def _stream_output(stream, prefix, target_stream):
-    """Stream output from subprocess to target stream with prefix."""
-    try:
-        for line in iter(stream.readline, ""):
-            if line:
-                target_stream.write(f"[{prefix}] {line}")
-                target_stream.flush()
-    except Exception as e:
-        print(f"Error streaming {prefix}: {e}", file=sys.stderr)
-    finally:
-        stream.close()
-
-
-class ManagedAPIServer:
-    """Context manager for subprocess-managed OpenHands API server."""
-
-    def __init__(self, port: int = 8000, host: str = "127.0.0.1"):
-        self.port: int = port
-        self.host: str = host
-        self.process: subprocess.Popen[str] | None = None
-        self.base_url: str = f"http://{host}:{port}"
-        self.stdout_thread: threading.Thread | None = None
-        self.stderr_thread: threading.Thread | None = None
-
-    def __enter__(self):
-        """Start the API server subprocess."""
-        print(f"Starting OpenHands API server on {self.base_url}...")
-
-        # Start the server process
-        self.process = subprocess.Popen(
-            [
-                "python",
-                "-m",
-                "openhands.agent_server",
-                "--port",
-                str(self.port),
-                "--host",
-                self.host,
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env={"LOG_JSON": "true", **os.environ},
-        )
-
-        # Start threads to stream stdout and stderr
-        assert self.process is not None
-        assert self.process.stdout is not None
-        assert self.process.stderr is not None
-        self.stdout_thread = threading.Thread(
-            target=_stream_output,
-            args=(self.process.stdout, "SERVER", sys.stdout),
-            daemon=True,
-        )
-        self.stderr_thread = threading.Thread(
-            target=_stream_output,
-            args=(self.process.stderr, "SERVER", sys.stderr),
-            daemon=True,
-        )
-
-        self.stdout_thread.start()
-        self.stderr_thread.start()
-
-        # Wait for server to be ready
-        max_retries = 30
-        for i in range(max_retries):
-            try:
-                import httpx
-
-                response = httpx.get(f"{self.base_url}/health", timeout=1.0)
-                if response.status_code == 200:
-                    print(f"API server is ready at {self.base_url}")
-                    return self
-            except Exception:
-                pass
-
-            assert self.process is not None
-            if self.process.poll() is not None:
-                # Process has terminated
-                raise RuntimeError(
-                    "Server process terminated unexpectedly. "
-                    "Check the server logs above for details."
-                )
-
-            time.sleep(1)
-
-        raise RuntimeError(f"Server failed to start after {max_retries} seconds")
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Stop the API server subprocess."""
-        if self.process:
-            print("Stopping API server...")
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                print("Force killing API server...")
-                self.process.kill()
-                self.process.wait()
-
-            # Wait for streaming threads to finish (they're daemon threads,
-            # so they'll stop automatically)
-            # But give them a moment to flush any remaining output
-            time.sleep(0.5)
-            print("API server stopped.")
-
-
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
 
 llm = LLM(
     usage_id="agent",
-    model=os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929"),
+    model=os.getenv("LLM_MODEL", "gpt-5.5"),
     base_url=os.getenv("LLM_BASE_URL"),
     api_key=SecretStr(api_key),
 )

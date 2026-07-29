@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 import anyio
-from anyio.from_thread import start_blocking_portal
+from anyio.from_thread import BlockingPortal, start_blocking_portal
 
 from openhands.sdk.logger import get_logger
 
@@ -26,7 +26,19 @@ class AsyncExecutor:
         self._lock = threading.Lock()
         self._atexit_registered = False
 
-    def _ensure_portal(self):
+    @property
+    def portal(self) -> BlockingPortal:
+        """The lazily-started ``BlockingPortal`` — public accessor.
+
+        Callers that need to schedule work directly on the portal loop
+        (e.g. ``ACPAgent.astep`` bridges ACP awaits across loops via
+        ``portal.start_task_soon`` + ``asyncio.wrap_future``) use this
+        instead of ``run_async`` because they need the future, not the
+        result.
+        """
+        return self._ensure_portal()
+
+    def _ensure_portal(self) -> BlockingPortal:
         with self._lock:
             if self._portal is None:
                 self._portal_cm = start_blocking_portal()

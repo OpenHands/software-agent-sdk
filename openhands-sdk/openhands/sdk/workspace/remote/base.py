@@ -2,6 +2,7 @@ import os
 from collections.abc import Generator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 from urllib.request import urlopen
 
 import httpx
@@ -10,6 +11,7 @@ from pydantic import PrivateAttr, ValidationError
 
 from openhands.sdk.git.models import GitChange, GitDiff
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.settings import SecretsListResponse, SettingsResponse
 from openhands.sdk.workspace.base import BaseWorkspace
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
@@ -345,12 +347,11 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         Uses ``X-Expose-Secrets: plaintext`` so secret fields (e.g. LLM
         api_key) are returned as plain strings.  The outer response is
         validated via :class:`SettingsResponse`, then the ``agent_settings``
-        dict is validated through :func:`validate_agent_settings` which
-        picks the correct discriminated-union variant
+        dict is validated through :meth:`SettingsResponse.get_agent_settings`,
+        which applies the persisted settings migration entry point before
+        picking the correct discriminated-union variant
         (``OpenHandsAgentSettings`` or ``ACPAgentSettings``).
         """
-        from openhands.sdk.settings import validate_agent_settings
-
         headers = dict(self._headers)
         headers["X-Expose-Secrets"] = "plaintext"
 
@@ -358,7 +359,25 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         response.raise_for_status()
 
         data = SettingsResponse.model_validate(response.json())
-        return validate_agent_settings(data.agent_settings)
+        return data.get_agent_settings()
+
+    def _fetch_llm_profile_config(self, profile_name: str) -> dict[str, Any]:
+        """Call ``GET /api/profiles/{name}`` and return plaintext LLM config."""
+        headers = dict(self._headers)
+        headers["X-Expose-Secrets"] = "plaintext"
+
+        response = self.client.get(
+            f"/api/profiles/{quote(profile_name, safe='')}",
+            headers=headers,
+        )
+        if response.status_code == 404:
+            raise FileNotFoundError(f"LLM profile '{profile_name}' not found")
+        response.raise_for_status()
+
+        config = response.json().get("config")
+        if not isinstance(config, dict):
+            raise ValueError(f"LLM profile '{profile_name}' has invalid config")
+        return dict(config)
 
     @tenacity.retry(
         stop=tenacity.stop_after_attempt(_MAX_RETRIES),
@@ -366,28 +385,26 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         retry=tenacity.retry_if_exception(_is_retryable_error),
         reraise=True,
     )
-    def get_llm(self, **llm_kwargs: Any) -> "LLM":
-        """Fetch LLM settings from the agent-server's persisted settings.
-
-        Calls ``GET /api/settings`` with ``X-Expose-Secrets: plaintext`` header
-        to retrieve the full LLM configuration and returns a fully usable
-        ``LLM`` instance.  All persisted LLM fields (model, api_key,
-        base_url, temperature, max_output_tokens, …) are preserved.
+    def get_llm(self, profile_name: str | None = None, **llm_kwargs: Any) -> "LLM":
+        """Fetch LLM settings from persisted settings or a named profile.
 
         Args:
-            **llm_kwargs: Additional keyword arguments that override
-                persisted values (e.g., ``model``, ``temperature``).
+            profile_name: Optional LLM profile name. When provided, loads that
+                named profile instead of the active persisted LLM settings.
+            **llm_kwargs: Additional keyword arguments that override persisted
+                or profile values (e.g., ``model``, ``temperature``).
 
         Returns:
-            An LLM instance configured with the persisted settings.
+            An LLM instance configured with the persisted settings or profile.
 
         Raises:
+            FileNotFoundError: If ``profile_name`` does not exist.
             httpx.HTTPStatusError: If the API request fails.
             RuntimeError: If the workspace host is not set.
 
         Example:
             >>> with DockerWorkspace(...) as workspace:
-            ...     llm = workspace.get_llm()
+            ...     llm = workspace.get_llm(profile_name="fast")
             ...     agent = Agent(llm=llm, tools=get_default_tools())
         """
         from openhands.sdk.llm.llm import LLM
@@ -395,14 +412,15 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         if not self.host or self.host == "undefined":
             raise RuntimeError("Workspace host is not set")
 
-        settings = self._fetch_agent_settings()
+        if profile_name:
+            llm_data = self._fetch_llm_profile_config(profile_name)
+            llm_data["usage_id"] = f"profile:{profile_name}"
+        else:
+            settings = self._fetch_agent_settings()
+            if not llm_kwargs:
+                return settings.llm
+            llm_data = settings.llm.model_dump(context={"expose_secrets": "plaintext"})
 
-        if not llm_kwargs:
-            return settings.llm
-
-        # Dump persisted LLM config and merge overrides, then
-        # reconstruct so Pydantic validators run on the merged values
-        llm_data = settings.llm.model_dump(context={"expose_secrets": "plaintext"})
         llm_data.update(llm_kwargs)
         return LLM(**llm_data)
 
@@ -472,17 +490,16 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         retry=tenacity.retry_if_exception(_is_retryable_error),
         reraise=True,
     )
-    def get_mcp_config(self) -> dict[str, Any]:
-        """Fetch MCP configuration from the agent-server's persisted settings.
+    def get_mcp_config(self) -> dict[str, MCPServer]:
+        """Fetch MCP servers from the agent-server's persisted settings.
 
         Calls ``GET /api/settings`` with ``X-Expose-Secrets: plaintext`` header
-        to retrieve the MCP configuration and returns a dict compatible with
-        ``MCPConfig.model_validate()`` and the ``Agent(mcp_config=...)`` kwarg.
+        to retrieve the MCP servers and returns a dict compatible with the
+        ``Agent(mcp_config=...)`` kwarg.
 
         Returns:
-            A dictionary with ``mcpServers`` key containing server configurations
-            (compatible with ``MCPConfig.model_validate()``), or an empty dict
-            if no MCP config is set.
+            A dictionary mapping server names to server configurations, or an
+            empty dict if no MCP servers are configured.
 
         Raises:
             httpx.HTTPStatusError: If the API request fails.
@@ -493,10 +510,6 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             ...     llm = workspace.get_llm()
             ...     mcp_config = workspace.get_mcp_config()
             ...     agent = Agent(llm=llm, mcp_config=mcp_config, tools=...)
-            ...
-            ...     # Or validate as MCPConfig:
-            ...     from fastmcp.mcp_config import MCPConfig
-            ...     config = MCPConfig.model_validate(mcp_config)
         """
         from openhands.sdk.settings import OpenHandsAgentSettings
 
@@ -505,14 +518,11 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
 
         settings = self._fetch_agent_settings()
 
-        # mcp_config only exists on OpenHandsAgentSettings, not ACPAgentSettings
+        # Runtime MCP tools only exist on OpenHandsAgentSettings, not ACPAgentSettings.
         if not isinstance(settings, OpenHandsAgentSettings):
             return {}
 
-        if settings.mcp_config is None:
-            return {}
-
-        return settings.mcp_config.model_dump(exclude_none=True, exclude_defaults=True)
+        return settings.mcp_config
 
     # ── Repository Cloning Methods ─────────────────────────────────────────
 

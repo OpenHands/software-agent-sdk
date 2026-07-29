@@ -239,6 +239,56 @@ def test_rest_deprecation_regex_matches_deprecation_check_regex():
     assert _rest_route_deprecation_re.flags == _deprecation_check_re.flags
 
 
+def test_accepted_cloud_proxy_removal_detection_is_exact():
+    assert _prod._is_accepted_cloud_proxy_removal(
+        {"path": "/api/cloud-proxy", "method": "post", "deprecated": False}
+    )
+    assert not _prod._is_accepted_cloud_proxy_removal(
+        {"path": "/api/cloud-proxy", "method": "get", "deprecated": False}
+    )
+    assert not _prod._is_accepted_cloud_proxy_removal(
+        {"path": "/api/cloud-proxy/other", "method": "post", "deprecated": False}
+    )
+    assert not _prod._is_accepted_cloud_proxy_removal(
+        {"path": "/api/cloud-proxy", "method": "post", "deprecated": True}
+    )
+
+
+def test_accepted_cloud_proxy_path_removal_detection_is_exact():
+    assert _prod._is_accepted_cloud_proxy_path_removal(
+        {
+            "id": "api-path-removed-without-deprecation",
+            "path": "/api/cloud-proxy",
+            "operation": "POST",
+            "operationId": "cloud_proxy_api_cloud_proxy_post",
+        }
+    )
+    assert not _prod._is_accepted_cloud_proxy_path_removal(
+        {
+            "id": "api-path-removed-without-deprecation",
+            "path": "/api/cloud-proxy",
+            "operation": "GET",
+            "operationId": "cloud_proxy_api_cloud_proxy_post",
+        }
+    )
+    assert not _prod._is_accepted_cloud_proxy_path_removal(
+        {
+            "id": "api-path-removed-without-deprecation",
+            "path": "/api/cloud-proxy/other",
+            "operation": "POST",
+            "operationId": "cloud_proxy_api_cloud_proxy_post",
+        }
+    )
+    assert not _prod._is_accepted_cloud_proxy_path_removal(
+        {
+            "id": "api-path-removed-without-deprecation",
+            "path": "/api/cloud-proxy",
+            "operation": "POST",
+            "operationId": "other_operation",
+        }
+    )
+
+
 def test_parse_openapi_deprecation_description_extracts_versions_from_example():
     description = (
         "Nice description here with more context for API consumers.\n\n"
@@ -416,6 +466,80 @@ def test_validate_removed_schema_properties_requires_removal_target_to_be_reache
         "version(s): v1.20.0 (current version: v1.19.0). REST API property "
         "removals require 5 minor releases of deprecation runway."
     ]
+
+
+def test_main_allows_accepted_cloud_proxy_removal(monkeypatch, capsys):
+    monkeypatch.setattr(_prod, "_read_version_from_pyproject", lambda _path: "1.28.0")
+    monkeypatch.setattr(
+        _prod, "_get_baseline_version", lambda _distribution, _current: "1.28.0"
+    )
+    monkeypatch.setattr(_prod, "_find_sdk_deprecated_fastapi_routes", lambda _root: [])
+    monkeypatch.setattr(_prod, "_generate_current_openapi", lambda: {"paths": {}})
+    monkeypatch.setattr(_prod, "_find_deprecation_policy_errors", lambda _schema: [])
+    monkeypatch.setattr(
+        _prod, "_generate_openapi_for_git_ref", lambda _ref: {"paths": {}}
+    )
+    monkeypatch.setattr(_prod, "_normalize_openapi_for_oasdiff", lambda schema: schema)
+    monkeypatch.setattr(
+        _prod,
+        "_run_oasdiff_breakage_check",
+        lambda _prev, _cur: (
+            [
+                {
+                    "id": "removed-operation",
+                    "details": {
+                        "path": "/api/cloud-proxy",
+                        "method": "post",
+                        "deprecated": False,
+                    },
+                    "text": "removed POST /api/cloud-proxy",
+                }
+            ],
+            1,
+        ),
+    )
+
+    assert _prod.main() == 0
+
+    captured = capsys.readouterr()
+    assert "Accepted removal of POST /api/cloud-proxy" in captured.out
+    assert "accepted POST /api/cloud-proxy removal" in captured.out
+
+
+def test_main_allows_accepted_cloud_proxy_path_removal(monkeypatch, capsys):
+    monkeypatch.setattr(_prod, "_read_version_from_pyproject", lambda _path: "1.28.0")
+    monkeypatch.setattr(
+        _prod, "_get_baseline_version", lambda _distribution, _current: "1.28.0"
+    )
+    monkeypatch.setattr(_prod, "_find_sdk_deprecated_fastapi_routes", lambda _root: [])
+    monkeypatch.setattr(_prod, "_generate_current_openapi", lambda: {"paths": {}})
+    monkeypatch.setattr(_prod, "_find_deprecation_policy_errors", lambda _schema: [])
+    monkeypatch.setattr(
+        _prod, "_generate_openapi_for_git_ref", lambda _ref: {"paths": {}}
+    )
+    monkeypatch.setattr(_prod, "_normalize_openapi_for_oasdiff", lambda schema: schema)
+    monkeypatch.setattr(
+        _prod,
+        "_run_oasdiff_breakage_check",
+        lambda _prev, _cur: (
+            [
+                {
+                    "id": "api-path-removed-without-deprecation",
+                    "text": "api path removed without deprecation",
+                    "operation": "POST",
+                    "operationId": "cloud_proxy_api_cloud_proxy_post",
+                    "path": "/api/cloud-proxy",
+                }
+            ],
+            1,
+        ),
+    )
+
+    assert _prod.main() == 0
+
+    captured = capsys.readouterr()
+    assert "Accepted removal of POST /api/cloud-proxy" in captured.out
+    assert "accepted POST /api/cloud-proxy removal" in captured.out
 
 
 def test_main_allows_scheduled_removal_with_documented_target(monkeypatch, capsys):
@@ -667,6 +791,24 @@ def test_split_breaking_changes_separates_three_buckets():
             "text": "added body anyOf member",
         },
         {
+            # Additive value on the hook discriminator union -> downgraded.
+            "id": "response-property-enum-value-added",
+            "details": {},
+            "text": (
+                "added the new `agent` enum value to the "
+                "`hook_config/anyOf[subschema #1: HookConfig]/stop/items/"
+                "hooks/items/type` response property for the response status `200`"
+            ),
+        },
+        {
+            # Enum value on an ordinary (non-discriminator) property -> breaking.
+            "id": "response-property-enum-value-added",
+            "details": {},
+            "text": (
+                "added the new `archived` enum value to the `status` response property"
+            ),
+        },
+        {
             "id": "response-property-removed",
             "details": {},
             "text": "removed the optional property `agent/llm/old_field`",
@@ -688,9 +830,113 @@ def test_split_breaking_changes_separates_three_buckets():
         "response-property-one-of-added",
         "response-body-one-of-added",
         "response-body-any-of-added",
+        "response-property-enum-value-added",
     }
-    assert len(other) == 1
-    assert other[0]["id"] == "response-body-changed"
+    # The hook-discriminator enum addition is downgraded; the unrelated `status`
+    # enum addition and the body change remain breaking.
+    assert {
+        change["text"] for change in additive_oneof if "enum value" in change["text"]
+    } == {
+        "added the new `agent` enum value to the "
+        "`hook_config/anyOf[subschema #1: HookConfig]/stop/items/"
+        "hooks/items/type` response property for the response status `200`"
+    }
+    assert {change["id"] for change in other} == {
+        "response-property-enum-value-added",
+        "response-body-changed",
+    }
+    assert any("`status`" in change["text"] for change in other)
+
+
+def test_parse_response_property_type_widening_requires_response_property():
+    change = {
+        "id": "response-property-type-changed",
+        "text": (
+            "response property `agent/registered_marketplaces/items/auto_load` "
+            "list-of-types was widened by adding types `array` to media type "
+            "`application/json` of response `200`"
+        ),
+    }
+
+    widening = _prod._parse_response_property_type_widening(change)
+
+    assert widening == _prod.ResponsePropertyTypeWidening(
+        property_path="agent/registered_marketplaces/items/auto_load",
+        added_types="array",
+        media_type="application/json",
+        response_status="200",
+        text=change["text"],
+    )
+    assert not _prod._is_additive_response_property_type_widening(
+        {
+            "id": "request-property-type-changed",
+            "text": (
+                "request property `agent/registered_marketplaces/items/auto_load` "
+                "list-of-types was widened by adding types `array` to media type "
+                "`application/json` of request body"
+            ),
+        }
+    )
+
+
+def test_main_passes_and_reports_response_property_type_widening(
+    monkeypatch, tmp_path, capsys
+):
+    change_text = (
+        "response property `agent/registered_marketplaces/items/auto_load` "
+        "list-of-types was widened by adding types `array` to media type "
+        "`application/json` of response `200`"
+    )
+    report_path = tmp_path / "rest-type-widening.json"
+    since_base = _prod.ResponsePropertyTypeWidening(
+        property_path="agent/registered_marketplaces/items/auto_load",
+        added_types="array",
+        media_type="application/json",
+        response_status="200",
+        text=change_text,
+    )
+    monkeypatch.setenv(_prod.RESPONSE_TYPE_WIDENING_REPORT_ENV, str(report_path))
+    monkeypatch.setenv(_prod.AGENT_SERVER_REST_API_BASE_REF_ENV, "base-sha")
+    monkeypatch.setattr(_prod, "_read_version_from_pyproject", lambda _path: "1.15.0")
+    monkeypatch.setattr(
+        _prod, "_get_baseline_version", lambda _distribution, _current: "1.14.0"
+    )
+    monkeypatch.setattr(_prod, "_find_sdk_deprecated_fastapi_routes", lambda _root: [])
+    monkeypatch.setattr(_prod, "_generate_current_openapi", lambda: {"paths": {}})
+    monkeypatch.setattr(_prod, "_find_deprecation_policy_errors", lambda _schema: [])
+    monkeypatch.setattr(
+        _prod, "_generate_openapi_for_git_ref", lambda _ref: {"paths": {}}
+    )
+    monkeypatch.setattr(_prod, "_normalize_openapi_for_oasdiff", lambda schema: schema)
+    monkeypatch.setattr(
+        _prod,
+        "_collect_response_property_type_widenings_since_ref",
+        lambda _base_ref, _current_schema: [since_base],
+    )
+    monkeypatch.setattr(
+        _prod,
+        "_run_oasdiff_breakage_check",
+        lambda _prev, _cur: (
+            [
+                {
+                    "id": "response-property-type-changed",
+                    "details": {},
+                    "text": change_text,
+                }
+            ],
+            1,
+        ),
+    )
+
+    assert _prod.main() == 0
+
+    captured = capsys.readouterr()
+    assert "Additive response property type widenings detected" in captured.out
+    report = json.loads(report_path.read_text())
+    assert report == {
+        "additive_response_property_type_widenings": [since_base.__dict__],
+        "additive_response_property_type_widenings_since_base": [since_base.__dict__],
+    }
 
 
 def test_main_passes_when_only_additive_oneof(monkeypatch, capsys):
@@ -723,8 +969,222 @@ def test_main_passes_when_only_additive_oneof(monkeypatch, capsys):
     assert _prod.main() == 0
 
     captured = capsys.readouterr()
-    assert "Additive oneOf/anyOf expansion detected" in captured.out
+    assert "Additive oneOf/anyOf expansion or enum-value additions" in captured.out
     assert "additive response oneOf expansions" in captured.out
+
+
+def test_main_passes_when_body_union_addition_reports_removed_properties(
+    monkeypatch, capsys
+):
+    monkeypatch.setattr(_prod, "_read_version_from_pyproject", lambda _path: "1.15.0")
+    monkeypatch.setattr(
+        _prod, "_get_baseline_version", lambda _distribution, _current: "1.14.0"
+    )
+    monkeypatch.setattr(_prod, "_find_sdk_deprecated_fastapi_routes", lambda _root: [])
+    monkeypatch.setattr(_prod, "_generate_current_openapi", lambda: {"paths": {}})
+    monkeypatch.setattr(_prod, "_find_deprecation_policy_errors", lambda _schema: [])
+    monkeypatch.setattr(
+        _prod,
+        "_generate_openapi_for_git_ref",
+        lambda _ref: {"paths": {}, "components": {"schemas": {}}},
+    )
+    monkeypatch.setattr(_prod, "_normalize_openapi_for_oasdiff", lambda schema: schema)
+    monkeypatch.setattr(
+        _prod,
+        "_run_oasdiff_breakage_check",
+        lambda _prev, _cur: (
+            [
+                {
+                    "id": "response-body-any-of-added",
+                    "details": {},
+                    "text": "added body anyOf member",
+                },
+                {
+                    "id": "response-property-removed",
+                    "details": {},
+                    "text": (
+                        "removed the required property `id` from the response with "
+                        "the `200` status"
+                    ),
+                },
+                {
+                    "id": "response-property-removed",
+                    "details": {},
+                    "text": (
+                        "removed the optional property `title` from the response with "
+                        "the `200` status"
+                    ),
+                },
+                {
+                    "id": "request-property-removed",
+                    "details": {},
+                    "text": "removed the request property `agent/llm`",
+                },
+                {
+                    "id": "request-property-type-changed",
+                    "details": {},
+                    "text": (
+                        "the `agent` request property type/format changed from "
+                        "`object`/`` to ``/``"
+                    ),
+                },
+            ],
+            1,
+        ),
+    )
+
+    assert _prod.main() == 0
+
+    captured = capsys.readouterr()
+    assert "Additive oneOf/anyOf expansion or enum-value additions" in captured.out
+    assert "ignored 3 request/response-property removal artifact" in captured.out
+    assert "ignored 1 request/response type-change artifact" in captured.out
+
+
+def test_main_passes_when_oasdiff_reports_only_response_union_artifacts(
+    monkeypatch, capsys
+):
+    monkeypatch.setattr(_prod, "_read_version_from_pyproject", lambda _path: "1.15.0")
+    monkeypatch.setattr(
+        _prod, "_get_baseline_version", lambda _distribution, _current: "1.14.0"
+    )
+    monkeypatch.setattr(_prod, "_find_sdk_deprecated_fastapi_routes", lambda _root: [])
+    monkeypatch.setattr(_prod, "_generate_current_openapi", lambda: {"paths": {}})
+    monkeypatch.setattr(_prod, "_find_deprecation_policy_errors", lambda _schema: [])
+    monkeypatch.setattr(
+        _prod,
+        "_generate_openapi_for_git_ref",
+        lambda _ref: {"paths": {}, "components": {"schemas": {}}},
+    )
+    monkeypatch.setattr(_prod, "_normalize_openapi_for_oasdiff", lambda schema: schema)
+    monkeypatch.setattr(
+        _prod,
+        "_run_oasdiff_breakage_check",
+        lambda _prev, _cur: (
+            [
+                {
+                    "id": "response-property-removed",
+                    "details": {},
+                    "text": (
+                        "removed the required property `id` from the response with "
+                        "the `200` status"
+                    ),
+                },
+                {
+                    "id": "request-property-type-changed",
+                    "details": {},
+                    "text": (
+                        "the `agent` request property type/format changed from "
+                        "`object`/`` to ``/``"
+                    ),
+                },
+            ],
+            1,
+        ),
+    )
+
+    assert _prod.main() == 0
+
+    captured = capsys.readouterr()
+    assert "Ignored 1 property-removal and 1 type-change artifact" in captured.out
+
+
+def test_mcp_contract_schema_repair_is_narrowly_scoped():
+    accepted = [
+        (
+            "the `agent/mcp_config/additionalProperties/` response's property "
+            "type/format changed from ``/`` to `object`/`` for status `200`"
+        ),
+        (
+            "the `oauth_state/anyOf[subschema #1]/` response's property type/format "
+            "changed from ``/`` to `object`/`` for status `200`"
+        ),
+        (
+            "removed `#/components/schemas/MCPNoneAuthCredential-Input` from the "
+            "`server/auth/anyOf[subschema #1]/` request property `oneOf` list"
+        ),
+        (
+            "removed `subschema #1` from the `agent_settings_diff` request property "
+            "`anyOf` list"
+        ),
+    ]
+    rejected = [
+        (
+            "the `agent/llm/` response's property type/format changed from ``/`` "
+            "to `object`/`` for status `200`"
+        ),
+        (
+            "removed `#/components/schemas/MCPBearerAuthCredential-Input` from the "
+            "`server/auth/anyOf[subschema #1]/` request property `oneOf` list"
+        ),
+        (
+            "removed `subschema #1` from the `conversation_settings_diff` request "
+            "property `anyOf` list"
+        ),
+    ]
+
+    assert all(
+        _prod._is_mcp_contract_schema_repair({"text": text}) for text in accepted
+    )
+    assert not any(
+        _prod._is_mcp_contract_schema_repair({"text": text}) for text in rejected
+    )
+
+
+def test_main_passes_for_mcp_contract_schema_repairs(monkeypatch, capsys):
+    monkeypatch.setattr(_prod, "_read_version_from_pyproject", lambda _path: "1.15.0")
+    monkeypatch.setattr(
+        _prod, "_get_baseline_version", lambda _distribution, _current: "1.14.0"
+    )
+    monkeypatch.setattr(_prod, "_find_sdk_deprecated_fastapi_routes", lambda _root: [])
+    monkeypatch.setattr(_prod, "_generate_current_openapi", lambda: {"paths": {}})
+    monkeypatch.setattr(_prod, "_find_deprecation_policy_errors", lambda _schema: [])
+    monkeypatch.setattr(
+        _prod,
+        "_generate_openapi_for_git_ref",
+        lambda _ref: {"paths": {}, "components": {"schemas": {}}},
+    )
+    monkeypatch.setattr(_prod, "_normalize_openapi_for_oasdiff", lambda schema: schema)
+    monkeypatch.setattr(
+        _prod,
+        "_run_oasdiff_breakage_check",
+        lambda _prev, _cur: (
+            [
+                {
+                    "id": "response-property-type-changed",
+                    "details": {},
+                    "text": (
+                        "the `agent/mcp_config/additionalProperties/` response's "
+                        "property type/format changed from ``/`` to `object`/`` "
+                        "for status `200`"
+                    ),
+                },
+                {
+                    "id": "request-property-one-of-updated",
+                    "details": {},
+                    "text": (
+                        "removed `#/components/schemas/"
+                        "MCPNoneAuthCredential-Input` from the `server/auth/"
+                        "anyOf[subschema #1]/` request property `oneOf` list"
+                    ),
+                },
+                {
+                    "id": "request-property-any-of-updated",
+                    "details": {},
+                    "text": (
+                        "removed `subschema #1` from the `agent_settings_diff` "
+                        "request property `anyOf` list"
+                    ),
+                },
+            ],
+            1,
+        ),
+    )
+
+    assert _prod.main() == 0
+
+    captured = capsys.readouterr()
+    assert "Typed historically opaque MCP/settings schemas" in captured.out
 
 
 def test_main_fails_when_additive_oneof_mixed_with_real_breakage(monkeypatch, capsys):
@@ -762,7 +1222,7 @@ def test_main_fails_when_additive_oneof_mixed_with_real_breakage(monkeypatch, ca
     assert _prod.main() == 1
 
     captured = capsys.readouterr()
-    assert "Additive oneOf/anyOf expansion detected" in captured.out
+    assert "Additive oneOf/anyOf expansion or enum-value additions" in captured.out
     assert "other than removing previously-deprecated operations" in captured.out
 
 

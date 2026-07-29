@@ -9,8 +9,10 @@ This script:
 4. Exits with error code 1 if undocumented examples are found
 """
 
+import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -90,9 +92,62 @@ def find_agent_sdk_examples(agent_sdk_path: Path) -> set[str]:
                 if file == "__init__.py":
                     continue
 
+                # Skip support scripts that back examples but are not
+                # standalone examples themselves.
+                if "/scripts/" in relative_path_str:
+                    continue
+
                 examples.add(relative_path_str)
 
     return examples
+
+
+def find_changed_examples_for_pull_request(agent_sdk_path: Path) -> set[str] | None:
+    """
+    Return example paths changed by the current pull request, if available.
+
+    The docs repository can lag behind main briefly. In pull_request runs, only
+    fail the PR for examples that are part of that PR's diff; manual and other
+    runs continue to validate the full examples set.
+    """
+    if os.environ.get("GITHUB_EVENT_NAME") != "pull_request":
+        return None
+
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    if not event_path:
+        print("⚠️  GITHUB_EVENT_PATH is unavailable; checking all examples.")
+        return None
+
+    try:
+        event = json.loads(Path(event_path).read_text(encoding="utf-8"))
+        base_sha = event["pull_request"]["base"]["sha"]
+    except (KeyError, OSError, json.JSONDecodeError) as e:
+        print(f"⚠️  Could not read pull request base SHA: {e}")
+        print("   Checking all examples instead.")
+        return None
+
+    try:
+        diff = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(agent_sdk_path),
+                "diff",
+                "--name-only",
+                f"{base_sha}...HEAD",
+                "--",
+                "examples",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        print(f"⚠️  Could not determine changed examples: {e}")
+        print("   Checking all examples instead.")
+        return None
+
+    return {line for line in diff.stdout.splitlines() if line.endswith(".py")}
 
 
 def resolve_paths() -> tuple[Path, Path]:
@@ -157,6 +212,14 @@ def main() -> None:
     print("\n📋 Scanning agent-sdk examples...")
     agent_examples = find_agent_sdk_examples(agent_sdk_root)
     print(f"   Found {len(agent_examples)} example file(s)")
+
+    changed_examples = find_changed_examples_for_pull_request(agent_sdk_root)
+    if changed_examples is not None:
+        agent_examples &= changed_examples
+        print(
+            "   Pull request mode: checking "
+            f"{len(agent_examples)} changed example file(s)"
+        )
 
     # Find all documented examples in docs
     print("\n📄 Scanning docs repository...")

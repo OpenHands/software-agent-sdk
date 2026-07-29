@@ -50,7 +50,8 @@ The workflow will:
 3. Run `make set-package-version version=<version>` across all packages
 4. Update the `sdk_ref` default in the eval workflow
 5. Open a PR titled **"Release v\<version\>"** with labels
-   `integration-test`, `behavior-test`, and `test-examples`
+   `integration-test`, `behavior-test`, `test-examples`, and `security-scan`
+6. Notify `#proj-agent` with the release PR link and workflow actor
 
 ### ⏸ Checkpoint — Confirm PR Created
 
@@ -73,15 +74,17 @@ Review the failing check output and either:
 
 Push fixes to the release branch. The check must pass before merging.
 
-## Phase 3: Wait for CI — Tests Must Pass
+## Phase 3: Wait for CI — Checks Must Pass
 
-The release PR triggers three labeled test suites. **All three must pass.**
+The release PR triggers three labeled test suites and a security scan.
+**All four must pass.**
 
 | Label | Suite | What it covers |
 |-------|-------|----------------|
 | `integration-test` | Integration tests | End-to-end agent scenarios |
 | `behavior-test` | Behavior tests | Agent behavioral guardrails |
 | `test-examples` | Example tests | All runnable examples in `examples/` |
+| `security-scan` | Release security scan | Approval drift and dependency diff checks |
 
 Monitor status:
 
@@ -202,6 +205,7 @@ downstream PRs and handling any issues.
 - [ ] Integration tests pass
 - [ ] Behavior tests pass
 - [ ] Example tests pass
+- [ ] Security scan passes
 - [ ] (Optional) Evaluation run shows no regressions
 - [ ] **🚨 Get human approval**, then merge the release PR
 - [ ] _(Automated)_ GitHub release created with auto-generated notes

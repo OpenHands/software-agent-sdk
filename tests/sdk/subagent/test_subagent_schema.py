@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from openhands.sdk.hooks.config import HookConfig
+from openhands.sdk.mcp.config import MCPServer, dump_mcp_config
 from openhands.sdk.subagent.schema import (
     AgentDefinition,
     _extract_examples,
@@ -373,24 +374,27 @@ Content.
         agent = AgentDefinition(name="test")
         assert agent.profile_store_dir is None
 
-    def test_mcp_servers_default_none(self):
-        """Test that mcp_servers defaults to None on direct construction."""
+    def test_mcp_config_default_none(self):
+        """Test that mcp_config defaults to None on direct construction."""
         agent = AgentDefinition(name="test")
-        assert agent.mcp_servers is None
+        assert agent.mcp_config is None
 
-    def test_mcp_servers_as_dict(self):
-        """Test creating AgentDefinition with mcp_servers as dict."""
-        servers = {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}
-        agent = AgentDefinition(name="mcp-agent", mcp_servers=servers)
-        assert agent.mcp_servers == servers
+    def test_mcp_config(self):
+        """Test creating AgentDefinition with typed MCP servers."""
+        servers = {"fetch": MCPServer(command="uvx", args=["mcp-server-fetch"])}
+        agent = AgentDefinition(name="mcp-agent", mcp_config=servers)
+        assert agent.mcp_config is not None
+        assert dump_mcp_config(agent.mcp_config) == {
+            "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}
+        }
 
-    def test_load_mcp_servers_from_frontmatter(self, tmp_path: Path):
-        """Test loading mcp_servers from YAML frontmatter."""
+    def test_load_mcp_config_from_frontmatter(self, tmp_path: Path):
+        """Test loading mcp_config from YAML frontmatter."""
         agent_md = tmp_path / "mcp-agent.md"
         agent_md.write_text(
             """---
 name: mcp-agent
-mcp_servers:
+mcp_config:
   fetch:
     command: uvx
     args:
@@ -407,19 +411,20 @@ You are an agent with MCP tools.
         )
 
         agent = AgentDefinition.load(agent_md)
-        assert agent.mcp_servers is not None
-        assert "fetch" in agent.mcp_servers
-        assert agent.mcp_servers["fetch"]["command"] == "uvx"
-        assert agent.mcp_servers["fetch"]["args"] == ["mcp-server-fetch"]
-        assert "filesystem" in agent.mcp_servers
+        assert agent.mcp_config is not None
+        assert "fetch" in agent.mcp_config
+        servers = dump_mcp_config(agent.mcp_config)
+        assert servers["fetch"]["command"] == "uvx"
+        assert servers["fetch"]["args"] == ["mcp-server-fetch"]
+        assert "filesystem" in agent.mcp_config
 
-    def test_load_mcp_servers_not_in_metadata(self, tmp_path: Path):
-        """Test that mcp_servers doesn't leak into metadata."""
+    def test_load_mcp_config_not_in_metadata(self, tmp_path: Path):
+        """Test that mcp_config doesn't leak into metadata."""
         agent_md = tmp_path / "agent.md"
         agent_md.write_text(
             """---
 name: agent
-mcp_servers:
+mcp_config:
   fetch:
     command: uvx
     args:
@@ -431,11 +436,11 @@ Prompt.
 """
         )
         agent = AgentDefinition.load(agent_md)
-        assert "mcp_servers" not in agent.metadata
+        assert "mcp_config" not in agent.metadata
         assert agent.metadata.get("custom_field") == "value"
 
-    def test_load_without_mcp_servers(self, tmp_path: Path):
-        """Test that loading from file without mcp_servers gives None."""
+    def test_load_without_mcp_config(self, tmp_path: Path):
+        """Test that loading from file without mcp_config gives None."""
         agent_md = tmp_path / "agent.md"
         agent_md.write_text(
             """---
@@ -446,15 +451,15 @@ Prompt.
 """
         )
         agent = AgentDefinition.load(agent_md)
-        assert agent.mcp_servers is None
+        assert agent.mcp_config is None
 
-    def test_mcp_servers_env_vars_preserved_in_env_field(self, tmp_path: Path):
+    def test_mcp_config_env_vars_preserved_in_env_field(self, tmp_path: Path):
         """Test that ${VAR} references in env values are preserved."""
         agent_md = tmp_path / "agent.md"
         agent_md.write_text(
             """---
 name: agent
-mcp_servers:
+mcp_config:
   my-server:
     command: npx
     args:
@@ -467,18 +472,19 @@ Prompt.
 """
         )
         agent = AgentDefinition.load(agent_md)
-        mcp_servers = agent.mcp_servers
-        assert mcp_servers is not None
+        mcp_config = agent.mcp_config
+        assert mcp_config is not None
+        dumped = dump_mcp_config(mcp_config)
         # Placeholder preserved for runtime expansion with per-conversation secrets
-        assert mcp_servers["my-server"]["env"]["API_KEY"] == "${MY_API_KEY}"
+        assert dumped["my-server"]["env"]["API_KEY"] == "${MY_API_KEY}"
 
-    def test_mcp_servers_env_vars_preserved_in_command(self, tmp_path: Path):
+    def test_mcp_config_env_vars_preserved_in_command(self, tmp_path: Path):
         """Test that ${VAR} references in command are preserved."""
         agent_md = tmp_path / "agent.md"
         agent_md.write_text(
             """---
 name: agent
-mcp_servers:
+mcp_config:
   my-server:
     command: ${PLUGIN_ROOT}/bin/server
     args:
@@ -490,24 +496,25 @@ Prompt.
 """
         )
         agent = AgentDefinition.load(agent_md)
-        mcp_servers = agent.mcp_servers
-        assert mcp_servers is not None
+        mcp_config = agent.mcp_config
+        assert mcp_config is not None
+        dumped = dump_mcp_config(mcp_config)
         # Placeholders preserved for runtime expansion
-        assert mcp_servers["my-server"]["command"] == "${PLUGIN_ROOT}/bin/server"
-        assert mcp_servers["my-server"]["args"] == [
+        assert dumped["my-server"]["command"] == "${PLUGIN_ROOT}/bin/server"
+        assert dumped["my-server"]["args"] == [
             "--config",
             "${PLUGIN_ROOT}/config.json",
         ]
 
-    def test_mcp_servers_env_vars_preserved_in_url_and_headers(self, tmp_path: Path):
+    def test_mcp_config_env_vars_preserved_in_url_and_headers(self, tmp_path: Path):
         """Test that ${VAR} references in url and headers are preserved."""
         agent_md = tmp_path / "agent.md"
         agent_md.write_text(
             """---
 name: agent
-mcp_servers:
+mcp_config:
   remote:
-    type: http
+    transport: http
     url: ${API_BASE}/mcp
     headers:
       Authorization: Bearer ${AUTH_TOKEN}
@@ -517,21 +524,20 @@ Prompt.
 """
         )
         agent = AgentDefinition.load(agent_md)
-        mcp_servers = agent.mcp_servers
-        assert mcp_servers is not None
+        mcp_config = agent.mcp_config
+        assert mcp_config is not None
+        dumped = dump_mcp_config(mcp_config)
         # Placeholders preserved for runtime expansion
-        assert mcp_servers["remote"]["url"] == "${API_BASE}/mcp"
-        assert mcp_servers["remote"]["headers"]["Authorization"] == (
-            "Bearer ${AUTH_TOKEN}"
-        )
+        assert dumped["remote"]["url"] == "${API_BASE}/mcp"
+        assert dumped["remote"]["headers"]["Authorization"] == ("Bearer ${AUTH_TOKEN}")
 
-    def test_mcp_servers_placeholders_preserved(self, tmp_path: Path):
+    def test_mcp_config_placeholders_preserved(self, tmp_path: Path):
         """Test that all ${VAR} placeholders are preserved unchanged."""
         agent_md = tmp_path / "agent.md"
         agent_md.write_text(
             """---
 name: agent
-mcp_servers:
+mcp_config:
   my-server:
     command: ${SOME_VAR}
 ---
@@ -540,9 +546,9 @@ Prompt.
 """
         )
         agent = AgentDefinition.load(agent_md)
-        mcp_servers = agent.mcp_servers
-        assert mcp_servers is not None
-        assert mcp_servers["my-server"]["command"] == "${SOME_VAR}"
+        mcp_config = agent.mcp_config
+        assert mcp_config is not None
+        assert dump_mcp_config(mcp_config)["my-server"]["command"] == "${SOME_VAR}"
 
     def test_permission_mode_defaults_to_none(self):
         """Test that permission_mode defaults to None (inherit parent)."""
@@ -678,91 +684,60 @@ class TestExtractExamples:
         assert "Multi" in examples[0]
 
 
-class TestMcpServersPlaceholderPreservation:
-    """Tests that mcp_servers preserves variable placeholders for runtime expansion.
+class TestAgentDefinitionCondenser:
+    """Tests for the condenser frontmatter field."""
 
-    Variable expansion is deferred to runtime (in LocalConversation) to support
-    per-conversation secrets. The expand_mcp_variables function in skills/utils.py
-    handles the actual expansion - see test_mcp_config_expansion.py for those tests.
-    """
+    def test_condenser_absent_is_none(self, tmp_path: Path):
+        agent_md = tmp_path / "a.md"
+        agent_md.write_text("---\nname: a\n---\n\nPrompt.\n")
+        assert AgentDefinition.load(agent_md).condenser is None
 
-    def test_mcp_servers_preserves_variable_placeholders(self, tmp_path: Path):
-        """Test that ${VAR} placeholders are preserved in mcp_servers."""
-        agent_md = tmp_path / "test-agent.md"
-        agent_md.write_text(
-            """---
-name: mcp-agent
-description: Agent with MCP config
-mcp_servers:
-  my-server:
-    command: /usr/bin/server
-    env:
-      API_TOKEN: "${SECRET_TOKEN}"
-      ENDPOINT: "${API_URL:-https://default.example.com}"
----
-System prompt.
-"""
-        )
-        agent = AgentDefinition.load(agent_md)
+    def test_condenser_none_disables(self, tmp_path: Path):
+        from openhands.sdk.context.condenser import NoOpCondenser
 
-        # Placeholders should be preserved, not expanded
-        assert agent.mcp_servers is not None
-        env = agent.mcp_servers["my-server"]["env"]
-        assert env["API_TOKEN"] == "${SECRET_TOKEN}"
-        assert env["ENDPOINT"] == "${API_URL:-https://default.example.com}"
+        agent_md = tmp_path / "a.md"
+        agent_md.write_text("---\nname: a\ncondenser: none\n---\n\nPrompt.\n")
+        assert isinstance(AgentDefinition.load(agent_md).condenser, NoOpCondenser)
 
-    def test_mcp_servers_preserves_complex_placeholders(self, tmp_path: Path):
-        """Test that nested placeholders in args and env are preserved."""
-        agent_md = tmp_path / "test-agent.md"
-        agent_md.write_text(
-            """---
-name: complex-mcp-agent
-description: Agent with complex MCP config
-mcp_servers:
-  server-a:
-    command: "${CMD:-uvx}"
-    args:
-      - "--token"
-      - "${TOKEN}"
-      - "--url"
-      - "${URL:-http://localhost:8080}"
-    env:
-      TOKEN: "${TOKEN}"
-      DEBUG: "true"
----
-System prompt.
-"""
-        )
-        agent = AgentDefinition.load(agent_md)
+    def test_condenser_false_disables(self, tmp_path: Path):
+        from openhands.sdk.context.condenser import NoOpCondenser
 
-        assert agent.mcp_servers is not None
-        server = agent.mcp_servers["server-a"]
-        assert server["command"] == "${CMD:-uvx}"
-        assert server["args"][1] == "${TOKEN}"
-        assert server["args"][3] == "${URL:-http://localhost:8080}"
-        assert server["env"]["TOKEN"] == "${TOKEN}"
-        # Literal values unchanged
-        assert server["env"]["DEBUG"] == "true"
+        agent_md = tmp_path / "a.md"
+        agent_md.write_text("---\nname: a\ncondenser: false\n---\n\nPrompt.\n")
+        assert isinstance(AgentDefinition.load(agent_md).condenser, NoOpCondenser)
 
-    def test_mcp_servers_without_placeholders_unchanged(self, tmp_path: Path):
-        """Test that configs without placeholders work normally."""
-        agent_md = tmp_path / "test-agent.md"
-        agent_md.write_text(
-            """---
-name: static-mcp-agent
-description: Agent with static MCP config
-mcp_servers:
-  static-server:
-    command: uvx
-    args:
-      - mcp-server-fetch
----
-System prompt.
-"""
-        )
-        agent = AgentDefinition.load(agent_md)
+    def test_condenser_invalid_string_raises(self, tmp_path: Path):
+        agent_md = tmp_path / "a.md"
+        agent_md.write_text("---\nname: a\ncondenser: bogus\n---\n\nPrompt.\n")
+        with pytest.raises(ValueError, match="Invalid condenser value"):
+            AgentDefinition.load(agent_md)
 
-        assert agent.mcp_servers is not None
-        server = agent.mcp_servers["static-server"]
-        assert server["command"] == "uvx"
-        assert server["args"] == ["mcp-server-fetch"]
+    def test_condenser_not_in_metadata(self, tmp_path: Path):
+        """condenser is a known field, not leaked into metadata extras."""
+        agent_md = tmp_path / "a.md"
+        agent_md.write_text("---\nname: a\ncondenser: none\n---\n\nPrompt.\n")
+        assert "condenser" not in AgentDefinition.load(agent_md).metadata
+
+
+class TestAgentDefinitionMaxBudget:
+    """Tests for the max_budget_per_run frontmatter field."""
+
+    def test_absent_is_none(self, tmp_path: Path):
+        md = tmp_path / "a.md"
+        md.write_text("---\nname: a\n---\n\nPrompt.\n")
+        assert AgentDefinition.load(md).max_budget_per_run is None
+
+    def test_numeric_value(self, tmp_path: Path):
+        md = tmp_path / "a.md"
+        md.write_text("---\nname: a\nmax_budget_per_run: 2.5\n---\n\nPrompt.\n")
+        assert AgentDefinition.load(md).max_budget_per_run == 2.5
+
+    def test_string_value(self, tmp_path: Path):
+        md = tmp_path / "a.md"
+        md.write_text('---\nname: a\nmax_budget_per_run: "1.0"\n---\n\nPrompt.\n')
+        assert AgentDefinition.load(md).max_budget_per_run == 1.0
+
+    def test_not_in_metadata(self, tmp_path: Path):
+        md = tmp_path / "a.md"
+        md.write_text("---\nname: a\nmax_budget_per_run: 3\n---\n\nPrompt.\n")
+        assert "max_budget_per_run" not in AgentDefinition.load(md).metadata

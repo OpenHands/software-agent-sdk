@@ -1,14 +1,19 @@
 # Custom Tools with Remote Agent Server
 
-This example demonstrates how to use custom tools with a remote agent server by building a custom base image that includes your tool implementations.
+This example demonstrates how to use custom tools with a remote agent server by
+building a custom base image that includes your tool implementations and exposes
+them to the binary agent server through `OH_EXTRA_PYTHON_PATH`.
 
 ## Overview
 
-When using a remote agent server, custom tools must be available in the server's Python environment. This example shows the complete workflow for:
+When using a remote agent server, custom tools must be available in the server's
+Python environment. This example shows the complete workflow for:
 
 1. **Defining custom tools** that log structured data to a JSON file
-2. **Building a custom base image** that includes your tools
-3. **Using `DockerDevWorkspace`** to build the agent server on top of the custom base image
+2. **Building a custom base image** that includes your tools and sets
+   `OH_EXTRA_PYTHON_PATH`
+3. **Using `DockerDevWorkspace`** to build the binary agent server on top of the
+   custom base image
 4. **Using dynamic tool registration** to make tools available at runtime
 5. **Verifying the results** by reading the logged data back from the workspace
 
@@ -16,7 +21,8 @@ When using a remote agent server, custom tools must be available in the server's
 
 This pattern is useful for:
 
-- **Structured data collection**: Define tools like `log_data`, `record_metric`, or `track_event` to collect structured data during agent runs
+- **Structured data collection**: Define tools like `log_data`, `record_metric`,
+  or `track_event` to collect structured data during agent runs
 - **Custom integrations**: Tools that interact with external systems (APIs, databases, etc.)
 - **Domain-specific operations**: Business logic tools specific to your application
 - **Downstream processing**: Collected data can be used to generate reports, trigger workflows, etc.
@@ -26,10 +32,10 @@ This pattern is useful for:
 ```
 ┌─────────────────┐         ┌──────────────────────────┐
 │   SDK Client    │         │   Remote Agent Server    │
-│                 │         │   (Built on custom base) │
+│                 │         │   (Binary custom image)  │
 │  - Define tools │◄────────┤                          │
 │  - Send tasks   │   API   │  - Custom tools in       │
-│  - Get results  │         │    Python path           │
+│  - Get results  │         │    OH_EXTRA_PYTHON_PATH  │
 │                 │         │  - Dynamic registration  │
 └─────────────────┘         │  - Tool execution        │
                             │  - JSON file output      │
@@ -41,7 +47,7 @@ This pattern is useful for:
 - **`custom_tools/log_data.py`**: Example custom tool for logging structured data to JSON
 - **`Dockerfile`**: Simple Dockerfile that copies custom tools into the base image
 - **`build_custom_image.sh`**: Script to build the custom base image
-- **`custom_tool_example.py`**: SDK script demonstrating the full workflow
+- **`main.py`**: SDK script demonstrating the full workflow
 - **`README.md`**: This documentation
 
 ## The Custom Tool
@@ -81,14 +87,16 @@ The Dockerfile is very simple:
 ```dockerfile
 FROM nikolaik/python-nodejs:python3.13-nodejs22-slim
 
-# Copy custom tools into the Python path
+# Copy custom tools into a directory outside the frozen binary
 COPY custom_tools /app/custom_tools
 
-# Add /app to PYTHONPATH so custom_tools can be imported
-ENV PYTHONPATH="/app:${PYTHONPATH}"
+# Tell the binary agent server where to find external Python modules
+ENV OH_EXTRA_PYTHON_PATH="/app"
 ```
 
-This creates a base image with your custom tools. The agent server is built on top of this image automatically by `DockerDevWorkspace`.
+This creates a base image with your custom tools and tells the binary agent
+server where to import them from. The agent server is built on top of this image
+automatically by `DockerDevWorkspace`.
 
 ### 3. Dynamic Tool Registration
 
@@ -98,11 +106,11 @@ When creating a conversation, the SDK:
 3. Server imports those modules, triggering auto-registration
 4. Tools become available for agent execution
 
-### 4. SDK Script (`custom_tool_example.py`)
+### 4. SDK Script (`main.py`)
 
 The script:
 - Builds the custom base image (if not already built)
-- Uses `DockerDevWorkspace` with `base_image` to build the agent server on top
+- Uses `DockerDevWorkspace` with `base_image` and `target="binary"` to build the agent server on top
 - Creates an agent with the custom tool specified
 - Sends a task that uses the custom tool
 - Agent executes on the remote server with access to the custom tool
@@ -120,17 +128,17 @@ The script:
 
 1. **Navigate to this directory**:
    ```bash
-   cd examples/02_remote_agent_server/05_custom_tool
+   cd examples/02_remote_agent_server/06_custom_tool
    ```
 
 2. **Run the example**:
    ```bash
-   python custom_tool_example.py
+   python main.py
    ```
 
 The script will:
 - Build the custom base image (first run only)
-- Build the agent server on top of the base image (first run may take a few minutes)
+- Build the binary agent server on top of the base image (first run may take a few minutes)
 - Start the agent server with custom tools
 - Execute the task using the custom tool
 - Read and display the logged data from the JSON file
@@ -214,7 +222,8 @@ register_tool("MyTool", MyTool)
 
 ### 2. Update the Dockerfile
 
-No changes needed! The Dockerfile already copies all of `custom_tools/`.
+No changes needed! The Dockerfile already copies all of `custom_tools/` and sets
+`OH_EXTRA_PYTHON_PATH=/app` so the binary agent server can import the package.
 
 ### 3. Use Your Tool
 
@@ -223,10 +232,11 @@ In your SDK script:
 ```python
 from openhands.workspace import DockerDevWorkspace
 
-# Use DockerDevWorkspace with your custom base image
+# Use DockerDevWorkspace with your custom base image and binary target
 with DockerDevWorkspace(
     base_image="custom-base-image:latest",
     host_port=8010,
+    target="binary",
 ) as workspace:
     # Create agent with your custom tool
     tools = get_default_tools(enable_browser=False)

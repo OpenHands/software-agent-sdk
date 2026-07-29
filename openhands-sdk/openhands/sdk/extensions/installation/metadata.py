@@ -208,7 +208,7 @@ class InstallationMetadata(BaseModel):
         """
         discovered: list[InstallationInfo] = []
 
-        for item in installed_dir.iterdir():
+        for item in sorted(installed_dir.iterdir()):
             if not item.is_dir() or item.name.startswith("."):
                 continue
 

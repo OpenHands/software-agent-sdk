@@ -52,8 +52,9 @@ class ConversationListingBudget:
 class ConcurrentConversationsBudget:
     n_conversations: int = 16
     per_call_latency_s: float = 0.1
-    # Concurrent wall < single-conversation wall × this.
-    wall_time_factor: float = 2.5
+    # Concurrent wall < single-conversation wall × this. 4.0 (vs serial
+    # estimate of n=16) leaves slack for shared CI runners.
+    wall_time_factor: float = 4.0
     # RSS delta (peak - baseline) must be < baseline × this. With factor=2.0,
     # peak is allowed up to 3× baseline.
     rss_growth_factor: float = 2.0

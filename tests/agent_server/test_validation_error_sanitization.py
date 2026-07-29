@@ -1,7 +1,7 @@
 """Tests for RequestValidationError sanitization in the agent server.
 
 Verifies that 422 error responses do not leak sensitive fields such as
-``api_key``, ``acp_env``, or other secret-bearing request values.
+``api_key``, ``env``, or other secret-bearing request values.
 
 Refs: OpenHands/evaluation#385
 """
@@ -51,8 +51,8 @@ class TestSanitizeValidationErrors:
         # Non-secret fields should be preserved
         assert agent_input["llm"]["model"] == "gpt-4"
 
-    def test_redacts_acp_env_values(self):
-        """All values under acp_env should be fully redacted."""
+    def test_redacts_env_values(self):
+        """All values under a redact-all map key (e.g. ``env``) are redacted."""
         errors = [
             {
                 "type": "value_error",
@@ -60,7 +60,7 @@ class TestSanitizeValidationErrors:
                 "msg": "Invalid value",
                 "input": {
                     "agent": {
-                        "acp_env": {
+                        "env": {
                             "OPENAI_API_KEY": "sk-secret",
                             "DATABASE_URL": "postgres://user:pass@host/db",
                         },
@@ -69,9 +69,9 @@ class TestSanitizeValidationErrors:
             }
         ]
         result = _sanitize_validation_errors(errors)
-        acp_env = result[0]["input"]["agent"]["acp_env"]
-        assert acp_env["OPENAI_API_KEY"] == "<redacted>"
-        assert acp_env["DATABASE_URL"] == "<redacted>"
+        env = result[0]["input"]["agent"]["env"]
+        assert env["OPENAI_API_KEY"] == "<redacted>"
+        assert env["DATABASE_URL"] == "<redacted>"
 
     def test_preserves_non_secret_fields(self):
         """Non-secret fields should pass through unchanged."""
@@ -165,6 +165,20 @@ class TestSanitizeValidationErrors:
         assert inp["x_session_id"] == "<redacted>"
         assert inp["name"] == "safe_value"
 
+    def test_stringifies_value_error_context(self):
+        """ValueError in ctx should not break JSONResponse rendering."""
+        errors = [
+            {
+                "type": "value_error",
+                "loc": ["body", "observability_metadata"],
+                "msg": "Value error, bad metadata",
+                "input": {"nested": {"bad": True}},
+                "ctx": {"error": ValueError("bad metadata")},
+            }
+        ]
+        result = _sanitize_validation_errors(errors)
+        assert result[0]["ctx"]["error"] == "bad metadata"
+
     def test_empty_errors_list(self):
         """An empty error list should return an empty list."""
         assert _sanitize_validation_errors([]) == []
@@ -188,7 +202,7 @@ class TestValidationErrorResponse:
         class SecretPayload(BaseModel):
             name: str
             api_key: str
-            acp_env: dict[str, str] = {}
+            env: dict[str, str] = {}
 
         @app.post("/test-endpoint")
         async def test_endpoint(payload: SecretPayload):
@@ -204,7 +218,7 @@ class TestValidationErrorResponse:
             "/test-endpoint",
             json={
                 "api_key": "sk-super-secret-key",
-                "acp_env": {"PROVIDER_KEY": "provider-secret"},
+                "env": {"PROVIDER_KEY": "provider-secret"},
             },
         )
         assert response.status_code == 422
@@ -219,8 +233,8 @@ class TestValidationErrorResponse:
             if "input" in error and isinstance(error["input"], dict):
                 if "api_key" in error["input"]:
                     assert error["input"]["api_key"] == "<redacted>"
-                if "acp_env" in error["input"]:
-                    for val in error["input"]["acp_env"].values():
+                if "env" in error["input"]:
+                    for val in error["input"]["env"].values():
                         assert val == "<redacted>"
 
     def test_422_response_preserves_error_structure(self, app_with_validation):
@@ -248,7 +262,7 @@ class TestValidationErrorResponse:
             json={
                 "name": "test",
                 "api_key": "sk-key",
-                "acp_env": {},
+                "env": {},
             },
         )
         assert response.status_code == 200

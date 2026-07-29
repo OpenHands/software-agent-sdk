@@ -1,6 +1,9 @@
 """Secrets manager for handling sensitive data in conversations."""
 
-from collections.abc import Mapping
+import time
+from collections.abc import Collection, Mapping
+from threading import RLock
+from typing import Final
 
 from pydantic import Field, PrivateAttr, SecretStr
 
@@ -10,6 +13,9 @@ from openhands.sdk.utils.models import OpenHandsModel
 
 
 logger = get_logger(__name__)
+
+# Back-off before retrying a failed source; a failed lookup masks nothing anyway.
+FAILED_LOOKUP_RETRY_SECONDS: Final[float] = 60.0
 
 
 class SecretRegistry(OpenHandsModel):
@@ -32,6 +38,13 @@ class SecretRegistry(OpenHandsModel):
 
     secret_sources: dict[str, SecretSource] = Field(default_factory=dict)
     _exported_values: dict[str, str] = PrivateAttr(default_factory=dict)
+    _exported_values_lock: RLock = PrivateAttr(default_factory=RLock)
+    _failed_lookups: dict[str, float] = PrivateAttr(default_factory=dict)
+
+    def track_exported_values(self, values: Mapping[str, str]) -> None:
+        """Track values for output masking."""
+        with self._exported_values_lock:
+            self._exported_values.update({k: v for k, v in values.items() if v})
 
     def update_secrets(
         self,
@@ -84,8 +97,7 @@ class SecretRegistry(OpenHandsModel):
                 value = source.get_value()
                 if value:
                     env_vars[key] = value
-                    # Track successfully exported values for masking
-                    self._exported_values[key] = value
+                    self.track_exported_values({key: value})
             except Exception as e:
                 logger.error(f"Failed to retrieve secret for key '{key}': {e}")
                 continue
@@ -93,11 +105,48 @@ class SecretRegistry(OpenHandsModel):
         logger.debug(f"Prepared {len(env_vars)} secrets as environment variables")
         return env_vars
 
+    def get_all_secrets_as_env_vars(
+        self, exclude: Collection[str] | None = None
+    ) -> dict[str, str]:
+        """Resolve every registered secret to an env-var mapping.
+
+        Unlike :meth:`get_secrets_as_env_vars`, which name-scans a single
+        command and injects only the secrets it references, this resolves the
+        whole registry. It is for opaque consumers (e.g. an ACP CLI subprocess)
+        that cannot be name-scanned per command and must receive their
+        credentials upfront. Resolved values are tracked for output masking, and
+        lookup failures are skipped rather than raised.
+
+        Note: this injects the *whole* registry; least-privilege scoping
+        (provider creds + an explicit allowlist only) is deferred to #1039
+        task 6.
+
+        Args:
+            exclude: Secret names to skip — e.g. keys a higher-precedence tier
+                will set anyway, or file-content secrets materialised to disk
+                (avoids a wasted, possibly remote, ``get_value()``).
+
+        Returns:
+            Dictionary of environment variables to export (key -> value),
+            omitting empty values and excluded names.
+        """
+        skip = set(exclude or ())
+        env_vars: dict[str, str] = {}
+        for name in self.secret_sources:
+            if name in skip:
+                continue
+            value = self.get_secret_value(name)
+            if value:
+                env_vars[name] = value
+        return env_vars
+
     def mask_secrets_in_output(self, text: str) -> str:
         """Mask secret values in the given text.
 
-        This method uses both the current exported values and attempts to get
-        fresh values from callables to ensure comprehensive masking.
+        Masks the last resolved value of every registered secret, not only the
+        exported ones: a value can reach the output without the command ever
+        referencing its name (e.g. a token in a git remote URL). Cached values
+        are not re-resolved, so a rotated secret masks its previous value.
 
         Args:
             text: The text to mask secrets in
@@ -108,11 +157,24 @@ class SecretRegistry(OpenHandsModel):
         if not text:
             return text
 
-        masked_text = text
+        # Resolve uncached sources, backing off on failure: get_value() may do
+        # blocking network I/O and masking runs per output and per ACP chunk.
+        now = time.monotonic()
+        for key in list(self.secret_sources):
+            if key in self._exported_values:
+                continue
+            failed_at = self._failed_lookups.get(key)
+            if failed_at is not None and now - failed_at < FAILED_LOOKUP_RETRY_SECONDS:
+                continue
+            if not self.get_secret_value(key):
+                self._failed_lookups[key] = now
 
-        # First, mask using currently exported values (always available)
-        for value in self._exported_values.values():
-            masked_text = masked_text.replace(value, "<secret-hidden>")
+        masked_text = text
+        with self._exported_values_lock:
+            exported_values = tuple(self._exported_values.values())
+        for value in exported_values:
+            if value:
+                masked_text = masked_text.replace(value, "<secret-hidden>")
 
         return masked_text
 
@@ -158,8 +220,7 @@ class SecretRegistry(OpenHandsModel):
         try:
             value = source.get_value()
             if value:
-                # Track retrieved value for output masking
-                self._exported_values[name] = value
+                self.track_exported_values({name: value})
             return value
         except (OSError, TimeoutError) as e:
             # Network/IO errors - likely transient, log and return None

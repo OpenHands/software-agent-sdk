@@ -14,6 +14,7 @@ from openhands.agent_server.config import Config
 from openhands.agent_server.persistence import reset_stores
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.profiles import AgentProfileStore, OpenHandsAgentProfile
 
 
 @pytest.fixture
@@ -26,6 +27,15 @@ def temp_profiles_dir():
 
 
 @pytest.fixture
+def temp_agent_profiles_dir():
+    """Create a temporary directory for agent profiles (FK store)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        agent_dir = Path(tmpdir) / "agent-profiles"
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        yield agent_dir
+
+
+@pytest.fixture
 def temp_settings_dir():
     """Create a temporary directory for settings."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -35,7 +45,7 @@ def temp_settings_dir():
 
 
 @pytest.fixture
-def client(temp_profiles_dir, temp_settings_dir, monkeypatch):
+def client(temp_profiles_dir, temp_agent_profiles_dir, temp_settings_dir, monkeypatch):
     """Create test client with isolated profiles/settings directories, no cipher."""
     # Reset store singletons to ensure clean state
     reset_stores()
@@ -47,10 +57,17 @@ def client(temp_profiles_dir, temp_settings_dir, monkeypatch):
     config = Config(static_files_path=None, session_api_keys=[], secret_key=None)
     app = create_app(config)
 
-    # Patch LLMProfileStore to use temp directory
-    with patch(
-        "openhands.agent_server.profiles_router.LLMProfileStore",
-        lambda: LLMProfileStore(base_dir=temp_profiles_dir),
+    # Patch both stores to use temp directories (AgentProfileStore is hit by the
+    # FK guard on delete/rename).
+    with (
+        patch(
+            "openhands.agent_server.profiles_router.get_llm_profile_store",
+            lambda: LLMProfileStore(base_dir=temp_profiles_dir),
+        ),
+        patch(
+            "openhands.agent_server.profiles_router.get_agent_profile_store",
+            lambda: AgentProfileStore(base_dir=temp_agent_profiles_dir),
+        ),
     ):
         yield TestClient(app)
 
@@ -62,6 +79,52 @@ def client(temp_profiles_dir, temp_settings_dir, monkeypatch):
 def store(temp_profiles_dir):
     """Create a profile store using the temp directory."""
     return LLMProfileStore(base_dir=temp_profiles_dir)
+
+
+@pytest.fixture
+def agent_store(temp_agent_profiles_dir):
+    """Create the agent-profile store backing the FK guard."""
+    return AgentProfileStore(base_dir=temp_agent_profiles_dir)
+
+
+# ── FK Guard: deleting/renaming a referenced LLM profile ────────────────────
+
+
+def test_delete_referenced_llm_profile_returns_409(client, store, agent_store):
+    """Deleting an LLM profile cited by an AgentProfile returns 409 w/ referrers."""
+    store.save("base-llm", LLM(model="gpt-4o"))
+    agent_store.save(OpenHandsAgentProfile(name="agent-a", llm_profile_ref="base-llm"))
+
+    response = client.delete("/api/profiles/base-llm")
+
+    assert response.status_code == 409
+    assert "agent-a" in response.json()["detail"]
+    # The LLM profile is left intact.
+    assert store.load("base-llm").model == "gpt-4o"
+
+
+def test_delete_unreferenced_llm_profile_succeeds(client, store, agent_store):
+    """An LLM profile no AgentProfile cites deletes normally."""
+    store.save("lonely", LLM(model="gpt-4o"))
+    agent_store.save(OpenHandsAgentProfile(name="agent-a", llm_profile_ref="other-llm"))
+
+    response = client.delete("/api/profiles/lonely")
+
+    assert response.status_code == 200
+    with pytest.raises(FileNotFoundError):
+        store.load("lonely")
+
+
+def test_rename_llm_profile_cascades_to_agent_refs(client, store, agent_store):
+    """Renaming an LLM profile repoints citing AgentProfile.llm_profile_ref."""
+    store.save("old-llm", LLM(model="gpt-4o"))
+    agent_store.save(OpenHandsAgentProfile(name="agent-a", llm_profile_ref="old-llm"))
+
+    response = client.post("/api/profiles/old-llm/rename", json={"new_name": "new-llm"})
+
+    assert response.status_code == 200
+    # The agent profile's FK was cascaded to the new name.
+    assert agent_store.load("agent-a").llm_profile_ref == "new-llm"
 
 
 # ── List Profiles ──────────────────────────────────────────────────────────
@@ -239,6 +302,29 @@ def test_delete_profile_idempotent(client):
     assert response.status_code == 200
     body = response.json()
     assert body["name"] == "nonexistent"
+
+
+def test_delete_active_profile_clears_active_profile(client, store):
+    """Deleting the active profile clears active_profile in settings."""
+    llm = LLM(model="gpt-4o")
+    store.save("active-profile", llm)
+    store.save("other-profile", llm)
+    activate_response = client.post("/api/profiles/active-profile/activate")
+    assert activate_response.status_code == 200
+    assert client.get("/api/settings").json()["active_profile"] == "active-profile"
+
+    response = client.delete("/api/profiles/active-profile")
+
+    assert response.status_code == 200
+    settings_response = client.get("/api/settings")
+    assert settings_response.status_code == 200
+    assert settings_response.json()["active_profile"] is None
+
+    profiles_response = client.get("/api/profiles")
+    assert profiles_response.status_code == 200
+    body = profiles_response.json()
+    assert body["active_profile"] is None
+    assert {profile["name"] for profile in body["profiles"]} == {"other-profile"}
 
 
 # ── Rename Profile ─────────────────────────────────────────────────────────
@@ -636,7 +722,13 @@ def secret_key():
 
 
 @pytest.fixture
-def client_with_cipher(temp_profiles_dir, temp_settings_dir, secret_key, monkeypatch):
+def client_with_cipher(
+    temp_profiles_dir,
+    temp_agent_profiles_dir,
+    temp_settings_dir,
+    secret_key,
+    monkeypatch,
+):
     """Create test client with cipher configured."""
     from pydantic import SecretStr
 
@@ -653,9 +745,15 @@ def client_with_cipher(temp_profiles_dir, temp_settings_dir, secret_key, monkeyp
     )
     app = create_app(config)
 
-    with patch(
-        "openhands.agent_server.profiles_router.LLMProfileStore",
-        lambda: LLMProfileStore(base_dir=temp_profiles_dir),
+    with (
+        patch(
+            "openhands.agent_server.profiles_router.get_llm_profile_store",
+            lambda: LLMProfileStore(base_dir=temp_profiles_dir),
+        ),
+        patch(
+            "openhands.agent_server.profiles_router.get_agent_profile_store",
+            lambda: AgentProfileStore(base_dir=temp_agent_profiles_dir),
+        ),
     ):
         yield TestClient(app)
 
@@ -916,6 +1014,38 @@ def test_activate_profile_applies_llm_config(client, store):
     assert agent_settings["llm"]["temperature"] == 0.8
 
 
+def test_activate_profile_replaces_stale_llm_extra_body(client, store):
+    """Activating a profile should not retain extra_body from the old LLM."""
+    response = client.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "llm": {
+                    "model": "openai/qwen3",
+                    "litellm_extra_body": {"enable_thinking": True, "store": False},
+                }
+            }
+        },
+    )
+    assert response.status_code == 200
+
+    llm = LLM(
+        model="openai/target-model",
+        base_url="https://api.example.test/v1",
+        litellm_extra_body={},
+    )
+    store.save("target-profile", llm)
+
+    response = client.post("/api/profiles/target-profile/activate")
+
+    assert response.status_code == 200
+    settings_response = client.get("/api/settings")
+    assert settings_response.status_code == 200
+    llm_settings = settings_response.json()["agent_settings"]["llm"]
+    assert llm_settings["model"] == "openai/target-model"
+    assert llm_settings["litellm_extra_body"] == {}
+
+
 def test_activate_profile_not_found(client):
     """POST /api/profiles/{name}/activate returns 404 for non-existent profile."""
     response = client.post("/api/profiles/nonexistent/activate")
@@ -1026,42 +1156,17 @@ def test_rename_inactive_profile_preserves_active_profile(client, store):
 # ── Auto-Create Profile Tests ─────────────────────────────────────────────
 
 
-def test_list_profiles_auto_creates_profile_named_after_model(client):
-    """Auto-creates profile named after model when API key is configured."""
-    # Configure LLM settings with API key (required for auto-creation)
+def test_list_profiles_does_not_auto_create_from_settings(client):
+    """A configured LLM + API key with no profiles must NOT create a profile.
+
+    The legacy one-time settings->profile migration was removed: profiles are
+    created explicitly, so an LLM key lingering in agent_settings never
+    materializes a profile on its own.
+    """
     client.patch(
         "/api/settings",
         json={
-            "agent_settings_diff": {
-                "llm": {
-                    "model": "gpt-4o",
-                    "api_key": "sk-auto-test",
-                    "temperature": 0.5,
-                }
-            }
-        },
-    )
-
-    # List profiles should auto-create a profile named after the model
-    response = client.get("/api/profiles")
-
-    assert response.status_code == 200
-    body = response.json()
-    assert len(body["profiles"]) == 1
-    assert body["profiles"][0]["name"] == "gpt-4o"  # Named after model
-    assert body["profiles"][0]["model"] == "gpt-4o"
-    assert body["profiles"][0]["api_key_set"] is True
-    assert body["active_profile"] == "gpt-4o"
-
-
-def test_list_profiles_auto_creates_profile_strips_provider_prefix(client):
-    """Auto-created profile strips provider prefix from model name."""
-    client.patch(
-        "/api/settings",
-        json={
-            "agent_settings_diff": {
-                "llm": {"model": "openai/gpt-4o-mini", "api_key": "sk-prefix-test"}
-            }
+            "agent_settings_diff": {"llm": {"model": "gpt-4o", "api_key": "sk-no-auto"}}
         },
     )
 
@@ -1069,31 +1174,8 @@ def test_list_profiles_auto_creates_profile_strips_provider_prefix(client):
 
     assert response.status_code == 200
     body = response.json()
-    # Should use just "gpt-4o-mini" not "openai/gpt-4o-mini"
-    assert body["profiles"][0]["name"] == "gpt-4o-mini"
-    assert body["active_profile"] == "gpt-4o-mini"
-
-
-def test_list_profiles_auto_creates_profile_sanitizes_special_chars(client):
-    """Auto-created profile sanitizes special characters in model name."""
-    client.patch(
-        "/api/settings",
-        json={
-            "agent_settings_diff": {
-                "llm": {
-                    "model": "anthropic/claude-3.5-sonnet@beta",
-                    "api_key": "sk-special",
-                }
-            }
-        },
-    )
-
-    response = client.get("/api/profiles")
-
-    assert response.status_code == 200
-    body = response.json()
-    # @ should be replaced with -
-    assert body["profiles"][0]["name"] == "claude-3.5-sonnet-beta"
+    assert body["profiles"] == []
+    assert body["active_profile"] is None
 
 
 def test_list_profiles_no_auto_create_without_api_key(client):
@@ -1148,52 +1230,21 @@ def test_list_profiles_no_auto_create_when_profiles_exist(client, store):
     assert body["profiles"][0]["name"] == "existing-profile"
 
 
-def test_list_profiles_auto_create_is_idempotent(client):
-    """Multiple calls to list_profiles don't create duplicate profiles."""
-    # Configure LLM with API key
-    client.patch(
-        "/api/settings",
-        json={
-            "agent_settings_diff": {
-                "llm": {"model": "gpt-4o", "api_key": "sk-idempotent-test"}
-            }
-        },
-    )
+def test_list_profiles_no_auto_create_after_deleting_active_profile(client, store):
+    """Deleting all profiles leaves the list empty (regression).
 
-    # First call creates profile
-    response1 = client.get("/api/profiles")
-    assert response1.status_code == 200
-    assert len(response1.json()["profiles"]) == 1
+    Activating a profile copies its API key into agent_settings; with no
+    auto-create from settings, that lingering key must not resurrect a
+    profile on the next list call.
+    """
+    llm = LLM(model="gpt-4o", api_key="sk-test")
+    store.save("my-profile", llm, include_secrets=True)
+    client.post("/api/profiles/my-profile/activate")
 
-    # Second call should not create another
-    response2 = client.get("/api/profiles")
-    assert response2.status_code == 200
-    assert len(response2.json()["profiles"]) == 1
-    assert response2.json()["profiles"][0]["name"] == "gpt-4o"
+    client.delete("/api/profiles/my-profile")
+    response = client.get("/api/profiles")
 
-
-def test_auto_created_profile_persists(client, store):
-    """Auto-created profile is persisted and can be loaded."""
-    # Configure LLM with API key
-    client.patch(
-        "/api/settings",
-        json={
-            "agent_settings_diff": {
-                "llm": {
-                    "model": "gpt-4o",
-                    "api_key": "sk-persist-test",
-                    "temperature": 0.7,
-                }
-            }
-        },
-    )
-
-    # Trigger auto-creation
-    client.get("/api/profiles")
-
-    # Verify profile was saved with model name
-    loaded = store.load("gpt-4o")
-    assert loaded.model == "gpt-4o"
-    assert loaded.temperature == 0.7
-    assert loaded.api_key is not None
-    assert loaded.api_key.get_secret_value() == "sk-persist-test"
+    assert response.status_code == 200
+    body = response.json()
+    assert body["profiles"] == []
+    assert body["active_profile"] is None

@@ -1,13 +1,14 @@
 """OpenHands Agent SDK — Configurable Security Policy Example
 
-This example demonstrates how to use a custom security policy template
-with an agent. Security policies define risk assessment guidelines that
-help agents evaluate the safety of their actions.
+This example demonstrates how to use a custom security policy with an agent.
+Security policies define risk assessment guidelines that help agents evaluate
+the safety of their actions.
 
-By default, agents use the built-in security_policy.j2 template. This
-example shows how to:
+By default, agents use the built-in security policy baked into the system
+prompt (assembled from the Python prompt registry; there is no template file).
+This example shows how to:
 1. Use the default security policy
-2. Provide a custom security policy template embedded in the script
+2. Provide a custom security policy embedded in the script
 3. Apply the custom policy to guide agent behavior
 """
 
@@ -32,7 +33,7 @@ from openhands.tools.terminal import TerminalTool
 
 logger = get_logger(__name__)
 
-# Define a custom security policy template inline
+# Define a custom security policy inline (inserted verbatim, not Jinja-rendered)
 CUSTOM_SECURITY_POLICY = (
     "# 🔐 Custom Security Risk Policy\n"
     "When using tools that support the security_risk parameter, assess the "
@@ -53,7 +54,7 @@ CUSTOM_SECURITY_POLICY = (
 # Configure LLM
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
-model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
+model = os.getenv("LLM_MODEL", "gpt-5.5")
 base_url = os.getenv("LLM_BASE_URL")
 llm = LLM(
     usage_id="agent",
@@ -84,7 +85,7 @@ print("=" * 100)
 
 # Create a temporary file for the custom security policy
 with tempfile.NamedTemporaryFile(
-    mode="w", suffix=".j2", delete=False, encoding="utf-8"
+    mode="w", suffix=".md", delete=False, encoding="utf-8"
 ) as temp_file:
     temp_file.write(CUSTOM_SECURITY_POLICY)
     custom_policy_path = temp_file.name
@@ -146,8 +147,8 @@ print("\n" + "=" * 100)
 print("Example Summary")
 print("=" * 100)
 print("This example demonstrated:")
-print("1. Using the default security policy (security_policy.j2)")
-print("2. Creating a custom security policy template")
+print("1. Using the built-in default security policy")
+print("2. Creating a custom security policy")
 print("3. Applying the custom policy via security_policy_filename parameter")
 print("4. Running a conversation with the custom security policy")
 print(

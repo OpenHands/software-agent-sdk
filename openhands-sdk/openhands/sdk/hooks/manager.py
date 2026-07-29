@@ -1,11 +1,18 @@
 """Hook manager - orchestrates hook execution within conversations."""
 
 import logging
-from typing import Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
+from openhands.sdk.conversation.visualizer import ConversationVisualizerBase
 from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.hooks.executor import HookExecutor, HookResult
 from openhands.sdk.hooks.types import HookEvent, HookEventType
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.conversation.conversation_stats import ConversationStats
+    from openhands.sdk.llm import LLM
 
 
 logger = logging.getLogger(__name__)
@@ -19,9 +26,23 @@ class HookManager:
         config: HookConfig | None = None,
         working_dir: str | None = None,
         session_id: str | None = None,
+        llm: "LLM | None" = None,
+        llm_getter: "Callable[[], LLM | None] | None" = None,
+        persistence_dir: str | None = None,
+        visualizer: type[ConversationVisualizerBase]
+        | ConversationVisualizerBase
+        | None = None,
+        conversation_stats: "ConversationStats | None" = None,
     ):
         self.config = config or HookConfig.load(working_dir=working_dir)
-        self.executor = HookExecutor(working_dir=working_dir)
+        self.executor = HookExecutor(
+            working_dir=working_dir,
+            llm=llm,
+            llm_getter=llm_getter,
+            persistence_dir=persistence_dir,
+            visualizer=visualizer,
+            conversation_stats=conversation_stats,
+        )
         self.session_id = session_id
         self.working_dir = working_dir
 

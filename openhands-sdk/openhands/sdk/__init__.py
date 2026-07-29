@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError, version
-from typing import TYPE_CHECKING, Any
 
 from openhands.sdk.agent import (
     Agent,
     AgentBase,
 )
 from openhands.sdk.banner import _print_banner
-from openhands.sdk.context import AgentContext
+from openhands.sdk.context import AgentContext, load_memory
 from openhands.sdk.context.condenser import (
     LLMSummarizingCondenser,
 )
@@ -26,6 +25,7 @@ from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import (
     LLM,
+    LLM_PROFILE_SCHEMA_VERSION,
     FallbackStrategy,
     ImageContent,
     LLMProfileStore,
@@ -50,8 +50,9 @@ from openhands.sdk.plugin import Plugin
 from openhands.sdk.settings import (
     ACP_PROVIDERS,
     ACPAgentSettings,
+    ACPFileSecretSpec,
+    ACPModelOption,
     ACPProviderInfo,
-    AgentSettings,
     AgentSettingsBase,
     AgentSettingsConfig,
     CondenserSettings,
@@ -62,6 +63,7 @@ from openhands.sdk.settings import (
     SettingsSchema,
     SettingsSectionSchema,
     VerificationSettings,
+    apply_agent_settings_diff,
     build_session_model_meta,
     default_agent_settings,
     detect_acp_provider_by_agent_name,
@@ -70,10 +72,6 @@ from openhands.sdk.settings import (
     get_acp_provider,
     validate_agent_settings,
 )
-
-
-if TYPE_CHECKING:
-    from openhands.sdk.settings import LLMAgentSettings
 from openhands.sdk.settings.metadata import (
     SettingProminence,
     SettingsFieldMetadata,
@@ -87,6 +85,7 @@ from openhands.sdk.skills import (
 )
 from openhands.sdk.subagent import (
     agent_definition_to_factory,
+    discover_agents,
     load_agents_from_dir,
     load_project_agents,
     load_user_agents,
@@ -118,38 +117,10 @@ except PackageNotFoundError:
 # Print startup banner
 _print_banner(__version__)
 
-_DEPRECATED_SDK_EXPORTS: dict[str, dict[str, str]] = {
-    "LLMAgentSettings": {
-        "deprecated_in": "1.19.0",
-        "removed_in": "1.24.0",
-        "details": (
-            "Use ``OpenHandsAgentSettings`` directly. "
-            "``LLMAgentSettings`` was renamed in v1.19.0."
-        ),
-    },
-}
-
-
-def __getattr__(name: str) -> Any:
-    if name in _DEPRECATED_SDK_EXPORTS:
-        from openhands.sdk.utils.deprecation import warn_deprecated
-
-        info = _DEPRECATED_SDK_EXPORTS[name]
-        warn_deprecated(
-            f"Importing {name!r} from openhands.sdk",
-            deprecated_in=info["deprecated_in"],
-            removed_in=info["removed_in"],
-            details=info["details"],
-            stacklevel=3,
-        )
-        from openhands.sdk import settings as _settings
-
-        return getattr(_settings, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
 
 __all__ = [
     "LLM",
+    "LLM_PROFILE_SCHEMA_VERSION",
     "LLMRegistry",
     "LLMProfileStore",
     "LLMStreamChunk",
@@ -191,12 +162,13 @@ __all__ = [
     "VerificationSettings",
     "ACP_PROVIDERS",
     "ACPAgentSettings",
+    "ACPFileSecretSpec",
+    "ACPModelOption",
     "ACPProviderInfo",
-    "AgentSettings",
     "AgentSettingsBase",
     "AgentSettingsConfig",
-    "LLMAgentSettings",
     "OpenHandsAgentSettings",
+    "apply_agent_settings_diff",
     "build_session_model_meta",
     "default_agent_settings",
     "detect_acp_provider_by_agent_name",
@@ -226,7 +198,9 @@ __all__ = [
     "load_project_agents",
     "load_user_agents",
     "load_agents_from_dir",
+    "discover_agents",
     "agent_definition_to_factory",
+    "load_memory",
     "load_project_skills",
     "load_skills_from_dir",
     "load_user_skills",

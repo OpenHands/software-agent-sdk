@@ -18,6 +18,34 @@ logger = get_logger(__name__)
 
 
 _INTERNAL_SERVER_URL_ENV = "OH_INTERNAL_SERVER_URL"
+_EXTRA_PYTHON_PATH_ENV = "OH_EXTRA_PYTHON_PATH"
+
+# Hosts that bind to every network interface. Binding to one of these without
+# authentication exposes the (otherwise unauthenticated) agent server to the
+# network — see the session-api-key bind guard below.
+_WILDCARD_HOSTS = frozenset({"0.0.0.0", "::", "[::]"})
+_LOOPBACK_HOST = "127.0.0.1"
+
+
+def _auth_enabled() -> bool:
+    """Return True when at least one session API key is configured.
+
+    Keys may come from the ``SESSION_API_KEY`` / ``OH_SESSION_API_KEYS_0``
+    environment variables or from the agent-server config file, so we resolve
+    the effective config rather than checking a single source.
+    """
+    from openhands.agent_server.config import load_config
+
+    try:
+        config = load_config()
+    except Exception:
+        logger.warning(
+            "Failed to load agent-server config while resolving default bind "
+            "host; assuming no session API key is configured.",
+            exc_info=True,
+        )
+        return False
+    return bool(config.session_api_keys)
 
 
 def _get_internal_server_url(host: str, port: int) -> str:
@@ -36,11 +64,51 @@ def _get_internal_server_url(host: str, port: int) -> str:
         'http://[fe80::1]:8000'
     """
     resolved_host = host
-    if host in {"0.0.0.0", "::", "[::]"}:
+    if host in _WILDCARD_HOSTS:
         resolved_host = "127.0.0.1"
     elif ":" in host and not host.startswith("["):
         resolved_host = f"[{host}]"
     return f"http://{resolved_host}:{port}"
+
+
+def extend_python_path(extra_paths: str | None) -> None:
+    """Add directories to ``sys.path`` so ``importlib.import_module`` can find
+    external custom-tool modules — even when running from a PyInstaller binary.
+
+    Paths are read from *extra_paths* (``--extra-python-path`` CLI arg) **and**
+    the ``OH_EXTRA_PYTHON_PATH`` environment variable.  Both use the
+    platform path separator (``':'`` on POSIX, ``';'`` on Windows).
+
+    Non-existent directories are skipped with a warning; duplicates and paths
+    already on ``sys.path`` are silently ignored.
+    """
+    raw_parts: list[str] = []
+    for source in (extra_paths, os.environ.get(_EXTRA_PYTHON_PATH_ENV)):
+        if source:
+            raw_parts.extend(source.split(os.pathsep))
+
+    added = 0
+    for part in raw_parts:
+        part = part.strip()
+        if not part:
+            continue
+        resolved = os.path.abspath(part)
+        if not os.path.isdir(resolved):
+            logger.warning(
+                "Ignoring non-existent --extra-python-path entry: %s", resolved
+            )
+            continue
+        if resolved not in sys.path:
+            sys.path.insert(0, resolved)
+            logger.info("Added to sys.path: %s", resolved)
+            added += 1
+
+    if added:
+        logger.info(
+            "Extended sys.path with %d director%s for custom tool imports",
+            added,
+            "y" if added == 1 else "ies",
+        )
 
 
 def preload_modules(modules_arg: str | None) -> None:
@@ -145,7 +213,13 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="OpenHands Agent Server App")
     parser.add_argument(
-        "--host", default="0.0.0.0", help="Host to bind to (default: 0.0.0.0)"
+        "--host",
+        default=None,
+        help=(
+            "Host to bind to. Defaults to 127.0.0.1 (loopback) when no session "
+            "API key is configured, or 0.0.0.0 when authentication is enabled via "
+            "SESSION_API_KEY / OH_SESSION_API_KEYS_0."
+        ),
     )
     parser.add_argument(
         "--port", type=int, default=8000, help="Port to bind to (default: 8000)"
@@ -171,6 +245,16 @@ def main() -> None:
             "(e.g. 'myapp.tools,myapp.plugins')"
         ),
     )
+    parser.add_argument(
+        "--extra-python-path",
+        type=str,
+        default=None,
+        help=(
+            "Additional directories to add to sys.path for custom tool imports "
+            f"('{os.pathsep}'-separated).  Also reads from the "
+            f"{_EXTRA_PYTHON_PATH_ENV} environment variable."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -181,15 +265,38 @@ def main() -> None:
         else:
             sys.exit(1)
 
+    # Extend sys.path before importing user modules so external .py files
+    # are reachable — critical for PyInstaller binary builds.
+    extend_python_path(args.extra_python_path)
+
     # Import user modules after early-exit checks
     preload_modules(args.import_modules)
 
-    os.environ[_INTERNAL_SERVER_URL_ENV] = _get_internal_server_url(
-        args.host, args.port
-    )
+    # Resolve the bind host. When the operator does not pass --host we pick a
+    # safe default: loopback unless a session API key is configured, in which
+    # case binding all interfaces is intentional. An explicit wildcard host
+    # without a session API key is allowed (the operator chose it — e.g. a
+    # containerized sandbox whose port is mapped to host loopback) but emits a
+    # warning so an unauthenticated server is not exposed to the network by
+    # accident.
+    host = args.host
+    auth_enabled = _auth_enabled()
+    if host is None:
+        host = "0.0.0.0" if auth_enabled else _LOOPBACK_HOST
+    elif host in _WILDCARD_HOSTS and not auth_enabled:
+        logger.warning(
+            "Binding to all interfaces (%s) without a session API key: the "
+            "agent server will be unauthenticated and reachable from the "
+            "network. Set SESSION_API_KEY (or OH_SESSION_API_KEYS_0) to "
+            "require authentication, or bind to a loopback address with "
+            "--host.",
+            host,
+        )
 
-    print(f"Starting OpenHands Agent Server on {args.host}:{args.port}")
-    print(f"API docs will be available at http://{args.host}:{args.port}/docs")
+    os.environ[_INTERNAL_SERVER_URL_ENV] = _get_internal_server_url(host, args.port)
+
+    print(f"Starting OpenHands Agent Server on {host}:{args.port}")
+    print(f"API docs will be available at http://{host}:{args.port}/docs")
     print(f"Auto-reload: {'enabled' if args.reload else 'disabled'}")
 
     # Show debug mode status
@@ -205,7 +312,7 @@ def main() -> None:
     # Create uvicorn config
     config = Config(
         "openhands.agent_server.api:api",
-        host=args.host,
+        host=host,
         port=args.port,
         reload=args.reload,
         reload_includes=[

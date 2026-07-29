@@ -15,6 +15,19 @@ def symlink_or_skip(source: Path, link_name: Path) -> None:
         pytest.skip(f"symlinks are not available in this environment: {exc}")
 
 
+def require_case_sensitive_fs(tmp_path: Path) -> None:
+    """Collision tests need a case-sensitive ``tmp_path`` to verify the
+    deterministic winner; skip on case-insensitive filesystems where the
+    collision cannot occur."""
+    probe = tmp_path / "CaseProbe.tmp"
+    probe.write_text("x")
+    try:
+        if (tmp_path / "caseprobe.tmp").exists():
+            pytest.skip("filesystem is case-insensitive; case-collision cannot occur")
+    finally:
+        probe.unlink()
+
+
 def supports_posix_execute_bits() -> bool:
     """Return whether the current environment has POSIX execute-bit semantics."""
     return os.name != "nt"

@@ -1,5 +1,6 @@
-"""Tests for the --import-modules preloading helper."""
+"""Tests for the --import-modules preloading and --extra-python-path helpers."""
 
+import importlib
 import logging
 import os
 import sys
@@ -8,7 +9,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from openhands.agent_server.__main__ import _get_internal_server_url, preload_modules
+from openhands.agent_server.__main__ import (
+    _EXTRA_PYTHON_PATH_ENV,
+    _get_internal_server_url,
+    extend_python_path,
+    preload_modules,
+)
 
 
 class TestPreloadModules:
@@ -112,6 +118,134 @@ class TestPreloadModules:
         )
 
 
+class TestExtendPythonPath:
+    """Tests for extend_python_path() — the enabler for custom tool imports
+    in both source and binary (PyInstaller) agent-server builds."""
+
+    def test_none_and_no_env_is_noop(self, monkeypatch):
+        monkeypatch.delenv(_EXTRA_PYTHON_PATH_ENV, raising=False)
+        original = sys.path.copy()
+        extend_python_path(None)
+        assert sys.path == original
+
+    def test_empty_string_and_no_env_is_noop(self, monkeypatch):
+        monkeypatch.delenv(_EXTRA_PYTHON_PATH_ENV, raising=False)
+        original = sys.path.copy()
+        extend_python_path("")
+        assert sys.path == original
+
+    def test_adds_directory_from_cli_arg(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(_EXTRA_PYTHON_PATH_ENV, raising=False)
+        d = tmp_path / "custom_tools"
+        d.mkdir()
+        extend_python_path(str(d))
+        assert str(d) in sys.path
+        sys.path.remove(str(d))
+
+    def test_adds_directory_from_env_var(self, tmp_path, monkeypatch):
+        d = tmp_path / "env_tools"
+        d.mkdir()
+        monkeypatch.setenv(_EXTRA_PYTHON_PATH_ENV, str(d))
+        extend_python_path(None)
+        assert str(d) in sys.path
+        sys.path.remove(str(d))
+
+    def test_merges_cli_and_env(self, tmp_path, monkeypatch):
+        d1 = tmp_path / "cli_tools"
+        d2 = tmp_path / "env_tools"
+        d1.mkdir()
+        d2.mkdir()
+        monkeypatch.setenv(_EXTRA_PYTHON_PATH_ENV, str(d2))
+        extend_python_path(str(d1))
+        assert str(d1) in sys.path
+        assert str(d2) in sys.path
+        sys.path.remove(str(d1))
+        sys.path.remove(str(d2))
+
+    def test_skips_nonexistent_dir_with_warning(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.delenv(_EXTRA_PYTHON_PATH_ENV, raising=False)
+        bogus = str(tmp_path / "does_not_exist")
+        with caplog.at_level(logging.WARNING):
+            extend_python_path(bogus)
+        assert bogus not in sys.path
+        assert any("non-existent" in r.message for r in caplog.records)
+
+    def test_deduplicates(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(_EXTRA_PYTHON_PATH_ENV, raising=False)
+        d = tmp_path / "dup_tools"
+        d.mkdir()
+        extend_python_path(f"{d}{os.pathsep}{d}")
+        count = sys.path.count(str(d))
+        assert count == 1
+        sys.path.remove(str(d))
+
+    def test_skips_already_on_sys_path(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(_EXTRA_PYTHON_PATH_ENV, raising=False)
+        d = tmp_path / "already_there"
+        d.mkdir()
+        abs_d = str(d.resolve())
+        sys.path.insert(0, abs_d)
+        before_count = sys.path.count(abs_d)
+        extend_python_path(abs_d)
+        assert sys.path.count(abs_d) == before_count
+        sys.path.remove(abs_d)
+
+    def test_multiple_dirs_via_pathsep(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(_EXTRA_PYTHON_PATH_ENV, raising=False)
+        d1 = tmp_path / "tools_a"
+        d2 = tmp_path / "tools_b"
+        d1.mkdir()
+        d2.mkdir()
+        extend_python_path(f"{d1}{os.pathsep}{d2}")
+        assert str(d1) in sys.path
+        assert str(d2) in sys.path
+        sys.path.remove(str(d1))
+        sys.path.remove(str(d2))
+
+    def test_enables_import_of_external_module(self, tmp_path, monkeypatch):
+        """End-to-end: extend_python_path + importlib.import_module works
+        for a .py file placed in the extra directory."""
+        monkeypatch.delenv(_EXTRA_PYTHON_PATH_ENV, raising=False)
+        d = tmp_path / "ext_tools"
+        d.mkdir()
+        mod_name = "ext_test_tool_abc123"
+        (d / f"{mod_name}.py").write_text("REGISTERED = True\n")
+
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module(mod_name)
+
+        extend_python_path(str(d))
+        try:
+            mod = importlib.import_module(mod_name)
+            assert mod.REGISTERED is True
+        finally:
+            sys.path.remove(str(d))
+            sys.modules.pop(mod_name, None)
+
+    def test_enables_preload_modules_integration(self, tmp_path, monkeypatch):
+        """Confirm the intended workflow: extend_python_path() then
+        preload_modules() successfully imports an external tool module."""
+        monkeypatch.delenv(_EXTRA_PYTHON_PATH_ENV, raising=False)
+        d = tmp_path / "integration_tools"
+        d.mkdir()
+        mod_name = "integration_test_tool_xyz789"
+        (d / f"{mod_name}.py").write_text(
+            textwrap.dedent("""\
+                TOOL_REGISTRY = []
+                TOOL_REGISTRY.append("IntegrationTestTool")
+            """)
+        )
+
+        extend_python_path(str(d))
+        try:
+            preload_modules(mod_name)
+            imported = sys.modules[mod_name]
+            assert imported.TOOL_REGISTRY == ["IntegrationTestTool"]
+        finally:
+            sys.path.remove(str(d))
+            sys.modules.pop(mod_name, None)
+
+
 @pytest.mark.parametrize("host", ["0.0.0.0", "::", "[::]"])
 def test_get_internal_server_url_rewrites_wildcard_host(host):
     assert _get_internal_server_url(host, 4321) == "http://127.0.0.1:4321"
@@ -158,6 +292,10 @@ class TestMainCheckBrowserOrdering:
 
     def test_main_sets_internal_server_url(self, monkeypatch):
         monkeypatch.delenv("OH_INTERNAL_SERVER_URL", raising=False)
+        # An explicit wildcard bind requires auth to be enabled; set a key so
+        # the bind-host guard allows 0.0.0.0 and we still exercise the wildcard
+        # → loopback rewrite for the internal server URL.
+        monkeypatch.setenv("SESSION_API_KEY", "test-key-for-internal-url")
 
         with (
             patch("sys.argv", ["prog", "--host", "0.0.0.0", "--port", "4321"]),
@@ -173,3 +311,173 @@ class TestMainCheckBrowserOrdering:
 
         assert exc_info.value.code == 0
         assert os.environ["OH_INTERNAL_SERVER_URL"] == "http://127.0.0.1:4321"
+
+
+class TestMainBindHostGuard:
+    """The agent server must not bind all interfaces without authentication."""
+
+    def _no_key_env(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("SESSION_API_KEY", raising=False)
+        monkeypatch.delenv("OH_SESSION_API_KEYS_0", raising=False)
+        cfg = tmp_path / "empty_config.json"
+        cfg.write_text("{}")
+        monkeypatch.setenv("OPENHANDS_AGENT_SERVER_CONFIG_PATH", str(cfg))
+
+    def test_default_host_is_loopback_without_key(self, monkeypatch, tmp_path):
+        """With no session API key, the default bind host is 127.0.0.1."""
+        self._no_key_env(monkeypatch, tmp_path)
+        captured: dict = {}
+
+        def capture_config(app, *, host, **kwargs):
+            captured["host"] = host
+            return MagicMock()
+
+        with (
+            patch("sys.argv", ["prog", "--port", "4321"]),
+            patch("openhands.agent_server.__main__.preload_modules"),
+            patch("openhands.agent_server.__main__._setup_crash_diagnostics"),
+            patch("openhands.agent_server.__main__.LoggingServer") as mock_server,
+            patch("openhands.agent_server.__main__.Config", side_effect=capture_config),
+        ):
+            mock_server.return_value.run.side_effect = SystemExit(0)
+            from openhands.agent_server.__main__ import main
+
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+
+        assert exc_info.value.code == 0
+        assert captured["host"] == "127.0.0.1"
+
+    def test_default_host_is_wildcard_with_key(self, monkeypatch, tmp_path):
+        """With a session API key configured, the default bind host is 0.0.0.0."""
+        self._no_key_env(monkeypatch, tmp_path)
+        monkeypatch.setenv("SESSION_API_KEY", "test-secret-123")
+        captured: dict = {}
+
+        def capture_config(app, *, host, **kwargs):
+            captured["host"] = host
+            return MagicMock()
+
+        with (
+            patch("sys.argv", ["prog", "--port", "4321"]),
+            patch("openhands.agent_server.__main__.preload_modules"),
+            patch("openhands.agent_server.__main__._setup_crash_diagnostics"),
+            patch("openhands.agent_server.__main__.LoggingServer") as mock_server,
+            patch("openhands.agent_server.__main__.Config", side_effect=capture_config),
+        ):
+            mock_server.return_value.run.side_effect = SystemExit(0)
+            from openhands.agent_server.__main__ import main
+
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+
+        assert exc_info.value.code == 0
+        assert captured["host"] == "0.0.0.0"
+
+    @pytest.mark.parametrize("wildcard", ["0.0.0.0", "::", "[::]"])
+    def test_explicit_wildcard_warns_without_key(
+        self, monkeypatch, tmp_path, wildcard, caplog
+    ):
+        """An explicit --host <wildcard> without a key is allowed but warned."""
+        self._no_key_env(monkeypatch, tmp_path)
+        captured: dict = {}
+
+        def capture_config(app, *, host, **kwargs):
+            captured["host"] = host
+            return MagicMock()
+
+        with (
+            patch("sys.argv", ["prog", "--host", wildcard, "--port", "4321"]),
+            patch("openhands.agent_server.__main__.preload_modules"),
+            patch("openhands.agent_server.__main__._setup_crash_diagnostics"),
+            patch("openhands.agent_server.__main__.Config", side_effect=capture_config),
+            patch("openhands.agent_server.__main__.LoggingServer") as mock_server,
+            caplog.at_level(logging.WARNING, logger="openhands.agent_server.__main__"),
+        ):
+            mock_server.return_value.run.side_effect = SystemExit(0)
+            from openhands.agent_server.__main__ import main
+
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+
+        # Allowed (operator's explicit choice) but warned.
+        assert exc_info.value.code == 0
+        assert captured["host"] == wildcard
+        assert any("without a session API key" in r.message for r in caplog.records)
+
+    def test_explicit_wildcard_allowed_with_key(self, monkeypatch, tmp_path):
+        """An explicit --host 0.0.0.0 with a key is allowed."""
+        self._no_key_env(monkeypatch, tmp_path)
+        monkeypatch.setenv("SESSION_API_KEY", "test-secret-123")
+        captured: dict = {}
+
+        def capture_config(app, *, host, **kwargs):
+            captured["host"] = host
+            return MagicMock()
+
+        with (
+            patch("sys.argv", ["prog", "--host", "0.0.0.0", "--port", "4321"]),
+            patch("openhands.agent_server.__main__.preload_modules"),
+            patch("openhands.agent_server.__main__._setup_crash_diagnostics"),
+            patch("openhands.agent_server.__main__.LoggingServer") as mock_server,
+            patch("openhands.agent_server.__main__.Config", side_effect=capture_config),
+        ):
+            mock_server.return_value.run.side_effect = SystemExit(0)
+            from openhands.agent_server.__main__ import main
+
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+
+        assert exc_info.value.code == 0
+        assert captured["host"] == "0.0.0.0"
+
+    def test_explicit_loopback_allowed_without_key(self, monkeypatch, tmp_path):
+        """An explicit --host 127.0.0.1 without a key is allowed."""
+        self._no_key_env(monkeypatch, tmp_path)
+        captured: dict = {}
+
+        def capture_config(app, *, host, **kwargs):
+            captured["host"] = host
+            return MagicMock()
+
+        with (
+            patch("sys.argv", ["prog", "--host", "127.0.0.1", "--port", "4321"]),
+            patch("openhands.agent_server.__main__.preload_modules"),
+            patch("openhands.agent_server.__main__._setup_crash_diagnostics"),
+            patch("openhands.agent_server.__main__.LoggingServer") as mock_server,
+            patch("openhands.agent_server.__main__.Config", side_effect=capture_config),
+        ):
+            mock_server.return_value.run.side_effect = SystemExit(0)
+            from openhands.agent_server.__main__ import main
+
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+
+        assert exc_info.value.code == 0
+        assert captured["host"] == "127.0.0.1"
+
+
+def test_auth_enabled_reads_config_keys(monkeypatch, tmp_path):
+    from openhands.agent_server.__main__ import _auth_enabled
+
+    cfg = tmp_path / "config.json"
+    monkeypatch.delenv("SESSION_API_KEY", raising=False)
+    monkeypatch.delenv("OH_SESSION_API_KEYS_0", raising=False)
+    monkeypatch.setenv("OPENHANDS_AGENT_SERVER_CONFIG_PATH", str(cfg))
+
+    cfg.write_text("{}")
+    assert _auth_enabled() is False
+
+    cfg.write_text('{"session_api_keys": ["abc"]}')
+    assert _auth_enabled() is True
+
+
+def test_auth_enabled_reads_env_key(monkeypatch, tmp_path):
+    from openhands.agent_server.__main__ import _auth_enabled
+
+    cfg = tmp_path / "config.json"
+    cfg.write_text("{}")
+    monkeypatch.setenv("OPENHANDS_AGENT_SERVER_CONFIG_PATH", str(cfg))
+    monkeypatch.delenv("OH_SESSION_API_KEYS_0", raising=False)
+    monkeypatch.setenv("SESSION_API_KEY", "from-env")
+    assert _auth_enabled() is True
