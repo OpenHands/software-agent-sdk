@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import json
 import re
 import threading
 from abc import ABC, abstractmethod
@@ -35,7 +36,7 @@ from pydantic import (
 from pydantic.json_schema import SkipJsonSchema
 
 from openhands.sdk.security import risk
-from openhands.sdk.tool.schema import Action, Observation, Schema, _process_schema_node
+from openhands.sdk.tool.schema import Action, Observation, Schema
 from openhands.sdk.utils.models import (
     DiscriminatedUnionMixin,
     get_known_concrete_subclasses,
@@ -77,7 +78,64 @@ def _response_schema_json(response_schema: ResponseSchema) -> dict[str, Any]:
 
 def _response_tool_schema(response_schema: ResponseSchema) -> dict[str, Any]:
     schema = _response_schema_json(response_schema)
-    return _process_schema_node(schema, schema.get("$defs", {}))
+    schema = _expand_response_refs(schema, schema.get("$defs", {}))
+    assert isinstance(schema, dict)
+    properties = schema.get("properties")
+    if not properties:
+        raise ValueError("response_schema must define named properties")
+    return schema
+
+
+def _expand_response_refs(
+    node: dict[str, Any] | bool,
+    defs: dict[str, Any],
+    visiting: frozenset[str] = frozenset(),
+) -> dict[str, Any] | bool:
+    if isinstance(node, bool):
+        return node
+    if "$ref" in node:
+        ref = node["$ref"]
+        if ref.startswith("#/$defs/"):
+            name = ref.removeprefix("#/$defs/")
+            if name not in defs:
+                return copy.deepcopy(node)
+            if name in visiting:
+                return _shallow_response_ref(defs[name])
+            expanded = _expand_response_refs(defs[name], defs, visiting | {name})
+            if isinstance(expanded, dict):
+                siblings = {key: value for key, value in node.items() if key != "$ref"}
+                expanded_siblings = _expand_response_refs(
+                    siblings, defs, visiting | {name}
+                )
+                assert isinstance(expanded_siblings, dict)
+                expanded.update(expanded_siblings)
+            return expanded
+
+    result = copy.deepcopy(node)
+    result.pop("$defs", None)
+    if "properties" in result:
+        result["properties"] = {
+            name: _expand_response_refs(value, defs, visiting)
+            for name, value in result["properties"].items()
+        }
+    for keyword in ("items", "additionalProperties", "not"):
+        value = result.get(keyword)
+        if isinstance(value, (dict, bool)):
+            result[keyword] = _expand_response_refs(value, defs, visiting)
+    for keyword in ("allOf", "anyOf", "oneOf", "prefixItems"):
+        if keyword in result:
+            result[keyword] = [
+                _expand_response_refs(value, defs, visiting)
+                for value in result[keyword]
+            ]
+    return result
+
+
+def _shallow_response_ref(node: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {"type": node.get("type", "object")}
+    if "description" in node:
+        result["description"] = node["description"]
+    return result
 
 
 def _camel_to_snake(name: str) -> str:
@@ -405,9 +463,9 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
     def action_from_arguments(self, arguments: dict[str, Any]) -> Action:
         """Create an action from parsed arguments."""
         action_arguments, structured_output = self._split_response_arguments(arguments)
-        if structured_output is not None:
-            action_arguments["structured_output"] = structured_output
-        return self.action_type.model_validate(action_arguments)
+        action = self.action_type.model_validate(action_arguments)
+        action._structured_output = structured_output
+        return action
 
     def _split_response_arguments(
         self, arguments: dict[str, Any]
@@ -465,9 +523,9 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         """Parse the most recent action for this tool."""
         from openhands.sdk.event import ActionEvent
 
-        action = next(
+        event = next(
             (
-                event.action
+                event
                 for event in reversed(events)
                 if isinstance(event, ActionEvent)
                 and event.tool_name == self.name
@@ -475,7 +533,15 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
             ),
             None,
         )
-        return self.parse_response(action) if action is not None else None
+        if event is None:
+            return None
+        arguments = json.loads(event.tool_call.arguments)
+        _, structured_output = self._split_response_arguments(arguments)
+        if structured_output is None:
+            return None
+        assert event.action is not None
+        event.action._structured_output = structured_output
+        return self.parse_response(event.action)
 
     def __call__(
         self, action: ActionT, conversation: "LocalConversation | None" = None

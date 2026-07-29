@@ -305,10 +305,9 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
             exclude_none=True,
             exclude=exclude_fields,
         )
-        return MCPToolAction(
-            data=sanitized,
-            structured_output=structured_output,
-        )
+        action = MCPToolAction(data=sanitized)
+        action._structured_output = structured_output
+        return action
 
     @classmethod
     def create(

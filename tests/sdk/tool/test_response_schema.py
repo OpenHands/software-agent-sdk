@@ -36,7 +36,9 @@ class FinishPairTool(FinishTool):
         return [tool, tool]
 
 
-def _finish_with_schema(schema: type[BaseModel]) -> ToolDefinition:
+def _finish_with_schema(
+    schema: type[BaseModel] | dict[str, object],
+) -> ToolDefinition:
     register_tool("FinishTool", FinishTool)
     [tool] = resolve_tool(
         Tool(name="FinishTool", params={"response_schema": schema}),
@@ -58,7 +60,7 @@ def _make_finish_event(tool: ToolDefinition, tool_name: str, **fields) -> Action
         tool_name=tool_name,
         tool_call_id="tc",
         tool_call=MessageToolCall(
-            id="tc", name=tool_name, arguments="{}", origin="completion"
+            id="tc", name=tool_name, arguments=json.dumps(defaults), origin="completion"
         ),
         llm_response_id="r",
         action=action,
@@ -225,13 +227,36 @@ def test_action_event_roundtrips_with_static_kind():
 
     serialized = event.model_dump_json()
     assert "FinishActionWith" not in serialized
+    assert "structured_output" not in serialized
     restored = Event.model_validate_json(serialized)
 
     assert isinstance(restored, ActionEvent)
     assert type(restored.action) is FinishAction
-    result = tool.parse_response(restored.action)
+    result = tool.parse_last_response([restored])
     assert isinstance(result, TaskResult)
     assert result.success is True
+
+
+def test_response_schema_preserves_constraints():
+    class ConstrainedResult(BaseModel):
+        code: str = Field(pattern=r"^[A-Z]{3}$", min_length=3, max_length=3)
+        count: int = Field(ge=1, le=5)
+
+    tool = _finish_with_schema(ConstrainedResult)
+    properties = tool._get_tool_schema()["properties"]
+
+    assert properties["code"]["pattern"] == r"^[A-Z]{3}$"
+    assert properties["code"]["minLength"] == 3
+    assert properties["code"]["maxLength"] == 3
+    assert properties["count"]["minimum"] == 1
+    assert properties["count"]["maximum"] == 5
+
+
+def test_response_schema_requires_named_properties():
+    with pytest.raises(ValueError, match="named properties"):
+        _finish_with_schema(
+            {"type": "object", "additionalProperties": {"type": "string"}}
+        )
 
 
 def test_parse_last_response_ignores_other_tools():

@@ -3,8 +3,7 @@ from abc import ABC
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
 
-from pydantic import ConfigDict, Field, create_model
-from pydantic.json_schema import SkipJsonSchema
+from pydantic import ConfigDict, Field, PrivateAttr, create_model
 from rich.text import Text
 
 from openhands.sdk.llm import ImageContent, TextContent
@@ -332,10 +331,11 @@ class Schema(DiscriminatedUnionMixin):
 class Action(Schema, ABC):
     """Base schema for input action."""
 
-    structured_output: SkipJsonSchema[dict[str, Any] | None] = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-    )
+    _structured_output: dict[str, Any] | None = PrivateAttr(default=None)
+
+    @property
+    def structured_output(self) -> dict[str, Any] | None:
+        return self._structured_output
 
     @property
     def visualize(self) -> Text:
