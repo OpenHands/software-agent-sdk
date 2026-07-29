@@ -46,6 +46,7 @@ from openhands.sdk.conversation.request import StartConversationRequest
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.llm.message import Message, TextContent
 from openhands.sdk.tool.builtins import SkillsListTool, SkillsReadTool
+from openhands.tools.data_preparation import DfSubmitPipelineTool
 from openhands.tools.pyromind_cleaning import RunDatasetCleaningTool
 from openhands.tools.pyromind_dataset import (
     PreviewDatasetTool,
@@ -55,6 +56,7 @@ from openhands.tools.pyromind_dataset.definition import (
     PYROMIND_STORAGE_AUTH_COOKIE_SECRET,
     PYROMIND_STORAGE_HEADERS_STATE_KEY,
 )
+from openhands.tools.pyromind_remote_dataset import PreviewRemoteDatasetTool
 from openhands.tools.workflow import (
     RunWorkflowTool,
     ValidateWorkflowDslTool,
@@ -889,6 +891,8 @@ def test_pyromind_storage_tools_use_user_context_headers():
         PreviewDatasetTool.name,
         UploadFileToPyromindTool.name,
         RunDatasetCleaningTool.name,
+        DfSubmitPipelineTool.name,
+        PreviewRemoteDatasetTool.name,
     ]
     assert tools[0].params == {
         "storage_base_url": "https://storage.test/api",
