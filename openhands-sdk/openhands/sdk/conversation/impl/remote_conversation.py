@@ -1683,6 +1683,22 @@ class RemoteConversation(BaseConversation):
         if self._cleanup_initiated:
             return
         self._cleanup_initiated = True
+
+        # Best-effort: hand the accumulated LLM cost to the workspace so it can
+        # be included in the automation completion callback. Only read cached
+        # state — close() also runs on the failure path, where a live fetch
+        # could block until timeout against an agent server that is already gone.
+        try:
+            cached = self._state._cached_state
+            # Require an actual "stats" entry: a cache built only from partial
+            # field updates would otherwise yield 0.0 and record a run as free
+            # when its cost is really just unknown.
+            if cached is not None and "stats" in cached:
+                cost = self._state.stats.get_combined_metrics().accumulated_cost
+                self.workspace.register_cost(cost)
+        except Exception as e:
+            logger.debug(f"Could not register accumulated cost: {e}")
+
         # SessionEnd hooks are executed server-side (via hook_config in payload).
         try:
             # Stop WebSocket client if it exists

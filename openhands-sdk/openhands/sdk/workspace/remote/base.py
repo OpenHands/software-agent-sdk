@@ -71,6 +71,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
 
     _client: httpx.Client | None = PrivateAttr(default=None)
     _conversation_id: str | None = PrivateAttr(default=None)
+    _accumulated_cost: float | None = PrivateAttr(default=None)
 
     def reset_client(self) -> None:
         """Reset the HTTP client to force re-initialization.
@@ -274,6 +275,28 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         """
         return self._conversation_id
 
+    def register_cost(self, cost: float) -> None:
+        """Register the accumulated LLM cost for this workspace's run.
+
+        Called by the automation entry-point script once the conversation has
+        finished. The cost is included in the completion callback sent to the
+        automation service.
+
+        Args:
+            cost: Accumulated LLM cost in USD
+        """
+        self._accumulated_cost = cost
+        logger.debug(f"Registered cost: {cost}")
+
+    @property
+    def accumulated_cost(self) -> float | None:
+        """Get the most recently registered accumulated LLM cost.
+
+        Returns:
+            The cost in USD if one has been registered, None otherwise.
+        """
+        return self._accumulated_cost
+
     def _send_completion_callback(
         self, exc_type: type | None, exc_val: BaseException | None
     ) -> None:
@@ -288,7 +311,8 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
           - ``AUTOMATION_RUN_ID`` — Run ID to include in callback payload (optional)
 
         Includes ``conversation_id`` in the payload if one was registered via
-        ``register_conversation()``.
+        ``register_conversation()``, and ``cost`` if one was registered via
+        ``register_cost()``.
 
         Args:
             exc_type: Exception type if an exception was raised, None otherwise
@@ -311,6 +335,10 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         # Include conversation_id if one was registered
         if self._conversation_id is not None:
             payload["conversation_id"] = self._conversation_id
+
+        # Include accumulated LLM cost if one was registered
+        if self._accumulated_cost is not None:
+            payload["cost"] = self._accumulated_cost
 
         try:
             headers: dict[str, str] = {}
