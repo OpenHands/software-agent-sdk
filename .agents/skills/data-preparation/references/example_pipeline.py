@@ -2,15 +2,17 @@
 """
 Example DataFlow pipeline: generate chain-of-thought for DAPO-Math-17k
 
+Batch-incremental mode: processes records in batches of BATCH_SIZE,
+leveraging DataFlow's internal thread pool for concurrent LLM calls.
+Each batch's results are written to disk immediately after completion.
+Supports automatic resume on restart (skips records already in output).
+
 Key API notes:
 - Class is APILLMServing_request (underscore)
 - Must use importlib shim to import it (dataflow/serving/__init__.py pulls
   in transformers/torch which fails in sandboxed or version-conflict envs)
-- PromptedGenerator constructor: llm_serving, system_prompt, user_prompt, json_schema
-- input_key / output_key are parameters of run(), NOT the constructor
-- generator.run() returns the output_key string, NOT a storage object
-- After run(), data is buffered at the next step; call storage.step() then read()
 - LoggingLLMServing wraps the LLM to record all calls (required for platform runs)
+- generate_from_input() accepts a list and processes concurrently via max_workers
 """
 
 import importlib.util
@@ -40,8 +42,6 @@ _spec.loader.exec_module(_mod)
 APILLMServing_request = _mod.APILLMServing_request
 # --- End shim ---
 
-from dataflow.operators.core_text import PromptedGenerator  # noqa: E402
-from dataflow.utils.storage import LazyFileStorage  # noqa: E402
 from df_logging import LoggingLLMServing  # noqa: E402
 
 
@@ -54,16 +54,53 @@ SYSTEM_PROMPT = (
     '{"reasoning": "...", "answer": "..."}'
 )
 
+# Number of records per LLM batch. generate_from_input() processes these
+# concurrently via its internal thread pool (max_workers=8).
+BATCH_SIZE = 20
+
+
+def _count_existing_lines(path: Path) -> int:
+    """Count lines in existing output file for resume support."""
+    if not path.is_file():
+        return 0
+    count = 0
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                count += 1
+    return count
+
+
+def _read_input(path: Path) -> list[dict]:
+    """Read all records from input JSONL."""
+    records = []
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                records.append(json.loads(line))
+    return records
+
 
 def main(input_path: str, output_path: str) -> None:
     input_file = Path(input_path).resolve()
     output_file = Path(output_path).resolve()
+    output_file.parent.mkdir(parents=True, exist_ok=True)
 
-    # 1. Initialize storage and advance to step 0 (reads the input file)
-    storage = LazyFileStorage(str(input_file), cache_type="jsonl")
-    storage = storage.step()
+    # 1. Read input records
+    records = _read_input(input_file)
+    total = len(records)
 
-    # 2. Initialize LLM from environment variables (injected by df_run_pipeline
+    # 2. Resume: skip records already written in a previous run
+    already_done = _count_existing_lines(output_file)
+    if already_done > 0:
+        print(f"Resuming: skipping {already_done}/{total} already-processed records")
+    remaining = records[already_done:]
+
+    if not remaining:
+        print(f"All {total} records already processed. Nothing to do.")
+        return
+
+    # 3. Initialize LLM from environment variables (injected by df_run_pipeline
     #    or the platform runner). Wrap with LoggingLLMServing for full call
     #    traceability (writes llm_calls.jsonl to DF_LOG_DIR).
     raw_llm = APILLMServing_request(
@@ -77,25 +114,50 @@ def main(input_path: str, output_path: str) -> None:
     )
     llm = LoggingLLMServing(raw_llm)
 
-    # 3. Generator: add CoT reasoning
-    #    Constructor only accepts: llm_serving, system_prompt, user_prompt, json_schema
-    generator = PromptedGenerator(
-        llm_serving=llm,
-        system_prompt=SYSTEM_PROMPT,
+    # 4. Process in batches: N records per LLM call, write after each batch
+    succeeded = already_done
+    failed = 0
+    with output_file.open("a", encoding="utf-8") as out:
+        for batch_start in range(0, len(remaining), BATCH_SIZE):
+            batch = remaining[batch_start : batch_start + BATCH_SIZE]
+            prompts = [str(r.get("problem", "")) for r in batch]
+
+            try:
+                responses = llm.generate_from_input(
+                    user_inputs=prompts,
+                    system_prompt=SYSTEM_PROMPT,
+                )
+            except Exception as exc:
+                api_key = os.environ.get("DF_API_KEY", "")
+                err_msg = (
+                    str(exc).replace(api_key, "<redacted>") if api_key else str(exc)
+                )
+                print(
+                    f"[ERROR] batch at offset {batch_start}: {err_msg[:200]}",
+                    file=sys.stderr,
+                )
+                failed += len(batch)
+                continue
+
+            for record, response in zip(batch, responses):
+                if response is None:
+                    failed += 1
+                    continue
+                record["cot"] = response
+                out.write(json.dumps(record, ensure_ascii=False) + "\n")
+                succeeded += 1
+            out.flush()
+
+            processed = batch_start + len(batch)
+            print(
+                f"Progress: {processed}/{len(remaining)} processed, "
+                f"{succeeded}/{total} succeeded, {failed} failed"
+            )
+
+    print(
+        f"Done. total={total} succeeded={succeeded} failed={failed} "
+        f"output={output_file}"
     )
-    # input_key / output_key are parameters of run(), not the constructor
-    generator.run(storage=storage, input_key="problem", output_key="cot")
-
-    # 4. Read results: run() buffered data at step 1, advance and read
-    storage = storage.step()
-    data = storage.read(output_type="dict")
-
-    # 5. Write final output to the requested path
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_file, "w", encoding="utf-8") as f:
-        for row in data:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-    print(f"Processed {len(data)} records, written to {output_file}")
 
 
 if __name__ == "__main__":

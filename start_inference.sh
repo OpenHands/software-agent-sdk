@@ -18,7 +18,7 @@ export SOFTWARE_AGENT_SDK_DIR="${SOFTWARE_AGENT_SDK_DIR:-${SCRIPT_DIR}}"
 # LiteLLM requires a provider prefix (e.g. openai/) for custom OpenAI-compatible endpoints.
 export LLM_MODEL="openai/glm-5.2-fp8"
 export LLM_BASE_URL="http://208.64.254.187:8000/v1"
-export OPENAI_API_KEY="sk-6137d26281697017ef07ef4da0823dc16d32acaad253ecac"
+export OPENAI_API_KEY="${LLM_API_KEY}"
 if [[ -z "${OPENAI_API_KEY:-}" ]]; then
   echo "ERROR: OPENAI_API_KEY is required. Set it in start_inference.sh." >&2
   exit 1

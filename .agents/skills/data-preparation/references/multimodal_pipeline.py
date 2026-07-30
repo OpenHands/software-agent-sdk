@@ -4,6 +4,10 @@ Copy this file to the conversation workspace and customize only the constants
 and small task hooks below. It deliberately calls DataFlow's existing VLM
 serving directly instead of defining a new operator.
 
+Incremental mode: processes records in small batches and writes each result
+immediately to disk. Supports automatic resume on restart (skips records
+already present in the output file).
+
 Usage:
     pipeline.py <manifest.jsonl> <processed.jsonl> [limit]
 """
@@ -205,10 +209,14 @@ def assemble_training_response(
     return response
 
 
-def _generate_with_isolation(
+BATCH_SIZE = 4
+
+
+def _generate_batch(
     vlm: Any,
     records: list[dict[str, Any]],
 ) -> tuple[dict[str, str], dict[str, str]]:
+    """Call VLM for a small batch with recursive error isolation."""
     if not records:
         return {}, {}
     try:
@@ -223,13 +231,25 @@ def _generate_with_isolation(
         if len(records) == 1:
             return {}, {str(records[0]["sample_id"]): _safe_error(exc)}
         middle = len(records) // 2
-        left_ok, left_failed = _generate_with_isolation(vlm, records[:middle])
-        right_ok, right_failed = _generate_with_isolation(vlm, records[middle:])
+        left_ok, left_failed = _generate_batch(vlm, records[:middle])
+        right_ok, right_failed = _generate_batch(vlm, records[middle:])
         return {**left_ok, **right_ok}, {**left_failed, **right_failed}
     return {
         str(record["sample_id"]): response
         for record, response in zip(records, responses, strict=True)
     }, {}
+
+
+def _count_existing_lines(path: Path) -> int:
+    """Count lines in existing output file for resume support."""
+    if not path.is_file():
+        return 0
+    count = 0
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                count += 1
+    return count
 
 
 def run(
@@ -240,6 +260,8 @@ def run(
     manifest = Path(input_path).resolve()
     output = Path(output_path).resolve()
     report = output.with_suffix(".report.json")
+    output.parent.mkdir(parents=True, exist_ok=True)
+
     raw_records = _read_manifest(manifest, limit)
     records: list[dict[str, Any]] = []
     failures: dict[str, str] = {}
@@ -250,48 +272,74 @@ def run(
         except Exception as exc:
             failures[sample_id] = _safe_error(exc)
 
-    generated: dict[str, str] = {}
-    if records:
-        APIVLMServing = _load_vlm_class()
-        vlm = APIVLMServing(
-            api_url=os.environ["DF_API_BASE_URL"],
-            key_name_of_api_key="DF_API_KEY",
-            model_name=os.environ["DF_MODEL_NAME"],
-        )
-        try:
-            generated, inference_failures = _generate_with_isolation(vlm, records)
-            failures.update(inference_failures)
-        finally:
-            vlm.cleanup()
+    total = len(records)
 
-    output.parent.mkdir(parents=True, exist_ok=True)
-    succeeded = 0
+    # Resume: skip records already written in a previous run
+    already_done = _count_existing_lines(output)
+    if already_done > 0:
+        print(f"Resuming: skipping {already_done}/{total} already-processed records")
+    remaining = records[already_done:]
+
+    if not remaining:
+        print(f"All {total} records already processed. Nothing to do.")
+        return
+
+    # Initialize VLM
+    APIVLMServing = _load_vlm_class()
+    vlm = APIVLMServing(
+        api_url=os.environ["DF_API_BASE_URL"],
+        key_name_of_api_key="DF_API_KEY",
+        model_name=os.environ["DF_MODEL_NAME"],
+    )
+
+    succeeded = already_done
     generated_field_names: set[str] = set()
-    with output.open("w", encoding="utf-8") as handle:
-        for record in records:
-            sample_id = str(record["sample_id"])
-            raw_response = generated.get(sample_id)
-            if raw_response is None:
-                continue
-            try:
-                annotations = parse_generated_annotations(raw_response)
-                generated_field_names.update(annotations)
-                result = {
-                    key: value
-                    for key, value in record.items()
-                    if not key.startswith("_")
-                }
-                result["generated_annotations"] = annotations
-                result["training_system_prompt"] = TRAINING_SYSTEM_PROMPT
-                result["training_prompt"] = TRAINING_PROMPT or record["prompt"]
-                result["training_response"] = assemble_training_response(
-                    record,
-                    annotations,
-                )
-                handle.write(json.dumps(result, ensure_ascii=False) + "\n")
-                succeeded += 1
-            except Exception as exc:
-                failures[sample_id] = _safe_error(exc)
+    try:
+        with output.open("a", encoding="utf-8") as handle:
+            for batch_start in range(0, len(remaining), BATCH_SIZE):
+                batch = remaining[batch_start : batch_start + BATCH_SIZE]
+                generated, batch_failures = _generate_batch(vlm, batch)
+                failures.update(batch_failures)
+
+                for record in batch:
+                    sample_id = str(record["sample_id"])
+                    raw_response = generated.get(sample_id)
+                    if raw_response is None:
+                        continue
+                    try:
+                        annotations = parse_generated_annotations(raw_response)
+                        generated_field_names.update(annotations)
+                        result = {
+                            key: value
+                            for key, value in record.items()
+                            if not key.startswith("_")
+                        }
+                        result["generated_annotations"] = annotations
+                        result["training_system_prompt"] = TRAINING_SYSTEM_PROMPT
+                        result["training_prompt"] = TRAINING_PROMPT or record["prompt"]
+                        result["training_response"] = assemble_training_response(
+                            record,
+                            annotations,
+                        )
+                        handle.write(json.dumps(result, ensure_ascii=False) + "\n")
+                        handle.flush()
+                        succeeded += 1
+                    except Exception as exc:
+                        failures[sample_id] = _safe_error(exc)
+
+                processed_so_far = batch_start + len(batch) + already_done
+                if processed_so_far % 50 < BATCH_SIZE:
+                    print(
+                        f"Progress: {succeeded}/{total} succeeded, "
+                        f"{len(failures)} failed"
+                    )
+    finally:
+        vlm.cleanup()
+
+    print(
+        f"Done. total={total} succeeded={succeeded} "
+        f"failed={len(failures)} output={output}"
+    )
 
     report.write_text(
         json.dumps(
