@@ -10,6 +10,7 @@ import warnings
 from collections.abc import AsyncIterable, Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
 
@@ -122,6 +123,10 @@ from openhands.sdk.logger import ENV_LOG_DIR, get_logger
 
 
 logger = get_logger(__name__)
+_serialized_is_subscription = ContextVar(
+    "serialized_is_subscription",
+    default=False,
+)
 
 __all__ = ["LLM"]
 
@@ -643,6 +648,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     # Validators
     # =========================================================================
+    @model_validator(mode="before")
+    @classmethod
+    def _capture_serialized_is_subscription(cls, data):
+        if isinstance(data, dict):
+            _serialized_is_subscription.set(bool(data.get("is_subscription")))
+        return data
+
     @field_validator(
         "api_key", "aws_access_key_id", "aws_secret_access_key", "aws_session_token"
     )
@@ -837,34 +849,24 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     )
     @property
     def is_subscription(self) -> bool:
-        """Check if this LLM uses subscription-based authentication.
-
-        Returns True when the LLM was created via `LLM.subscription_login()`,
-        which uses the ChatGPT subscription Codex backend rather than the
-        standard OpenAI API.
-
-        Returns:
-            bool: True if using subscription-based transport, False otherwise.
-        """
+        """Check if this LLM uses subscription-based authentication."""
         return self._is_subscription
+
+    @is_subscription.setter
+    def is_subscription(self, value: bool) -> None:
+        self._is_subscription = value
 
     @model_validator(mode="wrap")
     @classmethod
     def _restore_is_subscription(cls, data, handler):
-        """Restore the subscription flag when validating serialized data.
-
-        ``is_subscription`` is a computed field backed by the private
-        ``_is_subscription`` attribute, so plain validation would drop it.
-        Without this, an LLM created via ``LLM.subscription_login()`` loses
-        its subscription-specific request handling (streaming exemption,
-        Codex system prompt transform, reasoning-item stripping) after a
-        dump/validate round trip - e.g. when shipped to a remote
-        agent-server.
-        """
-        llm = handler(data)
-        if isinstance(data, dict) and data.get("is_subscription"):
-            llm._is_subscription = True
-        return llm
+        token = _serialized_is_subscription.set(False)
+        try:
+            llm = handler(data)
+            if _serialized_is_subscription.get():
+                llm._is_subscription = True
+            return llm
+        finally:
+            _serialized_is_subscription.reset(token)
 
     def restore_metrics(self, metrics: Metrics) -> None:
         # Only used by ConversationStats to seed metrics

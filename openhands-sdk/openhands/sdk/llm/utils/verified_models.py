@@ -76,6 +76,7 @@ VERIFIED_MOONSHOT_MODELS = [
     "kimi-k2-thinking",
     "kimi-k2.5",
     "kimi-k2.6",
+    "kimi-for-coding",
 ]
 
 VERIFIED_MINIMAX_MODELS = [
