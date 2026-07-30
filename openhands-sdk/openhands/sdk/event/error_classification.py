@@ -141,6 +141,12 @@ def classify_error(code: str, detail: str = "") -> ErrorClassification:
         "HTTPStatusError",
         "RequestError",
         "CloudflareError",
+        "OpenAIError",
+        "APIError",
+        "BaseLLMException",
+        "AnthropicError",
+        "OpenRouterException",
+        "OllamaError",
     }:
         return _failure(FailureKind.TRANSIENT, retryable=True, user_action="retry")
     if code in {"MaxIterationsReached", "ConversationOwnershipLostError"}:

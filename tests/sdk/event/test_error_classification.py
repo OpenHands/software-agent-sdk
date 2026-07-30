@@ -9,6 +9,7 @@ from openhands.sdk.event.conversation_error import ConversationErrorEvent
         ("OpenAIError", "Incorrect API key provided", "auth"),
         ("APIError", "This request requires more credits", "quota"),
         ("OpenAIError", "Error code: 429", "rate_limit"),
+        ("OpenRouterException", "", "transient"),
         (
             "LLMBadRequestError",
             "LLM Provider NOT provided",
