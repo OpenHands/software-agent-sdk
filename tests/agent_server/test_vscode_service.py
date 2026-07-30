@@ -1,6 +1,7 @@
 """Tests for VSCode service."""
 
 import asyncio
+import re
 import stat
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -9,6 +10,7 @@ import pytest
 
 from openhands.agent_server.vscode_service import (
     VSCodeService,
+    derive_connection_token,
     get_vscode_service,
 )
 
@@ -486,6 +488,55 @@ def test_get_vscode_service_enabled(tmp_path):
         service = get_vscode_service()
 
         assert isinstance(service, VSCodeService)
+
+
+def test_get_vscode_service_derives_token_from_session_api_key():
+    """The editor token must not be the session API key itself.
+
+    The token is a URL query parameter, so it reaches browser history, Referer
+    headers and proxy access logs. Deriving it keeps those disclosures from
+    being disclosures of the credential that authenticates every /api/* call.
+    """
+    with (
+        patch("openhands.agent_server.config.get_default_config") as mock_config,
+        patch("openhands.agent_server.vscode_service._vscode_service", None),
+    ):
+        mock_config.return_value.enable_vscode = True
+        mock_config.return_value.vscode_port = 8001
+        mock_config.return_value.vscode_base_path = None
+        mock_config.return_value.session_api_keys = ["super-secret-key", "second-key"]
+
+        service = get_vscode_service()
+
+        assert isinstance(service, VSCodeService)
+        assert service.connection_token != "super-secret-key"
+        assert service.connection_token == derive_connection_token("super-secret-key")
+        assert service.get_vscode_url() is not None
+        assert "super-secret-key" not in service.get_vscode_url()  # type: ignore[operator]
+
+
+def test_derive_connection_token_is_deterministic():
+    """Callers build the editor URL themselves, so the derivation is a contract.
+
+    A caller holding the session API key computes the same token this server
+    does, with no round trip — that is the property #793 wanted from sharing the
+    key outright.
+    """
+    assert derive_connection_token("key-a") == derive_connection_token("key-a")
+    assert derive_connection_token("key-a") != derive_connection_token("key-b")
+
+
+def test_derive_connection_token_satisfies_vscode_charset():
+    """openvscode-server enforces `^[0-9A-Za-z_-]+$` on connection tokens.
+
+    A session API key that violates it makes the editor refuse to start with a
+    token parse error, so passing the key through was a latent failure for any
+    key containing punctuation. A hex digest always satisfies the rule.
+    """
+    token = derive_connection_token("a key/with+punctuation=and spaces")
+
+    assert re.fullmatch(r"[0-9A-Za-z_-]+", token)
+    assert len(token) == 64
 
 
 def test_get_vscode_service_disabled():

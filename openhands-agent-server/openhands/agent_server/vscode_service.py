@@ -1,6 +1,8 @@
 """VSCode service for managing OpenVSCode Server in the agent server."""
 
 import asyncio
+import hashlib
+import hmac
 import os
 import shutil
 import tempfile
@@ -11,6 +13,40 @@ from openhands.sdk.utils import sanitized_env
 
 
 logger = get_logger(__name__)
+
+
+# Domain separator for `derive_connection_token`. Anything that wants to build
+# the editor URL without asking the agent server for it must derive the token
+# the same way, so this string is part of the contract with those callers and
+# cannot change without changing the `:v1` suffix.
+VSCODE_TOKEN_DERIVATION_INFO = b"openhands-agent-server:vscode-connection-token:v1"
+
+
+def derive_connection_token(session_api_key: str) -> str:
+    """Derive the editor's connection token from a session API key.
+
+    The editor's token travels in the URL's ``?tkn=`` query parameter, so it
+    lands in browser history, in ``Referer`` headers from the pages the
+    workbench renders, and in the access log of anything proxying the editor.
+    Using the session API key itself there means each of those is a disclosure
+    of the credential that authenticates every ``/api/*`` call on this server.
+
+    Deriving instead keeps the property that made sharing attractive in the
+    first place (see #793): a caller holding the session API key can still
+    compute the editor URL on its own, with no round trip to the agent server.
+    What it loses is the reverse direction — the derived token is a one-way
+    function of the key, so disclosing it no longer discloses API access.
+
+    A hex digest also always satisfies the ``^[0-9A-Za-z_-]+$`` that
+    openvscode-server enforces on connection tokens, which an arbitrary session
+    API key does not: a key containing so much as a ``.`` currently makes the
+    editor refuse to start with a token parse error.
+    """
+    return hmac.new(
+        session_api_key.encode("utf-8"),
+        VSCODE_TOKEN_DERIVATION_INFO,
+        hashlib.sha256,
+    ).hexdigest()
 
 
 class VSCodeService:
@@ -288,9 +324,13 @@ def get_vscode_service() -> VSCodeService | None:
             logger.info("VSCode is disabled in configuration")
             return None
         else:
+            # Derived, not copied. A caller that knows the session API key can
+            # still build the editor URL without calling this server — see
+            # `derive_connection_token` — but the token in that URL is no longer
+            # usable as an API credential.
             connection_token = None
             if config.session_api_keys:
-                connection_token = config.session_api_keys[0]
+                connection_token = derive_connection_token(config.session_api_keys[0])
             _vscode_service = VSCodeService(
                 port=config.vscode_port,
                 connection_token=connection_token,
