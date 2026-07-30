@@ -66,7 +66,13 @@ def get_codex_tools(enable_browser: bool = True) -> list[Tool]:
 
 def get_codex_condenser(llm: LLM) -> CondenserBase:
     """Get the default condenser for the codex preset."""
-    return LLMSummarizingCondenser(llm=llm, max_size=80, keep_first=4)
+    return LLMSummarizingCondenser(
+        llm=llm,
+        max_size=480,
+        target_size=120,
+        keep_first=4,
+        keep_last_user_turns=3,
+    )
 
 
 def get_codex_agent(
