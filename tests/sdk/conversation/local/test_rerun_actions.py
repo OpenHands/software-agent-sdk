@@ -1,5 +1,6 @@
 """Tests for conversation.rerun_actions() functionality."""
 
+import uuid
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from openhands.sdk.conversation.types import (
 )
 from openhands.sdk.event import ActionEvent
 from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
+from openhands.sdk.event.types import EventID
 from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
 from openhands.sdk.tool import (
     Action,
@@ -626,3 +628,72 @@ def test_rerun_multiple_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         file_path = tmp_path / filename
         assert file_path.exists(), f"File {filename} should exist"
         assert file_path.read_text() == expected_content
+
+
+def test_rerun_with_parent_id_not_in_rerun_log(tmp_path: Path):
+    """Rerun with rerun_log_path succeeds when ActionEvent parent_id references
+    an event (e.g. MessageEvent) that is not part of the rerun log.
+
+    In a real conversation, ActionEvents have parent_id pointing to preceding
+    MessageEvents. The rerun log only contains ActionEvents and their
+    Observations. PR #4089 added parent_id validation to EventLog.append()
+    that rejects events whose parent_id doesn't exist in the log, which broke
+    rerun_actions(rerun_log_path=...).
+    """
+    from openhands.sdk.conversation.event_store import EventLog
+    from openhands.sdk.io import LocalFileStore
+
+    agent = RerunDummyAgent(tools=[Tool(name="rerun_test", params={})])
+    conversation = Conversation(agent=agent)
+    conversation._ensure_agent_ready()
+
+    events = list(conversation._state.events)
+    sys_event = events[0]
+
+    # Simulate real conversation: SystemPrompt -> MessageEvent -> ActionEvent
+    msg_id = EventID(str(uuid.uuid4()))
+    msg_event = MessageEvent(
+        id=msg_id,
+        parent_id=sys_event.id,
+        source="agent",
+        llm_message=Message(role="assistant", content=[TextContent(text="thinking")]),
+    )
+    conversation._state.events.append(msg_event)
+
+    action = RerunTestAction(value="parent_test")
+    action_event = ActionEvent(
+        id=EventID(str(uuid.uuid4())),
+        parent_id=msg_id,  # parent is MessageEvent — NOT in rerun log
+        source="agent",
+        thought=[TextContent(text="doing something")],
+        tool_name="rerun_test",
+        tool_call_id="tc1",
+        tool_call=MessageToolCall(
+            id="tc1",
+            name="rerun_test",
+            arguments='{"value": "parent_test"}',
+            origin="completion",
+        ),
+        llm_response_id="resp1",
+        action=action,
+    )
+    conversation._state.events.append(action_event)
+
+    log_dir = tmp_path / "rerun_log"
+
+    # This used to raise ValueError and return False
+    result = conversation.rerun_actions(rerun_log_path=log_dir)
+
+    assert result is True
+    assert execution_counts["parent_test"] == 1
+
+    # Verify the rerun log was written correctly
+    file_store = LocalFileStore(str(log_dir))
+    event_log = EventLog(file_store, dir_path="events")
+    assert len(event_log) == 2  # ActionEvent + ObservationEvent
+
+    # The original event must NOT be mutated by the fix
+    original_action = [
+        e for e in conversation._state.events if isinstance(e, ActionEvent)
+    ][0]
+    assert original_action.parent_id == msg_id

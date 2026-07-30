@@ -49,6 +49,7 @@ from openhands.sdk.event import (
     UserRejectObservation,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
+from openhands.sdk.event.types import ROOT_PARENT_ID
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
@@ -2863,8 +2864,14 @@ class LocalConversation(BaseConversation):
 
                 # Log the action and observation incrementally
                 if rerun_log is not None:
-                    # Append action event (copy from original)
-                    rerun_log.append(event)
+                    # The rerun log is a standalone sequence of action→observation
+                    # pairs, not part of the original conversation tree. Reset
+                    # parent_id so the rerun log's parent validation (added in
+                    # #4089) does not reject events whose original parent (e.g. a
+                    # MessageEvent) was never appended to the rerun log.
+                    rerun_log.append(
+                        event.model_copy(update={"parent_id": ROOT_PARENT_ID})
+                    )
                     # Append observation event
                     obs_event = ObservationEvent(
                         source="environment",
