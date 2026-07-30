@@ -2,6 +2,7 @@ from pydantic import Field
 from rich.text import Text
 
 from openhands.sdk.event.base import Event
+from openhands.sdk.event.error_classification import ErrorClassification
 
 
 class ConversationErrorEvent(Event):
@@ -24,6 +25,10 @@ class ConversationErrorEvent(Event):
 
     code: str = Field(description="Code for the error - typically a type")
     detail: str = Field(description="Details about the error")
+    classification: ErrorClassification | None = Field(
+        default=None,
+        description="Safe structured error semantics for API consumers.",
+    )
 
     @property
     def visualize(self) -> Text:

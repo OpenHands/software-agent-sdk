@@ -49,6 +49,7 @@ from openhands.sdk.event import (
     UserRejectObservation,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
+from openhands.sdk.event.error_classification import classify_error_code
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
@@ -644,7 +645,12 @@ class LocalConversation(BaseConversation):
         logger.error(detail)
         self._state.execution_status = ConversationExecutionStatus.ERROR
         self._on_event(
-            ConversationErrorEvent(source="environment", code=code, detail=detail)
+            ConversationErrorEvent(
+                source="environment",
+                code=code,
+                detail=detail,
+                classification=classify_error_code(code),
+            )
         )
 
     @property
@@ -1941,6 +1947,9 @@ class LocalConversation(BaseConversation):
                                 source="environment",
                                 code="MaxIterationsReached",
                                 detail=error_msg,
+                                classification=classify_error_code(
+                                    "MaxIterationsReached"
+                                ),
                             )
                         )
                         break
@@ -1959,6 +1968,7 @@ class LocalConversation(BaseConversation):
                             source="environment",
                             code=e.__class__.__name__,
                             detail=str(e),
+                            classification=classify_error_code(e.__class__.__name__),
                         )
                     )
 

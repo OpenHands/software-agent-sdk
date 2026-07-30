@@ -4,6 +4,7 @@ from pydantic import Field
 from rich.text import Text
 
 from openhands.sdk.event.base import N_CHAR_PREVIEW, LLMConvertibleEvent
+from openhands.sdk.event.error_classification import ErrorClassification
 from openhands.sdk.event.types import EventID, SourceType, ToolCallID
 from openhands.sdk.llm import Message, TextContent, content_to_str
 from openhands.sdk.tool.schema import Observation
@@ -143,6 +144,10 @@ class AgentErrorEvent(ObservationBaseEvent):
 
     source: SourceType = "agent"
     error: str = Field(..., description="The error message from the scaffold")
+    classification: ErrorClassification | None = Field(
+        default=None,
+        description="Safe structured error semantics for API consumers.",
+    )
 
     @property
     def visualize(self) -> Text:

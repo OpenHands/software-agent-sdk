@@ -50,6 +50,7 @@ from openhands.sdk.event.condenser import (
     Condensation,
     CondensationRequest,
 )
+from openhands.sdk.event.error_classification import ErrorClassification
 from openhands.sdk.llm import (
     LLM,
     ImageContent,
@@ -1150,6 +1151,15 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 error=error,
                 tool_name=tool_name,
                 tool_call_id=tool_call.id,
+                classification=ErrorClassification(
+                    origin="agent",
+                    cause="tool_input",
+                    blame="agent_behavior",
+                    impact="step_failed",
+                    retry="immediate",
+                    presentation="warning",
+                    telemetry="outcome",
+                ),
             )
         )
 
@@ -1339,6 +1349,15 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 error=err,
                 tool_name=tool.name,
                 tool_call_id=action_event.tool_call.id,
+                classification=ErrorClassification(
+                    origin="tool",
+                    cause="tool_input",
+                    blame="agent_behavior",
+                    impact="step_failed",
+                    retry="immediate",
+                    presentation="warning",
+                    telemetry="outcome",
+                ),
             )
             return [error_event]
 
