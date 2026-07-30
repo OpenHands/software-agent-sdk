@@ -257,6 +257,22 @@ async def test_conversation_error_event_reports_only_the_code(factory):
     assert detail not in serialized
     assert "/home/bob" not in serialized
     assert sink.events[0].to_payload()["error_class"] == "LLMAuthError"
+    assert sink.events[0].to_payload()["error_telemetry"] == "diagnostic"
+
+
+async def test_known_error_outcomes_are_not_diagnostics(factory):
+    sink = CollectingSink()
+    sub = make_subscriber(sink, factory)
+
+    await sub(
+        ConversationErrorEvent(
+            source="environment",
+            code="OpenAIError",
+            detail="Incorrect API key provided",
+        )
+    )
+
+    assert sink.events[0].to_payload()["error_telemetry"] == "outcome"
 
 
 # ── isolation ─────────────────────────────────────────────────────────────

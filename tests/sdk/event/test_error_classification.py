@@ -25,6 +25,7 @@ from openhands.sdk.event.conversation_error import ConversationErrorEvent
             "surrogates not allowed",
             "internal",
         ),
+        ("UnexpectedProviderError", "", "unknown"),
     ],
 )
 def test_conversation_error_classifies_sensitive_detail_without_serializing_it(

@@ -261,7 +261,8 @@ class TelemetrySubscriber(Subscriber[Event]):
             is_terminal=True,
             error_telemetry=(
                 "diagnostic"
-                if classification is not None and classification.kind == "internal"
+                if classification is not None
+                and classification.kind in {"internal", "unknown"}
                 else "outcome"
             ),
         )
