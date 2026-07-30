@@ -4,7 +4,7 @@ from pydantic import Field, model_validator
 from rich.text import Text
 
 from openhands.sdk.event.base import N_CHAR_PREVIEW, LLMConvertibleEvent
-from openhands.sdk.event.error_classification import ErrorClassification
+from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
 from openhands.sdk.event.types import EventID, SourceType, ToolCallID
 from openhands.sdk.llm import Message, TextContent, content_to_str
 from openhands.sdk.tool.schema import Observation
@@ -156,13 +156,8 @@ class AgentErrorEvent(ObservationBaseEvent):
                 self,
                 "classification",
                 ErrorClassification(
-                    origin="agent",
-                    cause="tool_input",
-                    blame="agent_behavior",
-                    impact="step_failed",
-                    retry="immediate",
-                    presentation="warning",
-                    telemetry="outcome",
+                    kind=FailureKind.AGENT_ACTION,
+                    retryable=True,
                 ),
             )
         return self

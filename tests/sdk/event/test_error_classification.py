@@ -4,37 +4,33 @@ from openhands.sdk.event.conversation_error import ConversationErrorEvent
 
 
 @pytest.mark.parametrize(
-    ("code", "detail", "cause", "telemetry"),
+    ("code", "detail", "kind"),
     [
-        ("OpenAIError", "Incorrect API key provided", "authentication", "outcome"),
-        ("APIError", "This request requires more credits", "quota", "outcome"),
-        ("OpenAIError", "Error code: 429", "rate_limit", "outcome"),
+        ("OpenAIError", "Incorrect API key provided", "auth"),
+        ("APIError", "This request requires more credits", "quota"),
+        ("OpenAIError", "Error code: 429", "rate_limit"),
         (
             "LLMBadRequestError",
             "LLM Provider NOT provided",
-            "configuration",
-            "outcome",
+            "config",
         ),
         (
             "NoCondensationAvailableException",
             "Streaming requires an on_token callback",
             "internal",
-            "diagnostic",
         ),
         (
             "PydanticSerializationError",
             "surrogates not allowed",
             "internal",
-            "diagnostic",
         ),
     ],
 )
 def test_conversation_error_classifies_sensitive_detail_without_serializing_it(
-    code: str, detail: str, cause: str, telemetry: str
+    code: str, detail: str, kind: str
 ) -> None:
     event = ConversationErrorEvent(source="environment", code=code, detail=detail)
 
     assert event.classification is not None
-    assert event.classification.cause == cause
-    assert event.classification.telemetry == telemetry
+    assert event.classification.kind == kind
     assert detail not in event.classification.model_dump_json()
