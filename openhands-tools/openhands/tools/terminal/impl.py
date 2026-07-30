@@ -377,11 +377,16 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         generic redactions (``redact_api_key_literals`` +
         ``redact_url_credentials_in_text``) are applied — enough to stop
         ``git remote -v`` from leaking a ``ghu_…`` token to the model.
+
+        Security redaction must fail closed: if the registry masker raises,
+        the generic literal/URL redactors still run so credential-bearing
+        output never reaches the model unmasked.
         """
         content_text = observation.text
         if not content_text:
             return observation
 
+        masked_content = content_text
         if conversation is not None:
             try:
                 masked_content = (
@@ -390,10 +395,15 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                     )
                 )
             except Exception:
-                masked_content = content_text
-        else:
-            masked_content = redact_api_key_literals(content_text)
-            masked_content = redact_url_credentials_in_text(masked_content)
+                # Registry masking failed; fall through to deterministic
+                # generic redaction so the output is still scrubbed.
+                pass
+
+        # Always apply deterministic generic redaction as the last line of
+        # defence.  When the registry already applied it (success path) the
+        # redactors are idempotent no-ops on already-masked placeholders.
+        masked_content = redact_api_key_literals(masked_content)
+        masked_content = redact_url_credentials_in_text(masked_content)
 
         if masked_content != content_text:
             data = observation.model_dump(

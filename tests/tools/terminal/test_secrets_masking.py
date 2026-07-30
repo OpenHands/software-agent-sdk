@@ -164,3 +164,57 @@ def test_terminal_masks_git_remote_credentials_without_registered_secrets():
         finally:
             executor.close()
 
+
+
+def test_terminal_masks_credential_url_when_registry_masker_raises():
+    """Generic redaction must still run when SecretRegistry.mask_secrets_in_output raises.
+
+    Regression for the fail-open exception path identified in PR #4175 review:
+    a ``git remote -v`` line containing ``ghu_...@github.com`` must be redacted
+    even if the registry masker raises, so credential-bearing output never
+    reaches the model unmasked.
+    """
+    from unittest.mock import patch
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        llm = LLM(
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+        )
+        agent = Agent(llm=llm, tools=[])
+        conversation = Conversation(
+            agent=agent,
+            workspace=temp_dir,
+            persistence_dir=temp_dir,
+        )
+
+        executor = TerminalExecutor(working_dir=temp_dir, terminal_type="subprocess")
+        try:
+            token = "ghu_" + ("b" * 36)
+            remote_line = f"origin\thttps://{token}@github.com/owner/repo.git (fetch)"
+            mock_session = Mock()
+            mock_session.execute.return_value = TerminalObservation(
+                command="git remote -v",
+                exit_code=0,
+                content=[TextContent(text=remote_line)],
+            )
+            mock_session._closed = False
+            executor._session = mock_session
+
+            # Force the registry masker to raise — simulates state access failure.
+            with patch.object(
+                type(conversation.state.secret_registry),
+                "mask_secrets_in_output",
+                side_effect=RuntimeError("registry unavailable"),
+            ):
+                result = executor(
+                    TerminalAction(command="git remote -v"),
+                    conversation=conversation,
+                )
+
+                # The credential must still be redacted despite the registry failure.
+                assert token not in result.text
+                assert "github.com/owner/repo.git" in result.text
+                assert "****@" in result.text or "<redacted>" in result.text
+        finally:
+            executor.close()
+            conversation.close()
