@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from rich.text import Text
 
 from openhands.sdk.event.base import N_CHAR_PREVIEW, LLMConvertibleEvent
@@ -148,6 +148,24 @@ class AgentErrorEvent(ObservationBaseEvent):
         default=None,
         description="Safe structured error semantics for API consumers.",
     )
+
+    @model_validator(mode="after")
+    def classify(self) -> "AgentErrorEvent":
+        if self.classification is None:
+            object.__setattr__(
+                self,
+                "classification",
+                ErrorClassification(
+                    origin="agent",
+                    cause="tool_input",
+                    blame="agent_behavior",
+                    impact="step_failed",
+                    retry="immediate",
+                    presentation="warning",
+                    telemetry="outcome",
+                ),
+            )
+        return self
 
     @property
     def visualize(self) -> Text:

@@ -1,8 +1,11 @@
-from pydantic import Field
+from pydantic import Field, model_validator
 from rich.text import Text
 
 from openhands.sdk.event.base import Event
-from openhands.sdk.event.error_classification import ErrorClassification
+from openhands.sdk.event.error_classification import (
+    ErrorClassification,
+    classify_error_code,
+)
 
 
 class ConversationErrorEvent(Event):
@@ -29,6 +32,12 @@ class ConversationErrorEvent(Event):
         default=None,
         description="Safe structured error semantics for API consumers.",
     )
+
+    @model_validator(mode="after")
+    def classify(self) -> "ConversationErrorEvent":
+        if self.classification is None:
+            object.__setattr__(self, "classification", classify_error_code(self.code))
+        return self
 
     @property
     def visualize(self) -> Text:

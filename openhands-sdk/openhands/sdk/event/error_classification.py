@@ -65,7 +65,13 @@ def classify_error_code(code: str) -> ErrorClassification:
             presentation="warning",
             telemetry="outcome",
         )
-    if code in {"LLMBadRequestError", "ACPInitError", "ACPSpawnError", "NotFoundError"}:
+    if code in {
+        "LLMBadRequestError",
+        "ACPInitError",
+        "ACPSpawnError",
+        "ACPPromptError",
+        "NotFoundError",
+    }:
         return ErrorClassification(
             origin="provider",
             cause="configuration",
@@ -92,6 +98,16 @@ def classify_error_code(code: str) -> ErrorClassification:
         "LLMTimeoutError",
         "ReadTimeout",
         "LLMNoResponseError",
+        "OpenAIError",
+        "APIError",
+        "BaseLLMException",
+        "AnthropicError",
+        "OpenRouterException",
+        "OllamaError",
+        "BadGatewayError",
+        "HTTPStatusError",
+        "RequestError",
+        "CloudflareError",
     }:
         return ErrorClassification(
             origin="provider",

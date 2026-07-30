@@ -232,6 +232,11 @@ class TelemetrySubscriber(Subscriber[Event]):
             error_fingerprint=fingerprint.error_fingerprint,
             is_first_party=True,
             is_terminal=False,
+            error_telemetry=(
+                getattr(event, "classification", None).telemetry
+                if getattr(event, "classification", None) is not None
+                else "outcome"
+            ),
             tool_name=safe_token(getattr(event, "tool_name", None)),
         )
         self.sink.emit(
@@ -250,13 +255,21 @@ class TelemetrySubscriber(Subscriber[Event]):
         touched.
         """
         fingerprint = normalize_error_code(getattr(event, "code", None))
+        classification = getattr(event, "classification", None)
         properties = m.ErrorProperties(
             conversation_ref=self.context.conversation_ref,
             error_class=fingerprint.error_class,
             error_category=fingerprint.error_category,
             error_fingerprint=fingerprint.error_fingerprint,
             is_first_party=True,
-            is_terminal=True,
+            is_terminal=(
+                classification.impact in {"run_stopped", "conversation_unusable"}
+                if classification is not None
+                else True
+            ),
+            error_telemetry=(
+                classification.telemetry if classification is not None else "diagnostic"
+            ),
         )
         self.sink.emit(
             self.factory.build(
