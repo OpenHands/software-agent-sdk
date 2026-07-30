@@ -212,10 +212,21 @@ def _workspace_source_path(
 
     root = _normalize_posix_path(to_posix_path(workspace.working_dir))
     requested = _normalize_posix_path(to_posix_path(image_path))
+    root_for_requested = root
+    if requested.is_absolute() and not root.is_absolute():
+        root_for_requested = PurePosixPath("/") / root
+
     if not requested.is_absolute():
-        requested = _normalize_posix_path(str(root / requested))
+        try:
+            requested.relative_to(root_for_requested)
+        except ValueError:
+            root_parts = tuple(part for part in root_for_requested.parts if part != "/")
+            if requested.parts and root_parts and requested.parts[0] == root_parts[0]:
+                return None, f"Image path '{image_path}' is outside the workspace."
+            requested = _normalize_posix_path(str(root_for_requested / requested))
+
     try:
-        requested.relative_to(root)
+        requested.relative_to(root_for_requested)
     except ValueError:
         return None, f"Image path '{image_path}' is outside the workspace."
     return str(requested), None

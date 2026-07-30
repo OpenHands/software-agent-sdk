@@ -29,6 +29,7 @@ from openhands.sdk.tool.builtins.vision_inspect import (
 )
 from openhands.sdk.workspace.base import BaseWorkspace
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
+from openhands.sdk.workspace.workspace import Workspace
 
 
 if TYPE_CHECKING:
@@ -483,6 +484,84 @@ def test_workspace_image_file_uses_workspace_download_for_nonlocal_workspace():
     source_path, destination_path = workspace.downloads[0]
     assert source_path == "/remote/workspace/screenshots/result.png"
     assert Path(destination_path).name == "result.png"
+
+
+@pytest.mark.parametrize(
+    ("image_path", "expected_source_path"),
+    [
+        ("screenshots/result.png", "workspace/project/screenshots/result.png"),
+        (
+            "workspace/project/screenshots/result.png",
+            "workspace/project/screenshots/result.png",
+        ),
+        (
+            "/workspace/project/screenshots/result.png",
+            "/workspace/project/screenshots/result.png",
+        ),
+    ],
+)
+def test_workspace_image_file_uses_workspace_download_for_default_remote_workspace(
+    monkeypatch,
+    image_path,
+    expected_source_path,
+):
+    workspace = Workspace(host="http://example.test")
+    downloads: list[tuple[str, str]] = []
+
+    def fake_file_download(self, source_path, destination_path):
+        destination = Path(destination_path)
+        destination.write_bytes(b"\x89PNG\r\n\x1a\n")
+        downloads.append((str(source_path), str(destination_path)))
+        return FileOperationResult(
+            success=True,
+            source_path=str(source_path),
+            destination_path=str(destination_path),
+            file_size=8,
+        )
+
+    monkeypatch.setattr(type(workspace), "file_download", fake_file_download)
+    conversation = SimpleNamespace(state=SimpleNamespace(workspace=workspace))
+
+    image_url, error = _workspace_image_url(
+        cast(LocalConversation, conversation),
+        image_path,
+    )
+
+    assert error is None
+    assert image_url == "data:image/png;base64,iVBORw0KGgo="
+    assert len(downloads) == 1
+    source_path, destination_path = downloads[0]
+    assert source_path == expected_source_path
+    assert Path(destination_path).name == "result.png"
+
+
+@pytest.mark.parametrize(
+    "image_path",
+    [
+        "../outside.png",
+        "workspace/outside.png",
+        "/workspace/outside.png",
+    ],
+)
+def test_workspace_image_file_rejects_paths_outside_default_remote_workspace(
+    monkeypatch,
+    image_path,
+):
+    workspace = Workspace(host="http://example.test")
+
+    def fake_file_download(self, source_path, destination_path):
+        raise AssertionError("file_download should not run for outside paths")
+
+    monkeypatch.setattr(type(workspace), "file_download", fake_file_download)
+    conversation = SimpleNamespace(state=SimpleNamespace(workspace=workspace))
+
+    image_url, error = _workspace_image_url(
+        cast(LocalConversation, conversation),
+        image_path,
+    )
+
+    assert image_url is None
+    assert error == f"Image path '{image_path}' is outside the workspace."
 
 
 def test_profile_helper_registers_auxiliary_vision_llm(monkeypatch):
