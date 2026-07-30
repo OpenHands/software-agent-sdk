@@ -4,8 +4,6 @@ Unlike LLM profiles, meta-profiles hold no secrets — they are plain JSON
 documents persisted via :class:`MetaProfileStore`.
 """
 
-import os
-import pathlib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Annotated
@@ -23,6 +21,7 @@ from openhands.sdk.llm.meta_profile_store import (
     MetaProfile,
     MetaProfileLimitExceeded,
     MetaProfileStore,
+    default_meta_profile_dir,
 )
 from openhands.sdk.logger import get_logger
 
@@ -42,16 +41,10 @@ MetaProfileName = Annotated[
 def _get_meta_profile_store() -> MetaProfileStore:
     """Resolve the meta-profile store under ``OH_PERSISTENCE_DIR``.
 
-    Mirrors how the LLM/agent profile stores resolve (``OH_PERSISTENCE_DIR``
-    when set, else ``~/.openhands``) so meta-profiles stay co-located with the
-    LLM profiles they reference by name, and an isolated agent-server (fresh
-    ``OH_PERSISTENCE_DIR``) doesn't read or write the host's
-    ``~/.openhands/meta-profiles``. A bare ``MetaProfileStore()`` ignores the
-    env var and always defaults to the host home dir.
+    Uses the same helper as the runtime routing tool, so the HTTP API and
+    conversation execution read/write the same isolated store.
     """
-    env_dir = os.environ.get("OH_PERSISTENCE_DIR")
-    base = pathlib.Path(env_dir) if env_dir else pathlib.Path.home() / ".openhands"
-    return MetaProfileStore(base_dir=base / "meta-profiles")
+    return MetaProfileStore(base_dir=default_meta_profile_dir())
 
 
 class MetaProfileInfo(BaseModel):

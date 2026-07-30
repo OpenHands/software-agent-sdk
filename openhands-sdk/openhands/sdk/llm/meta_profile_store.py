@@ -1,4 +1,4 @@
-"""JSON-file storage for meta-profiles under ``~/.openhands/meta-profiles``.
+"""JSON-file storage for meta-profiles.
 
 Key invariant: every model reference in a meta-profile (``classifier_model``,
 ``default_model``, each class's ``model``, and direct-routing prompt outputs) is
@@ -10,6 +10,7 @@ string — credentials/provider settings resolve through that store.
 from __future__ import annotations
 
 import json
+import os
 import re
 import tempfile
 from collections.abc import Iterator
@@ -24,10 +25,23 @@ from openhands.sdk.llm.llm_profile_store import PROFILE_NAME_REGEX
 from openhands.sdk.logger import get_logger
 
 
-_DEFAULT_META_PROFILE_DIR: Final[Path] = Path.home() / ".openhands" / "meta-profiles"
 _LOCK_TIMEOUT_SECONDS: Final[float] = 30.0
 
 logger = get_logger(__name__)
+
+
+def default_meta_profile_dir() -> Path:
+    """Return the default directory for meta-profile storage.
+
+    Agent-server instances can set ``OH_PERSISTENCE_DIR`` to isolate all
+    persisted state. Honor that for bare ``MetaProfileStore()`` instances so
+    runtime tools read the same meta-profiles exposed by the HTTP API. Without
+    that env var, keep the standalone SDK default under ``~/.openhands``.
+    """
+    env_dir = os.environ.get("OH_PERSISTENCE_DIR")
+    if env_dir:
+        return Path(env_dir) / "meta-profiles"
+    return Path.home() / ".openhands" / "meta-profiles"
 
 
 class MetaProfileLimitExceeded(Exception):
@@ -92,17 +106,18 @@ class MetaProfile(BaseModel):
 
 
 class MetaProfileStore:
-    """Read meta-profiles from ``~/.openhands/meta-profiles`` (by default)."""
+    """Read meta-profiles from the default meta-profile directory."""
 
     def __init__(self, base_dir: Path | str | None = None) -> None:
         """Initialize the meta-profile store.
 
         Args:
             base_dir: Directory where meta-profiles are stored. Defaults to
-                ``~/.openhands/meta-profiles`` when ``None``.
+                ``$OH_PERSISTENCE_DIR/meta-profiles`` when set, otherwise
+                ``~/.openhands/meta-profiles``.
         """
         self.base_dir = (
-            Path(base_dir) if base_dir is not None else _DEFAULT_META_PROFILE_DIR
+            Path(base_dir) if base_dir is not None else default_meta_profile_dir()
         )
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self._file_lock = FileLock(self.base_dir / ".meta-profiles.lock")

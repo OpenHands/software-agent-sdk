@@ -242,6 +242,20 @@ def test_create_loads_meta_profile(meta_store: MetaProfileStore) -> None:
     assert tool.executor._resolve_meta_profile().classifier_model == "classifier"
 
 
+def test_create_uses_oh_persistence_dir_meta_profiles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    meta_dir = tmp_path / "meta-profiles"
+    meta_dir.mkdir()
+    (meta_dir / "balanced.json").write_text(json.dumps(META), encoding="utf-8")
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path))
+
+    tool = ClassifyAndSwitchLLMTool.create(active_meta_profile="balanced")[0]
+
+    assert isinstance(tool.executor, ClassifyAndSwitchLLMExecutor)
+    assert tool.executor._resolve_meta_profile().classifier_model == "classifier"
+
+
 # ── executor ──────────────────────────────────────────────────────────────
 
 
@@ -465,10 +479,7 @@ def test_missing_active_meta_profile_does_not_break_startup(
 ) -> None:
     # The whole point of deferring the load: a missing active meta-profile must
     # not break _ensure_agent_ready() / conversation startup.
-    monkeypatch.setattr(
-        "openhands.sdk.llm.meta_profile_store._DEFAULT_META_PROFILE_DIR",
-        meta_store.base_dir,
-    )
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(meta_store.base_dir.parent))
     agent = OpenHandsAgentSettings(
         llm=_make_llm("default-model", "default"),
         tools=[],
@@ -487,10 +498,7 @@ def test_missing_active_meta_profile_does_not_break_startup(
 
 
 def test_create_agent_adds_tool_when_enabled(meta_store, monkeypatch) -> None:
-    monkeypatch.setattr(
-        "openhands.sdk.llm.meta_profile_store._DEFAULT_META_PROFILE_DIR",
-        meta_store.base_dir,
-    )
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(meta_store.base_dir.parent))
     agent = OpenHandsAgentSettings(
         llm=_make_llm("default-model", "default"),
         enable_classify_and_switch_llm_tool=True,
@@ -503,10 +511,7 @@ def test_create_agent_adds_tool_when_enabled(meta_store, monkeypatch) -> None:
 def test_create_agent_adds_tool_when_enabled_without_active_profile(
     meta_store, monkeypatch
 ) -> None:
-    monkeypatch.setattr(
-        "openhands.sdk.llm.meta_profile_store._DEFAULT_META_PROFILE_DIR",
-        meta_store.base_dir,
-    )
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(meta_store.base_dir.parent))
     # No active_meta_profile: the tool is still wired and resolves the first one.
     agent = OpenHandsAgentSettings(
         llm=_make_llm("default-model", "default"),
