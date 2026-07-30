@@ -563,6 +563,10 @@ def _mcp_config_to_acp_servers(
     these are *not* turned into in-process SDK MCP tools — the ACP server owns
     the MCP connection and exposes the tools through its own turn.
 
+    Servers with ``enabled=False`` are skipped entirely -- the ACP subprocess
+    owns the connection, so withholding the entry is the only way to keep a
+    disabled server out of its reach.
+
     Each entry maps by transport:
 
     - ``command`` present → :class:`McpServerStdio` (always forwarded; the
@@ -583,6 +587,8 @@ def _mcp_config_to_acp_servers(
     sse_ok = bool(getattr(mcp_capabilities, "sse", False))
     result: list[_ACPMcpServer] = []
     for name, server in mcp_config.items():
+        if not server.enabled:
+            continue
         if server.command:
             env = [
                 EnvVariable(name=name, value=value.get_secret_value())

@@ -896,7 +896,7 @@ def test_llm_agent_settings_validates_mcp_config_as_typed_model() -> None:
 
     assert isinstance(settings.mcp_config["fetch"], MCPServer)
     assert settings.model_dump()["mcp_config"] == {
-        "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}
+        "fetch": {"command": "uvx", "args": ["mcp-server-fetch"], "enabled": True}
     }
 
 
@@ -911,6 +911,26 @@ def test_llm_create_agent_serializes_typed_mcp_config_compactly() -> None:
     assert dump_mcp_config(agent.mcp_config) == {
         "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}
     }
+
+
+def test_disabled_mcp_server_survives_settings_round_trip() -> None:
+    """A switched-off server stays off, and keeps its config, across reloads."""
+    settings = OpenHandsAgentSettings.model_validate(
+        {
+            "mcp_config": {
+                "fetch": {
+                    "command": "uvx",
+                    "args": ["mcp-server-fetch"],
+                    "enabled": False,
+                }
+            }
+        }
+    )
+
+    reloaded = OpenHandsAgentSettings.model_validate(settings.model_dump(mode="json"))
+
+    assert reloaded.mcp_config["fetch"].enabled is False
+    assert reloaded.mcp_config["fetch"].command == "uvx"
 
 
 def test_llm_create_agent_builds_condenser_when_enabled() -> None:
