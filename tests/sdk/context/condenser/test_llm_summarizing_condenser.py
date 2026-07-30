@@ -21,7 +21,7 @@ from openhands.sdk.context.condenser.llm_summarizing_condenser import (
 from openhands.sdk.context.view import View
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.condenser import Condensation, CondensationRequest
-from openhands.sdk.event.llm_convertible import MessageEvent
+from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import (
     LLM,
     LLMResponse,
@@ -113,10 +113,12 @@ def test_default_values(mock_llm: LLM) -> None:
 
     # Default max_size should be 240 (raised from 120 to allow more room for tool loops)
     assert condenser.max_size == 240
+    assert condenser.target_size is None
 
     # Default keep_first should be 2 (reduced from 4 to leave more room for
     # condensation)
     assert condenser.keep_first == 2
+    assert condenser.keep_last_user_turns == 0
 
 
 def test_test_max_size_environment_override(mock_llm: LLM) -> None:
@@ -124,9 +126,15 @@ def test_test_max_size_environment_override(mock_llm: LLM) -> None:
         "openhands.sdk.context.condenser.llm_summarizing_condenser.os.getenv",
         return_value="12",
     ):
-        condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=240, keep_first=2)
+        condenser = LLMSummarizingCondenser(
+            llm=mock_llm,
+            max_size=240,
+            target_size=120,
+            keep_first=2,
+        )
 
     assert condenser.max_size == 12
+    assert condenser.target_size == 6
 
 
 def test_should_condense(mock_llm: LLM) -> None:
@@ -194,6 +202,134 @@ def test_condense_returns_condensation_when_needed(mock_llm: LLM) -> None:
     cast(MagicMock, mock_llm.completion).assert_called_once()
 
 
+def test_configured_target_size_reduces_view_to_120(mock_llm: LLM) -> None:
+    condenser = LLMSummarizingCondenser(
+        llm=mock_llm,
+        max_size=480,
+        target_size=120,
+        keep_first=4,
+        keep_last_user_turns=3,
+    )
+    events = [message_event(f"Event {i}") for i in range(481)]
+    view = View.from_events(events)
+
+    result = condenser.get_condensation(view)
+    condensed_events = result.apply(view.events)
+
+    assert len(condensed_events) == 120
+    assert condensed_events[:4] == events[:4]
+    assert condensed_events[-3:] == events[-3:]
+
+
+def test_condensation_preserves_system_prompt_and_last_three_user_turns(
+    mock_llm: LLM,
+) -> None:
+    condenser = LLMSummarizingCondenser(
+        llm=mock_llm,
+        max_size=12,
+        keep_first=1,
+        keep_last_user_turns=3,
+    )
+    system_prompt = SystemPromptEvent(
+        system_prompt=TextContent(text="system prompt"),
+        tools=[],
+    )
+    events: list[Event] = [system_prompt]
+    user_events: list[MessageEvent] = []
+    for turn in range(5):
+        user_event = MessageEvent(
+            llm_message=Message(
+                role="user",
+                content=[TextContent(text=f"user {turn}")],
+            ),
+            source="user",
+            activated_skills=["generate-workflow-dsl"],
+            extended_content=[TextContent(text=f"skill context {turn}")],
+        )
+        user_events.append(user_event)
+        events.extend(
+            [
+                user_event,
+                MessageEvent(
+                    llm_message=Message(
+                        role="assistant",
+                        content=[TextContent(text=f"tool call {turn}")],
+                    ),
+                    source="agent",
+                ),
+                MessageEvent(
+                    llm_message=Message(
+                        role="assistant",
+                        content=[TextContent(text=f"tool result {turn}")],
+                    ),
+                    source="agent",
+                ),
+            ]
+        )
+
+    view = View.from_events(events)
+    result = condenser.get_condensation(view)
+
+    assert system_prompt.id not in result.forgotten_event_ids
+    protected_start = view.events.index(user_events[-3])
+    protected_events = view.events[protected_start:]
+    assert all(event.id not in result.forgotten_event_ids for event in protected_events)
+    assert user_events[-3].activated_skills == ["generate-workflow-dsl"]
+    assert user_events[-3].extended_content == [TextContent(text="skill context 2")]
+
+    condensed_events = result.apply(view.events)
+    assert condensed_events[0] == system_prompt
+    assert condensed_events[-len(protected_events) :] == protected_events
+
+
+def test_hard_context_reset_preserves_protected_context(mock_llm: LLM) -> None:
+    condenser = LLMSummarizingCondenser(
+        llm=mock_llm,
+        max_size=20,
+        keep_first=1,
+        keep_last_user_turns=3,
+    )
+    system_prompt = SystemPromptEvent(
+        system_prompt=TextContent(text="system prompt"),
+        tools=[],
+    )
+    old_events = [
+        message_event("old user"),
+        MessageEvent(
+            llm_message=Message(
+                role="assistant",
+                content=[TextContent(text="old tool result")],
+            ),
+            source="agent",
+        ),
+    ]
+    recent_events: list[MessageEvent] = []
+    for turn in range(3):
+        recent_events.extend(
+            [
+                message_event(f"recent user {turn}"),
+                MessageEvent(
+                    llm_message=Message(
+                        role="assistant",
+                        content=[TextContent(text=f"recent tool result {turn}")],
+                    ),
+                    source="agent",
+                ),
+            ]
+        )
+    view = View.from_events([system_prompt, *old_events, *recent_events])
+
+    result = condenser.hard_context_reset(view)
+
+    assert isinstance(result, Condensation)
+    assert result.forgotten_event_ids == {event.id for event in old_events}
+    assert system_prompt.id not in result.forgotten_event_ids
+    assert all(event.id not in result.forgotten_event_ids for event in recent_events)
+    condensed_events = result.apply(view.events)
+    assert condensed_events[0] == system_prompt
+    assert condensed_events[-len(recent_events) :] == recent_events
+
+
 def test_get_condensation_with_previous_summary(mock_llm: LLM) -> None:
     """Test that condenser properly handles previous summary content."""
     max_size = 10
@@ -259,6 +395,13 @@ def test_invalid_config(mock_llm: LLM) -> None:
     # Test keep_first must be less than max_size // 2 to leave room for condensation
     with pytest.raises(ValueError):
         LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=8)
+
+    with pytest.raises(ValueError):
+        LLMSummarizingCondenser(
+            llm=mock_llm,
+            max_size=120,
+            target_size=120,
+        )
 
 
 def test_get_condensation_does_not_pass_extra_body(mock_llm: LLM) -> None:
