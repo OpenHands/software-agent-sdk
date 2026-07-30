@@ -12,72 +12,88 @@ description: >-
 
 This skill walks through the software-agent-sdk release process step by step.
 
-> **🚨 CRITICAL**: NEVER merge the release PR or create/publish a GitHub
-> release without the human's explicit approval. Release is the last line
-> of human defense. Always present the current status and ask for
-> confirmation before performing any irreversible action.
+The SDK releases via the shared **[OpenHands/release-actions](https://github.com/OpenHands/release-actions)**
+(release-please) automation. You no longer pick a version or create a release
+branch by hand — release-please keeps a **draft** release PR open, derives the
+version from Conventional Commit PR titles, and the deliberate release-cut signal
+is marking that PR **Ready for review**. With `freeze-on-ready: true`, that signal
+also *freezes* the release onto a `release/<major.minor>` branch so nothing that
+lands on `main` afterwards can slip into the release.
 
-## Phase 1: Trigger the Prepare-Release Workflow
+> **🚨 CRITICAL**: NEVER mark a release PR **Ready for review** and NEVER merge it
+> or publish a GitHub release without the human's explicit approval. Marking ready
+> is the release-cut/freeze signal; merging is irreversible (it tags and publishes
+> to PyPI). Release is the last line of human defense. Always present the current
+> status and ask for confirmation before either action.
 
-Determine the target version (SemVer `X.Y.Z`). Then trigger the
-`prepare-release.yml` workflow, which creates a release branch and PR
-automatically.
+## Mental model — two PRs
 
-### Via GitHub UI
+1. **`chore(main): release X.Y.Z`** — the standing *draft* PR release-please keeps
+   open on `main`. This is the **preview** of the next release. You never merge it.
+   Marking it Ready is the freeze signal, not the merge.
+2. **`chore(release/X.Y): release X.Y.Z`** — the *frozen* release PR release-please
+   opens on the `release/X.Y` branch after the freeze. **This is the one you test
+   and merge to publish.**
 
-Navigate to
-<https://github.com/OpenHands/software-agent-sdk/actions/workflows/prepare-release.yml>,
-click **Run workflow**, enter the version (e.g. `1.16.0`), and run it.
+## Phase 1: Review the standing draft release PR
 
-### Via GitHub API
-
-```bash
-curl -X POST \
-  -H "Authorization: token $GITHUB_TOKEN" \
-  -H "Accept: application/vnd.github+json" \
-  "https://api.github.com/repos/OpenHands/software-agent-sdk/actions/workflows/prepare-release.yml/dispatches" \
-  -d '{
-    "ref": "main",
-    "inputs": {
-      "version": "1.16.0"
-    }
-  }'
-```
-
-The workflow will:
-1. Validate version format
-2. Create branch `rel-<version>`
-3. Run `make set-package-version version=<version>` across all packages
-4. Update the `sdk_ref` default in the eval workflow
-5. Open a PR titled **"Release v\<version\>"** with labels
-   `integration-test`, `behavior-test`, `test-examples`, and `security-scan`
-6. Notify `#proj-agent` with the release PR link and workflow actor
-
-### ⏸ Checkpoint — Confirm PR Created
-
-Verify the PR exists and the version changes look correct before continuing.
+There is nothing to trigger. Find the draft release PR release-please already
+maintains and review what it selected:
 
 ```bash
 gh pr list --repo OpenHands/software-agent-sdk \
-  --head "rel-<version>" --json number,title,url
+  --search 'chore(main): release in:title' --state open \
+  --json number,title,url,isDraft
 ```
 
-## Phase 2: Address Deprecation Deadlines
+Review, before anything else:
+- the computed version bump (from merged Conventional Commit titles since the last
+  release) — confirm it matches expectations (`feat!:`/`BREAKING CHANGE` → major,
+  `feat:` → minor, `fix:` → patch);
+- the generated release notes and the **Release checklist** in the PR body
+  (deprecation deadlines, `release-note-required` entries, etc.);
+- that all four package `pyproject.toml` versions move in lockstep.
 
-The `deprecation-check` CI job runs on every PR. If the release version
-crosses any deprecation deadline declared in the codebase, the check will
-fail.
+### ⏸ Checkpoint — Confirm the version and notes look right
 
-Review the failing check output and either:
-- Remove the deprecated code if the deadline has passed, **or**
-- Extend the deadline with justification.
+Do not proceed to the freeze until the version and release notes are correct. If
+the version is wrong, it almost always means a PR title wasn't Conventional — fix
+the history (or a follow-up commit) rather than hand-editing the version.
 
-Push fixes to the release branch. The check must pass before merging.
+## Phase 2: Freeze the release (mark the draft PR Ready)
 
-## Phase 3: Wait for CI — Checks Must Pass
+> **🚨 STOP — Ask the human before marking Ready.** This is the release-cut.
 
-The release PR triggers three labeled test suites and a security scan.
-**All four must pass.**
+Marking the `chore(main): release X.Y.Z` PR **Ready for review** triggers
+`release-ready.yml`, which (with `freeze-on-ready: true`):
+
+1. cuts `release/<major.minor>` at the PR's base SHA using the release App token
+   (so release-please picks the branch up), and
+2. returns the `chore(main)` PR **to draft** so it can't be merged from moving
+   `main`; it stays as the next-release preview.
+
+release-please then opens the **frozen** `chore(release/X.Y): release X.Y.Z` PR on
+the `release/X.Y` branch. From here on, only the frozen PR matters; leave the
+`chore(main)` preview alone.
+
+```bash
+# After freeze, locate the frozen release PR
+gh pr list --repo OpenHands/software-agent-sdk \
+  --search 'chore(release/ release in:title' --state open \
+  --json number,title,headRefName,url
+```
+
+> If you marked the draft ready and it flipped back to draft with a "Release
+> frozen" comment, that is expected — the release moved to the `release/**` PR.
+
+## Phase 3: Run tests on the frozen PR (mark it Ready)
+
+> **🚨 STOP — Ask the human before marking the frozen PR Ready.**
+
+Mark the frozen `chore(release/X.Y)` PR **Ready for review**. Because its base is a
+`release/**` branch, the freeze step skips itself and the normal path runs:
+`release: ready` plus the SDK's four test-trigger labels are applied and the suites
+run. **All four must pass.**
 
 | Label | Suite | What it covers |
 |-------|-------|----------------|
@@ -89,33 +105,25 @@ The release PR triggers three labeled test suites and a security scan.
 Monitor status:
 
 ```bash
-gh pr checks <PR_NUMBER> --repo OpenHands/software-agent-sdk
+gh pr checks <FROZEN_PR_NUMBER> --repo OpenHands/software-agent-sdk
 ```
 
-### ⏸ Checkpoint — Human Judgment on Failures
+### ⏸ Checkpoint — Human judgment on failures
 
-Some test failures may be pre-existing or flaky. Decide with the team
-whether each failure is:
-- **Blocking** — must fix before release
-- **Known / pre-existing** — acceptable to release with a follow-up issue
-- **Flaky** — re-run the workflow
-
-Re-run failed jobs:
+Decide with the team whether each failure is **blocking**, **known/pre-existing**,
+or **flaky**. Fix blocking failures on `main` and **backport/cherry-pick onto
+`release/X.Y`** (never commit release-only fixes that never reach `main`);
+release-please will update the frozen PR. Re-run flaky jobs:
 
 ```bash
-# Find the run ID
-gh run list --repo OpenHands/software-agent-sdk \
-  --branch "rel-<version>" --limit 5
-
-# Re-run failed jobs
+gh run list --repo OpenHands/software-agent-sdk --branch "release/<major.minor>" --limit 5
 gh run rerun <RUN_ID> --repo OpenHands/software-agent-sdk --failed
 ```
 
-## Phase 4: Run Evaluation (Optional but Recommended)
+## Phase 4: Run evaluation (optional but recommended)
 
-Trigger an evaluation run on SWE-bench (or another benchmark) against the
-release branch to catch regressions. See the `run-eval` skill for full
-details.
+Trigger an eval against the frozen branch to catch regressions. See the `run-eval`
+skill for full details.
 
 ```bash
 curl -X POST \
@@ -126,7 +134,7 @@ curl -X POST \
     "ref": "main",
     "inputs": {
       "benchmark": "swebench",
-      "sdk_ref": "v<version>",
+      "sdk_ref": "release/<major.minor>",
       "eval_limit": "50",
       "reason": "Pre-release eval for v<version>",
       "allow_unreleased_branches": "true"
@@ -134,43 +142,39 @@ curl -X POST \
   }'
 ```
 
-### ⏸ Checkpoint — Evaluate Results
+### ⏸ Checkpoint — Evaluate results
 
-Compare the eval results against the previous release. Significant score
-drops should block the release.
+Compare against the previous release. Significant score drops should block.
 
-## Phase 5: Merge the Release PR
+## Phase 5: Merge the frozen release PR
 
 > **🚨 STOP — Do NOT merge without explicit human approval.**
-> Present the CI status summary and ask the human to confirm before merging.
-> Merging is effectively irreversible — it automatically triggers the full
-> release pipeline (GitHub release → PyPI publish → downstream version bumps).
+> Merge the **frozen** `chore(release/X.Y)` PR — never the `chore(main)` preview.
+> Merging is irreversible: it tags `vX.Y.Z` and triggers the full publish pipeline.
 
 Once the human approves:
 
 ```bash
-gh pr merge <PR_NUMBER> --repo OpenHands/software-agent-sdk --merge
+gh pr merge <FROZEN_PR_NUMBER> --repo OpenHands/software-agent-sdk --merge
 ```
 
-## Phase 6: Automated Release Pipeline (no action needed)
+## Phase 6: Automated release pipeline (no action needed)
 
-When the release PR is merged, the following happens automatically:
+Merging the frozen PR makes release-please tag and publish, then:
 
-1. **`create-release.yml`** detects the merged `rel-*` branch, creates a
-   GitHub release with tag `v<version>` and auto-generated release notes.
-2. **`pypi-release.yml`** triggers on the published release and publishes
-   all four packages to PyPI:
+1. release-please creates the GitHub release with tag `v<version>` and notes.
+2. **`pypi-release.yml`** triggers on `release: published` and publishes all four
+   packages to PyPI:
    - `openhands-sdk`
    - `openhands-tools`
    - `openhands-workspace`
    - `openhands-agent-server`
-3. **`version-bump-prs.yml`** triggers after successful PyPI publish and
-   creates downstream version bump PRs.
+3. **`release-binaries.yml`** and the downstream version-bump automation run from
+   the same `release: published` event.
 
-### ⏸ Checkpoint — Verify PyPI Publication
+### ⏸ Checkpoint — Verify PyPI publication
 
 ```bash
-# Check each package is available (allow a few minutes for indexing)
 for pkg in openhands-sdk openhands-tools openhands-workspace openhands-agent-server; do
   curl -s -o /dev/null -w "$pkg: %{http_code}\n" \
     "https://pypi.org/pypi/$pkg/<version>/json"
@@ -179,37 +183,43 @@ done
 
 All should return `200`.
 
-## Phase 7: Post-Release Announcements
+## Phase 7: Merge back and announce
 
-After the automated pipeline completes, compose a Slack message for the
-human to post, including links to the downstream version bump PRs:
+1. **Merge `release/X.Y` back into `main`** so `main` learns the released
+   version/manifest and the `chore(main)` preview advances. Until you do,
+   release-please keeps re-proposing the same version on `main`.
+2. Compose a Slack message for the human to post, including downstream version
+   bump PR links:
 
 ```
 🚀 *SDK v<version> published to PyPI!*
 
 Version bump PRs:
-• <https://github.com/All-Hands-AI/OpenHands/pulls?q=is%3Apr+bump-sdk-<version>|OpenHands>
+• <https://github.com/OpenHands/OpenHands/pulls?q=is%3Apr+bump-sdk-<version>|OpenHands>
 • <https://github.com/OpenHands/openhands-cli/pulls?q=is%3Apr+bump-sdk-<version>|OpenHands-CLI>
 
 Release: <https://github.com/OpenHands/software-agent-sdk/releases/tag/v<version>|v<version>>
 ```
 
-See `references/post-release-checklist.md` for details on reviewing
-downstream PRs and handling any issues.
+See `references/post-release-checklist.md` for details on reviewing downstream PRs.
 
 ## Quick Reference — Full Checklist
 
-- [ ] Trigger `prepare-release.yml` with target version
-- [ ] Verify release PR is created
-- [ ] Fix deprecation deadline failures (if any)
+- [ ] Find and review the standing `chore(main): release X.Y.Z` draft PR
+- [ ] Confirm the computed version and release notes are correct
+- [ ] **🚨 Get human approval**, then mark the draft PR **Ready** (freeze signal)
+- [ ] Locate the frozen `chore(release/X.Y): release X.Y.Z` PR; leave the `chore(main)` preview alone
+- [ ] **🚨 Get human approval**, then mark the frozen PR **Ready** (starts tests)
 - [ ] Integration tests pass
 - [ ] Behavior tests pass
 - [ ] Example tests pass
 - [ ] Security scan passes
+- [ ] Fix blocking failures on `main` and backport to `release/X.Y`
 - [ ] (Optional) Evaluation run shows no regressions
-- [ ] **🚨 Get human approval**, then merge the release PR
-- [ ] _(Automated)_ GitHub release created with auto-generated notes
+- [ ] **🚨 Get human approval**, then merge the **frozen** release PR
+- [ ] _(Automated)_ GitHub release created with notes
 - [ ] _(Automated)_ Packages published to PyPI
 - [ ] _(Automated)_ Downstream version bump PRs created
 - [ ] Verify packages appear on PyPI
+- [ ] Merge `release/X.Y` back into `main`
 - [ ] Send Slack message with downstream version bump PR links

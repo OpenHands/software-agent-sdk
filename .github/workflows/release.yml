@@ -26,4 +26,4 @@ jobs:
             contents: write
             pull-requests: write
         secrets: inherit
-        uses: OpenHands/release-actions/.github/workflows/release-please.yml@v0.2.0
+        uses: OpenHands/release-actions/.github/workflows/release-please.yml@v0.3.0

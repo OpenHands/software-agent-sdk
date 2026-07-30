@@ -22,15 +22,28 @@ on:
 jobs:
     release-ready:
         permissions:
-            actions: read # write only if `release-test-workflows` is later set
-            contents: read # write only if `release-test-event-type` is later set
+            # All four are required unconditionally. GitHub validates a called
+            # workflow's job permissions statically at startup, before any `if:`
+            # gating runs; release-ready.yml declares jobs needing `actions: write`
+            # and `contents: write`, so granting `read` for either kills the run as
+            # `startup_failure` with no jobs and no logs. `contents: write` is also
+            # what `freeze-on-ready` needs to cut the freeze branch.
+            actions: write
+            contents: write
             issues: write
             pull-requests: write
         secrets: inherit # RELEASE_APP_* + SLACK_BOT_TOKEN
-        uses: OpenHands/release-actions/.github/workflows/release-ready.yml@v0.2.0
+        uses: OpenHands/release-actions/.github/workflows/release-ready.yml@v0.3.0
         with:
             product-name: OpenHands Agent SDK
             slack-channel: '#proj-agent'
+            # Marking the draft `chore(main): release X.Y.Z` PR ready cuts
+            # `release/<major.minor>` at the PR's base SHA (via the App token, so
+            # release-please picks it up) and returns this PR to draft, so commits
+            # landing on `main` afterwards cannot enter this release. release-please
+            # then opens the frozen release PR on `release/**`; marking THAT one
+            # ready runs the normal label/Slack/test path below.
+            freeze-on-ready: true
             ready-labels: |
                 behavior-test
                 integration-test
