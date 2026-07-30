@@ -114,4 +114,8 @@ set-package-version: check-uv-version
 		$(ECHO) "$(YELLOW)bumping $$PKG -> $(version)$(RESET)"; \
 		uv version --package $$PKG $(version); \
 	done
+	@python3 .github/scripts/update_internal_dependency_pins.py \
+		--version "$(version)" \
+		--packages $(PKGS)
+	@uv lock
 	@$(ECHO) "$(GREEN)Version updated in all selected packages.$(RESET)"
