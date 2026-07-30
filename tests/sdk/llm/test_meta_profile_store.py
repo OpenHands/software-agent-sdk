@@ -9,7 +9,6 @@ from openhands.sdk.llm.meta_profile_store import (
     MetaProfileClass,
     MetaProfileLimitExceeded,
     MetaProfileStore,
-    MetaProfileTargetModel,
 )
 
 
@@ -112,10 +111,6 @@ def test_direct_prompt_meta_profile_roundtrip(tmp_path: Path) -> None:
             'Return JSON: {"model": "<exact model name>"}'
         ),
         model_table="- GPT-5.4\n- MiniMax-M3",
-        target_models=[
-            MetaProfileTargetModel(model="GPT-5.4", profile="gpt"),
-            MetaProfileTargetModel(model="MiniMax-M3", profile="minimax"),
-        ],
     )
 
     store.save("pareto", meta)
@@ -123,7 +118,6 @@ def test_direct_prompt_meta_profile_roundtrip(tmp_path: Path) -> None:
     loaded = store.load("pareto")
     assert loaded.prompt_template == meta.prompt_template
     assert loaded.model_table == "- GPT-5.4\n- MiniMax-M3"
-    assert [target.profile for target in loaded.target_models] == ["gpt", "minimax"]
 
 
 def test_direct_prompt_requires_instance_text_placeholder() -> None:
@@ -132,7 +126,6 @@ def test_direct_prompt_requires_instance_text_placeholder() -> None:
             classifier_model="minimax",
             default_model="default",
             prompt_template="Route without the task.",
-            target_models=[MetaProfileTargetModel(model="GPT-5.4", profile="gpt")],
         )
 
 
@@ -143,20 +136,6 @@ def test_direct_prompt_rejects_classes() -> None:
             default_model="default",
             classes=[MetaProfileClass(description="tests", model="minimax")],
             prompt_template="Task:\n{{ instance_text }}",
-            target_models=[MetaProfileTargetModel(model="GPT-5.4", profile="gpt")],
-        )
-
-
-def test_direct_prompt_rejects_duplicate_target_models() -> None:
-    with pytest.raises(ValueError, match="duplicate"):
-        MetaProfile(
-            classifier_model="minimax",
-            default_model="default",
-            prompt_template="Task:\n{{ instance_text }}",
-            target_models=[
-                MetaProfileTargetModel(model="GPT-5.4", profile="gpt"),
-                MetaProfileTargetModel(model="gpt-5.4", profile="other"),
-            ],
         )
 
 

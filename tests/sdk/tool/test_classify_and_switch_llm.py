@@ -44,10 +44,6 @@ DIRECT_META = {
         'Return ONLY JSON: {"model": "<exact model name>", "reason": "<short>"}'
     ),
     "model_table": "- GPT-5.4\n- MiniMax-M3",
-    "target_models": [
-        {"model": "GPT-5.4", "profile": "fast"},
-        {"model": "MiniMax-M3", "profile": "slow"},
-    ],
 }
 
 
@@ -71,6 +67,8 @@ def profile_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> LLMProfile
     store = LLMProfileStore(base_dir=profile_dir)
     store.save("fast", _make_llm("fast-model", "fast"))
     store.save("slow", _make_llm("slow-model", "slow"))
+    store.save("gpt-5.4", _make_llm("gpt-model", "gpt"))
+    store.save("minimax-m3", _make_llm("slow-model", "minimax"))
     store.save("default", _make_llm("default-profile-model", "default-profile"))
     return store
 
@@ -152,6 +150,13 @@ def test_render_direct_prompt_replaces_supported_placeholders() -> None:
 )
 def test_parse_direct_model(reply: str, expected: str | None) -> None:
     assert parse_direct_model(reply, ["GPT-5.4", "MiniMax-M3"]) == expected
+
+
+def test_parse_direct_model_matches_saved_profile_names_case_insensitively() -> None:
+    assert parse_direct_model('{"model": "GPT-5.4"}', ["gpt-5.4"]) == "gpt-5.4"
+    assert parse_direct_model('{"model": "MiniMax-M3"}', ["minimax-m3"]) == (
+        "minimax-m3"
+    )
 
 
 def test_recent_messages_text_takes_last_n() -> None:
@@ -351,8 +356,8 @@ def test_executor_direct_prompt_switches_to_selected_model(
 
     assert isinstance(obs, ClassifyAndSwitchLLMObservation)
     assert not obs.is_error
-    assert obs.model == "slow"
-    assert obs.chosen_class == "model: MiniMax-M3"
+    assert obs.model == "minimax-m3"
+    assert obs.chosen_class == "model: minimax-m3"
     assert conversation.agent.llm.model == "slow-model"
 
 

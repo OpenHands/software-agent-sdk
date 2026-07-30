@@ -1,9 +1,10 @@
 """JSON-file storage for meta-profiles under ``~/.openhands/meta-profiles``.
 
 Key invariant: every model reference in a meta-profile (``classifier_model``,
-``default_model``, and each class's ``model``) is the *name of a saved LLM
-profile* in :class:`~openhands.sdk.llm.llm_profile_store.LLMProfileStore`, not a
-raw model string — credentials/provider settings resolve through that store.
+``default_model``, each class's ``model``, and direct-routing prompt outputs) is
+the *name of a saved LLM profile* in
+:class:`~openhands.sdk.llm.llm_profile_store.LLMProfileStore`, not a raw model
+string — credentials/provider settings resolve through that store.
 """
 
 from __future__ import annotations
@@ -46,17 +47,6 @@ class MetaProfileClass(BaseModel):
     )
 
 
-class MetaProfileTargetModel(BaseModel):
-    """Mapping from a classifier prompt's model label to an LLM profile."""
-
-    model: str = Field(
-        description="Exact model name the direct classifier prompt may return."
-    )
-    profile: str = Field(
-        description="Name of the saved LLM profile to switch to for this model."
-    )
-
-
 class MetaProfile(BaseModel):
     """A declarative model-routing configuration."""
 
@@ -85,12 +75,6 @@ class MetaProfile(BaseModel):
             "prompts."
         ),
     )
-    target_models: list[MetaProfileTargetModel] = Field(
-        default_factory=list,
-        description=(
-            "Allowed direct-routing model labels and their saved LLM profiles."
-        ),
-    )
 
     @model_validator(mode="after")
     def validate_routing_mode(self) -> MetaProfile:
@@ -104,16 +88,6 @@ class MetaProfile(BaseModel):
             )
         if self.classes:
             raise ValueError("Direct-routing meta-profiles cannot also define classes.")
-        if not self.target_models:
-            raise ValueError(
-                "Direct-routing meta-profiles must define at least one target_model."
-            )
-        labels = [target.model.lower() for target in self.target_models]
-        if len(labels) != len(set(labels)):
-            raise ValueError(
-                "Direct-routing meta-profiles cannot define duplicate target "
-                "model labels."
-            )
         return self
 
 

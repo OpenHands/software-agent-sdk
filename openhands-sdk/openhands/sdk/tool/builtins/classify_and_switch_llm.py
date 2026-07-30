@@ -129,15 +129,17 @@ def render_direct_prompt(meta: MetaProfile, instance_text: str) -> str:
 
 
 def parse_direct_model(text: str, available_models: Sequence[str]) -> str | None:
-    """Parse a direct-routing classifier reply into an allowed model name.
+    """Parse a direct-routing classifier reply into a saved profile name.
 
     The expected contract is JSON with a ``model`` field, but the parser also
-    scans the raw response for an exact allowed model name to tolerate fenced
-    JSON or small formatting mistakes.
+    scans the raw response for an allowed profile name to tolerate fenced JSON
+    or small formatting mistakes. Matching is case-insensitive, but the returned
+    value is the canonical saved profile name from ``available_models``.
     """
     raw = (text or "").strip()
     raw = re.sub(r"^```[a-zA-Z]*\n?", "", raw)
     raw = re.sub(r"\n?```$", "", raw).strip()
+    profile_by_casefold = {model.casefold(): model for model in available_models}
 
     candidate = ""
     try:
@@ -148,11 +150,19 @@ def parse_direct_model(text: str, available_models: Sequence[str]) -> str | None
     except Exception:  # noqa: BLE001
         candidate = ""
 
-    scan = (candidate or raw).lower()
+    if candidate:
+        return profile_by_casefold.get(candidate.casefold())
+
+    scan = raw.casefold()
     for model in sorted(available_models, key=len, reverse=True):
-        if model.lower() in scan:
+        if model.casefold() in scan:
             return model
     return None
+
+
+def _saved_profile_names(conversation: "LocalConversation") -> list[str]:
+    """Return saved LLM profile names without ``.json`` suffixes."""
+    return [name.removesuffix(".json") for name in conversation._profile_store.list()]
 
 
 def _recent_messages_text(
@@ -308,16 +318,14 @@ class ClassifyAndSwitchLLMExecutor(ToolExecutor):
                 target_profile = chosen.model
                 chosen_class = chosen.description
         else:
-            target_by_model = {
-                target.model: target.profile for target in meta.target_models
-            }
-            selected_model = parse_direct_model(reply, list(target_by_model))
-            if selected_model is None:
+            target_profile = parse_direct_model(
+                reply, _saved_profile_names(conversation)
+            )
+            if target_profile is None:
                 target_profile = meta.default_model
                 chosen_class = None
             else:
-                target_profile = target_by_model[selected_model]
-                chosen_class = f"model: {selected_model}"
+                chosen_class = f"model: {target_profile}"
 
         # 4) Switch the conversation to the target profile.
         try:

@@ -28,7 +28,6 @@ from openhands.sdk.llm.meta_profile_store import (
     MetaProfileClass,
     MetaProfileLimitExceeded,
     MetaProfileStore,
-    MetaProfileTargetModel,
 )
 from openhands.sdk.llm.router import RouterLLM
 from openhands.sdk.llm.streaming import (
@@ -63,7 +62,6 @@ __all__ = [
     "MetaProfileClass",
     "MetaProfileLimitExceeded",
     "MetaProfileStore",
-    "MetaProfileTargetModel",
     "RouterLLM",
     "RegistryEvent",
     # Messages
