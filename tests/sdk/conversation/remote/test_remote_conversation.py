@@ -1854,6 +1854,45 @@ class TestRemoteConversation:
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
+    def test_close_reports_streamed_cost_on_error_only_wakeup(self, mock_ws_client):
+        """The failure path reports this run's spend, not the subscribe snapshot.
+
+        ERROR/STUCK wake run() from a per-field update, so close() runs before
+        the server's post-run full-state snapshot lands. Cost is still correct
+        because the agent server streams a "stats" update after every LLM
+        response (EventService._setup_stats_streaming).
+        """
+        self.setup_mock_client()
+        mock_ws_client.return_value = Mock()
+        conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+
+        # Subscribe-time full-state snapshot: stats exist, but cost is still 0.
+        conversation.state.update_state_from_event(
+            self.full_state_event(
+                "running", stats=ConversationStats().model_dump(mode="json")
+            )
+        )
+        # Server streams stats after the run's LLM response.
+        metrics = Metrics(model_name="gpt-4o-mini")
+        metrics.add_cost(0.75)
+        conversation.state.update_state_from_event(
+            ConversationStateUpdateEvent(
+                key="stats",
+                value=ConversationStats(usage_to_metrics={"agent": metrics}),
+            )
+        )
+        # Run fails: only the per-field status update arrives before close().
+        conversation.state.update_state_from_event(
+            ConversationStateUpdateEvent(key="execution_status", value="error")
+        )
+
+        conversation.close()
+
+        assert self.workspace.accumulated_cost == 0.75
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
     def test_remote_conversation_stuck_detector_not_implemented(self, mock_ws_client):
         """Test that stuck_detector property raises NotImplementedError."""
         # Setup mocks
