@@ -13,7 +13,7 @@ description: >-
 This skill walks through the software-agent-sdk release process step by step.
 
 The SDK releases via the shared **[OpenHands/release-actions](https://github.com/OpenHands/release-actions)**
-(release-please) automation. You no longer pick a version or create a release
+(release-please) automation. You must not pick a version or create a release
 branch by hand — release-please keeps a **draft** release PR open, derives the
 version from Conventional Commit PR titles, and the deliberate release-cut signal
 is marking that PR **Ready for review**. With `freeze-on-ready: true`, that signal
