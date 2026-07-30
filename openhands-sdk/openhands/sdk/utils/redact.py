@@ -200,7 +200,14 @@ def redact_url_credentials_in_text(text: str) -> str:
         >>> redact_url_credentials_in_text("no credentials here")
         'no credentials here'
     """
-    return _EMBEDDED_URL_CREDENTIALS_RE.sub(r"\g<1>****@", text)
+    return _EMBEDDED_URL_CREDENTIALS_RE.sub(
+        lambda m: (
+            m.group(0)
+            if "<secret-hidden>" in m.group(0) or "<redacted>" in m.group(0)
+            else f"{m.group(1)}****@"
+        ),
+        text,
+    )
 
 
 def redact_url_params(url: str) -> str:

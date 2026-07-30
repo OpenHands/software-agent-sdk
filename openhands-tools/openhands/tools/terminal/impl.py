@@ -368,25 +368,32 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
     ) -> TerminalObservation:
         """Apply automatic secrets masking to *observation*.
 
-        Always redacts URL-embedded credentials and bare API key literals so
-        outputs like ``git remote -v`` never leak GitHub tokens into the model
-        context (OpenHands#15338), even when no conversation secrets are set.
+        When a conversation is present, masking is fully delegated to its
+        ``SecretRegistry.mask_secrets_in_output``, which scrubs registered
+        secret values, bare API-key literals, and URL-embedded credentials
+        (OpenHands#15338) in one pass.
+
+        Without a conversation there is no registry to consult, so only the
+        generic redactions (``redact_api_key_literals`` +
+        ``redact_url_credentials_in_text``) are applied — enough to stop
+        ``git remote -v`` from leaking a ``ghu_…`` token to the model.
         """
         content_text = observation.text
         if not content_text:
             return observation
 
-        masked_content = content_text
         if conversation is not None:
             try:
-                secret_registry = conversation.state.secret_registry
-                masked_content = secret_registry.mask_secrets_in_output(masked_content)
+                masked_content = (
+                    conversation.state.secret_registry.mask_secrets_in_output(
+                        content_text
+                    )
+                )
             except Exception:
-                pass
-
-        # Generic redaction (idempotent if secret_registry already applied it).
-        masked_content = redact_api_key_literals(masked_content)
-        masked_content = redact_url_credentials_in_text(masked_content)
+                masked_content = content_text
+        else:
+            masked_content = redact_api_key_literals(content_text)
+            masked_content = redact_url_credentials_in_text(masked_content)
 
         if masked_content != content_text:
             data = observation.model_dump(
