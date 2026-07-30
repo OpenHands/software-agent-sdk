@@ -115,6 +115,8 @@ def test_get_sub_agents_exposes_full_frontmatter(client, tmp_path: Path):
     assert agent["max_iteration_per_run"] == 7
     assert agent["max_budget_per_run"] == 1.5
     assert agent["profile_store_dir"] == "/tmp/profiles"
+    # ``enabled`` defaults to True and MCPServer's compact serializer only drops
+    # empty values, so the flag is always reported even when frontmatter omits it.
     assert agent["mcp_config"] == {
         "fetch": {
             "command": "uvx",
@@ -123,6 +125,7 @@ def test_get_sub_agents_exposes_full_frontmatter(client, tmp_path: Path):
                 "mcp==1.29.0",
                 "mcp-server-fetch==2026.7.10",
             ],
+            "enabled": True,
         }
     }
     # condenser: none -> a NoOpCondenser is serialized (not null)
