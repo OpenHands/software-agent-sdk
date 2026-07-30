@@ -57,6 +57,28 @@ _action_type_lock = threading.Lock()
 _RESERVED_RESPONSE_FIELDS = frozenset(
     {"kind", "security_risk", "structured_output", "summary"}
 )
+_SUPPORTED_RESPONSE_SCHEMA_KEYS = frozenset(
+    {
+        "$anchor",
+        "$comment",
+        "$defs",
+        "$dynamicAnchor",
+        "$id",
+        "$schema",
+        "$vocabulary",
+        "additionalProperties",
+        "default",
+        "deprecated",
+        "description",
+        "examples",
+        "properties",
+        "readOnly",
+        "required",
+        "title",
+        "type",
+        "writeOnly",
+    }
+)
 
 
 def _response_schema_json(response_schema: ResponseSchema) -> dict[str, Any]:
@@ -78,12 +100,32 @@ def _response_schema_json(response_schema: ResponseSchema) -> dict[str, Any]:
 
 def _response_tool_schema(response_schema: ResponseSchema) -> dict[str, Any]:
     schema = _response_schema_json(response_schema)
-    schema = _expand_response_refs(schema, schema.get("$defs", {}))
-    assert isinstance(schema, dict)
     properties = schema.get("properties")
     if not properties:
         raise ValueError("response_schema must define named properties")
-    return schema
+
+    unsupported = set(schema) - _SUPPORTED_RESPONSE_SCHEMA_KEYS
+    if unsupported:
+        raise ValueError(
+            f"response_schema has unsupported top-level keywords: {sorted(unsupported)}"
+        )
+
+    additional_properties = schema.get("additionalProperties")
+    if additional_properties not in (None, False):
+        raise ValueError(
+            "response_schema does not support dynamic fields via additionalProperties"
+        )
+
+    unnamed_required = set(schema.get("required", ())) - set(properties)
+    if unnamed_required:
+        raise ValueError(
+            f"response_schema required fields {sorted(unnamed_required)} must be "
+            "named properties"
+        )
+
+    expanded = _expand_response_refs(schema, schema.get("$defs", {}))
+    assert isinstance(expanded, dict)
+    return expanded
 
 
 def _expand_response_refs(

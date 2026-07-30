@@ -252,6 +252,47 @@ def test_response_schema_preserves_constraints():
     assert properties["count"]["maximum"] == 5
 
 
+def test_response_schema_rejects_object_level_constraints():
+    schema = {
+        "type": "object",
+        "properties": {
+            "foo": {"type": "string"},
+            "bar": {"type": "string"},
+        },
+        "dependentRequired": {"foo": ["bar"]},
+    }
+
+    with pytest.raises(ValueError, match="unsupported.*dependentRequired"):
+        _finish_with_schema(schema)
+
+
+@pytest.mark.parametrize(
+    "additional_properties",
+    [True, {"type": "string"}],
+    ids=["untyped", "typed"],
+)
+def test_response_schema_rejects_dynamic_fields(additional_properties):
+    schema = {
+        "type": "object",
+        "properties": {"value": {"type": "string"}},
+        "additionalProperties": additional_properties,
+    }
+
+    with pytest.raises(ValueError, match="dynamic fields"):
+        _finish_with_schema(schema)
+
+
+def test_response_schema_requires_required_fields_to_be_named():
+    schema = {
+        "type": "object",
+        "properties": {"foo": {"type": "string"}},
+        "required": ["bar"],
+    }
+
+    with pytest.raises(ValueError, match="required fields.*bar.*named properties"):
+        _finish_with_schema(schema)
+
+
 def test_response_schema_requires_named_properties():
     with pytest.raises(ValueError, match="named properties"):
         _finish_with_schema(
