@@ -886,6 +886,57 @@ def test_mcp_server_crud_endpoints_preserve_sibling_credentials(client_with_sett
     assert "auth" not in cleared_auth.json()["agent_settings"]["mcp_config"]["github"]
 
 
+def test_mcp_server_patch_toggles_enabled_without_dropping_config(
+    client_with_settings,
+):
+    """Switching a server off keeps it — and its credentials — configured."""
+    created = client_with_settings.post(
+        "/api/settings/mcp/github",
+        json={
+            "transport": "http",
+            "url": "https://github.example/mcp",
+            "auth": {"strategy": "bearer", "value": "github-secret"},
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["agent_settings"]["mcp_config"]["github"]["enabled"] is True
+
+    disabled = client_with_settings.patch(
+        "/api/settings/mcp/github",
+        json={"enabled": False},
+    )
+    assert disabled.status_code == 200, disabled.text
+    server = disabled.json()["agent_settings"]["mcp_config"]["github"]
+    assert server["enabled"] is False
+    assert server["url"] == "https://github.example/mcp"
+
+    # The credential survives the toggle — that is the point of disabling
+    # instead of deleting.
+    plaintext = client_with_settings.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()["agent_settings"]["mcp_config"]["github"]
+    assert plaintext["auth"]["value"] == "github-secret"
+    assert plaintext["enabled"] is False
+
+    # A patch that does not mention the flag must not silently re-enable it.
+    described = client_with_settings.patch(
+        "/api/settings/mcp/github",
+        json={"description": "GitHub"},
+    )
+    assert described.status_code == 200, described.text
+    still_disabled = described.json()["agent_settings"]["mcp_config"]["github"]
+    assert still_disabled["enabled"] is False
+    assert still_disabled["description"] == "GitHub"
+
+    # A null clears the override, restoring the canonical default (enabled).
+    restored = client_with_settings.patch(
+        "/api/settings/mcp/github",
+        json={"enabled": None},
+    )
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["agent_settings"]["mcp_config"]["github"]["enabled"] is True
+
+
 def test_mcp_server_crud_endpoints_enforce_key_preconditions(client_with_settings):
     created = client_with_settings.post(
         "/api/settings/mcp/github",
