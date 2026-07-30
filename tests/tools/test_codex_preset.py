@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from openhands.sdk.context.condenser import LLMSummarizingCondenser
 from openhands.sdk.llm import LLM
 from openhands.tools.preset.codex import get_codex_agent, get_codex_tools
 
@@ -32,6 +33,11 @@ def test_get_codex_tools_composition() -> None:
 def test_get_codex_agent_uses_codex_template() -> None:
     agent = get_codex_agent(_make_llm(), cli_mode=True)
     assert agent.system_prompt_filename == "system_prompt_codex.j2"
+    assert isinstance(agent.condenser, LLMSummarizingCondenser)
+    assert agent.condenser.max_size == 480
+    assert agent.condenser.target_size == 120
+    assert agent.condenser.keep_first == 4
+    assert agent.condenser.keep_last_user_turns == 3
 
 
 def test_get_codex_agent_appends_extra_tools() -> None:

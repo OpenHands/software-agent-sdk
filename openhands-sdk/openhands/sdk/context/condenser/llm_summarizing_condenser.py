@@ -19,6 +19,7 @@ from openhands.sdk.context.prompts import render_template
 from openhands.sdk.context.view import View
 from openhands.sdk.event.base import LLMConvertibleEvent
 from openhands.sdk.event.condenser import Condensation
+from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.exceptions import LLMContextWindowExceedError
 from openhands.sdk.logger import get_logger
@@ -50,6 +51,10 @@ class LLMSummarizingCondenser(RollingCondenser):
 
     llm: LLM
     max_size: int = Field(default=240, gt=0)
+    target_size: int | None = Field(default=None, gt=0)
+    """Optional target number of events after condensation. When unset, the
+    existing half-size behavior is preserved.
+    """
     max_tokens: int | None = None
     auto_compact_ratio: float = Field(default=0.9, gt=0.0, lt=1.0)
     """Fraction of the agent model's input window at which token-based
@@ -70,6 +75,12 @@ class LLMSummarizingCondenser(RollingCondenser):
     keep_first: int = Field(default=2, ge=0)
     """Minimum number of events to preserve at the start of the view. The first
     `keep_first` events in the conversation will never be condensed or summarized.
+    """
+
+    keep_last_user_turns: int = Field(default=0, ge=0)
+    """Number of recent user turns to preserve verbatim. A turn starts at a user
+    ``MessageEvent`` and includes every following event up to the next user message,
+    so skill context, assistant actions, and tool results remain together.
     """
 
     minimum_progress: float = Field(default=0.1, gt=0.0, lt=1.0)
@@ -110,15 +121,22 @@ class LLMSummarizingCondenser(RollingCondenser):
             max_size,
             _TEST_MAX_SIZE_ENV,
         )
-        return {**data, "max_size": max_size}
+        overridden_data = {**data, "max_size": max_size}
+        target_size = overridden_data.get("target_size")
+        if isinstance(target_size, int) and target_size >= max_size:
+            overridden_data["target_size"] = max_size // 2
+        return overridden_data
 
     @model_validator(mode="after")
     def validate_keep_first_vs_max_size(self):
-        events_from_tail = self.max_size // 2 - self.keep_first - 1
+        target_size = self.target_size or self.max_size // 2
+        if target_size >= self.max_size:
+            raise ValueError("target_size must be less than max_size")
+        events_from_tail = target_size - self.keep_first - 1
         if events_from_tail <= 0:
             raise ValueError(
-                "keep_first must be less than max_size // 2 to leave room for "
-                "condensation"
+                "keep_first must leave room for a summary and retained suffix at "
+                "the configured target_size"
             )
         return self
 
@@ -373,13 +391,27 @@ class LLMSummarizingCondenser(RollingCondenser):
         assert reasons != set(), "No condensation reasons found."
 
         suffix_events_to_keep: set[int] = set()
+        configured_target_size = None
+        if self.target_size is not None:
+            configured_target_size = max(
+                self.keep_first + 2,
+                min(self.target_size, len(view) // 2),
+            )
 
         if Reason.REQUEST in reasons:
-            target_size = len(view) // 2
+            target_size = (
+                configured_target_size
+                if configured_target_size is not None
+                else len(view) // 2
+            )
             suffix_events_to_keep.add(target_size - self.keep_first - 1)
 
         if Reason.EVENTS in reasons:
-            target_size = self.max_size // 2
+            target_size = (
+                configured_target_size
+                if configured_target_size is not None
+                else self.max_size // 2
+            )
             suffix_events_to_keep.add(target_size - self.keep_first - 1)
 
         if Reason.TOKENS in reasons:
@@ -400,19 +432,40 @@ class LLMSummarizingCondenser(RollingCondenser):
                     base_events=view.events[: self.keep_first],
                 )
             )
+            if configured_target_size is not None:
+                suffix_events_to_keep.add(configured_target_size - self.keep_first - 1)
 
         # We might have multiple reasons to condense, so pick the strictest condensation
         # to ensure all resource constraints are met.
         events_from_tail = min(suffix_events_to_keep)
 
-        # Calculate naive forgetting end (without considering atomic boundaries)
-        naive_end = len(view) - events_from_tail
+        protected_prefix_end, protected_suffix_start = self._protected_bounds(view)
 
-        # Find actual forgetting_start: smallest manipulation index >= keep_first
-        forgetting_start = view.manipulation_indices.find_next(self.keep_first)
+        # Calculate naive forgetting end (without considering atomic boundaries),
+        # but never cross into the recent user turns preserved verbatim.
+        naive_end = min(len(view) - events_from_tail, protected_suffix_start)
 
-        # Find actual forgetting_end: smallest manipulation index >= naive_end
-        forgetting_end = view.manipulation_indices.find_next(naive_end)
+        manipulation_indices = view.manipulation_indices
+
+        # Find actual forgetting_start after the configured prefix and every system
+        # prompt. System prompts are detected by type rather than relying only on their
+        # usual position near the beginning of the event stream.
+        forgetting_start = manipulation_indices.find_next(protected_prefix_end)
+
+        valid_ends = [
+            index
+            for index in manipulation_indices
+            if naive_end <= index <= protected_suffix_start
+        ]
+        if valid_ends:
+            forgetting_end = min(valid_ends)
+        else:
+            safe_ends = [
+                index
+                for index in manipulation_indices
+                if index <= protected_suffix_start
+            ]
+            forgetting_end = max(safe_ends, default=forgetting_start)
 
         # Extract events to forget using boundary-aware indices
         forgotten_events = view[forgetting_start:forgetting_end]
@@ -420,13 +473,57 @@ class LLMSummarizingCondenser(RollingCondenser):
         # Summary offset is the same as forgetting_start
         return forgotten_events, forgetting_start
 
+    def _protected_bounds(self, view: View) -> tuple[int, int]:
+        """Return the exclusive prefix end and inclusive recent-turn boundary."""
+        system_prompt_indices = [
+            index
+            for index, event in enumerate(view.events)
+            if isinstance(event, SystemPromptEvent)
+        ]
+        protected_prefix_end = min(
+            len(view),
+            max(
+                self.keep_first,
+                max(system_prompt_indices, default=-1) + 1,
+            ),
+        )
+
+        protected_suffix_start = len(view)
+        if self.keep_last_user_turns:
+            user_message_indices = [
+                index
+                for index, event in enumerate(view.events)
+                if isinstance(event, MessageEvent) and event.source == "user"
+            ]
+            if user_message_indices:
+                protected_index = max(
+                    0, len(user_message_indices) - self.keep_last_user_turns
+                )
+                protected_suffix_start = user_message_indices[protected_index]
+
+        return protected_prefix_end, protected_suffix_start
+
+    def _protected_middle_events(
+        self, view: View
+    ) -> tuple[Sequence[LLMConvertibleEvent], int]:
+        protected_prefix_end, protected_suffix_start = self._protected_bounds(view)
+        manipulation_indices = view.manipulation_indices
+        summary_offset = manipulation_indices.find_next(protected_prefix_end)
+        valid_ends = [
+            index
+            for index in manipulation_indices
+            if summary_offset <= index <= protected_suffix_start
+        ]
+        forgetting_end = max(valid_ends, default=summary_offset)
+        return view[summary_offset:forgetting_end], summary_offset
+
     @observe(ignore_inputs=["view", "agent_llm"])
     def hard_context_reset(
         self,
         view: View,
         agent_llm: LLM | None = None,  # noqa: ARG002
     ) -> Condensation | None:
-        """Perform a hard context reset by summarizing all events in the view.
+        """Perform a hard context reset while preserving protected context.
 
         Depending on how the hard context reset is triggered, this may fail (e.g., if
         the view is too large for the summarizing LLM to handle). In that case, we keep
@@ -434,19 +531,24 @@ class LLMSummarizingCondenser(RollingCondenser):
         """
         max_event_str_length: int | None = None
         attempts_remaining: int = self.hard_context_reset_max_retries
+        forgotten_events, summary_offset = self._protected_middle_events(view)
+        if not forgotten_events:
+            return None
 
         while attempts_remaining > 0:
             try:
                 return self._generate_condensation(
-                    forgotten_events=view.events,
-                    summary_offset=0,
+                    forgotten_events=forgotten_events,
+                    summary_offset=summary_offset,
                     max_event_str_length=max_event_str_length,
                 )
             except Exception as e:
                 # If we haven't set a max_event_str_length yet, set it as the largest
                 # event string length.
                 if max_event_str_length is None:
-                    max_event_str_length = max(len(str(event)) for event in view.events)
+                    max_event_str_length = max(
+                        len(str(event)) for event in forgotten_events
+                    )
 
                 # Since the summarization failed, reduce the max_event_str_length by 20%
                 assert max_event_str_length is not None
@@ -609,17 +711,20 @@ class LLMSummarizingCondenser(RollingCondenser):
         """Async variant of :meth:`hard_context_reset`."""
         max_event_str_length: int | None = None
         attempts_remaining: int = self.hard_context_reset_max_retries
+        forgotten_events, summary_offset = self._protected_middle_events(view)
+        if not forgotten_events:
+            return None
 
         while attempts_remaining > 0:
             try:
                 return await self._agenerate_condensation(
-                    forgotten_events=view.events,
-                    summary_offset=0,
+                    forgotten_events=forgotten_events,
+                    summary_offset=summary_offset,
                     max_event_str_length=max_event_str_length,
                 )
             except Exception as e:
                 if max_event_str_length is None:
-                    max_event_str_length = max(len(str(ev)) for ev in view.events)
+                    max_event_str_length = max(len(str(ev)) for ev in forgotten_events)
                 assert max_event_str_length is not None
                 max_event_str_length = int(
                     max_event_str_length * self.hard_context_reset_context_scaling
