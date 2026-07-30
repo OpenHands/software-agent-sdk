@@ -2,6 +2,8 @@
 
 import asyncio
 import os
+import shutil
+import tempfile
 from pathlib import Path
 
 from openhands.sdk.logger import get_logger
@@ -35,6 +37,7 @@ class VSCodeService:
         self.process: asyncio.subprocess.Process | None = None
         self.openvscode_server_root: Path = Path("/openhands/.openvscode-server")
         self.extensions_dir: Path = self.openvscode_server_root / "extensions"
+        self._token_dir: Path | None = None
 
     async def start(self) -> bool:
         """Start the VSCode server.
@@ -69,6 +72,9 @@ class VSCodeService:
 
         except Exception as e:
             logger.error(f"Failed to start VSCode server: {e}")
+            # The token file outlives a failed start otherwise: nothing will
+            # call stop() for a server that never came up.
+            self._remove_connection_token_file()
             return False
 
     async def stop(self) -> None:
@@ -86,6 +92,7 @@ class VSCodeService:
                 logger.error(f"Error stopping VSCode server: {e}")
             finally:
                 self.process = None
+        self._remove_connection_token_file()
 
     def get_vscode_url(
         self,
@@ -153,31 +160,68 @@ class VSCodeService:
         except OSError:
             return False
 
+    def _write_connection_token_file(self) -> Path:
+        """Write the connection token to a file only this user can read.
+
+        openvscode-server's own option documentation recommends
+        ``--connection-token-file`` over ``--connection-token`` on a multi-user
+        system precisely because the latter "can be seen by other users using
+        ``ps`` or similar commands". That applies here: the agent runs bash in
+        this same container, so anything in the server's argv is readable by the
+        agent itself.
+
+        Returns:
+            Path of the token file, inside a directory owned by this process.
+        """
+        if self.connection_token is None:
+            raise ValueError("Cannot write a connection token file without a token")
+
+        # A restart must not leave the previous run's file behind.
+        self._remove_connection_token_file()
+
+        # mkdtemp is 0o700 and O_EXCL|0o600 creates the file with its final
+        # permissions, so there is no window in which either is readable by
+        # another user.
+        token_dir = Path(tempfile.mkdtemp(prefix="openhands-vscode-"))
+        token_file = token_dir / "connection-token"
+        fd = os.open(token_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(self.connection_token)
+        self._token_dir = token_dir
+        return token_file
+
+    def _remove_connection_token_file(self) -> None:
+        """Remove the token file and its directory, if one was written."""
+        if self._token_dir is None:
+            return
+        shutil.rmtree(self._token_dir, ignore_errors=True)
+        self._token_dir = None
+
     async def _start_vscode_process(self) -> None:
         """Start the VSCode server process."""
-        extensions_arg = (
-            f"--extensions-dir {self.extensions_dir} "
-            if self.extensions_dir.exists()
-            else ""
-        )
-        base_path_arg = (
-            f"--server-base-path {self.server_base_path} "
-            if self.server_base_path
-            else ""
-        )
-        cmd = (
-            f"exec {self.openvscode_server_root}/bin/openvscode-server "
-            f"--host 0.0.0.0 "
-            f"--connection-token {self.connection_token} "
-            f"--port {self.port} "
-            f"{extensions_arg}"
-            f"{base_path_arg}"
-            f"--disable-workspace-trust\n"
-        )
+        # An argument list rather than a shell string: `server_base_path` and
+        # the extensions path are configuration, and interpolating them into a
+        # command line means a value containing a space or a `;` is a broken
+        # server at best. There is no shell to `exec` past either, so
+        # `self.process` is the server itself and `terminate()` reaches it.
+        argv = [
+            str(self.openvscode_server_root / "bin" / "openvscode-server"),
+            "--host",
+            "0.0.0.0",
+            "--connection-token-file",
+            str(self._write_connection_token_file()),
+            "--port",
+            str(self.port),
+        ]
+        if self.extensions_dir.exists():
+            argv += ["--extensions-dir", str(self.extensions_dir)]
+        if self.server_base_path:
+            argv += ["--server-base-path", self.server_base_path]
+        argv.append("--disable-workspace-trust")
 
         # Start the process
-        self.process = await asyncio.create_subprocess_shell(
-            cmd,
+        self.process = await asyncio.create_subprocess_exec(
+            *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             env=sanitized_env(),
