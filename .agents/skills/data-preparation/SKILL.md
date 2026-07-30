@@ -1,113 +1,70 @@
 ---
 name: data-preparation
 description: >-
-  用 DataFlow 对本地或 HuggingFace 数据做内容级准备，包括规则清洗、过滤、去重、
-  LLM/VLM 生成与评分、单图或多图语义打标、参考标注补全，以及 messages、
-  preference 或 TRL 视觉 SFT 格式转换。用于数据质量治理、训练数据生成、图片语义
-  标注和需要可抽样、可重跑、可审计的数据处理任务。
+  对文本或图片数据进行抽样检查、本地 Pipeline 试跑、人工确认和 Pyromind 全量
+  处理，生成规范训练 JSONL；支持图片 OCR/语义打标、模型重试、失败报告和断点续跑。
 ---
 
 # 数据准备
 
-在本地会话工作区试跑，用户确认后将全量任务提交到 Pyromind 平台异步执行。
+先在本地验证最多 3 条 Sample；用户明确确认后，才提交 Pyromind 全量任务。
 
-**强制约束：**
-- 所有中间文件写入 `public_data/data-preparation/`。
-- `file_editor` 和 `terminal` 使用 conversation workspace 的绝对路径；工具参数
-  （`df_run_pipeline`、`dataset_download` 等）使用 workspace 相对路径。不要依赖
-  terminal cwd，不要 `cd` 到相对路径。
-- 样本数据直接用 `file_editor` 创建文件，不要写 `make_sample.py` 之类的中间脚本
-  再用 terminal 执行。
-- 不要修改项目源码或 skill 文件，也不要用终端探测依赖；`df_run_pipeline` 会检查
-  运行环境。
-- 本文档的流程和决策规则已自包含。仅在编写 pipeline 需要算子签名或脚本模板时才
-  读取 `references/` 下的文件，不要为了理解流程而读取。
+## 强制边界
 
-## 核心流程
+- 工作区中间文件放在 `public_data/data-preparation/`。
+- Storage 数据和平台产物只能用 `preview_dataset` 查看。不得用 Terminal、
+  `file_editor`、本地 `Path` 或下载脚本读取 Pyromind 路径。
+- `preview_dataset(mode="inspect")` 浏览 Storage 文件和文件夹；
+  `mode="sample"` 将 Agent 选定的最多 3 个文件或文件夹物化到工作区，并返回
+  `sample_manifest_path`。图片由该 Tool 调用 Gemma 返回 OCR 和视觉摘要。
+- `df_run_pipeline` 仅运行本地 Sample；用户确认前不得调用 `df_submit_pipeline`。
+- 新链路直接生成规范 JSONL，不以 `df_convert` 或 Parquet 作为正式产物。
 
-`原始数据 → manifest.jsonl → processed.jsonl → 训练文件`
+## 执行流程
 
-- 检查用户目标、样本、字段和相关规则，形成字段策略与验证方式。
-- HuggingFace 数据先用 `dataset_download` 下载少量样本，确认 split、config 和字段；
-  `output_path` 使用 `public_data/data-preparation/` 下的 workspace 相对路径。
-- 输入适配、内容处理和格式转换保持为可独立重跑的阶段。
-- 默认首次抽样最多 3 条，写入 `processed.sample.jsonl`；这只是模型行为提示，
-  不是运行时门控。用户明确要求全量时可直接生成 `processed.jsonl`。
-- 使用 DataFlow LLM 的 pipeline 必须用 `LoggingLLMServing` 包装 serving；
-  `df_run_pipeline` 自动把 `df_logging.py` 和 `generate_report.py` 投递到脚本目录。
-- 试跑成功后**必须主动**向用户展示样本结果并询问：“试跑结果符合预期吗？确认后
-  我将提交平台执行全量数据。”不要跳过此步骤，即使结果看起来正确也必须等用户
-  明确确认后才能提交。
-- 确认后调用 `df_submit_pipeline`（传本地 `script_path` 和 Storage `input_path`）；
-  工具内部自动生成 run_id、上传 pipeline 和 runtime 文件到 Storage，无需手动调
-  `upload_file_to_pyromind`。收到 callback 后依次检查 `report.json`、异常时的
-  `llm_calls.jsonl`，以及 `processed.jsonl`。
-- 处理完成后调用 `df_convert`，并重新加载最终训练文件验证；已在平台生成的产物无需重复上传。
+1. 调用 `preview_dataset(mode="inspect")` 确认数据结构；目录含多个条目时，自主选择
+   能覆盖正常和边界情况的 3 条。
+2. 调用 `preview_dataset(mode="sample", sample_paths=[...])` 下载 Sample。图片任务
+   同时查看 `vision_previews`，用其 OCR/摘要理解数据，不把原图传给主编程模型。
+3. 编写 Pipeline。文本和图片输出分别遵循
+   [目标格式](references/target-formats.md)；图片 Pipeline 从
+   [配置模板](references/multimodal_pipeline.py) 修改，只填写
+   `ImagePipelineConfig`，不要生成循环、HTTP、Base64、重试或 Checkpoint。
+4. 调用 `df_run_pipeline`，显式设置 `model_profile` 和 `output_schema`，检查
+   `processed.sample.jsonl` 及本地 Report。
+5. 展示 Sample 结果并等待用户明确确认。
+6. 调用 `df_submit_pipeline(mode="full")`。收到 Kafka callback 后，调用
+   `preview_dataset` 查看 `<output_dir>/report.json`；如失败，再查看同目录的
+   `failure.json`、`validation.json` 和必要的 `llm_calls.jsonl`。
+7. Agent 修复后先在本地重跑失败记录、失败前一条和同类成功记录：
+   - 旧结果仍可用：`mode="resume"`，提交 `reuse_assessment` 和可选新脚本。
+   - 旧结果不可用：重新执行 Sample、人工确认并创建新的 full run。
 
-## 决策规则
+## 运行规则
 
-- 下游字段必须来自原始数据或更早阶段。
-- 默认保留输入字段；需要修订时生成新字段，或遵循用户明确要求。
-- 根据用户目标、实际字段和相关规则自主决定模型输入字段、生成字段、保留字段与训练响应；
-  不固定图片数量或业务字段名。
-- 规则只提炼直接影响判断的部分，不把整份文档塞进 prompt。
-- 确定性清洗优先使用 `general_text` 算子。
-- 单字段生成使用 `PromptedGenerator`；多字段 prompt 使用
-  `FormatStrPromptedGenerator`；LLM 语义过滤使用 `PromptedFilter`。
-- QA 生成优先 `Text2MultiHopQAGenerator`；文本改写使用
-  `PromptedRefiner`。
-- 视觉内容由 DataFlow VLM serving 读取；主 Agent 只编写和调度脚本，并接收文本摘要、
-  路径与状态。
-- 单图和多图语义任务复用现有 VLM serving，不新增 DataFlow 核心算子。
-
-需要算子签名、storage step 约束或 serving 导入方式时，读取
-[算子与脚本约定](references/operators.md)。需要常见文本流水线组合时，读取
-[流水线模式](references/patterns.md)。不要为多模态任务加载这些文本示例，除非任务
-同时包含文本算子。
-
-## 多模态任务
-
-多模态任务只读取：
-
-- [多图语义打标](references/multimodal-labeling.md)
-- [通用多图 pipeline 模板](references/multimodal_pipeline.py)
-- [目标格式](references/target-formats.md)
-
-Agent 根据用户目标、数据和规则自主选择：
-
-- 哪些原始或参考字段可供模型读取；
-- 生成哪些字段；
-- 哪些字段原样保留；
-- 推理字段、答案字段以及训练 prompt 如何组装。
-
-VLM 按任务 JSON Schema 返回结构化字段；本地代码从任务选定的推理字段和答案字段组装：
-
-```text
-<think>...</think>
-
-<answer>...</answer>
-```
-
-不要硬编码 `label`、`note`、`cot` 或 AVI 语义。最终训练 user prompt 不得泄漏只在
-生成阶段使用的参考答案。
+- 图片任务使用 `model_profile="vision"`，由服务端 `DF_*` 配置选择 Gemma；文本任务
+  使用 `model_profile="text"`，沿用主对话模型。
+- 文本 Pipeline 使用自动投递的 `preparation_runtime.py`；图片 Pipeline 使用
+  `image_utils.py` 封装的 DataFlow 多图算子。模型瞬时或输出校验错误最多重试 3 次；
+  永久错误或重试耗尽时停止任务，保留 DataFlow Checkpoint 和 `failure.json`。
+- 断点续跑复用同一输入 Manifest 和已提交 JSONL 前缀。脚本、Prompt、模型或 Schema
+  变化不是机械拒绝条件，但 Agent 必须提交包含变更、验证样本和复用理由的
+  `reuse_assessment`。
+- 平台每次恢复产生新的 execution revision，Report 必须能追溯该段输出使用的版本。
 
 ## 完成条件
 
-- 样本和全量文件名明确区分，抽样结果不能冒充全量产物。
-- 处理报告包含读取、成功、失败数量、失败样本和字段策略。
-- 文本 SFT/DPO 分别输出 `messages.jsonl`/`preference.jsonl`。
-- 视觉 SFT 的 `processed.jsonl` 包含任务系统提示、样本 prompt、结构化标注、
-  已组装的标签响应和有序图片路径。
-- `vision_sft_flat` 输出 `id/image_path/images/system_prompt/user_prompt/gt`；
-  图片保持路径形式和原始顺序。
-- `df_convert` 的 converted 数量等于成功标注数量；任何 skipped 或失败都在交付中说明。
-- 视觉 Parquet 重新加载后列、行数、路径和图片可解码性均通过验证。
+- `processed.jsonl` 通过 `validate_prepared_data.py`，ID 唯一且没有额外审计字段。
+- 文本行固定为 `id/system_prompt/user_prompt/gt`。
+- 图片行固定为 `id/image_path/images/system_prompt/user_prompt/gt`，
+  `image_path == images[0]`，`gt` 为 `<think>...</think>` 后接
+  `<answer>...</answer>`。
+- Report 明确记录状态、输出数、模型调用、失败信息、Checkpoint、校验结果和 Revision。
 
-## 参考
+## 按需参考
 
-- [算子与脚本约定](references/operators.md)
-- [文本流水线模式](references/patterns.md)
 - [目标格式](references/target-formats.md)
-- [多图语义打标](references/multimodal-labeling.md)
-- [通用多图 pipeline 模板](references/multimodal_pipeline.py)
-- [AVI manifest adapter 示例](references/avi_manifest_adapter.py)
+- [通用文本 Pipeline](references/text_pipeline.py)
+- [通用图片 Pipeline](references/multimodal_pipeline.py)
+- [image_utils API](references/image-utils-api.md)
+- [多图语义打标说明](references/multimodal-labeling.md)

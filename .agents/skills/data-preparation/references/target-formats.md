@@ -1,59 +1,44 @@
 # 目标格式
 
-## messages 格式（用于 SFT/通用对话）
+正式训练产物统一为 UTF-8 JSONL，一行一个对象，不允许额外字段。审计、源路径、模型
+和重试信息写入 Report，不写进训练行。
 
-```json
-{"messages": [
-  {"role": "system", "content": "optional system prompt"},
-  {"role": "user", "content": "the problem"},
-  {"role": "assistant", "content": "reasoning\n\nanswer"}
-]}
-```
-
-用 `df_convert --format messages --text_field problem --reasoning_field cot --answer_field answer [--system_prompt "..."]`
-
-## preference 格式（用于 DPO/RLHF）
-
-```json
-{"prompt": "the problem", "chosen": "chosen response", "rejected": "rejected response"}
-```
-
-用 `df_convert --format preference --text_field prompt --chosen_field chosen --rejected_field rejected`
-
-## 扁平视觉 SFT（当前业务格式）
-
-输入 `processed.jsonl` 至少包含：
+## 文本
 
 ```json
 {
-  "sample_id": "sample-001",
-  "training_system_prompt": "任务级系统提示",
-  "training_prompt": "比较这些图片并给出结论",
-  "training_response": "<think>推理</think>\n\n<answer>A</answer>",
-  "image_paths": ["images/a.jpg", "images/b.jpg"]
+  "id": "alpaca-gpt4-2",
+  "system_prompt": "You are a helpful assistant.",
+  "user_prompt": "用户问题",
+  "gt": "标准答案"
 }
 ```
 
-调用：
+- 四个字段都必须是非空字符串。
+- `id` 在整个文件内唯一。
 
-```text
-df_convert(
-  format="vision_sft_flat",
-  input_path="processed.jsonl",
-  output_path="train.parquet",
-  id_field="sample_id",
-  system_prompt_field="training_system_prompt",
-  prompt_field="training_prompt",
-  response_field="training_response",
-  images_field="image_paths"
-)
+## 图片
+
+```json
+{
+  "id": "geo-training-0",
+  "image_path": "images/geo-training-000000.png",
+  "images": ["images/geo-training-000000.png"],
+  "system_prompt": "You are a helpful assistant.",
+  "user_prompt": "用户问题",
+  "gt": "<think>推理</think>\n\n<answer>A</answer>"
+}
 ```
 
-输出列固定为
-`id/image_path/images/system_prompt/user_prompt/gt`。`images` 保存所有原始路径及
-顺序，`image_path` 是首图兼容别名，不嵌入 PIL、bytes 或 base64。转换前验证图片存在
-且可解码，`gt` 必须是完整的 `<think>/<answer>` 响应。
+- `images` 是非空、有序的相对 POSIX 路径列表。
+- `image_path` 必须等于 `images[0]`。
+- 路径不允许绝对路径或 `..`。
+- `gt` 只能包含一组非空 `<think>` 和 `<answer>`；是否限制 A/B/C/D 由任务决定。
 
-## TRL vision SFT（兼容格式）
+Pipeline 直接写出上述格式，并通过 `df_run_pipeline(output_schema=...)` 或
+`df_submit_pipeline(output_schema=...)` 自动校验。
 
-旧调用 `format="trl_vision_sft"` 保持 `messages + 嵌入式 images` 语义，供已有流程使用。
+## 旧格式兼容
+
+已有 `messages`、`preference`、`trl_vision_sft` 和 `vision_sft_flat` 的 `df_convert`
+调用继续可用，但不属于新的标准链路。

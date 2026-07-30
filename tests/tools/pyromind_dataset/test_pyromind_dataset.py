@@ -16,6 +16,7 @@ from openhands.tools.pyromind_dataset.definition import (
     UploadFileToPyromindAction,
     UploadFileToPyromindExecutor,
     _match_shared_dataset,
+    _resolve_workspace_dir,
     download_file_from_pyromind,
 )
 
@@ -1137,3 +1138,261 @@ def test_storage_directory_single_file_auto_previews(monkeypatch, tmp_path):
     assert observation.source == "storage"
     assert observation.preview_file_path == "solo/only.jsonl"
     assert observation.num_rows == 2
+
+
+def test_storage_directory_lists_folders(monkeypatch, tmp_path):
+    _patch_shared_empty(monkeypatch)
+
+    def fake_post(url, *, headers, json, timeout):
+        if url.endswith("/file_list"):
+            return _Response(
+                200,
+                {
+                    "success": True,
+                    "data": {
+                        "list": [
+                            {
+                                "name": "sample-a",
+                                "path": "images/sample-a",
+                                "type": "Folder",
+                                "size": None,
+                            },
+                            {
+                                "name": "labels.jsonl",
+                                "path": "images/labels.jsonl",
+                                "type": "File",
+                                "size": 12,
+                            },
+                        ]
+                    },
+                },
+            )
+        raise AssertionError(f"unexpected POST URL: {url}")
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    observation = PreviewDatasetExecutor(
+        storage_base_url="https://portal.test/storage_api",
+    )(
+        PreviewDatasetAction(dataset_path="images/"),
+        cast(Any, _fake_conversation(tmp_path)),
+    )
+
+    assert not observation.is_error
+    assert observation.is_dir is True
+    assert observation.files == ["images/labels.jsonl"]
+    assert observation.entries == [
+        {
+            "path": "images/sample-a",
+            "name": "sample-a",
+            "type": "folder",
+            "size": None,
+            "last_modified": None,
+        },
+        {
+            "path": "images/labels.jsonl",
+            "name": "labels.jsonl",
+            "type": "file",
+            "size": 12,
+            "last_modified": None,
+        },
+    ]
+
+
+def test_storage_virtual_directory_without_slash_falls_back_to_listing(
+    monkeypatch,
+    tmp_path,
+):
+    _patch_shared_empty(monkeypatch)
+
+    def fake_post(url, *, headers, json, timeout):
+        if url.endswith("/get_file_metadata"):
+            return _Response(500, {}, text="file metadata is not found")
+        if url.endswith("/file_list"):
+            return _Response(
+                200,
+                {
+                    "success": True,
+                    "data": {
+                        "list": [
+                            {
+                                "name": "defect.jpg",
+                                "path": "images/sample-a/defect.jpg",
+                                "type": "File",
+                                "size": 12,
+                            },
+                            {
+                                "name": "meta.json",
+                                "path": "images/sample-a/meta.json",
+                                "type": "File",
+                                "size": 24,
+                            },
+                        ]
+                    },
+                },
+            )
+        raise AssertionError(f"unexpected POST URL: {url}")
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    observation = PreviewDatasetExecutor(
+        storage_base_url="https://portal.test/storage_api",
+    )(
+        PreviewDatasetAction(dataset_path="images/sample-a"),
+        cast(Any, _fake_conversation(tmp_path)),
+    )
+
+    assert not observation.is_error
+    assert observation.is_dir is True
+    assert len(observation.entries) == 2
+
+
+def test_sample_mode_materializes_folder_and_runs_vision_preview(
+    monkeypatch,
+    tmp_path,
+):
+    image = b"\x89PNG\r\n\x1a\nfake"
+    note = b"sample notes"
+    downloads = {
+        "https://download.test/image": image,
+        "https://download.test/note": note,
+    }
+
+    def fake_post(url, *, headers, json, timeout):
+        if url.endswith("/get_file_metadata"):
+            assert json["path"] == "/dataset/sample-a"
+            return _Response(500, {}, text="file metadata is not found")
+        if url.endswith("/file_list"):
+            assert json["path"] == "/dataset/sample-a"
+            return _Response(
+                200,
+                {
+                    "success": True,
+                    "data": {
+                        "list": [
+                            {
+                                "name": "diagram.png",
+                                "path": "/dataset/sample-a/diagram.png",
+                                "type": "File",
+                                "size": len(image),
+                            },
+                            {
+                                "name": "note.txt",
+                                "path": "/dataset/sample-a/note.txt",
+                                "type": "File",
+                                "size": len(note),
+                            },
+                        ]
+                    },
+                },
+            )
+        if url.endswith("/get_url"):
+            suffix = "image" if json["path"].endswith(".png") else "note"
+            return _Response(
+                200,
+                {
+                    "success": True,
+                    "data": {"url": f"https://download.test/{suffix}"},
+                },
+            )
+        raise AssertionError(f"unexpected POST URL: {url}")
+
+    def fake_stream(method, url, *, headers, timeout, follow_redirects):
+        assert method == "GET"
+        return _StreamResponse(downloads[url])
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr(httpx, "stream", fake_stream)
+    monkeypatch.setattr(
+        "openhands.tools.pyromind_dataset.definition._call_vision_preview_model",
+        lambda **kwargs: "OCR: triangle ABC",
+    )
+
+    observation = PreviewDatasetExecutor(
+        storage_base_url="https://portal.test/storage_api",
+    )(
+        PreviewDatasetAction(
+            dataset_path="/dataset/",
+            mode="sample",
+            sample_paths=["/dataset/sample-a/"],
+        ),
+        cast(Any, _fake_conversation(tmp_path)),
+    )
+
+    assert not observation.is_error
+    assert observation.previewed_rows == 1
+    assert observation.has_vision is True
+    assert observation.sample_manifest_path is not None
+    manifest_path = tmp_path / observation.sample_manifest_path
+    manifest = jsonlib.loads(manifest_path.read_text().strip())
+    assert manifest["source_path"] == "/dataset/sample-a"
+    assert manifest["local_path"].endswith("sample-a")
+    assert manifest["images"][0].endswith("diagram.png")
+    assert len(manifest["files"]) == 2
+    assert (manifest_path.parent / manifest["images"][0]).read_bytes() == image
+    assert (tmp_path / observation.local_sample_paths[0]).is_dir()
+    assert observation.vision_previews[0]["ocr_text"] == "OCR: triangle ABC"
+    assert any(item.type == "image" for item in observation.content)
+    assert all(item.type == "text" for item in observation.to_llm_content)
+
+
+def test_sample_mode_allows_conversation_public_data_workspace(tmp_path) -> None:
+    workspace = tmp_path / "workspace" / "conversations" / "conversation-id"
+    (workspace / "events").mkdir(parents=True)
+    (workspace / "public_data").mkdir()
+
+    resolved = _resolve_workspace_dir(cast(Any, _fake_conversation(workspace)))
+
+    assert resolved == workspace.resolve()
+
+
+def test_inspect_storage_image_uses_vision_model(monkeypatch, tmp_path) -> None:
+    _patch_shared_empty(monkeypatch)
+    image = b"\xff\xd8\xff\xe0fake-jpeg"
+
+    def fake_post(url, *, headers, json, timeout):
+        if url.endswith("/get_file_metadata"):
+            return _Response(
+                200,
+                {
+                    "success": True,
+                    "data": {
+                        "object_name": "/dataset/defect.jpg",
+                        "bucket_name": "1001",
+                        "size": len(image),
+                        "content_type": "image/jpeg",
+                        "is_dir": False,
+                        "metadata": {},
+                    },
+                },
+            )
+        if url.endswith("/get_url"):
+            return _Response(
+                200,
+                {"success": True, "data": {"url": "https://download.test/image"}},
+            )
+        raise AssertionError(f"unexpected POST URL: {url}")
+
+    def fake_stream(method, url, *, headers, timeout, follow_redirects):
+        assert method == "GET"
+        assert url == "https://download.test/image"
+        return _StreamResponse(image)
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr(httpx, "stream", fake_stream)
+    monkeypatch.setattr(
+        "openhands.tools.pyromind_dataset.definition._call_vision_preview_model",
+        lambda **kwargs: "AOI image without visible text; red defect box.",
+    )
+
+    observation = PreviewDatasetExecutor(
+        storage_base_url="https://portal.test/storage_api",
+    )(
+        PreviewDatasetAction(dataset_path="/dataset/defect.jpg"),
+        cast(Any, _fake_conversation(tmp_path)),
+    )
+
+    assert not observation.is_error
+    assert observation.has_vision is True
+    assert observation.vision_previews[0]["ocr_text"].startswith("AOI image")
+    assert "vision_summary=AOI image" in observation.text
+    assert any(item.type == "image" for item in observation.content)
+    assert all(item.type == "text" for item in observation.to_llm_content)

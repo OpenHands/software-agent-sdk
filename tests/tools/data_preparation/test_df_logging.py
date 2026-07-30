@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from PIL import Image
 
 
 SCRIPTS_DIR = (
@@ -38,6 +39,16 @@ def df_logging() -> Any:
 @pytest.fixture()
 def generate_report_mod() -> Any:
     return _import_from_scripts("generate_report")
+
+
+@pytest.fixture()
+def preparation_runtime() -> Any:
+    return _import_from_scripts("preparation_runtime")
+
+
+@pytest.fixture()
+def validate_prepared_data() -> Any:
+    return _import_from_scripts("validate_prepared_data")
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +265,233 @@ def test_report_all_failed(generate_report_mod: Any, tmp_path: Path) -> None:
     assert report["status"] == "failed"
     assert report["llm_calls"]["success"] == 0
     assert report["llm_calls"]["failed"] == 2
+
+
+def test_report_merges_checkpoint_validation_and_revision(
+    generate_report_mod: Any,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "checkpoint.json").write_text(
+        json.dumps(
+            {
+                "next_source_index": 3,
+                "committed_records": 3,
+                "output_offset": 120,
+            }
+        )
+    )
+    (tmp_path / "validation.json").write_text(
+        json.dumps({"status": "failed", "error": "duplicate id"})
+    )
+
+    report = generate_report_mod.generate_report(
+        str(tmp_path),
+        execution_revision=2,
+        resumed=True,
+    )
+
+    assert report["status"] == "failed"
+    assert report["execution_revision"] == 2
+    assert report["resumed"] is True
+    assert report["checkpoint"]["next_source_index"] == 3
+    assert report["validation"]["error"] == "duplicate id"
+
+
+def test_report_reads_dataflow_batch_checkpoint_and_runtime_metadata(
+    generate_report_mod: Any,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "processed.jsonl").write_text('{"id":"one"}\n')
+    (tmp_path / "image_pipeline_last_success_step.txt").write_text("0,1\n")
+    (tmp_path / "runtime_metadata.json").write_text(
+        json.dumps(
+            {
+                "batch_size": 8,
+                "record_count": 20,
+                "manifest_fingerprint": "manifest-sha",
+                "runtime_fingerprint": "runtime-sha",
+                "image_utils_api_version": "1",
+            }
+        )
+    )
+
+    report = generate_report_mod.generate_report(
+        str(tmp_path),
+        pipeline_exit_code=1,
+        runtime_dir_name="runtime-r2",
+    )
+
+    assert report["checkpoint"] == {
+        "kind": "dataflow_batch",
+        "path": "image_pipeline_last_success_step.txt",
+        "operator_step": 0,
+        "next_batch": 1,
+        "batch_size": 8,
+        "next_source_index": 8,
+        "committed_records": 1,
+    }
+    assert report["resumable"] is True
+    assert report["runtime_fingerprint"] == "runtime-sha"
+    assert report["runtime_dir_name"] == "runtime-r2"
+    assert report["image_utils_api_version"] == "1"
+
+
+def test_checkpoint_commit_and_resume_truncates_uncommitted_tail(
+    preparation_runtime: Any,
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "processed.jsonl"
+    checkpoint = preparation_runtime.commit_record(
+        output_path=output,
+        state_dir=tmp_path,
+        source_index=0,
+        row={"id": "one"},
+    )
+    committed_content = output.read_bytes()
+    with output.open("ab") as target:
+        target.write(b'{"id":"uncommitted"}\n')
+
+    loaded = preparation_runtime.load_checkpoint(tmp_path)
+    assert loaded == checkpoint
+    preparation_runtime.prepare_resume_output(output, loaded)
+
+    assert output.read_bytes() == committed_content
+    assert loaded.next_source_index == 1
+
+
+def test_vision_client_retries_transient_failure_and_repairs_output(
+    monkeypatch,
+    preparation_runtime: Any,
+    tmp_path: Path,
+) -> None:
+    image = tmp_path / "image.png"
+    image.write_bytes(b"png")
+
+    class Response:
+        def __init__(
+            self,
+            status_code: int,
+            payload: dict[str, Any],
+            text: str = "",
+        ) -> None:
+            self.status_code = status_code
+            self._payload = payload
+            self.text = text
+
+        def json(self) -> dict[str, Any]:
+            return self._payload
+
+    responses = iter(
+        [
+            Response(429, {}, "rate limited"),
+            Response(
+                200,
+                {"choices": [{"message": {"content": "invalid"}}]},
+            ),
+            Response(
+                200,
+                {"choices": [{"message": {"content": "valid"}}]},
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        preparation_runtime.httpx,
+        "post",
+        lambda *args, **kwargs: next(responses),
+    )
+    monkeypatch.setattr(preparation_runtime.time, "sleep", lambda seconds: None)
+
+    client = preparation_runtime.RetryingVisionClient(
+        api_url="https://vision.test/chat/completions",
+        model="gemma",
+        max_attempts=3,
+    )
+
+    def validate(value: str) -> None:
+        if value != "valid":
+            raise ValueError("bad schema")
+
+    result, attempts = client.generate(
+        prompt="label",
+        image_paths=[image],
+        validate=validate,
+    )
+
+    assert result == "valid"
+    assert attempts == 3
+
+
+def test_validate_canonical_text_jsonl(
+    validate_prepared_data: Any,
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "processed.jsonl"
+    _write_jsonl(
+        output,
+        [
+            {
+                "id": "text-1",
+                "system_prompt": "You are helpful.",
+                "user_prompt": "Question",
+                "gt": "Answer",
+            }
+        ],
+    )
+
+    result = validate_prepared_data.validate_jsonl(output, schema="text")
+    assert result == {"status": "passed", "schema": "text", "rows": 1}
+
+
+def test_validate_canonical_vision_jsonl(
+    validate_prepared_data: Any,
+    tmp_path: Path,
+) -> None:
+    images = tmp_path / "images"
+    images.mkdir()
+    Image.new("RGB", (1, 1), "white").save(images / "one.png")
+    output = tmp_path / "processed.jsonl"
+    _write_jsonl(
+        output,
+        [
+            {
+                "id": "vision-1",
+                "image_path": "images/one.png",
+                "images": ["images/one.png"],
+                "system_prompt": "You are helpful.",
+                "user_prompt": "Question",
+                "gt": "<think>reason</think>\n\n<answer>A</answer>",
+            }
+        ],
+    )
+
+    result = validate_prepared_data.validate_jsonl(
+        output,
+        schema="vision",
+        image_root=tmp_path,
+    )
+    assert result["rows"] == 1
+
+
+def test_validate_jsonl_rejects_extra_fields(
+    validate_prepared_data: Any,
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "processed.jsonl"
+    _write_jsonl(
+        output,
+        [
+            {
+                "id": "text-1",
+                "system_prompt": "system",
+                "user_prompt": "user",
+                "gt": "answer",
+                "source_path": "must-not-leak",
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="extra=.*source_path"):
+        validate_prepared_data.validate_jsonl(output, schema="text")
 
 
 def _write_jsonl(path: Path, records: list[dict]) -> None:
