@@ -1,3 +1,4 @@
+import ast
 import importlib.util
 import json
 import sys
@@ -684,6 +685,47 @@ def _load_image_utils() -> Any:
     finally:
         sys.modules.pop(module_name, None)
     return module
+
+
+def test_data_preparation_runtime_is_python_310_compatible() -> None:
+    scripts_dir = (
+        Path(__file__).parents[3]
+        / ".agents"
+        / "skills"
+        / "data-preparation"
+        / "scripts"
+    )
+    for path in sorted(scripts_dir.glob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(
+            source,
+            filename=str(path),
+            feature_version=(3, 10),
+        )
+        direct_datetime_utc = {
+            alias.name
+            for node in tree.body
+            if isinstance(node, ast.ImportFrom) and node.module == "datetime"
+            for alias in node.names
+            if alias.name == "UTC"
+        }
+        assert not direct_datetime_utc, (
+            f"{path.name} imports datetime.UTC without a Python 3.10 fallback"
+        )
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "typing":
+                imported_names = {alias.name for alias in node.names}
+                unsupported_typing = imported_names & {"Self", "TypeAliasType"}
+                assert not unsupported_typing, (
+                    f"{path.name} imports Python 3.11+ typing API(s): "
+                    f"{sorted(unsupported_typing)}"
+                )
+            if isinstance(node, ast.Attribute):
+                assert not (
+                    isinstance(node.value, ast.Name)
+                    and node.value.id == "datetime"
+                    and node.attr == "UTC"
+                ), f"{path.name} uses datetime.UTC, which requires Python 3.11"
 
 
 def test_image_utils_multi_image_prompt_retry_and_output_order(

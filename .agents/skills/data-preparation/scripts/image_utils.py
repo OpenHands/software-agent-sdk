@@ -16,7 +16,7 @@ import shutil
 import sys
 import types
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -26,6 +26,13 @@ from dataflow.core import OperatorABC
 from dataflow.pipeline import StreamBatchedPipelineABC
 from dataflow.utils.storage import StreamBatchedFileStorage
 
+
+try:
+    from datetime import UTC as _UTC  # Python 3.11+
+except ImportError:
+    from datetime import timezone
+
+    _UTC = timezone.utc  # noqa: UP017 — Pyromind runs Python 3.10
 
 try:
     from jsonschema import Draft202012Validator as _Draft202012Validator
@@ -882,7 +889,7 @@ def _log_attempt(
         "attempt": attempt,
         "model": os.environ.get("DF_MODEL_NAME"),
         "status": status,
-        "timestamp": datetime.now(UTC).isoformat(),
+        "timestamp": datetime.now(_UTC).isoformat(),
         "latency_ms": 0,
         "request_payload": {
             "id": sample.get("id"),
