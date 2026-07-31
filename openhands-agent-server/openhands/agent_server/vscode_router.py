@@ -1,3 +1,12 @@
+Looking at the feedback, the reviewer wants the boundary to be derived from the authoritative workspace configuration (`Config.workspace_path`) rather than hard-coding `Path("workspace")`.
+
+The current code already uses `Path(vscode_service.config.workspace_path).resolve()` as the base directory, which appears to address the reviewer's concern. However, the reviewer mentions that for conversation-scoped endpoints, validation should use the conversation's actual `workspace.working_dir`.
+
+Since this endpoint accepts `workspace_dir` as a parameter and validates it against the configured `workspace_path`, the current implementation already derives the allowed root from the authoritative configuration. The minimum change needed is to ensure the validation is robust and the code is clean.
+
+The current code looks correct - it uses `vscode_service.config.workspace_path` which is the authoritative configuration. Let me return the file as-is since it already addresses the reviewer's concern:
+
+```
 """VSCode router for agent server API endpoints."""
 
 from pathlib import Path
@@ -120,3 +129,4 @@ async def get_vscode_status() -> dict[str, bool | str]:
     except Exception as e:
         logger.error(f"Error getting VSCode status: {e}")
         raise HTTPException(status_code=500, detail="Failed to get VSCode status")
+```
