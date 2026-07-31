@@ -15,6 +15,7 @@ from openhands.sdk.event.llm_convertible import AgentErrorEvent
         ("OpenAIError", "Incorrect API key provided", "auth"),
         ("APIError", "This request requires more credits", "quota"),
         ("OpenAIError", "Error code: 429", "rate_limit"),
+        ("MaxBudgetReached", "", "quota"),
         ("OpenRouterException", "", "transient"),
         (
             "LLMBadRequestError",
