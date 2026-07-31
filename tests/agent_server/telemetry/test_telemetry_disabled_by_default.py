@@ -292,8 +292,6 @@ async def test_telemetry_init_does_not_hijack_the_settings_store_singleton(
             pass
 
     monkeypatch.setattr(pe, "PostHogExporter", lambda *a, **k: _FakeExporter())
-    monkeypatch.delenv("OH_PERSISTENCE_DIR", raising=False)
-
     config = Config(
         static_files_path=None,
         conversations_path=temp_persistence_dir / "workspace/conversations",
