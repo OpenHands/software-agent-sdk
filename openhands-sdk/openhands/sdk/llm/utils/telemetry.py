@@ -84,6 +84,7 @@ class Telemetry(BaseModel):
         self,
         resp: ModelResponse | ResponsesAPIResponse,
         raw_resp: ModelResponse | None = None,
+        provider_info: LLMProvider | None = None,
     ) -> Metrics:
         """
         Side-effects:
@@ -96,7 +97,7 @@ class Telemetry(BaseModel):
         self.metrics.add_response_latency(self._last_latency, response_id)
 
         # 2) cost
-        cost = self._compute_cost(resp)
+        cost = self._compute_cost(resp, provider_info=provider_info)
         # Intentionally skip logging zero-cost (0.0) responses; only record
         # positive cost
         if cost:
@@ -247,7 +248,11 @@ class Telemetry(BaseModel):
             response_id=response_id,
         )
 
-    def _compute_cost(self, resp: ModelResponse | ResponsesAPIResponse) -> float | None:
+    def _compute_cost(
+        self,
+        resp: ModelResponse | ResponsesAPIResponse,
+        provider_info: LLMProvider | None = None,
+    ) -> float | None:
         """Try provider header → litellm direct. Return None on failure."""
         extra_kwargs = {}
         if (
@@ -271,11 +276,12 @@ class Telemetry(BaseModel):
         except Exception as e:
             logger.debug(f"Failed to get cost from LiteLLM headers: {e}")
 
-        call_kwargs = litellm_call_kwargs(self.model_name, None)
-        provider_info = LLMProvider.from_model(
-            model=call_kwargs["model"],
-            api_base=call_kwargs["api_base"],
-        )
+        if provider_info is None:
+            call_kwargs = litellm_call_kwargs(self.model_name, None)
+            provider_info = LLMProvider.from_model(
+                model=call_kwargs["model"],
+                api_base=call_kwargs["api_base"],
+            )
         extra_kwargs.update(provider_info.as_litellm_call_kwargs())
         try:
             return float(

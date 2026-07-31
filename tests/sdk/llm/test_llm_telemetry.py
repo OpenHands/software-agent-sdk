@@ -313,7 +313,7 @@ class TestTelemetryCostCalculation:
 
     def test_compute_cost_model_name_processing(self, mock_metrics):
         """Test that parsed provider/model info is sent to LiteLLM cost calc."""
-        telemetry = Telemetry(model_name="openai/gpt-4o-mini", metrics=mock_metrics)
+        telemetry = Telemetry(model_name="gpt-4o-mini", metrics=mock_metrics)
 
         mock_response = ModelResponse(
             id="test-id",

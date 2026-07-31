@@ -792,11 +792,28 @@ def test_llm_model_copy_refreshes_provider_for_model_update(deep: bool):
         update={"model": "anthropic/claude-3-5-sonnet-20241022"},
         deep=deep,
     )
-    kwargs = copied._prepare_transport_kwargs(messages=[], enable_streaming=False)
+    response = create_mock_litellm_response("ok")
+    messages = [Message(role="user", content=[TextContent(text="Hi")])]
+
+    with (
+        patch(
+            "openhands.sdk.llm.llm.litellm_completion",
+            return_value=response,
+        ) as mock_completion,
+        patch(
+            "openhands.sdk.llm.utils.telemetry.litellm_completion_cost",
+            return_value=0.1,
+        ) as mock_cost,
+    ):
+        copied.completion(messages=messages)
 
     assert copied.model == "anthropic/claude-3-5-sonnet-20241022"
-    assert kwargs["model"] == "claude-3-5-sonnet-20241022"
-    assert kwargs["custom_llm_provider"] == "anthropic"
+    completion_kwargs = mock_completion.call_args.kwargs
+    assert completion_kwargs["model"] == "claude-3-5-sonnet-20241022"
+    assert completion_kwargs["custom_llm_provider"] == "anthropic"
+    cost_kwargs = mock_cost.call_args.kwargs
+    assert cost_kwargs["model"] == "claude-3-5-sonnet-20241022"
+    assert cost_kwargs["custom_llm_provider"] == "anthropic"
 
 
 def test_llm_model_copy_refreshes_provider_for_base_url_update():

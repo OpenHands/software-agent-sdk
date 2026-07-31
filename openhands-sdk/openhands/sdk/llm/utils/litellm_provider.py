@@ -2,17 +2,13 @@ from __future__ import annotations
 
 import logging
 import warnings
-from collections.abc import Callable
 from dataclasses import dataclass
-from functools import cached_property
 from typing import Any, cast
 
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore")
     import litellm
-    from litellm.types.utils import LlmProviders
-    from litellm.utils import ProviderConfigManager
 
 
 logger = logging.getLogger(__name__)
@@ -59,34 +55,6 @@ class LLMProvider:
             resolved_api_base=resolved_api_base,
         )
 
-    @cached_property
-    def provider_enum(self) -> LlmProviders | None:
-        if self.name is None:
-            return None
-
-        try:
-            return LlmProviders(self.name)
-        except ValueError:
-            return None
-
-    @cached_property
-    def model_info(self) -> Any | None:
-        if self.provider_enum is None:
-            return None
-
-        try:
-            return ProviderConfigManager.get_provider_model_info(
-                self.model, self.provider_enum
-            )
-        except Exception:
-            return None
-
-    @property
-    def canonical_name(self) -> str:
-        if self.name is None:
-            return self.model
-        return f"{self.name}/{self.model}"
-
     @property
     def is_bedrock(self) -> bool:
         return self.name == "bedrock"
@@ -108,27 +76,3 @@ class LLMProvider:
         if normalized_api_key is not None:
             kwargs["api_key"] = normalized_api_key
         return kwargs
-
-    @staticmethod
-    def _api_base_or_none(getter: Callable[[], Any]) -> str | None:
-        try:
-            api_base = getter()
-        except Exception:
-            return None
-        if not api_base:
-            return None
-        return cast(str, api_base)
-
-    def infer_api_base(self) -> str | None:
-        """Resolve provider API base using LiteLLM and provider defaults."""
-        get_api_base = cast(Any, litellm).get_api_base
-        api_base = self._api_base_or_none(lambda: get_api_base(self.canonical_name, {}))
-        if api_base:
-            return api_base
-
-        if self.model_info is not None and hasattr(self.model_info, "get_api_base"):
-            api_base = self._api_base_or_none(self.model_info.get_api_base)
-            if api_base:
-                return api_base
-
-        return self.resolved_api_base

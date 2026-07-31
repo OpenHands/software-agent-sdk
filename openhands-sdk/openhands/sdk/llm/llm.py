@@ -1118,7 +1118,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             completed_resp.output = collected_output_items
 
         assert self._telemetry is not None
-        self._telemetry.on_response(completed_resp)
+        self._telemetry.on_response(
+            completed_resp,
+            provider_info=self._provider_info,
+        )
         return completed_resp
 
     def _prepare_completion_params(
@@ -1433,7 +1436,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         # 6) telemetry
         assert self._telemetry is not None
-        self._telemetry.on_response(resp, raw_resp=raw_resp)
+        self._telemetry.on_response(
+            resp,
+            raw_resp=raw_resp,
+            provider_info=self._provider_info,
+        )
 
         # Ensure at least one choice.
         # Gemini sometimes returns empty choices; we raise LLMNoResponseError here
@@ -1748,7 +1755,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                                 "provider returned a non-streaming response; "
                                 "no on_token deltas will be emitted."
                             )
-                        self._telemetry.on_response(ret)
+                        self._telemetry.on_response(
+                            ret,
+                            provider_info=self._provider_info,
+                        )
                         return ret
 
                     # When stream=True, LiteLLM returns a streaming
@@ -1902,7 +1912,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                                 "provider returned a non-streaming response; "
                                 "no on_token deltas will be emitted."
                             )
-                        self._telemetry.on_response(ret)
+                        self._telemetry.on_response(
+                            ret,
+                            provider_info=self._provider_info,
+                        )
                         return ret
 
                     # When stream=True, LiteLLM returns a streaming
