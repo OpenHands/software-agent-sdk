@@ -813,6 +813,45 @@ def test_agent_settings_from_persisted_current_payload_matches_model_validate() 
     assert payload == original_payload
 
 
+def test_agent_settings_from_persisted_preserves_validated_instance_secrets() -> None:
+    settings = OpenHandsAgentSettings(
+        llm=LLM(model="current-model", api_key=SecretStr("sk-test-key"))
+    )
+
+    restored = OpenHandsAgentSettings.from_persisted(settings)
+
+    assert restored is settings
+    assert isinstance(restored.llm.api_key, SecretStr)
+    assert restored.llm.api_key.get_secret_value() == "sk-test-key"
+
+
+def test_agent_settings_from_persisted_decrypts_mcp_secrets() -> None:
+    from openhands.sdk.utils.cipher import Cipher
+
+    cipher = Cipher(secret_key="test-encryption-key")
+    settings = OpenHandsAgentSettings(
+        mcp_config=coerce_mcp_config(
+            {
+                "github": {
+                    "command": "uvx",
+                    "args": ["mcp-server-github"],
+                    "env": {"GITHUB_TOKEN": "ghp-test-token"},
+                    "headers": {"X-API-Token": "tok-test-token"},
+                }
+            }
+        )
+    )
+    persisted = settings.model_dump(mode="json", context={"cipher": cipher})
+
+    restored = OpenHandsAgentSettings.from_persisted(
+        persisted, context={"cipher": cipher}
+    )
+
+    restored_mcp = dump_mcp_config(restored.mcp_config)
+    assert restored_mcp["github"]["env"] == {"GITHUB_TOKEN": "ghp-test-token"}
+    assert restored_mcp["github"]["headers"] == {"X-API-Token": "tok-test-token"}
+
+
 def test_openhands_agent_settings_from_persisted_matches_union_validator() -> None:
     payload = {
         "schema_version": 1,

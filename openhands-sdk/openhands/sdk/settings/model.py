@@ -493,7 +493,12 @@ class AgentSettingsBase(BaseModel):
         return export_settings_schema(cls)
 
     @classmethod
-    def from_persisted(cls, data: Any) -> Self:
+    def from_persisted(
+        cls,
+        data: Any,
+        *,
+        context: Mapping[str, Any] | None = None,
+    ) -> Self:
         """Load persisted agent settings into this concrete variant.
 
         Applies registered schema migrations, then validates the migrated
@@ -502,6 +507,12 @@ class AgentSettingsBase(BaseModel):
         should use :func:`validate_agent_settings`. Current-schema payloads
         with the deprecated ``agent_kind='llm'`` discriminator are rejected by
         :meth:`OpenHandsAgentSettings.from_persisted`.
+
+        When loading an encrypted persisted mapping, pass the same validation
+        context used to write it (for example ``{"cipher": cipher}``) so
+        secret-bearing fields can be decrypted. An already-validated instance
+        of this concrete variant is returned unchanged, preserving its secrets
+        without a lossy serialization round trip.
 
         Returns:
             An instance of ``cls``.
@@ -514,13 +525,17 @@ class AgentSettingsBase(BaseModel):
             pydantic.ValidationError: If the migrated payload is invalid for
                 ``cls``.
         """
+        if isinstance(data, cls):
+            return data
+        if isinstance(data, BaseModel):
+            data = data.model_dump(mode="json", context={"expose_secrets": "plaintext"})
         payload = _apply_persisted_migrations(
             data,
             current_version=AGENT_SETTINGS_SCHEMA_VERSION,
             migrations=_AGENT_SETTINGS_MIGRATIONS,
             payload_name="AgentSettings",
         )
-        return cls.model_validate(payload)
+        return cls.model_validate(payload, context=context)
 
     def create_agent(self) -> AgentBase:
         """Build an agent from these settings.
