@@ -449,15 +449,47 @@ class DfRunPipelineAction(Action):
     )
 
 
+def _read_output_records(
+    output_path: Path, *, limit: int = 3
+) -> tuple[list[dict[str, Any]], int]:
+    """Read up to ``limit`` output JSONL records plus the total record count."""
+    records: list[dict[str, Any]] = []
+    total = 0
+    try:
+        with output_path.open(encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                total += 1
+                if len(records) < limit:
+                    try:
+                        value = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(value, dict):
+                        records.append(value)
+    except OSError:
+        return [], 0
+    return records, total
+
+
 class DfRunPipelineObservation(Observation):
     exit_code: int = Field(default=-1)
     stdout_tail: str = Field(default="")
     stderr_tail: str = Field(default="")
     report_path: str | None = Field(default=None)
+    output_path: str | None = Field(default=None)
+    record_count: int | None = Field(
+        default=None, description="Total records written to the output JSONL."
+    )
+    sample_records: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="First output records for inspection (local sample preview).",
+    )
 
     @property
     def to_llm_content(self) -> Sequence[TextContent]:
-        return [
+        content = [
             TextContent(
                 text=(
                     f"exit_code={self.exit_code}\n"
@@ -467,12 +499,26 @@ class DfRunPipelineObservation(Observation):
                 )
             )
         ]
+        if self.sample_records:
+            preview = "\n".join(
+                json.dumps(record, ensure_ascii=False) for record in self.sample_records
+            )
+            shown = self.record_count or len(self.sample_records)
+            content.append(
+                TextContent(text=f"--- output records ({shown}) ---\n{preview}")
+            )
+        return content
 
     @property
     def visualize(self) -> Text:
         text = Text()
         style = "green" if self.exit_code == 0 else "red"
         text.append(f"Pipeline finished (exit {self.exit_code})\n", style=style)
+        if self.sample_records:
+            shown = self.record_count or len(self.sample_records)
+            text.append(f"Output records ({shown}):\n", style="bold cyan")
+            for record in self.sample_records:
+                text.append(json.dumps(record, ensure_ascii=False) + "\n")
         tail = (self.stdout_tail or self.stderr_tail)[-500:]
         if tail:
             text.append(tail)
@@ -658,6 +704,10 @@ class DfRunPipelineExecutor(ToolExecutor):
             stderr = f"{stderr}\n--- report ---\n{report_stderr}"
             if rc == 0 and report_rc != 0:
                 rc = report_rc
+        sample_records: list[dict[str, Any]] = []
+        record_count: int | None = None
+        if rc == 0 and output_path is not None and output_path.is_file():
+            sample_records, record_count = _read_output_records(output_path)
         return DfRunPipelineObservation.from_text(
             text=(
                 f"DataFlow model: {config_summary}\n"
@@ -670,6 +720,9 @@ class DfRunPipelineExecutor(ToolExecutor):
             stdout_tail=stdout[-_LOG_TAIL_CHARS:],
             stderr_tail=stderr[-_LOG_TAIL_CHARS:],
             report_path=str(report_path) if report_path is not None else None,
+            output_path=str(output_path) if output_path is not None else None,
+            record_count=record_count,
+            sample_records=sample_records,
         )
 
 

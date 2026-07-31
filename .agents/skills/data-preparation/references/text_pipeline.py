@@ -2,6 +2,11 @@
 
 Usage:
     pipeline.py <input.jsonl> <processed.jsonl> [limit]
+
+Records are processed in batches via DataFlow's ``generate_from_input`` (a batch of
+prompts fans out across an internal thread pool with built-in retries and timeouts)
+instead of one blocking request per record. After each batch, committed records are
+checkpointed and a ``progress.json`` snapshot is written for ``df_check_progress``.
 """
 
 from __future__ import annotations
@@ -9,20 +14,26 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 
 from preparation_runtime import (
     Checkpoint,
-    RetryingChatClient,
     commit_record,
+    create_text_serving,
     load_checkpoint,
     prepare_resume_output,
     write_failure_report,
+    write_progress,
 )
 
 
 SYSTEM_PROMPT = "You are a helpful assistant."
+
+# Records per generate_from_input batch; the serving fans each batch out across its
+# internal thread pool (DF_MAX_WORKERS). Override with DF_BATCH_SIZE.
+BATCH_SIZE = int(os.environ.get("DF_BATCH_SIZE", "8"))
 
 
 def source_id(record: dict[str, Any], source_index: int) -> str:
@@ -44,9 +55,8 @@ def build_model_prompt(record: dict[str, Any]) -> str:
     return build_user_prompt(record)
 
 
-def validate_generated_answer(value: str) -> None:
-    if not value.strip():
-        raise ValueError("generated answer must not be empty")
+def validate_generated_answer(value: object) -> TypeGuard[str]:
+    return isinstance(value, str) and bool(value.strip())
 
 
 def output_row(
@@ -93,37 +103,85 @@ def run(input_path: str, output_path: str, limit: int | None = None) -> None:
             "validation.json",
             "llm_calls.jsonl",
             "report.json",
+            "progress.json",
         ):
             (state_dir / name).unlink(missing_ok=True)
 
     records = read_records(source, limit)
-    client = RetryingChatClient()
-    for source_index in range(checkpoint.next_source_index, len(records)):
-        record = records[source_index]
-        attempts = 0
-        try:
-            answer, attempts = client.generate(
-                prompt=build_model_prompt(record),
-                validate=validate_generated_answer,
+    total = len(records)
+    baseline = checkpoint.next_source_index
+    progress_path = state_dir / "progress.json"
+    started_at = time.monotonic()
+    serving = create_text_serving()
+    succeeded = baseline
+    try:
+        write_progress(
+            progress_path,
+            total=total,
+            processed=baseline,
+            succeeded=baseline,
+            failed=0,
+            started_at=started_at,
+            attempted_this_run=0,
+        )
+        for batch_start in range(baseline, total, BATCH_SIZE):
+            batch = records[batch_start : batch_start + BATCH_SIZE]
+            prompts = [build_model_prompt(record) for record in batch]
+            responses = serving.generate_from_input(
+                user_inputs=prompts,
+                system_prompt=SYSTEM_PROMPT,
             )
-            commit_record(
-                output_path=output,
-                state_dir=state_dir,
-                source_index=source_index,
-                row=output_row(record, source_index, answer),
+            for offset, record in enumerate(batch):
+                source_index = batch_start + offset
+                response = responses[offset] if offset < len(responses) else None
+                try:
+                    if not validate_generated_answer(response):
+                        raise ValueError("generated answer must be a non-empty string")
+                    commit_record(
+                        output_path=output,
+                        state_dir=state_dir,
+                        source_index=source_index,
+                        row=output_row(record, source_index, response),
+                    )
+                except Exception as exc:
+                    write_failure_report(
+                        state_dir=state_dir,
+                        source_index=source_index,
+                        source_id=source_id(record, source_index),
+                        source_path=str(source),
+                        stage="text_generation",
+                        error=exc,
+                        attempts=0,
+                        retriable=False,
+                    )
+                    raise
+                succeeded += 1
+            batch_end = batch_start + len(batch)
+            write_progress(
+                progress_path,
+                total=total,
+                processed=batch_end,
+                succeeded=succeeded,
+                failed=0,
+                started_at=started_at,
+                attempted_this_run=batch_end - baseline,
             )
-        except Exception as exc:
-            write_failure_report(
-                state_dir=state_dir,
-                source_index=source_index,
-                source_id=source_id(record, source_index),
-                source_path=str(source),
-                stage="text_generation",
-                error=exc,
-                attempts=attempts,
-                retriable=False,
+            print(
+                f"[text_pipeline] {batch_end}/{total} processed, {succeeded} succeeded",
+                flush=True,
             )
-            raise
+        print(
+            f"[text_pipeline] done: total={total} succeeded={succeeded} "
+            f"output={output}",
+            flush=True,
+        )
+    finally:
+        cleanup = getattr(serving, "cleanup", None)
+        if callable(cleanup):
+            try:
+                cleanup()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

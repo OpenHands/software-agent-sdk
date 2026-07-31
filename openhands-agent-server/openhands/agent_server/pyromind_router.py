@@ -1027,6 +1027,7 @@ async def request_debug_url(
 @pyromind_router.get("/data-preparation/progress")
 def get_data_preparation_progress(
     http_request: Request,
+    response: Response,
     output_dir: str,
     tail_lines: int = 5,
 ) -> dict[str, Any]:
@@ -1036,6 +1037,9 @@ def get_data_preparation_progress(
     run's Storage output directory so the frontend can render a progress
     bar, ETA, and recently processed records while the job is running.
     """
+    # The frontend polls this URL repeatedly with the same query string; make
+    # sure browsers/proxies never serve a cached (stale) copy.
+    response.headers["Cache-Control"] = "no-store, max-age=0"
     current_user = _get_current_login_user(http_request)
     headers = _build_debug_context_headers(current_user)
     executor = DfCheckProgressExecutor(headers=headers)

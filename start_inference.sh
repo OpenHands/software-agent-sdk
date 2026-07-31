@@ -19,16 +19,21 @@ export SOFTWARE_AGENT_SDK_DIR="${SOFTWARE_AGENT_SDK_DIR:-${SCRIPT_DIR}}"
 export LLM_MODEL="openai/glm-5.2-fp8"
 export LLM_BASE_URL="http://208.64.254.187:8000/v1"
 export OPENAI_API_KEY="${LLM_API_KEY}"
+
+#export LLM_MODEL="openai/deepseek-v4-pro"
+#export LLM_BASE_URL="https://api.deepseek.com"
+#export OPENAI_API_KEY="sk-d1041017718d4d009316d49bd26923a0"
 if [[ -z "${OPENAI_API_KEY:-}" ]]; then
   echo "ERROR: OPENAI_API_KEY is required. Set it in start_inference.sh." >&2
   exit 1
 fi
 export OPENAI_API_KEY
 
-export DF_API_BASE_URL=https://openrouter.ai/api/v1
-export DF_API_URL=https://openrouter.ai/api/v1/chat/completions
-export DF_MODEL_NAME=google/gemma-4-31b-it
+export DF_API_BASE_URL="https://openrouter.ai/api/v1"
+export DF_API_URL="https://openrouter.ai/api/v1/chat/completions"
+export DF_MODEL_NAME="google/gemma-4-31b-it"
 export DF_API_KEY="${OPENROUTER_API_KEY}"
+
 
 # ----------------------------------------------------------
 # Agent Server Configuration
