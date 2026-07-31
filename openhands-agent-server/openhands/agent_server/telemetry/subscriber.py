@@ -222,9 +222,11 @@ class TelemetrySubscriber(Subscriber[Event]):
 
         Only ``tool_name`` is read. ``AgentErrorEvent.error`` is the scaffold's
         message and routinely contains tool output, paths and model text, so it
-        is never touched.
+        is never touched. The ``classification`` field determines whether the
+        error is an expected agent outcome or a diagnostic.
         """
         fingerprint = normalize_error_code("AgentError")
+        classification = event.classification
         properties = m.ErrorProperties(
             conversation_ref=self.context.conversation_ref,
             error_class=fingerprint.error_class,
@@ -232,6 +234,12 @@ class TelemetrySubscriber(Subscriber[Event]):
             error_fingerprint=fingerprint.error_fingerprint,
             is_first_party=True,
             is_terminal=False,
+            error_telemetry=(
+                "diagnostic"
+                if classification is None
+                or classification.kind in {"internal", "unknown"}
+                else "outcome"
+            ),
             tool_name=safe_token(getattr(event, "tool_name", None)),
         )
         self.sink.emit(
@@ -250,6 +258,7 @@ class TelemetrySubscriber(Subscriber[Event]):
         touched.
         """
         fingerprint = normalize_error_code(getattr(event, "code", None))
+        classification = event.classification
         properties = m.ErrorProperties(
             conversation_ref=self.context.conversation_ref,
             error_class=fingerprint.error_class,
@@ -257,6 +266,12 @@ class TelemetrySubscriber(Subscriber[Event]):
             error_fingerprint=fingerprint.error_fingerprint,
             is_first_party=True,
             is_terminal=True,
+            error_telemetry=(
+                "diagnostic"
+                if classification is None
+                or classification.kind in {"internal", "unknown"}
+                else "outcome"
+            ),
         )
         self.sink.emit(
             self.factory.build(

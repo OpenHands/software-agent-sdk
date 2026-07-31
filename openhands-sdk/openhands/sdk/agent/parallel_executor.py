@@ -25,6 +25,11 @@ from typing import TYPE_CHECKING
 
 from openhands.sdk.conversation.cancellation import CancellationToken
 from openhands.sdk.conversation.resource_lock_manager import ResourceLockManager
+from openhands.sdk.event.error_classification import (
+    AGENT_OUTCOME,
+    ErrorClassification,
+    FailureKind,
+)
 from openhands.sdk.event.llm_convertible import AgentErrorEvent
 from openhands.sdk.logger import get_logger
 
@@ -35,6 +40,9 @@ if TYPE_CHECKING:
     from openhands.sdk.tool.tool import DeclaredResources, ToolDefinition
 
 logger = get_logger(__name__)
+
+#: Unexpected internal failure - should surface as a diagnostic, not an outcome.
+_INTERNAL = ErrorClassification(kind=FailureKind.INTERNAL, retryable=False)
 
 
 class ParallelToolExecutor:
@@ -217,6 +225,7 @@ class ParallelToolExecutor:
                 error="Tool call cancelled by interrupt.",
                 tool_name=action.tool_name,
                 tool_call_id=action.tool_call_id,
+                classification=AGENT_OUTCOME,
             )
         ]
 
@@ -241,7 +250,7 @@ class ParallelToolExecutor:
         """
         if cancel_token is not None and cancel_token.is_cancelled:
             logger.info(
-                "Skipping tool '%s' — cancelled before execution",
+                "Skipping tool '%s' -- cancelled before execution",
                 action.tool_name,
             )
             return self._cancelled_error(action)
@@ -264,6 +273,7 @@ class ParallelToolExecutor:
                     error=f"Error executing tool '{action.tool_name}': {e}",
                     tool_name=action.tool_name,
                     tool_call_id=action.tool_call_id,
+                    classification=AGENT_OUTCOME,
                 )
             ]
         except Exception as e:
@@ -276,6 +286,7 @@ class ParallelToolExecutor:
                     error=f"Error executing tool '{action.tool_name}': {e}",
                     tool_name=action.tool_name,
                     tool_call_id=action.tool_call_id,
+                    classification=_INTERNAL,
                 )
             ]
 
