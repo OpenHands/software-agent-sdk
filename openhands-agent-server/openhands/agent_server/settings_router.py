@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from openhands.agent_server._secrets_exposure import (
     build_expose_context,
+    get_cipher,
     get_config,
     parse_expose_secrets_header,
     translate_missing_cipher,
@@ -14,10 +15,12 @@ from openhands.agent_server._secrets_exposure import (
 from openhands.agent_server.persistence import (
     SECRET_NAME_PATTERN,
     PersistedSettings,
+    get_llm_profile_store,
     get_secrets_store,
     get_settings_store,
 )
 from openhands.agent_server.persistence.models import SettingsUpdatePayload
+from openhands.agent_server.profiles_router import _store_errors
 from openhands.agent_server.telemetry import notify_misc_settings_changed
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer
@@ -179,6 +182,15 @@ async def update_settings(
 
     Accepts ``agent_settings_diff``, ``conversation_settings_diff``,
     ``misc_settings_diff``, and/or ``active_profile`` for incremental updates.
+
+    Setting ``active_profile`` to a profile name (without an explicit
+    ``agent_settings_diff.llm``) loads that profile and applies its LLM
+    config, the same as ``POST /api/profiles/{name}/activate`` - so
+    ``active_profile`` can't silently disagree with ``agent_settings.llm``.
+    Returns 404 if the named profile doesn't exist. Pass an explicit
+    ``agent_settings_diff.llm`` alongside ``active_profile`` to opt out and
+    set both independently.
+
     The three ``*_settings_diff`` fields are deep-merged; nested objects merge
     recursively, and a ``null`` value **inside a nested map deletes that entry**
     — the "unset" primitive that lets a client remove a single map key without
@@ -226,11 +238,55 @@ async def update_settings(
     )
 
 
+def _resolve_active_profile_llm(
+    request: Request, update_data: SettingsUpdatePayload
+) -> SettingsUpdatePayload:
+    """Fold the named profile's LLM into ``agent_settings_diff`` when the
+    caller sets ``active_profile`` without an explicit ``llm`` diff.
+
+    ``PATCH /api/settings`` used to accept ``active_profile`` as a bare label
+    with no side effects, letting it silently disagree with
+    ``agent_settings.llm`` - unlike ``POST /api/profiles/{name}/activate``,
+    which updates both atomically. This mirrors that endpoint's behavior
+    (load the profile, apply its LLM) so the two code paths can't diverge.
+    See #4314.
+    """
+    profile_name = update_data.get("active_profile")
+    agent_diff = update_data.get("agent_settings_diff")
+    explicit_llm_diff = isinstance(agent_diff, dict) and "llm" in agent_diff
+    if not profile_name or explicit_llm_diff:
+        return update_data
+
+    cipher = get_cipher(request)
+    profile_store = get_llm_profile_store()
+    try:
+        with _store_errors():
+            llm = profile_store.load(profile_name, cipher=cipher)
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Profile '{profile_name}' not found",
+        )
+
+    return cast(
+        SettingsUpdatePayload,
+        {
+            **update_data,
+            "agent_settings_diff": {
+                **(agent_diff if isinstance(agent_diff, dict) else {}),
+                "llm": llm.model_dump(mode="json", context={"expose_secrets": True}),
+            },
+        },
+    )
+
+
 def _apply_settings_update(
     request: Request,
     update_data: SettingsUpdatePayload,
     before_update: Callable[[PersistedSettings], None] | None = None,
 ) -> SettingsResponse:
+    update_data = _resolve_active_profile_llm(request, update_data)
+
     # Apply updates atomically with file locking
     def apply_update(settings: PersistedSettings) -> PersistedSettings:
         if before_update is not None:
