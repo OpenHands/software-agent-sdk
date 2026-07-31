@@ -19,7 +19,9 @@ import importlib.util
 import json
 import os
 import sys
+import time
 import types
+from datetime import UTC, datetime
 from pathlib import Path
 
 import dataflow  # top-level package is safe, does not import torch/transformers
@@ -81,6 +83,42 @@ def _read_input(path: Path) -> list[dict]:
     return records
 
 
+def _write_progress(
+    progress_path: Path,
+    *,
+    total: int,
+    processed: int,
+    succeeded: int,
+    failed: int,
+    attempted_this_run: int,
+    start_time: float,
+) -> None:
+    """Write a self-correcting progress snapshot next to the output file.
+
+    The platform mounts Storage at /target-workspace, so this file is
+    immediately visible via the Storage API and can be polled for live
+    progress / ETA.
+    """
+    elapsed_ms = int((time.monotonic() - start_time) * 1000)
+    elapsed_s = elapsed_ms / 1000.0
+    rate = (
+        attempted_this_run / elapsed_s if elapsed_s > 0 and attempted_this_run else 0.0
+    )
+    remaining = total - processed
+    eta_ms = int(remaining / rate * 1000) if rate > 0 else None
+    payload = {
+        "total": total,
+        "processed": processed,
+        "succeeded": succeeded,
+        "failed": failed,
+        "elapsed_ms": elapsed_ms,
+        "records_per_second": round(rate, 2),
+        "eta_ms": eta_ms,
+        "updated_at": datetime.now(UTC).isoformat(),
+    }
+    progress_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
 def main(input_path: str, output_path: str) -> None:
     input_file = Path(input_path).resolve()
     output_file = Path(output_path).resolve()
@@ -115,45 +153,67 @@ def main(input_path: str, output_path: str) -> None:
     llm = LoggingLLMServing(raw_llm)
 
     # 4. Process in batches: N records per LLM call, write after each batch
+    progress_path = output_file.parent / "progress.json"
+    start_time = time.monotonic()
     succeeded = already_done
     failed = 0
-    with output_file.open("a", encoding="utf-8") as out:
-        for batch_start in range(0, len(remaining), BATCH_SIZE):
-            batch = remaining[batch_start : batch_start + BATCH_SIZE]
-            prompts = [str(r.get("problem", "")) for r in batch]
+    for batch_start in range(0, len(remaining), BATCH_SIZE):
+        batch = remaining[batch_start : batch_start + BATCH_SIZE]
+        prompts = [str(r.get("problem", "")) for r in batch]
 
-            try:
-                responses = llm.generate_from_input(
-                    user_inputs=prompts,
-                    system_prompt=SYSTEM_PROMPT,
-                )
-            except Exception as exc:
-                api_key = os.environ.get("DF_API_KEY", "")
-                err_msg = (
-                    str(exc).replace(api_key, "<redacted>") if api_key else str(exc)
-                )
-                print(
-                    f"[ERROR] batch at offset {batch_start}: {err_msg[:200]}",
-                    file=sys.stderr,
-                )
-                failed += len(batch)
-                continue
-
-            for record, response in zip(batch, responses):
-                if response is None:
-                    failed += 1
-                    continue
-                record["cot"] = response
-                out.write(json.dumps(record, ensure_ascii=False) + "\n")
-                succeeded += 1
-            out.flush()
-
-            processed = batch_start + len(batch)
-            print(
-                f"Progress: {processed}/{len(remaining)} processed, "
-                f"{succeeded}/{total} succeeded, {failed} failed"
+        responses = None
+        try:
+            responses = llm.generate_from_input(
+                user_inputs=prompts,
+                system_prompt=SYSTEM_PROMPT,
             )
+        except Exception as exc:
+            api_key = os.environ.get("DF_API_KEY", "")
+            err_msg = str(exc).replace(api_key, "<redacted>") if api_key else str(exc)
+            print(
+                f"[ERROR] batch at offset {batch_start}: {err_msg[:200]}",
+                file=sys.stderr,
+            )
+            failed += len(batch)
 
+        if responses is not None:
+            # Open and close the output file per batch so the Storage (FUSE)
+            # mount uploads the bytes on close(). Keeping the file open for
+            # the whole run leaves them in the Pod cache (flush/fsync do not
+            # trigger an upload) and processed.jsonl stays at 0B in Storage.
+            with output_file.open("a", encoding="utf-8") as out:
+                for record, response in zip(batch, responses):
+                    if response is None:
+                        failed += 1
+                        continue
+                    record["cot"] = response
+                    out.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    succeeded += 1
+
+        attempted = batch_start + len(batch)
+        _write_progress(
+            progress_path,
+            total=total,
+            processed=already_done + attempted,
+            succeeded=succeeded,
+            failed=failed,
+            attempted_this_run=attempted,
+            start_time=start_time,
+        )
+        print(
+            f"Progress: {attempted}/{len(remaining)} processed, "
+            f"{succeeded}/{total} succeeded, {failed} failed"
+        )
+
+    _write_progress(
+        progress_path,
+        total=total,
+        processed=total,
+        succeeded=succeeded,
+        failed=failed,
+        attempted_this_run=len(remaining),
+        start_time=start_time,
+    )
     print(
         f"Done. total={total} succeeded={succeeded} failed={failed} "
         f"output={output_file}"

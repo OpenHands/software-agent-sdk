@@ -18,7 +18,9 @@ import importlib.util
 import json
 import os
 import sys
+import time
 import types
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -252,6 +254,42 @@ def _count_existing_lines(path: Path) -> int:
     return count
 
 
+def _write_progress(
+    progress_path: Path,
+    *,
+    total: int,
+    processed: int,
+    succeeded: int,
+    failed: int,
+    attempted_this_run: int,
+    start_time: float,
+) -> None:
+    """Write a self-correcting progress snapshot next to the output file.
+
+    The platform mounts Storage at /target-workspace, so this file is
+    immediately visible via the Storage API and can be polled for live
+    progress / ETA.
+    """
+    elapsed_ms = int((time.monotonic() - start_time) * 1000)
+    elapsed_s = elapsed_ms / 1000.0
+    rate = (
+        attempted_this_run / elapsed_s if elapsed_s > 0 and attempted_this_run else 0.0
+    )
+    remaining = total - processed
+    eta_ms = int(remaining / rate * 1000) if rate > 0 else None
+    payload = {
+        "total": total,
+        "processed": processed,
+        "succeeded": succeeded,
+        "failed": failed,
+        "elapsed_ms": elapsed_ms,
+        "records_per_second": round(rate, 2),
+        "eta_ms": eta_ms,
+        "updated_at": datetime.now(UTC).isoformat(),
+    }
+    progress_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
 def run(
     input_path: str,
     output_path: str,
@@ -294,13 +332,19 @@ def run(
 
     succeeded = already_done
     generated_field_names: set[str] = set()
+    progress_path = output.parent / "progress.json"
+    start_time = time.monotonic()
     try:
-        with output.open("a", encoding="utf-8") as handle:
-            for batch_start in range(0, len(remaining), BATCH_SIZE):
-                batch = remaining[batch_start : batch_start + BATCH_SIZE]
-                generated, batch_failures = _generate_batch(vlm, batch)
-                failures.update(batch_failures)
+        for batch_start in range(0, len(remaining), BATCH_SIZE):
+            batch = remaining[batch_start : batch_start + BATCH_SIZE]
+            generated, batch_failures = _generate_batch(vlm, batch)
+            failures.update(batch_failures)
 
+            # Open and close the output file per batch so the Storage (FUSE)
+            # mount uploads the bytes on close(). Keeping the file open leaves
+            # them in the Pod cache (flush/fsync do not trigger an upload) and
+            # the output stays at 0B in Storage.
+            with output.open("a", encoding="utf-8") as handle:
                 for record in batch:
                     sample_id = str(record["sample_id"])
                     raw_response = generated.get(sample_id)
@@ -322,20 +366,36 @@ def run(
                             annotations,
                         )
                         handle.write(json.dumps(result, ensure_ascii=False) + "\n")
-                        handle.flush()
                         succeeded += 1
                     except Exception as exc:
                         failures[sample_id] = _safe_error(exc)
 
-                processed_so_far = batch_start + len(batch) + already_done
-                if processed_so_far % 50 < BATCH_SIZE:
-                    print(
-                        f"Progress: {succeeded}/{total} succeeded, "
-                        f"{len(failures)} failed"
-                    )
+            attempted = batch_start + len(batch)
+            _write_progress(
+                progress_path,
+                total=total,
+                processed=already_done + attempted,
+                succeeded=succeeded,
+                failed=len(failures),
+                attempted_this_run=attempted,
+                start_time=start_time,
+            )
+            print(
+                f"Progress: {attempted}/{len(remaining)} processed, "
+                f"{succeeded}/{total} succeeded, {len(failures)} failed"
+            )
     finally:
         vlm.cleanup()
 
+    _write_progress(
+        progress_path,
+        total=total,
+        processed=total,
+        succeeded=succeeded,
+        failed=len(failures),
+        attempted_this_run=len(remaining),
+        start_time=start_time,
+    )
     print(
         f"Done. total={total} succeeded={succeeded} "
         f"failed={len(failures)} output={output}"

@@ -42,6 +42,10 @@ description: >-
   工具内部自动生成 run_id、上传 pipeline 和 runtime 文件到 Storage，无需手动调
   `upload_file_to_pyromind`。收到 callback 后依次检查 `report.json`、异常时的
   `llm_calls.jsonl`，以及 `processed.jsonl`。
+- 提交后可用 `df_check_progress`（传 `output_dir`）查看实时进度、ETA 和最近产出。
+  若用户预览后发现不符合预期、要介入调整，**先调用 `df_stop_task`**（传 `task_id`，
+  或 `df_submit_pipeline` 返回的 `run_id` / `output_dir`）停掉平台任务，再修改
+  pipeline 并重新提交，避免旧任务继续消耗资源或覆盖输出目录。
 - 处理完成后调用 `df_convert`，并重新加载最终训练文件验证；已在平台生成的产物无需重复上传。
 
 ## 决策规则

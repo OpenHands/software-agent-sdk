@@ -46,7 +46,11 @@ from openhands.sdk.conversation.request import StartConversationRequest
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.llm.message import Message, TextContent
 from openhands.sdk.tool.builtins import SkillsListTool, SkillsReadTool
-from openhands.tools.data_preparation import DfSubmitPipelineTool
+from openhands.tools.data_preparation import (
+    DfCheckProgressTool,
+    DfStopTaskTool,
+    DfSubmitPipelineTool,
+)
 from openhands.tools.pyromind_cleaning import RunDatasetCleaningTool
 from openhands.tools.pyromind_dataset import (
     PreviewDatasetTool,
@@ -892,6 +896,8 @@ def test_pyromind_storage_tools_use_user_context_headers():
         UploadFileToPyromindTool.name,
         RunDatasetCleaningTool.name,
         DfSubmitPipelineTool.name,
+        DfCheckProgressTool.name,
+        DfStopTaskTool.name,
         PreviewRemoteDatasetTool.name,
     ]
     assert tools[0].params == {
