@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config
 from openhands.sdk.plugin.fetch import fetch_plugin
 from openhands.sdk.plugin.types import (
     CommandDefinition,
@@ -18,7 +19,6 @@ from openhands.sdk.plugin.types import (
 )
 from openhands.sdk.skills.skill import Skill
 from openhands.sdk.skills.utils import (
-    discover_skill_resources,
     find_skill_md,
     load_mcp_config,
 )
@@ -63,8 +63,8 @@ class Plugin(BaseModel):
     hooks: HookConfig | None = Field(
         default=None, description="Hook configuration from hooks/hooks.json"
     )
-    mcp_config: dict[str, Any] | None = Field(
-        default=None, description="MCP configuration from .mcp.json"
+    mcp_config: dict[str, MCPServer] = Field(
+        default_factory=dict, description="MCP servers from .mcp.json"
     )
     agents: list[AgentDefinition] = Field(
         default_factory=list, description="Agent definitions from agents/ directory"
@@ -175,63 +175,34 @@ class Plugin(BaseModel):
 
     def add_mcp_config_to(
         self,
-        mcp_config: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """Add this plugin's MCP servers to an MCP config.
+        mcp_config: dict[str, MCPServer] | None = None,
+    ) -> dict[str, MCPServer]:
+        """Add this plugin's MCP config to an MCP config map.
 
         Plugin MCP servers override existing servers with the same name.
 
-        Merge semantics (Claude Code compatible):
-        - mcpServers: deep-merge by server name (last plugin wins for same server)
-        - Other top-level keys: shallow override (plugin wins)
+        Merge semantics: servers are merged by server name, and the
+        plugin wins when the same server is present in both configs.
 
         Args:
-            mcp_config: Existing MCP config (or None to create new)
+            mcp_config: Existing MCP servers (or None to create a new map)
 
         Returns:
-            New MCP config dict with this plugin's servers added
+            New MCP server map with this plugin's servers added
 
         Example:
             >>> plugin = Plugin.load(Plugin.fetch("github:owner/plugin"))
             >>> new_mcp = plugin.add_mcp_config_to(agent.mcp_config)
             >>> agent = agent.model_copy(update={"mcp_config": new_mcp})
         """
-        base_config = mcp_config
-        plugin_config = self.mcp_config
-
-        if base_config is None and plugin_config is None:
-            return {}
-        if base_config is None:
-            return dict(plugin_config) if plugin_config else {}
-        if plugin_config is None:
-            return dict(base_config)
-
-        # Shallow copy to avoid mutating inputs
-        result = dict(base_config)
-
-        # Merge mcpServers by server name (Claude Code compatible behavior)
-        if "mcpServers" in plugin_config:
-            existing_servers = result.get("mcpServers", {})
-            for server_name in plugin_config["mcpServers"]:
-                if server_name in existing_servers:
-                    logger.warning(
-                        f"Plugin MCP server '{server_name}' overrides existing server"
-                    )
-            result["mcpServers"] = {
-                **existing_servers,
-                **plugin_config["mcpServers"],
-            }
-
-        # Other top-level keys: plugin wins (shallow override)
-        for key, value in plugin_config.items():
-            if key != "mcpServers":
-                if key in result:
-                    logger.warning(
-                        f"Plugin MCP config key '{key}' overrides existing value"
-                    )
-                result[key] = value
-
-        return result
+        existing_servers = mcp_config or {}
+        plugin_servers = self.mcp_config
+        for server_name in plugin_servers:
+            if server_name in existing_servers:
+                logger.warning(
+                    f"Plugin MCP server '{server_name}' overrides existing server"
+                )
+        return {**existing_servers, **plugin_servers}
 
     @classmethod
     def fetch(
@@ -316,7 +287,7 @@ class Plugin(BaseModel):
         hooks = _load_hooks(plugin_dir)
 
         # Load MCP config
-        mcp_config = _load_mcp_config(plugin_dir)
+        mcp_config = _load_plugin_mcp_config(plugin_dir)
 
         # Load agents
         agents = _load_agents(plugin_dir)
@@ -402,24 +373,41 @@ def _load_manifest(plugin_dir: Path) -> PluginManifest:
 
 
 def _load_skills(plugin_dir: Path) -> list[Skill]:
-    """Load skills from the skills/ directory.
+    """Load a plugin's skills.
+
+    Supports both Claude Code plugin skill layouts:
+
+    - Multi-skill: a ``skills/`` directory containing one ``<name>/SKILL.md``
+      per skill (or single ``.md`` files).
+    - Single-skill: a ``SKILL.md`` at the plugin root when there is no
+      ``skills/`` directory. Claude Code loads such a plugin as a single-skill
+      plugin (v2.1.142+); this mirrors that behavior so standalone Agent Skills
+      published as plugins load without an extra nesting level.
 
     Note: Plugin skills are loaded with relaxed validation (strict=False)
     to support Claude Code plugins which may use different naming conventions.
     """
     skills_dir = plugin_dir / "skills"
-    if not skills_dir.is_dir():
-        return []
+    if skills_dir.is_dir():
+        return _load_skills_from_skills_dir(skills_dir)
 
+    root_skill_md = find_skill_md(plugin_dir)
+    if root_skill_md is not None:
+        return _load_root_skill(plugin_dir, root_skill_md)
+
+    return []
+
+
+def _load_skills_from_skills_dir(skills_dir: Path) -> list[Skill]:
+    """Load every skill under a plugin's ``skills/`` directory."""
     skills: list[Skill] = []
     for item in sorted(skills_dir.iterdir()):
         if item.is_dir():
             skill_md = find_skill_md(item)
             if skill_md:
                 try:
+                    # Skill.load() discovers resources, no need to do it again
                     skill = Skill.load(skill_md, skills_dir, strict=False)
-                    # Discover and attach resources
-                    skill.resources = discover_skill_resources(item)
                     skills.append(skill)
                     logger.debug(f"Loaded skill: {skill.name} from {skill_md}")
                 except Exception as e:
@@ -434,6 +422,26 @@ def _load_skills(plugin_dir: Path) -> list[Skill]:
                 logger.warning(f"Failed to load skill from {item}: {e}")
 
     return skills
+
+
+def _load_root_skill(plugin_dir: Path, skill_md: Path) -> list[Skill]:
+    """Load a single-skill plugin whose ``SKILL.md`` lives at the plugin root.
+
+    For root skills, the plugin directory is the skill root, so .mcp.json at the
+    plugin level is the same file that Skill.load() would try to load. We pass
+    skip_mcp=True to avoid double-loading with different semantics (plugin-level
+    uses expand_defaults=False for deferred secret expansion; skill-level would
+    use expand_defaults=True and raise on validation errors).
+    """
+    try:
+        # skip_mcp=True: Plugin-level MCP already loaded
+        # Skill.load() discovers resources, no need to do it again
+        skill = Skill.load(skill_md, plugin_dir, strict=False, skip_mcp=True)
+        logger.debug(f"Loaded single-skill plugin: {skill.name} from {skill_md}")
+        return [skill]
+    except Exception as e:
+        logger.warning(f"Failed to load root skill from {plugin_dir}: {e}")
+        return []
 
 
 def _load_hooks(plugin_dir: Path) -> HookConfig | None:
@@ -457,8 +465,8 @@ def _load_hooks(plugin_dir: Path) -> HookConfig | None:
         return None
 
 
-def _load_mcp_config(plugin_dir: Path) -> dict[str, Any] | None:
-    """Load MCP configuration from .mcp.json.
+def _load_plugin_mcp_config(plugin_dir: Path) -> dict[str, MCPServer]:
+    """Load MCP config from .mcp.json.
 
     Note: Variables are NOT fully expanded during plugin loading. Only SKILL_ROOT
     is expanded (since plugin_dir is known). Other variables like ${VAR:-default}
@@ -470,7 +478,7 @@ def _load_mcp_config(plugin_dir: Path) -> dict[str, Any] | None:
     """
     mcp_json = plugin_dir / ".mcp.json"
     if not mcp_json.exists():
-        return None
+        return {}
 
     try:
         # expand_defaults=False: preserve ${VAR:-default} placeholders for later
@@ -482,10 +490,11 @@ def _load_mcp_config(plugin_dir: Path) -> dict[str, Any] | None:
                 mcp_json,
                 len(config["mcpServers"]),
             )
-        return config
+        servers = config.get("mcpServers", {}) if isinstance(config, dict) else {}
+        return coerce_mcp_config(servers)
     except Exception as e:
         logger.warning(f"Failed to load MCP config from {mcp_json}: {e}")
-        return None
+        return {}
 
 
 def _load_agents(plugin_dir: Path) -> list[AgentDefinition]:

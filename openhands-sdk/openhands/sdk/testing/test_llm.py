@@ -44,6 +44,7 @@ from openhands.sdk.llm.utils.metrics import MetricsSnapshot, TokenUsage
 
 
 if TYPE_CHECKING:
+    from openhands.sdk.llm.llm import LLMCallContext
     from openhands.sdk.tool.tool import ToolDefinition
 
 from collections import deque
@@ -158,6 +159,7 @@ class TestLLM(LLM):
         tools: Sequence[ToolDefinition] | None = None,  # noqa: ARG002
         add_security_risk_prediction: bool = False,  # noqa: ARG002
         on_token: TokenCallbackType | None = None,  # noqa: ARG002
+        call_context: LLMCallContext | None = None,  # noqa: ARG002
         **kwargs: Any,  # noqa: ARG002
     ) -> LLMResponse:
         """Return the next scripted response.
@@ -206,6 +208,7 @@ class TestLLM(LLM):
         tools: Sequence[ToolDefinition] | None = None,
         add_security_risk_prediction: bool = False,
         on_token: AnyTokenCallbackType | None = None,  # noqa: ARG002
+        call_context: LLMCallContext | None = None,  # noqa: ARG002
         **kwargs: Any,
     ) -> LLMResponse:
         """Async variant that delegates to the synchronous :meth:`completion`.
@@ -240,6 +243,7 @@ class TestLLM(LLM):
         store: bool | None = None,  # noqa: ARG002
         add_security_risk_prediction: bool = False,
         on_token: TokenCallbackType | None = None,
+        call_context: LLMCallContext | None = None,  # noqa: ARG002
         **kwargs: Any,
     ) -> LLMResponse:
         """Return the next scripted response (delegates to completion).

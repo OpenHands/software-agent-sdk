@@ -11,6 +11,7 @@ from pydantic import PrivateAttr, ValidationError
 
 from openhands.sdk.git.models import GitChange, GitDiff
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.settings import SecretsListResponse, SettingsResponse
 from openhands.sdk.workspace.base import BaseWorkspace
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
@@ -489,17 +490,16 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         retry=tenacity.retry_if_exception(_is_retryable_error),
         reraise=True,
     )
-    def get_mcp_config(self) -> dict[str, Any]:
-        """Fetch MCP configuration from the agent-server's persisted settings.
+    def get_mcp_config(self) -> dict[str, MCPServer]:
+        """Fetch MCP servers from the agent-server's persisted settings.
 
         Calls ``GET /api/settings`` with ``X-Expose-Secrets: plaintext`` header
-        to retrieve the MCP configuration and returns a dict compatible with
-        ``MCPConfig.model_validate()`` and the ``Agent(mcp_config=...)`` kwarg.
+        to retrieve the MCP servers and returns a dict compatible with the
+        ``Agent(mcp_config=...)`` kwarg.
 
         Returns:
-            A dictionary with ``mcpServers`` key containing server configurations
-            (compatible with ``MCPConfig.model_validate()``), or an empty dict
-            if no MCP config is set.
+            A dictionary mapping server names to server configurations, or an
+            empty dict if no MCP servers are configured.
 
         Raises:
             httpx.HTTPStatusError: If the API request fails.
@@ -510,10 +510,6 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             ...     llm = workspace.get_llm()
             ...     mcp_config = workspace.get_mcp_config()
             ...     agent = Agent(llm=llm, mcp_config=mcp_config, tools=...)
-            ...
-            ...     # Or validate as MCPConfig:
-            ...     from fastmcp.mcp_config import MCPConfig
-            ...     config = MCPConfig.model_validate(mcp_config)
         """
         from openhands.sdk.settings import OpenHandsAgentSettings
 
@@ -522,14 +518,11 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
 
         settings = self._fetch_agent_settings()
 
-        # mcp_config only exists on OpenHandsAgentSettings, not ACPAgentSettings
+        # Runtime MCP tools only exist on OpenHandsAgentSettings, not ACPAgentSettings.
         if not isinstance(settings, OpenHandsAgentSettings):
             return {}
 
-        if settings.mcp_config is None:
-            return {}
-
-        return settings.mcp_config.model_dump(exclude_none=True, exclude_defaults=True)
+        return settings.mcp_config
 
     # ── Repository Cloning Methods ─────────────────────────────────────────
 

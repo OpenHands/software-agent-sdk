@@ -143,15 +143,15 @@ Documentation lives in **github.com/OpenHands/docs** under the `sdk/` folder. Wh
 
 ### Workflow
 
-1. Clone docs repo: `git clone https://github.com/OpenHands/docs.git /workspace/project/openhands-docs`
+1. Clone docs repo next to this repository: `git clone https://github.com/OpenHands/docs.git ../openhands-docs`
 2. Create matching branch in both repos
 3. Update documentation in `openhands-docs/sdk/` folder
-4. **If you are creating a PR to `OpenHands/agent-sdk`**, you must also create a corresponding PR to `OpenHands/docs` with documentation updates in the `sdk/` folder
+4. **If you are creating a PR to `OpenHands/software-agent-sdk`**, you must also create a corresponding PR to `OpenHands/docs` with documentation updates in the `sdk/` folder
 5. Cross-reference both PRs in their descriptions
 
 Example:
 ```bash
-cd /workspace/project/openhands-docs
+cd ../openhands-docs
 git checkout -b <feature-name>
 # Edit files in sdk/ folder
 git add sdk/

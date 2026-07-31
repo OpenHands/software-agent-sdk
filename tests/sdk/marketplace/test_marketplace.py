@@ -147,7 +147,7 @@ class TestMarketplacePluginEntry:
                 "lspServers": {"lsp1": {"command": "typescript-language-server"}},
             }
         )
-        assert entry.mcp_servers == {"server1": {"command": "node"}}
+        assert entry.mcp_config == {"server1": {"command": "node"}}
         assert entry.lsp_servers == {"lsp1": {"command": "typescript-language-server"}}
 
 

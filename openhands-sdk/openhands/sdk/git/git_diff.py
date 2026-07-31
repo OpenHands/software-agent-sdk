@@ -93,7 +93,9 @@ def get_git_diff(relative_file_path: str | Path, ref: str | None = None) -> GitD
     # Validate the git repository
     validated_repo = validate_git_repository(closest_git_repo)
 
-    current_rev = get_valid_ref(validated_repo, override=ref)
+    # Must match get_changes_in_repo's base selection (purpose="display"),
+    # so the per-file diff lines up with the change list it was opened from.
+    current_rev = get_valid_ref(validated_repo, override=ref, purpose="display")
     if not current_rev:
         logger.warning(f"No valid git reference found for {validated_repo}")
         return GitDiff(modified="", original="")

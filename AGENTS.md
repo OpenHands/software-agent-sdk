@@ -1,124 +1,48 @@
 <ROLE>
-You are a collaborative software engineering partner with a strong focus on code quality and simplicity. Your approach is inspired by proven engineering principles from successful open-source projects, emphasizing pragmatic solutions and maintainable code.
+You are a collaborative software engineering partner for this repository, with a
+strong bias toward simplicity and maintainable code.
 
 # Core Engineering Principles
 
-1. **Simplicity and Clarity**
-"The best solutions often come from looking at problems from a different angle, where special cases disappear and become normal cases."
-    • Prefer solutions that eliminate edge cases rather than adding conditional checks
-    • Good design patterns emerge from experience and careful consideration
-    • Simple, clear code is easier to maintain and debug
+1. **Simplicity and Clarity** — Prefer solutions that make special cases
+   disappear over ones that add conditional checks. Keep functions short and
+   single-purpose; avoid deep nesting.
+2. **Backward Compatibility** — Stability is a feature, not a constraint.
+   Changes should not break existing users or integrations; the enforced
+   deprecation policies are in "API compatibility pointers" below.
+3. **Pragmatic Problem-Solving** — Solve real problems users face, not
+   theoretical edge cases. Prefer proven, straightforward approaches over
+   speculative abstractions.
 
-2. **Backward Compatibility**
-"Stability is a feature, not a constraint."
-    • Changes should not break existing functionality
-    • Consider the impact on users and existing integrations
-    • Compatibility enables trust and adoption
+# Working Agreement
 
-3. **Pragmatic Problem-Solving**
-"Focus on solving real problems with practical solutions."
-    • Address actual user needs rather than theoretical edge cases
-    • Prefer proven, straightforward approaches over complex abstractions
-    • Code should serve real-world requirements
-
-4. **Maintainable Architecture**
-"Keep functions focused and code readable."
-    • Functions should be short and have a single responsibility
-    • Avoid deep nesting - consider refactoring when indentation gets complex
-    • Clear naming and structure reduce cognitive load
-
-# Collaborative Approach
-
-## Communication Style
-    • **Constructive**: Focus on helping improve code and solutions
-    • **Collaborative**: Work together as partners toward better outcomes
-    • **Clear**: Provide specific, actionable feedback
-    • **Respectful**: Maintain a supportive tone while being technically rigorous
-
-## Problem Analysis Process
-
-### 1. Understanding Requirements
-When reviewing a requirement, confirm understanding by restating it clearly:
-> "Based on your description, I understand you need: [clear restatement of the requirement]. Is this correct?"
-
-### 2. Collaborative Problem Decomposition
-
-#### Data Structure Analysis
-"Well-designed data structures often lead to simpler code."
-    • What are the core data elements and their relationships?
-    • How does data flow through the system?
-    • Are there opportunities to simplify data handling?
-
-#### Complexity Assessment
-"Let's look for ways to simplify this."
-    • What's the essential functionality we need to implement?
-    • Which parts of the current approach add unnecessary complexity?
-    • How can we make this more straightforward?
-
-#### Compatibility Review
-"Let's make sure this doesn't break existing functionality."
-    • What existing features might be affected?
-    • How can we implement this change safely?
-    • What migration path do users need?
-
-#### Practical Validation
-"Let's focus on the real-world use case."
-    • Does this solve an actual problem users face?
-    • Is the complexity justified by the benefit?
-    • What's the simplest approach that meets the need?
-
-## 3. Constructive Feedback Format
-
-After analysis, provide feedback in this format:
-
-**Assessment**: [Clear evaluation of the approach]
-
-**Key Observations**:
-- Data Structure: [insights about data organization]
-- Complexity: [areas where we can simplify]
-- Compatibility: [potential impact on existing code]
-
-**Suggested Approach**:
-If the solution looks good:
-1. Start with the simplest data structure that works
-2. Eliminate special cases where possible
-3. Implement clearly and directly
-4. Ensure backward compatibility
-
-If there are concerns:
-"I think we might be able to simplify this. The core issue seems to be [specific problem]. What if we tried [alternative approach]?"
-
-## 4. Code Review Approach
-When reviewing code, provide constructive feedback:
-
-**Overall Assessment**: [Helpful evaluation]
-
-**Specific Suggestions**:
-- [Concrete improvements with explanations]
-- [Alternative approaches to consider]
-- [Ways to reduce complexity]
-
-**Next Steps**: [Clear action items]
+- Act on the request rather than restating it back. If a requirement is
+  ambiguous in a way that would change the work, ask; otherwise proceed and
+  state your assumption.
+- When you disagree with an approach, say so once, concisely, with a concrete
+  alternative — then proceed.
+- Feedback on code should be specific and actionable: what is wrong, why it
+  matters, and what to do instead.
 </ROLE>
 
 ## Repository Memory
-- Async LLM completions propagate through the full call chain: `LLM.acompletion()`/`LLM.aresponses()` → `_atransport_call()` (litellm `acompletion`/`aresponses`) → `RetryMixin.async_retry()` (tenacity `AsyncRetrying`) → condenser `acondense()` → `Agent.astep()` → `LocalConversation.arun()` → `EventService.run()`. Every async method has a sync counterpart; base classes provide default delegations to sync so custom subclasses work without changes. Token callbacks use `AnyTokenCallbackType` (union of sync/async) with `_invoke_token_callback()` for transparent dispatch.
+- Async LLM completions propagate through the full call chain: `LLM.acompletion()`/`LLM.aresponses()` → `_atransport_call()` (litellm `acompletion`/`aresponses`) → `RetryMixin.retry_decorator()` (tenacity `retry`, which wraps coroutines natively — there is no separate async retry path) → condenser `acondense()` → `Agent.astep()` → `LocalConversation.arun()` → `EventService.run()`. Every async method has a sync counterpart; base classes provide default delegations to sync so custom subclasses work without changes. Token callbacks use `AnyTokenCallbackType` (union of sync/async) with `_invoke_token_callback()` for transparent dispatch.
 - `conversation.interrupt()` cancels in-flight `arun()` by cancelling the tracked `_arun_task`. `asyncio.CancelledError` propagates through all layers (LLM HTTP stream → agent step → conversation loop) without needing per-layer interrupt APIs, because LLM and Agent are frozen/stateless Pydantic models that may be shared across conversations. `arun()` catches `CancelledError`, sets status to `PAUSED`, and emits `InterruptEvent`. The agent-server exposes this via `EventService.interrupt()` → `ConversationService.interrupt_conversation()` → `POST /{conversation_id}/interrupt`.
 - OpenHands provider LLMs keep public config as `openhands/<model>` and translate to `litellm_proxy/<model>` plus the OpenHands proxy `api_base` only at LiteLLM boundaries. Legacy persisted proxy payloads are migrated once at settings/profile load boundaries; do not add downstream UI reverse-mapping for the normal path.
-- Programmatic settings live in `openhands-sdk/openhands/sdk/settings/`. Treat `AgentSettings` and `export_settings_schema()` as the canonical structured settings surface in the SDK, and keep that schema focused on neutral config semantics rather than client-specific presentation details.
+- Programmatic settings live in `openhands-sdk/openhands/sdk/settings/`. Treat `AgentSettings` and `export_settings_schema()` as the canonical structured settings surface in the SDK, and keep that schema focused on neutral config structure and semantics; downstream apps should own client-specific ordering, icons, widgets, and slash-command presentation.
 - `SettingsFieldSchema` intentionally does not export a `required` flag. If a consumer needs nullability semantics, inspect the underlying Python typing rather than inferring from SDK defaults.
 - `AgentSettings.tools` is part of the exported settings schema so the schema stays aligned with the settings payload that round-trips through `AgentSettings` and drives `create_agent()`.
-- `AgentSettings.mcp_config` now uses FastMCP's typed `MCPConfig` at runtime. When serializing settings back to plain data (e.g. `model_dump()` or `create_agent()`), keep the output compact with `exclude_none=True, exclude_defaults=True` so callers still see the familiar `.mcp.json`-style dict shape.
+- `mcp_config` is declared on `OpenHandsAgentSettings` and `ACPAgentSettings` (and inherited by `LLMAgentSettings`) — the variants of the `AgentSettingsConfig` union. It is a flat `dict[str, MCPServer]` server map, where `MCPServer` is the SDK's own model in `openhands-sdk/openhands/sdk/mcp/config.py` — not FastMCP's `MCPConfig`, and not the `.mcp.json`-style `{"mcpServers": {...}}` wrapper (the v4→v5 migration `_migrate_mcp_config_to_server_map` unwraps that key). FastMCP's typed `MCPConfig` is built only at the FastMCP boundary, in `_prepare_mcp_config()` in `openhands-sdk/openhands/sdk/mcp/utils.py`, from the payload produced by `to_fastmcp_mcp_config()` in `openhands-sdk/openhands/sdk/mcp/config.py`. Keep serialized MCP output compact with `exclude_none=True, exclude_defaults=True`, applied per-`MCPServer` in `openhands-sdk/openhands/sdk/mcp/config.py`.
 - Persisted SDK settings should use the direct `model_dump()` shape with a top-level `schema_version`; avoid adding wrapped payload formats or legacy migration shims in `openhands/sdk/settings/model.py`.
 - Persisted settings compatibility is enforced by `.github/scripts/check_persisted_settings_compat.py` plus `tests/sdk/persisted_settings_baselines/vN/` golden fixtures. When a versioned persisted settings shape changes incompatibly, bump the relevant schema version constant, add the migration step, and add a fixture for the old shape.
 - The persisted-settings compatibility check builds its historical PyPI baseline environment with `uv` and a PyPI release-date `exclude-newer` cutoff, and golden fixtures may include a top-level `__expected__` map of dotted paths whose post-migration values must be preserved.
 
-- Because persisted settings are not in production yet, prefer removing temporary compatibility fields and serializers outright instead of carrying legacy settings shims in the SDK.
+- Prefer removing genuinely temporary compatibility fields and serializers outright rather than carrying legacy settings shims in the SDK. Note that persisted settings now ship with a real migration chain (`AGENT_SETTINGS_SCHEMA_VERSION` is at 5) plus golden fixtures and a CI gate, so check `tests/sdk/persisted_settings_baselines/` before deleting anything that looks like a shim — it may be load-bearing for an older persisted payload.
 - Do not expose settings schema versions as public `CURRENT_PERSISTED_VERSION` class constants on `AgentSettings` or `ConversationSettings`; keep versioning internal to the `schema_version` field/defaults and private module constants.
 - `ConversationSettings` owns the conversation-scoped confirmation controls directly (`confirmation_mode`, `security_analyzer`); keep those fields top-level on the model and grouped into the exported `verification` section via schema metadata rather than nested helper models, and prefer the direct settings-model constructor `create_request(...)` over separate request-wrapper helpers.
 - Anthropic malformed tool-use/tool-result history errors (for example, missing or duplicated ``tool_result`` blocks) are intentionally mapped to a dedicated `LLMMalformedConversationHistoryError` and caught separately in `Agent.step()`, so recovery can still use condensation while logs preserve that this was malformed history rather than a true context-window overflow.
 - LLM-specific behavior tweaks should start in `openhands-sdk/openhands/sdk/llm/utils/model_features.py` whenever they can be expressed as model/provider capabilities. Genuinely try to keep provider-specific criteria out of `openhands-sdk/openhands/sdk/llm/llm.py`; only touch `llm.py` when the behavior cannot be represented cleanly in the feature registry or a focused helper.
-- AgentSkills progressive disclosure goes through `AgentContext.get_system_message_suffix()` into `<available_skills>`, and `openhands.sdk.context.skills.to_prompt()` truncates each prompt description to 1024 characters because the AgentSkills specification caps `description` at 1-1024 characters.
+- AgentSkills progressive disclosure resolves in `AgentContext._resolve_dynamic_data()`, shared by `get_system_message_suffix()` and the prompt section registry (`openhands/sdk/context/prompts/sections/`), and lands in `<available_skills>`. `openhands.sdk.skills.to_prompt()` (`openhands-sdk/openhands/sdk/skills/skill.py`) truncates each prompt description to 1024 characters because the AgentSkills specification caps `description` at 1-1024 characters.
 - Workspace-wide uv resolver guardrails belong in the repository root `[tool.uv]` table. When `exclude-newer` is configured there, `uv lock` persists it into the root `uv.lock` `[options]` section as both an absolute cutoff and `exclude-newer-span`, and `uv sync --frozen` continues to use that locked workspace state.
 - PR code review is handled via OpenHands Cloud automation (not a GitHub Actions workflow). Repo-specific reviewer instructions live in `.agents/skills/custom-codereview-guide.md`. The automation triggers on `ready_for_review` (established contributors), when `all-hands-bot` is requested as a reviewer, and when the `review-this` label is added.
 - Release PR reviewer guidance now requires checking the latest PR-specific `Run tests`, `Run Examples Scripts`, and `Run Integration Tests` results/comments before approval; if any are missing, stale, ambiguous, skipped, or failing, the bot should leave a COMMENT and defer to human maintainer review.
@@ -131,7 +55,7 @@ When reviewing code, provide constructive feedback:
 
 - Agent-server Docker publish tags are defined centrally in `openhands-agent-server/openhands/agent_server/docker/build.py`; keep `server.yml` manifest publication derived from the emitted per-arch tags so SHA/branch/git-tag aliases stay in sync, while preserving the legacy `latest-<variant>` alias used by workspace defaults.
 - The published agent-server Docker images in `.github/workflows/server.yml` must pass `OPENHANDS_BUILD_GIT_SHA` and `OPENHANDS_BUILD_GIT_REF` as explicit `docker/build-push-action` build args; the workflow only uses `docker/build.py` for context/tag generation, so those runtime env vars are otherwise left at the Dockerfile `unknown` defaults.
-- The PyInstaller agent-server binary should copy OpenHands distribution metadata (`openhands-agent-server`, `openhands-sdk`, `openhands-tools`, `openhands-workspace`) in `agent-server.spec`, otherwise `/server_info` version lookups via `importlib.metadata` can fall back to `unknown` inside published binary images.
+- The PyInstaller agent-server binary should copy OpenHands distribution metadata (`openhands-agent-server`, `openhands-sdk`, `openhands-tools`, `openhands-workspace`) in `openhands-agent-server/openhands/agent_server/agent-server.spec`, otherwise `/server_info` version lookups via `importlib.metadata` can fall back to `unknown` inside published binary images.
 - Agent-server deferred init (warm-pool / dormant mode) is driven by `Config.deferred_init` (env `OH_DEFERRED_INIT`). The `InitService` in `openhands-agent-server/openhands/agent_server/init_router.py` owns the dormant→initializing→ready transition and is registered on `app.state.init_service` only when `deferred_init=True`; the `require_initialized` dependency, added to the `/api/*` router, returns 503 while not `ready`. Bootstrap auth for `POST /api/init` uses the existing `secret_key` (`X-Init-API-Key` header) — the orchestrator already holds this key for encryption, and it is overwritten when the per-user runtime config arrives in the init body. The agent-server's 5xx exception handler rewrites `detail` on 503s, so warm-pool orchestrators should rely on the HTTP status code (not the body) when probing dormant state.
 
 
@@ -159,7 +83,6 @@ consult each relevant package-level AGENTS.md.
 - Tools: [openhands-tools/openhands/tools/AGENTS.md](openhands-tools/openhands/tools/AGENTS.md)
 - Workspace: [openhands-workspace/openhands/workspace/AGENTS.md](openhands-workspace/openhands/workspace/AGENTS.md)
 - Agent server: [openhands-agent-server/AGENTS.md](openhands-agent-server/AGENTS.md)
-- Eval config: [.github/run-eval/AGENTS.md](.github/run-eval/AGENTS.md)
 
 ## API compatibility pointers
 
@@ -190,7 +113,9 @@ consult each relevant package-level AGENTS.md.
 - Make sure you `make build` to configure the dependencies first
 - We use pre-commit hooks `.pre-commit-config.yaml` that includes:
   - type check through pyright
-  - linting and formatter with `uv ruff`
+  - linting and formatting with ruff (`ruff-check`, `ruff-format`) plus `pycodestyle`
+  - `yamlfmt` for YAML
+  - repo-specific gates: `check-import-rules`, `check-tool-registration`
 - NEVER USE `mypy`!
 - Do NOT commit ALL the file, just commit the relevant file you've changed!
 - In every commit message, you should add "Co-authored-by: openhands <openhands@all-hands.dev>"
@@ -200,7 +125,7 @@ consult each relevant package-level AGENTS.md.
 
 - If it is just code, you can modify it so it spans multiple lines.
 - If it is a single-line string, you can break it into a multi-line string by doing "ABC" -> ("A"\n"B"\n"C")
-- If it is a long multi-line string (e.g., docstring), you should just add type ignore AFTER the ending """. You should NEVER ADD IT INSIDE the docstring.
+- If it is a long multi-line string (e.g., docstring), add `# noqa: E501` AFTER the ending """. You should NEVER ADD IT INSIDE the docstring. E501 is a ruff lint rule, so `# noqa: E501` is what suppresses it — `# type: ignore` is a pyright directive and has no effect on E501.
 
 
 </DEV_SETUP>
@@ -253,9 +178,10 @@ mkdir -p .pr
 <PR_DESCRIPTION_HUMAN_CHECK>
 # Human-only PR description fields in PR template
 
-Use the PR template. The `HUMAN:` section in PR descriptions is reserved for human
-contributors only. AI agents MUST NOT edit, move, or remove this field, only
-set the placeholder. If the PR description CI fails because this field is missing
+When opening a PR, use the repository's PR template for the description. The
+`HUMAN:` section in PR descriptions is reserved for human contributors only. AI
+agents MUST NOT edit, move, or remove this field, only set the placeholder. If
+the PR description CI fails because this field is missing
 or empty, stop and ask the human user to update it in their own words. If
 the field was already updated by a human, report the exact validator error rather
 than editing it yourself.
@@ -365,7 +291,7 @@ gh run rerun <RUN_ID> --repo <OWNER>/<REPO> --failed
 
 # Behavior Tests
 
-Behavior tests (prefix `b##_*`) in `tests/integration/tests/` are designed to verify that agents exhibit desired behaviors in realistic scenarios. These tests are distinct from functional tests (prefix `t##_*`) and have specific requirements.
+Behavior tests (prefix `b##_*`) in `tests/integration/tests/` are designed to verify that agents exhibit desired behaviors in realistic scenarios. These tests are distinct from functional tests (prefix `t##_*`) and have specific requirements. The same directory also holds `a##_*` (malformed tool-use/tool-result history) and `c##_*` (condenser) tests; only the `b`/`t` prefixes drive the behavior-vs-integration classification described in `BEHAVIOR_TESTS.md`.
 
 Before adding or modifying behavior tests, review `tests/integration/BEHAVIOR_TESTS.md` for the latest workflow, expectations, and examples.
 </TESTING>
@@ -375,7 +301,7 @@ Before adding or modifying behavior tests, review `tests/integration/BEHAVIOR_TE
 
 When tools need to store observation files (e.g., browser session recordings, task tracker data), use `.agent_tmp` as the directory name for consistency.
 
-The browser session recording tool saves recordings to `.agent_tmp/observations/recording-{timestamp}/`.
+The browser session recording tool saves recordings to `.agent_tmp/browser_observations/recording-{timestamp}/` (see `BROWSER_RECORDING_OUTPUT_DIR` in `openhands-tools/openhands/tools/browser_use/definition.py`).
 
 This convention ensures tool-generated observation files are stored in a predictable location that can be easily:
 - Added to `.gitignore`
@@ -403,11 +329,10 @@ Note: This is separate from `persistence_dir` which is used for conversation sta
 - The example workflow runs `uv run pytest tests/examples/test_examples.py --run-examples`; each successful example must print an `EXAMPLE_COST: ...` line to stdout (use `EXAMPLE_COST: 0` for non-LLM examples).
 - Example scripts in `examples/` should use top-level code flow (e.g. `with` blocks, bare statements) rather than wrapping logic in a `def main()` function. The `def main` pattern creates unnecessary nesting that makes examples harder to read; keep the code flat and script-like.
 - Conversation plugins passed via `plugins=[...]` are lazy-loaded on the first `send_message()` or `run()`, so example code should inspect plugin-added skills or `resolved_plugins` only after that first interaction.
-- Programmatic settings live in `openhands-sdk/openhands/sdk/settings/`. Keep the exported schema focused on neutral config structure and semantics; downstream apps should own client-specific ordering, icons, widgets, and slash-command presentation.
 </QUICK_COMMANDS>
 
 <REPO_CONFIG_NOTES>
-- Ruff: `line-length = 88`, `target-version = "py312"` (see `pyproject.toml`).
+- Ruff: `line-length = 88`, `target-version = "py313"` (see `pyproject.toml`).
 - Ruff ignores `ARG` (unused arguments) under `tests/**/*.py` to allow pytest fixtures.
 - Repository guidance lives in the project root AGENTS.md (loaded as a third-party skill file).
 </REPO_CONFIG_NOTES>

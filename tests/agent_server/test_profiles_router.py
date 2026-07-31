@@ -1014,6 +1014,38 @@ def test_activate_profile_applies_llm_config(client, store):
     assert agent_settings["llm"]["temperature"] == 0.8
 
 
+def test_activate_profile_replaces_stale_llm_extra_body(client, store):
+    """Activating a profile should not retain extra_body from the old LLM."""
+    response = client.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "llm": {
+                    "model": "openai/qwen3",
+                    "litellm_extra_body": {"enable_thinking": True, "store": False},
+                }
+            }
+        },
+    )
+    assert response.status_code == 200
+
+    llm = LLM(
+        model="openai/target-model",
+        base_url="https://api.example.test/v1",
+        litellm_extra_body={},
+    )
+    store.save("target-profile", llm)
+
+    response = client.post("/api/profiles/target-profile/activate")
+
+    assert response.status_code == 200
+    settings_response = client.get("/api/settings")
+    assert settings_response.status_code == 200
+    llm_settings = settings_response.json()["agent_settings"]["llm"]
+    assert llm_settings["model"] == "openai/target-model"
+    assert llm_settings["litellm_extra_body"] == {}
+
+
 def test_activate_profile_not_found(client):
     """POST /api/profiles/{name}/activate returns 404 for non-existent profile."""
     response = client.post("/api/profiles/nonexistent/activate")

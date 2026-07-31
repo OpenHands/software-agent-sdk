@@ -10,6 +10,10 @@ from openhands.sdk import (
     LLMConvertibleEvent,
     get_logger,
 )
+from openhands.sdk.mcp import (
+    MCPOAuthAuthCredential,
+    MCPServer,
+)
 from openhands.sdk.tool import Tool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.terminal import TerminalTool
@@ -38,7 +42,10 @@ tools = [
 ]
 
 mcp_config = {
-    "mcpServers": {"Notion": {"url": "https://mcp.notion.com/mcp", "auth": "oauth"}}
+    "Notion": MCPServer(
+        url="https://mcp.notion.com/mcp",
+        auth=MCPOAuthAuthCredential(strategy="oauth2"),
+    )
 }
 agent = Agent(llm=llm, tools=tools, mcp_config=mcp_config)
 
