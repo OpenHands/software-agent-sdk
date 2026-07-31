@@ -77,6 +77,22 @@ export interface ObservationEvent extends BaseEvent {
   action_id: string;
 }
 
+/** Safe, provider-neutral semantics for an SDK failure. */
+export interface ErrorClassification {
+  kind:
+    | 'auth'
+    | 'quota'
+    | 'rate_limit'
+    | 'config'
+    | 'transient'
+    | 'agent_action'
+    | 'internal'
+    | 'unknown';
+  retryable: boolean;
+  user_action: 'none' | 'retry' | 'settings';
+  error_id?: string | null;
+}
+
 /**
  * Agent error event - error during agent execution (scaffold error, not tool result).
  * This IS sent to the LLM as a tool observation. Source is "agent".
@@ -89,6 +105,7 @@ export interface AgentErrorEvent extends BaseEvent {
   tool_call_id: string;
   /** Error message from the scaffold */
   error: string;
+  classification?: ErrorClassification | null;
 }
 
 /**
@@ -264,6 +281,7 @@ export interface ConversationErrorEvent extends BaseEvent {
   code: string;
   /** Detailed error message */
   detail: string;
+  classification?: ErrorClassification | null;
 }
 
 /**

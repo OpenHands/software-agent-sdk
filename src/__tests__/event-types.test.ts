@@ -9,6 +9,8 @@ import {
   ActionEvent,
   ObservationEvent,
   AgentErrorEvent,
+  ConversationErrorEvent,
+  ErrorClassification,
   SystemPromptEvent,
   PauseEvent,
   CondensationRequestEvent,
@@ -119,6 +121,34 @@ describe('Event Type Guards', () => {
 
       expect(isAgentErrorEvent(event)).toBe(true);
     });
+  });
+
+  it('models optional SDK error classification on both error events', () => {
+    const classification: ErrorClassification = {
+      kind: 'auth',
+      retryable: false,
+      user_action: 'settings',
+    };
+    const agentError: AgentErrorEvent = {
+      id: generateEventId(),
+      kind: 'AgentErrorEvent',
+      timestamp: new Date().toISOString(),
+      tool_name: 'terminal',
+      tool_call_id: 'call_1',
+      error: 'redacted',
+      classification,
+    };
+    const conversationError: ConversationErrorEvent = {
+      id: generateEventId(),
+      kind: 'ConversationErrorEvent',
+      timestamp: new Date().toISOString(),
+      code: 'OpenAIError',
+      detail: 'redacted',
+      classification,
+    };
+
+    expect(agentError.classification?.kind).toBe('auth');
+    expect(conversationError.classification?.user_action).toBe('settings');
   });
 
   describe('SystemPromptEvent', () => {

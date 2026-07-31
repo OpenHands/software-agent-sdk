@@ -74,6 +74,7 @@ export type {
   EventID,
   EventSource,
   BaseEvent,
+  ErrorClassification,
   MessageEvent,
   ActionEvent,
   ObservationEvent,
