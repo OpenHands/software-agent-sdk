@@ -28,6 +28,7 @@ from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.skills import (
     InstalledSkillInfo,
     SkillFetchError,
+    SkillInfo,
     SkillValidationError,
 )
 from openhands.sdk.skills.skill import DEFAULT_MARKETPLACE_PATH
@@ -104,8 +105,8 @@ class SkillsRequest(BaseModel):
         default_factory=list,
         description=(
             "Marketplace registrations for plugin-based skill loading. Registrations "
-            "with auto_load=True or a list of plugin names replace legacy public "
-            "skills."
+            "with auto_load=True or a list of plugin names add their skills to the "
+            "public skills."
         ),
     )
 
@@ -127,19 +128,6 @@ class SkillsRequest(BaseModel):
     sandbox_config: SandboxConfig | None = Field(
         default=None, description="Sandbox skills configuration"
     )
-
-
-class SkillInfo(BaseModel):
-    """Skill information returned by the API."""
-
-    name: str
-    type: Literal["repo", "knowledge", "agentskills"]
-    content: str
-    triggers: list[str] = Field(default_factory=list)
-    source: str | None = None
-    description: str | None = None
-    is_agentskills_format: bool = False
-    disable_model_invocation: bool = False
 
 
 class SkillsResponse(BaseModel):
@@ -328,20 +316,7 @@ def get_skills(request: SkillsRequest, http_request: Request) -> SkillsResponse:
         registered_marketplaces=registered_marketplaces,
     )
 
-    # Convert Skill objects to SkillInfo for response
-    skills_info = [
-        SkillInfo(
-            name=info.name,
-            type=info.type,
-            content=info.content,
-            triggers=info.triggers,
-            source=info.source,
-            description=info.description,
-            is_agentskills_format=info.is_agentskills_format,
-            disable_model_invocation=info.disable_model_invocation,
-        )
-        for info in (skill.to_skill_info() for skill in result.skills)
-    ]
+    skills_info = [skill.to_skill_info() for skill in result.skills]
 
     return SkillsResponse(skills=skills_info, sources=result.sources)
 

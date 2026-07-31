@@ -14,7 +14,8 @@ AGENT_SECTION_RE = re.compile(r"(?m)^AGENT:\s*$")
 SUMMARY_HEADING_RE = re.compile(r"(?m)^##\s+Summary\s*$")
 NEXT_HEADING_RE = re.compile(r"(?m)^##\s+")
 GENERATED_BLOCK_RE = re.compile(
-    rf"\n?{re.escape(START_MARKER)}\n.*?\n{re.escape(END_MARKER)}\n?",
+    rf"(?:\r?\n)?{re.escape(START_MARKER)}\r?\n.*?\r?\n"
+    rf"{re.escape(END_MARKER)}(?:\r?\n)?",
     re.DOTALL,
 )
 

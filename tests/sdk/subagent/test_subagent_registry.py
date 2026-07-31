@@ -9,6 +9,7 @@ from openhands.sdk import LLM, Agent
 from openhands.sdk.context.condenser import LLMSummarizingCondenser, NoOpCondenser
 from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.mcp.config import MCPServer, dump_mcp_config
 from openhands.sdk.subagent.registry import (
     _reset_registry_for_tests,
     agent_definition_to_factory,
@@ -811,16 +812,16 @@ def test_end_to_end_md_to_factory_to_registry(tmp_path: Path) -> None:
     assert isinstance(agent, Agent)
 
 
-def test_agent_definition_to_factory_mcp_servers() -> None:
-    """Factory passes mcp_servers as mcp_config to the Agent."""
+def test_agent_definition_to_factory_mcp_config() -> None:
+    """Factory passes mcp_config to the Agent."""
     agent_def = AgentDefinition(
         name="mcp-agent",
         description="Agent with MCP servers",
         model="inherit",
         tools=[],
         system_prompt="",
-        mcp_servers={
-            "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]},
+        mcp_config={
+            "fetch": MCPServer(command="uvx", args=["mcp-server-fetch"]),
         },
     )
 
@@ -828,13 +829,13 @@ def test_agent_definition_to_factory_mcp_servers() -> None:
     llm = _make_test_llm()
     agent = factory(llm)
 
-    assert agent.mcp_config == {
-        "mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}
+    assert dump_mcp_config(agent.mcp_config) == {
+        "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}
     }
 
 
-def test_agent_definition_to_factory_no_mcp_servers() -> None:
-    """Factory without mcp_servers passes empty mcp_config."""
+def test_agent_definition_to_factory_no_mcp_config() -> None:
+    """Factory without mcp_config passes an empty server map."""
     agent_def = AgentDefinition(
         name="no-mcp-agent",
         model="inherit",
@@ -850,14 +851,14 @@ def test_agent_definition_to_factory_no_mcp_servers() -> None:
 
 
 def test_register_file_agents_passes_mcp_config_to_agent(tmp_path: Path) -> None:
-    """Integration: mcp_servers in markdown flows through registry to Agent."""
+    """Integration: mcp_config in markdown flows through registry to Agent."""
     agents_dir = tmp_path / ".agents" / "agents"
     agents_dir.mkdir(parents=True)
     (agents_dir / "mcp-agent.md").write_text(
         "---\n"
         "name: mcp-agent\n"
         "description: Agent with MCP servers\n"
-        "mcp_servers:\n"
+        "mcp_config:\n"
         "  fetch:\n"
         "    command: uvx\n"
         "    args: [mcp-server-fetch]\n"
@@ -876,8 +877,8 @@ def test_register_file_agents_passes_mcp_config_to_agent(tmp_path: Path) -> None
     llm = _make_test_llm()
     agent = factory.factory_func(llm)
 
-    assert agent.mcp_config == {
-        "mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}
+    assert dump_mcp_config(agent.mcp_config) == {
+        "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}
     }
 
 

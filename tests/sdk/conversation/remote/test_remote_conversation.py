@@ -10,7 +10,10 @@ from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.agent.acp_agent import ACPAgent
-from openhands.sdk.conversation.exceptions import ConversationRunError
+from openhands.sdk.conversation.exceptions import (
+    ConversationRunError,
+    WebSocketConnectionError,
+)
 from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.visualizer import DefaultConversationVisualizer
@@ -218,6 +221,41 @@ class TestRemoteConversation:
             "Should have made at least one GET call to /events/search "
             "to fetch initial events"
         )
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_remote_conversation_raises_when_websocket_never_ready(
+        self, mock_ws_client
+    ):
+        conversation_id = str(uuid.uuid4())
+        self.setup_mock_client(conversation_id=conversation_id)
+        mock_ws_instance = Mock()
+        mock_ws_instance.wait_until_ready.return_value = False
+        mock_ws_client.return_value = mock_ws_instance
+
+        with pytest.raises(WebSocketConnectionError):
+            RemoteConversation(agent=self.agent, workspace=self.workspace)
+
+        mock_ws_instance.stop.assert_called_once()
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_remote_conversation_can_tolerate_websocket_ready_timeout(
+        self, mock_ws_client, monkeypatch
+    ):
+        conversation_id = str(uuid.uuid4())
+        self.setup_mock_client(conversation_id=conversation_id)
+        mock_ws_instance = Mock()
+        mock_ws_instance.wait_until_ready.return_value = False
+        mock_ws_client.return_value = mock_ws_instance
+        monkeypatch.setenv("OPENHANDS_REMOTE_WS_READY_REQUIRED", "false")
+
+        conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+
+        assert conversation.id == uuid.UUID(conversation_id)
+        mock_ws_instance.stop.assert_not_called()
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"

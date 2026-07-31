@@ -21,7 +21,6 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
-from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ValidationError
 
@@ -39,6 +38,7 @@ from openhands.sdk.skills import (
     install_skill,
     list_installed_skills,
     load_available_skills,
+    load_marketplace_standalone_skills,
     uninstall_skill,
     update_skill,
 )
@@ -55,10 +55,6 @@ from openhands.sdk.skills.utils import (
 )
 from openhands.sdk.utils import sanitized_env
 from openhands.sdk.utils.path import to_posix_path
-
-
-if TYPE_CHECKING:
-    from openhands.sdk.profiles import ACPAgentProfile, OpenHandsAgentProfile
 
 
 logger = get_logger(__name__)
@@ -301,7 +297,7 @@ def merge_skills(skill_lists: list[list[Skill]]) -> list[Skill]:
 def load_registered_marketplace_skills(
     registered_marketplaces: list[MarketplaceRegistration],
 ) -> list[Skill]:
-    """Load skills from auto-load plugins in registered marketplaces."""
+    """Load skills from auto-load plugins and standalone skills in marketplaces."""
     if not registered_marketplaces:
         return []
 
@@ -309,7 +305,7 @@ def load_registered_marketplace_skills(
     all_skills: list[Skill] = []
     for registration in registry.get_auto_load_registrations():
         try:
-            marketplace, _ = registry.get_marketplace(registration.name)
+            marketplace, marketplace_path = registry.get_marketplace(registration.name)
         except Exception:
             logger.warning(
                 "Failed to load marketplace '%s'; continuing without it",
@@ -317,6 +313,15 @@ def load_registered_marketplace_skills(
                 exc_info=True,
             )
             continue
+
+        # Standalone skills first: the tier is merged last-wins, so appending
+        # plugins after lets a plugin win over a same-named standalone skill —
+        # matching the catalog's plugin-over-standalone rule.
+        all_skills.extend(
+            load_marketplace_standalone_skills(
+                marketplace, marketplace_path, registration
+            )
+        )
 
         for entry in marketplace.plugins:
             if not registration.auto_loads_plugin(entry.name):
@@ -350,33 +355,7 @@ def load_all_skills(
     marketplace_path: str | None = DEFAULT_MARKETPLACE_PATH,
     registered_marketplaces: list[MarketplaceRegistration] | None = None,
 ) -> SkillLoadResult:
-    """Load and merge skills from all configured sources.
-
-    Skills are loaded from multiple sources and merged with the following
-    precedence (later overrides earlier for duplicate names):
-    1. Sandbox skills (lowest) - Exposed URLs from sandbox
-    2. Registered marketplace skills or public skills legacy fallback
-    3. User skills - From ~/.openhands/skills/
-    4. Organization skills - From {org}/.openhands or equivalent
-    5. Project skills (highest) - From {workspace}/.openhands/skills/
-
-    Args:
-        load_public: Whether to load public skills from OpenHands/extensions repo.
-        load_user: Whether to load user skills from ~/.openhands/skills/.
-        load_project: Whether to load project skills from workspace.
-        load_org: Whether to load organization-level skills.
-        project_dir: Workspace directory path for project skills.
-        org_repos: Pre-authenticated (Git URL, org name) pairs for org skills.
-            All repos are loaded and merged into the single org tier.
-        sandbox_exposed_urls: List of exposed URLs from sandbox.
-        marketplace_path: Relative marketplace JSON path for public skills.
-            Pass None to load all public skills without marketplace filtering.
-        registered_marketplaces: Marketplace registrations whose auto-load plugins
-            replace legacy public skills when provided.
-
-    Returns:
-        SkillLoadResult containing merged skills and source counts.
-    """
+    """Merge skills: sandbox < marketplace < public < user < org < project."""
     sources: dict[str, int] = {}
     skill_lists: list[list[Skill]] = []
 
@@ -401,15 +380,11 @@ def load_all_skills(
     sources["registered_marketplaces"] = len(marketplace_skills)
     skill_lists.append(marketplace_skills)
 
-    # 2-3. Load legacy public + user skills via helper (no project yet — org sits
-    # between). Auto-load registered marketplaces replace legacy public skills,
-    # while user skills keep their existing precedence above the public marketplace
-    # tier.
     sdk_base = load_available_skills(
         work_dir=None,
         include_user=load_user,
         include_project=False,
-        include_public=load_public and not auto_load_registrations,
+        include_public=load_public,
         marketplace_path=marketplace_path,
     )
     sources["sdk_base"] = len(sdk_base)
@@ -458,20 +433,21 @@ def load_all_skills(
 
 
 def discover_profile_skills() -> list[Skill]:
-    """Skill catalog for ``AgentProfile.skill_refs`` resolution (#3868).
+    """Skill catalog an OpenHands profile launches with (#4017).
 
     Returns the merged user + public skills — the deterministic sources of
-    :func:`load_all_skills` that ``resolve_agent_profile`` filters by name.
-    ``load_all_skills`` already absorbs and logs benign per-source failures, so
-    this does not swallow errors: an unexpected failure propagates rather than
-    silently resolving the profile to a zero-skill agent.
+    :func:`load_all_skills`. ``resolve_agent_profile`` keeps all of them except
+    the profile's ``disabled_skills`` deny-list. ``load_all_skills`` already
+    absorbs and logs benign per-source failures, so this does not swallow errors:
+    an unexpected failure propagates rather than silently resolving the profile
+    to a zero-skill agent.
 
     Org / project skills need auth / workspace context not available at resolve
-    time, so they are not in this catalog (a follow-up). Because the resolver
-    now hard-fails dangling ``skill_refs`` (mirroring MCP), a profile that
-    selects an org/project skill via the picker would fail launch here until the
-    catalog is broadened — the SaaS app-server, which has that context, is
-    expected to supply the fuller catalog the same way it does for the picker.
+    time, so they are not in this catalog. That is safe under the deny-list
+    model: a skill missing from the catalog is simply never disabled (it stays
+    on when it does load, e.g. project skills loaded lazily by
+    ``LocalConversation``) — the old allow-list would instead have dangled and
+    failed the launch.
     """
     return list(
         load_all_skills(
@@ -481,21 +457,6 @@ def discover_profile_skills() -> list[Skill]:
             load_project=False,
         ).skills
     )
-
-
-def discover_profile_skills_if_needed(
-    profile: "OpenHandsAgentProfile | ACPAgentProfile",
-) -> list[Skill] | None:
-    """Discover the skill catalog a profile needs, or ``None`` to skip discovery.
-
-    ``skill_refs == []`` selects no discovered skills, so the (potentially
-    network-bound) discovery is skipped and the resolver receives ``None``. Any
-    other value — ``None`` (all discovered) or a name list — needs the catalog.
-    Centralizes the skip guard shared by conversation start and the dry-run.
-    """
-    if profile.skill_refs == []:
-        return None
-    return discover_profile_skills()
 
 
 def sync_public_skills() -> tuple[bool, str]:

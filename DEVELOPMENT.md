@@ -3,8 +3,8 @@
 ## Setup
 
 ```bash
-git clone https://github.com/OpenHands/agent-sdk.git
-cd agent-sdk
+git clone https://github.com/OpenHands/software-agent-sdk.git
+cd software-agent-sdk
 make build
 ```
 
@@ -29,7 +29,7 @@ uv run pytest tests/tools/               # Tools tests only
 ## Project Structure
 
 ```
-agent-sdk/
+software-agent-sdk/
 ├── openhands-sdk/          # Core SDK package
 ├── openhands-tools/        # Built-in tools
 ├── openhands-workspace/    # Workspace management

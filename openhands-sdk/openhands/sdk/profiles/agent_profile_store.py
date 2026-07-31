@@ -24,7 +24,6 @@ if TYPE_CHECKING:
         ACPAgentProfile,
         OpenHandsAgentProfile,
     )
-    from openhands.sdk.utils.cipher import Cipher
 
 _DEFAULT_PROFILE_DIR: Final[Path] = Path.home() / ".openhands" / "agent-profiles"
 _LOCK_TIMEOUT_SECONDS: Final[float] = 30.0
@@ -50,9 +49,10 @@ class AgentProfileStore:
     Mirrors :class:`~openhands.sdk.llm.llm_profile_store.LLMProfileStore`: one
     JSON file per profile under ``~/.openhands/agent-profiles``, the filename is
     the (renameable) profile ``name``, and the stable ``id`` (uuid) lives inside
-    the file. The profile is secret-free at rest except for
-    ``skills[].mcp_tools`` env/headers, which are masked by default and
-    encrypted when a ``cipher`` is supplied.
+    the file. The profile is secret-free at rest — every field is a reference
+    (``llm_profile_ref``, ``mcp_server_refs``), a deny-list of names
+    (``disabled_skills``), or a plain value, so no cipher/encryption is needed to
+    persist or load one (#4017).
     """
 
     def __init__(self, base_dir: Path | str | None = None) -> None:
@@ -136,17 +136,14 @@ class AgentProfileStore:
         self,
         profile: OpenHandsAgentProfile | ACPAgentProfile,
         *,
-        cipher: Cipher | None = None,
         max_profiles: int | None = None,
     ) -> None:
         """Save a profile under its own ``name``, overwriting any namesake.
 
-        With no ``cipher`` the profile is secret-free at rest:
-        ``skills[].mcp_tools`` env/headers are redacted. With a ``cipher`` those
-        values are encrypted (recoverable) rather than redacted; every other
-        field is a reference and dumps in the clear regardless. When
-        ``max_profiles`` is set, creating a *new* profile beyond the cap raises
-        ``ProfileLimitExceeded`` under the same lock as the write.
+        The profile is secret-free at rest, so it dumps in the clear with no
+        cipher/encryption needed. When ``max_profiles`` is set, creating a
+        *new* profile beyond the cap raises ``ProfileLimitExceeded`` under the
+        same lock as the write.
 
         Raises:
             ValueError: If ``profile.name`` is not a valid profile name.
@@ -154,12 +151,7 @@ class AgentProfileStore:
             TimeoutError: If the lock cannot be acquired.
         """
         profile_path = self._get_profile_path(profile.name)
-
-        # Cipher present => encrypt mcp_tools secrets; absent => redact them.
-        context: dict[str, Any] = (
-            {"cipher": cipher, "expose_secrets": "encrypted"} if cipher else {}
-        )
-        payload = profile.model_dump(mode="json", context=context)
+        payload = profile.model_dump(mode="json")
 
         with self._acquire_lock():
             if max_profiles is not None and not profile_path.exists():
@@ -186,17 +178,11 @@ class AgentProfileStore:
     def load(
         self,
         name: str,
-        *,
-        cipher: Cipher | None = None,
     ) -> OpenHandsAgentProfile | ACPAgentProfile:
         """Load and validate the profile stored under ``name``.
 
-        A ``cipher`` is threaded through the validation context for parity with
-        ``save``. Note: ``Skill.mcp_tools`` has a masking *serializer* but no
-        symmetric *validator*, so encrypted env/headers come back as ciphertext
-        — decryption is deferred to the resolver (#3717), which holds the
-        cipher. Reference fields (``llm_profile_ref`` etc.) carry no secret and
-        load unchanged.
+        All fields are references or plain values, so no cipher is needed to
+        load one.
 
         Raises:
             FileNotFoundError: If ``name`` does not exist.
@@ -215,8 +201,7 @@ class AgentProfileStore:
 
             try:
                 data = json.loads(profile_path.read_text())
-                context = {"cipher": cipher} if cipher else None
-                profile = validate_agent_profile(data, context=context)
+                profile = validate_agent_profile(data)
             except Exception as e:
                 raise ValueError(f"Failed to load profile `{name}`: {e}") from e
 
@@ -246,8 +231,7 @@ class AgentProfileStore:
         """Atomically rename a profile, keeping the in-file ``name`` in sync.
 
         Unlike a bare file move this also rewrites the persisted ``name`` field
-        (a surgical raw-JSON edit, so encrypted ``mcp_tools`` are untouched and
-        no cipher is needed). The stable ``id`` is preserved.
+        (a surgical raw-JSON edit). The stable ``id`` is preserved.
 
         Raises:
             FileNotFoundError: If ``old_name`` is missing.
@@ -281,9 +265,9 @@ class AgentProfileStore:
         The single-profile write primitive behind ``profile_refs.cascade_rename``.
         Self-locks (re-entrant), so the read-modify-write is atomic whether called
         standalone or nested under the FK helpers' :meth:`lock`. A raw-JSON edit
-        (only the ref field changes), so encrypted ``skills[].mcp_tools`` and the
-        stable ``id`` are untouched and no cipher is needed. No-op when the profile
-        is missing, non-dict, or an ACP profile (which carries no ref).
+        (only the ref field changes), so the stable ``id`` is untouched. No-op
+        when the profile is missing, non-dict, or an ACP profile (which carries
+        no ref).
         """
         path = self._get_profile_path(name)
         with self._acquire_lock():
@@ -382,13 +366,10 @@ class AgentProfileStoreProtocol(Protocol):
         self,
         profile: OpenHandsAgentProfile | ACPAgentProfile,
         *,
-        cipher: Cipher | None = ...,
         max_profiles: int | None = ...,
     ) -> None: ...
 
-    def load(
-        self, name: str, *, cipher: Cipher | None = ...
-    ) -> OpenHandsAgentProfile | ACPAgentProfile: ...
+    def load(self, name: str) -> OpenHandsAgentProfile | ACPAgentProfile: ...
 
     def delete(self, name: str) -> None: ...
 
@@ -424,7 +405,6 @@ def save_profile_preserving_identity(
     store: AgentProfileStoreProtocol,
     profile: OpenHandsAgentProfile | ACPAgentProfile,
     *,
-    cipher: Cipher | None = None,
     max_profiles: int | None = None,
 ) -> OpenHandsAgentProfile | ACPAgentProfile:
     """Save ``profile`` with the server-managed id/revision policy.
@@ -447,5 +427,5 @@ def save_profile_preserving_identity(
             )
         else:
             profile = profile.model_copy(update={"id": uuid4()})
-        store.save(profile, cipher=cipher, max_profiles=max_profiles)
+        store.save(profile, max_profiles=max_profiles)
     return profile

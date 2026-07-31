@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from openhands.sdk.mcp.config import dump_mcp_config
 from openhands.sdk.plugin import Plugin, PluginManifest
 from openhands.sdk.plugin.types import (
     CommandDefinition,
@@ -137,6 +138,91 @@ This is a test skill content.
 
         assert len(plugin.skills) == 1
         assert plugin.skills[0].name == "test-skill"
+
+    def test_load_single_skill_plugin_root_skill_md(self, tmp_path: Path):
+        """A SKILL.md at the plugin root loads as a single-skill plugin.
+
+        Mirrors Claude Code's single-skill-plugin behavior (v2.1.142+): when a
+        plugin has no skills/ directory, a root SKILL.md is loaded as the
+        plugin's skill. This is how standalone Agent Skills are published as
+        plugins without an extra nesting level.
+        """
+        plugin_dir = tmp_path / "solo-skill"
+        plugin_dir.mkdir()
+        manifest_dir = plugin_dir / ".claude-plugin"
+        manifest_dir.mkdir()
+        (manifest_dir / "plugin.json").write_text(
+            '{"name": "solo-skill", "version": "1.0.0"}'
+        )
+        (plugin_dir / "SKILL.md").write_text(
+            """---
+name: solo-skill
+description: A standalone skill published as a single-skill plugin.
+---
+
+Body of the solo skill.
+"""
+        )
+
+        plugin = Plugin.load(plugin_dir)
+
+        assert plugin.name == "solo-skill"
+        assert len(plugin.skills) == 1
+        assert plugin.skills[0].name == "solo-skill"
+
+    def test_load_single_skill_plugin_without_manifest(self, tmp_path: Path):
+        """Root SKILL.md loads even when plugin.json is absent."""
+        plugin_dir = tmp_path / "inferred-solo"
+        plugin_dir.mkdir()
+        (plugin_dir / "SKILL.md").write_text(
+            """---
+name: inferred-solo
+description: Root skill with no manifest.
+---
+
+Body.
+"""
+        )
+
+        plugin = Plugin.load(plugin_dir)
+
+        assert plugin.name == "inferred-solo"
+        assert len(plugin.skills) == 1
+        assert plugin.skills[0].name == "inferred-solo"
+
+    def test_skills_dir_takes_precedence_over_root_skill_md(self, tmp_path: Path):
+        """When a skills/ directory exists, it wins over a root SKILL.md.
+
+        Matches Claude Code: the root SKILL.md is only a fallback used when
+        there is no skills/ directory.
+        """
+        plugin_dir = tmp_path / "both"
+        plugin_dir.mkdir()
+        # Root SKILL.md that must be IGNORED because skills/ exists.
+        (plugin_dir / "SKILL.md").write_text(
+            "---\nname: root-ignored\ndescription: should not load\n---\nbody\n"
+        )
+        skill_dir = plugin_dir / "skills" / "nested"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: nested\ndescription: the real one\n---\nbody\n"
+        )
+
+        plugin = Plugin.load(plugin_dir)
+
+        names = {s.name for s in plugin.skills}
+        assert names == {"nested"}
+        assert "root-ignored" not in names
+
+    def test_load_plugin_no_skills_anywhere(self, tmp_path: Path):
+        """A plugin with neither skills/ nor a root SKILL.md loads zero skills."""
+        plugin_dir = tmp_path / "empty"
+        plugin_dir.mkdir()
+        (plugin_dir / "README.md").write_text("# not a skill\n")
+
+        plugin = Plugin.load(plugin_dir)
+
+        assert plugin.skills == []
 
     def test_load_plugin_with_hooks(self, tmp_path: Path):
         """Test loading a plugin with hooks."""
@@ -681,8 +767,8 @@ class TestPluginMcpConfigLoading:
     are NOT prematurely expanded.
     """
 
-    def test_plugin_mcp_config_preserves_unexpanded_variables(self, tmp_path: Path):
-        """Test that MCP config variables WITHOUT defaults are preserved.
+    def test_plugin_mcp_config_preserve_unexpanded_variables(self, tmp_path: Path):
+        """Test that MCP server variables WITHOUT defaults are preserved.
 
         Variables like ${VAR} should remain as placeholders after plugin loading
         so they can be expanded later with per-conversation secrets.
@@ -717,16 +803,15 @@ class TestPluginMcpConfigLoading:
         plugin = Plugin.load(plugin_dir)
 
         # Variable without default should remain as placeholder
-        assert plugin.mcp_config is not None
-        auth_header = plugin.mcp_config["mcpServers"]["test-server"]["headers"][
+        auth_header = dump_mcp_config(plugin.mcp_config)["test-server"]["headers"][
             "Authorization"
         ]
         assert auth_header == "Bearer ${SECRET_TOKEN}", (
             f"Expected placeholder to be preserved, got '{auth_header}'"
         )
 
-    def test_plugin_mcp_config_preserves_variables_with_defaults(self, tmp_path: Path):
-        """Test that MCP config variables WITH defaults are preserved as placeholders.
+    def test_plugin_mcp_config_preserve_variables_with_defaults(self, tmp_path: Path):
+        """Test that MCP server variables WITH defaults are preserved as placeholders.
 
         Variables like ${VAR:-default} should remain as placeholders after plugin
         loading so they can be expanded later with per-conversation secrets.
@@ -771,8 +856,7 @@ class TestPluginMcpConfigLoading:
 
         # CRITICAL: Variable with default should be preserved as a placeholder,
         # NOT replaced with "fallback" during plugin loading
-        assert plugin.mcp_config is not None
-        auth_header = plugin.mcp_config["mcpServers"]["test-server"]["headers"][
+        auth_header = dump_mcp_config(plugin.mcp_config)["test-server"]["headers"][
             "Authorization"
         ]
 
@@ -784,6 +868,42 @@ class TestPluginMcpConfigLoading:
             "This is the double-expansion bug: the default value was applied "
             "during plugin loading instead of being deferred."
         )
+
+    def test_plugin_mcp_config_drops_unknown_server_fields(self, tmp_path: Path):
+        """Plugin .mcp.json loading tolerates fields from newer MCP schemas."""
+        import json
+
+        plugin_dir = tmp_path / "test-plugin"
+        plugin_dir.mkdir()
+
+        manifest_dir = plugin_dir / ".plugin"
+        manifest_dir.mkdir()
+        (manifest_dir / "plugin.json").write_text(
+            json.dumps({"name": "test-plugin", "version": "1.0.0"})
+        )
+
+        (plugin_dir / ".mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "test-server": {
+                            "type": "shttp",
+                            "url": "https://example.com/mcp",
+                            "future_field": "ignored",
+                        }
+                    }
+                }
+            )
+        )
+
+        plugin = Plugin.load(plugin_dir)
+
+        assert dump_mcp_config(plugin.mcp_config) == {
+            "test-server": {
+                "transport": "http",
+                "url": "https://example.com/mcp",
+            }
+        }
 
     def test_plugin_mcp_skill_root_is_expanded(self, tmp_path: Path):
         """Test that SKILL_ROOT is correctly expanded during plugin loading.
@@ -820,7 +940,223 @@ class TestPluginMcpConfigLoading:
         plugin = Plugin.load(plugin_dir)
 
         # SKILL_ROOT should be expanded to the plugin directory
-        assert plugin.mcp_config is not None
-        command = plugin.mcp_config["mcpServers"]["test-server"]["command"]
+        command = dump_mcp_config(plugin.mcp_config)["test-server"]["command"]
         assert str(plugin_dir) in command
         assert "${SKILL_ROOT}" not in command
+
+
+class TestRootSkillMcpHandling:
+    """Tests for proper MCP config handling in root SKILL.md plugins.
+
+    These tests verify the fix for issues where root .mcp.json files were
+    being loaded twice with different semantics, causing failures and
+    inconsistencies.
+    """
+
+    def test_malformed_root_mcp_json_does_not_drop_skill(self, tmp_path: Path):
+        """Issue #1: Malformed root .mcp.json should not silently drop the skill.
+
+        Before fix: Plugin-level loader tolerates malformed .mcp.json (logs warning),
+        but skill-level loader raises SkillValidationError, caught by broad except,
+        returning [] - skill silently dropped.
+
+        After fix: skip_mcp=True prevents double-loading, skill loads successfully.
+        """
+        import json
+
+        plugin_dir = tmp_path / "test-plugin"
+        plugin_dir.mkdir()
+
+        # Create minimal manifest
+        manifest_dir = plugin_dir / ".plugin"
+        manifest_dir.mkdir()
+        (manifest_dir / "plugin.json").write_text(
+            json.dumps({"name": "test-plugin", "version": "1.0.0"})
+        )
+
+        # Create valid root SKILL.md
+        (plugin_dir / "SKILL.md").write_text(
+            """---
+name: test-skill
+description: A test skill
+---
+
+# Test Skill
+
+This is a test skill.
+"""
+        )
+
+        # Create MALFORMED root .mcp.json (invalid JSON)
+        (plugin_dir / ".mcp.json").write_text('{ "mcpServers": { invalid json }')
+
+        # Load the plugin
+        plugin = Plugin.load(plugin_dir)
+
+        # The skill should still load (MCP loading is skipped for root skills)
+        assert len(plugin.skills) == 1
+        assert plugin.skills[0].name == "test-skill"
+        # Plugin-level MCP config should be empty (malformed file tolerated)
+        assert plugin.mcp_config == {}
+
+    def test_root_mcp_json_not_double_loaded(self, tmp_path: Path):
+        """Issue #2: Root .mcp.json should not be loaded twice with different semantics.
+
+        Before fix: Same file loaded by both _load_plugin_mcp_config
+        (expand_defaults=False) and Skill.load (expand_defaults=True).
+
+        After fix: Only loaded once at plugin level, skill uses skip_mcp=True.
+        """
+        import json
+
+        plugin_dir = tmp_path / "test-plugin"
+        plugin_dir.mkdir()
+
+        # Create minimal manifest
+        manifest_dir = plugin_dir / ".plugin"
+        manifest_dir.mkdir()
+        (manifest_dir / "plugin.json").write_text(
+            json.dumps({"name": "test-plugin", "version": "1.0.0"})
+        )
+
+        # Create root SKILL.md
+        (plugin_dir / "SKILL.md").write_text(
+            """---
+name: test-skill
+description: A test skill
+---
+
+# Test Skill
+"""
+        )
+
+        # Create root .mcp.json with variable placeholder
+        (plugin_dir / ".mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "test-server": {
+                            "command": "server",
+                            "args": ["--token", "${DB_TOKEN:-DEFAULT_TOKEN}"],
+                        }
+                    }
+                }
+            )
+        )
+
+        # Load the plugin
+        plugin = Plugin.load(plugin_dir)
+
+        # Plugin-level MCP preserves placeholders (expand_defaults=False)
+        mcp_dump = dump_mcp_config(plugin.mcp_config)
+        assert "${DB_TOKEN:-DEFAULT_TOKEN}" in mcp_dump["test-server"]["args"]
+
+        # Skill should have loaded successfully with skip_mcp=True
+        assert len(plugin.skills) == 1
+        assert plugin.skills[0].name == "test-skill"
+        # Skill's mcp_tools should be None (not loaded due to skip_mcp=True)
+        assert plugin.skills[0].mcp_tools is None
+
+    def test_root_skill_resources_not_duplicated(self, tmp_path: Path):
+        """Issue #3: Resources should not be discovered twice for root skills.
+
+        Before fix: discover_skill_resources called both by Skill.load() and
+        by plugin loader (redundant).
+
+        After fix: Only Skill.load() discovers resources, plugin loader doesn't
+        call discover_skill_resources.
+        """
+        import json
+
+        plugin_dir = tmp_path / "test-plugin"
+        plugin_dir.mkdir()
+
+        # Create minimal manifest
+        manifest_dir = plugin_dir / ".plugin"
+        manifest_dir.mkdir()
+        (manifest_dir / "plugin.json").write_text(
+            json.dumps({"name": "test-plugin", "version": "1.0.0"})
+        )
+
+        # Create root SKILL.md
+        (plugin_dir / "SKILL.md").write_text(
+            """---
+name: test-skill
+description: A test skill
+---
+
+# Test Skill
+"""
+        )
+
+        # Create some resources
+        (plugin_dir / "test.txt").write_text("test resource")
+        assets_dir = plugin_dir / "assets"
+        assets_dir.mkdir()
+        (assets_dir / "asset.txt").write_text("asset content")
+
+        # Load the plugin
+        plugin = Plugin.load(plugin_dir)
+
+        # Resources should be discovered and attached
+        assert len(plugin.skills) == 1
+        assert plugin.skills[0].resources is not None
+        assert plugin.skills[0].resources.assets == ["asset.txt"]
+        # This test passes if no exception is raised - the fix prevents the
+        # redundant call but the end result is the same
+
+    def test_nested_skill_with_own_mcp_json_still_loads(self, tmp_path: Path):
+        """Verify nested skills with their own .mcp.json still work correctly.
+
+        Nested skills should continue to load their own .mcp.json normally
+        (not skipped) since they're in a different directory than the plugin root.
+        """
+        import json
+
+        plugin_dir = tmp_path / "test-plugin"
+        plugin_dir.mkdir()
+
+        # Create minimal manifest
+        manifest_dir = plugin_dir / ".plugin"
+        manifest_dir.mkdir()
+        (manifest_dir / "plugin.json").write_text(
+            json.dumps({"name": "test-plugin", "version": "1.0.0"})
+        )
+
+        # Create nested skill with its own .mcp.json
+        skills_dir = plugin_dir / "skills"
+        skills_dir.mkdir()
+        skill_dir = skills_dir / "nested-skill"
+        skill_dir.mkdir()
+
+        (skill_dir / "SKILL.md").write_text(
+            """---
+name: nested-skill
+description: A nested skill
+---
+
+# Nested Skill
+"""
+        )
+
+        (skill_dir / ".mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "nested-server": {
+                            "command": "nested-server",
+                        }
+                    }
+                }
+            )
+        )
+
+        # Load the plugin
+        plugin = Plugin.load(plugin_dir)
+
+        # Skill should load with its own MCP config
+        assert len(plugin.skills) == 1
+        assert plugin.skills[0].name == "nested-skill"
+        # Nested skill SHOULD have mcp_tools (not skipped)
+        assert plugin.skills[0].mcp_tools is not None
+        assert "nested-server" in plugin.skills[0].mcp_tools

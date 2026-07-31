@@ -1,7 +1,7 @@
 ---
 name: Run Integration Tests
 run-name: >-
-    Run Integration Tests ${{ inputs.reason || github.event.label.name || 'scheduled' }}
+    Run Integration Tests ${{ inputs.reason || github.event.label.name || 'manual' }}
 
 on:
     # Use pull_request_target to access secrets even on fork PRs.
@@ -21,8 +21,8 @@ on:
                 default: all
             model_ids:
                 description: >-
-                    Comma-separated model IDs to test (resolved via OpenHands/evaluation).
-                    Example: gpt-5.5,glm-4.7. Defaults to a standard set.
+                    Comma-separated model IDs to test (resolved by the inline table).
+                    Example: gpt-5.5,claude-sonnet-4-6. Defaults to a standard set.
                 required: false
                 default: ''
                 type: string
@@ -44,13 +44,11 @@ on:
                     - gemini
                     - gpt5
                     - planning
-    schedule:
-        - cron: 30 22 * * * # Runs at 10:30pm UTC every day
 
 env:
     N_PROCESSES: 4 # Global configuration for number of parallel processes for evaluation
-    # Default models for scheduled/label-triggered runs (resolved via OpenHands/evaluation)
-    DEFAULT_MODEL_IDS: gpt-5.5,deepseek-v4-flash,minimax-m2.7,gemini-3.1-pro
+    # Default models for label-triggered runs (resolved by the inline table below)
+    DEFAULT_MODEL_IDS: gpt-5.5,deepseek-v4-flash,minimax-m2.7,gemini-3.1-pro,claude-sonnet-4-6
 
 jobs:
     setup-matrix:
@@ -92,8 +90,7 @@ jobs:
 
                   export MODEL_IDS
 
-                  # Resolve model configs using OpenHands/evaluation's model config.
-                  # Transform output to matrix format for integration tests.
+                  # Transform model configs to matrix format for integration tests.
                   MATRIX=$(python3 << 'EOF'
                   import json
                   import os
@@ -111,6 +108,12 @@ jobs:
                           "llm_config": {"model": "litellm_proxy/minimax/MiniMax-M2.7", "temperature": 1.0, "top_p": 0.95}},
                       "gemini-3.1-pro": {"display_name": "Gemini 3.1 Pro",
                           "llm_config": {"model": "litellm_proxy/gemini-3.1-pro-preview", "temperature": 0.0}},
+                      "claude-sonnet-4-6": {"display_name": "Claude Sonnet 4.6",
+                          "llm_config": {"model": "litellm_proxy/anthropic/claude-sonnet-4-6", "temperature": 0.0}},
+                      "kimi-k3": {"display_name": "Kimi K3",
+                          "llm_config": {"model": "litellm_proxy/moonshot/kimi-k3", "reasoning_effort": "high"}},
+                      "claude-opus-5": {"display_name": "Claude Opus 5",
+                          "llm_config": {"model": "litellm_proxy/anthropic/claude-opus-5", "reasoning_effort": "high"}},
                   }
 
                   model_ids = os.environ["MODEL_IDS"].split(",")
@@ -225,10 +228,9 @@ jobs:
                   printf '%s' "$COMMENT_BODY" | gh issue comment "$ISSUE_NUMBER" --body-file -
 
     run-integration-tests:
-        # Security: Only run when integration-related labels are present, via workflow_dispatch, or on schedule
+        # Security: Only run when integration-related labels are present or via workflow_dispatch
         # This prevents automatic execution on fork PRs without maintainer approval
-        # Note: uses always() to run even when comment jobs are skipped (e.g., for scheduled runs)
-        # Schedule trigger only runs in the main repository, not in forks
+        # Note: uses always() to run even when comment jobs are skipped
         if: |
             always() && (
                 (
@@ -237,8 +239,7 @@ jobs:
                         github.event.label.name == 'behavior-test'
                     )
                 ) ||
-                github.event_name == 'workflow_dispatch' ||
-                (github.event_name == 'schedule' && github.repository == 'OpenHands/software-agent-sdk')
+                github.event_name == 'workflow_dispatch'
             ) && needs.setup-matrix.result == 'success'
         needs: [setup-matrix, post-label-comment, post-dispatch-comment]
         runs-on: ubuntu-24.04
@@ -314,9 +315,6 @@ jobs:
                         echo "workflow_dispatch provided unknown test_type '$test_type'; defaulting to full suite."
                         ;;
                     esac
-                  elif [ "${{ github.event_name }}" = "schedule" ]; then
-                    TEST_TYPE_ARGS="--test-type integration"
-                    echo "Scheduled run; running integration tests only."
                   else
                     echo "Running full integration test suite."
                   fi
@@ -402,8 +400,7 @@ jobs:
                         github.event.label.name == 'behavior-test'
                     )
                 ) ||
-                github.event_name == 'workflow_dispatch' ||
-                (github.event_name == 'schedule' && github.repository == 'OpenHands/software-agent-sdk')
+                github.event_name == 'workflow_dispatch'
             )
         runs-on: ubuntu-24.04
         permissions:
@@ -488,26 +485,3 @@ jobs:
                   COMMENT_BODY=$(uv run python -c "from openhands.sdk.utils.github import sanitize_openhands_mentions; import sys; print(sanitize_openhands_mentions(sys.stdin.read()), end='')" < consolidated_report.md)
                   # Use GitHub CLI to create comment on the specified issue/PR
                   echo "$COMMENT_BODY" | gh issue comment "$ISSUE_NUMBER" --body-file -
-
-            - name: Read consolidated report for tracker issue
-              if: github.event_name == 'schedule'
-              id: read_report
-              run: |
-                  # Read and sanitize the report, then set as output
-                  REPORT_CONTENT=$(uv run python -c "from openhands.sdk.utils.github import sanitize_openhands_mentions; import sys; print(sanitize_openhands_mentions(sys.stdin.read()), end='')" < consolidated_report.md)
-                  echo "report<<EOF" >> $GITHUB_OUTPUT
-                  echo "$REPORT_CONTENT" >> $GITHUB_OUTPUT
-                  echo "EOF" >> $GITHUB_OUTPUT
-
-            - name: Comment with results on tracker issue
-              if: github.event_name == 'schedule'
-              uses: KeisukeYamashita/create-comment@1d95d97d7b1b73ab66e5ca931610e4e10ddc5eed # v1
-              with:
-                  number: 2078
-                  unique: false
-                  comment: |
-                      **Trigger:** Nightly Scheduled Run
-                      **Commit:** ${{ github.sha }}
-
-                      ${{ steps.read_report.outputs.report }}
-

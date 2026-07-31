@@ -25,7 +25,9 @@ from openhands.tools.preset.default import get_default_agent
 
 
 QUALITY_THRESHOLD = float(os.getenv("QUALITY_THRESHOLD", "90.0"))
-MAX_ITERATIONS = int(os.getenv("MAX_ITERATIONS", "5"))
+MAX_ITERATIONS = int(os.getenv("MAX_ITERATIONS", "2"))
+PHASE_MAX_ITERATIONS = int(os.getenv("PHASE_MAX_ITERATIONS", "15"))
+COBOL_SAMPLE_LIMIT = max(1, int(os.getenv("COBOL_SAMPLE_LIMIT", "1")))
 
 
 def setup_workspace() -> tuple[Path, Path, Path]:
@@ -229,7 +231,7 @@ def create_sample_cobol_files(cobol_dir: Path) -> list[str]:
     }
 
     created_files = []
-    for filename, content in sample_files.items():
+    for filename, content in list(sample_files.items())[:COBOL_SAMPLE_LIMIT]:
         file_path = cobol_dir / filename
         file_path.write_text(content)
         created_files.append(filename)
@@ -265,6 +267,8 @@ Requirements:
    the format: @source <program>:<line numbers> (e.g., @source CBACT01C.cbl:73-77)
 8. Create a clean, maintainable object-oriented design
 9. Each Java file should be compilable and follow Java best practices
+10. Keep this demo conversion compact; after the listed Java files are written,
+    finish without exploring unrelated files or starting extra work.
 
 Read each COBOL file and create the corresponding Java file in the target directory.
 """
@@ -337,6 +341,7 @@ Create a critique report in the following EXACT format:
 3. [Third priority]
 
 Save this report to: {java_dir.parent}/critiques/critique_report.md
+After saving the report, finish without starting any additional work.
 """
 
 
@@ -384,6 +389,9 @@ def run_iterative_refinement() -> None:
     print(f"COBOL Directory: {cobol_dir}")
     print(f"Java Directory: {java_dir}")
     print(f"Critique Directory: {critique_dir}")
+    print(f"Max refinement iterations: {MAX_ITERATIONS}")
+    print(f"Max agent steps per phase: {PHASE_MAX_ITERATIONS}")
+    print(f"Sample COBOL files: {COBOL_SAMPLE_LIMIT}")
     print()
 
     # Create sample COBOL files
@@ -409,6 +417,7 @@ def run_iterative_refinement() -> None:
         refactoring_conversation = Conversation(
             agent=refactoring_agent,
             workspace=str(workspace_dir),
+            max_iteration_per_run=PHASE_MAX_ITERATIONS,
         )
 
         previous_critique = critique_file if iteration > 1 else None
@@ -426,6 +435,7 @@ def run_iterative_refinement() -> None:
         critique_conversation = Conversation(
             agent=critique_agent,
             workspace=str(workspace_dir),
+            max_iteration_per_run=PHASE_MAX_ITERATIONS,
         )
 
         critique_prompt = get_critique_prompt(cobol_dir, java_dir, cobol_files)

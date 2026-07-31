@@ -165,4 +165,4 @@ Focus on correctness, security, and clear reasoning.
 User docs for Markdown agents live in the docs repo. If you change any of the
 invariants above, update both this file and the user docs.
 
-- Docs PR tracking this feature: https://github.com/OpenHands/docs/pull/358
+- Published guide: https://docs.openhands.dev/sdk/guides/agent-file-based

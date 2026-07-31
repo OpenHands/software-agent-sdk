@@ -90,6 +90,9 @@ def maybe_init_laminar():
 
     from lmnr import Instruments, Laminar
 
+    if Laminar.is_initialized():
+        return
+
     base_url = get_env("LMNR_BASE_URL") or None
     force_http = _get_bool_env("LMNR_FORCE_HTTP")
 
@@ -126,7 +129,6 @@ def observe[**P, R](
     metadata: dict[str, Any] | None = None,
     tags: list[str] | None = None,
     preserve_global_context: bool = False,
-    rollout_entrypoint: bool = False,
     **kwargs: dict[str, Any],
 ) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """Lazy-resolving observe decorator.
@@ -152,7 +154,6 @@ def observe[**P, R](
             metadata=metadata,
             tags=tags,
             preserve_global_context=preserve_global_context,
-            rollout_entrypoint=rollout_entrypoint,
             **kwargs,
         )(func)
 

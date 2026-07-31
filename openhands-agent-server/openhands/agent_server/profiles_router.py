@@ -337,14 +337,10 @@ async def activate_profile(
     settings_store = get_settings_store(config)
 
     def apply_profile(settings: PersistedSettings) -> PersistedSettings:
-        # Update the LLM configuration
-        llm_dict = llm.model_dump(mode="json", context={"expose_secrets": "plaintext"})
-        settings.update(
-            {
-                "agent_settings_diff": {"llm": llm_dict},
-                "active_profile": name,
-            }
+        settings.agent_settings = settings.agent_settings.model_copy(
+            update={"llm": llm}
         )
+        settings.active_profile = name
         return settings
 
     try:
