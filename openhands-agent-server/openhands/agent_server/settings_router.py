@@ -182,14 +182,9 @@ async def update_settings(
 
     Accepts ``agent_settings_diff``, ``conversation_settings_diff``,
     ``misc_settings_diff``, and/or ``active_profile`` for incremental updates.
-
-    Setting ``active_profile`` to a profile name (without an explicit
-    ``agent_settings_diff.llm``) loads that profile and applies its LLM
-    config, the same as ``POST /api/profiles/{name}/activate`` - so
-    ``active_profile`` can't silently disagree with ``agent_settings.llm``.
-    Returns 404 if the named profile doesn't exist. Pass an explicit
-    ``agent_settings_diff.llm`` alongside ``active_profile`` to opt out and
-    set both independently.
+    Setting ``active_profile`` loads and applies that profile's LLM, same as
+    ``POST /api/profiles/{name}/activate``, unless ``agent_settings_diff.llm``
+    is also given.
 
     The three ``*_settings_diff`` fields are deep-merged; nested objects merge
     recursively, and a ``null`` value **inside a nested map deletes that entry**
@@ -241,16 +236,8 @@ async def update_settings(
 def _resolve_active_profile_llm(
     request: Request, update_data: SettingsUpdatePayload
 ) -> SettingsUpdatePayload:
-    """Fold the named profile's LLM into ``agent_settings_diff`` when the
-    caller sets ``active_profile`` without an explicit ``llm`` diff.
-
-    ``PATCH /api/settings`` used to accept ``active_profile`` as a bare label
-    with no side effects, letting it silently disagree with
-    ``agent_settings.llm`` - unlike ``POST /api/profiles/{name}/activate``,
-    which updates both atomically. This mirrors that endpoint's behavior
-    (load the profile, apply its LLM) so the two code paths can't diverge.
-    See #4314.
-    """
+    """Fold the named profile's LLM into ``agent_settings_diff`` unless the
+    caller already gave one explicitly. Mirrors ``/activate``. See #4314."""
     profile_name = update_data.get("active_profile")
     agent_diff = update_data.get("agent_settings_diff")
     explicit_llm_diff = isinstance(agent_diff, dict) and "llm" in agent_diff

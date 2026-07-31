@@ -693,9 +693,7 @@ def test_patch_settings_active_agent_profile_id_independent(client_with_settings
 
 
 def test_patch_settings_active_profile_applies_llm(client_with_settings):
-    """PATCH active_profile loads and applies that profile's LLM, matching
-    POST /api/profiles/{name}/activate - so it can't silently desync
-    active_profile from agent_settings.llm (#4314)."""
+    """PATCH active_profile applies that profile's LLM (#4314)."""
     get_llm_profile_store().save("fast-profile", LLM(model="claude-haiku"))
 
     response = client_with_settings.patch(
@@ -714,8 +712,7 @@ def test_patch_settings_active_profile_applies_llm(client_with_settings):
 
 
 def test_patch_settings_switching_active_profile_updates_llm(client_with_settings):
-    """Switching active_profile a second time re-applies the new profile's
-    LLM, not the first profile's."""
+    """Switching active_profile re-applies the new profile's LLM."""
     get_llm_profile_store().save("profile-a", LLM(model="model-a"))
     get_llm_profile_store().save("profile-b", LLM(model="model-b"))
 
@@ -731,8 +728,7 @@ def test_patch_settings_switching_active_profile_updates_llm(client_with_setting
 
 
 def test_patch_settings_active_profile_not_found_returns_404(client_with_settings):
-    """PATCH active_profile with an unknown profile name 404s instead of
-    silently accepting a dangling pointer."""
+    """PATCH active_profile with an unknown profile name 404s."""
     response = client_with_settings.patch(
         "/api/settings",
         json={"active_profile": "does-not-exist"},
@@ -740,7 +736,6 @@ def test_patch_settings_active_profile_not_found_returns_404(client_with_setting
 
     assert response.status_code == 404
 
-    # Nothing should have been persisted - active_profile stays unset.
     refetch = client_with_settings.get("/api/settings").json()
     assert refetch["active_profile"] is None
 
@@ -748,8 +743,7 @@ def test_patch_settings_active_profile_not_found_returns_404(client_with_setting
 def test_patch_settings_explicit_llm_diff_overrides_profile_autoload(
     client_with_settings,
 ):
-    """An explicit agent_settings_diff.llm alongside active_profile is
-    respected as-is; the named profile's LLM is not auto-loaded over it."""
+    """An explicit agent_settings_diff.llm overrides profile autoload."""
     get_llm_profile_store().save("fast-profile", LLM(model="claude-haiku"))
 
     response = client_with_settings.patch(
