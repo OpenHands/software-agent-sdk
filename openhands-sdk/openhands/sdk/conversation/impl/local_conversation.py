@@ -2595,6 +2595,17 @@ class LocalConversation(BaseConversation):
         first_attempt = not getattr(self, "_cleanup_initiated", False)
         if first_attempt:
             self._cleanup_initiated = True
+
+            # Best-effort: hand the accumulated LLM cost to the workspace so it
+            # can be included in the automation completion callback. State is
+            # in-process here, so unlike RemoteConversation there is no cache to
+            # consult and no fetch that could block against a dead server.
+            try:
+                cost = self._state.stats.get_combined_metrics().accumulated_cost
+                self.workspace.register_cost(cost)
+            except Exception as e:
+                logger.debug(f"Could not register accumulated cost: {e}")
+
             logger.debug("Closing conversation and cleaning up tool executors")
             hook_processor = getattr(self, "_hook_processor", None)
             if hook_processor is not None:

@@ -1,4 +1,3 @@
-import os
 from collections.abc import Generator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -70,8 +69,6 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
     """
 
     _client: httpx.Client | None = PrivateAttr(default=None)
-    _conversation_id: str | None = PrivateAttr(default=None)
-    _accumulated_cost: float | None = PrivateAttr(default=None)
 
     def reset_client(self) -> None:
         """Reset the HTTP client to force re-initialization.
@@ -274,81 +271,6 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             The conversation ID if one has been registered, None otherwise.
         """
         return self._conversation_id
-
-    def register_cost(self, cost: float) -> None:
-        """Register the accumulated LLM cost for this workspace's run.
-
-        Called by the automation entry-point script once the conversation has
-        finished. The cost is included in the completion callback sent to the
-        automation service.
-
-        Args:
-            cost: Accumulated LLM cost in USD
-        """
-        self._accumulated_cost = cost
-        logger.debug(f"Registered cost: {cost}")
-
-    @property
-    def accumulated_cost(self) -> float | None:
-        """Get the most recently registered accumulated LLM cost.
-
-        Returns:
-            The cost in USD if one has been registered, None otherwise.
-        """
-        return self._accumulated_cost
-
-    def _send_completion_callback(
-        self, exc_type: type | None, exc_val: BaseException | None
-    ) -> None:
-        """POST completion status to the automation service (best-effort).
-
-        Call this from ``__exit__`` before ``cleanup()``. Does nothing when
-        ``AUTOMATION_CALLBACK_URL`` env var is not set.
-
-        Reads configuration from environment variables:
-          - ``AUTOMATION_CALLBACK_URL`` — URL to POST completion status to
-          - ``AUTOMATION_CALLBACK_API_KEY`` — Bearer token for callback auth (optional)
-          - ``AUTOMATION_RUN_ID`` — Run ID to include in callback payload (optional)
-
-        Includes ``conversation_id`` in the payload if one was registered via
-        ``register_conversation()``, and ``cost`` if one was registered via
-        ``register_cost()``.
-
-        Args:
-            exc_type: Exception type if an exception was raised, None otherwise
-            exc_val: Exception value if an exception was raised, None otherwise
-        """
-        callback_url = os.environ.get("AUTOMATION_CALLBACK_URL")
-        if not callback_url:
-            return
-
-        callback_api_key = os.environ.get("AUTOMATION_CALLBACK_API_KEY")
-        run_id = os.environ.get("AUTOMATION_RUN_ID")
-
-        status = "COMPLETED" if exc_type is None else "FAILED"
-        payload: dict[str, Any] = {"status": status}
-        if run_id:
-            payload["run_id"] = run_id
-        if exc_val is not None:
-            payload["error"] = str(exc_val)
-
-        # Include conversation_id if one was registered
-        if self._conversation_id is not None:
-            payload["conversation_id"] = self._conversation_id
-
-        # Include accumulated LLM cost if one was registered
-        if self._accumulated_cost is not None:
-            payload["cost"] = self._accumulated_cost
-
-        try:
-            headers: dict[str, str] = {}
-            if callback_api_key:
-                headers["Authorization"] = f"Bearer {callback_api_key}"
-            with httpx.Client(timeout=10.0) as cb_client:
-                resp = cb_client.post(callback_url, json=payload, headers=headers)
-                logger.info(f"Completion callback sent ({status}): {resp.status_code}")
-        except Exception as e:
-            logger.warning(f"Completion callback failed: {e}")
 
     def __exit__(
         self, exc_type: type | None, exc_val: BaseException | None, exc_tb: Any
