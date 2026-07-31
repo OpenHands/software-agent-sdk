@@ -25,7 +25,6 @@ if [[ -z "${OPENAI_API_KEY:-}" ]]; then
   exit 1
 fi
 export LLM_MODEL="${LLM_MODEL:-openai/glm-5.2-fp8}"
-export OPENAI_API_KEY="${LLM_API_KEY}"
 if [[ -z "${OPENAI_API_KEY:-}" ]]; then
   echo "ERROR: OPENAI_API_KEY is required. Set it in start_inference.sh." >&2
   exit 1
