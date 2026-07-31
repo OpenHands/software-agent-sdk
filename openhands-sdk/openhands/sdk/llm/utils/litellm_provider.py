@@ -24,14 +24,19 @@ class LLMProvider:
 
     model: str
     name: str | None
-    resolved_api_base: str | None
+    # The requested API base, forwarded to LiteLLM verbatim. The api_base that
+    # get_llm_provider returns is intentionally discarded: LiteLLM may rewrite
+    # it (e.g. mistral appends "/v1", some providers inject a default base),
+    # and forwarding that resolved value would freeze LiteLLM's per-call
+    # resolution at parse time and change what the user configured.
+    api_base: str | None
 
     @classmethod
     def from_model(cls, *, model: str, api_base: str | None) -> LLMProvider:
         """Parse a model string using LiteLLM's provider inference logic."""
         try:
             get_llm_provider = cast(Any, litellm).get_llm_provider
-            parsed_model, provider_name, _dynamic_key, resolved_api_base = (
+            parsed_model, provider_name, _dynamic_key, _resolved_api_base = (
                 get_llm_provider(
                     model=model,
                     custom_llm_provider=None,
@@ -47,12 +52,11 @@ class LLMProvider:
             )
             parsed_model = model
             provider_name = None
-            resolved_api_base = api_base
 
         return cls(
             model=parsed_model,
             name=provider_name,
-            resolved_api_base=resolved_api_base,
+            api_base=api_base,
         )
 
     @property

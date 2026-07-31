@@ -833,6 +833,46 @@ def test_llm_model_copy_refreshes_provider_for_base_url_update():
     assert kwargs["api_base"] == "https://new.example.com"
 
 
+@pytest.mark.parametrize(
+    ("model", "base_url"),
+    [
+        # OpenAI-compatible local endpoint: the common custom-base case.
+        ("openai/local-model", "http://localhost:8000/v1"),
+        # LiteLLM would append "/v1" to a custom mistral base during provider
+        # resolution; the SDK must still forward the user's value untouched.
+        ("mistral/mistral-small-latest", "https://myproxy.example.com"),
+    ],
+)
+def test_llm_forwards_custom_base_url_as_is(model: str, base_url: str):
+    llm = LLM(
+        usage_id="test-llm",
+        model=model,
+        base_url=base_url,
+        api_key=SecretStr("test_key"),
+        num_retries=0,
+    )
+
+    kwargs = llm._prepare_transport_kwargs(messages=[], enable_streaming=False)
+
+    assert kwargs["api_base"] == base_url
+
+
+def test_llm_forwards_none_api_base_when_no_base_url():
+    # LiteLLM knows default bases for many providers (e.g. mistral). The SDK
+    # must not bake them into the call; api_base stays None so LiteLLM keeps
+    # resolving env vars / defaults per call, exactly as on main.
+    llm = LLM(
+        usage_id="test-llm",
+        model="mistral/mistral-small-latest",
+        api_key=SecretStr("test_key"),
+        num_retries=0,
+    )
+
+    kwargs = llm._prepare_transport_kwargs(messages=[], enable_streaming=False)
+
+    assert kwargs["api_base"] is None
+
+
 @patch("openhands.sdk.llm.llm.litellm_completion")
 def test_completion_merges_llm_extra_headers_with_extended_thinking_default(
     mock_completion,

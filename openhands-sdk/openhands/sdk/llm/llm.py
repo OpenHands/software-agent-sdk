@@ -1044,7 +1044,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "input": typed_input,
             "instructions": instructions,
             "tools": resp_tools,
-            "api_base": provider_info.resolved_api_base,
+            "api_base": provider_info.api_base,
             "api_version": self.api_version,
             "timeout": self.timeout,
             "drop_params": self.drop_params,
@@ -2187,7 +2187,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             }
         return {
             **provider_info.as_litellm_call_kwargs(api_key=api_key_value),
-            "api_base": provider_info.resolved_api_base,
+            "api_base": provider_info.api_base,
             "api_version": self.api_version,
             "timeout": self.timeout,
             "drop_params": self.drop_params,
