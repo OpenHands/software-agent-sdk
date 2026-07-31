@@ -9,13 +9,17 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.tools.data_preparation.platform_submit import (
+    RUNTIME_FILENAMES,
     DataPreparationTaskAssociation,
     DataPreparationTaskStore,
     DfSubmitPipelineAction,
     DfSubmitPipelineExecutor,
+    ReuseAssessment,
     _build_dataflow_command,
     _build_dataflow_workflow,
     _build_llm_env,
+    _file_sha256,
+    _model_fingerprint,
     _normalize_storage_path,
     _pod_path,
 )
@@ -72,6 +76,9 @@ def test_build_dataflow_command_structure() -> None:
             "DF_MODEL_NAME": "gpt-4o",
         },
         convert_format="none",
+        runtime_dir_name="runtime-r1",
+        runtime_fingerprint="runtime-sha",
+        image_utils_api_version="1",
     )
     assert "python3 -m venv /tmp/df-venv" in cmd
     assert "pip install --use-deprecated=legacy-resolver open-dataflow==1.0.10" in cmd
@@ -83,6 +90,10 @@ def test_build_dataflow_command_structure() -> None:
     assert "DF_MODEL_NAME=" in cmd
     assert "DF_LOG_DIR=" in cmd
     assert "generate_report.py" in cmd
+    assert "runtime-r1/image_utils.py" in cmd
+    assert "PYTHONPATH=" in cmd
+    assert "DF_RUNTIME_FINGERPRINT=runtime-sha" in cmd
+    assert "--image-utils-api-version 1" in cmd
     assert " && " in cmd
     assert "cp " not in cmd
 
@@ -182,6 +193,9 @@ def test_task_store_roundtrip(tmp_path: Path) -> None:
         output_dir="/out/run-1",
         input_path="/data/in.jsonl",
         script_path="/scripts/p.py",
+        runtime_fingerprint="runtime-sha",
+        runtime_dir_name="runtime-r1",
+        image_utils_api_version="1",
         status="Running",
     )
     store.save(assoc)
@@ -192,6 +206,10 @@ def test_task_store_roundtrip(tmp_path: Path) -> None:
     assert loaded.conversation_id == "conv-1"
     assert loaded.run_id == "run-1"
     assert loaded.output_dir == "/out/run-1"
+    assert loaded.runtime_fingerprint == "runtime-sha"
+    assert loaded.runtime_dir_name == "runtime-r1"
+    assert loaded.image_utils_api_version == "1"
+    assert loaded.schema_version == 3
     assert loaded.status == "Running"
 
 
@@ -234,14 +252,43 @@ def test_task_store_get_missing(tmp_path: Path) -> None:
     assert store.get("nonexistent") is None
 
 
+def test_task_association_reads_legacy_runtime_location() -> None:
+    loaded = DataPreparationTaskAssociation.from_dict(
+        {
+            "schema_version": 2,
+            "task_id": "legacy-task",
+            "conversation_id": "conv",
+            "run_id": "run",
+            "output_dir": "/out/run",
+            "input_path": "/data/in.jsonl",
+            "script_path": "/scripts/pipeline.py",
+        }
+    )
+
+    assert loaded.runtime_dir_name == ""
+    assert loaded.runtime_fingerprint is None
+    assert loaded.image_utils_api_version is None
+
+
 # ---------------------------------------------------------------------------
 # DfSubmitPipelineExecutor — validation errors
 # ---------------------------------------------------------------------------
 
 
 def _make_executor(tmp_path: Path, **kwargs: Any) -> DfSubmitPipelineExecutor:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(exist_ok=True)
+    for filename in RUNTIME_FILENAMES:
+        content = (
+            "__all__ = ['ImagePipelineConfig', "
+            "'MultiImageSemanticLabelOperator', 'run_image_pipeline', "
+            "'run_image_pipeline_from_cli']\n"
+            if filename == "image_utils.py"
+            else "# runtime\n"
+        )
+        (runtime_dir / filename).write_text(content)
     defaults: dict[str, Any] = {
-        "runtime_dir": str(tmp_path / "runtime"),
+        "runtime_dir": str(runtime_dir),
         "storage_base_url": "http://storage.test",
         "task_store_dir": str(tmp_path / "tasks"),
     }
@@ -288,3 +335,143 @@ def test_executor_missing_runtime_dir(tmp_path: Path) -> None:
     obs = executor(action, conversation=conv)
     assert obs.status == "Failed"
     assert "runtime_dir" in obs.text
+
+
+def test_stage_runtime_files_uses_revision_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    executor = _make_executor(tmp_path)
+    uploads: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "openhands.tools.data_preparation.platform_submit."
+        "upload_local_file_to_pyromind",
+        lambda *, local_path, target_dir, **kwargs: uploads.append(
+            (Path(local_path).name, target_dir)
+        ),
+    )
+
+    executor._stage_runtime_files(
+        "/agentTest/data_preparation/run",
+        _make_conversation_with_llm(),
+        runtime_dir_name="runtime-r2",
+    )
+
+    assert {name for name, _ in uploads} == set(RUNTIME_FILENAMES)
+    assert {target for _, target in uploads} == {
+        "/agentTest/data_preparation/run/runtime-r2"
+    }
+
+
+def _saved_prior_run(
+    tmp_path: Path,
+    *,
+    conversation: Any,
+    script: Path,
+) -> DataPreparationTaskAssociation:
+    llm_env = _build_llm_env(conversation, "text")
+    association = DataPreparationTaskAssociation(
+        task_id="task-prior",
+        conversation_id="conv-1",
+        run_id="11111111-1111-1111-1111-111111111111",
+        output_dir=("/agentTest/data_preparation/11111111-1111-1111-1111-111111111111"),
+        input_path="/data/in.jsonl",
+        script_path=str(script),
+        pipeline_fingerprint=_file_sha256(script),
+        model_fingerprint=_model_fingerprint(llm_env),
+        model_profile="text",
+        output_schema="text",
+    )
+    DataPreparationTaskStore(tmp_path / "tasks").save(association)
+    return association
+
+
+def test_resume_changed_pipeline_requires_reuse_assessment(
+    tmp_path: Path,
+) -> None:
+    executor = _make_executor(tmp_path)
+    original = tmp_path / "original.py"
+    original.write_text("print('old')")
+    changed = tmp_path / "changed.py"
+    changed.write_text("print('new')")
+    conversation = _make_conversation_with_llm()
+    conversation.id = "conv-1"
+    _saved_prior_run(tmp_path, conversation=conversation, script=original)
+
+    observation = executor(
+        DfSubmitPipelineAction(
+            mode="resume",
+            resume_run_id=uuid.UUID("11111111-1111-1111-1111-111111111111"),
+            input_path="/data/in.jsonl",
+            script_path=str(changed),
+        ),
+        conversation=conversation,
+    )
+
+    assert observation.is_error
+    assert "Provide reuse_assessment" in observation.text
+
+
+def test_compatible_resume_accepts_agent_assessment(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    executor = _make_executor(tmp_path)
+    original = tmp_path / "original.py"
+    original.write_text("print('old')")
+    changed = tmp_path / "changed.py"
+    changed.write_text("print('new')")
+    conversation = _make_conversation_with_llm()
+    conversation.id = "conv-1"
+    conversation.workspace = MagicMock()
+    conversation.workspace.working_dir = str(tmp_path / "conversation")
+    _saved_prior_run(tmp_path, conversation=conversation, script=original)
+
+    staged: list[str] = []
+    monkeypatch.setattr(
+        executor,
+        "_stage_runtime_files",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        executor,
+        "_stage_script",
+        lambda *args, **kwargs: staged.append(kwargs["frozen_script_name"]),
+    )
+    monkeypatch.setattr(
+        "openhands.tools.data_preparation.platform_submit.create_workflow_api_client",
+        lambda **kwargs: object(),
+    )
+    response = MagicMock()
+    response.task_id = "task-resume"
+    response.status = "Pending"
+    monkeypatch.setattr(
+        "openhands.tools.data_preparation.platform_submit.submit_workflow_task",
+        lambda **kwargs: response,
+    )
+
+    observation = executor(
+        DfSubmitPipelineAction(
+            mode="resume",
+            resume_run_id=uuid.UUID("11111111-1111-1111-1111-111111111111"),
+            input_path="/data/in.jsonl",
+            script_path=str(changed),
+            reuse_assessment=ReuseAssessment(
+                changed_dimensions=["pipeline", "runtime"],
+                change_summary="Only fixes the corrupt-image branch.",
+                reason="Committed rows do not execute the changed branch.",
+                verification_samples=["failed", "previous", "same-kind"],
+                verification_result="passed",
+            ),
+        ),
+        conversation=conversation,
+    )
+
+    assert not observation.is_error
+    assert observation.resumed is True
+    assert observation.execution_revision == 2
+    assert staged == ["pipeline-r2.py"]
+    saved = DataPreparationTaskStore(tmp_path / "tasks").get("task-resume")
+    assert saved is not None
+    assert saved.reuse_assessment is not None
+    assert saved.reuse_assessment["decision"] == "compatible_resume"

@@ -1,7 +1,9 @@
-"""Generate an execution report from DataFlow pipeline LLM call logs.
+"""Generate an execution report inside the local or Pyromind runtime.
 
-Scans ``llm_calls.jsonl`` in the given log directory and produces a
-``report.json`` summary with statistics, error samples, and timing.
+Scans runtime-mounted files in the given log directory and produces a
+``report.json`` summary with statistics, error samples, and timing. Agents
+inspect remote copies of these artifacts through ``preview_dataset``; this
+script does not provide a remote-storage access path.
 
 Usage (called automatically by the platform command after pipeline completes):
 
@@ -53,11 +55,70 @@ def _extract_input_preview(record: dict) -> str:
     return str(payload)[:INPUT_PREVIEW_CHARS]
 
 
-def generate_report(log_dir: str) -> dict:
+def _read_json_object(path: Path) -> dict | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _read_dataflow_checkpoint(
+    log_path: Path,
+    runtime_metadata: dict | None,
+    *,
+    output_records: int,
+) -> dict | None:
+    candidates = sorted(log_path.glob("*_last_success_step.txt"))
+    if not candidates:
+        return None
+    checkpoint_path = candidates[0]
+    try:
+        operator_step, next_batch = (
+            int(value)
+            for value in checkpoint_path.read_text(encoding="utf-8")
+            .strip()
+            .split(
+                ",",
+                1,
+            )
+        )
+    except (OSError, TypeError, ValueError):
+        return None
+    batch_size = int((runtime_metadata or {}).get("batch_size") or 0)
+    record_count = int((runtime_metadata or {}).get("record_count") or 0)
+    next_source_index = (
+        min(next_batch * batch_size, record_count)
+        if operator_step == 0 and batch_size > 0
+        else output_records
+    )
+    return {
+        "kind": "dataflow_batch",
+        "path": checkpoint_path.name,
+        "operator_step": operator_step,
+        "next_batch": next_batch,
+        "batch_size": batch_size or None,
+        "next_source_index": next_source_index,
+        "committed_records": output_records,
+    }
+
+
+def generate_report(
+    log_dir: str,
+    *,
+    pipeline_exit_code: int = 0,
+    execution_revision: int = 1,
+    resumed: bool = False,
+    reuse_assessment: dict | None = None,
+    output_file: str | None = None,
+    runtime_fingerprint: str | None = None,
+    runtime_dir_name: str = "",
+    image_utils_api_version: str | None = None,
+) -> dict:
     """Scan llm_calls.jsonl and produce a report dict."""
     log_path = Path(log_dir)
     calls_file = log_path / "llm_calls.jsonl"
-    processed_file = log_path / "processed.jsonl"
+    processed_file = Path(output_file) if output_file else log_path / "processed.jsonl"
 
     total_calls = 0
     success_calls = 0
@@ -120,8 +181,25 @@ def generate_report(log_dir: str) -> dict:
     # Count output records
     output_records = _count_jsonl_lines(processed_file)
 
+    validation = _read_json_object(log_path / "validation.json")
+    runtime_metadata = _read_json_object(log_path / "runtime_metadata.json")
+    checkpoint = _read_json_object(log_path / "checkpoint.json")
+    if checkpoint is None:
+        checkpoint = _read_dataflow_checkpoint(
+            log_path,
+            runtime_metadata,
+            output_records=output_records,
+        )
+    runtime_failure = _read_json_object(log_path / "failure.json")
+
     # Determine overall status
-    if total_calls == 0:
+    if pipeline_exit_code != 0:
+        overall = "failed"
+    elif validation is not None and validation.get("status") != "passed":
+        overall = "failed"
+    elif validation is not None and validation.get("status") == "passed":
+        overall = "succeeded"
+    elif total_calls == 0:
         overall = "no_llm_calls"
     elif failed_calls == 0:
         overall = "succeeded"
@@ -142,6 +220,12 @@ def generate_report(log_dir: str) -> dict:
     report = {
         "status": overall,
         "generated_at": datetime.now(_UTC).isoformat(),
+        "pipeline_exit_code": pipeline_exit_code,
+        "execution_revision": execution_revision,
+        "resumed": resumed,
+        "resumable": overall == "failed" and checkpoint is not None,
+        "recommended_action": ("agent_assess" if overall == "failed" else "none"),
+        "reuse_assessment": reuse_assessment,
         "total_records_output": output_records,
         "llm_calls": {
             "total": total_calls,
@@ -157,6 +241,18 @@ def generate_report(log_dir: str) -> dict:
         "duration_seconds": duration_seconds,
         "error_samples": errors,
         "dataflow_version": dataflow_version,
+        "runtime_fingerprint": (
+            runtime_fingerprint or (runtime_metadata or {}).get("runtime_fingerprint")
+        ),
+        "runtime_dir_name": runtime_dir_name,
+        "image_utils_api_version": (
+            image_utils_api_version
+            or (runtime_metadata or {}).get("image_utils_api_version")
+        ),
+        "runtime_metadata": runtime_metadata,
+        "checkpoint": checkpoint,
+        "failure": runtime_failure,
+        "validation": validation,
     }
     return report
 
@@ -170,6 +266,14 @@ def main() -> None:
         required=True,
         help="Directory containing llm_calls.jsonl and processed.jsonl",
     )
+    parser.add_argument("--pipeline-exit-code", type=int, default=0)
+    parser.add_argument("--execution-revision", type=int, default=1)
+    parser.add_argument("--resumed", choices=("true", "false"), default="false")
+    parser.add_argument("--reuse-assessment-json")
+    parser.add_argument("--output-file")
+    parser.add_argument("--runtime-fingerprint")
+    parser.add_argument("--runtime-dir-name", default="")
+    parser.add_argument("--image-utils-api-version")
     args = parser.parse_args()
 
     log_dir = Path(args.log_dir)
@@ -177,7 +281,24 @@ def main() -> None:
         print(f"Error: log directory not found: {log_dir}", file=sys.stderr)
         sys.exit(1)
 
-    report = generate_report(args.log_dir)
+    reuse_assessment = None
+    if args.reuse_assessment_json:
+        try:
+            reuse_assessment = json.loads(args.reuse_assessment_json)
+        except json.JSONDecodeError as exc:
+            print(f"Invalid --reuse-assessment-json: {exc}", file=sys.stderr)
+            sys.exit(2)
+    report = generate_report(
+        args.log_dir,
+        pipeline_exit_code=args.pipeline_exit_code,
+        execution_revision=args.execution_revision,
+        resumed=args.resumed == "true",
+        reuse_assessment=reuse_assessment,
+        output_file=args.output_file,
+        runtime_fingerprint=args.runtime_fingerprint,
+        runtime_dir_name=args.runtime_dir_name,
+        image_utils_api_version=args.image_utils_api_version,
+    )
     report_path = log_dir / "report.json"
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)

@@ -1,57 +1,61 @@
-# 多图语义打标
+# 图片语义打标
 
-## 输入协议
+图片 Pipeline 只声明 `ImagePipelineConfig`，不要生成循环、HTTP、OpenAI Client、
+Base64、重试或 Checkpoint。完整字段见
+[image_utils API](image-utils-api.md)，起始脚本见
+[配置模板](multimodal_pipeline.py)。
 
-每行使用同一份 manifest 协议：
+## 输入
+
+优先使用 `preview_dataset(mode="sample")` 返回的 Manifest。默认字段：
 
 ```json
 {
-  "sample_id": "sample-001",
-  "image_paths": ["images/a.jpg", "images/b.jpg"],
-  "image_labels": ["视图A", "视图B"],
-  "prompt": "任务描述",
-  "reference_annotations": {},
-  "metadata": {}
+  "id": "sample-0",
+  "images": ["sample-a/front.png", "sample-a/back.png"],
+  "image_labels": ["front", "back"],
+  "user_prompt": "判断两张图片是否描述同一对象"
 }
 ```
 
-- 图片路径相对于 manifest；至少一张，顺序有语义。
-- `image_labels` 可省略；提供时必须与图片一一对应。
-- `reference_annotations` 保存可供模型参考或需要原样保留的标注。
-- `metadata` 默认仅用于追踪，不注入模型。
+- 支持 `id/images`，并兼容 `sample_id/image_paths/prompt`。
+- 图片路径必须相对于输入目录或 Manifest，保持原顺序。
+- 每条记录优先读取 `user_prompt_key`；字段为空时才渲染
+  `user_prompt_template`。两者都无法生成 Prompt 时失败。
+- `image_labels` 可省略；运行时生成 `Image 1`、`Image 2`。
 
-## 执行方式
+目录输入按直接子目录或直接图片划分样本，并生成冻结的
+`source_manifest.jsonl`；目录样本通常需要配置 `user_prompt_template`。
 
-1. 根据用户目标、输入字段和规则，自主确定要生成的字段、允许模型读取的参考字段和
-   原样保留字段；不要求额外 TaskSpec。
-2. 用户可直接描述判断依据；必要时读取其指定或输入附近的相关说明文件，将有用规则浓缩进 prompt。没有额外依据时直接使用现有图片和字段。
-3. 复制并按任务修改 [multimodal_pipeline.py](multimodal_pipeline.py) 顶部常量及小型
-   hook，不创建 DataFlow operator。字段选择及理由必须写入 `FIELD_POLICY_RATIONALE`。
-4. 默认首次通过 `df_run_pipeline` 传 `limit=3`，输出并检查
-   `processed.sample.jsonl` 和 `processed.sample.report.json`。这是行为提示，
-   不是程序门控；用户明确要求全量时直接运行全量。
-5. 全量独立输出 `processed.jsonl` 和 `processed.report.json`。
-6. 全量成功后单独调用 `df_convert(format="vision_sft_flat")` 生成
-   `train.parquet`，再重新加载校验列、行数、图片路径顺序和可解码性。
+## 执行与恢复
 
-模板直接调用
-`APIVLMServing_openai.generate_from_input_multi_images`，支持任意图片数量、
-样本级 prompt、JSON Schema、字段确定性合并和单样本失败隔离。
+运行时通过 DataFlow `APIVLMServing_openai` 完成多图请求，通过单个组合 Operator
+生成最终 Pyromind 行。结构化结果失败最多重试 3 次，任一记录最终失败时停止当前
+batch，不跳过数据。
 
-## Prompt 边界
+DataFlow checkpoint 决定已提交 batch；输出先写原子分片，再合并为
+`processed.jsonl`。resume 复用原 Manifest 和已提交分片，不重新扫描输入目录。
 
-- 将任务级角色、图片含义、判断依据和输出要求放入模板的 `SYSTEM_PROMPT`。
-- 将样本级任务和允许使用的参考标注放入 `build_user_prompt`。
-- `TRAINING_SYSTEM_PROMPT` 和 `TRAINING_PROMPT` 是最终训练提示；不得包含只在生成
-  阶段使用的参考答案。
-- `REASONING_FIELD` 和 `ANSWER_FIELD` 按当前任务指定。VLM 返回任务 JSON Schema，
-  模板再确定性组装 `<think>/<answer>`，不要求 VLM 自己生成 XML。
-- 结构化答案任务设置 `ANSWER_IS_JSON=True`，使 `<answer>` 内容额外经过 JSON 校验。
-- 不要把整份 SOP 或无关文件塞入 prompt；只保留直接影响判断的规则。
-- 报告中的 `field_policy` 用于审计本次自主决策，不是固定业务协议。
+本地使用：
 
-## AVI 示例
+```text
+df_run_pipeline(model_profile="vision", output_schema="vision")
+```
 
-[avi_manifest_adapter.py](avi_manifest_adapter.py) 演示如何把
-`defect.jpg`、`diff.jpg`、`gt.jpg` 和 `meta.json` 转换为通用 manifest。
-它只是业务边界适配器，不是通用 pipeline 的依赖。
+用户确认后使用 `df_submit_pipeline(mode="full")`。平台产物仍只能在 Kafka callback
+后通过 `preview_dataset` 查看。
+
+## 输出
+
+```json
+{
+  "id": "sample-0",
+  "image_path": "sample-a/front.png",
+  "images": ["sample-a/front.png", "sample-a/back.png"],
+  "system_prompt": "You are a helpful assistant.",
+  "user_prompt": "判断两张图片是否描述同一对象",
+  "gt": "<think>推理</think>\n\n<answer>答案</answer>"
+}
+```
+
+`validate_prepared_data.py` 继续执行最终字段、ID、图片路径、图片解码和标签校验。

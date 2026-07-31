@@ -2,20 +2,23 @@
 
 from __future__ import annotations
 
+import base64
 import csv
+import hashlib
 import json
 import os
 import random
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import httpx
 from pydantic import AliasChoices, Field
 from rich.text import Text
 
-from openhands.sdk.llm.message import TextContent
+from openhands.sdk.llm.message import ImageContent, TextContent
 from openhands.sdk.tool import (
     Action,
     Observation,
@@ -67,7 +70,16 @@ _VISION_SUFFIXES = {
     ".avi",
     ".webm",
 }
+_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 _VISION_FIELD_MARKERS = ("image", "video", "vision")
+_DEFAULT_SAMPLE_COUNT = 3
+_MAX_SAMPLE_FILES = 100
+_MAX_SAMPLE_FILE_BYTES = 25 * 1024 * 1024
+_MAX_SAMPLE_TOTAL_BYTES = 100 * 1024 * 1024
+_MAX_SAMPLE_DIRECTORY_DEPTH = 6
+_MAX_VISION_PREVIEW_IMAGES = 12
+_MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024
+_VISION_RETRYABLE_STATUS_CODES = {408, 409, 425, 429}
 
 
 @dataclass(frozen=True)
@@ -83,6 +95,7 @@ class _StorageFileInfo:
     name: str
     size: int | None
     last_modified: str | None
+    is_dir: bool = False
 
 
 def _default_storage_base_url() -> str:
@@ -118,6 +131,29 @@ class PreviewDatasetAction(Action):
         ge=1,
         le=_MAX_REQUESTED_SAMPLES,
         validation_alias=AliasChoices("n", "max_samples"),
+    )
+    mode: Literal["inspect", "sample"] = Field(
+        default="inspect",
+        description=(
+            "Use 'inspect' for the existing bounded preview behavior. Use "
+            "'sample' to materialize up to n selected user-storage files or "
+            "folders in the conversation workspace and create a JSONL manifest."
+        ),
+    )
+    sample_paths: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Optional exact user-storage file or folder paths to materialize in "
+            "sample mode. When omitted, up to n entries are selected from "
+            "dataset_path in stable path order."
+        ),
+    )
+    vision_ocr: bool = Field(
+        default=True,
+        description=(
+            "For storage images, call the configured DF vision model for OCR and "
+            "a short visual summary in both inspect and sample modes."
+        ),
     )
 
     @property
@@ -205,6 +241,34 @@ class PreviewDatasetObservation(Observation):
             "'storage' for user storage."
         ),
     )
+    entries: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Files and folders found directly under a storage directory.",
+    )
+    local_sample_paths: list[str] = Field(
+        default_factory=list,
+        description="Workspace-relative paths materialized for local sample runs.",
+    )
+    sample_manifest_path: str | None = Field(
+        default=None,
+        description="Workspace-relative JSONL manifest created in sample mode.",
+    )
+    vision_previews: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Gemma OCR and visual summaries for sampled images.",
+    )
+
+    @property
+    def to_llm_content(self) -> Sequence[TextContent]:
+        """Keep raw images out of the main coding model's context."""
+
+        text_content = [item for item in self.content if isinstance(item, TextContent)]
+        if self.is_error:
+            return [
+                TextContent(text=self.ERROR_MESSAGE_HEADER),
+                *text_content,
+            ]
+        return text_content
 
     @property
     def visualize(self) -> Text:
@@ -243,6 +307,12 @@ When only a dataset/folder name is given (no specific file):
   You MUST ask the user which file to preview, then call this tool again
   with the exact file path. If the folder has exactly one file, it is
   previewed directly.
+
+Use mode='sample' for user storage after inspection. It materializes at most
+three selected files or folders inside the conversation workspace, preserves
+their storage-relative layout, and returns a sample_manifest_path for
+df_run_pipeline. Image samples are sent to the configured DF vision model
+(normally Gemma) for OCR and a short visual summary.
 
 Returns:
 - files found under the path
@@ -301,13 +371,21 @@ class PreviewDatasetExecutor(
                 dataset_path=dataset_path,
             )
 
+        if action.mode == "sample":
+            return self._storage_sample(action, dataset_path, headers, conversation)
+
         # Option C: try shared dataset space first
         shared_result = self._try_shared_preview(dataset_path, action.n, headers)
         if shared_result is not None:
             return shared_result
 
         # Fall back to user storage
-        return self._storage_preview(dataset_path, action.n, headers)
+        return self._storage_preview(
+            dataset_path,
+            action.n,
+            headers,
+            vision_ocr=action.vision_ocr,
+        )
 
     # ------------------------------------------------------------------
     # Shared dataset space
@@ -666,11 +744,322 @@ class PreviewDatasetExecutor(
     # User storage (original flow)
     # ------------------------------------------------------------------
 
+    def _storage_sample(
+        self,
+        action: PreviewDatasetAction,
+        dataset_path: str,
+        headers: dict[str, str],
+        conversation: BaseConversation | None,
+    ) -> PreviewDatasetObservation:
+        try:
+            selected_paths, entries = self._select_storage_samples(
+                dataset_path,
+                action.sample_paths,
+                min(action.n, _DEFAULT_SAMPLE_COUNT),
+                headers,
+            )
+            workspace_dir = _resolve_workspace_dir(conversation)
+            preview_key = hashlib.sha256(
+                json.dumps(
+                    {
+                        "dataset_path": dataset_path,
+                        "sample_paths": selected_paths,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest()[:16]
+            preview_root = (
+                workspace_dir
+                / "public_data"
+                / "data-preparation"
+                / "previews"
+                / preview_key
+            )
+            preview_root.mkdir(parents=True, exist_ok=True)
+
+            manifest_rows: list[dict[str, Any]] = []
+            local_paths: list[str] = []
+            vision_previews: list[dict[str, Any]] = []
+            preview_images: list[ImageContent] = []
+            total_bytes = 0
+            total_files = 0
+            vision_images = 0
+
+            for index, selected_path in enumerate(selected_paths):
+                storage_files = self._storage_sample_files(selected_path, headers)
+                row_files: list[str] = []
+                row_images: list[str] = []
+                selected_workspace_path: str | None = None
+                selected_manifest_path: str | None = None
+
+                for storage_file in storage_files:
+                    total_files += 1
+                    if total_files > _MAX_SAMPLE_FILES:
+                        raise ValueError(
+                            "Sample selection exceeds the "
+                            f"{_MAX_SAMPLE_FILES}-file limit."
+                        )
+                    content = download_file_from_pyromind(
+                        storage_path=storage_file.path,
+                        storage_base_url=self._storage_base_url,
+                        headers=headers,
+                        timeout=self._timeout,
+                        max_bytes=_MAX_SAMPLE_FILE_BYTES,
+                    )
+                    total_bytes += len(content)
+                    if total_bytes > _MAX_SAMPLE_TOTAL_BYTES:
+                        raise ValueError(
+                            "Sample selection exceeds the "
+                            f"{_human_size(_MAX_SAMPLE_TOTAL_BYTES)} total limit."
+                        )
+
+                    local_file = _sample_local_file(preview_root, storage_file.path)
+                    local_file.parent.mkdir(parents=True, exist_ok=True)
+                    local_file.write_bytes(content)
+                    workspace_path = local_file.relative_to(workspace_dir).as_posix()
+                    manifest_file_path = local_file.relative_to(preview_root).as_posix()
+                    row_files.append(manifest_file_path)
+                    if selected_workspace_path is None:
+                        selected_workspace_path = workspace_path
+                        selected_manifest_path = manifest_file_path
+
+                    if _is_vision_path(storage_file.path):
+                        row_images.append(manifest_file_path)
+                        if (
+                            _is_image_path(storage_file.path)
+                            and len(preview_images) < _DEFAULT_SAMPLE_COUNT
+                            and len(content) <= _MAX_INLINE_IMAGE_BYTES
+                        ):
+                            preview_images.append(
+                                ImageContent(
+                                    image_urls=[
+                                        "data:"
+                                        f"{_vision_content_type(storage_file.path)}"
+                                        ";base64,"
+                                        + base64.b64encode(content).decode("ascii")
+                                    ]
+                                )
+                            )
+                        if action.vision_ocr and (
+                            vision_images < _MAX_VISION_PREVIEW_IMAGES
+                        ):
+                            vision_images += 1
+                            if _is_image_path(storage_file.path):
+                                vision_previews.append(
+                                    self._preview_image_with_vision_model(
+                                        source_path=storage_file.path,
+                                        local_path=workspace_path,
+                                        content=content,
+                                    )
+                                )
+
+                selected_local_path = _sample_local_file(preview_root, selected_path)
+                if selected_local_path.exists():
+                    selected_workspace_path = selected_local_path.relative_to(
+                        workspace_dir
+                    ).as_posix()
+                    selected_manifest_path = selected_local_path.relative_to(
+                        preview_root
+                    ).as_posix()
+                if selected_workspace_path is None or selected_manifest_path is None:
+                    raise ValueError(
+                        f"Sample path contains no downloadable files: {selected_path}"
+                    )
+                local_paths.append(selected_workspace_path)
+                manifest_row: dict[str, Any] = {
+                    "id": f"sample-{index}",
+                    "source_path": selected_path,
+                    "local_path": selected_manifest_path,
+                    "files": row_files,
+                    "images": row_images,
+                }
+                if row_images:
+                    manifest_row["image_path"] = row_images[0]
+                manifest_rows.append(manifest_row)
+
+            manifest_path = preview_root / "sample_manifest.jsonl"
+            with manifest_path.open("w", encoding="utf-8") as manifest_file:
+                for row in manifest_rows:
+                    manifest_file.write(
+                        json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n"
+                    )
+
+            manifest_relative = manifest_path.relative_to(workspace_dir).as_posix()
+            summary_text = (
+                f"Materialized {len(manifest_rows)} sample unit(s), "
+                f"{total_files} file(s), {_human_size(total_bytes)}. "
+                f"Manifest: {manifest_relative}"
+            )
+            for preview in vision_previews:
+                summary_text += (
+                    f"\n\n--- vision preview: {preview['source_path']} ---\n"
+                    f"{preview['visual_summary'] or '; '.join(preview['warnings'])}"
+                )
+            return PreviewDatasetObservation(
+                content=[TextContent(text=summary_text), *preview_images],
+                dataset_path=dataset_path,
+                files=[
+                    file_path
+                    for row in manifest_rows
+                    for file_path in cast(list[str], row["files"])
+                ],
+                entries=entries,
+                local_sample_paths=local_paths,
+                sample_manifest_path=manifest_relative,
+                vision_previews=vision_previews,
+                requested_rows=action.n,
+                previewed_rows=len(manifest_rows),
+                has_vision=any(row["images"] for row in manifest_rows),
+                source="storage",
+            )
+        except (OSError, ValueError) as exc:
+            return PreviewDatasetObservation.from_text(
+                text=f"Failed to materialize storage samples: {exc}",
+                is_error=True,
+                dataset_path=dataset_path,
+                source="storage",
+            )
+
+    def _select_storage_samples(
+        self,
+        dataset_path: str,
+        requested_paths: list[str],
+        limit: int,
+        headers: dict[str, str],
+    ) -> tuple[list[str], list[dict[str, Any]]]:
+        if requested_paths:
+            selected = [
+                _normalize_storage_sample_path(path) for path in requested_paths
+            ]
+            if len(selected) > limit:
+                raise ValueError(
+                    f"sample_paths contains {len(selected)} entries; at most "
+                    f"{limit} are allowed."
+                )
+            return selected, []
+
+        normalized_path = _normalize_storage_sample_path(dataset_path)
+        is_directory = _looks_like_directory(dataset_path)
+        if not is_directory:
+            metadata_result = self._get_metadata(normalized_path, headers)
+            if isinstance(metadata_result, PreviewDatasetObservation):
+                raise ValueError(metadata_result.text)
+            is_directory = metadata_result.get("is_dir") is True
+        if not is_directory:
+            return [normalized_path], []
+
+        list_result = self._list_entries(normalized_path, headers)
+        if isinstance(list_result, PreviewDatasetObservation):
+            raise ValueError(list_result.text)
+        sorted_entries = sorted(list_result, key=lambda item: item.path)
+        visible_entries = [
+            entry
+            for entry in sorted_entries
+            if not PurePosixPath(entry.path).name.startswith(".")
+        ]
+        if visible_entries:
+            sorted_entries = visible_entries
+        selected_entries = sorted_entries[:limit]
+        if not selected_entries:
+            raise ValueError(f"No files or folders found under {dataset_path}.")
+        return (
+            [entry.path for entry in selected_entries],
+            [_storage_entry_dict(entry) for entry in sorted_entries],
+        )
+
+    def _storage_sample_files(
+        self,
+        selected_path: str,
+        headers: dict[str, str],
+    ) -> list[_StorageFileInfo]:
+        normalized_path = _normalize_storage_sample_path(selected_path)
+        if _looks_like_directory(selected_path):
+            return self._walk_storage_files(normalized_path, headers)
+
+        metadata_result = self._get_metadata(normalized_path, headers)
+        if isinstance(metadata_result, PreviewDatasetObservation):
+            # Virtual folders can be listable even when get_file_metadata says
+            # they do not exist.
+            try:
+                return self._walk_storage_files(normalized_path, headers)
+            except ValueError as exc:
+                raise ValueError(metadata_result.text) from exc
+        if metadata_result.get("is_dir") is True:
+            return self._walk_storage_files(normalized_path, headers)
+        return [
+            _StorageFileInfo(
+                path=normalized_path,
+                name=PurePosixPath(normalized_path).name,
+                size=_optional_int(metadata_result.get("size")),
+                last_modified=None,
+            )
+        ]
+
+    def _walk_storage_files(
+        self,
+        root_path: str,
+        headers: dict[str, str],
+    ) -> list[_StorageFileInfo]:
+        pending: list[tuple[str, int]] = [(root_path, 0)]
+        files: list[_StorageFileInfo] = []
+        while pending:
+            current_path, depth = pending.pop(0)
+            if depth > _MAX_SAMPLE_DIRECTORY_DEPTH:
+                raise ValueError(
+                    "Sample folder nesting exceeds the "
+                    f"{_MAX_SAMPLE_DIRECTORY_DEPTH}-level limit."
+                )
+            list_result = self._list_entries(current_path, headers)
+            if isinstance(list_result, PreviewDatasetObservation):
+                raise ValueError(list_result.text)
+            for entry in sorted(list_result, key=lambda item: item.path):
+                if entry.is_dir:
+                    pending.append((entry.path, depth + 1))
+                else:
+                    files.append(entry)
+                    if len(files) > _MAX_SAMPLE_FILES:
+                        raise ValueError(
+                            f"Sample folder exceeds the {_MAX_SAMPLE_FILES}-file limit."
+                        )
+        return files
+
+    def _preview_image_with_vision_model(
+        self,
+        *,
+        source_path: str,
+        local_path: str,
+        content: bytes,
+    ) -> dict[str, Any]:
+        try:
+            summary = _call_vision_preview_model(
+                source_path=source_path,
+                content=content,
+                timeout=self._timeout,
+            )
+            return {
+                "source_path": source_path,
+                "local_path": local_path,
+                "ocr_text": summary,
+                "visual_summary": summary,
+                "warnings": [],
+            }
+        except ValueError as exc:
+            return {
+                "source_path": source_path,
+                "local_path": local_path,
+                "ocr_text": "",
+                "visual_summary": "",
+                "warnings": [str(exc)],
+            }
+
     def _storage_preview(
         self,
         dataset_path: str,
         n: int,
         headers: dict[str, str],
+        *,
+        vision_ocr: bool,
     ) -> PreviewDatasetObservation:
         files: list[str] = []
         preview_path = dataset_path
@@ -684,7 +1073,15 @@ class PreviewDatasetExecutor(
 
         metadata_result = self._get_metadata(preview_path, headers)
         if isinstance(metadata_result, PreviewDatasetObservation):
-            return metadata_result
+            # Storage backends may not expose metadata for virtual folders.
+            # Fall back to file_list so callers need not add a trailing slash.
+            dir_result = self._resolve_storage_directory(dataset_path, n, headers)
+            if isinstance(dir_result, PreviewDatasetObservation):
+                return dir_result
+            files, preview_path = dir_result
+            metadata_result = self._get_metadata(preview_path, headers)
+            if isinstance(metadata_result, PreviewDatasetObservation):
+                return metadata_result
         metadata = metadata_result
 
         if metadata.get("is_dir") is True:
@@ -701,6 +1098,17 @@ class PreviewDatasetExecutor(
             files = [preview_path]
 
         size = _optional_int(metadata.get("size"))
+        content_type = str(metadata.get("content_type") or "")
+        if _is_image_path(preview_path) or content_type.lower().startswith("image/"):
+            return self._storage_image_preview(
+                dataset_path=dataset_path,
+                preview_path=preview_path,
+                files=files,
+                metadata=metadata,
+                headers=headers,
+                vision_ocr=vision_ocr,
+            )
+
         if size == 0:
             preview_chunks, preview_truncated = [], False
         else:
@@ -756,6 +1164,75 @@ class PreviewDatasetExecutor(
             **_metadata_observation_fields(metadata),
         )
 
+    def _storage_image_preview(
+        self,
+        *,
+        dataset_path: str,
+        preview_path: str,
+        files: list[str],
+        metadata: dict[str, Any],
+        headers: dict[str, str],
+        vision_ocr: bool,
+    ) -> PreviewDatasetObservation:
+        try:
+            content = download_file_from_pyromind(
+                storage_path=preview_path,
+                storage_base_url=self._storage_base_url,
+                headers=headers,
+                timeout=self._timeout,
+                max_bytes=_MAX_SAMPLE_FILE_BYTES,
+            )
+        except ValueError as exc:
+            return PreviewDatasetObservation.from_text(
+                text=f"Failed to preview storage image: {exc}",
+                is_error=True,
+                dataset_path=dataset_path,
+                source="storage",
+            )
+
+        vision_previews: list[dict[str, Any]] = []
+        if vision_ocr:
+            vision_previews.append(
+                self._preview_image_with_vision_model(
+                    source_path=preview_path,
+                    local_path="",
+                    content=content,
+                )
+            )
+            preview = vision_previews[0]
+            summary = preview["visual_summary"] or "; ".join(preview["warnings"])
+        else:
+            summary = "Gemma OCR and visual summary disabled for this request."
+
+        image_content: list[ImageContent] = []
+        if len(content) <= _MAX_INLINE_IMAGE_BYTES:
+            image_content.append(
+                ImageContent(
+                    image_urls=[
+                        "data:"
+                        f"{_vision_content_type(preview_path)}"
+                        ";base64," + base64.b64encode(content).decode("ascii")
+                    ]
+                )
+            )
+
+        text = (
+            f"Image preview: {preview_path}\n"
+            f"size={len(content)} bytes\n"
+            f"vision_summary={summary}"
+        )
+        return PreviewDatasetObservation(
+            content=[TextContent(text=text), *image_content],
+            dataset_path=dataset_path,
+            files=files,
+            has_vision=True,
+            preview_file_path=preview_path,
+            previewed_rows=1,
+            vision_previews=vision_previews,
+            source="storage",
+            **_metadata_observation_fields(metadata),
+        )
+
     def _resolve_storage_directory(
         self,
         dataset_path: str,
@@ -768,40 +1245,54 @@ class PreviewDatasetExecutor(
         listing file details so the agent asks the user which file to
         preview. When exactly one file exists, auto-selects it.
         """
-        list_result = self._list_files(dataset_path, headers)
+        list_result = self._list_entries(dataset_path, headers)
         if isinstance(list_result, PreviewDatasetObservation):
             return list_result
 
-        file_infos = list_result
+        entries = list_result
+        file_infos = [entry for entry in entries if not entry.is_dir]
         file_paths = [f.path for f in file_infos]
 
-        if not file_paths:
+        if not entries:
             return PreviewDatasetObservation.from_text(
-                text=f"No previewable files found under {dataset_path}.",
+                text=f"No files or folders found under {dataset_path}.",
                 dataset_path=dataset_path,
                 files=file_paths,
                 is_dir=True,
                 source="storage",
             )
 
-        if len(file_paths) == 1:
+        if len(entries) == 1 and len(file_paths) == 1:
             return file_paths, file_paths[0]
 
         file_list_text = "\n".join(
-            f"  - {f.path} ({_human_size(f.size)}"
-            + (f", modified {f.last_modified}" if f.last_modified else "")
+            f"  - {entry.path}"
+            f" ({'folder' if entry.is_dir else _human_size(entry.size)}"
+            + (f", modified {entry.last_modified}" if entry.last_modified else "")
             + ")"
-            for f in file_infos
+            for entry in entries
         )
-        return PreviewDatasetObservation.from_text(
-            text=(
+        if len(file_infos) == len(entries):
+            summary = (
                 f"Directory '{dataset_path}' contains {len(file_paths)} files. "
                 "Ask the user which file to preview, then call this tool again "
-                "with the exact file path.\n"
-                f"Available files:\n{file_list_text}"
-            ),
+                "with the exact file path, or use mode='sample' to materialize "
+                "selected files."
+            )
+            list_label = "Available files"
+        else:
+            summary = (
+                f"Directory '{dataset_path}' contains {len(entries)} entries. "
+                "Call this tool again with an exact file path to preview content, "
+                "or use mode='sample' with selected sample_paths to materialize "
+                "files or folders."
+            )
+            list_label = "Available entries"
+        return PreviewDatasetObservation.from_text(
+            text=f"{summary}\n{list_label}:\n{file_list_text}",
             dataset_path=dataset_path,
             files=file_paths,
+            entries=[_storage_entry_dict(entry) for entry in entries],
             is_dir=True,
             source="storage",
         )
@@ -832,6 +1323,16 @@ class PreviewDatasetExecutor(
         path: str,
         headers: dict[str, str],
     ) -> list[_StorageFileInfo] | PreviewDatasetObservation:
+        entries_result = self._list_entries(path, headers)
+        if isinstance(entries_result, PreviewDatasetObservation):
+            return entries_result
+        return [entry for entry in entries_result if not entry.is_dir]
+
+    def _list_entries(
+        self,
+        path: str,
+        headers: dict[str, str],
+    ) -> list[_StorageFileInfo] | PreviewDatasetObservation:
         payload_result = self._post_json(
             "file_list", {"path": path, "search": ""}, headers
         )
@@ -857,23 +1358,25 @@ class PreviewDatasetExecutor(
                 dataset_path=path,
             )
 
-        files: list[_StorageFileInfo] = []
+        entries: list[_StorageFileInfo] = []
         for item in raw_files:
             if not isinstance(item, dict):
                 continue
-            if str(item.get("type") or "").lower() != "file":
+            entry_type = str(item.get("type") or "").lower()
+            if entry_type not in {"file", "folder", "directory", "dir"}:
                 continue
             item_path = item.get("path")
             if item_path is not None:
-                files.append(
+                entries.append(
                     _StorageFileInfo(
                         path=str(item_path),
                         name=str(item.get("name") or ""),
                         size=_optional_int(item.get("size")),
                         last_modified=_optional_str(item.get("last_modified")),
+                        is_dir=entry_type != "file",
                     )
                 )
-        return files
+        return entries
 
     def _get_download_url(
         self,
@@ -1054,7 +1557,7 @@ class PreviewDatasetTool(
                 ),
                 annotations=ToolAnnotations(
                     title="preview_dataset",
-                    readOnlyHint=True,
+                    readOnlyHint=False,
                     destructiveHint=False,
                     idempotentHint=True,
                     openWorldHint=True,
@@ -1866,6 +2369,175 @@ def _format_shared_preview_text(
         parts.append(f"\n--- sample line {row.get('line', '?')} ---")
         parts.append(str(row.get("text", "")))
     return "\n".join(parts)
+
+
+def _resolve_workspace_dir(
+    conversation: BaseConversation | None,
+) -> Path:
+    if conversation is None:
+        raise ValueError(
+            "Sample materialization requires an active conversation workspace."
+        )
+    workspace = cast(Any, conversation).workspace
+    workspace_dir = Path(workspace.working_dir).resolve()
+    path_policy = default_path_access_policy(workspace_dir)
+    sample_root = workspace_dir / "public_data" / "data-preparation"
+    if not path_policy.check(sample_root, "write"):
+        raise ValueError(
+            "Conversation public_data/data-preparation directory is not writable."
+        )
+    return workspace_dir
+
+
+def _normalize_storage_sample_path(value: str) -> str:
+    raw = value.strip()
+    if not raw:
+        raise ValueError("Sample path must be non-empty.")
+    pure_path = PurePosixPath("/" + raw.lstrip("/"))
+    if ".." in pure_path.parts:
+        raise ValueError("Sample path must not contain '..'.")
+    normalized = pure_path.as_posix()
+    if normalized == "/":
+        raise ValueError("Storage root cannot be materialized as a sample.")
+    return normalized
+
+
+def _sample_local_file(preview_root: Path, storage_path: str) -> Path:
+    normalized = _normalize_storage_sample_path(storage_path)
+    relative = PurePosixPath(normalized.lstrip("/"))
+    local_file = preview_root.joinpath(*relative.parts).resolve()
+    try:
+        local_file.relative_to(preview_root.resolve())
+    except ValueError as exc:
+        raise ValueError(f"Unsafe storage sample path: {storage_path}") from exc
+    return local_file
+
+
+def _storage_entry_dict(entry: _StorageFileInfo) -> dict[str, Any]:
+    return {
+        "path": entry.path,
+        "name": entry.name,
+        "type": "folder" if entry.is_dir else "file",
+        "size": entry.size,
+        "last_modified": entry.last_modified,
+    }
+
+
+def _is_vision_path(path: str) -> bool:
+    return PurePosixPath(path).suffix.lower() in _VISION_SUFFIXES
+
+
+def _is_image_path(path: str) -> bool:
+    return PurePosixPath(path).suffix.lower() in _IMAGE_SUFFIXES
+
+
+def _vision_content_type(path: str) -> str:
+    suffix = PurePosixPath(path).suffix.lower()
+    return {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
+    }.get(suffix, "application/octet-stream")
+
+
+def _vision_api_config() -> tuple[str, str, str | None]:
+    api_url = os.environ.get("DF_API_URL", "").strip()
+    if not api_url:
+        base_url = os.environ.get("DF_API_BASE_URL", "").strip().rstrip("/")
+        if base_url:
+            api_url = f"{base_url}/chat/completions"
+    model = os.environ.get("DF_MODEL_NAME", "").strip()
+    api_key = os.environ.get("DF_API_KEY")
+    if not api_url or not model:
+        raise ValueError(
+            "Vision preview is not configured; set DF_API_URL (or "
+            "DF_API_BASE_URL) and DF_MODEL_NAME."
+        )
+    return api_url, model, api_key
+
+
+def _call_vision_preview_model(
+    *,
+    source_path: str,
+    content: bytes,
+    timeout: float,
+) -> str:
+    api_url, model, api_key = _vision_api_config()
+    encoded = base64.b64encode(content).decode("ascii")
+    data_url = f"data:{_vision_content_type(source_path)};base64,{encoded}"
+    headers = {"content-type": "application/json"}
+    if api_key:
+        headers["authorization"] = f"Bearer {api_key}"
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Inspect this data-preparation sample. Return a concise "
+                            "plain-text description containing: (1) all readable "
+                            "OCR text, (2) the visual structure and relationships, "
+                            "and (3) any ambiguity or unreadable region. Do not "
+                            "invent missing text."
+                        ),
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": data_url},
+                    },
+                ],
+            }
+        ],
+        "temperature": 0,
+    }
+    attempts = max(1, min(int(os.environ.get("DF_VISION_MAX_ATTEMPTS", "3")), 5))
+    vision_timeout = max(
+        timeout,
+        float(os.environ.get("DF_VISION_TIMEOUT_SECONDS", "300")),
+    )
+    last_error = "unknown vision preview error"
+    for attempt in range(attempts):
+        try:
+            response = httpx.post(
+                api_url,
+                headers=headers,
+                json=payload,
+                timeout=vision_timeout,
+            )
+        except httpx.RequestError as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+        else:
+            if response.status_code < 400:
+                decoded = _decode_json_response(response, "Vision preview API")
+                if not isinstance(decoded, str):
+                    choices = decoded.get("choices")
+                    if isinstance(choices, list) and choices:
+                        message = choices[0].get("message")
+                        if isinstance(message, dict):
+                            result = message.get("content")
+                            if isinstance(result, str) and result.strip():
+                                return result.strip()
+                last_error = "Vision preview API response is missing message content."
+            else:
+                last_error = (
+                    f"Vision preview API returned HTTP {response.status_code}: "
+                    f"{_truncate_text(response.text)}"
+                )
+                retryable = (
+                    response.status_code in _VISION_RETRYABLE_STATUS_CODES
+                    or response.status_code >= 500
+                )
+                if not retryable:
+                    raise ValueError(last_error)
+        if attempt + 1 < attempts:
+            time.sleep((2**attempt) + random.random())
+    raise ValueError(f"Vision preview failed after {attempts} attempt(s): {last_error}")
 
 
 def _optional_str(value: Any) -> str | None:

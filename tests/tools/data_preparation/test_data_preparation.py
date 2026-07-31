@@ -1,9 +1,10 @@
+import ast
 import importlib.util
 import json
 import sys
 import types
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pyarrow.parquet as pq
 import pytest
@@ -16,12 +17,16 @@ from openhands.tools.data_preparation.definition import (
     DfConvertAction,
     DfConvertExecutor,
     DfConvertObservation,
+    DfRunPipelineAction,
+    DfRunPipelineExecutor,
 )
 from openhands.tools.data_preparation.runner import (
     build_dataflow_env,
     openai_compatible_model_name,
     run_dataflow_python,
+    runtime_public_names,
     summarize_dataflow_env,
+    validate_managed_image_pipeline,
 )
 
 
@@ -123,6 +128,24 @@ def test_build_dataflow_env_prefers_global_vision_model(monkeypatch) -> None:
     assert "openrouter-secret" not in summary
 
 
+def test_build_dataflow_env_text_profile_uses_conversation_model(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("DF_API_KEY", "vision-secret")
+    monkeypatch.setenv("DF_API_BASE_URL", "https://vision.example/v1")
+    monkeypatch.setenv(
+        "DF_API_URL",
+        "https://vision.example/v1/chat/completions",
+    )
+    monkeypatch.setenv("DF_MODEL_NAME", "gemma")
+
+    env = build_dataflow_env(_conversation_with_llm(), "text")
+
+    assert env["DF_MODEL_NAME"] == "vision-model"
+    assert env["DF_API_BASE_URL"] == "https://example.com/v1"
+    assert env["DF_API_KEY"] == "secret"
+
+
 def test_build_dataflow_env_derives_missing_url_pair(monkeypatch) -> None:
     monkeypatch.setenv("DF_API_KEY", "secret")
     monkeypatch.setenv(
@@ -172,6 +195,102 @@ def test_run_dataflow_python_redacts_api_key(tmp_path: Path) -> None:
     assert api_key not in stdout + stderr
     assert "<redacted>" in stdout
     assert "<redacted>" in stderr
+
+
+def test_df_run_pipeline_validates_output_and_writes_local_report(
+    tmp_path: Path,
+) -> None:
+    pipeline_dir = tmp_path / "public_data" / "data-preparation"
+    pipeline_dir.mkdir(parents=True)
+    pipeline = pipeline_dir / "pipeline.py"
+    pipeline.write_text(
+        "\n".join(
+            [
+                "import json, sys",
+                "row = {",
+                "  'id': 'text-1',",
+                "  'system_prompt': 'system',",
+                "  'user_prompt': 'question',",
+                "  'gt': 'answer',",
+                "}",
+                "with open(sys.argv[2], 'w', encoding='utf-8') as f:",
+                "    f.write(json.dumps(row) + '\\n')",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    input_path = pipeline_dir / "input.jsonl"
+    input_path.write_text("{}\n", encoding="utf-8")
+    scripts_dir = (
+        Path(__file__).parents[3]
+        / ".agents"
+        / "skills"
+        / "data-preparation"
+        / "scripts"
+    )
+    conversation = cast(Any, _fake_conversation(tmp_path))
+    conversation.state.agent = _conversation_with_llm().state.agent
+
+    observation = DfRunPipelineExecutor(runtime_dir=str(scripts_dir))(
+        DfRunPipelineAction(
+            pipeline_path="public_data/data-preparation/pipeline.py",
+            args=[
+                "public_data/data-preparation/input.jsonl",
+                "public_data/data-preparation/processed.sample.jsonl",
+            ],
+            output_schema="text",
+            model_profile="text",
+        ),
+        conversation,
+    )
+
+    assert not observation.is_error
+    assert observation.exit_code == 0
+    assert observation.report_path is not None
+    report = json.loads(Path(observation.report_path).read_text())
+    assert report["status"] == "succeeded"
+    assert report["validation"]["status"] == "passed"
+    assert report["total_records_output"] == 1
+    assert (pipeline_dir / "processed.sample.jsonl").is_file()
+    assert not (pipeline_dir / "public_data").exists()
+
+
+def test_df_run_pipeline_rejects_handwritten_vision_transport(
+    tmp_path: Path,
+) -> None:
+    pipeline_dir = tmp_path / "public_data" / "data-preparation"
+    pipeline_dir.mkdir(parents=True)
+    (pipeline_dir / "pipeline.py").write_text(
+        "import base64\n"
+        "from image_utils import ImagePipelineConfig, "
+        "run_image_pipeline_from_cli\n"
+    )
+    (pipeline_dir / "input.jsonl").write_text("{}\n")
+    scripts_dir = (
+        Path(__file__).parents[3]
+        / ".agents"
+        / "skills"
+        / "data-preparation"
+        / "scripts"
+    )
+    conversation = cast(Any, _fake_conversation(tmp_path))
+    conversation.state.agent = _conversation_with_llm().state.agent
+
+    observation = DfRunPipelineExecutor(runtime_dir=str(scripts_dir))(
+        DfRunPipelineAction(
+            pipeline_path="public_data/data-preparation/pipeline.py",
+            args=[
+                "public_data/data-preparation/input.jsonl",
+                "public_data/data-preparation/processed.sample.jsonl",
+            ],
+            output_schema="vision",
+            model_profile="vision",
+        ),
+        conversation,
+    )
+
+    assert observation.is_error
+    assert "cannot import base64" in observation.text
 
 
 def test_df_convert_messages_format(tmp_path: Path) -> None:
@@ -551,238 +670,296 @@ def _load_skill_reference(name: str, *, stub_dataflow: bool = False):
                 sys.modules["dataflow"] = previous_dataflow
 
 
-def test_multimodal_pipeline_supports_arbitrary_field_policy(tmp_path: Path) -> None:
-    pipeline = _load_skill_reference(
-        "multimodal_pipeline.py",
-        stub_dataflow=True,
+def _load_image_utils() -> Any:
+    root = Path(__file__).parents[3]
+    path = (
+        root / ".agents" / "skills" / "data-preparation" / "scripts" / "image_utils.py"
     )
-    for index in range(3):
-        _write_image(tmp_path / f"image-{index}.jpg", (index, index, index))
-    record = {
-        "sample_id": "sample-1",
-        "image_paths": [f"image-{index}.jpg" for index in range(3)],
-        "image_labels": ["one", "two", "three"],
-        "prompt": "Compare.",
-        "reference_annotations": {
-            "review_state": "keep",
-            "review_basis": "ground truth",
-        },
-        "metadata": {"batch": "b1"},
-    }
+    module_name = "test_data_preparation_image_utils"
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(module_name, None)
+    return module
 
-    normalized = pipeline._normalize_record(record, tmp_path / "manifest.jsonl")
-    assert normalized["_resolved_image_labels"] == ["one", "two", "three"]
-    assert len(normalized["_resolved_image_paths"]) == 3
 
-    setattr(pipeline, "REFERENCE_INPUT_FIELDS", ("review_state",))
-    setattr(
-        pipeline,
-        "PROTECTED_REFERENCE_FIELDS",
-        ("review_state", "review_basis"),
+def test_data_preparation_runtime_is_python_310_compatible() -> None:
+    scripts_dir = (
+        Path(__file__).parents[3]
+        / ".agents"
+        / "skills"
+        / "data-preparation"
+        / "scripts"
     )
-    assert "keep" in pipeline.build_user_prompt(normalized)
-    assert "ground truth" not in pipeline.build_user_prompt(normalized)
-    setattr(pipeline, "REASONING_FIELD", "explanation")
-    setattr(pipeline, "ANSWER_FIELD", "review_state")
-    assert (
-        pipeline.assemble_training_response(
-            normalized,
-            {"explanation": "generated"},
+    for path in sorted(scripts_dir.glob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(
+            source,
+            filename=str(path),
+            feature_version=(3, 10),
         )
-        == "<think>generated</think>\n\n<answer>keep</answer>"
-    )
+        direct_datetime_utc = {
+            alias.name
+            for node in tree.body
+            if isinstance(node, ast.ImportFrom) and node.module == "datetime"
+            for alias in node.names
+            if alias.name == "UTC"
+        }
+        assert not direct_datetime_utc, (
+            f"{path.name} imports datetime.UTC without a Python 3.10 fallback"
+        )
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "typing":
+                imported_names = {alias.name for alias in node.names}
+                unsupported_typing = imported_names & {"Self", "TypeAliasType"}
+                assert not unsupported_typing, (
+                    f"{path.name} imports Python 3.11+ typing API(s): "
+                    f"{sorted(unsupported_typing)}"
+                )
+            if isinstance(node, ast.Attribute):
+                assert not (
+                    isinstance(node.value, ast.Name)
+                    and node.value.id == "datetime"
+                    and node.attr == "UTC"
+                ), f"{path.name} uses datetime.UTC, which requires Python 3.11"
 
 
-@pytest.mark.parametrize(
-    ("answer", "expected"),
-    [
-        ("A", "A"),
-        ("plain text", "plain text"),
-        ({"decision": "keep"}, '{"decision":"keep"}'),
-    ],
-)
-def test_multimodal_pipeline_assembles_task_selected_response_fields(
-    answer: Any,
-    expected: str,
-) -> None:
-    pipeline = _load_skill_reference(
-        "multimodal_pipeline.py",
-        stub_dataflow=True,
-    )
-    setattr(pipeline, "REASONING_FIELD", "analysis_trace")
-    setattr(pipeline, "ANSWER_FIELD", "final_decision")
-    if isinstance(answer, dict):
-        setattr(pipeline, "ANSWER_IS_JSON", True)
-    record = {"reference_annotations": {}}
-
-    response = pipeline.assemble_training_response(
-        record,
-        {
-            "analysis_trace": "Task-specific reasoning.",
-            "final_decision": answer,
-        },
-    )
-
-    assert response == (
-        f"<think>Task-specific reasoning.</think>\n\n<answer>{expected}</answer>"
-    )
-    pipeline.validate_training_response(response)
-
-
-def test_multimodal_pipeline_preserves_batch_order_and_isolates_failures(
+def test_image_utils_multi_image_prompt_retry_and_output_order(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    pipeline = _load_skill_reference(
-        "multimodal_pipeline.py",
-        stub_dataflow=True,
+    image_utils = _load_image_utils()
+    for name, color in (
+        ("front.jpg", (1, 2, 3)),
+        ("back.jpg", (4, 5, 6)),
+        ("single.jpg", (7, 8, 9)),
+    ):
+        _write_image(tmp_path / name, color)
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "id": "first",
+                        "images": ["front.jpg", "back.jpg"],
+                        "user_prompt": "Compare both.",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "id": "second",
+                        "images": ["single.jpg"],
+                        "user_prompt": "Inspect one.",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
     )
 
-    class FakeVlm:
+    class FakeServing:
+        def __init__(self) -> None:
+            self.request_sizes: list[int] = []
+
         def generate_from_input_multi_images(
             self,
             image_paths,
             image_labels,
+            *,
+            user_prompts,
             **kwargs,
         ):
-            del image_labels, kwargs
-            if any("bad" in paths[0] for paths in image_paths):
-                raise RuntimeError("bad sample secret-key")
-            return [f"response:{Path(paths[0]).name}" for paths in image_paths]
+            del kwargs
+            self.request_sizes.append(len(image_paths))
+            if len(self.request_sizes) == 1:
+                assert image_labels[0] == ["Image 1", "Image 2"]
+                assert "Compare both." in user_prompts[0]
+                return [
+                    '{"reasoning":"first","answer":"A"}',
+                    "not-json",
+                ]
+            assert len(image_paths) == 1
+            return ['{"reasoning":"second","answer":"B"}']
 
-    records = [
-        {
-            "sample_id": "first",
-            "prompt": "one",
-            "_resolved_image_paths": ["/tmp/first.jpg"],
-            "_resolved_image_labels": ["first"],
-            "reference_annotations": {},
-        },
-        {
-            "sample_id": "bad",
-            "prompt": "bad",
-            "_resolved_image_paths": ["/tmp/bad.jpg"],
-            "_resolved_image_labels": ["bad"],
-            "reference_annotations": {},
-        },
-        {
-            "sample_id": "last",
-            "prompt": "last",
-            "_resolved_image_paths": ["/tmp/last.jpg"],
-            "_resolved_image_labels": ["last"],
-            "reference_annotations": {},
-        },
-    ]
+        def cleanup(self):
+            return None
 
-    monkeypatch.setenv("DF_API_KEY", "secret-key")
-    generated, failed = pipeline._generate_with_isolation(FakeVlm(), records)
-
-    assert list(generated) == ["first", "last"]
-    assert generated["first"] == "response:first.jpg"
-    assert generated["last"] == "response:last.jpg"
-    assert failed == {"bad": "bad sample <redacted>"}
-
-
-def test_multimodal_pipeline_limit_is_not_a_runtime_gate(tmp_path: Path) -> None:
-    pipeline = _load_skill_reference(
-        "multimodal_pipeline.py",
-        stub_dataflow=True,
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("DF_STATE_DIR", str(state_dir))
+    monkeypatch.setenv("DF_RESUME", "0")
+    fake = FakeServing()
+    monkeypatch.setattr(image_utils, "_create_vlm_serving", lambda config: fake)
+    config = image_utils.ImagePipelineConfig(
+        labeling_system_prompt="Label.",
+        training_system_prompt="Train.",
+        batch_size=2,
     )
+    output = tmp_path / "processed.sample.jsonl"
+
+    image_utils.run_image_pipeline(config, str(manifest), str(output))
+
+    rows = [
+        json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()
+    ]
+    assert fake.request_sizes == [2, 1]
+    assert [row["id"] for row in rows] == ["first", "second"]
+    assert rows[0]["images"] == ["front.jpg", "back.jpg"]
+    assert rows[1]["gt"] == "<think>second</think>\n\n<answer>B</answer>"
+    assert set(rows[0]) == {
+        "id",
+        "image_path",
+        "images",
+        "system_prompt",
+        "user_prompt",
+        "gt",
+    }
+
+
+def test_image_utils_dataflow_checkpoint_resume_without_duplicates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image_utils = _load_image_utils()
+    for name in ("first.jpg", "second.jpg"):
+        _write_image(tmp_path / name, (1, 2, 3))
     manifest = tmp_path / "manifest.jsonl"
     manifest.write_text(
         "\n".join(
             json.dumps(
                 {
-                    "sample_id": f"sample-{index}",
-                    "prompt": "Inspect.",
-                    "image_paths": ["image.jpg"],
+                    "id": name,
+                    "images": [f"{name}.jpg"],
+                    "user_prompt": f"Inspect {name}.",
                 }
             )
-            for index in range(5)
-        ),
+            for name in ("first", "second")
+        )
+        + "\n",
         encoding="utf-8",
     )
 
-    assert len(pipeline._read_manifest(manifest, 3)) == 3
-    assert len(pipeline._read_manifest(manifest, 4)) == 4
-    assert len(pipeline._read_manifest(manifest, None)) == 5
-
-
-def test_multimodal_pipeline_reports_resolved_field_policy(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    pipeline = _load_skill_reference(
-        "multimodal_pipeline.py",
-        stub_dataflow=True,
-    )
-    _write_image(tmp_path / "image.jpg", (1, 2, 3))
-    manifest = tmp_path / "manifest.jsonl"
-    manifest.write_text(
-        json.dumps(
-            {
-                "sample_id": "sample",
-                "image_paths": ["image.jpg"],
-                "prompt": "Inspect.",
-                "reference_annotations": {
-                    "review_state": "accepted",
-                    "private_note": "do not show",
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    class FakeVlm:
-        def __init__(self, **kwargs):
-            del kwargs
+    class FailingServing:
+        calls = 0
 
         def generate_from_input_multi_images(self, *args, **kwargs):
             del args, kwargs
-            return ['{"explanation":"looks correct"}']
+            self.calls += 1
+            if self.calls == 2:
+                raise RuntimeError("boundary failure")
+            return ['{"reasoning":"ok","answer":"A"}']
 
         def cleanup(self):
             return None
 
-    setattr(pipeline, "_load_vlm_class", lambda: FakeVlm)
-    setattr(pipeline, "OUTPUT_JSON_SCHEMA", {"type": "object"})
-    setattr(pipeline, "REFERENCE_INPUT_FIELDS", ("review_state",))
-    setattr(pipeline, "PROTECTED_REFERENCE_FIELDS", ("review_state",))
-    setattr(pipeline, "REASONING_FIELD", "explanation")
-    setattr(pipeline, "ANSWER_FIELD", "review_state")
-    setattr(pipeline, "FIELD_POLICY_RATIONALE", "Derived from the request.")
-    monkeypatch.setenv("DF_API_BASE_URL", "https://example.com/v1")
-    monkeypatch.setenv("DF_MODEL_NAME", "vision-model")
-    output = tmp_path / "processed.sample.jsonl"
-
-    pipeline.run(str(manifest), str(output), limit=3)
-
-    report = json.loads(
-        (tmp_path / "processed.sample.report.json").read_text(encoding="utf-8")
+    state_dir = tmp_path / "state"
+    output = tmp_path / "processed.jsonl"
+    config = image_utils.ImagePipelineConfig(
+        labeling_system_prompt="Label.",
+        training_system_prompt="Train.",
+        batch_size=1,
+        max_attempts=1,
     )
-    assert report["succeeded"] == 1
-    assert report["field_policy"] == {
-        "model_reads": {
-            "images": True,
-            "sample_prompt": True,
-            "reference_annotation_fields": ["review_state"],
-            "metadata": False,
-        },
-        "generated_fields": ["explanation"],
-        "preserved_reference_fields": ["review_state"],
-        "training_prompt": "sample prompt",
-        "training_response": (
-            "<think> from explanation; <answer> from review_state; "
-            "protected reference values win when fields overlap"
-        ),
-        "rationale": "Derived from the request.",
-    }
-    processed = json.loads(output.read_text(encoding="utf-8"))
-    assert processed["training_system_prompt"] == pipeline.TRAINING_SYSTEM_PROMPT
-    assert processed["generated_annotations"] == {"explanation": "looks correct"}
-    assert processed["training_response"] == (
-        "<think>looks correct</think>\n\n<answer>accepted</answer>"
+    monkeypatch.setenv("DF_STATE_DIR", str(state_dir))
+    monkeypatch.setenv("DF_RESUME", "0")
+    monkeypatch.setattr(
+        image_utils,
+        "_create_vlm_serving",
+        lambda config: FailingServing(),
     )
+    with pytest.raises(ValueError, match="boundary failure"):
+        image_utils.run_image_pipeline(config, str(manifest), str(output))
+
+    first_rows = [json.loads(line) for line in output.read_text().splitlines()]
+    assert [row["id"] for row in first_rows] == ["first"]
+    assert (state_dir / "image_pipeline_last_success_step.txt").read_text() == "0,1\n"
+
+    class SuccessfulServing:
+        def generate_from_input_multi_images(self, *args, **kwargs):
+            del args, kwargs
+            return ['{"reasoning":"fixed","answer":"B"}']
+
+        def cleanup(self):
+            return None
+
+    monkeypatch.setenv("DF_RESUME", "1")
+    monkeypatch.setattr(
+        image_utils,
+        "_create_vlm_serving",
+        lambda config: SuccessfulServing(),
+    )
+    image_utils.run_image_pipeline(config, str(manifest), str(output))
+    resumed = [json.loads(line) for line in output.read_text().splitlines()]
+    assert [row["id"] for row in resumed] == ["first", "second"]
+
+
+def test_image_utils_converts_webp_for_dataflow(
+    tmp_path: Path,
+) -> None:
+    image_utils = _load_image_utils()
+    source = tmp_path / "image.webp"
+    Image.new("RGB", (2, 2), "red").save(source)
+    converted = image_utils._prepare_vlm_image(source, tmp_path / "state")
+    assert converted.suffix == ".png"
+    with Image.open(converted) as image:
+        assert image.format == "PNG"
+
+
+def test_image_utils_discards_uncheckpointed_batch_part(tmp_path: Path) -> None:
+    image_utils = _load_image_utils()
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text('{"id":"one"}\n')
+    state_dir = tmp_path / "state"
+    output = tmp_path / "processed.jsonl"
+    storage = image_utils.ManagedStreamBatchedFileStorage(
+        first_entry_file_name=str(manifest),
+        state_dir=state_dir,
+        output_path=output,
+    )
+    storage.parts_dir.mkdir(parents=True)
+    (storage.parts_dir / "part-00000000.jsonl").write_text('{"id":"one"}\n')
+    (storage.parts_dir / "part-00000001.jsonl").write_text('{"id":"uncommitted"}\n')
+    storage.checkpoint_path.write_text("0,1\n")
+
+    storage.materialize_output()
+
+    assert output.read_text() == '{"id":"one"}\n'
+    assert not (storage.parts_dir / "part-00000001.jsonl").exists()
+
+
+def test_managed_image_pipeline_static_contract(tmp_path: Path) -> None:
+    image_utils_path = (
+        Path(__file__).parents[3]
+        / ".agents"
+        / "skills"
+        / "data-preparation"
+        / "scripts"
+        / "image_utils.py"
+    )
+    public_names = runtime_public_names(image_utils_path)
+    valid = tmp_path / "valid.py"
+    valid.write_text(
+        "from image_utils import ImagePipelineConfig, "
+        "run_image_pipeline_from_cli\n"
+        "CONFIG = ImagePipelineConfig("
+        "labeling_system_prompt='x', training_system_prompt='y')\n"
+        "run_image_pipeline_from_cli(CONFIG)\n"
+    )
+    validate_managed_image_pipeline(valid, public_names)
+
+    invalid = tmp_path / "invalid.py"
+    invalid.write_text(
+        "import base64\n"
+        "from image_utils import ImagePipelineConfig, "
+        "run_image_pipeline_from_cli\n"
+    )
+    with pytest.raises(ValueError, match="cannot import base64"):
+        validate_managed_image_pipeline(invalid, public_names)
 
 
 def test_avi_manifest_adapter_is_only_a_boundary_example(tmp_path: Path) -> None:

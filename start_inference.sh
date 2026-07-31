@@ -25,6 +25,11 @@ if [[ -z "${OPENAI_API_KEY:-}" ]]; then
 fi
 export OPENAI_API_KEY
 
+export DF_API_BASE_URL=https://openrouter.ai/api/v1
+export DF_API_URL=https://openrouter.ai/api/v1/chat/completions
+export DF_MODEL_NAME=google/gemma-4-31b-it
+export DF_API_KEY="${OPENROUTER_API_KEY}"
+
 # ----------------------------------------------------------
 # Agent Server Configuration
 # ----------------------------------------------------------
