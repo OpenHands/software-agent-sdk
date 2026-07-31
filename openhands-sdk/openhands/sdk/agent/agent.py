@@ -46,11 +46,11 @@ from openhands.sdk.event import (
     TokenEvent,
     UserRejectObservation,
 )
-from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
 from openhands.sdk.event.condenser import (
     Condensation,
     CondensationRequest,
 )
+from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
 from openhands.sdk.llm import (
     LLM,
     ImageContent,
