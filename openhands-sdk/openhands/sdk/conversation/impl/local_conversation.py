@@ -49,6 +49,7 @@ from openhands.sdk.event import (
     UserRejectObservation,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
+from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
@@ -2501,6 +2502,9 @@ class LocalConversation(BaseConversation):
                     ),
                     tool_name=ae.tool_name,
                     tool_call_id=ae.tool_call_id,
+                    classification=ErrorClassification(
+                        kind=FailureKind.AGENT_ACTION, retryable=True
+                    ),
                 )
             )
 

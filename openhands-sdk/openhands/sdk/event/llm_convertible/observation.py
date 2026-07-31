@@ -151,14 +151,19 @@ class AgentErrorEvent(ObservationBaseEvent):
 
     @model_validator(mode="after")
     def classify(self) -> "AgentErrorEvent":
+        """Default to UNKNOWN when the producer did not supply a classification.
+
+        ``AgentErrorEvent`` describes *where* an error was surfaced (the agent
+        scaffold), not *why* it happened. Producers that know the error is an
+        expected, agent-correctable validation failure pass ``AGENT_ACTION``
+        explicitly; unexpected exceptions and crash-recovery paths leave the
+        default so telemetry treats them as diagnostics.
+        """
         if self.classification is None:
             object.__setattr__(
                 self,
                 "classification",
-                ErrorClassification(
-                    kind=FailureKind.AGENT_ACTION,
-                    retryable=True,
-                ),
+                ErrorClassification(kind=FailureKind.UNKNOWN, retryable=False),
             )
         return self
 

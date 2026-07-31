@@ -43,7 +43,49 @@ def _failure(
 
 
 def classify_error(code: str, detail: str = "") -> ErrorClassification:
-    """Classify known failures from typed code and local provider metadata text."""
+    """Classify known failures from typed code and local provider metadata text.
+
+    Exception classes whose name alone is authoritative (``KeyError``,
+    ``AssertionError``, SDK-specific errors like ``LLMAuthenticationError``,
+    ``MaxIterationsReached``, …) are checked **first**, so incidental wording
+    in ``detail`` cannot override them. Opaque/generic wrapper codes
+    (``OpenAIError``, ``APIError``, ``HTTPStatusError``, …) are checked
+    **after** the detail heuristics, because the class name alone is not
+    specific enough — the detail text is needed to distinguish auth from
+    rate-limit from transient.
+    """
+    # ── authoritative code-based classification (checked first) ──────────
+    if code in {"LLMAuthenticationError", "ACPAuthRequired"}:
+        return _failure(FailureKind.AUTH, user_action="settings")
+    if code in {"LLMRateLimitError"}:
+        return _failure(FailureKind.RATE_LIMIT, retryable=True, user_action="retry")
+    if code in {
+        "LLMBadRequestError",
+        "ACPInitError",
+        "ACPSpawnError",
+        "ACPPromptError",
+        "NotFoundError",
+        "MaxBudgetReached",
+        "LibTmuxException",
+    }:
+        return _failure(FailureKind.CONFIG, user_action="settings")
+    # Context-window / conversation-history errors are recoverable via
+    # condensation, so classify them as agent outcomes, not diagnostics.
+    if code in {"LLMContextWindowExceedError", "LLMMalformedConversationHistoryError"}:
+        return _failure(FailureKind.AGENT_ACTION, retryable=True, user_action="retry")
+    # Run-limit and ownership-loss are known product outcomes, not diagnostics.
+    if code in {"MaxIterationsReached", "ConversationOwnershipLostError"}:
+        return _failure(FailureKind.AGENT_ACTION)
+    if code in {
+        "KeyError",
+        "AssertionError",
+        "PydanticSerializationError",
+        "AttributeError",
+        "TypeError",
+    }:
+        return _failure(FailureKind.INTERNAL)
+
+    # ── detail-based classification (for opaque/generic wrapper codes) ───
     text = detail.casefold()
 
     if any(
@@ -74,7 +116,7 @@ def classify_error(code: str, detail: str = "") -> ErrorClassification:
         )
     ):
         return _failure(FailureKind.QUOTA, user_action="settings")
-    if "429" in text or "rate limit" in text:
+    if "rate limit" in text or "error code: 429" in text or 'status": 429' in text:
         return _failure(FailureKind.RATE_LIMIT, retryable=True, user_action="retry")
     if any(
         token in text
@@ -83,7 +125,7 @@ def classify_error(code: str, detail: str = "") -> ErrorClassification:
             "no models loaded",
             "does not support thinking",
             "model is no longer available",
-            "not found",
+            "model not found",
             "invalid params",
             "inactive_service",
             "powershell is not available",
@@ -117,20 +159,7 @@ def classify_error(code: str, detail: str = "") -> ErrorClassification:
     ):
         return _failure(FailureKind.INTERNAL)
 
-    if code in {"LLMAuthenticationError", "ACPAuthRequired"}:
-        return _failure(FailureKind.AUTH, user_action="settings")
-    if code in {"LLMRateLimitError"}:
-        return _failure(FailureKind.RATE_LIMIT, retryable=True, user_action="retry")
-    if code in {
-        "LLMBadRequestError",
-        "ACPInitError",
-        "ACPSpawnError",
-        "ACPPromptError",
-        "NotFoundError",
-        "MaxBudgetReached",
-        "LibTmuxException",
-    }:
-        return _failure(FailureKind.CONFIG, user_action="settings")
+    # ── fallback code-based classification (generic wrapper codes) ───────
     if code in {
         "LLMServiceUnavailableError",
         "LLMTimeoutError",
@@ -149,18 +178,5 @@ def classify_error(code: str, detail: str = "") -> ErrorClassification:
         "OllamaError",
     }:
         return _failure(FailureKind.TRANSIENT, retryable=True, user_action="retry")
-    if code in {"MaxIterationsReached", "ConversationOwnershipLostError"}:
-        return _failure(FailureKind.UNKNOWN)
-    if code in {
-        "KeyError",
-        "AssertionError",
-        "PydanticSerializationError",
-        "AttributeError",
-        "TypeError",
-    }:
-        return _failure(FailureKind.INTERNAL)
+
     return _failure(FailureKind.UNKNOWN)
-
-
-def classify_error_code(code: str) -> ErrorClassification:
-    return classify_error(code)
