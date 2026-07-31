@@ -212,17 +212,36 @@ def _has_recursive_force_flags(command: ShellCommand) -> bool:
 def _collect_flags(words: tuple[ShellWord, ...]) -> set[str]:
     """Collect short-flag chars and recognised long flags.
 
-    The end-of-options marker terminates flag parsing. Long flags are mapped
-    onto their short-flag character so ordering and mixing work.
+    Option words are resolved through the same quote-removal path as the
+    command name. POSIX quote removal makes ``rm "-rf" /`` and ``rm -r"f" /``
+    argv-identical to ``rm -rf /``, so treating a quoted option word as opaque
+    -- and therefore flagless -- would let the same catastrophic delete through
+    under a different spelling while the de-quoted verb still resolved to
+    ``rm``. Resolving the verb but not its options is the asymmetry that made
+    that bypass possible.
+
+    A word that is dynamic (command substitution, expansion, ANSI-C string)
+    stays unresolved and contributes no flags. That matches how an
+    unresolvable script operand is treated in ``_scan_script_operand``:
+    passing flags through a variable is ordinary benign usage, and flagging it
+    would flood the ensemble with UNKNOWNs.
+
+    The end-of-options marker terminates flag parsing, and it is compared
+    against the de-quoted literal too -- after ``rm "--"`` the shell really
+    does treat a following ``-rf`` as a filename. Long flags are mapped onto
+    their short-flag character so ordering and mixing work.
     """
     flags: set[str] = set()
     for word in words:
-        if not word.opaque and word.text == _END_OF_OPTIONS:
+        literal = _resolve_node_literal(word.node)
+        if literal is None:
+            continue
+        if literal == _END_OF_OPTIONS:
             break
-        flags |= ast_view.split_short_flags(word)
-        if ast_view.is_long_flag(word, _LONG_RECURSIVE):
+        flags |= ast_view.split_short_flags(literal)
+        if ast_view.is_long_flag(literal, _LONG_RECURSIVE):
             flags.add("r")
-        elif ast_view.is_long_flag(word, _LONG_FORCE):
+        elif ast_view.is_long_flag(literal, _LONG_FORCE):
             flags.add("f")
     return flags
 

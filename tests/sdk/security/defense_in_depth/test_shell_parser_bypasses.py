@@ -384,3 +384,95 @@ class TestEscapedVerb:
         command = '"r' + "\\" + 'm" ' + _RF + " /"
         risk = analyzer.security_risk(make_action(command))
         assert risk == SecurityRisk.LOW
+
+
+class TestQuotedOptionWords:
+    """Quoted option words resolve exactly as the quoted verb already does.
+
+    Review finding on the Phase 2b PR (enyst): the AST layer de-quoted the
+    command name but still handed raw ``ShellWord`` values to the flag
+    helpers, which refuse any word carrying quote syntax. POSIX quote removal
+    makes ``rm "-rf" /`` and ``rm -r"f" /`` argv-identical to ``rm -rf /``, so
+    the verb resolved to the destructive one while its flags vanished, and the
+    catastrophic delete came back LOW under a different spelling. The legacy
+    regex does not rescue these because the quote is still in the scanned
+    source.
+
+    AST resolution: option words go through the same literal resolution as the
+    command name before option parsing, so command resolution and option
+    resolution share one quote-removal semantics. Dynamic words stay
+    unresolved and contribute no flags.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            _RM + ' "' + _RF + '" /',
+            _RM + " -r" + '"f"' + " /",
+            _RM + " '" + _RF + "' /",
+            _RM + ' -"r"f /',
+            _RM + ' "-r" "-f" /',
+            _RM + " -r" + "\\" + "f /",
+            _RM + ' "--recursive" "--force" /',
+            _RM + ' --recur"sive" --force /',
+            "/bin/" + _RM + ' "' + _RF + '" /',
+            "r" + '"m" "' + _RF + '" /',
+        ],
+        ids=[
+            "fully_quoted_short_group",
+            "concatenated_short_flag",
+            "single_quoted_short_group",
+            "quoted_middle_flag_char",
+            "separately_quoted_short_flags",
+            "backslash_escaped_flag_char",
+            "quoted_long_flags",
+            "concatenated_long_flag",
+            "path_qualified_verb_quoted_flags",
+            "quoted_verb_and_quoted_flags",
+        ],
+    )
+    def test_quoted_option_words_are_high(self, command: str):
+        analyzer = PatternSecurityAnalyzer()
+        risk = analyzer.security_risk(make_action(command))
+        assert risk == SecurityRisk.HIGH
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            _RM + ' "--" ' + _RF + " /",
+            _RM + " -- " + _RF + " /",
+        ],
+        ids=["quoted_end_of_options", "bare_end_of_options"],
+    )
+    def test_end_of_options_makes_flags_operands(self, command: str):
+        # After ``--`` the shell treats ``-rf`` as a filename, so this deletes
+        # a file literally named ``-rf`` and the root operand is never forced.
+        # Resolving the quoted ``--`` matters in both directions: it must
+        # terminate option parsing rather than be skipped as opaque.
+        analyzer = PatternSecurityAnalyzer()
+        risk = analyzer.security_risk(make_action(command))
+        assert risk == SecurityRisk.LOW
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            _RM + ' -r "$FLAGS" /',
+            _RM + " -r ${FLAGS} /",
+            _RM + ' "-r" file',
+            _RM + ' "-f" file',
+        ],
+        ids=[
+            "dynamic_flag_word",
+            "braced_expansion_flag_word",
+            "recursive_without_force",
+            "force_without_recursive",
+        ],
+    )
+    def test_unresolved_or_incomplete_flags_stay_low(self, command: str):
+        # A flag word that only exists after expansion is unknown, not
+        # hostile: flagging it would make every ``$OPTS`` invocation UNKNOWN.
+        # And one half of the destructive pair is not the destructive shape,
+        # however it is spelled.
+        analyzer = PatternSecurityAnalyzer()
+        risk = analyzer.security_risk(make_action(command))
+        assert risk == SecurityRisk.LOW
