@@ -1,0 +1,12 @@
+{
+  "schema_version": 3,
+  "name": "default",
+  "llm_profile_ref": "default",
+  "revision": 0,
+  "disabled_skills": [],
+  "__expected__": {
+    "name": "default",
+    "llm_profile_ref": "default",
+    "disabled_skills": []
+  }
+}
