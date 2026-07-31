@@ -266,6 +266,20 @@ def test_close_reports_accumulated_cost_to_workspace(tmp_path):
     assert conv.workspace.accumulated_cost == 0.75
 
 
+def test_close_reports_zero_cost_when_no_llm_calls(tmp_path):
+    """A run that ends before any LLM call — e.g. it errors during setup —
+    reports a genuine 0.0, not an omitted cost. Local state is in-process and
+    authoritative, so zero spend is a fact here; this deliberately differs from
+    RemoteConversation.close(), where missing cached stats means the cost is
+    unknown and is therefore left unreported."""
+    agent = create_test_agent()
+    conv = Conversation(agent=agent, persistence_dir=tmp_path, workspace=tmp_path)
+
+    conv.close()
+
+    assert conv.workspace.accumulated_cost == 0.0
+
+
 def test_close_logs_noncredential_agent_failure_without_retry(tmp_path):
     agent = create_test_agent()
     conv = Conversation(agent=agent, persistence_dir=tmp_path, workspace=tmp_path)
