@@ -311,14 +311,18 @@ def test_v1_untouched_default_migrates_empty_tools_to_null() -> None:
     assert profile.tools is None
 
 
-def test_v1_profile_migrates_legacy_empty_embedded_skills() -> None:
+@pytest.mark.parametrize(
+    "skills",
+    [[], [{"name": "old-skill", "content": "do stuff"}]],
+)
+def test_v1_profile_migrates_legacy_embedded_skills(skills: list[object]) -> None:
     profile = validate_agent_profile(
         {
             "schema_version": 1,
             "name": "default",
             "llm_profile_ref": "default",
             "revision": 0,
-            "skills": [],
+            "skills": skills,
         }
     )
 
@@ -466,17 +470,17 @@ def test_openhands_profile_has_no_embedded_skills_field() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Removed fields with non-empty user configuration remain invalid across
-# migrations: only the legacy empty ``skills`` field has a lossless migration.
+# Removed fields remain invalid in current-version payloads.  ``skills`` is an
+# exception for v1 payloads because the v1-to-v2 migration explicitly retires it.
 # ---------------------------------------------------------------------------
 
 
-def test_removed_skills_field_is_rejected() -> None:
-    """Non-empty embedded skills cannot be removed without losing configuration."""
+def test_current_profile_with_skills_field_is_rejected() -> None:
+    """A v2 payload must not retain the retired embedded ``skills`` field."""
     with pytest.raises(ValidationError):
         validate_agent_profile(
             {
-                "schema_version": 1,
+                "schema_version": AGENT_PROFILE_SCHEMA_VERSION,
                 "agent_kind": "openhands",
                 "name": "oh",
                 "llm_profile_ref": "default",

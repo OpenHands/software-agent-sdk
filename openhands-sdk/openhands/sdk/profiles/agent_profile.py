@@ -33,7 +33,7 @@ from openhands.sdk.settings.model import (
 from openhands.sdk.tool import Tool
 
 
-AGENT_PROFILE_SCHEMA_VERSION = 3
+AGENT_PROFILE_SCHEMA_VERSION = 2
 
 
 class ProfileVerificationSettings(BaseModel):
@@ -324,37 +324,25 @@ PersistedProfileMigrator = Callable[[dict[str, Any]], dict[str, Any]]
 
 
 def _migrate_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
-    if (
-        payload.get("agent_kind", "openhands") == "openhands"
-        and payload.get("name") == "default"
-        and payload.get("revision", 0) == 0
-        and payload.get("tools") == []
-    ):
-        payload["tools"] = None
-    payload["schema_version"] = 2
-    return payload
-
-
-def _migrate_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
-    """Discard the retired empty embedded-skills field from legacy profiles.
-
-    Early persisted OpenHands profiles could include ``skills: []``. Embedded
-    skills were subsequently removed because their nested configuration could
-    contain secrets; an empty list has no behavior or configuration to
-    preserve, so it is safe to remove during migration. Non-empty (or malformed)
-    values deliberately remain for strict validation to reject with an
-    actionable error rather than silently discarding user configuration.
-    """
+    """Remove the retired embedded-skills configuration from v1 profiles."""
     migrated = dict(payload)
-    if migrated.get("skills") == []:
-        migrated.pop("skills")
-    migrated["schema_version"] = 3
+    # ``skills`` was removed from the persisted profile shape in v2.  It must
+    # be discarded here, before strict model validation, so a v1 profile can
+    # be opened and saved as its canonical v2 representation.
+    migrated.pop("skills", None)
+    if (
+        migrated.get("agent_kind", "openhands") == "openhands"
+        and migrated.get("name") == "default"
+        and migrated.get("revision", 0) == 0
+        and migrated.get("tools") == []
+    ):
+        migrated["tools"] = None
+    migrated["schema_version"] = 2
     return migrated
 
 
 _AGENT_PROFILE_MIGRATIONS: dict[int, PersistedProfileMigrator] = {
     1: _migrate_v1_to_v2,
-    2: _migrate_v2_to_v3,
 }
 
 
