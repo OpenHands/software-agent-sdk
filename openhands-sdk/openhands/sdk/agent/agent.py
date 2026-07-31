@@ -50,7 +50,7 @@ from openhands.sdk.event.condenser import (
     Condensation,
     CondensationRequest,
 )
-from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
+from openhands.sdk.event.error_classification import AGENT_OUTCOME
 from openhands.sdk.llm import (
     LLM,
     ImageContent,
@@ -96,12 +96,6 @@ from openhands.sdk.tool.builtins.vision_inspect import VISION_INSPECT_TOOL_NAME
 
 logger = get_logger(__name__)
 maybe_init_laminar()
-
-#: Expected, agent-correctable failure — the agent can retry (e.g. malformed
-#: tool call, tool validation error).
-_AGENT_OUTCOME = ErrorClassification(
-    kind=FailureKind.AGENT_ACTION, retryable=True, user_action="retry"
-)
 
 
 def _tool_has_summary_param(tool: ToolDefinition) -> bool:
@@ -1157,7 +1151,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 error=error,
                 tool_name=tool_name,
                 tool_call_id=tool_call.id,
-                classification=_AGENT_OUTCOME,
+                classification=AGENT_OUTCOME,
             )
         )
 
@@ -1347,7 +1341,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 error=err,
                 tool_name=tool.name,
                 tool_call_id=action_event.tool_call.id,
-                classification=_AGENT_OUTCOME,
+                classification=AGENT_OUTCOME,
             )
             return [error_event]
 

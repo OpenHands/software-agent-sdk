@@ -42,6 +42,13 @@ def _failure(
     return ErrorClassification(kind=kind, retryable=retryable, user_action=user_action)
 
 
+#: Expected, agent-correctable failure — the agent can retry (for example, a
+#: malformed tool call or tool validation error).
+AGENT_OUTCOME = ErrorClassification(
+    kind=FailureKind.AGENT_ACTION, retryable=True, user_action="retry"
+)
+
+
 def classify_error(code: str, detail: str = "") -> ErrorClassification:
     """Classify known failures from typed code and local provider metadata text.
 

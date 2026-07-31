@@ -226,7 +226,8 @@ class TelemetrySubscriber(Subscriber[Event]):
         error is an expected agent outcome or a diagnostic.
         """
         fingerprint = normalize_error_code("AgentError")
-        classification = getattr(event, "classification", None)
+        classification = event.classification
+        assert classification is not None
         properties = m.ErrorProperties(
             conversation_ref=self.context.conversation_ref,
             error_class=fingerprint.error_class,
@@ -236,8 +237,7 @@ class TelemetrySubscriber(Subscriber[Event]):
             is_terminal=False,
             error_telemetry=(
                 "diagnostic"
-                if classification is not None
-                and classification.kind in {"internal", "unknown"}
+                if classification.kind in {"internal", "unknown"}
                 else "outcome"
             ),
             tool_name=safe_token(getattr(event, "tool_name", None)),
@@ -258,7 +258,8 @@ class TelemetrySubscriber(Subscriber[Event]):
         touched.
         """
         fingerprint = normalize_error_code(getattr(event, "code", None))
-        classification = getattr(event, "classification", None)
+        classification = event.classification
+        assert classification is not None
         properties = m.ErrorProperties(
             conversation_ref=self.context.conversation_ref,
             error_class=fingerprint.error_class,
@@ -268,8 +269,7 @@ class TelemetrySubscriber(Subscriber[Event]):
             is_terminal=True,
             error_telemetry=(
                 "diagnostic"
-                if classification is not None
-                and classification.kind in {"internal", "unknown"}
+                if classification.kind in {"internal", "unknown"}
                 else "outcome"
             ),
         )
