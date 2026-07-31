@@ -242,7 +242,10 @@ class DfCheckProgressExecutor(
     def _download_range(
         self, url: str, start: int | None, end: int | None
     ) -> bytes | str:
-        headers: dict[str, str] = {}
+        headers: dict[str, str] = {
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+        }
         if start is not None and end is not None:
             headers["range"] = f"bytes={start}-{end}"
         try:
@@ -273,8 +276,13 @@ class DfCheckProgressExecutor(
         result = self._get_size_and_url(path, headers)
         if isinstance(result, str):
             return None
-        _, url = result
-        content = self._download_range(url, None, None)
+        size, url = result
+        # Use a Range request (like _read_tail) to bypass CDN caching of the
+        # pre-signed URL — progress.json is overwritten in-place frequently.
+        if size is not None and size > 0:
+            content = self._download_range(url, 0, size - 1)
+        else:
+            content = self._download_range(url, None, None)
         if isinstance(content, str):
             return None
         try:
