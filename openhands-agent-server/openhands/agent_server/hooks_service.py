@@ -4,13 +4,11 @@ This module contains the business logic for loading hooks from the workspace,
 keeping the router clean and focused on HTTP concerns.
 
 Hook Sources:
-- Project hooks: {workspace}/.openhands/hooks.json
-- User hooks: ~/.openhands/hooks.json (future)
+- Project hooks: {workspace}/<dir>/hooks.json for each dir in HOOK_CONFIG_DIRS
+- User hooks: ~/<dir>/hooks.json (future)
 """
 
-from pathlib import Path
-
-from openhands.sdk.hooks import HookConfig
+from openhands.sdk.hooks import HOOK_CONFIG_DIRS, HookConfig, find_hooks_file
 from openhands.sdk.logger import get_logger
 
 
@@ -18,10 +16,10 @@ logger = get_logger(__name__)
 
 
 def load_hooks_from_workspace(project_dir: str | None = None) -> HookConfig | None:
-    """Load hooks from the workspace .openhands/hooks.json file.
+    """Load hooks from the workspace's hooks.json file.
 
-    This function reads the hooks configuration from the project's
-    .openhands/hooks.json file if it exists.
+    Looks for `hooks.json` under each of `HOOK_CONFIG_DIRS` inside the project
+    directory and reads the first one that exists.
 
     Args:
         project_dir: Workspace directory path for project hooks.
@@ -33,10 +31,13 @@ def load_hooks_from_workspace(project_dir: str | None = None) -> HookConfig | No
         logger.debug("No project_dir provided, skipping hooks loading")
         return None
 
-    hooks_path = Path(project_dir) / ".openhands" / "hooks.json"
+    hooks_path = find_hooks_file(project_dir)
 
-    if not hooks_path.exists():
-        logger.debug(f"No hooks.json found at {hooks_path}")
+    if hooks_path is None:
+        logger.debug(
+            f"No hooks.json found in {project_dir} "
+            f"(searched {', '.join(HOOK_CONFIG_DIRS)})"
+        )
         return None
 
     try:

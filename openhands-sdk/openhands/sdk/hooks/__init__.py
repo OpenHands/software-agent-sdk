@@ -6,11 +6,14 @@ during agent execution, enabling deterministic control over agent behavior.
 """
 
 from openhands.sdk.hooks.config import (
+    HOOK_CONFIG_DIRS,
+    HOOK_CONFIG_FILENAME,
     HOOK_EVENT_FIELDS,
     HookConfig,
     HookDefinition,
     HookMatcher,
     HookType,
+    find_hooks_file,
 )
 from openhands.sdk.hooks.conversation_hooks import (
     HookEventProcessor,
@@ -22,6 +25,8 @@ from openhands.sdk.hooks.types import HookDecision, HookEvent, HookEventType
 
 
 __all__ = [
+    "HOOK_CONFIG_DIRS",
+    "HOOK_CONFIG_FILENAME",
     "HOOK_EVENT_FIELDS",
     "HookConfig",
     "HookDefinition",
@@ -35,4 +40,5 @@ __all__ = [
     "HookDecision",
     "HookEventProcessor",
     "create_hook_callback",
+    "find_hooks_file",
 ]

@@ -22,6 +22,38 @@ def _pascal_to_snake(name: str) -> str:
     return result
 
 
+# Directories searched for ``hooks.json``, most preferred first.
+#
+# ``.agents`` is where the SDK already looks for skills, plugins and subagents
+# (``SKILL_SEARCH_PATHS``, ``PLUGIN_SEARCH_PATHS``, ``.agents/agents``), so
+# hooks belong there too. ``.openhands`` stays supported so existing projects
+# keep working.
+HOOK_CONFIG_DIRS: tuple[str, ...] = (".agents", ".openhands")
+
+HOOK_CONFIG_FILENAME = "hooks.json"
+
+
+def find_hooks_file(base_dir: str | Path) -> Path | None:
+    """Return the first ``<base_dir>/<dir>/hooks.json`` that exists.
+
+    Directories are tried in ``HOOK_CONFIG_DIRS`` order, so a project carrying
+    more than one only has its preferred file loaded — configs are not merged
+    across directories.
+
+    Args:
+        base_dir: Project or home directory to search under.
+
+    Returns:
+        The path to the first existing hooks file, or None when none exist.
+    """
+    base = Path(base_dir)
+    for directory in HOOK_CONFIG_DIRS:
+        candidate = base / directory / HOOK_CONFIG_FILENAME
+        if candidate.exists():
+            return candidate
+    return None
+
+
 # Valid snake_case field names for hook events.
 # This is the single source of truth for hook event types.
 HOOK_EVENT_FIELDS: frozenset[str] = frozenset(
@@ -159,8 +191,9 @@ class HookMatcher(BaseModel):
 class HookConfig(BaseModel):
     """Configuration for all hooks.
 
-    Hooks can be configured either by loading from `.openhands/hooks.json` or
-    by directly instantiating with typed fields:
+    Hooks can be configured either by loading a `hooks.json` (searched for in
+    `.agents/` then `.openhands/`) or by directly instantiating with typed
+    fields:
 
         # Direct instantiation with typed fields (recommended):
         config = HookConfig(
@@ -173,7 +206,7 @@ class HookConfig(BaseModel):
         )
 
         # Load from JSON file:
-        config = HookConfig.load(".openhands/hooks.json")
+        config = HookConfig.load(".agents/hooks.json")
     """
 
     model_config = {
@@ -273,24 +306,19 @@ class HookConfig(BaseModel):
     def load(
         cls, path: str | Path | None = None, working_dir: str | Path | None = None
     ) -> "HookConfig":
-        """Load config from path or search .openhands/hooks.json locations.
+        """Load config from path, or discover a project/user hooks.json.
+
+        Discovery checks the project directory first and the user's home
+        directory second, trying ``HOOK_CONFIG_DIRS`` within each.
 
         Args:
             path: Explicit path to hooks.json file. If provided, working_dir is ignored.
-            working_dir: Project directory for discovering .openhands/hooks.json.
+            working_dir: Project directory to discover hooks.json under.
                 Falls back to cwd if not provided.
         """
         if path is None:
-            # Search for hooks.json in standard locations
             base_dir = Path(working_dir) if working_dir else Path.cwd()
-            search_paths = [
-                base_dir / ".openhands" / "hooks.json",
-                Path.home() / ".openhands" / "hooks.json",
-            ]
-            for search_path in search_paths:
-                if search_path.exists():
-                    path = search_path
-                    break
+            path = find_hooks_file(base_dir) or find_hooks_file(Path.home())
 
         if path is None:
             return cls()

@@ -4,7 +4,10 @@ import json
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from openhands.agent_server.hooks_service import load_hooks_from_workspace
+from openhands.sdk.hooks import HOOK_CONFIG_DIRS
 
 
 class TestLoadHooksFromWorkspace:
@@ -142,3 +145,49 @@ class TestLoadHooksFromWorkspace:
             assert not result.is_empty()
             assert len(result.stop) == 1
             assert len(result.pre_tool_use) == 1
+
+
+class TestWorkspaceHooksDiscovery:
+    """The workspace loader must honour every supported config directory."""
+
+    @staticmethod
+    def write_hooks(base_dir: Path, directory: str, command: str) -> Path:
+        hooks_dir = base_dir / directory
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        hooks_file = hooks_dir / "hooks.json"
+        matcher = {"matcher": "*", "hooks": [{"command": command}]}
+        hooks_file.write_text(json.dumps({"hooks": {"stop": [matcher]}}))
+        return hooks_file
+
+    @pytest.mark.parametrize("directory", HOOK_CONFIG_DIRS)
+    def test_loads_hooks_from_each_supported_directory(
+        self, tmp_path: Path, directory: str
+    ):
+        self.write_hooks(tmp_path, directory, f"{directory}.sh")
+
+        result = load_hooks_from_workspace(project_dir=str(tmp_path))
+
+        assert result is not None
+        assert [hook.command for hook in result.stop[0].hooks] == [f"{directory}.sh"]
+
+    def test_prefers_agents_over_the_legacy_openhands_directory(self, tmp_path: Path):
+        self.write_hooks(tmp_path, ".agents", "agents.sh")
+        self.write_hooks(tmp_path, ".openhands", "openhands.sh")
+
+        result = load_hooks_from_workspace(project_dir=str(tmp_path))
+
+        assert result is not None
+        assert [hook.command for hook in result.stop[0].hooks] == ["agents.sh"]
+
+    def test_ignores_a_home_directory_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Workspace loading is project-scoped; user hooks are not picked up."""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        home_dir = tmp_path / "home"
+        home_dir.mkdir()
+        self.write_hooks(home_dir, ".agents", "user.sh")
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home_dir))
+
+        assert load_hooks_from_workspace(project_dir=str(project_dir)) is None
