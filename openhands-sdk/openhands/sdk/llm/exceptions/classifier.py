@@ -25,7 +25,7 @@ LONG_PROMPT_PATTERNS: Final[list[str]] = [
     "prompt is too long",
     "input length and `max_tokens` exceed context limit",
     "please reduce the length of",
-    "the request exceeds the available context size",
+    "exceeds the available context size",
     "context length exceeded",
     "input exceeds the context window",
     "context window exceeds limit",  # Minimax provider

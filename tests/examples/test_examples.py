@@ -114,6 +114,7 @@ def test_example_scripts(
     example_path: Path,
     examples_enabled: bool,
     examples_results_dir: Path,
+    tmp_path: Path,
 ) -> None:
     if not examples_enabled:
         pytest.skip("Use --run-examples to execute example scripts.")
@@ -129,6 +130,11 @@ def test_example_scripts(
     env.setdefault("PYTHONUNBUFFERED", "1")
     # Windows pipes default to the active code page; examples may print model text.
     env.setdefault("PYTHONIOENCODING", "utf-8")
+    # Give each example subprocess its own tmux socket directory so that parallel
+    # workers cannot tear down a tmux server shared via the default socket path
+    # (openhands/tools/terminal uses a fixed socket name). tmux creates its own
+    # tmux-<uid> subdirectory inside TMUX_TMPDIR.
+    env["TMUX_TMPDIR"] = str(tmp_path)
     # Apply model overrides for certain examples requiring provider-specific models
     overrides = _LLM_SPECIFIC_EXAMPLES.get(_normalize_path(example_path))
     if overrides:

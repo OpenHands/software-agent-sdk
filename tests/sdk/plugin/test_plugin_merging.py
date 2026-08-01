@@ -3,8 +3,15 @@
 import pytest
 
 from openhands.sdk.context import AgentContext
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.plugin import Plugin, PluginManifest
 from openhands.sdk.skills import Skill
+
+
+def mcp_config(
+    servers: dict[str, MCPServer] | None = None,
+) -> dict[str, MCPServer]:
+    return servers or {}
 
 
 class TestPluginAddSkillsTo:
@@ -146,40 +153,29 @@ class TestPluginAddMcpConfigTo:
     """Tests for Plugin.add_mcp_config_to() method."""
 
     def test_add_mcp_config_to_empty_plugin(self, empty_plugin):
-        """Test adding MCP config from empty plugin returns empty dict."""
-        new_mcp = empty_plugin.add_mcp_config_to({})
+        """Test adding MCP servers from empty plugin returns an empty map."""
+        new_mcp = empty_plugin.add_mcp_config_to(mcp_config())
         assert new_mcp == {}
 
     def test_add_mcp_config_to_both_none(self, empty_plugin):
-        """Test adding MCP config with both None returns empty dict."""
+        """Test adding MCP servers with both None returns an empty map."""
         new_mcp = empty_plugin.add_mcp_config_to(None)
         assert new_mcp == {}
 
     def test_add_mcp_config_to_none_input(self, mock_plugin_with_mcp):
-        """Test adding MCP config with None input."""
+        """Test adding MCP servers with None input."""
         new_mcp = mock_plugin_with_mcp.add_mcp_config_to()
-        assert isinstance(new_mcp, dict)
         assert new_mcp == mock_plugin_with_mcp.mcp_config
 
     def test_add_mcp_config_to_with_config(self, mock_plugin_with_mcp):
-        """Test adding plugin MCP config."""
-        new_mcp = mock_plugin_with_mcp.add_mcp_config_to({})
+        """Test adding plugin MCP servers."""
+        new_mcp = mock_plugin_with_mcp.add_mcp_config_to(mcp_config())
         assert new_mcp == mock_plugin_with_mcp.mcp_config
 
-    def test_add_mcp_config_to_both_empty(self):
-        """Test adding MCP config with both empty returns empty dict."""
-        plugin = Plugin(
-            manifest=PluginManifest(name="test", version="1.0.0", description="Test"),
-            path="/tmp/test",
-            mcp_config={},
-        )
-        new_mcp = plugin.add_mcp_config_to({})
-        assert new_mcp == {}
-
-    def test_add_mcp_config_to_merges_configs(self):
-        """Test add_mcp_config_to returns correctly merged MCP config."""
-        base_mcp = {"server1": {"command": "base"}}
-        plugin_mcp = {"server2": {"command": "plugin"}}
+    def test_add_mcp_config_to_merges_servers(self):
+        """Test add_mcp_config_to returns correctly merged MCP servers."""
+        base_mcp = mcp_config({"server1": MCPServer(command="base")})
+        plugin_mcp = mcp_config({"server2": MCPServer(command="plugin")})
 
         plugin = Plugin(
             manifest=PluginManifest(name="test", version="1.0.0", description="Test"),
@@ -189,15 +185,17 @@ class TestPluginAddMcpConfigTo:
 
         new_mcp = plugin.add_mcp_config_to(base_mcp)
 
-        assert "server1" in new_mcp
-        assert "server2" in new_mcp
-        assert new_mcp["server1"]["command"] == "base"
-        assert new_mcp["server2"]["command"] == "plugin"
+        assert new_mcp["server1"].command == "base"
+        assert new_mcp["server2"].command == "plugin"
 
     def test_add_mcp_config_to_plugin_overrides(self):
-        """Test plugin config overrides base config for same key."""
-        base_mcp = {"server1": {"command": "python", "args": ["-m", "base_server"]}}
-        plugin_mcp = {"server1": {"command": "python", "args": ["-m", "plugin_server"]}}
+        """Test plugin MCP servers override base servers for same key."""
+        base_mcp = mcp_config(
+            {"server1": MCPServer(command="python", args=["-m", "base_server"])}
+        )
+        plugin_mcp = mcp_config(
+            {"server1": MCPServer(command="python", args=["-m", "plugin_server"])}
+        )
 
         plugin = Plugin(
             manifest=PluginManifest(name="test", version="1.0.0", description="Test"),
@@ -206,14 +204,14 @@ class TestPluginAddMcpConfigTo:
         )
 
         new_mcp = plugin.add_mcp_config_to(base_mcp)
-        assert new_mcp["server1"]["args"] == ["-m", "plugin_server"]
+        assert new_mcp["server1"].args == ["-m", "plugin_server"]
 
     def test_add_mcp_config_to_does_not_modify_inputs(self):
-        """Test add_mcp_config_to does not modify input dicts."""
-        base_mcp = {"server1": {"command": "python"}}
-        plugin_mcp = {"server2": {"command": "node"}}
-        original_base = base_mcp.copy()
-        original_plugin = plugin_mcp.copy()
+        """Test add_mcp_config_to does not modify input maps."""
+        base_mcp = mcp_config({"server1": MCPServer(command="python")})
+        plugin_mcp = mcp_config({"server2": MCPServer(command="node")})
+        original_base = dict(base_mcp)
+        original_plugin = dict(plugin_mcp)
 
         plugin = Plugin(
             manifest=PluginManifest(name="test", version="1.0.0", description="Test"),
@@ -226,10 +224,10 @@ class TestPluginAddMcpConfigTo:
         assert base_mcp == original_base
         assert plugin_mcp == original_plugin
 
-    def test_add_mcp_config_to_merges_mcp_servers(self):
-        """Test add_mcp_config_to merges mcpServers by server name."""
-        base_mcp = {"mcpServers": {"server1": {"command": "base"}}}
-        plugin_mcp = {"mcpServers": {"server2": {"command": "plugin"}}}
+    def test_add_mcp_config_to_merges_mcp_config(self):
+        """Test add_mcp_config_to merges native server maps by server name."""
+        base_mcp = mcp_config({"server1": MCPServer(command="base")})
+        plugin_mcp = mcp_config({"server2": MCPServer(command="plugin")})
 
         plugin = Plugin(
             manifest=PluginManifest(name="test", version="1.0.0", description="Test"),
@@ -239,14 +237,13 @@ class TestPluginAddMcpConfigTo:
 
         new_mcp = plugin.add_mcp_config_to(base_mcp)
 
-        assert "mcpServers" in new_mcp
-        assert "server1" in new_mcp["mcpServers"]
-        assert "server2" in new_mcp["mcpServers"]
+        assert "server1" in new_mcp
+        assert "server2" in new_mcp
 
-    def test_add_mcp_config_to_mcp_servers_plugin_overrides(self):
-        """Test plugin mcpServers override base mcpServers for same server name."""
-        base_mcp = {"mcpServers": {"server1": {"command": "base"}}}
-        plugin_mcp = {"mcpServers": {"server1": {"command": "plugin"}}}
+    def test_add_mcp_config_to_mcp_config_plugin_overrides(self):
+        """Test plugin MCP config overrides base config for the same server name."""
+        base_mcp = mcp_config({"server1": MCPServer(command="base")})
+        plugin_mcp = mcp_config({"server1": MCPServer(command="plugin")})
 
         plugin = Plugin(
             manifest=PluginManifest(name="test", version="1.0.0", description="Test"),
@@ -256,7 +253,7 @@ class TestPluginAddMcpConfigTo:
 
         new_mcp = plugin.add_mcp_config_to(base_mcp)
 
-        assert new_mcp["mcpServers"]["server1"]["command"] == "plugin"
+        assert new_mcp["server1"].command == "plugin"
 
 
 # Fixtures
@@ -305,11 +302,13 @@ def mock_plugin_with_skills(mock_skill, another_mock_skill):
 
 @pytest.fixture
 def mock_plugin_with_mcp():
-    """Create a plugin with MCP config."""
+    """Create a plugin with MCP servers."""
     return Plugin(
         manifest=PluginManifest(
             name="mcp-plugin", version="1.0.0", description="MCP plugin"
         ),
         path="/tmp/mcp",
-        mcp_config={"server1": {"command": "python", "args": ["-m", "server1"]}},
+        mcp_config=mcp_config(
+            {"server1": MCPServer(command="python", args=["-m", "server1"])}
+        ),
     )

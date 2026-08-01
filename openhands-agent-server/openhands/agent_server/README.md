@@ -55,6 +55,15 @@ The server can be configured using environment variables or a JSON configuration
 | `SESSION_API_KEY` | API key for authentication (optional) | None |
 | `OH_SECRET_KEY` | Secret key for encrypting sensitive data (LLM API keys, secrets) in stored conversations. **Required for persistence across restarts.** | None |
 | `OH_ALLOW_CORS_ORIGIN_REGEX` | Regular expression for additional allowed CORS origins. Use `https?://.+` to allow any HTTP(S) origin while echoing the concrete origin. | None |
+| `OH_TELEMETRY_EXPORTER` | Where events go: `none`, `posthog`, or `http`. See [Telemetry](#telemetry). | `none` |
+| `OH_TELEMETRY_POSTHOG_API_KEY` | PostHog project API key. Required by the `posthog` exporter. | None |
+| `OH_TELEMETRY_POSTHOG_HOST` | PostHog ingestion host. | `https://us.i.posthog.com` |
+| `OH_TELEMETRY_HTTP_ENDPOINT` | Endpoint the `http` exporter POSTs sanitized batches to. | None |
+| `OH_TELEMETRY_HTTP_TOKEN` | Bearer token for the `http` exporter, if required. | None |
+| `OH_TELEMETRY_CONSENT` | `granted` or `denied`. Seeds or overrides the persisted consent value. | Unset |
+| `OH_TELEMETRY_CONSENT_MODE` | `seed` (applies only while consent is `unset`) or `override` (wins over settings). | `seed` |
+| `OH_TELEMETRY_SALT` | Key used to pseudonymize conversation ids. Falls back to `OH_SECRET_KEY`, then to a per-process random salt. | None |
+| `DO_NOT_TRACK` | Set to `1` to force telemetry off, overriding consent and env. | Unset |
 
 ### Configuration File
 
@@ -89,6 +98,155 @@ Create a JSON configuration file (default: `workspace/openhands_agent_server_con
 - **`webhooks`**: Array of webhook configurations for event notifications
 
 **Note**: Directory configuration (`working_dir`) will be handled at the conversation level rather than globally. These directories are specified when starting a conversation through the API.
+
+### Telemetry
+
+The agent server can emit a small set of **product-analytics** events to PostHog.
+It is **disabled by default** and does nothing unless a deployment opts in.
+
+#### This is not the same as the other two observability features
+
+| Feature | What it collects | Where it goes |
+|---|---|---|
+| **Telemetry** (this section) | Allowlisted lifecycle/failure events. Never prompts, messages, file contents, paths, secrets, request/response bodies, or tracebacks. | PostHog, when configured |
+| **LLM completion logging** (`log_completions`) | Full prompts, responses, and raw provider payloads — deliberately high fidelity for debugging. | Local disk only |
+| **Laminar / OpenTelemetry tracing** | Distributed traces and spans for latency analysis. | Your OTel/Laminar backend |
+
+Nothing from completion logging or tracing is ever forwarded to telemetry.
+
+#### Consent
+
+There is no deployment "mode" and nothing in the agent-server special-cases a
+hosted deployment. It resolves one thing — **effective consent** — and delivery
+additionally requires that an exporter is configured.
+
+Consent lives at `misc_settings.telemetry.consent` (`granted` | `denied` |
+`unset`), with an optional `misc_settings.telemetry.managed = true` marking the
+choice as administrator-managed so a UI can render it read-only. Canvas writes
+it through `PATCH /api/settings` like any other frontend preference:
+
+```
+PATCH /api/settings
+{"misc_settings_diff": {"telemetry": {"consent": "granted"}}}
+```
+
+`misc_settings` is otherwise opaque to the agent-server. **This one namespace is
+the documented exception**: the frontend still owns the value, the server only
+reads it. Nothing else in the container is interpreted.
+
+Because it is ordinary `misc_settings`, consent persists across restarts for
+free and needs no settings schema change.
+
+Precedence, highest first:
+
+1. `DO_NOT_TRACK=1` — operator kill switch, overrides everything.
+2. `OH_TELEMETRY_CONSENT` when `OH_TELEMETRY_CONSENT_MODE=override`.
+3. `misc_settings.telemetry.consent`.
+4. The legacy `misc_settings.app_preferences.user_consents_to_analytics` key,
+   read only as a fallback so existing users are not reset. Never written.
+5. `OH_TELEMETRY_CONSENT` as a seed (the default mode) — applies only while the
+   persisted value is `unset`, so an operator default never silently overrules
+   an explicit choice.
+6. Otherwise `unset`, which is **not** consent.
+
+Revoking takes effect before the settings request returns: delivery stops and
+anything already queued is **discarded**, not flushed.
+
+#### Exporters
+
+`OH_TELEMETRY_EXPORTER` selects the transport:
+
+- **`none`** (default) — nothing is delivered. This is what library and headless
+  consumers get, and it requires no vendor dependency.
+- **`posthog`** — requires `OH_TELEMETRY_POSTHOG_API_KEY` and the optional
+  `[posthog]` extra. Without either, telemetry logs one line and stays inactive.
+- **`http`** — POSTs sanitized batches to `OH_TELEMETRY_HTTP_ENDPOINT`. Intended
+  to front a backend that revalidates auth and consent before forwarding onward,
+  so no vendor credentials need to live in the sandbox. Payload shape:
+
+```
+POST <endpoint>
+Content-Type: application/json
+Authorization: Bearer <OH_TELEMETRY_HTTP_TOKEN>   # only when configured
+
+{
+  "schema_version": 1,
+  "events": [
+    {
+      "event": "agent_server.conversation_finished",
+      "distinct_id": "<user id, or anon:...>",
+      "occurred_at": "2026-07-21T10:00:00+00:00",
+      "properties": { ... allowlisted properties ... }
+    }
+  ]
+}
+```
+
+All three share the same bounded queue, drop-on-failure and capped-shutdown
+behaviour.
+
+#### Hosted deployments
+
+A hosted deployment enforces its policy by **seeding** the sandbox's misc
+settings before any conversation starts (`consent = granted`, `managed = true`),
+not by the agent-server knowing about it. That seeding lives outside this
+repository.
+
+#### What is sent
+
+Events: `conversation_started`, `conversation_finished`, `conversation_failed`,
+`conversation_error`, `request_failed`, `server_started`, `server_stopped` — all
+prefixed `agent_server.`.
+
+Properties are limited to:
+
+- **Envelope** — `schema_version`, `source`.
+- **Release / runtime** — `server_version`, `sdk_version`, `tools_version`,
+  `build_git_sha`, `build_git_ref`, `python_version`, `platform`,
+  `deferred_init`.
+- **Conversation shape** — `conversation_ref`, `llm_model_family`, `agent_kind`,
+  `tool_count`, `is_fork`, `has_agent_profile`, `workspace_kind`,
+  `confirmation_policy`.
+- **Outcome (bucketed)** — `terminal_status`, `duration_bucket`,
+  `event_count_bucket`, `total_tokens_bucket`, `cost_bucket`.
+- **Failure** — `error_class`, `error_category`, `error_fingerprint`,
+  `error_origin_module`, `error_origin_lineno`, `is_first_party`,
+  `is_terminal`, `tool_name`, `error_id`.
+- **Request failure** — `route_template` (the parametrised route, never the
+  concrete path), `method`, `status_code`.
+
+Magnitudes are bucketed rather than exact, because a raw count joined with a
+timestamp is a re-identification vector. `conversation_ref` is a keyed digest,
+never the raw conversation UUID. Exception *messages* and tracebacks are never
+read at all — failures are grouped by a fingerprint computed from the exception
+type and first-party module/line pairs.
+
+#### Identity
+
+Events use the deployment-supplied `user_id` verbatim as the PostHog
+`distinct_id`, so they attach to the person your product already identified.
+The exporter only ever calls `capture()` — never `identify()`, `alias()`, or
+`group_identify()` — so it cannot create a duplicate identity or irreversibly
+merge two. Without a `user_id`, an in-memory `anon:<hex>` id is used that resets
+on restart and is flagged so PostHog creates no person profile.
+
+Request-scoped activity that has no conversation `user_id` — a failed request,
+and future events such as LLM-profile creation — can still be attributed by
+sending the frontend's PostHog id in the `X-OpenHands-Telemetry-Distinct-Id`
+header (`headers["X-OpenHands-Telemetry-Distinct-Id"] = posthog.get_distinct_id()`).
+When absent, those events fall back to the anonymous id. The header is trusted
+the same way as `user_id`: the frontend is responsible for setting it correctly.
+
+#### Installation
+
+The PostHog client is an optional extra:
+
+```bash
+pip install 'openhands-agent-server[posthog]'
+```
+
+Without it, telemetry logs one warning and stays inactive; the server starts
+normally.
 
 ### Secret Encryption
 

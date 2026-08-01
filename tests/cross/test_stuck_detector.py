@@ -95,6 +95,12 @@ class _SpyState:
     def __init__(self, events):
         self.events = events
 
+    def active_branch(self, limit=None):
+        # A linear conversation's active branch is the whole log; ``limit`` takes
+        # the tail. Mirrored via the spy slice so the "only the last N events are
+        # touched" assertions still hold.
+        return list(self.events[-limit:] if limit is not None else self.events)
+
 
 def test_is_stuck_uses_only_recent_event_window():
     llm = LLM(model="gpt-4o-mini", usage_id="test-llm")

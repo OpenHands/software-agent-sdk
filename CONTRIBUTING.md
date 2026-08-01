@@ -64,6 +64,9 @@ through the shape of a clean interface.
 This file is mostly about principles. For the mechanics, please see:
 - [AGENTS.md](AGENTS.md) for AI agents
 - [DEVELOPMENT.md](DEVELOPMENT.md) for humans
+- [openhands-sdk/openhands/sdk/subagent/AGENTS.md](openhands-sdk/openhands/sdk/subagent/AGENTS.md) for file-based subagent discovery, precedence, and task handoff conventions
+- `examples/01_standalone_sdk/41_task_tool_set.py` for delegating work to registered subagents with resume support
+- `examples/01_standalone_sdk/42_file_based_subagents.py` for programmatic `AgentDefinition` registration
 
 ## Questions / discussion
 

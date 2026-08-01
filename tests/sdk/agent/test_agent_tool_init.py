@@ -2,6 +2,7 @@ from collections.abc import Sequence
 from typing import ClassVar
 from unittest.mock import patch
 
+import pytest
 from pydantic import Field
 from rich.text import Text
 
@@ -115,6 +116,18 @@ def test_agent_disable_all_default_tools():
         runtime_tools = agent.tools_map
         assert "finish" not in runtime_tools
         assert "think" not in runtime_tools
+
+
+def test_runtime_tools_cannot_replace_existing_tool():
+    register_tool("upper", _UpperTool)
+    llm = LLM(model="test-model", usage_id="test-llm")
+    agent = Agent(llm=llm, tools=[Tool(name="upper")], include_default_tools=[])
+    conv = Conversation(agent=agent, visualizer=None)
+    conv._ensure_agent_ready()
+
+    runtime_tool = _UpperTool.create()[0]
+    with pytest.raises(ValueError, match="Duplicate tool names"):
+        agent.add_runtime_tools([runtime_tool])
 
 
 # Custom finish tool for testing replacement

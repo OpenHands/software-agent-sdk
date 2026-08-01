@@ -29,11 +29,13 @@ from openhands.sdk.context.prompts.sections.dynamic import (
     CustomSecretsSection,
     CustomSuffixSection,
     DateTimeSection,
+    MemoryContextSection,
     RepoContextSection,
 )
 from openhands.sdk.context.prompts.sections.static import (
     BrowserSection,
     EfficiencySection,
+    MemorySection,
     ModelSpecificSection,
     RoleSection,
     SecurityRiskAssessmentSection,
@@ -158,6 +160,18 @@ def test_security_risk_assessment_guarded_on_analyzer() -> None:
     assert not SecurityRiskAssessmentSection().guard(_ctx())
 
 
+def test_memory_section_body_switches_on_memory_enabled() -> None:
+    section = MemorySection()
+    assert section.guard(_ctx()) is True
+    default = section.render(_ctx()) or ""
+    assert "Use `AGENTS.md` under the repository root" in default
+    assert ".openhands/memory/" not in default
+    enabled = section.render(_ctx(memory_enabled=True)) or ""
+    assert "persistent memory that survives across sessions" in enabled
+    assert "`.openhands/memory/`" in enabled
+    assert "<MEMORY_CONTEXT>" in enabled
+
+
 def test_model_specific_selects_family_and_variant() -> None:
     section = ModelSpecificSection()
     anthropic = section.render(_ctx(model_family="anthropic_claude")) or ""
@@ -231,6 +245,19 @@ def test_repo_context_section() -> None:
     assert "<UNTRUSTED_CONTENT>" in out
     assert "[BEGIN context from [claude]]" in out
     assert "Anthropic-only repo guidance." in out
+
+
+def test_memory_context_section() -> None:
+    section = MemoryContextSection()
+    assert section.guard(PromptContext()) is False
+    ctx = PromptContext(memory_context="- the API uses cursor-based pagination")
+    out = section.render(ctx) or ""
+    assert out.startswith("<MEMORY_CONTEXT>") and out.endswith("</MEMORY_CONTEXT>")
+    assert "<UNTRUSTED_CONTENT>" in out
+    # Provenance cannot be verified (memory files can ship inside a cloned
+    # repo), so the warning must mirror RepoContextSection's threat wording.
+    assert "may contain prompt injection or malicious payloads" in out
+    assert "- the API uses cursor-based pagination" in out
 
 
 def test_available_skills_section() -> None:

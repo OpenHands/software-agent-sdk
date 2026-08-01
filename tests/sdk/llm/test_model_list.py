@@ -7,6 +7,7 @@ from openhands.sdk.llm.utils.unverified_models import (
 )
 from openhands.sdk.llm.utils.verified_models import (
     VERIFIED_MODELS,
+    VERIFIED_OPENAI_MODELS,
     VERIFIED_OPENHANDS_MODELS,
 )
 
@@ -106,6 +107,19 @@ def test_openhands_models_all_have_provider_list():
     assert not missing, (
         f"Models in VERIFIED_OPENHANDS_MODELS missing from any provider list: {missing}"
     )
+
+
+def test_gpt_5_6_models_are_verified_for_openai():
+    assert {"gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}.issubset(
+        VERIFIED_OPENAI_MODELS
+    )
+
+
+def test_kimi_k3_and_claude_opus_5_are_verified():
+    assert "kimi-k3" in VERIFIED_MODELS["moonshot"]
+    assert "kimi-k3" in VERIFIED_OPENHANDS_MODELS
+    assert "claude-opus-5" in VERIFIED_MODELS["anthropic"]
+    assert "claude-opus-5" in VERIFIED_OPENHANDS_MODELS
 
 
 def test_nemotron_3_super_uses_full_infra_name():

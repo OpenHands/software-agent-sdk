@@ -4,19 +4,29 @@ This test reproduces issue #886 where the 'kind' field from DiscriminatedUnionMi
 is incorrectly included in the MCP tool arguments, causing validation errors.
 """
 
+import sys
+from pathlib import Path
+
 import pytest
 
 from openhands.sdk.mcp import create_mcp_tools
+from openhands.sdk.mcp.config import coerce_mcp_config
 
 
 @pytest.fixture
 def fetch_tool():
-    """Create a real MCP fetch tool using the mcp-server-fetch package."""
+    """Create a real MCP fetch tool using a local stdio server."""
+    repo_root = Path(__file__).resolve().parents[3]
     mcp_config = {
-        "mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}
+        "mcpServers": {
+            "fetch": {
+                "command": sys.executable,
+                "args": ["-m", "tests.sdk.mcp.stdio_test_server"],
+                "cwd": str(repo_root),
+            }
+        }
     }
-    # Use longer timeout for CI environments where uvx may need to download packages
-    tools = create_mcp_tools(mcp_config, timeout=120.0)
+    tools = create_mcp_tools(coerce_mcp_config(mcp_config["mcpServers"]), timeout=10.0)
     assert len(tools) == 1
     return tools[0]
 
