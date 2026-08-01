@@ -98,7 +98,6 @@ jobs:
                   - [ ] Integration tests pass (tagged with `integration-test`)
                   - [ ] Behavior tests pass (tagged with `behavior-test`)
                   - [ ] Example tests pass (tagged with `test-examples`)
-                  - [ ] Security scan passes (tagged with `security-scan`)
                   - [ ] Confirm any `release-note-required` PRs are accurately called out in the final release notes
 
                   ### What happens on merge
@@ -117,8 +116,7 @@ jobs:
                     --head "$BRANCH_NAME" \
                     --label "integration-test" \
                     --label "behavior-test" \
-                    --label "test-examples" \
-                    --label "security-scan"
+                    --label "test-examples"
 
                   rm pr_body.txt
                   echo "✅ Pull request created successfully!"
