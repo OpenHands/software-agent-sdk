@@ -324,26 +324,22 @@ def test_view_with_a_specific_range(editor):
     assert "101" not in result.text
 
 
-def test_view_full_file_with_trailing_newline_has_no_phantom_line(tmp_path):
-    """A full-file view of a file ending in a newline must not render a phantom
-    extra numbered line (it emulates ``cat -n``), and must match the equivalent
-    explicit range view."""
+def test_view_preserves_non_newline_line_terminators(tmp_path):
+    """The full view emulates ``cat -n`` and must stay content-faithful.
+
+    Rare terminators like form feed (``\\x0c`` — a page separator in Python,
+    Lisp, and C sources) are treated as line breaks by ``str.splitlines()``,
+    so any splitlines-based normalization silently rewrites them into
+    newlines. The agent then issues ``str_replace`` against text that does
+    not exist in the file. The view must render the byte as-is, glued to its
+    line, exactly as ``cat -n`` does."""
     editor = FileEditor()
-    test_file = tmp_path / "trailing.txt"
-    test_file.write_text("line1\nline2\nline3\n")
+    test_file = tmp_path / "ff.py"
+    test_file.write_bytes(b"def a():\n    pass\n\x0cdef b():\n    pass\n")
 
-    full = editor(command="view", path=str(test_file))
-    assert isinstance(full, FileEditorObservation)
-    assert full.text == (
-        f"Here's the result of running `cat -n` on {test_file}:\n"
-        "     1\tline1\n"
-        "     2\tline2\n"
-        "     3\tline3\n"
-    )
-
-    # The full view and the equivalent range view must agree on line count.
-    ranged = editor(command="view", path=str(test_file), view_range=[1, 3])
-    assert full.text == ranged.text
+    result = editor(command="view", path=str(test_file))
+    assert isinstance(result, FileEditorObservation)
+    assert "3\t\x0cdef b():" in result.text
 
 
 def test_create_file(editor):

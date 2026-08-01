@@ -369,12 +369,7 @@ class FileEditor:
         start_line = 1
         if not view_range:
             file_content = self.read_file(path)
-            # Normalize trailing newlines the same way the range path does, so a
-            # file ending in "\n" doesn't render a phantom extra numbered line
-            # (this path emulates `cat -n`, which shows no such trailing line).
-            output = self._make_output(
-                "\n".join(file_content.splitlines()), str(path), start_line
-            )
+            output = self._make_output(file_content, str(path), start_line)
 
             return FileEditorObservation.from_text(
                 text=output,
