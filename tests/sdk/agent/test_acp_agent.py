@@ -8409,6 +8409,20 @@ class TestMcpConfigToAcpServers:
         assert len(out) == 1
         assert isinstance(out[0], HttpMcpServer)
 
+    def test_disabled_servers_not_forwarded(self):
+        cfg = {
+            "mcpServers": {
+                "fetch": {"command": "uvx"},
+                "switched_off": {"command": "uvx", "enabled": False},
+            }
+        }
+        # The subprocess owns the connection, so withholding the entry is the
+        # only way to keep a disabled server out of its reach.
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=True)
+        )
+        assert [s.name for s in out] == ["fetch"]
+
     def test_empty_configs(self):
         caps = self._caps(http=True, sse=True)
         assert _mcp_config_to_acp_servers({}, caps) == []

@@ -5,6 +5,7 @@ import traceback
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager, suppress
+from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -370,6 +371,7 @@ def _create_fastapi_instance(config: Config) -> FastAPI:
     """
     return FastAPI(
         title="OpenHands Agent Server",
+        version=version("openhands-agent-server"),
         description=(
             "OpenHands Agent Server - REST/WebSocket interface for OpenHands AI Agent"
         ),

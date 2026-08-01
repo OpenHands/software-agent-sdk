@@ -70,7 +70,6 @@ Defined in `.github/workflows/integration-runner.yml`, this workflow runs integr
 **Triggers:**
 1. **Pull Request Labels**: When a PR is labeled with `integration-test` or `behavior-test`
 2. **Manual Trigger**: Via workflow dispatch with a required reason
-3. **Scheduled Runs**: Daily at 10:30 PM UTC (cron: `30 22 * * *`)
 
 **Test Coverage:** Runs across 5 LLM models (GPT-5.5, DeepSeek V4 Flash, MiniMax M2.7, Gemini 3.1 Pro, Claude Sonnet 4.6)
 

@@ -49,6 +49,7 @@ from openhands.sdk.event import (
     UserRejectObservation,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
+from openhands.sdk.event.error_classification import AGENT_OUTCOME
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
@@ -58,7 +59,12 @@ from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
 from openhands.sdk.marketplace.registry import MarketplaceRegistry
-from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config, dump_mcp_config
+from openhands.sdk.mcp.config import (
+    MCPServer,
+    coerce_mcp_config,
+    dump_mcp_config,
+    enabled_mcp_servers,
+)
 from openhands.sdk.mcp.utils import (
     DefaultMCPToolProvider,
     MCPToolProvider,
@@ -1247,6 +1253,10 @@ class LocalConversation(BaseConversation):
         *,
         on_tools_changed: ToolsChangedCallback | None = None,
     ) -> list[ToolDefinition]:
+        # Servers the user switched off stay in the settings map but must not
+        # be connected to. Filter before the emptiness check so an all-disabled
+        # config is a plain no-op rather than a zero-server MCP client.
+        mcp_config = enabled_mcp_servers(mcp_config)
         if not mcp_config:
             return []
         client = self._mcp_tool_provider.create_tools(
@@ -2492,6 +2502,7 @@ class LocalConversation(BaseConversation):
                     ),
                     tool_name=ae.tool_name,
                     tool_call_id=ae.tool_call_id,
+                    classification=AGENT_OUTCOME,
                 )
             )
 

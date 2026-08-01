@@ -243,8 +243,9 @@ class TerminalSession(TerminalSessionBase):
             self._cwd: str = metadata.working_dir
 
         logger.debug(
-            f"[Prev PS1 not matched: {get_content_before_last_match}] "
-            f"COMMAND OUTPUT: {terminal_content}"
+            "Parsed terminal output (previous_ps1_not_matched=%s, content_length=%s)",
+            get_content_before_last_match,
+            len(terminal_content),
         )
         # Extract the command output between the two PS1 prompts
         raw_command_output = self._combine_outputs_between_matches(
@@ -300,9 +301,10 @@ class TerminalSession(TerminalSessionBase):
         self.prev_status = TerminalCommandStatus.NO_CHANGE_TIMEOUT
         if len(ps1_matches) != 1:
             logger.warning(
-                f"Expected exactly one PS1 metadata block BEFORE the execution of a "
-                f"command, but got {len(ps1_matches)} PS1 metadata blocks:\n"
-                f"---\n{terminal_content!r}\n---"
+                "Expected exactly one PS1 metadata block before command execution, "
+                "but got %s (content_length=%s)",
+                len(ps1_matches),
+                len(terminal_content),
             )
         raw_command_output = self._combine_outputs_between_matches(
             terminal_content, ps1_matches
@@ -339,9 +341,10 @@ class TerminalSession(TerminalSessionBase):
         self.prev_status = TerminalCommandStatus.HARD_TIMEOUT
         if len(ps1_matches) != 1:
             logger.warning(
-                f"Expected exactly one PS1 metadata block BEFORE the execution of a "
-                f"command, but got {len(ps1_matches)} PS1 metadata blocks:\n"
-                f"---\n{terminal_content!r}\n---"
+                "Expected exactly one PS1 metadata block before command execution, "
+                "but got %s (content_length=%s)",
+                len(ps1_matches),
+                len(terminal_content),
             )
         raw_command_output = self._combine_outputs_between_matches(
             terminal_content, ps1_matches
@@ -396,7 +399,9 @@ class TerminalSession(TerminalSessionBase):
             combined_output += output_segment + "\n"
         # Add the content after the last PS1 prompt
         combined_output += terminal_content[ps1_matches[-1].end() + 1 :]
-        logger.debug(f"COMBINED OUTPUT: {combined_output}")
+        logger.debug(
+            "Combined terminal output (content_length=%s)", len(combined_output)
+        )
         return combined_output
 
     def execute(self, action: TerminalAction) -> TerminalObservation:
@@ -405,7 +410,11 @@ class TerminalSession(TerminalSessionBase):
             raise RuntimeError("Unified session is not initialized")
 
         # Strip the command of any leading/trailing whitespace
-        logger.debug(f"RECEIVED ACTION: {action}")
+        logger.debug(
+            "Received terminal action (is_input=%s, command_length=%s)",
+            action.is_input,
+            len(action.command),
+        )
         command = action.command.strip()
         is_input: bool = action.is_input
 
@@ -464,7 +473,10 @@ class TerminalSession(TerminalSessionBase):
         )
         initial_ps1_count = len(initial_ps1_matches)
         logger.debug(f"Initial PS1 count: {initial_ps1_count}")
-        logger.debug(f"INITIAL TERMINAL OUTPUT: {initial_terminal_output!r}")
+        logger.debug(
+            "Initial terminal output (content_length=%s)",
+            len(initial_terminal_output),
+        )
 
         start_time = time.time()
         last_change_time = start_time
@@ -498,7 +510,10 @@ class TerminalSession(TerminalSessionBase):
                 f"command is completed. By setting `is_input` to `true`, you can "
                 f"interact with the current process: {TIMEOUT_MESSAGE_TEMPLATE}]"
             )
-            logger.debug(f"PREVIOUS COMMAND OUTPUT: {raw_command_output}")
+            logger.debug(
+                "Previous command output (content_length=%s)",
+                len(raw_command_output),
+            )
             command_output = self._get_command_output(
                 command,
                 raw_command_output,
@@ -515,7 +530,6 @@ class TerminalSession(TerminalSessionBase):
                 exit_code=metadata.exit_code,
                 is_error=True,
             )
-            logger.debug(f"RETURNING OBSERVATION (previous-command): {obs}")
             return obs
 
         # Send actual command/inputs to the terminal
@@ -523,7 +537,9 @@ class TerminalSession(TerminalSessionBase):
         if command != "":
             is_special_key = self._is_special_key(command)
             if is_input:
-                logger.debug(f"SENDING INPUT TO RUNNING PROCESS: {command!r}")
+                logger.debug(
+                    "Sending input to running process (input_length=%s)", len(command)
+                )
                 self.terminal.send_keys(
                     command,
                     enter=not is_special_key,
@@ -533,7 +549,7 @@ class TerminalSession(TerminalSessionBase):
                 if not self.terminal.is_powershell():
                     # Only escape for bash terminals, not PowerShell
                     command = escape_bash_special_chars(command)
-                logger.debug(f"SENDING COMMAND: {command!r}")
+                logger.debug("Sending command (command_length=%s)", len(command))
                 self.terminal.send_keys(
                     command,
                     enter=not is_special_key,
@@ -548,10 +564,7 @@ class TerminalSession(TerminalSessionBase):
                 f"TERMINAL CONTENT GOT after {time.time() - _start_time:.2f} seconds"
             )
             logger.debug(
-                f"BEGIN OF TERMINAL CONTENT: {cur_terminal_output.split('\n')[:10]}"
-            )
-            logger.debug(
-                f"END OF TERMINAL CONTENT: {cur_terminal_output.split('\n')[-10:]}"
+                "Terminal content read (content_length=%s)", len(cur_terminal_output)
             )
             ps1_matches = CmdOutputMetadata.matches_ps1_metadata(cur_terminal_output)
             current_ps1_count = len(ps1_matches)
@@ -578,7 +591,6 @@ class TerminalSession(TerminalSessionBase):
                     terminal_content=cur_terminal_output,
                     ps1_matches=ps1_matches,
                 )
-                logger.debug(f"RETURNING OBSERVATION (completed): {obs}")
                 return obs
 
             # Timeout checks should only trigger if a new prompt hasn't appeared yet.
@@ -602,7 +614,6 @@ class TerminalSession(TerminalSessionBase):
                     terminal_content=cur_terminal_output,
                     ps1_matches=ps1_matches,
                 )
-                logger.debug(f"RETURNING OBSERVATION (nochange-timeout): {obs}")
                 return obs
 
             # 3) Execution timed out since the command has been running for too long
@@ -620,7 +631,6 @@ class TerminalSession(TerminalSessionBase):
                         ps1_matches=ps1_matches,
                         timeout=action.timeout,
                     )
-                    logger.debug(f"RETURNING OBSERVATION (hard-timeout): {obs}")
                     return obs
 
             # Sleep before next check

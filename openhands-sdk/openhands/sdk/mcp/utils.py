@@ -18,6 +18,7 @@ from openhands.sdk.mcp.config import (
     MCPOAuthAuthCredential,
     MCPOAuthAuthentication,
     MCPServer,
+    enabled_mcp_servers,
     to_fastmcp_mcp_config,
 )
 from openhands.sdk.mcp.exceptions import MCPTimeoutError
@@ -293,6 +294,14 @@ def create_mcp_tools(
     callers must ensure it is thread-safe (e.g. ``Agent.add_runtime_tools``).
     """
     mcp_config = _require_native_mcp_config(mcp_config)
+    requested = mcp_config
+    mcp_config = enabled_mcp_servers(mcp_config)
+    if requested and not mcp_config:
+        raise ValueError(
+            "All configured MCP servers are disabled: "
+            f"{', '.join(sorted(requested))}. Enable at least one, or skip "
+            "the call entirely."
+        )
     config = _prepare_mcp_config(
         mcp_config,
         mcp_oauth_token_storage=mcp_oauth_token_storage,
