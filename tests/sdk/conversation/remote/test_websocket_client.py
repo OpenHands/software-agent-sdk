@@ -282,7 +282,7 @@ def test_websocket_client_retries_after_retryable_connection_closed():
 
     async def no_sleep(delay):
         retry_delays.append(delay)
-        return None
+        return
 
     client._sleep_before_retry = no_sleep
 
