@@ -43,6 +43,10 @@ class TestACPProviderInfo:
         assert info.session_meta_key == "claudeCode"
         assert info.default_model == "opus[1m]"
         assert any(m.id == "opus[1m]" for m in info.available_models)
+        # Opus 5 GA: version-agnostic opus[1m] label + explicit pin for picker.
+        opus_1m = next(m for m in info.available_models if m.id == "opus[1m]")
+        assert "Opus 5" in opus_1m.label
+        assert any(m.id == "claude-opus-5" for m in info.available_models)
         # Pinned binary exposed by the agent-server image wrappers.
         assert info.binary_name == "claude-agent-acp"
         assert info.data_dir_env_var == "CLAUDE_CONFIG_DIR"
