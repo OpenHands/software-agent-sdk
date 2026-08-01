@@ -5,7 +5,73 @@
  * structured events for all conversation activities.
  */
 
-import { Message, MessageContent, Event } from '../types/base';
+import type {
+  AcpToolCallEvent as AgentServerAcpToolCallEvent,
+  ActionEvent as AgentServerActionEvent,
+  AgentErrorEvent as AgentServerAgentErrorEvent,
+  Condensation as AgentServerCondensationEvent,
+  CondensationRequest as AgentServerCondensationRequestEvent,
+  CondensationSummaryEvent as AgentServerCondensationSummaryEvent,
+  ConversationErrorEvent as AgentServerConversationErrorEvent,
+  ConversationStateUpdateEvent as AgentServerConversationStateUpdateEvent,
+  ErrorClassification as AgentServerErrorClassification,
+  Event as AgentServerEvent,
+  HookExecutionEvent as AgentServerHookExecutionEvent,
+  LlmCompletionLogEvent as AgentServerLlmCompletionLogEvent,
+  MessageEvent as AgentServerMessageEvent,
+  MessageToolCall as AgentServerMessageToolCall,
+  ObservationEvent as AgentServerObservationEvent,
+  PauseEvent as AgentServerPauseEvent,
+  SecurityRisk as AgentServerSecurityRisk,
+  StreamingDeltaEvent as AgentServerStreamingDeltaEvent,
+  SystemPromptEvent as AgentServerSystemPromptEvent,
+  TokenEvent as AgentServerTokenEvent,
+  ToolDefinition as AgentServerToolDefinition,
+  UserRejectObservation as AgentServerUserRejectObservation,
+} from '../generated/agent-server-schema';
+
+export type ACPToolCallEvent = AgentServerAcpToolCallEvent;
+export type ACPToolCallStatus = NonNullable<ACPToolCallEvent['status']>;
+export type ACPToolKind = NonNullable<ACPToolCallEvent['tool_kind']>;
+/**
+ * The local conversation implementation represents tool inputs as opaque JSON.
+ * Keep that client-side convenience while sourcing every other ActionEvent field
+ * from the Agent Server schema.
+ */
+export type ActionEvent = Omit<
+  AgentServerActionEvent,
+  'action' | 'llm_response_id' | 'thought' | 'tool_call'
+> & {
+  action: Record<string, unknown> | null;
+  llm_response_id?: EventID;
+  thought?: AgentServerActionEvent['thought'] | string;
+  tool_call?: AgentServerMessageToolCall;
+};
+export type AgentErrorEvent = AgentServerAgentErrorEvent;
+export type CondensationEvent = AgentServerCondensationEvent;
+export type CondensationRequestEvent = AgentServerCondensationRequestEvent;
+export type CondensationSummaryEvent = AgentServerCondensationSummaryEvent;
+export type ConversationErrorEvent = Omit<AgentServerConversationErrorEvent, 'source'> & {
+  source?: EventSource;
+};
+export type ConversationStateUpdateEvent = AgentServerConversationStateUpdateEvent;
+export type ErrorClassification = AgentServerErrorClassification;
+export type HookExecutionEvent = AgentServerHookExecutionEvent;
+export type HookExecutionEventType = NonNullable<HookExecutionEvent['hook_event_type']>;
+export type LLMCompletionLogEvent = AgentServerLlmCompletionLogEvent;
+export type MessageEvent = AgentServerMessageEvent;
+export type MessageToolCall = AgentServerMessageToolCall;
+/** Local conversations expose tool observations as opaque JSON values. */
+export type ObservationEvent = Omit<AgentServerObservationEvent, 'observation'> & {
+  observation: unknown;
+};
+export type PauseEvent = AgentServerPauseEvent;
+export type SecurityRisk = AgentServerSecurityRisk;
+export type StreamingDeltaEvent = AgentServerStreamingDeltaEvent;
+export type SystemPromptEvent = AgentServerSystemPromptEvent;
+export type TokenEvent = AgentServerTokenEvent;
+export type ToolDefinition = AgentServerToolDefinition;
+export type UserRejectObservation = AgentServerUserRejectObservation;
 
 /**
  * Event ID type - unique identifier for events
@@ -21,176 +87,16 @@ export type EventSource = 'agent' | 'user' | 'environment' | 'system' | 'hook';
  * Base interface for all rich conversation events.
  * Extends the minimal Event interface from types/base.ts.
  */
-export interface BaseEvent extends Event {
+export interface BaseEvent {
   /** Unique event identifier */
-  id: EventID;
+  id?: EventID;
   /** Event type/kind discriminator */
   kind: string;
   /** ISO timestamp when event was created */
-  timestamp: string;
+  timestamp?: string;
   /** Source of the event */
   source?: EventSource;
-}
-
-/**
- * Message event - represents a message in the conversation
- */
-export interface MessageEvent extends BaseEvent {
-  kind: 'MessageEvent';
-  /** The LLM message content */
-  llm_message: Message;
-  /** List of activated skills for this message */
-  activated_skills?: string[];
-  /** Optional sender identifier */
-  sender?: string;
-}
-
-/**
- * Action event - represents an action taken by the agent
- */
-export interface ActionEvent extends BaseEvent {
-  kind: 'ActionEvent';
-  /** The tool being called */
-  tool_name: string;
-  /** Tool call ID for correlation */
-  tool_call_id: string;
-  /** The action parameters/arguments */
-  action: Record<string, unknown>;
-  /** Agent's reasoning/thought for this action */
-  thought?: string;
-  /** LLM response ID that generated this action */
-  llm_response_id?: string;
-}
-
-/**
- * Observation event - result of an action
- */
-export interface ObservationEvent extends BaseEvent {
-  kind: 'ObservationEvent';
-  /** The tool that produced this observation */
-  tool_name: string;
-  /** Tool call ID for correlation with action */
-  tool_call_id: string;
-  /** The observation content/result */
-  observation: unknown;
-  /** ID of the action this observation corresponds to */
-  action_id: string;
-}
-
-/** Safe, provider-neutral semantics for an SDK failure. */
-export interface ErrorClassification {
-  kind:
-    | 'auth'
-    | 'quota'
-    | 'rate_limit'
-    | 'config'
-    | 'transient'
-    | 'agent_action'
-    | 'internal'
-    | 'unknown';
-  retryable: boolean;
-  user_action: 'none' | 'retry' | 'settings';
-  error_id?: string | null;
-}
-
-/**
- * Agent error event - error during agent execution (scaffold error, not tool result).
- * This IS sent to the LLM as a tool observation. Source is "agent".
- */
-export interface AgentErrorEvent extends BaseEvent {
-  kind: 'AgentErrorEvent';
-  /** The tool that caused the error */
-  tool_name: string;
-  /** Tool call ID for correlation */
-  tool_call_id: string;
-  /** Error message from the scaffold */
-  error: string;
-  classification?: ErrorClassification | null;
-}
-
-/**
- * System prompt event - system prompt sent to LLM
- */
-export interface SystemPromptEvent extends BaseEvent {
-  kind: 'SystemPromptEvent';
-  /** The system prompt content */
-  system_prompt: MessageContent;
-  /** Tools available to the agent */
-  tools: unknown[];
-}
-
-/**
- * Pause event - agent execution paused
- */
-export interface PauseEvent extends BaseEvent {
-  kind: 'PauseEvent';
-  /** Reason for pausing */
-  reason?: string;
-}
-
-/**
- * Condensation request event - request to condense conversation history
- */
-export interface CondensationRequestEvent extends BaseEvent {
-  kind: 'CondensationRequest';
-}
-
-/**
- * Condensation summary event - the LLM-generated summary injected after condensation.
- * This IS sent to the LLM as context (LLMConvertibleEvent).
- */
-export interface CondensationSummaryEvent extends BaseEvent {
-  kind: 'CondensationSummaryEvent';
-  /** The summary text of the condensed events */
-  summary: string;
-}
-
-/**
- * Condensation event - marks that conversation history was condensed.
- * Records which events were forgotten and optionally includes a summary.
- * NOT sent to the LLM directly (infrastructure event).
- */
-export interface CondensationEvent extends BaseEvent {
-  kind: 'Condensation';
-  /** IDs of events that were removed from context */
-  forgotten_event_ids: string[];
-  /** Summary of the forgotten events, if generated */
-  summary?: string | null;
-  /** Where to insert the summary in the view after removing forgotten events */
-  summary_offset?: number | null;
-  /** LLM response ID that triggered this condensation */
-  llm_response_id: string;
-}
-
-/**
- * Conversation state update event - state change notification
- */
-export interface ConversationStateUpdateEvent extends BaseEvent {
-  kind: 'ConversationStateUpdateEvent';
-  /** The state field that changed */
-  key: string;
-  /** New value of the field */
-  value: unknown;
-  /** Previous value (if available) */
-  previous_value?: unknown;
-}
-
-/**
- * User reject observation - action was rejected by the user or a PreToolUse hook.
- * Sent to the LLM as an observation.
- */
-export interface UserRejectObservation extends BaseEvent {
-  kind: 'UserRejectObservation';
-  /** The tool that was rejected */
-  tool_name: string;
-  /** Tool call ID for correlation with the action */
-  tool_call_id: string;
-  /** ID of the rejected action */
-  action_id: string;
-  /** Reason for rejection */
-  rejection_reason: string;
-  /** Source of the rejection */
-  rejection_source: 'user' | 'system';
+  parent_id?: EventID | null;
 }
 
 /**
@@ -219,18 +125,6 @@ export interface ConfirmationResponseEvent extends BaseEvent {
   accepted: boolean;
   /** User's reason for the decision */
   reason?: string;
-}
-
-/**
- * Token event - raw token IDs from VLLM for LLM interaction tracking.
- * Carries prompt and response token ID arrays, not streaming text tokens.
- */
-export interface TokenEvent extends BaseEvent {
-  kind: 'TokenEvent';
-  /** Token IDs from the prompt */
-  prompt_token_ids: number[];
-  /** Token IDs from the response */
-  response_token_ids: number[];
 }
 
 /**
@@ -272,102 +166,15 @@ export interface ThinkEvent extends BaseEvent {
 }
 
 /**
- * Conversation error event - a conversation-level failure NOT sent to the LLM.
- * Typically causes the run loop to move to ERROR state. Source is usually "environment".
- */
-export interface ConversationErrorEvent extends BaseEvent {
-  kind: 'ConversationErrorEvent';
-  /** Error code/type identifier */
-  code: string;
-  /** Detailed error message */
-  detail: string;
-  classification?: ErrorClassification | null;
-}
-
-/**
- * LLM completion log event - streams raw LLM completion logs from remote agents to clients.
- */
-export interface LLMCompletionLogEvent extends BaseEvent {
-  kind: 'LLMCompletionLogEvent';
-  /** Intended filename for the log, relative to the log directory */
-  filename: string;
-  /** JSON-encoded log data */
-  log_data: string;
-  /** Name of the model that produced the log */
-  model_name?: string;
-  /** LLM usage_id that produced this log */
-  usage_id?: string;
-}
-
-/**
- * Hook execution event type - matches Python SDK's HookEventType literal.
- */
-export type HookExecutionEventType =
-  'PreToolUse' | 'PostToolUse' | 'UserPromptSubmit' | 'SessionStart' | 'SessionEnd' | 'Stop';
-
-/**
- * Hook execution event - emitted when a hook is executed.
- *
- * Provides observability into hook execution, including which hook type
- * was triggered, the command that was run, and the result.
- */
-export interface HookExecutionEvent extends BaseEvent {
-  kind: 'HookExecutionEvent';
-  source: 'hook';
-  /** The type of hook event that triggered this execution */
-  hook_event_type: HookExecutionEventType;
-  /** The hook command that was executed */
-  hook_command: string;
-  /** Tool name for PreToolUse/PostToolUse hooks */
-  tool_name?: string | null;
-  /** Whether the hook executed successfully */
-  success: boolean;
-  /** Whether the hook blocked the operation (exit code 2 or deny) */
-  blocked: boolean;
-  /** Exit code from the hook command */
-  exit_code: number;
-  /** Standard output from the hook */
-  stdout: string;
-  /** Standard error from the hook */
-  stderr: string;
-  /** Reason provided by hook (for blocking) */
-  reason?: string | null;
-  /** Additional context injected by hook (e.g., for UserPromptSubmit) */
-  additional_context?: string | null;
-  /** Error message if hook execution failed */
-  error?: string | null;
-  /** ID of the action this hook is associated with (PreToolUse/PostToolUse) */
-  action_id?: string | null;
-  /** ID of the message this hook is associated with (UserPromptSubmit) */
-  message_id?: string | null;
-  /** The input data that was passed to the hook */
-  hook_input?: Record<string, unknown> | null;
-}
-
-/**
  * Union type of all conversation events
  */
 export type ConversationEvent =
-  | MessageEvent
-  | ActionEvent
-  | ObservationEvent
-  | AgentErrorEvent
-  | SystemPromptEvent
-  | PauseEvent
-  | CondensationRequestEvent
-  | CondensationSummaryEvent
-  | CondensationEvent
-  | ConversationStateUpdateEvent
-  | ConversationErrorEvent
-  | LLMCompletionLogEvent
-  | UserRejectObservation
+  | AgentServerEvent
   | ConfirmationRequestEvent
   | ConfirmationResponseEvent
-  | TokenEvent
   | StuckDetectionEvent
   | FinishEvent
-  | ThinkEvent
-  | HookExecutionEvent;
+  | ThinkEvent;
 
 /**
  * Type guard to check if an event is a MessageEvent

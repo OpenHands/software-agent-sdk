@@ -85,7 +85,9 @@ class LocalEventsList implements IEventsList {
   async addEvent(event: BaseEvent): Promise<void> {
     const index = this.events.length;
     this.events.push(event);
-    this.idToIndex.set(event.id, index);
+    if (event.id) {
+      this.idToIndex.set(event.id, index);
+    }
   }
 
   async getEvents(): Promise<BaseEvent[]> {
@@ -920,7 +922,7 @@ Provide a direct answer without using any tools.`;
       id: generateEventId(),
       kind: 'ConversationStateUpdateEvent',
       timestamp: new Date().toISOString(),
-      source: 'system',
+      source: 'environment',
       key: 'status',
       value: 'closed',
     };

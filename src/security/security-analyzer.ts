@@ -126,16 +126,17 @@ export class PatternBasedAnalyzer implements SecurityAnalyzer {
     const parts: string[] = [action.tool_name];
 
     if (action.action) {
+      const actionData = action.action as unknown as Record<string, unknown>;
       // For execute_command tool
-      if (typeof action.action === 'object' && 'command' in action.action) {
-        parts.push(String(action.action.command));
+      if ('command' in actionData) {
+        parts.push(String(actionData.command));
       }
       // For write_file tool
-      if (typeof action.action === 'object' && 'path' in action.action) {
-        parts.push(String(action.action.path));
+      if ('path' in actionData) {
+        parts.push(String(actionData.path));
       }
-      if (typeof action.action === 'object' && 'content' in action.action) {
-        parts.push(String(action.action.content));
+      if ('content' in actionData) {
+        parts.push(String(actionData.content));
       }
       // Generic: stringify the action
       parts.push(JSON.stringify(action.action));

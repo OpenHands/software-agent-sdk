@@ -29,7 +29,11 @@ function createMessageEvent(source: 'user' | 'agent', text: string): MessageEven
   };
 }
 
-function createActionEvent(toolName: string, command: string, thought?: string): ActionEvent {
+function createActionEvent(
+  toolName: string,
+  command: string,
+  thought?: string
+): ActionEvent & { id: string } {
   return {
     id: generateEventId(),
     kind: 'ActionEvent',
