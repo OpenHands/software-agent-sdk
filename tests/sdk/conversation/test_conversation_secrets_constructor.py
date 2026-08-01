@@ -1,6 +1,7 @@
 """Tests for Conversation constructor with secrets parameter."""
 
 import tempfile
+import uuid
 from unittest.mock import patch
 
 import pytest
@@ -157,45 +158,104 @@ def test_local_conversation_constructor_with_empty_secrets():
         assert env_vars == {}
 
 
-def test_update_secrets_persists_to_base_state():
+def test_update_secrets_registry_survives_restart_without_cipher():
     """`update_secrets` must persist the registry immediately.
 
     It mutated the registry in place, which does not touch any state *field* and
     so never triggered autosave — the secret was only written if some later,
     unrelated field change happened to save the state.
+
+    Asserted via a real restart round trip. Without a cipher the registry
+    *entry* survives but the value is redacted on save (documented behavior:
+    the SDK warns to provide a cipher); the with-cipher round trip is the
+    next test.
     """
-    from openhands.sdk.conversation.persistence_const import BASE_STATE
-
     agent = create_test_agent()
-    with tempfile.TemporaryDirectory() as tmpdir:
-        conv = Conversation(agent=agent, workspace=tmpdir, persistence_dir=tmpdir)
-        assert isinstance(conv, LocalConversation)
-
-        conv.update_secrets({"MY_TOKEN": "tok"})
-
-        # Persisted immediately, with no intervening unrelated state mutation.
-        persisted = conv.state._fs.read(BASE_STATE)
-        assert "MY_TOKEN" in persisted
-        assert "MY_TOKEN" in conv.state.secret_registry.secret_sources
-
-
-def test_constructor_secrets_persist_to_base_state():
-    """Secrets seeded via the constructor route through `update_secrets`, so they
-    must be persisted too (not just held in memory)."""
-    from openhands.sdk.conversation.persistence_const import BASE_STATE
-
-    agent = create_test_agent()
+    conv_id = uuid.uuid4()
     with tempfile.TemporaryDirectory() as tmpdir:
         conv = Conversation(
             agent=agent,
             workspace=tmpdir,
             persistence_dir=tmpdir,
+            conversation_id=conv_id,
+        )
+        assert isinstance(conv, LocalConversation)
+        conv.update_secrets({"MY_TOKEN": "super-secret-value-12345"})
+        conv.close()
+
+        reopened = Conversation(
+            agent=agent,
+            workspace=tmpdir,
+            persistence_dir=tmpdir,
+            conversation_id=conv_id,
+        )
+        assert isinstance(reopened, LocalConversation)
+        sources = reopened.state.secret_registry.secret_sources
+        assert "MY_TOKEN" in sources
+        # No cipher: the value itself is redacted on save and lost on restore.
+        assert sources["MY_TOKEN"].get_value() is None
+        reopened.close()
+
+
+def test_update_secrets_value_round_trips_with_cipher():
+    """With a cipher configured, the secret *value* survives a restart.
+
+    ``cipher`` is a ``LocalConversation`` parameter (not exposed through the
+    ``Conversation`` factory), so construct the impl directly.
+    """
+    from openhands.sdk.utils.cipher import Cipher
+
+    agent = create_test_agent()
+    conv_id = uuid.uuid4()
+    cipher = Cipher(secret_key="test-encryption-key")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        conv = LocalConversation(
+            agent=agent,
+            workspace=tmpdir,
+            persistence_dir=tmpdir,
+            conversation_id=conv_id,
+            cipher=cipher,
+        )
+        conv.update_secrets({"MY_TOKEN": "super-secret-value-12345"})
+        conv.close()
+
+        reopened = LocalConversation(
+            agent=agent,
+            workspace=tmpdir,
+            persistence_dir=tmpdir,
+            conversation_id=conv_id,
+            cipher=cipher,
+        )
+        sources = reopened.state.secret_registry.secret_sources
+        assert sources["MY_TOKEN"].get_value() == "super-secret-value-12345"
+        reopened.close()
+
+
+def test_constructor_secrets_survive_restart():
+    """Secrets seeded via the constructor route through `update_secrets`, so
+    they must be persisted too (not just held in memory)."""
+    agent = create_test_agent()
+    conv_id = uuid.uuid4()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        conv = Conversation(
+            agent=agent,
+            workspace=tmpdir,
+            persistence_dir=tmpdir,
+            conversation_id=conv_id,
             secrets={"SEED_TOKEN": "seed"},
         )
         assert isinstance(conv, LocalConversation)
+        conv.close()
 
-        persisted = conv.state._fs.read(BASE_STATE)
-        assert "SEED_TOKEN" in persisted
+        reopened = Conversation(
+            agent=agent,
+            workspace=tmpdir,
+            persistence_dir=tmpdir,
+            conversation_id=conv_id,
+        )
+        assert isinstance(reopened, LocalConversation)
+        assert "SEED_TOKEN" in reopened.state.secret_registry.secret_sources
+        reopened.close()
 
 
 @pytest.mark.parametrize("api_key", [None, "test-api-key"])

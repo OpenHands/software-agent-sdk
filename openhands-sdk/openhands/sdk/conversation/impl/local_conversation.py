@@ -2582,11 +2582,8 @@ class LocalConversation(BaseConversation):
                      when a command references the secret key.
         """
         # Reassign a modified copy so ConversationState.__setattr__ fires the
-        # autosave. An in-place `secret_registry.update_secrets(...)` mutates a
-        # nested object without touching any state *field*, so it never triggers
-        # persistence: secrets added here (or seeded through the constructor,
-        # which also routes through this method) would be dropped on restart
-        # unless some unrelated later field change happened to save the state.
+        # autosave; an in-place registry mutation never touches a state field
+        # and so never persists.
         with self._state:
             registry = self._state.secret_registry.model_copy(deep=True)
             registry.update_secrets(secrets)
