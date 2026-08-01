@@ -42,11 +42,11 @@ class TestACPProviderInfo:
         assert info.supports_runtime_model_switch is True
         assert info.session_meta_key == "claudeCode"
         assert info.default_model == "opus[1m]"
-        assert any(m.id == "opus[1m]" for m in info.available_models)
-        # Opus 5 GA: version-agnostic opus[1m] label + explicit pin for picker.
-        opus_1m = next(m for m in info.available_models if m.id == "opus[1m]")
-        assert "Opus 5" in opus_1m.label
-        assert any(m.id == "claude-opus-5" for m in info.available_models)
+        models = {model.id: model.label for model in info.available_models}
+        assert models["opus[1m]"] == "Claude Opus (1M)"
+        assert models["claude-opus-5"] == "Claude Opus 5"
+        assert models["sonnet"] == "Claude Sonnet"
+        assert models["haiku"] == "Claude Haiku"
         # Pinned binary exposed by the agent-server image wrappers.
         assert info.binary_name == "claude-agent-acp"
         assert info.data_dir_env_var == "CLAUDE_CONFIG_DIR"

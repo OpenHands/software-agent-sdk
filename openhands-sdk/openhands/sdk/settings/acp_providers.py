@@ -297,21 +297,19 @@ class ACPProviderInfo:
 # select claude-agent-acp reports at ``session/new`` (the short aliases the CLI's
 # own ``/model`` menu offers, switched via ``set_config_option``).
 # ``opus[1m]`` is the SDK-documented version-agnostic 1M-context alias and the
-# CLI's own default (``currentValue``); as of Claude Code ≥ 2.1.219 / Opus 5 GA
-# it resolves to Opus 5 on the Anthropic API (previously Opus 4.8). ``default``
-# is the CLI's recommended tier for the account. ``claude-opus-5`` is the
-# explicit full model pin for users who want to force Opus 5 rather than track
-# the version-agnostic alias. The ``/model`` menu is dynamic/account-dependent
-# and the CLI validates ``set_config_option(model)`` against the live select —
-# it rejects an absent id (e.g. ``sonnet`` on accounts without it), so these are
-# pre-session suggestions, not ground truth; a rejected id degrades to the
-# server default.
+# CLI's own default (``currentValue``); ``default`` is the CLI's recommended tier
+# for the account. ``claude-opus-5`` is the explicit full model pin for users who
+# want Opus 5 rather than the provider-dependent alias. The ``/model`` menu is
+# dynamic/account-dependent and the CLI validates ``set_config_option(model)``
+# against the live select — it rejects an absent id (e.g. ``sonnet`` on accounts
+# without it), so these are pre-session suggestions, not ground truth; a rejected
+# id degrades to the server default.
 _CLAUDE_MODELS: tuple[ACPModelOption, ...] = (
     ACPModelOption(id="default", label="Default (recommended)"),
-    ACPModelOption(id="opus[1m]", label="Claude Opus 5 (1M)"),
-    ACPModelOption(id="claude-opus-5", label="Claude Opus 5 (pinned)"),
-    ACPModelOption(id="sonnet", label="Claude Sonnet 5"),
-    ACPModelOption(id="haiku", label="Claude Haiku 4.5"),
+    ACPModelOption(id="opus[1m]", label="Claude Opus (1M)"),
+    ACPModelOption(id="claude-opus-5", label="Claude Opus 5"),
+    ACPModelOption(id="sonnet", label="Claude Sonnet"),
+    ACPModelOption(id="haiku", label="Claude Haiku"),
 )
 
 # Bare preset ids advertised by the Codex app server through
