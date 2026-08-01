@@ -25,21 +25,32 @@ from openhands.tools.utils import (
 logger = get_logger(__name__)
 
 
-def _expand_brace_pattern(pattern: str) -> list[str]:
-    """Expand shell-style brace alternation into concrete glob patterns.
+# Brace groups multiply: sixteen ``{a,b}`` groups already expand to 65,536
+# patterns, and ``include`` is agent/user-controlled tool input. Cap the number
+# of generated patterns so a malformed or adversarial filter fails cleanly
+# instead of exhausting the process. Legitimate filters are tiny (``*.{ts,tsx}``
+# is 2; three 4-way groups are 64).
+MAX_BRACE_EXPANSIONS = 64
 
-    ``fnmatch`` treats ``{``, ``}`` and ``,`` literally, but the tool documents
-    ``*.{ts,tsx}`` as a supported ``include`` example and ripgrep's ``-g`` flag
-    honors it, so the post-filter must understand it too or brace includes
-    silently match nothing. ``"*.{ts,tsx}"`` expands to ``["*.ts", "*.tsx"]``.
 
-    Handles multiple and nested groups via recursion. Returns ``[pattern]``
-    unchanged when there is no balanced, comma-bearing brace group (mirroring
-    the shell, which leaves ``{abc}`` literal).
+class BraceExpansionBudgetError(ValueError):
+    """Raised when brace alternation would expand past ``MAX_BRACE_EXPANSIONS``."""
+
+    def __init__(self, pattern: str) -> None:
+        super().__init__(
+            f"Include pattern '{pattern}' expands to more than "
+            f"{MAX_BRACE_EXPANSIONS} glob patterns; simplify the brace groups."
+        )
+
+
+def _split_first_brace_group(pattern: str) -> tuple[str, list[str], str] | None:
+    """Return ``(prefix, options, suffix)`` for the first balanced,
+    comma-bearing brace group, or ``None`` when the pattern has no such group
+    (mirroring the shell, which leaves ``{abc}`` and unbalanced ``{`` literal).
     """
     start = pattern.find("{")
     if start == -1:
-        return [pattern]
+        return None
 
     depth = 0
     end = -1
@@ -52,7 +63,7 @@ def _expand_brace_pattern(pattern: str) -> list[str]:
                 end = i
                 break
     if end == -1:  # unbalanced "{": treat literally
-        return [pattern]
+        return None
 
     # Split the group body on top-level commas (commas inside nested braces
     # belong to the inner group, not this one).
@@ -72,12 +83,40 @@ def _expand_brace_pattern(pattern: str) -> list[str]:
     options.append("".join(current))
 
     if len(options) == 1:  # no alternation, e.g. "{abc}" — leave literal
-        return [pattern]
+        return None
 
-    prefix, suffix = pattern[:start], pattern[end + 1 :]
+    return pattern[:start], options, pattern[end + 1 :]
+
+
+def _expand_brace_pattern(pattern: str) -> list[str]:
+    """Expand shell-style brace alternation into concrete glob patterns.
+
+    ``fnmatch`` treats ``{``, ``}`` and ``,`` literally, but the tool documents
+    ``*.{ts,tsx}`` as a supported ``include`` example and ripgrep's ``-g`` flag
+    honors it, so the post-filter must understand it too or brace includes
+    silently match nothing. ``"*.{ts,tsx}"`` expands to ``["*.ts", "*.tsx"]``.
+
+    Handles multiple and nested groups. Returns ``[pattern]`` unchanged when
+    there is no balanced, comma-bearing brace group.
+
+    Raises:
+        BraceExpansionBudgetError: if the pattern would expand to more than
+            ``MAX_BRACE_EXPANSIONS`` patterns. The bound is enforced while
+            expanding, before the full product is ever materialized.
+    """
     expanded: list[str] = []
-    for option in options:
-        expanded.extend(_expand_brace_pattern(prefix + option + suffix))
+    pending: list[str] = [pattern]
+    while pending:
+        candidate = pending.pop(0)
+        group = _split_first_brace_group(candidate)
+        if group is None:
+            expanded.append(candidate)
+        else:
+            prefix, options, suffix = group
+            # Prepend to preserve depth-first (shell) expansion order.
+            pending = [prefix + opt + suffix for opt in options] + pending
+        if len(expanded) + len(pending) > MAX_BRACE_EXPANSIONS:
+            raise BraceExpansionBudgetError(pattern)
     return expanded
 
 
@@ -144,6 +183,22 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
                     include_pattern=action.include,
                     is_error=True,
                 )
+
+            # Validate the include filter's expansion budget up front so an
+            # oversized brace product fails cleanly before any search work
+            # (the post-filter re-expands it per matched file).
+            if action.include:
+                try:
+                    _expand_brace_pattern(action.include)
+                except BraceExpansionBudgetError as e:
+                    return GrepObservation.from_text(
+                        text=str(e),
+                        matches=[],
+                        pattern=action.pattern,
+                        search_path=str(search_path),
+                        include_pattern=action.include,
+                        is_error=True,
+                    )
 
             if self._search_backend == "ripgrep":
                 return self._execute_with_ripgrep(action, search_path)

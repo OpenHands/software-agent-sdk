@@ -14,7 +14,12 @@ import pytest
 
 import openhands.tools.grep.impl as grep_impl
 from openhands.tools.grep import GrepAction
-from openhands.tools.grep.impl import GrepExecutor, _expand_brace_pattern
+from openhands.tools.grep.impl import (
+    MAX_BRACE_EXPANSIONS,
+    BraceExpansionBudgetError,
+    GrepExecutor,
+    _expand_brace_pattern,
+)
 from openhands.tools.utils import _check_grep_available
 
 
@@ -124,6 +129,41 @@ def test_grep_executor_include_filter():
 )
 def test_expand_brace_pattern(pattern, expected):
     assert _expand_brace_pattern(pattern) == expected
+
+
+def test_expand_brace_pattern_budget_enforced_before_materialization():
+    """Sixteen 2-way groups would be 65,536 patterns; the expander must fail
+    fast instead of allocating the Cartesian product."""
+    pattern = "{a,b}" * 16
+    with pytest.raises(BraceExpansionBudgetError):
+        _expand_brace_pattern(pattern)
+
+
+def test_expand_brace_pattern_budget_boundary():
+    """Exactly MAX_BRACE_EXPANSIONS patterns is allowed; one more group over
+    the budget is rejected."""
+    at_budget = "{a,b,c,d}" * 3  # 4^3 = 64 == MAX_BRACE_EXPANSIONS
+    assert len(_expand_brace_pattern(at_budget)) == MAX_BRACE_EXPANSIONS
+
+    over_budget = "{a,b}" + at_budget  # 128
+    with pytest.raises(BraceExpansionBudgetError):
+        _expand_brace_pattern(over_budget)
+
+
+def test_grep_executor_rejects_oversized_include_expansion():
+    """An over-budget include filter returns a clean error observation instead
+    of hanging the executor on an exponential expansion."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        (Path(temp_dir) / "a.ts").write_text("logError('x')")
+
+        executor = GrepExecutor(working_dir=temp_dir)
+        observation = executor(
+            GrepAction(pattern="logError", include="{a,b}" * 16 + "*.ts")
+        )
+
+        assert observation.is_error is True
+        assert "simplify the brace groups" in observation.text
+        assert observation.matches == []
 
 
 def test_grep_executor_include_brace_expansion():
