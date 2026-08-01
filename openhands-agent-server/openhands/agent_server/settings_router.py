@@ -10,6 +10,7 @@ from openhands.agent_server._secrets_exposure import (
     get_cipher,
     get_config,
     parse_expose_secrets_header,
+    store_errors,
     translate_missing_cipher,
 )
 from openhands.agent_server.persistence import (
@@ -20,7 +21,6 @@ from openhands.agent_server.persistence import (
     get_settings_store,
 )
 from openhands.agent_server.persistence.models import SettingsUpdatePayload
-from openhands.agent_server.profiles_router import _store_errors
 from openhands.agent_server.telemetry import notify_misc_settings_changed
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer
@@ -237,7 +237,7 @@ def _resolve_active_profile_llm(
     request: Request, update_data: SettingsUpdatePayload
 ) -> SettingsUpdatePayload:
     """Fold the named profile's LLM into ``agent_settings_diff`` unless the
-    caller already gave one explicitly. Mirrors ``/activate``. See #4314."""
+    caller already gave one explicitly. Mirrors ``/activate``."""
     profile_name = update_data.get("active_profile")
     agent_diff = update_data.get("agent_settings_diff")
     explicit_llm_diff = isinstance(agent_diff, dict) and "llm" in agent_diff
@@ -247,7 +247,7 @@ def _resolve_active_profile_llm(
     cipher = get_cipher(request)
     profile_store = get_llm_profile_store()
     try:
-        with _store_errors():
+        with store_errors():
             llm = profile_store.load(profile_name, cipher=cipher)
     except FileNotFoundError:
         raise HTTPException(

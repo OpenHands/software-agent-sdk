@@ -711,6 +711,32 @@ def test_patch_settings_active_profile_applies_llm(client_with_settings):
     assert refetch["agent_settings"]["llm"]["model"] == "claude-haiku"
 
 
+def test_patch_settings_active_profile_applies_encrypted_api_key(
+    client_with_settings, secret_key
+):
+    """Applying a profile carries its at-rest-encrypted api_key through PATCH."""
+    cipher = Cipher(secret_key)
+    get_llm_profile_store().save(
+        "secure-profile",
+        LLM(model="claude-haiku", api_key=SecretStr("sk-secret")),
+        include_secrets=True,
+        cipher=cipher,
+    )
+
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={"active_profile": "secure-profile"},
+    )
+    assert response.status_code == 200
+
+    exposed = client_with_settings.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()
+    assert exposed["agent_settings"]["llm"]["model"] == "claude-haiku"
+    assert exposed["agent_settings"]["llm"]["api_key"] == "sk-secret"
+    assert exposed["llm_api_key_is_set"] is True
+
+
 def test_patch_settings_switching_active_profile_updates_llm(client_with_settings):
     """Switching active_profile re-applies the new profile's LLM."""
     get_llm_profile_store().save("profile-a", LLM(model="model-a"))
