@@ -303,6 +303,7 @@ def _fetch_pypi_project_metadata(distribution: str) -> dict[str, Any]:
 
 
 def get_pypi_baseline_version(distribution: str, current: str) -> str | None:
+    """Return the newest published version strictly older than ``current``."""
     meta = _fetch_pypi_project_metadata(distribution)
     releases = meta.get("releases")
     if not isinstance(releases, dict):
@@ -312,9 +313,6 @@ def get_pypi_baseline_version(distribution: str, current: str) -> str | None:
     release_versions = list(releases.keys())
     if not release_versions:
         return None
-
-    if current in release_versions:
-        return current
 
     current_parsed = _parse_version(current)
     older = [

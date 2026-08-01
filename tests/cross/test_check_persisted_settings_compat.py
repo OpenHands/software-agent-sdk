@@ -229,7 +229,7 @@ def test_validate_fixture_cases_checks_expected_sentinel_values() -> None:
         )
 
 
-def test_get_pypi_baseline_version_prefers_current_or_previous(monkeypatch) -> None:
+def test_get_pypi_baseline_version_uses_previous_release(monkeypatch) -> None:
     _mock_pypi_releases(
         monkeypatch,
         {
@@ -238,7 +238,7 @@ def test_get_pypi_baseline_version_prefers_current_or_previous(monkeypatch) -> N
         },
     )
 
-    assert get_pypi_baseline_version("openhands-sdk", "1.1.0") == "1.1.0"
+    assert get_pypi_baseline_version("openhands-sdk", "1.1.0") == "1.0.0"
     assert get_pypi_baseline_version("openhands-sdk", "1.2.0") == "1.1.0"
 
 
