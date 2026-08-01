@@ -230,3 +230,44 @@ def test_thinking_budget_preserved_when_no_clamp_needed():
 
     assert out["max_tokens"] == 64_000
     assert out["thinking"]["budget_tokens"] == 63_999
+
+
+def test_thinking_dropped_when_no_legal_budget_fits():
+    """Near-exhausted window: the clamped budget cannot fit any legal thinking
+    budget (Anthropic requires ``1024 <= budget_tokens < max_tokens``), so the
+    thinking block must be dropped rather than sent one token short.
+
+    With 199.5k input the clamp lands on the floor of 1024, and
+    ``budget_tokens = 1023`` would swap the "budget >= max_tokens" 400 for a
+    "budget < 1024" 400.
+    """
+    llm = _make_llm("bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+    call_kwargs = {
+        "max_tokens": 64_000,
+        "thinking": {"type": "enabled", "budget_tokens": 63_999},
+    }
+
+    with patch("openhands.sdk.llm.llm.token_counter", return_value=199_500):
+        out = llm._clamp_max_tokens_for_joint_budget(call_kwargs, [], [])
+
+    assert out["max_tokens"] == JOINT_BUDGET_MIN_OUTPUT_TOKENS
+    assert "thinking" not in out
+    # The caller's kwargs must not be mutated.
+    assert call_kwargs["thinking"] == {"type": "enabled", "budget_tokens": 63_999}
+
+
+def test_thinking_kept_at_smallest_legal_budget():
+    """Boundary: a clamped budget of 1025 still fits the minimum legal
+    thinking budget of exactly 1024, so thinking survives."""
+    llm = _make_llm("bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+    call_kwargs = {
+        "max_tokens": 64_000,
+        "thinking": {"type": "enabled", "budget_tokens": 63_999},
+    }
+
+    # headroom = 200_000 - 198_719 - 256 = 1_025 -> clamped = 1_025
+    with patch("openhands.sdk.llm.llm.token_counter", return_value=198_719):
+        out = llm._clamp_max_tokens_for_joint_budget(call_kwargs, [], [])
+
+    assert out["max_tokens"] == 1_025
+    assert out["thinking"]["budget_tokens"] == 1_024
