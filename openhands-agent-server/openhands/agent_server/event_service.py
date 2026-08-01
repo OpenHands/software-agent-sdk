@@ -65,6 +65,7 @@ from openhands.sdk.event import (
     StreamingDeltaEvent,
 )
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
@@ -1115,6 +1116,9 @@ class EventService:
                             "A restart occurred while this tool was in progress. "
                             "This may indicate a fatal memory error or system crash. "
                             "The tool execution was interrupted and did not complete."
+                        ),
+                        classification=ErrorClassification(
+                            kind=FailureKind.INTERNAL, retryable=False
                         ),
                     )
                     self._conversation._on_event(error_event)
