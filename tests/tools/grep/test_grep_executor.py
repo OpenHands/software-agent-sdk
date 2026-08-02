@@ -123,6 +123,16 @@ def test_grep_executor_include_filter():
         ("*.{ts,tsx}", ["*.ts", "*.tsx"]),
         ("{a,b}.{js,ts}", ["a.js", "a.ts", "b.js", "b.ts"]),
         ("a{,_test}.py", ["a.py", "a_test.py"]),
+        (
+            "x{literal}*.{ts,tsx}",
+            ["x{literal}*.ts", "x{literal}*.tsx"],
+        ),
+        (
+            "x*.{ts,tsx}{literal}",
+            ["x*.ts{literal}", "x*.tsx{literal}"],
+        ),
+        ("x{{a,b}}", ["x{a}", "x{b}"]),
+        ("{a,{b,c}}", ["a", "b", "c"]),
         ("{abc}", ["{abc}"]),  # no comma: left literal, like the shell
         ("*.{ts", ["*.{ts"]),  # unbalanced brace: left literal
     ],
@@ -137,6 +147,43 @@ def test_expand_brace_pattern_budget_enforced_before_materialization():
     pattern = "{a,b}" * 16
     with pytest.raises(BraceExpansionBudgetError):
         _expand_brace_pattern(pattern)
+
+
+def test_expand_brace_pattern_rejects_single_wide_group():
+    options = [f"option{i}" for i in range(MAX_BRACE_EXPANSIONS + 1)]
+    pattern = "{" + ",".join(options) + "}"
+
+    with pytest.raises(BraceExpansionBudgetError):
+        _expand_brace_pattern(pattern)
+
+
+def test_expand_brace_pattern_leaves_wide_unmatched_group_literal():
+    unmatched_suffix = "x{" + "," * MAX_BRACE_EXPANSIONS
+
+    assert _expand_brace_pattern(unmatched_suffix) == [unmatched_suffix]
+    assert _expand_brace_pattern("{a,b}" + unmatched_suffix) == [
+        "a" + unmatched_suffix,
+        "b" + unmatched_suffix,
+    ]
+
+
+def test_expand_brace_pattern_checks_budget_before_candidate_build(monkeypatch):
+    class CandidateBuildGuard(str):
+        def __add__(self, other):
+            raise AssertionError("candidate strings were built before the budget check")
+
+    monkeypatch.setattr(
+        grep_impl,
+        "_split_first_brace_group",
+        lambda _pattern: (
+            CandidateBuildGuard(""),
+            ["option"] * (MAX_BRACE_EXPANSIONS + 1),
+            "",
+        ),
+    )
+
+    with pytest.raises(BraceExpansionBudgetError):
+        _expand_brace_pattern("{oversized}")
 
 
 def test_expand_brace_pattern_budget_boundary():
@@ -193,6 +240,52 @@ def test_grep_executor_include_brace_expansion_python_backend():
 
         assert observation.is_error is False
         assert sorted(Path(m).name for m in observation.matches) == ["a.ts", "b.tsx"]
+
+
+@pytest.mark.parametrize("backend", ["ripgrep", "grep", "python"])
+@pytest.mark.parametrize(
+    "include_pattern,expected_names",
+    [
+        (
+            "x{literal}*.{ts,tsx}",
+            ["x{literal}a.ts", "x{literal}b.tsx"],
+        ),
+        (
+            "x*.{ts,tsx}{literal}",
+            ["xa.ts{literal}", "xb.tsx{literal}"],
+        ),
+        ("{!foo,bar}", ["!foo", "bar"]),
+    ],
+)
+def test_grep_executor_brace_expansion_consistent_across_backends(
+    backend, include_pattern, expected_names
+):
+    if backend == "ripgrep" and not grep_impl._check_ripgrep_available():
+        pytest.skip("ripgrep is not available")
+    if backend == "grep" and not _check_grep_available():
+        pytest.skip("system grep is not available")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        for filename in [
+            "x{literal}a.ts",
+            "x{literal}b.tsx",
+            "xa.ts{literal}",
+            "xb.tsx{literal}",
+            "!foo",
+            "bar",
+            "foo",
+            "noise.py",
+        ]:
+            (Path(temp_dir) / filename).write_text("findMe")
+
+        executor = GrepExecutor(working_dir=temp_dir)
+        executor._search_backend = backend
+        observation = executor(GrepAction(pattern="findMe", include=include_pattern))
+
+        assert observation.is_error is False
+        assert (
+            sorted(Path(match).name for match in observation.matches) == expected_names
+        )
 
 
 def test_grep_executor_custom_path():

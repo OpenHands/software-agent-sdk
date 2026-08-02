@@ -44,46 +44,46 @@ class BraceExpansionBudgetError(ValueError):
 
 
 def _split_first_brace_group(pattern: str) -> tuple[str, list[str], str] | None:
-    """Return ``(prefix, options, suffix)`` for the first balanced,
-    comma-bearing brace group, or ``None`` when the pattern has no such group
-    (mirroring the shell, which leaves ``{abc}`` and unbalanced ``{`` literal).
+    """Return ``(prefix, options, suffix)`` for the leftmost expandable group.
+
+    A balanced group without a top-level comma stays literal but does not hide
+    an expandable nested or later group. An unmatched opening leaves the rest
+    of the pattern unchanged.
     """
-    start = pattern.find("{")
-    if start == -1:
-        return None
+    stack: list[tuple[int, list[int], int]] = []
+    first_group: tuple[int, int, list[int], int] | None = None
 
-    depth = 0
-    end = -1
-    for i in range(start, len(pattern)):
-        if pattern[i] == "{":
-            depth += 1
-        elif pattern[i] == "}":
-            depth -= 1
-            if depth == 0:
-                end = i
-                break
-    if end == -1:  # unbalanced "{": treat literally
-        return None
-
-    # Split the group body on top-level commas (commas inside nested braces
-    # belong to the inner group, not this one).
-    options: list[str] = []
-    current: list[str] = []
-    depth = 0
-    for ch in pattern[start + 1 : end]:
+    for i, ch in enumerate(pattern):
         if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-        if ch == "," and depth == 0:
-            options.append("".join(current))
-            current = []
-        else:
-            current.append(ch)
-    options.append("".join(current))
+            stack.append((i, [], 0))
+        elif ch == "," and stack:
+            # A comma belongs to the innermost open group, so commas in nested
+            # groups are not mistaken for top-level separators of their parent.
+            start, comma_positions, comma_count = stack[-1]
+            if comma_count < MAX_BRACE_EXPANSIONS - 1:
+                comma_positions.append(i)
+            stack[-1] = (start, comma_positions, comma_count + 1)
+        elif ch == "}" and stack:
+            start, commas, comma_count = stack.pop()
+            if comma_count and (first_group is None or start < first_group[0]):
+                first_group = (start, i, commas, comma_count)
 
-    if len(options) == 1:  # no alternation, e.g. "{abc}" — leave literal
+    if first_group is None:
         return None
+    if stack and stack[0][0] < first_group[0]:
+        # Preserve the existing literal treatment: once an unmatched opening
+        # appears, following text is not parsed as a separate group.
+        return None
+
+    start, end, commas, comma_count = first_group
+    if comma_count >= MAX_BRACE_EXPANSIONS:
+        raise BraceExpansionBudgetError(pattern)
+    options: list[str] = []
+    option_start = start + 1
+    for comma in commas:
+        options.append(pattern[option_start:comma])
+        option_start = comma + 1
+    options.append(pattern[option_start:end])
 
     return pattern[:start], options, pattern[end + 1 :]
 
@@ -113,10 +113,11 @@ def _expand_brace_pattern(pattern: str) -> list[str]:
             expanded.append(candidate)
         else:
             prefix, options, suffix = group
+            projected_count = len(expanded) + len(pending) + len(options)
+            if projected_count > MAX_BRACE_EXPANSIONS:
+                raise BraceExpansionBudgetError(pattern)
             # Prepend to preserve depth-first (shell) expansion order.
             pending = [prefix + opt + suffix for opt in options] + pending
-        if len(expanded) + len(pending) > MAX_BRACE_EXPANSIONS:
-            raise BraceExpansionBudgetError(pattern)
     return expanded
 
 
@@ -350,7 +351,13 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
             "--sortr=modified",
         ]
         if action.include:
-            cmd.extend(["-g", action.include])
+            # Use the same bounded expansion as the post-filter. Any braces
+            # left afterward are literal and must be escaped for rg's globset.
+            for include_pattern in _expand_brace_pattern(action.include):
+                rg_pattern = include_pattern.replace("{", r"\{").replace("}", r"\}")
+                if rg_pattern.startswith("!"):
+                    rg_pattern = "\\" + rg_pattern
+                cmd.extend(["-g", rg_pattern])
 
         result = subprocess.run(
             cmd,
