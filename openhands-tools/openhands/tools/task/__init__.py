@@ -24,12 +24,26 @@ from openhands.tools.task.definition import (
     TaskToolSet,
 )
 from openhands.tools.task.impl import TaskExecutor
+from openhands.tools.task.scope import (
+    TaskScope,
+    TaskScopeAnalysis,
+    TaskScopeConflict,
+    TaskScopeConflictKind,
+    TaskScopeDecision,
+    analyze_task_scopes,
+)
 
 
 __all__ = [
     "TaskAction",
     "TaskExecutor",
     "TaskObservation",
+    "TaskScope",
+    "TaskScopeAnalysis",
+    "TaskScopeConflict",
+    "TaskScopeConflictKind",
+    "TaskScopeDecision",
     "TaskTool",
     "TaskToolSet",
+    "analyze_task_scopes",
 ]
