@@ -182,6 +182,7 @@ def generate_report(
     output_records = _count_jsonl_lines(processed_file)
 
     validation = _read_json_object(log_path / "validation.json")
+    scenario_metrics = _read_json_object(log_path / "scenario_metrics.json")
     runtime_metadata = _read_json_object(log_path / "runtime_metadata.json")
     checkpoint = _read_json_object(log_path / "checkpoint.json")
     if checkpoint is None:
@@ -253,6 +254,7 @@ def generate_report(
         "checkpoint": checkpoint,
         "failure": runtime_failure,
         "validation": validation,
+        "scenario_metrics": scenario_metrics,
     }
     return report
 

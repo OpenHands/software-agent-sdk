@@ -64,6 +64,14 @@ RUNTIME_FILENAMES = (
 )
 IMAGE_UTILS_API_VERSION = "1"
 GPU_PRODUCT_FALLBACKS = ("NVIDIA-H100-NVL", "NVIDIA-H100-80GB-HBM3")
+OutputSchema = Literal[
+    "text",
+    "vision",
+    "multiturn",
+    "function_call",
+    "quality_evaluation",
+    "text2sql",
+]
 
 TOOL_DESCRIPTION = """\
 Submit a DataFlow pipeline for asynchronous execution on Pyromind platform.
@@ -76,7 +84,7 @@ for new standard runs.
 The tool creates a one-node CustomCommandNode workflow that:
 1. Creates a venv and installs open-dataflow
 2. Runs pipeline.py <input_path> <processed.jsonl>
-3. Validates canonical text/vision JSONL when output_schema is set
+3. Validates the selected canonical JSONL schema when output_schema is set
 4. Always generates report.json, including failure and checkpoint state
 
 Execution is asynchronous. A terminal Kafka callback resumes the
@@ -157,11 +165,12 @@ class DfSubmitPipelineAction(Action):
             "omitted."
         ),
     )
-    output_schema: Literal["text", "vision"] | None = Field(
+    output_schema: OutputSchema | None = Field(
         default=None,
         description=(
-            "Canonical output schema. New data-preparation runs should always "
-            "set this; None is retained only for legacy pipelines."
+            "Canonical output schema: text, vision, multiturn, function_call, "
+            "quality_evaluation, or text2sql. New data-preparation runs should "
+            "always set this; None is retained only for legacy pipelines."
         ),
     )
     convert_format: Literal["messages", "preference", "none"] = Field(

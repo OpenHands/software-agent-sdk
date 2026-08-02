@@ -25,10 +25,15 @@ if [[ -z "${OPENAI_API_KEY:-}" ]]; then
 fi
 export OPENAI_API_KEY
 
-export DF_API_BASE_URL=https://openrouter.ai/api/v1
-export DF_API_URL=https://openrouter.ai/api/v1/chat/completions
-export DF_MODEL_NAME=google/gemma-4-31b-it
-export DF_API_KEY="${OPENROUTER_API_KEY}"
+if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then
+  export DF_API_BASE_URL="https://openrouter.ai/api/v1"
+  export DF_API_URL="https://openrouter.ai/api/v1/chat/completions"
+  export DF_MODEL_NAME="google/gemma-4-31b-it"
+  export DF_API_KEY="${OPENROUTER_API_KEY}"
+else
+  unset DF_API_BASE_URL DF_API_URL DF_MODEL_NAME DF_API_KEY
+  echo "WARN: OPENROUTER_API_KEY is not set; vision DataFlow will use the conversation model fallback." >&2
+fi
 
 # ----------------------------------------------------------
 # Agent Server Configuration
@@ -105,6 +110,8 @@ if ! command -v uv >/dev/null 2>&1; then
   echo "Install it with: curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
   exit 127
 fi
+export UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/software-agent-sdk-uv-cache}"
+mkdir -p "${UV_CACHE_DIR}"
 
 # ----------------------------------------------------------
 # Start Agent Server

@@ -64,6 +64,14 @@ _HF_ROWS_API = "https://datasets-server.huggingface.co"
 _HF_ROWS_PAGE_SIZE = 100
 _ROWS_API_MAX_ROWS = 10_000
 _LOG_TAIL_CHARS = 6000
+OutputSchema = Literal[
+    "text",
+    "vision",
+    "multiturn",
+    "function_call",
+    "quality_evaluation",
+    "text2sql",
+]
 
 
 def _resolve_in_workspace(conversation: Any, path: str) -> Path:
@@ -432,12 +440,13 @@ class DfRunPipelineAction(Action):
             "current interpreter. Must have `open-dataflow` installed."
         ),
     )
-    output_schema: Literal["text", "vision"] | None = Field(
+    output_schema: OutputSchema | None = Field(
         default=None,
         description=(
-            "Canonical JSONL schema to validate after a successful run. For the "
-            "standard pipeline contract, args[1] is treated as the output path. "
-            "Omit only for legacy pipelines with non-standard outputs."
+            "Canonical JSONL schema to validate after a successful run: text, "
+            "vision, multiturn, function_call, quality_evaluation, or text2sql. "
+            "For the standard pipeline contract, args[1] is treated as the output "
+            "path. Omit only for legacy pipelines with non-standard outputs."
         ),
     )
     model_profile: Literal["text", "vision"] = Field(
