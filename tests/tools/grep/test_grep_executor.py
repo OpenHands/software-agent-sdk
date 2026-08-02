@@ -6,6 +6,7 @@ These tests verify that grep behaves like OpenHands:
 - Sorted by modification time (--sortr=modified)
 """
 
+import os
 import tempfile
 import time
 from pathlib import Path
@@ -21,6 +22,11 @@ from openhands.tools.grep.impl import (
     _expand_brace_pattern,
 )
 from openhands.tools.utils import _check_grep_available
+
+
+POSIX_FILENAME_CASE = pytest.mark.skipif(
+    os.name == "nt", reason="requires a filename with POSIX-only characters"
+)
 
 
 def test_grep_executor_initialization():
@@ -133,6 +139,13 @@ def test_grep_executor_include_filter():
         ),
         ("x{{a,b}}", ["x{a}", "x{b}"]),
         ("{a,{b,c}}", ["a", "b", "c"]),
+        ("[{,}]", ["[{,}]"]),
+        ("[]{,}]", ["[]{,}]"]),
+        ("{[a,b],c}", ["[a,b]", "c"]),
+        ("[!!]{a,b}", ["[!!]a", "[!!]b"]),
+        ("[!]]{a,b}", ["[!]]a", "[!]]b"]),
+        (r"\{a,b\}", [r"\{a,b\}"]),
+        (r"{a\,b,c}", [r"a\,b", "c"]),
         ("{abc}", ["{abc}"]),  # no comma: left literal, like the shell
         ("*.{ts", ["*.{ts"]),  # unbalanced brace: left literal
     ],
@@ -255,6 +268,20 @@ def test_grep_executor_include_brace_expansion_python_backend():
             ["xa.ts{literal}", "xb.tsx{literal}"],
         ),
         ("{!foo,bar}", ["!foo", "bar"]),
+        ("[{,}]", [",", "{", "}"]),
+        ("[]{,}]", [",", "]", "{", "}"]),
+        ("{[a,b],c}", [",", "a", "b", "c"]),
+        pytest.param(r"\{a,b\}", [r"\{a,b\}"], marks=POSIX_FILENAME_CASE),
+        pytest.param(r"{a\,b,c}", [r"a\,b", "c"], marks=POSIX_FILENAME_CASE),
+        ("{[^a],c}", ["^", "a", "c"]),
+        ("[^]]{a,b}", ["^]a", "^]b"]),
+        ("[a{x,y}", ["[a{x,y}"]),
+        ("[!]{a,b}", ["[!]{a,b}"]),
+        ("[]{a,b}", ["[]{a,b}"]),
+        ("[{,}", ["[{,}"]),
+        ("{#foo,bar}", ["#foo", "bar"]),
+        pytest.param("foo ", ["foo "], marks=POSIX_FILENAME_CASE),
+        pytest.param("foo\t", ["foo\t"], marks=POSIX_FILENAME_CASE),
     ],
 )
 def test_grep_executor_brace_expansion_consistent_across_backends(
@@ -266,7 +293,7 @@ def test_grep_executor_brace_expansion_consistent_across_backends(
         pytest.skip("system grep is not available")
 
     with tempfile.TemporaryDirectory() as temp_dir:
-        for filename in [
+        filenames = [
             "x{literal}a.ts",
             "x{literal}b.tsx",
             "xa.ts{literal}",
@@ -274,8 +301,27 @@ def test_grep_executor_brace_expansion_consistent_across_backends(
             "!foo",
             "bar",
             "foo",
+            ",",
+            "{",
+            "}",
+            "]",
+            "a",
+            "b",
+            "c",
+            "^",
+            "^]a",
+            "^]b",
+            "[a{x,y}",
+            "[!]{a,b}",
+            "[]{a,b}",
+            "[{,}",
+            "#foo",
             "noise.py",
-        ]:
+        ]
+        if os.name != "nt":
+            filenames.extend([r"\{a,b\}", r"a\,b", "foo ", "foo\t"])
+
+        for filename in filenames:
             (Path(temp_dir) / filename).write_text("findMe")
 
         executor = GrepExecutor(working_dir=temp_dir)
@@ -286,6 +332,106 @@ def test_grep_executor_brace_expansion_consistent_across_backends(
         assert (
             sorted(Path(match).name for match in observation.matches) == expected_names
         )
+
+
+@pytest.mark.parametrize("backend", ["ripgrep", "grep", "python"])
+def test_grep_executor_question_mark_matches_unicode_character(backend, tmp_path):
+    if backend == "ripgrep" and not grep_impl._check_ripgrep_available():
+        pytest.skip("ripgrep is not available")
+    if backend == "grep" and not _check_grep_available():
+        pytest.skip("system grep is not available")
+
+    for filename in ["a", "é", "中"]:
+        (tmp_path / filename).write_text("findMe")
+
+    executor = GrepExecutor(working_dir=tmp_path)
+    executor._search_backend = backend
+    observation = executor(GrepAction(pattern="findMe", include="?"))
+
+    assert observation.is_error is False
+    assert sorted(Path(match).name for match in observation.matches) == ["a", "é", "中"]
+
+
+def test_ripgrep_escaped_braces_do_not_bypass_expansion_budget(monkeypatch, tmp_path):
+    captured_cmd = []
+    executor = GrepExecutor(working_dir=tmp_path)
+
+    def fake_run(cmd, **_kwargs):
+        captured_cmd.extend(cmd)
+        return grep_impl.subprocess.CompletedProcess(cmd, 1, "", "")
+
+    monkeypatch.setattr(grep_impl.subprocess, "run", fake_run)
+    escaped_groups = r"\{a,b\}" * 16
+
+    observation = executor._execute_with_ripgrep(
+        GrepAction(pattern="findMe", include=escaped_groups), tmp_path
+    )
+
+    assert observation.is_error is False
+    assert "-g" not in captured_cmd
+    assert "--hidden" in captured_cmd
+    assert "--no-ignore" in captured_cmd
+    assert "--no-config" in captured_cmd
+
+
+def test_ripgrep_non_match_error_returns_error_observation(monkeypatch, tmp_path):
+    def fake_run(cmd, **_kwargs):
+        return grep_impl.subprocess.CompletedProcess(cmd, 2, "", "invalid glob")
+
+    monkeypatch.setattr(grep_impl.subprocess, "run", fake_run)
+    executor = GrepExecutor(working_dir=tmp_path)
+    observation = executor._execute_with_ripgrep(
+        GrepAction(pattern="findMe", include="*.py"), tmp_path
+    )
+
+    assert observation.is_error is True
+    assert observation.matches == []
+    assert "invalid glob" in observation.text
+
+
+@pytest.mark.skipif(
+    not grep_impl._check_ripgrep_available(), reason="ripgrep is not available"
+)
+def test_ripgrep_complex_include_keeps_hidden_ignored_files(tmp_path):
+    search_root = tmp_path / ".root"
+    search_root.mkdir()
+    hidden_file = search_root / ".env"
+    hidden_file.write_text("findMe")
+    (search_root / ".ignore").write_text(".env\n")
+    hidden_dir = search_root / ".hidden"
+    hidden_dir.mkdir()
+    (hidden_dir / ".env").write_text("findMe")
+
+    executor = GrepExecutor(working_dir=search_root)
+    action = GrepAction(pattern="findMe", include="[.]env")
+    observation = executor._execute_with_ripgrep(action, search_root)
+
+    assert observation.is_error is False
+    assert observation.matches == [str(hidden_file.resolve())]
+
+
+@pytest.mark.skipif(
+    not grep_impl._check_ripgrep_available(), reason="ripgrep is not available"
+)
+def test_ripgrep_simple_include_ignores_repo_and_user_excludes(monkeypatch, tmp_path):
+    ignored_dir = tmp_path / "ignored"
+    ignored_dir.mkdir()
+    (ignored_dir / "a.txt").write_text("findMe")
+    (tmp_path / "configured.txt").write_text("findMe")
+    (tmp_path / ".ignore").write_text("ignored/\n")
+    rg_config = tmp_path / "rg.conf"
+    rg_config.write_text("--glob=!configured.txt\n")
+    monkeypatch.setenv("RIPGREP_CONFIG_PATH", str(rg_config))
+
+    executor = GrepExecutor(working_dir=tmp_path)
+    action = GrepAction(pattern="findMe", include="*.txt")
+    observation = executor._execute_with_ripgrep(action, tmp_path)
+
+    assert observation.is_error is False
+    assert sorted(Path(match).name for match in observation.matches) == [
+        "a.txt",
+        "configured.txt",
+    ]
 
 
 def test_grep_executor_custom_path():

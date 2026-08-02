@@ -47,14 +47,43 @@ def _split_first_brace_group(pattern: str) -> tuple[str, list[str], str] | None:
     """Return ``(prefix, options, suffix)`` for the leftmost expandable group.
 
     A balanced group without a top-level comma stays literal but does not hide
-    an expandable nested or later group. An unmatched opening leaves the rest
-    of the pattern unchanged.
+    an expandable nested or later group. Glob character classes and escaped
+    characters are opaque to brace parsing. An unmatched opening leaves the
+    rest of the pattern unchanged.
     """
     stack: list[tuple[int, list[int], int]] = []
     first_group: tuple[int, int, list[int], int] | None = None
+    in_character_class = False
+    character_class_has_member = False
+    character_class_can_negate = False
+    escaped = False
 
     for i, ch in enumerate(pattern):
-        if ch == "{":
+        if escaped:
+            escaped = False
+            if in_character_class:
+                character_class_has_member = True
+                character_class_can_negate = False
+            continue
+        if ch == "\\":
+            escaped = True
+            continue
+        if in_character_class:
+            # A leading ']' is a literal class member (for example ``[]a]``),
+            # as is one immediately after the optional negation marker.
+            if ch == "]" and character_class_has_member:
+                in_character_class = False
+            elif character_class_can_negate and ch == "!":
+                character_class_can_negate = False
+            else:
+                character_class_has_member = True
+                character_class_can_negate = False
+            continue
+        if ch == "[":
+            in_character_class = True
+            character_class_has_member = False
+            character_class_can_negate = True
+        elif ch == "{":
             stack.append((i, [], 0))
         elif ch == "," and stack:
             # A comma belongs to the innermost open group, so commas in nested
@@ -349,15 +378,37 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
             action.pattern,
             str(search_path),
             "--sortr=modified",
+            "--no-config",
         ]
         if action.include:
-            # Use the same bounded expansion as the post-filter. Any braces
-            # left afterward are literal and must be escaped for rg's globset.
-            for include_pattern in _expand_brace_pattern(action.include):
-                rg_pattern = include_pattern.replace("{", r"\{").replace("}", r"\}")
-                if rg_pattern.startswith("!"):
-                    rg_pattern = "\\" + rg_pattern
-                cmd.extend(["-g", rg_pattern])
+            expanded_includes = _expand_brace_pattern(action.include)
+            # Python's fnmatch is the canonical post-filter. Its backslash and
+            # globset differ for escapes, classes, Unicode '?', comments,
+            # whitespace, and Windows case normalization. For those patterns,
+            # let rg perform only the linear-time content search, then apply
+            # the canonical filename filter below.
+            requires_unfiltered_search = os.name == "nt" or any(
+                (
+                    any(ch in include_pattern for ch in "\\[]?")
+                    or include_pattern.startswith("#")
+                    or any(ch.isspace() for ch in include_pattern)
+                    or any(not ch.isprintable() for ch in include_pattern)
+                )
+                for include_pattern in expanded_includes
+            )
+            if requires_unfiltered_search:
+                # Include hidden/ignored paths before the canonical post-filter.
+                cmd.extend(["--hidden", "--no-ignore"])
+            else:
+                # Any braces left after expansion are literal and must be
+                # escaped for rg's globset. Ignore repository excludes because
+                # the other backends search all visible directories.
+                cmd.append("--no-ignore")
+                for include_pattern in expanded_includes:
+                    rg_pattern = include_pattern.replace("{", r"\{").replace("}", r"\}")
+                    if rg_pattern.startswith("!"):
+                        rg_pattern = "\\" + rg_pattern
+                    cmd.extend(["-g", rg_pattern])
 
         result = subprocess.run(
             cmd,
@@ -367,6 +418,18 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
             check=False,
             env=sanitized_env(),
         )
+
+        if result.returncode not in (0, 1):
+            detail = result.stderr.strip() or f"exit code {result.returncode}"
+            logger.warning("ripgrep backend failed: %s", detail)
+            return GrepObservation.from_text(
+                text=f"ripgrep search failed: {detail}",
+                matches=[],
+                pattern=action.pattern,
+                search_path=str(search_path),
+                include_pattern=action.include,
+                is_error=True,
+            )
 
         matches = []
         if result.stdout:
