@@ -230,6 +230,23 @@ def test_task_store_get_by_run_id(tmp_path: Path) -> None:
     assert store.get_by_run_id("nonexistent") is None
 
 
+def test_task_store_get_by_output_dir(tmp_path: Path) -> None:
+    store = DataPreparationTaskStore(tmp_path / "tasks")
+    assoc = DataPreparationTaskAssociation(
+        task_id="task-3",
+        conversation_id="conv-3",
+        run_id="run-xyz",
+        output_dir="/out/run-xyz",
+        input_path="/data/in.jsonl",
+        script_path="/scripts/p.py",
+    )
+    store.save(assoc)
+    found = store.get_by_output_dir("/out/run-xyz/")
+    assert found is not None
+    assert found.task_id == "task-3"
+    assert store.get_by_output_dir("/out/missing") is None
+
+
 def test_task_store_get_missing(tmp_path: Path) -> None:
     store = DataPreparationTaskStore(tmp_path / "tasks")
     assert store.get("nonexistent") is None

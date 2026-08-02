@@ -18,6 +18,16 @@ from openhands.tools.data_preparation.platform_submit import (
     DfSubmitPipelineObservation,
     DfSubmitPipelineTool,
 )
+from openhands.tools.data_preparation.progress import (
+    DfCheckProgressAction,
+    DfCheckProgressObservation,
+    DfCheckProgressTool,
+)
+from openhands.tools.data_preparation.stop_task import (
+    DfStopTaskAction,
+    DfStopTaskObservation,
+    DfStopTaskTool,
+)
 
 
 __all__ = [
@@ -26,12 +36,18 @@ __all__ = [
     "DatasetDownloadAction",
     "DatasetDownloadObservation",
     "DatasetDownloadTool",
+    "DfCheckProgressAction",
+    "DfCheckProgressObservation",
+    "DfCheckProgressTool",
     "DfConvertAction",
     "DfConvertObservation",
     "DfConvertTool",
     "DfRunPipelineAction",
     "DfRunPipelineObservation",
     "DfRunPipelineTool",
+    "DfStopTaskAction",
+    "DfStopTaskObservation",
+    "DfStopTaskTool",
     "DfSubmitPipelineAction",
     "DfSubmitPipelineObservation",
     "DfSubmitPipelineTool",

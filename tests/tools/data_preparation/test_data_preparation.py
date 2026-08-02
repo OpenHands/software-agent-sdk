@@ -253,6 +253,16 @@ def test_df_run_pipeline_validates_output_and_writes_local_report(
     assert report["total_records_output"] == 1
     assert (pipeline_dir / "processed.sample.jsonl").is_file()
     assert not (pipeline_dir / "public_data").exists()
+    assert observation.output_path is not None
+    assert observation.record_count == 1
+    assert observation.sample_records == [
+        {
+            "id": "text-1",
+            "system_prompt": "system",
+            "user_prompt": "question",
+            "gt": "answer",
+        }
+    ]
 
 
 def test_df_run_pipeline_rejects_handwritten_vision_transport(
@@ -672,18 +682,21 @@ def _load_skill_reference(name: str, *, stub_dataflow: bool = False):
 
 def _load_image_utils() -> Any:
     root = Path(__file__).parents[3]
-    path = (
-        root / ".agents" / "skills" / "data-preparation" / "scripts" / "image_utils.py"
-    )
+    scripts_dir = root / ".agents" / "skills" / "data-preparation" / "scripts"
+    path = scripts_dir / "image_utils.py"
     module_name = "test_data_preparation_image_utils"
     spec = importlib.util.spec_from_file_location(module_name, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
+    # Mirror the platform runtime, where image_utils.py and preparation_runtime.py
+    # share a PYTHONPATH entry, so image_utils can import the shared helpers.
+    sys.path.insert(0, str(scripts_dir))
     try:
         spec.loader.exec_module(module)
     finally:
         sys.modules.pop(module_name, None)
+        sys.path.remove(str(scripts_dir))
     return module
 
 

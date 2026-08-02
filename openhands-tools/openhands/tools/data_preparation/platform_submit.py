@@ -357,6 +357,22 @@ class DataPreparationTaskStore:
             return None
         return max(matches, key=lambda item: item.updated_at, default=None)
 
+    def get_by_output_dir(
+        self, output_dir: str
+    ) -> DataPreparationTaskAssociation | None:
+        normalized = output_dir.strip().rstrip("/")
+        matches: list[DataPreparationTaskAssociation] = []
+        try:
+            for path in self.root.glob("*.json"):
+                association = self._read(path)
+                if association is None:
+                    continue
+                if association.output_dir.strip().rstrip("/") == normalized:
+                    matches.append(association)
+        except OSError:
+            return None
+        return max(matches, key=lambda item: item.updated_at, default=None)
+
     def _read(self, path: Path) -> DataPreparationTaskAssociation | None:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -654,7 +670,9 @@ class DfSubmitPipelineExecutor(
                 "DataFlow pipeline submitted. "
                 f"task_id={task_id}, run_id={run_id}, "
                 f"revision={execution_revision}, output_dir={output_dir}. "
-                "After the terminal callback, preview "
+                "While the job runs, call df_check_progress with this "
+                "output_dir to report live progress, ETA, and recent output "
+                "records. After the terminal callback, preview "
                 f"{output_dir}/report.json, then processed.jsonl."
             ),
             status=response.status,

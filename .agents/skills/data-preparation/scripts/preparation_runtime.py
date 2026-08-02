@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import base64
+import importlib.util
 import json
 import os
 import random
+import sys
 import time
+import types
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -125,6 +128,54 @@ def write_failure_report(
         },
     }
     _atomic_json_write(Path(state_dir) / "failure.json", report)
+
+
+def write_progress(
+    progress_path: str | Path,
+    *,
+    total: int,
+    processed: int,
+    succeeded: int,
+    failed: int,
+    started_at: float,
+    attempted_this_run: int,
+) -> None:
+    """Write a ``progress.json`` snapshot consumed by ``df_check_progress``.
+
+    ``started_at`` is a ``time.monotonic()`` baseline and ``attempted_this_run``
+    counts records attempted since that baseline, so the derived rate and ETA
+    reflect the current run rather than any resumed prefix.
+
+    The snapshot is written directly (open -> write -> close) rather than via
+    ``_atomic_json_write``'s tmp+rename: the platform's FUSE-mounted object
+    storage only uploads bytes on ``close()``, so a rename would leave
+    ``progress.json`` stale/0B for ``df_check_progress`` (which polls it through
+    the Storage API).
+    """
+    elapsed_ms = int((time.monotonic() - started_at) * 1000)
+    elapsed_s = elapsed_ms / 1000
+    rate = (
+        attempted_this_run / elapsed_s
+        if elapsed_s > 0 and attempted_this_run > 0
+        else 0.0
+    )
+    remaining = max(total - processed, 0)
+    eta_ms = int(remaining / rate * 1000) if rate > 0 else None
+    payload = {
+        "total": total,
+        "processed": processed,
+        "succeeded": succeeded,
+        "failed": failed,
+        "elapsed_ms": elapsed_ms,
+        "records_per_second": round(rate, 2),
+        "eta_ms": eta_ms,
+        "updated_at": datetime.now(_UTC).isoformat(),
+    }
+    path = Path(progress_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as target:
+        json.dump(payload, target, ensure_ascii=False)
+        target.write("\n")
 
 
 class RetryingVisionClient:
@@ -296,6 +347,67 @@ def _chat_url(base_url: str | None) -> str | None:
     if not base_url:
         return None
     return f"{base_url.rstrip('/')}/chat/completions"
+
+
+def create_text_serving() -> Any:
+    """Build the batch text LLM serving used by text pipelines.
+
+    Loads DataFlow's ``APILLMServing_request`` (its ``generate_from_input`` fans a
+    batch out across an internal thread pool with built-in retries and connect/read
+    timeouts) and wraps it in ``LoggingLLMServing`` so every per-item call is
+    recorded to ``llm_calls.jsonl``.
+    """
+    api_url = os.environ.get("DF_API_URL") or _chat_url(
+        os.environ.get("DF_API_BASE_URL")
+    )
+    model = os.environ.get("DF_MODEL_NAME", "").strip()
+    if not api_url or not model or not os.environ.get("DF_API_KEY"):
+        raise OSError(
+            "DF_API_KEY, DF_API_BASE_URL/DF_API_URL, and DF_MODEL_NAME are required"
+        )
+    serving_class = _load_text_serving_class()
+    raw = serving_class(
+        api_url=api_url,
+        model_name=model,
+        key_name_of_api_key="DF_API_KEY",
+        temperature=0.0,
+        max_workers=int(os.environ.get("DF_MAX_WORKERS", "8")),
+    )
+    from df_logging import LoggingLLMServing  # sibling runtime file, lazy import
+
+    return LoggingLLMServing(raw)
+
+
+def _load_text_serving_class() -> Any:
+    """Load ``APILLMServing_request`` without importing ``dataflow.serving``.
+
+    ``dataflow/serving/__init__.py`` pulls in transformers/torch, which can fail in
+    the sandboxed platform env, so the concrete module is loaded by file path.
+    """
+    import dataflow  # top-level package is safe (no torch/transformers)
+
+    existing = sys.modules.get("dataflow.serving.api_llm_serving_request")
+    if existing is not None and hasattr(existing, "APILLMServing_request"):
+        return existing.APILLMServing_request
+
+    serving_dir = Path(dataflow.__file__).resolve().parent / "serving"
+    package = sys.modules.get("dataflow.serving")
+    if package is None:
+        package = types.ModuleType("dataflow.serving")
+        package.__path__ = [str(serving_dir)]
+        package.__package__ = "dataflow.serving"
+        sys.modules["dataflow.serving"] = package
+    module_name = "dataflow.serving.api_llm_serving_request"
+    spec = importlib.util.spec_from_file_location(
+        module_name,
+        serving_dir / "api_llm_serving_request.py",
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError("could not load DataFlow APILLMServing_request")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module.APILLMServing_request
 
 
 def _retryable_status(status_code: int) -> bool:

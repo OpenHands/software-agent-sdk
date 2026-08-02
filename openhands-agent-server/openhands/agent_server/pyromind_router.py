@@ -67,7 +67,13 @@ from openhands.sdk.security.defense_in_depth import PatternSecurityAnalyzer
 from openhands.sdk.skills import Skill, load_skills_from_dir
 from openhands.sdk.tool.builtins import SkillsListTool, SkillsReadTool
 from openhands.sdk.workspace import LocalWorkspace
-from openhands.tools.data_preparation import DfSubmitPipelineTool
+from openhands.tools.data_preparation import (
+    DfCheckProgressAction,
+    DfCheckProgressTool,
+    DfStopTaskTool,
+    DfSubmitPipelineTool,
+)
+from openhands.tools.data_preparation.progress import DfCheckProgressExecutor
 from openhands.tools.preset.codex import get_codex_agent
 from openhands.tools.preset.default import register_default_tools
 from openhands.tools.pyromind_cleaning import RunDatasetCleaningTool
@@ -473,12 +479,22 @@ def _build_pyromind_storage_tools(
         Path(skills_path) / "data-preparation" / "scripts"
     )
 
+    # Stop-task tool talks to the studio_api portal (APP_ENV-derived URL),
+    # not the storage API, so only forward auth headers — no storage_base_url.
+    stop_params: dict[str, Any] = {}
+    if "headers" in params:
+        stop_params["headers"] = dict(params["headers"])
+    if "secret_headers" in params:
+        stop_params["secret_headers"] = dict(params["secret_headers"])
+
     return (
         [
             Tool(name=PreviewDatasetTool.name, params=dict(params)),
             Tool(name=UploadFileToPyromindTool.name, params=dict(params)),
             Tool(name=RunDatasetCleaningTool.name, params=cleaning_params),
             Tool(name=DfSubmitPipelineTool.name, params=preparation_params),
+            Tool(name=DfCheckProgressTool.name, params=dict(params)),
+            Tool(name=DfStopTaskTool.name, params=stop_params),
             Tool(name=PreviewRemoteDatasetTool.name, params={}),
         ],
         secrets,
@@ -1006,6 +1022,43 @@ async def request_debug_url(
         response_headers=dict(response.headers),
         body=response.text[:_PYROMIND_DEBUG_RESPONSE_BODY_LIMIT],
     )
+
+
+@pyromind_router.get("/data-preparation/progress")
+def get_data_preparation_progress(
+    http_request: Request,
+    response: Response,
+    output_dir: str,
+    tail_lines: int = 5,
+) -> dict[str, Any]:
+    """Poll the live progress of a submitted DataFlow pipeline run.
+
+    Reads ``progress.json`` and the tail of ``processed.jsonl`` from the
+    run's Storage output directory so the frontend can render a progress
+    bar, ETA, and recently processed records while the job is running.
+    """
+    # The frontend polls this URL repeatedly with the same query string; make
+    # sure browsers/proxies never serve a cached (stale) copy.
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    current_user = _get_current_login_user(http_request)
+    headers = _build_debug_context_headers(current_user)
+    executor = DfCheckProgressExecutor(headers=headers)
+    action = DfCheckProgressAction(output_dir=output_dir, tail_lines=tail_lines)
+    observation = executor(action, conversation=None)
+    return {
+        "output_dir": observation.output_dir,
+        "progress_found": observation.progress_found,
+        "total": observation.total,
+        "processed": observation.processed,
+        "succeeded": observation.succeeded,
+        "failed": observation.failed,
+        "elapsed_ms": observation.elapsed_ms,
+        "records_per_second": observation.records_per_second,
+        "eta_ms": observation.eta_ms,
+        "updated_at": observation.updated_at,
+        "percent": observation.percent,
+        "latest_records": observation.latest_records,
+    }
 
 
 @pyromind_router.post("/conversations", response_model=ConversationInfo)

@@ -29,13 +29,18 @@ description: >-
    中的算子链负责处理中间字段，Pipeline 末尾负责映射正式 Schema。
 4. 调用 `df_run_pipeline`，显式设置 `model_profile` 和 `output_schema`，检查
    `processed.sample.jsonl`、`validation.json` 和 `report.json`。
-5. 展示 Sample 结果，等待用户明确确认。
-6. 调用 `df_submit_pipeline(mode="full")`。Kafka callback 后用
-   `preview_dataset` 查看 Report；失败时再看 `failure.json` 和必要日志。
-7. 修复后先本地验证失败边界；可复用旧结果时用 `mode="resume"` 并提交
-   `reuse_assessment`，否则创建新 full run。
-
-## 场景路由
+5. 展示 Sample 结果并等待用户明确确认。
+6. 调用 `df_submit_pipeline(mode="full")`。收到 Kafka callback 后，调用
+   `preview_dataset` 查看 `<output_dir>/report.json`；如失败，再查看同目录的
+   `failure.json`、`validation.json` 和必要的 `llm_calls.jsonl`。
+7. Agent 修复后先在本地重跑失败记录、失败前一条和同类成功记录：
+   - 旧结果仍可用：`mode="resume"`，提交 `reuse_assessment` 和可选新脚本。
+   - 旧结果不可用：重新执行 Sample、人工确认并创建新的 full run。
+8. 提交后可用 `df_check_progress`（传 `output_dir`）查看实时进度、ETA 和最近产出。
+   若用户预览后发现不符合预期、要介入调整，**先调用 `df_stop_task`**（传 `task_id`，
+   或 `df_submit_pipeline` 返回的 `run_id` / `output_dir`）停掉平台任务，再修改
+   pipeline 并重新提交，避免旧任务继续消耗资源或覆盖输出目录。
+## 运行规则
 
 | 需求 | Reference | `output_schema` |
 |---|---|---|

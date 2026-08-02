@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import sys
+import time
 import types
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -25,6 +26,7 @@ import pandas as pd
 from dataflow.core import OperatorABC
 from dataflow.pipeline import StreamBatchedPipelineABC
 from dataflow.utils.storage import StreamBatchedFileStorage
+from preparation_runtime import write_progress
 
 
 try:
@@ -227,6 +229,12 @@ class MultiImageSemanticLabelOperator(OperatorABC):
         self.config = config
         self.state_dir = state_dir
         self.llm_serving = serving or _create_vlm_serving(config)
+        self._progress_path = state_dir / "progress.json"
+        self._total = self._read_total_records()
+        self._processed = self._count_committed_records()
+        self._attempted_this_run = 0
+        self._started_at = time.monotonic()
+        self._write_progress_snapshot()
 
     def run(self, storage: Any) -> None:
         dataframe = storage.read("dataframe")
@@ -240,6 +248,42 @@ class MultiImageSemanticLabelOperator(OperatorABC):
             for sample, response in zip(prepared, responses, strict=True)
         ]
         storage.write(rows)
+        self._processed += len(rows)
+        self._attempted_this_run += len(rows)
+        self._write_progress_snapshot()
+
+    def _read_total_records(self) -> int:
+        metadata_path = self.state_dir / "runtime_metadata.json"
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return 0
+        total = metadata.get("record_count") if isinstance(metadata, dict) else None
+        return total if isinstance(total, int) and total >= 0 else 0
+
+    def _count_committed_records(self) -> int:
+        parts_dir = self.state_dir / "processed.parts"
+        if not parts_dir.is_dir():
+            return 0
+        count = 0
+        for part in parts_dir.glob("part-*.jsonl"):
+            try:
+                with part.open("rb") as handle:
+                    count += sum(1 for line in handle if line.strip())
+            except OSError:
+                continue
+        return count
+
+    def _write_progress_snapshot(self) -> None:
+        write_progress(
+            self._progress_path,
+            total=self._total,
+            processed=self._processed,
+            succeeded=self._processed,
+            failed=0,
+            started_at=self._started_at,
+            attempted_this_run=self._attempted_this_run,
+        )
 
     def _generate_validated(
         self,
