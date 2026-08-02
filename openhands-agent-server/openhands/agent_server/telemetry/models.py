@@ -202,6 +202,7 @@ class ErrorProperties(_BaseProperties):
     error_origin_lineno: int | None = Field(default=None, ge=0)
     is_first_party: bool
     is_terminal: bool
+    error_telemetry: Literal["outcome", "diagnostic"] = "diagnostic"
     tool_name: SafeToken | None = None
     error_id: SafeToken | None = None
 
@@ -306,6 +307,7 @@ EXPECTED_PROPERTY_NAMES: Final[frozenset[str]] = frozenset(
         "error_origin_lineno",
         "is_first_party",
         "is_terminal",
+        "error_telemetry",
         "tool_name",
         "error_id",
         "route_template",

@@ -516,12 +516,56 @@ def _assert_expected_paths(
             )
 
 
+def _find_unpreserved_path(
+    expected: Any,
+    actual: Any,
+    *,
+    path: str = "",
+) -> str | None:
+    """Return the first historical path missing or changed in ``actual``.
+
+    New mapping keys are compatible, but every value already emitted under the
+    current schema version must survive a load/dump round-trip unchanged.
+    """
+    if isinstance(expected, Mapping):
+        if not isinstance(actual, Mapping):
+            return path
+        for key, expected_value in expected.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            if key not in actual:
+                return child_path
+            changed_path = _find_unpreserved_path(
+                expected_value,
+                actual[key],
+                path=child_path,
+            )
+            if changed_path is not None:
+                return changed_path
+        return None
+    if isinstance(expected, list):
+        if not isinstance(actual, list) or len(expected) != len(actual):
+            return path
+        for index, expected_value in enumerate(expected):
+            changed_path = _find_unpreserved_path(
+                expected_value,
+                actual[index],
+                path=f"{path}[{index}]",
+            )
+            if changed_path is not None:
+                return changed_path
+        return None
+    if expected != actual:
+        return path
+    return None
+
+
 def _validate_single_payload(
     *,
     payload: Mapping[str, Any],
     surface: SurfaceConfig,
     origin: str,
     expected_paths: Mapping[str, Any] | None = None,
+    require_same_version_preservation: bool = False,
 ) -> None:
     raw_payload = _copy_payload(payload)
     raw_version = raw_payload.get("schema_version")
@@ -547,6 +591,20 @@ def _validate_single_payload(
         raise PersistedSettingsCompatError(
             f"{surface.display_name} payload from {origin} round-tripped with "
             f"schema_version {roundtrip_version}, expected {surface.current_version}."
+        )
+    unpreserved_path = None
+    if (
+        require_same_version_preservation
+        and type(raw_version) is int
+        and raw_version == surface.current_version
+    ):
+        unpreserved_path = _find_unpreserved_path(raw_payload, roundtrip)
+    if unpreserved_path is not None:
+        raise PersistedSettingsCompatError(
+            f"{surface.display_name} payload from {origin} did not preserve persisted "
+            f"field {unpreserved_path!r} without advancing schema_version "
+            f"{raw_version}. "
+            f"{surface.migration_guidance}"
         )
     if expected_paths:
         _assert_expected_paths(
@@ -678,6 +736,7 @@ def validate_baseline_payload_cases(
             payload=case.payload,
             surface=surface,
             origin=f"{case.source} ({case.key})",
+            require_same_version_preservation=True,
         )
 
 

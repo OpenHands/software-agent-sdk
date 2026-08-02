@@ -185,9 +185,60 @@ jobs:
                   retention-days: 7
                   if-no-files-found: error
 
+    build-openapi:
+        name: Build public OpenAPI contract
+        needs: resolve-tag
+        runs-on: ubuntu-24.04
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v7
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              with:
+                  version: latest
+                  python-version: '3.13'
+
+            - name: Install Node.js
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 22
+
+            - name: Install dependencies
+              run: uv sync --frozen --dev
+
+            - name: Export and validate public OpenAPI
+              env:
+                  EXPECTED_VERSION: ${{ needs.resolve-tag.outputs.version }}
+                  RELEASE_TAG: ${{ needs.resolve-tag.outputs.tag }}
+              run: |
+                  set -euo pipefail
+                  mkdir -p release-assets
+                  OPENHANDS_SUPPRESS_BANNER=1 uv run python \
+                      .github/scripts/export_agent_server_openapi.py \
+                      --output release-assets/openapi.json
+                  uv run python \
+                      .github/scripts/check_agent_server_openapi_quality.py \
+                      --schema release-assets/openapi.json
+                  npx --yes @apidevtools/swagger-cli@^4 validate \
+                      release-assets/openapi.json
+                  if [[ -n "$RELEASE_TAG" ]]; then
+                      jq -e --arg version "$EXPECTED_VERSION" \
+                          '.info.version == $version' \
+                          release-assets/openapi.json
+                  fi
+
+            - name: Upload OpenAPI workflow artifact
+              uses: actions/upload-artifact@v7
+              with:
+                  name: openapi-contract
+                  path: release-assets/openapi.json
+                  retention-days: 7
+                  if-no-files-found: error
+
     publish-binaries:
-        name: Publish binaries + SHA256SUMS
-        needs: [resolve-tag, build-binary]
+        name: Publish binaries, OpenAPI + SHA256SUMS
+        needs: [resolve-tag, build-binary, build-openapi]
         # always() so one dead/failed build leg (e.g. a retired runner that
         # queues until timeout) can't skip publishing the binaries that did
         # build. download-artifact's `pattern: binary-*` uploads whatever set
@@ -202,16 +253,22 @@ jobs:
                   merge-multiple: true
                   path: release-assets
 
+            - name: Download OpenAPI artifact
+              uses: actions/download-artifact@v8
+              with:
+                  name: openapi-contract
+                  path: release-assets
+
             - name: Generate combined SHA256SUMS
               shell: bash
               run: |
                   set -euo pipefail
                   cd release-assets
                   ls -la
-                  shasum -a 256 agent-server-* | sort > SHA256SUMS
+                  shasum -a 256 agent-server-* openapi.json | sort > SHA256SUMS
                   cat SHA256SUMS
 
-            - name: Attach binaries + SHA256SUMS to release
+            - name: Attach binaries, OpenAPI + SHA256SUMS to release
               env:
                   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
                   TAG: ${{ needs.resolve-tag.outputs.tag }}
@@ -221,6 +278,7 @@ jobs:
                   cd release-assets
                   gh release upload "$TAG" \
                       agent-server-* \
+                      openapi.json \
                       SHA256SUMS \
                       --clobber \
                       --repo "${{ github.repository }}"
@@ -314,8 +372,8 @@ jobs:
                   echo "Starting container ..."
                   docker run --platform="linux/${ARCH}" -d --rm \
                       --name "$CONTAINER" \
-                      -p 8000:8000 \
-                      "$TAG_FQN"
+                      -p 127.0.0.1:8000:8000 \
+                      "$TAG_FQN" --host 0.0.0.0
 
                   cleanup() {
                       docker logs "$CONTAINER" 2>&1 | tail -100 || true

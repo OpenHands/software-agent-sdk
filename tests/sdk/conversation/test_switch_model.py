@@ -715,7 +715,7 @@ def test_switch_llm_to_subscription_profile_disables_condenser(
     def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
         runtime = llm.model_copy()
         if llm.auth_type == "subscription":
-            runtime._is_subscription = True
+            runtime.is_subscription = True
         return runtime
 
     monkeypatch.setattr(

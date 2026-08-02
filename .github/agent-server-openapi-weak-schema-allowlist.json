@@ -1,0 +1,590 @@
+[
+  {
+    "pointer": "/components/schemas/ACPAgent-Input/properties/system_prompt_kwargs/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Provider-specific configuration is intentionally extensible.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/ACPAgent-Output/properties/system_prompt_kwargs/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Provider-specific configuration is intentionally extensible.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/ACPToolCallEvent/properties/content/anyOf/0/items",
+    "kind": "empty-object-schema",
+    "reason": "ACP protocol raw input, output, and content payloads are intentionally proxy-opaque.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/ACPToolCallEvent/properties/raw_input/anyOf/0",
+    "kind": "empty-object-schema",
+    "reason": "ACP protocol raw input, output, and content payloads are intentionally proxy-opaque.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/ACPToolCallEvent/properties/raw_output/anyOf/0",
+    "kind": "empty-object-schema",
+    "reason": "ACP protocol raw input, output, and content payloads are intentionally proxy-opaque.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/Agent-Input/properties/system_prompt_kwargs/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Provider-specific configuration is intentionally extensible.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/Agent-Output/properties/system_prompt_kwargs/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Provider-specific configuration is intentionally extensible.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/AgentContext-Output/properties/secrets/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/AgentDefinition/properties/mcp_servers/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/AgentDefinition/properties/metadata/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/AgentProfileDetailResponse/properties/profile/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/AgentProfileDiagnostics/properties/resolved_settings/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/AgentSettings/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Agent settings retain a backward-compatible extension surface while known security-sensitive fields remain typed.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/AgentSettingsPatch/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Agent settings retain a backward-compatible extension surface while known security-sensitive fields remain typed.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/BrowserClickTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/BrowserCloseTabTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/BrowserGetContentTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/BrowserGetStateTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/BrowserGetStorageTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/BrowserGoBackTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/BrowserListTabsTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/BrowserNavigateTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/BrowserScrollTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/BrowserSetStorageAction/properties/storage_state/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/BrowserSetStorageTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/BrowserStartRecordingTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/BrowserStopRecordingTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/BrowserSwitchTabTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/BrowserToolSet/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/BrowserTypeTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/ClientTool/properties/input_schema/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "The value is a caller or provider supplied JSON Schema or tool argument object.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/ClientTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/ClientToolSpec-Input/properties/parameters/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "The value is a caller or provider supplied JSON Schema or tool argument object.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/ClientToolSpec-Output/properties/parameters/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "The value is a caller or provider supplied JSON Schema or tool argument object.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/ConversationInfo/properties/agent_state/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/ConversationStats/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/CriticResult/properties/metadata/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/EditTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/FileEditorTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/FinishTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/GlobTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/GrepTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/HookExecutionEvent/properties/hook_input/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/Icon/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/InvokeSkillTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/LLM-Input/properties/litellm_extra_body/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Provider-specific configuration is intentionally extensible.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/LLM-Output/properties/litellm_extra_body/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Provider-specific configuration is intentionally extensible.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/ListDirectoryTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/MCPOAuthAuthentication-Input/properties/additional_client_metadata/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "The upstream MCP or OAuth payload intentionally preserves provider-defined extension fields.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/MCPOAuthAuthentication-Output/properties/additional_client_metadata/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "The upstream MCP or OAuth payload intentionally preserves provider-defined extension fields.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/MCPOAuthClientInfoState-Input/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "The upstream MCP or OAuth payload intentionally preserves provider-defined extension fields.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/MCPOAuthClientInfoState-Output/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "The upstream MCP or OAuth payload intentionally preserves provider-defined extension fields.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/MCPOAuthStateResponse/properties/client_info/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "The upstream MCP or OAuth payload intentionally preserves provider-defined extension fields.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/MCPOAuthStateResponse/properties/tokens/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "The upstream MCP or OAuth payload intentionally preserves provider-defined extension fields.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/MCPOAuthTokenState-Input/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "The upstream MCP or OAuth payload intentionally preserves provider-defined extension fields.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/MCPOAuthTokenState-Output/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "The upstream MCP or OAuth payload intentionally preserves provider-defined extension fields.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/MCPTestSuccess/properties/resolved_mcp_servers/anyOf/0/items/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "The upstream MCP or OAuth payload intentionally preserves provider-defined extension fields.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/MCPToolAction/properties/data/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/MCPToolCallSpec/properties/arguments/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "The value is a caller or provider supplied JSON Schema or tool argument object.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/MCPToolDefinition/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/PlanningFileEditorTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/ProfileDetailResponse/properties/config/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/ReadFileTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/SettingsResponse/properties/agent_settings/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/SettingsResponse/properties/conversation_settings/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/SettingsResponse/properties/misc_settings/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Misc settings are an intentionally opaque frontend-owned extension container.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/SettingsUpdateRequest/properties/agent_settings_diff/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/SettingsUpdateRequest/properties/conversation_settings_diff/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/SettingsUpdateRequest/properties/misc_settings_diff/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Misc settings are an intentionally opaque frontend-owned extension container.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/Skill-Output/properties/mcp_tools/anyOf/0/additionalProperties/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/StartConversationRequest/properties/agent_settings/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/SubAgentInfo/properties/metadata/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/SwitchLLMTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/TaskTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/TaskToolSet/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/TaskTrackerTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/TerminalTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/ThinkTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/Tool-Input/properties/params/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "The value is a caller or provider supplied JSON Schema or tool argument object.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/ToolExecution/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/VisionInspectTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/WorkflowTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/WorkflowToolSet/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/WriteFileTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/mcp__types__Tool/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/mcp__types__Tool/properties/_meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/mcp__types__Tool/properties/inputSchema/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "The value is a caller or provider supplied JSON Schema or tool argument object.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/mcp__types__Tool/properties/outputSchema/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "The value is a caller or provider supplied JSON Schema or tool argument object.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/mcp__types__ToolAnnotations/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/openhands__sdk__tool__spec__Tool/properties/params/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "The value is a caller or provider supplied JSON Schema or tool argument object.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/paths/~1api~1agent-profiles~1{name}/post/requestBody/content/application~1json/schema/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "This existing endpoint has an opaque or non-JSON response contract and is tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/paths/~1api~1conversations~1{conversation_id}~1events~1search/get/responses/200/content/application~1json/schema",
+    "kind": "empty-object-schema",
+    "reason": "This existing endpoint has an opaque or non-JSON response contract and is tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/paths/~1api~1conversations~1{conversation_id}~1workspace/get/responses/200/content/application~1json/schema",
+    "kind": "empty-object-schema",
+    "reason": "This existing endpoint has an opaque or non-JSON response contract and is tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/paths/~1api~1conversations~1{conversation_id}~1workspace~1{file_path}/get/responses/200/content/application~1json/schema",
+    "kind": "empty-object-schema",
+    "reason": "This existing endpoint has an opaque or non-JSON response contract and is tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/paths/~1api~1file~1archive/get/responses/200/content/application~1json/schema",
+    "kind": "empty-object-schema",
+    "reason": "This existing endpoint has an opaque or non-JSON response contract and is tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/paths/~1api~1file~1download-trajectory~1{conversation_id}/get/responses/200/content/application~1json/schema",
+    "kind": "empty-object-schema",
+    "reason": "This existing endpoint has an opaque or non-JSON response contract and is tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/paths/~1api~1file~1download/get/responses/200/content/application~1json/schema",
+    "kind": "empty-object-schema",
+    "reason": "This existing endpoint has an opaque or non-JSON response contract and is tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/paths/~1api~1settings~1secrets~1{name}/get/responses/200/content/application~1json/schema",
+    "kind": "empty-object-schema",
+    "reason": "This existing endpoint has an opaque or non-JSON response contract and is tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  }
+]

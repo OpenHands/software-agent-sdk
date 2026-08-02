@@ -99,6 +99,16 @@ def test_get_agent_settings_schema():
     assert "confirmation_mode" not in verification_field_keys
     assert "security_analyzer" not in verification_field_keys
 
+    # agent_context is curated: only the annotated load_memory field
+    # surfaces, never the raw context model.
+    assert "agent_context" in section_keys
+    agent_context_section = next(
+        section for section in body["sections"] if section["key"] == "agent_context"
+    )
+    assert [field["key"] for field in agent_context_section["fields"]] == [
+        "agent_context.load_memory"
+    ]
+
 
 def test_get_conversation_settings_schema():
     client = TestClient(create_app(Config(static_files_path=None, session_api_keys=[])))
@@ -821,6 +831,167 @@ def test_patch_settings_encrypts_mcp_env_and_headers_on_disk(
     assert servers["remote"]["headers"] == {"X-Api-Key": "tok-router-secret"}
 
 
+def test_mcp_server_crud_endpoints_preserve_sibling_credentials(client_with_settings):
+    github = client_with_settings.post(
+        "/api/settings/mcp/github",
+        json={
+            "transport": "http",
+            "url": "https://github.example/mcp",
+            "auth": {"strategy": "bearer", "value": "github-secret"},
+        },
+    )
+    assert github.status_code == 201, github.text
+    assert github.json()["agent_settings"]["mcp_config"]["github"]["auth"] == {
+        "strategy": "bearer",
+        "value": "**********",
+    }
+
+    docs = client_with_settings.post(
+        "/api/settings/mcp/docs",
+        json={"transport": "http", "url": "https://docs.example/mcp"},
+    )
+    assert docs.status_code == 201, docs.text
+
+    updated_docs = client_with_settings.patch(
+        "/api/settings/mcp/docs",
+        json={"description": "Documentation"},
+    )
+    assert updated_docs.status_code == 200, updated_docs.text
+
+    plaintext = client_with_settings.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()["agent_settings"]["mcp_config"]
+    assert plaintext["github"]["auth"]["value"] == "github-secret"
+    assert plaintext["docs"]["description"] == "Documentation"
+
+    deleted_docs = client_with_settings.delete("/api/settings/mcp/docs")
+    assert deleted_docs.status_code == 200, deleted_docs.text
+    assert set(deleted_docs.json()["agent_settings"]["mcp_config"]) == {"github"}
+
+    replaced_auth = client_with_settings.patch(
+        "/api/settings/mcp/github",
+        json={"auth": {"strategy": "bearer", "value": "new-github-secret"}},
+    )
+    assert replaced_auth.status_code == 200, replaced_auth.text
+    plaintext = client_with_settings.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()["agent_settings"]["mcp_config"]
+    assert plaintext["github"]["auth"]["value"] == "new-github-secret"
+
+    cleared_auth = client_with_settings.patch(
+        "/api/settings/mcp/github",
+        json={"auth": None},
+    )
+    assert cleared_auth.status_code == 200, cleared_auth.text
+    assert "auth" not in cleared_auth.json()["agent_settings"]["mcp_config"]["github"]
+
+
+def test_mcp_server_patch_toggles_enabled_without_dropping_config(
+    client_with_settings,
+):
+    """Switching a server off keeps it — and its credentials — configured."""
+    created = client_with_settings.post(
+        "/api/settings/mcp/github",
+        json={
+            "transport": "http",
+            "url": "https://github.example/mcp",
+            "auth": {"strategy": "bearer", "value": "github-secret"},
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["agent_settings"]["mcp_config"]["github"]["enabled"] is True
+
+    disabled = client_with_settings.patch(
+        "/api/settings/mcp/github",
+        json={"enabled": False},
+    )
+    assert disabled.status_code == 200, disabled.text
+    server = disabled.json()["agent_settings"]["mcp_config"]["github"]
+    assert server["enabled"] is False
+    assert server["url"] == "https://github.example/mcp"
+
+    # The credential survives the toggle — that is the point of disabling
+    # instead of deleting.
+    plaintext = client_with_settings.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()["agent_settings"]["mcp_config"]["github"]
+    assert plaintext["auth"]["value"] == "github-secret"
+    assert plaintext["enabled"] is False
+
+    # A patch that does not mention the flag must not silently re-enable it.
+    described = client_with_settings.patch(
+        "/api/settings/mcp/github",
+        json={"description": "GitHub"},
+    )
+    assert described.status_code == 200, described.text
+    still_disabled = described.json()["agent_settings"]["mcp_config"]["github"]
+    assert still_disabled["enabled"] is False
+    assert still_disabled["description"] == "GitHub"
+
+    # A null clears the override, restoring the canonical default (enabled).
+    restored = client_with_settings.patch(
+        "/api/settings/mcp/github",
+        json={"enabled": None},
+    )
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["agent_settings"]["mcp_config"]["github"]["enabled"] is True
+
+
+def test_mcp_server_crud_endpoints_enforce_key_preconditions(client_with_settings):
+    created = client_with_settings.post(
+        "/api/settings/mcp/github",
+        json={"transport": "http", "url": "https://github.example/mcp"},
+    )
+    assert created.status_code == 201, created.text
+
+    duplicate = client_with_settings.post(
+        "/api/settings/mcp/github",
+        json={"transport": "http", "url": "https://replacement.example/mcp"},
+    )
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"] == "MCP server 'github' already exists"
+
+    missing_patch = client_with_settings.patch(
+        "/api/settings/mcp/missing",
+        json={"description": "Missing"},
+    )
+    assert missing_patch.status_code == 404
+
+    missing_delete = client_with_settings.delete("/api/settings/mcp/missing")
+    assert missing_delete.status_code == 404
+
+    plaintext = client_with_settings.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()["agent_settings"]["mcp_config"]
+    assert plaintext["github"]["url"] == "https://github.example/mcp"
+
+
+def test_mcp_server_crud_endpoints_normalize_key_paths(client_with_settings):
+    server = {"transport": "http", "url": "https://github.example/mcp"}
+    created = client_with_settings.post("/api/settings/mcp/github", json=server)
+    assert created.status_code == 201, created.text
+
+    trailing_slash = client_with_settings.post(
+        "/api/settings/mcp/github/",
+        json=server,
+        follow_redirects=False,
+    )
+    assert trailing_slash.status_code == 307
+    assert trailing_slash.headers["location"].endswith("/api/settings/mcp/github")
+
+    empty_key = client_with_settings.post(
+        "/api/settings/mcp/",
+        json=server,
+        follow_redirects=False,
+    )
+    assert empty_key.status_code == 404
+
+    mcp_config = client_with_settings.get("/api/settings").json()["agent_settings"][
+        "mcp_config"
+    ]
+    assert set(mcp_config) == {"github"}
+
+
 def test_patch_settings_empty_payload_returns_400(client_with_settings):
     """PATCH /api/settings with empty payload returns 400."""
     response = client_with_settings.patch("/api/settings", json={})
@@ -1012,6 +1183,22 @@ def test_patch_settings_deep_merges(client_with_settings):
     body = response.json()
     assert body["agent_settings"]["llm"]["model"] == "gpt-4o"
     assert body["llm_api_key_is_set"] is True
+
+
+def test_patch_settings_agent_context_load_memory_round_trips(client_with_settings):
+    """The persistent-memory toggle's wire path: a nested agent_context diff
+    persists and is served back by GET (what the GUI Memory page reads)."""
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"agent_context": {"load_memory": True}}},
+    )
+    assert response.status_code == 200
+
+    fetched = client_with_settings.get("/api/settings")
+
+    assert fetched.status_code == 200
+    agent_settings = fetched.json()["agent_settings"]
+    assert agent_settings["agent_context"]["load_memory"] is True
 
 
 # ── JSON Merge Patch (RFC 7386) unset semantics ─────────────────────────

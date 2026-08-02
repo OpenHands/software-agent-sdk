@@ -187,7 +187,6 @@ class BashEventService:
         self,
         process: asyncio.subprocess.Process,
         sig: signal.Signals,
-        command: str,
     ) -> None:
         try:
             os.killpg(os.getpgid(process.pid), sig)
@@ -195,8 +194,9 @@ class BashEventService:
             pass
         except OSError as e:
             logger.debug(
-                f"Failed to send {sig.name} to process group for command "
-                f"'{command}': {e}"
+                "Failed to send %s to process group (error_type=%s)",
+                sig.name,
+                type(e).__name__,
             )
 
     async def start_bash_command(
@@ -298,21 +298,22 @@ class BashEventService:
             except TimeoutError:
                 # Send SIGTERM to the whole process group so user-installed
                 # cleanup traps can run, then escalate to SIGKILL if needed.
-                self._signal_process_group(process, signal.SIGTERM, command.command)
+                self._signal_process_group(process, signal.SIGTERM)
                 try:
                     await asyncio.wait_for(process.wait(), timeout=1.0)
                 except TimeoutError:
-                    self._signal_process_group(process, signal.SIGKILL, command.command)
+                    self._signal_process_group(process, signal.SIGKILL)
                     try:
                         await asyncio.wait_for(process.wait(), timeout=1.0)
                     except TimeoutError:
                         logger.error(
-                            f"Failed to kill process for command: {command.command}"
+                            "Failed to kill process (command_id=%s)", command.id
                         )
                 exit_code = -1
                 logger.warning(
-                    f"Command timed out after {command.timeout} seconds: "
-                    f"{command.command}"
+                    "Command timed out after %s seconds (command_id=%s)",
+                    command.timeout,
+                    command.id,
                 )
 
             # Create final output event with any remaining buffer content and exit code
@@ -334,7 +335,11 @@ class BashEventService:
                 await self._pub_sub(final_output)
 
         except Exception as e:
-            logger.error(f"Error executing bash command '{command.command}': {e}")
+            logger.error(
+                "Error executing bash command (command_id=%s, error_type=%s)",
+                command.id,
+                type(e).__name__,
+            )
             # Create error output event
             error_output = BashOutput(
                 command_id=command.id,

@@ -6,8 +6,11 @@ from openhands.sdk.llm.call_context import (
     apply_llm_call_context,
     resolve_llm_call_context,
 )
-from openhands.sdk.llm.options.common import apply_defaults_if_absent
-from openhands.sdk.llm.utils.model_features import get_features
+from openhands.sdk.llm.options.common import (
+    apply_defaults_if_absent,
+    apply_extra_body,
+    apply_extra_headers,
+)
 
 
 if TYPE_CHECKING:
@@ -30,31 +33,22 @@ def select_responses_options(
         defaults["max_output_tokens"] = llm.effective_max_output_tokens
     out = apply_defaults_if_absent(user_kwargs, defaults)
 
-    # Enforce sampling/tool behavior for Responses path
-    # Note: temperature is not supported in subscription mode
-    if not llm.is_subscription:
-        out["temperature"] = 1.0
+    model_features = llm._model_features()
+    if not llm.is_subscription and model_features.supports_sampling_params is False:
+        out.pop("temperature", None)
+        out.pop("top_p", None)
+        out.pop("top_k", None)
+    elif not llm.is_subscription and llm.temperature is not None:
+        out.setdefault("temperature", llm.temperature)
     out["tool_choice"] = "auto"
 
-    # If user didn't set extra_headers, propagate from llm config
-    if llm.extra_headers is not None and "extra_headers" not in out:
-        out["extra_headers"] = dict(llm.extra_headers)
-
-    # Inject OpenRouter HTTP-Referer / X-Title via extra_headers so we don't
-    # have to mutate os.environ (which would leak across conversations in a
-    # multi-tenant server; see issue #3138). User-supplied headers win.
-    openrouter_headers = llm._openrouter_headers()
-    if openrouter_headers:
-        existing = out.get("extra_headers") or {}
-        out["extra_headers"] = {**openrouter_headers, **existing}
+    out = apply_extra_headers(out, llm)
 
     # Store defaults to False (stateless) unless explicitly provided
     if store is not None:
         out["store"] = bool(store)
     else:
         out.setdefault("store", False)
-
-    model_features = get_features(llm._model_name_for_capabilities())
 
     # Include encrypted reasoning only when the user enables it on the LLM,
     # and only for stateless calls (store=False). Respect user choice.
@@ -90,10 +84,7 @@ def select_responses_options(
     ):
         out["prompt_cache_retention"] = llm.prompt_cache_retention
 
-    # Pass through user-provided extra_body unchanged
-    if llm.litellm_extra_body:
-        out["extra_body"] = llm.litellm_extra_body
-
+    out = apply_extra_body(out, llm)
     context = resolve_llm_call_context(call_context)
     apply_llm_call_context(out, context)
 
