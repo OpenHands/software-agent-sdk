@@ -1,11 +1,12 @@
 """Tests for Conversation constructor with secrets parameter."""
 
 import tempfile
+import threading
 import uuid
 from unittest.mock import patch
 
 import pytest
-from pydantic import SecretStr
+from pydantic import PrivateAttr, SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
@@ -31,6 +32,16 @@ class _DynamicTokenSource(SecretSource):
 class _CallableApiKeySource(SecretSource):
     def get_value(self):
         return "callable-api-key"
+
+
+class _LockBackedTokenSource(SecretSource):
+    calls: int = 0
+    _lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
+
+    def get_value(self) -> str:
+        with self._lock:
+            self.calls += 1
+            return f"dynamic-token-{self.calls}"
 
 
 def create_test_agent() -> Agent:
@@ -156,6 +167,54 @@ def test_local_conversation_constructor_with_empty_secrets():
         # Should return empty dict for any command
         env_vars = secret_registry.get_secrets_as_env_vars("echo $API_KEY")
         assert env_vars == {}
+
+
+def test_update_secrets_preserves_registry_and_secret_source_identity():
+    agent = create_test_agent()
+    conv_id = uuid.uuid4()
+    source = _LockBackedTokenSource()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        conv = Conversation(
+            agent=agent,
+            workspace=tmpdir,
+            persistence_dir=tmpdir,
+            conversation_id=conv_id,
+        )
+        assert isinstance(conv, LocalConversation)
+        registry = conv.state.secret_registry
+        sources = registry.secret_sources
+        bound_lookup = registry.get_secret_value
+        bound_mask = registry.mask_secrets_in_output
+
+        conv.update_secrets({"DYNAMIC_TOKEN": source})
+        assert conv.state.secret_registry is registry
+        assert registry.secret_sources is sources
+        assert bound_lookup("DYNAMIC_TOKEN") == "dynamic-token-1"
+
+        conv.update_secrets({"STATIC_TOKEN": "static-value"})
+
+        assert conv.state.secret_registry is registry
+        assert registry.secret_sources is sources
+        assert sources["DYNAMIC_TOKEN"] is source
+        assert source.calls == 1
+        assert bound_lookup("STATIC_TOKEN") == "static-value"
+        assert bound_mask("static-value") == "<secret-hidden>"
+        conv.close()
+
+        reopened = Conversation(
+            agent=agent,
+            workspace=tmpdir,
+            persistence_dir=tmpdir,
+            conversation_id=conv_id,
+        )
+        assert isinstance(reopened, LocalConversation)
+        restored_sources = reopened.state.secret_registry.secret_sources
+        assert "STATIC_TOKEN" in restored_sources
+        restored_dynamic = restored_sources["DYNAMIC_TOKEN"]
+        assert isinstance(restored_dynamic, _LockBackedTokenSource)
+        assert restored_dynamic.calls == 1
+        reopened.close()
 
 
 def test_update_secrets_registry_survives_restart_without_cipher():

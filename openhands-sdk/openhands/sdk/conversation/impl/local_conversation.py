@@ -2581,13 +2581,11 @@ class LocalConversation(BaseConversation):
                      SecretValue = str | Callable[[], str]. Callables are invoked lazily
                      when a command references the secret key.
         """
-        # Reassign a modified copy so ConversationState.__setattr__ fires the
-        # autosave; an in-place registry mutation never touches a state field
-        # and so never persists.
+        # Long-lived consumers bind methods on this registry, so preserve its
+        # identity and explicitly schedule autosave for the nested mutation.
         with self._state:
-            registry = self._state.secret_registry.model_copy(deep=True)
-            registry.update_secrets(secrets)
-            self._state.secret_registry = registry
+            self._state.secret_registry.update_secrets(secrets)
+            self._state._mark_dirty()
         logger.info(f"Added {len(secrets)} secrets to conversation")
 
     def set_security_analyzer(self, analyzer: SecurityAnalyzerBase | None) -> None:
