@@ -41,6 +41,7 @@ from openhands.sdk.tool.builtins.vision_inspect import (
     VisionInspectTool,
     has_vision_profile_available,
 )
+from openhands.sdk.utils.deprecation import deprecated
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
 
@@ -731,6 +732,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         return self
 
+    @deprecated(
+        deprecated_in="1.40.0",
+        removed_in="1.45.0",
+        details="Use model_dump(exclude_none=True) instead.",
+    )
     def model_dump_succint(self, **kwargs):
         """Like model_dump, but excludes None fields by default."""
         if "exclude_none" not in kwargs:
