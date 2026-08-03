@@ -4,6 +4,7 @@ from pyromind_sdk.client.models import StudioTaskStatus
 
 from openhands.agent_server.kafka_bus.kafka_handler import MessageHandler
 from openhands.agent_server.kafka_bus.kafka_topic import KafkaTopic
+from openhands.agent_server.kafka_bus.kafka_utils import decompression
 from openhands.agent_server.kafka_bus.message_event import MessageEvent
 from openhands.agent_server.run_workflow_callback import (
     deliver_run_workflow_status,
@@ -105,11 +106,16 @@ class StudioWorkflowNotifyHandler(MessageHandler):
             )
             return
 
+        # 压缩前的内容
         error_log = (
             str(message_data["error_msg"])
             if message_data.get("error_msg") is not None
             else None
         )
+
+        if error_log:
+            # 解压缩
+            error_log = decompression(error_log)
 
         result = await deliver_run_workflow_status(
             task_id=task_id,
