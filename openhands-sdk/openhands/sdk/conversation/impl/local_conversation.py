@@ -648,6 +648,40 @@ class LocalConversation(BaseConversation):
             ConversationErrorEvent(source="environment", code=code, detail=detail)
         )
 
+    def _check_stuck_or_nudge(self) -> bool:
+        """Run stuck-pattern detection for the current run loop iteration.
+
+        A repeating action-error pattern gets one explicit corrective nudge
+        (naming the repeated action and its error) before the conversation is
+        hard-terminated, mirroring how an EMPTY/reasoning-only LLM response
+        already gets `_send_corrective_nudge()` instead of an immediate stop
+        (#4331). The nudge is injected and the loop is left free to run
+        another `agent.step()` this same iteration so the model can react to
+        it; only a pattern that persists past that nudge, or any other stuck
+        pattern, sets STUCK.
+
+        Returns True if STUCK was set and the run loop should stop.
+        """
+        if not self._stuck_detector:
+            return False
+
+        nudge = self._stuck_detector.get_action_error_nudge()
+        if nudge is not None:
+            self._on_event(
+                MessageEvent(
+                    source="environment",
+                    llm_message=Message(role="user", content=[TextContent(text=nudge)]),
+                )
+            )
+            return False
+
+        if self._stuck_detector.is_stuck():
+            logger.warning("Stuck pattern detected.")
+            self._state.execution_status = ConversationExecutionStatus.STUCK
+            return True
+
+        return False
+
     @property
     def stuck_detector(self) -> StuckDetector | None:
         """Get the stuck detector instance if enabled."""
@@ -1869,15 +1903,8 @@ class LocalConversation(BaseConversation):
                         break
 
                     # Check for stuck patterns if enabled
-                    if self._stuck_detector:
-                        is_stuck = self._stuck_detector.is_stuck()
-
-                        if is_stuck:
-                            logger.warning("Stuck pattern detected.")
-                            self._state.execution_status = (
-                                ConversationExecutionStatus.STUCK
-                            )
-                            continue
+                    if self._check_stuck_or_nudge():
+                        continue
 
                     # clear the flag before calling agent.step() (user approved)
                     if (
@@ -2069,14 +2096,8 @@ class LocalConversation(BaseConversation):
                                 continue
                         break
 
-                    if self._stuck_detector:
-                        is_stuck = self._stuck_detector.is_stuck()
-                        if is_stuck:
-                            logger.warning("Stuck pattern detected.")
-                            self._state.execution_status = (
-                                ConversationExecutionStatus.STUCK
-                            )
-                            continue
+                    if self._check_stuck_or_nudge():
+                        continue
 
                     if (
                         self._state.execution_status

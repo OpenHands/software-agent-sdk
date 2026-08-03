@@ -375,8 +375,12 @@ def test_repeating_action_observation_stuck():
     assert stuck_detector.is_stuck() is True
 
 
-def test_repeating_action_error_stuck():
-    """Test detection of repeating action-error cycles."""
+def test_repeating_action_error_nudges_before_stuck():
+    """A repeating action-error pattern gets one corrective nudge before
+    ``is_stuck()`` reports it as terminal (#4331): reaching the threshold
+    (3 by default) is nudge-eligible, not yet stuck; only a further repeat
+    of the identical action-error pair is a hard stuck.
+    """
     llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
     agent = Agent(llm=llm)
     state = ConversationState.create(
@@ -422,16 +426,30 @@ def test_repeating_action_error_stuck():
         state.events.append(action)
         state.events.append(error)
 
-    # Should not stuck with 2 identical action-error pairs
+    # Should not be stuck (nor nudge-eligible) with only 2 identical pairs
     assert stuck_detector.is_stuck() is False
+    assert stuck_detector.get_action_error_nudge() is None
 
-    # Add 1 more identical action-error pair to trigger stuck detection
+    # Add 1 more identical action-error pair to reach the threshold (3)
     action, error = create_action_and_error(2)
     state.events.append(action)
     state.events.append(error)
 
-    # Should be stuck with 3 identical action-error pairs
+    # Threshold reached: nudge-eligible, but not yet a hard stuck
+    assert stuck_detector.is_stuck() is False
+    nudge = stuck_detector.get_action_error_nudge()
+    assert nudge is not None
+    assert "terminal" in nudge
+    assert "Command 'invalid_command' not found" in nudge
+
+    # Model repeats the exact same action-error again despite the nudge
+    action, error = create_action_and_error(3)
+    state.events.append(action)
+    state.events.append(error)
+
+    # Now it's a hard stuck, and there's no further nudge to give
     assert stuck_detector.is_stuck() is True
+    assert stuck_detector.get_action_error_nudge() is None
 
 
 def test_agent_monologue_stuck():
