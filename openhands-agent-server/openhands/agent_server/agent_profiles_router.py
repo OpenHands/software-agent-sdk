@@ -12,14 +12,16 @@ MCP references and returns :class:`~openhands.sdk.profiles.AgentProfileDiagnosti
 """
 
 import asyncio
-from collections.abc import Iterator
-from contextlib import contextmanager
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Path, Request, status
 from pydantic import BaseModel, Field, ValidationError
 
-from openhands.agent_server._secrets_exposure import get_cipher, get_config
+from openhands.agent_server._secrets_exposure import (
+    get_cipher,
+    get_config,
+    store_errors,
+)
 from openhands.agent_server.persistence import (
     PersistedSettings,
     get_agent_profile_store,
@@ -105,25 +107,6 @@ class RenameAgentProfileRequest(BaseModel):
     )
 
 
-@contextmanager
-def _store_errors() -> Iterator[None]:
-    """Map ``AgentProfileStore`` errors to HTTP responses.
-
-    Mirrors ``profiles_router._store_errors``: ``TimeoutError`` and
-    ``ValueError`` only. ``FileNotFoundError`` / ``FileExistsError`` are handled
-    inline per-endpoint so each gets a clean, resource-specific message.
-    """
-    try:
-        yield
-    except TimeoutError:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Agent profile store is busy. Please retry.",
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-
-
 def _llm_has_real_config(llm: LLM) -> bool:
     """True when ``llm`` carries real, user-provided configuration.
 
@@ -173,7 +156,7 @@ def _seed_default_llm_profile(llm: LLM, cipher: Cipher | None) -> str:
     silently clobber it.
     """
     llm_store = get_llm_profile_store()
-    with _store_errors():
+    with store_errors():
         try:
             llm_store.load(SEED_PROFILE_NAME, cipher=cipher)
             return SEED_PROFILE_NAME
@@ -227,7 +210,7 @@ def _seed_default_profile(
     The lock spans empty-check + save + pointer write so concurrent first
     requests seed exactly once and the pointer matches the persisted id.
     """
-    with _store_errors(), store.lock():
+    with store_errors(), store.lock():
         # Double-checked under the lock: a concurrent first request may have
         # already seeded (the outer emptiness check in the list endpoint is
         # unlocked).
@@ -261,7 +244,7 @@ def _seed_default_profile(
 
 def _summary_id_for_name(store: AgentProfileStore, name: str) -> str | None:
     """Return the stable id of the profile stored under ``name``, if present."""
-    with _store_errors():
+    with store_errors():
         for summary in store.list_summaries():
             if summary.get("name") == name:
                 sid = summary.get("id")
@@ -282,14 +265,14 @@ async def list_agent_profiles(request: Request) -> AgentProfileListResponse:
     settings = settings_store.load() or PersistedSettings()
 
     store = get_agent_profile_store()
-    with _store_errors():
+    with store_errors():
         existing = store.list()
 
     if not existing and settings.active_agent_profile_id is None:
         _seed_default_profile(store, request, settings, get_cipher(request))
         settings = settings_store.load() or settings
 
-    with _store_errors():
+    with store_errors():
         summaries = store.list_summaries()
 
     return AgentProfileListResponse(
@@ -308,7 +291,7 @@ async def get_agent_profile(name: ProfileName) -> AgentProfileDetailResponse:
     """
     store = get_agent_profile_store()
     try:
-        with _store_errors():
+        with store_errors():
             profile = store.load(name)
     except FileNotFoundError:
         raise HTTPException(
@@ -361,7 +344,7 @@ async def save_agent_profile(
     # holds the store lock across read + mint + save so two concurrent creates
     # of the same new name can't both mint an id and clobber each other.
     try:
-        with _store_errors():
+        with store_errors():
             save_profile_preserving_identity(
                 store, profile, max_profiles=MAX_AGENT_PROFILES
             )
@@ -392,7 +375,7 @@ async def delete_agent_profile(
     store = get_agent_profile_store()
     deleted_id = _summary_id_for_name(store, name)
 
-    with _store_errors():
+    with store_errors():
         store.delete(name)
 
     if deleted_id is not None:
@@ -428,7 +411,7 @@ async def rename_agent_profile(
     """
     store = get_agent_profile_store()
     try:
-        with _store_errors():
+        with store_errors():
             store.rename(name, body.new_name)
     except FileNotFoundError:
         raise HTTPException(
@@ -462,7 +445,7 @@ async def activate_agent_profile(
     creation-time-only contract). Returns 404 if no stored profile has that id.
     """
     store = get_agent_profile_store()
-    with _store_errors():
+    with store_errors():
         known_ids = {
             str(s["id"]) for s in store.list_summaries() if s.get("id") is not None
         }
@@ -515,7 +498,7 @@ async def materialize_agent_profile(
     """
     store = get_agent_profile_store()
     try:
-        with _store_errors():
+        with store_errors():
             profile = store.load(name)
     except FileNotFoundError:
         raise HTTPException(
