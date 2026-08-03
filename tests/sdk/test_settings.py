@@ -56,6 +56,7 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
     assert section_keys == [
         "general",
         "llm",
+        "agent_context",
         "condenser",
         "verification",
     ]
@@ -111,6 +112,16 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
     # Excluded fields must not appear
     assert "llm.fallback_strategy" not in llm_fields
     assert "llm.retry_listener" not in llm_fields
+
+    # -- agent_context section (only annotated fields surface) --
+    assert sections["agent_context"].label == "Memory"
+    ac_fields = {f.key: f for f in sections["agent_context"].fields}
+    assert set(ac_fields) == {"agent_context.load_memory"}
+    load_memory = ac_fields["agent_context.load_memory"]
+    assert load_memory.label == "Persistent memory"
+    assert load_memory.value_type == "boolean"
+    assert load_memory.default is False
+    assert load_memory.prominence is SettingProminence.MAJOR
 
     # -- condenser section --
     condenser_fields = {f.key: f for f in sections["condenser"].fields}
@@ -358,6 +369,11 @@ def test_export_agent_settings_schema_emits_variant_tagged_sections() -> None:
     assert ("llm", "openhands") in by_keyvariant
     assert ("condenser", "openhands") in by_keyvariant
     assert ("verification", "openhands") in by_keyvariant
+
+    # Memory section is OpenHands-only: the GUI matches sections by key and
+    # ignores variant, so tagging both variants would render the toggle twice.
+    assert ("agent_context", "openhands") in by_keyvariant
+    assert ("agent_context", "acp") not in by_keyvariant
 
     # ACP-variant sections.
     acp_section = by_keyvariant.get(("acp", "acp"))
@@ -880,7 +896,7 @@ def test_llm_agent_settings_validates_mcp_config_as_typed_model() -> None:
 
     assert isinstance(settings.mcp_config["fetch"], MCPServer)
     assert settings.model_dump()["mcp_config"] == {
-        "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}
+        "fetch": {"command": "uvx", "args": ["mcp-server-fetch"], "enabled": True}
     }
 
 
@@ -895,6 +911,26 @@ def test_llm_create_agent_serializes_typed_mcp_config_compactly() -> None:
     assert dump_mcp_config(agent.mcp_config) == {
         "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}
     }
+
+
+def test_disabled_mcp_server_survives_settings_round_trip() -> None:
+    """A switched-off server stays off, and keeps its config, across reloads."""
+    settings = OpenHandsAgentSettings.model_validate(
+        {
+            "mcp_config": {
+                "fetch": {
+                    "command": "uvx",
+                    "args": ["mcp-server-fetch"],
+                    "enabled": False,
+                }
+            }
+        }
+    )
+
+    reloaded = OpenHandsAgentSettings.model_validate(settings.model_dump(mode="json"))
+
+    assert reloaded.mcp_config["fetch"].enabled is False
+    assert reloaded.mcp_config["fetch"].command == "uvx"
 
 
 def test_llm_create_agent_builds_condenser_when_enabled() -> None:
@@ -2012,7 +2048,7 @@ def test_llm_create_agent_resolves_subscription_llm(monkeypatch) -> None:
         subscription_vendor="openai",
     )
     runtime_llm = LLM(model="openai/gpt-5.6")
-    runtime_llm._is_subscription = True
+    runtime_llm.is_subscription = True
 
     def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
         assert llm is original_llm
@@ -2034,7 +2070,7 @@ def test_llm_from_persisted_rehydrates_subscription_runtime(monkeypatch) -> None
     from openhands.sdk.llm.auth import openai
 
     runtime_llm = LLM(model="openai/gpt-5.6", auth_type="subscription")
-    runtime_llm._is_subscription = True
+    runtime_llm.is_subscription = True
 
     def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
         assert llm.auth_type == "subscription"
@@ -2064,7 +2100,7 @@ def test_llm_load_from_env_rehydrates_subscription_runtime(monkeypatch) -> None:
     from openhands.sdk.llm.auth import openai
 
     runtime_llm = LLM(model="openai/gpt-5.6", auth_type="subscription")
-    runtime_llm._is_subscription = True
+    runtime_llm.is_subscription = True
 
     def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
         assert llm.auth_type == "subscription"
@@ -2101,7 +2137,7 @@ def test_create_subscription_llm_from_config_preserves_runtime_llm(monkeypatch) 
         auth_type="subscription",
         subscription_vendor="openai",
     )
-    runtime_llm._is_subscription = True
+    runtime_llm.is_subscription = True
     runtime_llm._subscription_credentials = OAuthCredentials(
         vendor="openai",
         access_token="access-token",
@@ -2186,7 +2222,7 @@ async def test_async_subscription_api_key_uses_async_refresh(monkeypatch) -> Non
         auth_type="subscription",
         subscription_vendor="openai",
     )
-    llm._is_subscription = True
+    llm.is_subscription = True
 
     api_key, extra_headers = await llm._aget_litellm_auth_values()
     assert api_key == "access-token"
@@ -2224,7 +2260,7 @@ def test_sync_subscription_api_key_uses_valid_runtime_credentials(
         auth_type="subscription",
         subscription_vendor="openai",
     )
-    llm._is_subscription = True
+    llm.is_subscription = True
     llm._subscription_credentials = credentials
 
     api_key, extra_headers = llm._get_litellm_auth_values()

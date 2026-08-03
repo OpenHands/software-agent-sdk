@@ -78,6 +78,10 @@ if TYPE_CHECKING:
 CONVERSATION_WORKTREE_ROOT = Path("/tmp/conversation-worktrees")
 
 
+class CredentialBindingActivationRequired(RuntimeError):
+    pass
+
+
 def _build_worktree_guidance(
     *,
     source_workspace: Path,
@@ -282,6 +286,7 @@ def _resolve_agent_from_profile(
     profile_id: "UUID",
     cipher: "Cipher | None",
     mcp_config: "dict[str, MCPServer]",
+    load_memory: bool = False,
 ) -> "tuple[AgentBase, LaunchedAgentProfile]":
     """Load and resolve an agent profile by id, returning the built agent + provenance.
 
@@ -292,6 +297,11 @@ def _resolve_agent_from_profile(
             server's cipher.  Passed explicitly so this free function never
             touches the settings-store singleton (which may not have been
             initialised with the correct cipher yet).
+        load_memory: The user's global persistent-memory preference
+            (``agent_settings.agent_context.load_memory``).  An ``AgentProfile``
+            has no ``agent_context`` field, so the preference cannot ride the
+            profile — it is stamped onto the resolved agent below, else a
+            profile-launched conversation would silently ignore the setting.
 
     Raises:
         ProfileNotFound: No stored profile has ``profile_id``.
@@ -367,6 +377,15 @@ def _resolve_agent_from_profile(
     ):
         agent = agent.model_copy(
             update={"tools": [*agent.tools, Tool(name=BROWSER_TOOL_NAME)]}
+        )
+    # Persistent memory is a global user preference, not a profile field, so it
+    # is carried across the profile-resolution boundary the same way the global
+    # ``mcp_config`` is. Left untouched when off, so the resolved agent stays
+    # byte-identical for everyone who hasn't opted in.
+    if load_memory:
+        context = agent.agent_context or AgentContext()
+        agent = agent.model_copy(
+            update={"agent_context": context.model_copy(update={"load_memory": True})}
         )
     launched = LaunchedAgentProfile(
         agent_profile_id=profile.id,
@@ -566,6 +585,7 @@ class ConversationService:
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     max_concurrent_runs: int = 10
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
+    conversation_idle_ttl_seconds: float | None = None
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_records: dict[UUID, _ConversationRecord] = field(
         default_factory=dict, init=False
@@ -575,6 +595,7 @@ class ConversationService:
         default_factory=list, init=False
     )
     _lease_renewal_task: asyncio.Task | None = field(default=None, init=False)
+    _eviction_task: asyncio.Task | None = field(default=None, init=False)
     _run_executor: ThreadPoolExecutor | None = field(default=None, init=False)
     _credential_bindings: dict[UUID, dict[str, VersionedCredentialBinding]] = field(
         default_factory=dict, init=False
@@ -682,6 +703,35 @@ class ConversationService:
             self._credential_bindings.setdefault(conversation_id, {})[secret_name] = (
                 binding
             )
+
+    async def prepare_for_sandbox_pause(self) -> None:
+        async with self._lifecycle_lock:
+            event_services = self._event_services
+            if event_services is None:
+                raise ValueError("inactive_service")
+            active_services = tuple(event_services.items())
+            results = await asyncio.gather(
+                *(
+                    event_service.__aexit__(None, None, None)
+                    for _, event_service in active_services
+                ),
+                return_exceptions=True,
+            )
+            first_error: BaseException | None = None
+            for (conversation_id, event_service), result in zip(
+                active_services, results, strict=True
+            ):
+                if isinstance(result, BaseException):
+                    if first_error is None:
+                        first_error = result
+                    continue
+                record = self._conversation_records.get(conversation_id)
+                if record is not None:
+                    record.stored = event_service.stored
+                event_services.pop(conversation_id, None)
+            if first_error is not None:
+                raise first_error
+            self._credential_bindings = {}
 
     @staticmethod
     def _is_codex_agent(agent: AgentBase | None) -> bool:
@@ -882,7 +932,10 @@ class ConversationService:
             return await self._get_or_load_event_service_locked(conversation_id)
 
     async def _get_or_load_event_service_locked(
-        self, conversation_id: UUID
+        self,
+        conversation_id: UUID,
+        *,
+        require_runtime_bindings: bool = True,
     ) -> EventService | None:
         event_services = self._event_services
         if event_services is None:
@@ -890,11 +943,22 @@ class ConversationService:
 
         event_service = event_services.get(conversation_id)
         if event_service is not None and event_service.is_open():
+            # Access counts as activity, deferring idle eviction.
+            event_service.touch()
             return event_service
 
         record = self._conversation_records.get(conversation_id)
         if record is None:
             return None
+
+        pending_bindings = self._credential_bindings.get(conversation_id, {})
+        missing_bindings = (
+            record.stored.required_runtime_credential_bindings - pending_bindings.keys()
+        )
+        if require_runtime_bindings and missing_bindings:
+            raise CredentialBindingActivationRequired(
+                "credential_binding_activation_required"
+            )
 
         await asyncio.to_thread(self._prepare_persisted_runtime, record.stored)
         try:
@@ -1271,11 +1335,14 @@ class ConversationService:
 
             settings = get_settings_store().load() or PersistedSettings()
             mcp_config = settings.agent_settings.mcp_config
+            # ``ACPAgentSettings.agent_context`` is nullable, hence the guard.
+            stored_context = settings.agent_settings.agent_context
             resolved_agent, launched_agent_profile = await asyncio.to_thread(
                 _resolve_agent_from_profile,
                 request.agent_profile_id,
                 self.cipher,
                 mcp_config,
+                load_memory=bool(stored_context and stored_context.load_memory),
             )
             request = request.model_copy(update={"agent": resolved_agent})
 
@@ -1462,7 +1529,8 @@ class ConversationService:
             if event_services is None:
                 raise ValueError("inactive_service")
             event_service = await self._get_or_load_event_service_locked(
-                conversation_id
+                conversation_id,
+                require_runtime_bindings=False,
             )
             if event_service is None:
                 return False
@@ -1753,6 +1821,10 @@ class ConversationService:
                 )
 
         self._lease_renewal_task = asyncio.create_task(self._renew_all_leases_loop())
+        if self.conversation_idle_ttl_seconds:
+            self._eviction_task = asyncio.create_task(
+                self._evict_idle_conversations_loop()
+            )
 
         return self
 
@@ -1775,7 +1847,78 @@ class ConversationService:
         except asyncio.CancelledError:
             raise
 
+    async def _evict_idle_conversations_loop(self) -> None:
+        """Periodically evict conversations idle beyond the TTL."""
+        ttl = self.conversation_idle_ttl_seconds
+        if not ttl or ttl <= 0:
+            return
+        interval = max(60.0, ttl / 2)
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                try:
+                    await self._evict_idle_conversations(ttl)
+                except Exception:
+                    logger.exception(
+                        "error_evicting_idle_conversations", stack_info=True
+                    )
+        except asyncio.CancelledError:
+            raise
+
+    async def _evict_idle_conversations(self, ttl_seconds: float) -> None:
+        """Evict idle conversations, keeping the record so they re-hydrate on access.
+
+        Running or externally-subscribed conversations are skipped.
+        """
+        async with self._lifecycle_lock:
+            event_services = self._event_services
+            if event_services is None:
+                return
+            to_evict = [
+                conversation_id
+                for conversation_id, event_service in event_services.items()
+                if event_service.is_open()
+                and event_service.idle_seconds() >= ttl_seconds
+                and event_service.is_idle_evictable()
+            ]
+            for conversation_id in to_evict:
+                event_service = event_services.pop(conversation_id, None)
+                if event_service is None:
+                    continue
+                # Preserve runtime-only state so rehydration is faithful:
+                # sync the catalog to the current stored (switch_acp_model /
+                # secret updates replace it) and hand back credential bindings
+                # (close() clears them).
+                record = self._conversation_records.get(conversation_id)
+                if record is not None:
+                    record.stored = event_service.stored
+                bindings = dict(event_service.credential_bindings)
+                try:
+                    await event_service.__aexit__(None, None, None)
+                except Exception:
+                    logger.warning(
+                        "Failed to evict idle conversation %s",
+                        conversation_id,
+                        exc_info=True,
+                    )
+                else:
+                    logger.info(
+                        "Evicted idle conversation %s (idle >= %.0fs)",
+                        conversation_id,
+                        ttl_seconds,
+                    )
+                if bindings:
+                    pending = self._credential_bindings.setdefault(conversation_id, {})
+                    for secret_name, binding in bindings.items():
+                        pending.setdefault(secret_name, binding)
+
     async def __aexit__(self, exc_type, exc_value, traceback):
+        if self._eviction_task is not None:
+            self._eviction_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._eviction_task
+            self._eviction_task = None
+
         if self._lease_renewal_task is not None:
             self._lease_renewal_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -1866,6 +2009,7 @@ class ConversationService:
             secrets_store=get_secrets_store(config),
             max_concurrent_runs=config.max_concurrent_runs,
             lease_ttl_seconds=config.lease_ttl_seconds,
+            conversation_idle_ttl_seconds=config.conversation_idle_ttl_seconds,
         )
 
     async def _start_event_service(
@@ -1918,6 +2062,8 @@ class ConversationService:
                     for webhook_spec in self.webhook_specs
                 ]
             )
+            # Mark these as internal so idle eviction only counts external clients.
+            event_service.mark_subscription_baseline()
             # Save metadata immediately after successful start to ensure persistence
             # even if the system is not shut down gracefully
             await event_service.save_meta()
@@ -2035,6 +2181,8 @@ class _EventSubscriber(Subscriber):
     service: EventService
 
     async def __call__(self, _event: Event):
+        # Any event is activity; refresh the idle-eviction clock.
+        self.service.touch()
         # Skip updating timestamp for ConversationStateUpdateEvent, which is
         # published during startup/state changes and doesn't represent actual
         # conversation activity. This prevents updated_at from being reset

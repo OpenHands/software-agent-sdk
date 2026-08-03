@@ -41,6 +41,7 @@ from openhands.sdk.tool.builtins.vision_inspect import (
     VisionInspectTool,
     has_vision_profile_available,
 )
+from openhands.sdk.utils.deprecation import deprecated
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
 
@@ -133,7 +134,18 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     mcp_config: dict[str, MCPServer] = Field(
         default_factory=dict,
         description="Optional MCP servers to expose as tools.",
-        examples=[{"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}],
+        examples=[
+            {
+                "fetch": {
+                    "command": "uvx",
+                    "args": [
+                        "--with",
+                        "mcp==1.29.0",
+                        "mcp-server-fetch==2026.7.10",
+                    ],
+                }
+            }
+        ],
     )
     filter_tools_regex: str | None = Field(
         default=None,
@@ -720,6 +732,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         return self
 
+    @deprecated(
+        deprecated_in="1.40.0",
+        removed_in="1.45.0",
+        details="Use model_dump(exclude_none=True) instead.",
+    )
     def model_dump_succint(self, **kwargs):
         """Like model_dump, but excludes None fields by default."""
         if "exclude_none" not in kwargs:

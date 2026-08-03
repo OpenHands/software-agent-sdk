@@ -35,12 +35,14 @@ from openhands.agent_server.bash_service import (
 from openhands.agent_server.config import Config, get_default_config
 from openhands.agent_server.conversation_service import (
     ConversationService,
+    CredentialBindingActivationRequired,
     get_default_conversation_service,
 )
 from openhands.agent_server.event_router import normalize_datetime_to_server_timezone
 from openhands.agent_server.models import (
     BashError,
     BashEventBase,
+    BashOutput,
     ExecuteBashRequest,
     ServerErrorEvent,
 )
@@ -279,7 +281,14 @@ async def events_socket(
 
     logger.info(f"Event Websocket Connected: {conversation_id}")
     conv_service = _get_conversation_service(websocket)
-    event_service = await conv_service.get_event_service(conversation_id)
+    try:
+        event_service = await conv_service.get_event_service(conversation_id)
+    except CredentialBindingActivationRequired:
+        await websocket.close(
+            code=1013,
+            reason="credential_binding_activation_required",
+        )
+        return
     if event_service is None:
         logger.warning(f"Converation not found: {conversation_id}")
         await websocket.close(code=4004, reason="Conversation not found")
@@ -437,6 +446,8 @@ async def bash_events_socket(
             try:
                 # Keep the connection alive and handle any incoming messages
                 data = await websocket.receive_json()
+                if _is_auth_control_message(data):
+                    continue
                 logger.info("Received bash request")
                 request = ExecuteBashRequest.model_validate(data)
                 await bash_service.start_bash_command(request)
@@ -444,7 +455,6 @@ async def bash_events_socket(
                 logger.info("Bash websocket disconnected")
                 return
             except Exception as e:
-                # Something went wrong - Tell the client so they can handle it
                 try:
                     error_event = BashError(
                         code=e.__class__.__name__,
@@ -452,16 +462,16 @@ async def bash_events_socket(
                     )
                     dumped = error_event.model_dump(mode="json")
                     await websocket.send_json(dumped)
-                    # Log after - if send event raises an error logging is handled
-                    # in the except block
-                    logger.exception(
-                        "error_in_bash_event_subscription", stack_info=True
+                    logger.error(
+                        "error_in_bash_event_subscription (error_type=%s)",
+                        type(e).__name__,
                     )
-                except Exception:
-                    # Sending the error event failed - likely a closed socket
-                    logger.info("Base websocket disconnected")
+                except Exception as send_error:
+                    logger.info("Bash websocket disconnected")
                     logger.debug(
-                        "error_sending_bash_error", exc_info=True, stack_info=True
+                        "error_sending_bash_error (error_type=%s, send_error_type=%s)",
+                        type(e).__name__,
+                        type(send_error).__name__,
                     )
                     await _safe_close_websocket(websocket)
                     return
@@ -485,14 +495,12 @@ async def _send_event(event: Event, websocket: WebSocket):
 
 
 def _is_auth_control_message(data: object) -> bool:
-    """Return True for ``{"type": "auth", ...}`` first-message-auth frames.
-
-    Clients that handle both legacy and first-message auth may send this
-    frame even after legacy (query/header) auth has already succeeded.
-    The post-auth receive loops must ignore it instead of validating it
-    as a regular message payload.
-    """
-    return isinstance(data, dict) and data.get("type") == "auth"
+    """Match redundant auth frames left unread after legacy authentication."""
+    return (
+        isinstance(data, dict)
+        and data.get("type") == "auth"
+        and set(data) <= {"type", "session_api_key"}
+    )
 
 
 async def _safe_close_websocket(
@@ -538,16 +546,39 @@ class _WebSocketSubscriber(Subscriber):
 
 
 async def _send_bash_event(event: BashEventBase, websocket: WebSocket):
+    metadata: dict[str, str | int | None] = {
+        "kind": event.kind,
+        "event_id": str(event.id),
+        "command_id": None,
+        "order": None,
+        "exit_code": None,
+    }
+    if isinstance(event, BashOutput):
+        metadata.update(
+            command_id=str(event.command_id),
+            order=event.order,
+            exit_code=event.exit_code,
+        )
+
     if not _is_websocket_connected(websocket):
-        logger.debug("skip_sending_bash_event_socket_disconnected: %r", event)
+        logger.debug("skip_sending_bash_event_socket_disconnected: %s", metadata)
         return
     try:
         dumped = event.model_dump(mode="json")
         await websocket.send_json(dumped)
     except (RuntimeError, WebSocketDisconnect) as e:
-        logger.debug("error_sending_bash_event_disconnected: %r (%s)", event, e)
-    except Exception:
-        logger.exception("error_sending_bash_event: %r", event, stack_info=True)
+        logger.debug(
+            "error_sending_bash_event_disconnected: %s (error_type=%s)",
+            metadata,
+            type(e).__name__,
+        )
+    except Exception as e:
+        logger.error(
+            "error_sending_bash_event: %s (error_type=%s)",
+            metadata,
+            type(e).__name__,
+            stack_info=True,
+        )
 
 
 @dataclass

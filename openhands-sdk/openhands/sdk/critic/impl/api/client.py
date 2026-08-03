@@ -330,6 +330,3 @@ class CriticClient(BaseModel):
 
         mapping = {lbl: probs[i] for i, lbl in enumerate(self.all_labels)}
         return LabelProbMap(probs=mapping, order=list(self.all_labels))
-
-    def predict_labels(self, probs: list[float], threshold: float = 0.5) -> list[int]:
-        return [1 if p > threshold else 0 for p in probs]
