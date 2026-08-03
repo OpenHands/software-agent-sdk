@@ -272,6 +272,68 @@ def test_df_run_pipeline_validates_output_and_writes_local_report(
     ]
 
 
+def test_df_run_pipeline_validates_dpo_output(
+    tmp_path: Path,
+) -> None:
+    pipeline_dir = tmp_path / "public_data" / "data-preparation"
+    pipeline_dir.mkdir(parents=True)
+    pipeline = pipeline_dir / "pipeline.py"
+    pipeline.write_text(
+        "\n".join(
+            [
+                "import json, sys",
+                "row = {",
+                "  'id': 'dpo-1',",
+                "  'system_prompt': 'system',",
+                "  'user_prompt': 'question',",
+                "  'gt': 'chosen answer',",
+                "  'rejected_answer': 'rejected answer',",
+                "}",
+                "with open(sys.argv[2], 'w', encoding='utf-8') as f:",
+                "    f.write(json.dumps(row) + '\\n')",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (pipeline_dir / "input.jsonl").write_text("{}\n", encoding="utf-8")
+    scripts_dir = (
+        Path(__file__).parents[3]
+        / ".agents"
+        / "skills"
+        / "data-preparation"
+        / "scripts"
+    )
+    conversation = cast(Any, _fake_conversation(tmp_path))
+    conversation.state.agent = _conversation_with_llm().state.agent
+
+    observation = DfRunPipelineExecutor(runtime_dir=str(scripts_dir))(
+        DfRunPipelineAction(
+            pipeline_path="public_data/data-preparation/pipeline.py",
+            args=[
+                "public_data/data-preparation/input.jsonl",
+                "public_data/data-preparation/processed.sample.jsonl",
+            ],
+            output_schema="dpo",
+            model_profile="text",
+        ),
+        conversation,
+    )
+
+    assert not observation.is_error
+    assert observation.exit_code == 0
+    report = json.loads(Path(observation.report_path).read_text())
+    assert report["validation"] == {"status": "passed", "schema": "dpo", "rows": 1}
+    assert observation.sample_records == [
+        {
+            "id": "dpo-1",
+            "system_prompt": "system",
+            "user_prompt": "question",
+            "gt": "chosen answer",
+            "rejected_answer": "rejected answer",
+        }
+    ]
+
+
 def test_df_run_pipeline_rejects_handwritten_vision_transport(
     tmp_path: Path,
 ) -> None:

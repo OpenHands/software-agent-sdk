@@ -12,6 +12,15 @@ Report，不进入数据行。
 四个字段均为非空字符串。规则清洗本身是前处理，必须在下游生成、QA、代码等场景中
 映射成此格式。
 
+## `dpo`
+
+```json
+{"id":"dpo-1","system_prompt":"You are helpful.","user_prompt":"问题","gt":"推荐回答","rejected_answer":"不推荐回答"}
+```
+
+五个字段均为非空字符串；`gt` 是 chosen/preferred answer，`rejected_answer` 是 rejected
+answer，二者去除首尾空白后不能相同。
+
 ## `vision`
 
 ```json

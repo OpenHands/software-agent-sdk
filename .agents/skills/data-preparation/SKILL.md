@@ -20,7 +20,8 @@ description: >-
 
 ## 执行流程
 
-1. `preview_dataset(mode="inspect")` 确认结构，再用 `mode="sample"` 物化最多 3 条。
+1. `preview_dataset(mode="inspect")` 确认结构；目录输入先读取
+   `directory_summary`，再决定继续 inspect、sample 哪些路径，或向用户确认格式意图。
 2. 根据下表只读取相关场景 reference，同时读取
    [通用约定](references/dataflow-common.md) 和
    [输出契约](references/schema-conventions.md)。
@@ -47,6 +48,7 @@ description: >-
 | 规则清洗、语言/长度过滤、去重 | [文本规则清洗](references/text-cleaning.md) | 下游 Schema |
 | 通用生成、改写、打分、过滤 | [通用 LLM 处理](references/generic-llm-processing.md) | `text` |
 | SFT 合成与筛选 | [SFT 数据](references/sft-data.md) | `text` |
+| DPO 偏好对清洗或生成 | [DPO 数据](references/dpo-data.md) | `dpo` |
 | 推理问题和答案合成 | [Reasoning 数据](references/reasoning-data.md) | `text` |
 | 代码指令和代码生成 | [Code 数据](references/code-data.md) | `text` |
 | 文本/Markdown 清洗并生成 QA | [知识库与 QA](references/knowledge-qa.md) | `text` |
@@ -63,6 +65,8 @@ description: >-
 - 文本任务使用 `model_profile="text"`；图片任务使用 `model_profile="vision"`。
 - 图片 Pipeline 只配置 `ImagePipelineConfig`，不得自行实现 HTTP、Base64、重试或
   Checkpoint。
+- `directory_summary` 只是结构摘要，不是数据 Schema；低置信度、混合结构或需要
+  类别/异常/大小/命名模式覆盖时，继续 inspect 或自行选择 `sample_paths`。
 - Text2SQL Sample 使用 Python 3.10 的 `DATAFLOW_PYTHON`；Pyromind 固定
   `open-dataflow==1.0.10`、CPU 执行。
 - `processed.jsonl` 必须通过所选 Schema 校验，ID 唯一且不含运行审计字段。

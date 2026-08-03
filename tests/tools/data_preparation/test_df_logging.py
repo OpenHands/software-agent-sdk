@@ -442,6 +442,50 @@ def test_validate_canonical_text_jsonl(
     assert result == {"status": "passed", "schema": "text", "rows": 1}
 
 
+def test_validate_canonical_dpo_jsonl(
+    validate_prepared_data: Any,
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "processed.jsonl"
+    _write_jsonl(
+        output,
+        [
+            {
+                "id": "dpo-1",
+                "system_prompt": "You are helpful.",
+                "user_prompt": "Question",
+                "gt": "Chosen answer",
+                "rejected_answer": "Rejected answer",
+            }
+        ],
+    )
+
+    result = validate_prepared_data.validate_jsonl(output, schema="dpo")
+    assert result == {"status": "passed", "schema": "dpo", "rows": 1}
+
+
+def test_validate_dpo_rejects_equal_answers(
+    validate_prepared_data: Any,
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "processed.jsonl"
+    _write_jsonl(
+        output,
+        [
+            {
+                "id": "dpo-1",
+                "system_prompt": "system",
+                "user_prompt": "user",
+                "gt": "same",
+                "rejected_answer": " same ",
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="gt and rejected_answer"):
+        validate_prepared_data.validate_jsonl(output, schema="dpo")
+
+
 def test_validate_canonical_vision_jsonl(
     validate_prepared_data: Any,
     tmp_path: Path,
@@ -492,6 +536,29 @@ def test_validate_jsonl_rejects_extra_fields(
 
     with pytest.raises(ValueError, match="extra=.*source_path"):
         validate_prepared_data.validate_jsonl(output, schema="text")
+
+
+def test_validate_dpo_rejects_extra_fields(
+    validate_prepared_data: Any,
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "processed.jsonl"
+    _write_jsonl(
+        output,
+        [
+            {
+                "id": "dpo-1",
+                "system_prompt": "system",
+                "user_prompt": "user",
+                "gt": "chosen",
+                "rejected_answer": "rejected",
+                "source_path": "must-not-leak",
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="extra=.*source_path"):
+        validate_prepared_data.validate_jsonl(output, schema="dpo")
 
 
 def _write_jsonl(path: Path, records: list[dict]) -> None:

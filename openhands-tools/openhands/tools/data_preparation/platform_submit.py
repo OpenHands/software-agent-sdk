@@ -66,6 +66,7 @@ IMAGE_UTILS_API_VERSION = "1"
 GPU_PRODUCT_FALLBACKS = ("NVIDIA-H100-NVL", "NVIDIA-H100-80GB-HBM3")
 OutputSchema = Literal[
     "text",
+    "dpo",
     "vision",
     "multiturn",
     "function_call",
@@ -168,7 +169,7 @@ class DfSubmitPipelineAction(Action):
     output_schema: OutputSchema | None = Field(
         default=None,
         description=(
-            "Canonical output schema: text, vision, multiturn, function_call, "
+            "Canonical output schema: text, dpo, vision, multiturn, function_call, "
             "quality_evaluation, or text2sql. New data-preparation runs should "
             "always set this; None is retained only for legacy pipelines."
         ),

@@ -66,6 +66,7 @@ _ROWS_API_MAX_ROWS = 10_000
 _LOG_TAIL_CHARS = 6000
 OutputSchema = Literal[
     "text",
+    "dpo",
     "vision",
     "multiturn",
     "function_call",
@@ -443,7 +444,7 @@ class DfRunPipelineAction(Action):
     output_schema: OutputSchema | None = Field(
         default=None,
         description=(
-            "Canonical JSONL schema to validate after a successful run: text, "
+            "Canonical JSONL schema to validate after a successful run: text, dpo, "
             "vision, multiturn, function_call, quality_evaluation, or text2sql. "
             "For the standard pipeline contract, args[1] is treated as the output "
             "path. Omit only for legacy pipelines with non-standard outputs."

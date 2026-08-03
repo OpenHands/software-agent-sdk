@@ -98,6 +98,26 @@ def test_build_dataflow_command_structure() -> None:
     assert "cp " not in cmd
 
 
+def test_build_dataflow_command_validates_dpo_schema() -> None:
+    cmd = _build_dataflow_command(
+        input_path="/data/input.jsonl",
+        output_dir="/output/run1",
+        llm_env={
+            "DF_API_KEY": "sk-test",
+            "DF_API_URL": "http://localhost/v1/chat/completions",
+            "DF_MODEL_NAME": "gpt-4o",
+        },
+        convert_format="none",
+        runtime_dir_name="runtime-r1",
+        image_utils_api_version="1",
+        output_schema="dpo",
+    )
+
+    assert "validate_prepared_data.py" in cmd
+    assert "--schema dpo" in cmd
+    assert "--image-root" not in cmd
+
+
 # ---------------------------------------------------------------------------
 # _build_dataflow_workflow
 # ---------------------------------------------------------------------------

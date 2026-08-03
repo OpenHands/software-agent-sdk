@@ -17,6 +17,23 @@
 - 四个字段都必须是非空字符串。
 - `id` 在整个文件内唯一。
 
+## DPO
+
+```json
+{
+  "id": "alpaca-gpt4-2",
+  "system_prompt": "You are a helpful assistant.",
+  "user_prompt": "用户问题",
+  "gt": "推荐回答",
+  "rejected_answer": "不推荐回答"
+}
+```
+
+- 五个字段都必须是非空字符串。
+- `gt` 是 chosen / preferred answer；`rejected_answer` 是 rejected answer。
+- `gt` 和 `rejected_answer` 去除首尾空白后不能相同。
+- `id` 在整个文件内唯一。
+
 ## 图片
 
 ```json
