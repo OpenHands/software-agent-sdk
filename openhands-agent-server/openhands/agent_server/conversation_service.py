@@ -2278,6 +2278,11 @@ class WebhookSubscriber(Subscriber):
     session_api_key: str | None = None
     queue: list[Event] = field(default_factory=list)
     _flush_timer: asyncio.Task | None = field(default=None, init=False)
+    _post_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+    _queue_sizes: list[int] = field(default_factory=list, init=False)
+    _queue_bytes: int = field(default=0, init=False)
+    _dropped_events: int = field(default=0, init=False)
+    _closed: bool = field(default=False, init=False)
     # Per-instance sleep seam so tests override delays without patching the
     # global asyncio.sleep. default_factory (not default) keeps it an instance
     # attribute, else the function would be descriptor-bound as a method.
@@ -2287,17 +2292,24 @@ class WebhookSubscriber(Subscriber):
 
     async def __call__(self, event: Event):
         """Add event to queue and post to webhook when buffer size is reached."""
-        self.queue.append(event)
+        self._enqueue(event)
 
-        if len(self.queue) >= self.spec.event_buffer_size:
+        if (
+            len(self.queue) >= self.spec.event_buffer_size
+            or self._queue_bytes >= self.spec.max_batch_bytes
+        ):
+            if self._post_lock.locked():
+                self._start_flush_timer()
+                return
             # Cancel timer since we're flushing due to buffer size
             self._cancel_flush_timer()
             await self._post_events()
-        elif not self._flush_timer:
-            self._flush_timer = asyncio.create_task(self._flush_after_delay())
+        elif self.queue:
+            self._start_flush_timer()
 
     async def close(self):
         """Post any remaining items in the queue to the webhook."""
+        self._closed = True
         # Cancel any pending flush timer
         self._cancel_flush_timer()
 
@@ -2305,29 +2317,25 @@ class WebhookSubscriber(Subscriber):
             await self._post_events()
 
     async def _post_events(self):
-        """Post queued events to the webhook with retry logic."""
-        if not self.queue:
-            return
+        """Post bounded batches serially until the queue is empty or a post fails."""
+        async with self._post_lock:
+            self._sync_queue_sizes()
+            self._trim_queue()
+            events_remaining = len(self.queue)
+            while events_remaining:
+                events_to_post, event_data = self._take_batch(events_remaining)
+                if not await self._post_batch(event_data):
+                    self._requeue(events_to_post)
+                    return
+                events_remaining -= len(events_to_post)
 
-        events_to_post = self.queue.copy()
-        self.queue.clear()
+    async def _post_batch(self, event_data: list[dict[str, Any]]) -> bool:
+        """Post one serialized batch with retry logic."""
 
         # Prepare headers
         headers = self.spec.headers.copy()
         if self.session_api_key:
             headers["X-Session-API-Key"] = self.session_api_key
-
-        # Convert events to a JSON-serializable format. mode="json" is required
-        # so types like set and SecretStr become JSON-safe primitives; without
-        # it httpx's encoder raises "Object of type set/SecretStr is not JSON
-        # serializable", every retry fails identically, and the events are
-        # dropped. (Mirrors ConversationWebhookSubscriber.post_conversation_info.)
-        event_data = [
-            event.model_dump(mode="json")
-            if hasattr(event, "model_dump")
-            else event.__dict__
-            for event in events_to_post
-        ]
 
         # Construct events URL
         events_url = (
@@ -2350,7 +2358,7 @@ class WebhookSubscriber(Subscriber):
                         f"Successfully posted {len(event_data)} events "
                         f"to webhook {events_url}"
                     )
-                    return
+                    return True
             except Exception as e:
                 logger.warning(f"Webhook post attempt {attempt + 1} failed: {e}")
                 if attempt < self.spec.num_retries:
@@ -2360,15 +2368,95 @@ class WebhookSubscriber(Subscriber):
                         f"Failed to post events to webhook {events_url} "
                         f"after {self.spec.num_retries + 1} attempts"
                     )
-                    self.queue.extend(events_to_post)
-                    overflow = len(self.queue) - self.spec.max_queue_size
-                    if overflow > 0:
-                        del self.queue[:overflow]
-                        logger.warning(
-                            f"Webhook queue exceeded max_queue_size="
-                            f"{self.spec.max_queue_size}; dropped {overflow} "
-                            f"oldest event(s) for {events_url}."
-                        )
+        return False
+
+    @staticmethod
+    def _event_data(event: Event) -> dict[str, Any]:
+        # mode="json" makes types such as set and SecretStr JSON-safe.
+        if hasattr(event, "model_dump"):
+            return event.model_dump(mode="json")
+        return event.__dict__
+
+    @classmethod
+    def _event_size(cls, event: Event) -> int:
+        return len(
+            json.dumps(
+                cls._event_data(event),
+                ensure_ascii=False,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode()
+        )
+
+    def _sync_queue_sizes(self):
+        """Refresh size accounting after callers directly replace the public queue."""
+        if len(self._queue_sizes) != len(self.queue):
+            self._queue_sizes = [self._event_size(event) for event in self.queue]
+            self._queue_bytes = sum(self._queue_sizes)
+
+    def _enqueue(self, event: Event):
+        self._sync_queue_sizes()
+        event_size = self._event_size(event)
+        self.queue.append(event)
+        self._queue_sizes.append(event_size)
+        self._queue_bytes += event_size
+        self._trim_queue()
+
+    def _requeue(self, events: list[Event]):
+        sizes = [self._event_size(event) for event in events]
+        self.queue[:0] = events
+        self._queue_sizes[:0] = sizes
+        self._queue_bytes += sum(sizes)
+        self._trim_queue()
+
+    def _trim_queue(self):
+        dropped = 0
+        while self.queue and (
+            len(self.queue) > self.spec.max_queue_size
+            or self._queue_bytes > self.spec.max_queue_bytes
+        ):
+            del self.queue[0]
+            self._queue_bytes -= self._queue_sizes.pop(0)
+            dropped += 1
+        if dropped:
+            previous_dropped = self._dropped_events
+            self._dropped_events += dropped
+            if (
+                previous_dropped == 0
+                or self._dropped_events // 100 > previous_dropped // 100
+            ):
+                logger.warning(
+                    "Webhook queue exceeded its configured count or byte limit; "
+                    f"dropped {self._dropped_events} event(s) so far for conversation "
+                    f"{self.conversation_id.hex}."
+                )
+
+    def _take_batch(self, max_events: int) -> tuple[list[Event], list[dict[str, Any]]]:
+        self._sync_queue_sizes()
+        batch_size = 2  # JSON array brackets
+        batch_count = 0
+        event_data: list[dict[str, Any]] = []
+
+        for event, event_size in zip(self.queue, self._queue_sizes, strict=True):
+            next_size = batch_size + event_size + (1 if batch_count else 0)
+            if batch_count and next_size > self.spec.max_batch_bytes:
+                break
+            event_data.append(self._event_data(event))
+            batch_size = next_size
+            batch_count += 1
+            if batch_count >= min(self.spec.event_buffer_size, max_events):
+                break
+
+        events = self.queue[:batch_count]
+        del self.queue[:batch_count]
+        removed_sizes = self._queue_sizes[:batch_count]
+        del self._queue_sizes[:batch_count]
+        self._queue_bytes -= sum(removed_sizes)
+        return events, event_data
+
+    def _start_flush_timer(self):
+        if not self._closed and not self._flush_timer:
+            self._flush_timer = asyncio.create_task(self._flush_after_delay())
 
     def _cancel_flush_timer(self):
         """Cancel the current flush timer if it exists."""
@@ -2378,16 +2466,22 @@ class WebhookSubscriber(Subscriber):
 
     async def _flush_after_delay(self):
         """Wait for flush_delay seconds then flush events if any exist."""
+        current_task = asyncio.current_task()
+        should_reschedule = False
         try:
             await self._sleep(self.spec.flush_delay)
             # Only flush if there are events in the queue
             if self.queue:
                 await self._post_events()
+                should_reschedule = bool(self.queue)
         except asyncio.CancelledError:
             # Timer was cancelled, which is expected behavior
             pass
         finally:
-            self._flush_timer = None
+            if self._flush_timer is current_task:
+                self._flush_timer = None
+            if should_reschedule:
+                self._start_flush_timer()
 
 
 @dataclass

@@ -857,7 +857,7 @@ def get_settings_store(config: Config | None = None) -> FileSettingsStore:
         # Double-check after acquiring lock
         if _settings_store is None:
             _settings_store = FileSettingsStore(
-                persistence_dir=_get_persistence_dir(config),
+                persistence_dir=_get_profile_persistence_dir(),
                 cipher=_get_cipher(config),
             )
         return _settings_store
@@ -889,7 +889,7 @@ def get_secrets_store(config: Config | None = None) -> FileSecretsStore:
         # Double-check after acquiring lock
         if _secrets_store is None:
             _secrets_store = FileSecretsStore(
-                persistence_dir=_get_persistence_dir(config),
+                persistence_dir=_get_profile_persistence_dir(),
                 cipher=_get_cipher(config),
             )
         return _secrets_store

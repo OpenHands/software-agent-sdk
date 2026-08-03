@@ -269,12 +269,9 @@ async def test_telemetry_init_does_not_hijack_the_settings_store_singleton(
 ):
     """Regression: telemetry must prime the settings store WITH the config.
 
-    ``get_settings_store`` is a singleton whose persistence directory and
-    cipher are fixed by the first call. Telemetry initialises during lifespan
-    startup, before ``ConversationService.get_instance()`` makes its own
-    priming call, so a no-arg ``get_settings_store()`` here previously won the
-    race and left the whole process writing settings *and secrets* to the
-    default relative directory with encryption disabled.
+    ``get_settings_store`` is a singleton whose cipher is fixed by the first
+    call. Telemetry initialises during lifespan startup, so a no-arg call here
+    would leave the whole process writing secrets with encryption disabled.
     """
     from base64 import urlsafe_b64encode
 
@@ -292,8 +289,6 @@ async def test_telemetry_init_does_not_hijack_the_settings_store_singleton(
             pass
 
     monkeypatch.setattr(pe, "PostHogExporter", lambda *a, **k: _FakeExporter())
-    monkeypatch.delenv("OH_PERSISTENCE_DIR", raising=False)
-
     config = Config(
         static_files_path=None,
         conversations_path=temp_persistence_dir / "workspace/conversations",
@@ -310,8 +305,6 @@ async def test_telemetry_init_does_not_hijack_the_settings_store_singleton(
             "telemetry primed the settings store without a cipher; secrets "
             "would be persisted unencrypted process-wide"
         )
-        assert temp_persistence_dir in store.persistence_dir.parents or (
-            store.persistence_dir.is_relative_to(temp_persistence_dir)
-        ), f"settings store landed outside the configured dir: {store.persistence_dir}"
+        assert store.persistence_dir == temp_persistence_dir
     finally:
         await sink.aclose()

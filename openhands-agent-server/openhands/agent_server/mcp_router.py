@@ -53,6 +53,7 @@ from openhands.sdk.mcp.config import (
 )
 from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.deprecation import warn_deprecated
 
 
 logger = get_logger(__name__)
@@ -101,6 +102,7 @@ class _RemoteMCPServerSpec(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict)
     api_key: str | None = Field(
         default=None,
+        deprecated=True,
         description=(
             "Deprecated bearer token. Prefer auth.strategy='bearer'. If provided "
             "without auth, sent as 'Authorization: Bearer <token>'."
@@ -111,11 +113,25 @@ class _RemoteMCPServerSpec(BaseModel):
     sse_read_timeout: float | None = None
     keep_alive: bool | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _warn_legacy_api_key(cls, value: object) -> object:
+        if isinstance(value, dict) and value.get("api_key") is not None:
+            warn_deprecated(
+                "_RemoteMCPServerSpec.api_key",
+                deprecated_in="1.36.0",
+                removed_in="1.41.0",
+                details="Use auth.strategy='bearer' with auth.value instead.",
+                stacklevel=3,
+            )
+        return value
+
     @model_validator(mode="after")
     def _reject_ambiguous_auth(self) -> _RemoteMCPServerSpec:
-        if self.api_key is not None and self.auth is not None:
+        api_key = self.__dict__.get("api_key")
+        if api_key is not None and self.auth is not None:
             raise ValueError("api_key cannot be combined with auth.")
-        if self.api_key is not None and any(
+        if api_key is not None and any(
             name.lower() == "authorization" for name in self.headers
         ):
             raise ValueError(
@@ -133,6 +149,7 @@ class _RemoteMCPServerSpec(BaseModel):
 
     def to_mcp_server(self) -> MCPServer:
         transport = "http" if self.type == "shttp" else self.type
+        api_key = self.__dict__.get("api_key")
         data: dict[str, Any] = {
             "url": self.url,
             "transport": transport,
@@ -143,8 +160,8 @@ class _RemoteMCPServerSpec(BaseModel):
         }
         if self.auth is not None:
             data["auth"] = self.auth
-        elif self.api_key is not None:
-            data["auth"] = {"strategy": "bearer", "value": self.api_key}
+        elif api_key is not None:
+            data["auth"] = {"strategy": "bearer", "value": api_key}
         return MCPServer.model_validate(data)
 
 
@@ -266,6 +283,7 @@ class MCPTestSuccess(BaseModel):
     )
     resolved_mcp_servers: list[dict[str, Any]] | None = Field(
         default=None,
+        deprecated=True,
         description=(
             "Deprecated compatibility field for older clients that expected "
             "resolved MCP server metadata in test responses."
