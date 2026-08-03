@@ -14,6 +14,7 @@ from pydantic import SecretStr
 from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.workspace.workspace import LocalWorkspace
 from openhands.tools.data_preparation.definition import (
+    RUNTIME_FILENAMES,
     DfConvertAction,
     DfConvertExecutor,
     DfConvertObservation,
@@ -207,6 +208,7 @@ def test_df_run_pipeline_validates_output_and_writes_local_report(
         "\n".join(
             [
                 "import json, sys",
+                "from image_utils import IMAGE_UTILS_API_VERSION",
                 "row = {",
                 "  'id': 'text-1',",
                 "  'system_prompt': 'system',",
@@ -253,6 +255,11 @@ def test_df_run_pipeline_validates_output_and_writes_local_report(
     assert report["total_records_output"] == 1
     assert (pipeline_dir / "processed.sample.jsonl").is_file()
     assert not (pipeline_dir / "public_data").exists()
+    for filename in RUNTIME_FILENAMES:
+        assert not (pipeline_dir / filename).exists()
+        assert (
+            pipeline_dir / ".processed.sample.state" / "runtime" / filename
+        ).is_file()
     assert observation.output_path is not None
     assert observation.record_count == 1
     assert observation.sample_records == [

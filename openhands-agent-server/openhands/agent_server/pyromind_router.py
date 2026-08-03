@@ -147,8 +147,8 @@ _PYROMIND_DEBUG_RESPONSE_BODY_LIMIT = 20000
 
 # Knowledge-base retrieval guidance layered on top of the codex base prompt via
 # get_codex_agent(custom_instructions=...). Match the Codex flow: prefer the
-# matching skill first; then use skill/runtime reads for skill docs; only fall
-# back to grep + file_editor for free-form knowledge-base lookups.
+# matching skill first; read references intentionally; run skill scripts instead
+# of expanding their implementation into context.
 PYROMIND_KB_INSTRUCTIONS = """\
 The Pyromind platform knowledge base is available through the read-only logical
 path `{knowledge_alias}/`. Do not use or request its host filesystem path.
@@ -173,9 +173,9 @@ Skill usage rules:
   "换个模型". Reuse dataset/model identifiers and topology already present in
   the file instead of asking the user to provide them again.
 - Immediately after that single workflow read, invoke the matching listed skill.
-  Then read only the exact skill resource that the skill requires. For a local
-  workflow edit, do not inspect general `knowledge/` before invoking the skill,
-  and do not inspect it afterward unless the skill explicitly requires it.
+  Then read only the exact `references/` resource that the skill requires. For
+  a local workflow edit, do not inspect general `knowledge/` before invoking the
+  skill, and do not inspect it afterward unless the skill explicitly requires it.
 - For requests that do not involve a current workflow, invoke a matching listed
   skill before searching the knowledge base.
 - Data processing routing (`data-cleaning` vs `data-preparation`):
@@ -203,10 +203,11 @@ Skill usage rules:
   invoke `debug-workflow` or `workflow_debug` in the same turn. Use
   `debug-workflow` only for an explicit test/debug request that contains no
   configuration change.
-- For skill document lookup, use `skills_list` / `skills_read` style access,
-  not grep or directory scanning.
-- For skill-linked resources, read the exact relative path from the skill root;
-  do not manually search `references/`, `scripts/`, or `assets/` with grep.
+- For skill document lookup, use `invoke_skill` first, then `skills_read` only
+  for `SKILL.md`, `references/**`, or assets explicitly referenced by the skill.
+- Treat `scripts/` as executable helpers. Do not read, grep, or summarize
+  `scripts/` source during normal tasks; run the script or platform tool named
+  by `SKILL.md` instead.
 - Use `grep` and `file_editor` only as a fallback when the request is not skill-
   addressed or when you need a free-form knowledge-base article.
 

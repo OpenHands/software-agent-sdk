@@ -159,8 +159,13 @@ def test_pyromind_instructions_enforce_workflow_skill_reference_order() -> None:
     )
 
     assert "Immediately after that single workflow read" in rendered
-    assert "Then read only the exact skill resource" in rendered
-    assert "do not inspect general `knowledge/` before invoking the skill" in rendered
+    assert "Then read only the exact `references/` resource" in rendered
+    assert "then `skills_read` only\n  for `SKILL.md`, `references/**`" in rendered
+    assert "Treat `scripts/` as executable helpers" in rendered
+    assert "Do not read, grep, or summarize\n  `scripts/` source" in rendered
+    assert (
+        "do not inspect general `knowledge/` before invoking the\n  skill" in rendered
+    )
     assert "Treat any requested node, model, parameter" in rendered
     assert "do not\n  invoke `debug-workflow` or `workflow_debug`" in rendered
     assert "Pyromind platform nodes perform actual" in rendered

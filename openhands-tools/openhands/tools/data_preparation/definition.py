@@ -538,15 +538,25 @@ class DfRunPipelineExecutor(ToolExecutor):
     def __init__(self, *, runtime_dir: str | None = None) -> None:
         self._runtime_dir = Path(runtime_dir) if runtime_dir else None
 
-    def _stage_runtime_files(self, target_dir: Path) -> None:
-        """Copy runtime helpers (df_logging.py etc.) next to the pipeline."""
+    def _stage_runtime_files(self, target_dir: Path) -> Path | None:
+        """Copy runtime helpers into a hidden tool-owned directory."""
         if self._runtime_dir is None:
-            return
+            return None
+        target_dir.mkdir(parents=True, exist_ok=True)
         for filename in RUNTIME_FILENAMES:
             src = self._runtime_dir / filename
             dst = target_dir / filename
             if src.is_file():
                 dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+        return target_dir
+
+    @staticmethod
+    def _add_runtime_pythonpath(env_extra: dict[str, str], runtime_dir: Path) -> None:
+        existing = env_extra.get("PYTHONPATH") or os.environ.get("PYTHONPATH", "")
+        paths = [str(runtime_dir)]
+        if existing:
+            paths.append(existing)
+        env_extra["PYTHONPATH"] = os.pathsep.join(paths)
 
     def _preflight_managed_image_pipeline(self, pipeline: Path) -> None:
         if self._runtime_dir is None:
@@ -591,8 +601,6 @@ class DfRunPipelineExecutor(ToolExecutor):
                     is_error=True,
                     exit_code=2,
                 )
-
-        self._stage_runtime_files(pipeline.parent)
 
         try:
             env_extra = build_dataflow_env(conversation, action.model_profile)
@@ -650,6 +658,15 @@ class DfRunPipelineExecutor(ToolExecutor):
                         is_error=True,
                         exit_code=2,
                     )
+        elif self._runtime_dir is not None:
+            state_dir = pipeline.parent / f".{pipeline.stem}.state"
+            state_dir.mkdir(parents=True, exist_ok=True)
+
+        if self._runtime_dir is not None:
+            assert state_dir is not None
+            runtime_stage_dir = self._stage_runtime_files(state_dir / "runtime")
+            if runtime_stage_dir is not None:
+                self._add_runtime_pythonpath(env_extra, runtime_stage_dir)
         config_summary = summarize_dataflow_env(env_extra)
         rc, stdout, stderr = run_dataflow_python(
             python,
@@ -660,9 +677,13 @@ class DfRunPipelineExecutor(ToolExecutor):
         )
         pipeline_rc = rc
         if rc == 0 and action.output_schema is not None:
-            validator = pipeline.parent / "validate_prepared_data.py"
             assert output_path is not None
             assert state_dir is not None
+            validator = (
+                state_dir / "runtime" / "validate_prepared_data.py"
+                if self._runtime_dir is not None
+                else pipeline.parent / "validate_prepared_data.py"
+            )
             validation_args = [
                 str(validator),
                 str(output_path),
@@ -689,8 +710,13 @@ class DfRunPipelineExecutor(ToolExecutor):
         report_path: Path | None = None
         if output_path is not None and state_dir is not None:
             report_path = state_dir / "report.json"
+            report_script = (
+                state_dir / "runtime" / "generate_report.py"
+                if self._runtime_dir is not None
+                else pipeline.parent / "generate_report.py"
+            )
             report_args = [
-                str(pipeline.parent / "generate_report.py"),
+                str(report_script),
                 "--log-dir",
                 str(state_dir),
                 "--pipeline-exit-code",

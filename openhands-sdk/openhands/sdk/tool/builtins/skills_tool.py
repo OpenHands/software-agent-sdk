@@ -39,6 +39,20 @@ class SkillsReadObservation(Observation):
     contents: str = Field()
 
 
+def _validate_readable_skill_path(path: str) -> str | None:
+    normalized = path.strip().replace("\\", "/")
+    if normalized in ("", ".", "SKILL.md"):
+        return "SKILL.md"
+    parts = [part for part in normalized.split("/") if part]
+    if any(part in (".", "..") for part in parts):
+        return None
+    if not parts:
+        return "SKILL.md"
+    if parts[0] in {"references", "assets"}:
+        return "/".join(parts)
+    return None
+
+
 def _runtime_from_conversation(conversation) -> SkillRuntime:
     if conversation is None:
         return SkillRuntime([])
@@ -66,8 +80,22 @@ class SkillsReadExecutor(ToolExecutor):
     def __call__(
         self, action: SkillsReadAction, conversation=None
     ) -> SkillsReadObservation:
+        readable_path = _validate_readable_skill_path(action.path)
+        if readable_path is None:
+            return SkillsReadObservation.from_text(
+                text=(
+                    "Skill scripts are executable helpers, not reference "
+                    "documents. Follow the skill's SKILL.md instructions and "
+                    "run the named script or platform tool instead of reading "
+                    "scripts/ source files."
+                ),
+                is_error=True,
+                skill_name=action.skill_name,
+                path=action.path,
+                contents="",
+            )
         runtime = _runtime_from_conversation(conversation)
-        result = runtime.read(action.skill_name, action.path)
+        result = runtime.read(action.skill_name, readable_path)
         return SkillsReadObservation.from_text(
             text=result.handle.contents,
             skill_name=result.entry.name,
