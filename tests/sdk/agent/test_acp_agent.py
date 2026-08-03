@@ -26,6 +26,7 @@ import openhands.sdk.agent.acp_file_credentials as acp_file_credentials_module
 import openhands.sdk.utils.files as files_module
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
+    ACPAgentClosedError,
     _acp_error_detail,
     _acp_error_indicates_auth,
     _apply_acp_model,
@@ -5845,6 +5846,111 @@ class TestACPPromptRetry:
 
         # Default max retries is 3, so 4 total attempts
         assert call_count == 4
+        assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+
+    def test_close_during_prompt_aborts_without_retry_delay(self, tmp_path):
+        """``close()`` landing mid-prompt aborts now instead of sleeping.
+
+        Killing the subprocess surfaces as a retriable connection error, so
+        without the ``_closed`` check the turn waits out a full retry delay
+        before failing — defeating the point of closing to abort the turn.
+        """
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        call_count = 0
+
+        def _fake_run_async(_coro, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            # What close() does on the other thread: _closed is set before
+            # teardown, then the runtime references are dropped.
+            agent._closed = True
+            agent._executor = None
+            raise ConnectionError("Connection closed")
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        with patch("openhands.sdk.agent.acp_agent.time.sleep") as mock_sleep:
+            with pytest.raises(ACPAgentClosedError):
+                agent.step(conversation, on_event=events.append)
+
+        assert call_count == 1
+        mock_sleep.assert_not_called()
+        assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+        assert [e.code for e in events if isinstance(e, ConversationErrorEvent)] == [
+            "ACPAgentClosed"
+        ]
+
+    def test_step_after_teardown_reports_closed_agent(self, tmp_path):
+        """A torn-down executor is reported as a closed agent, not a None deref."""
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+
+        agent._client = _OpenHandsACPBridge()
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+        agent._executor = None
+
+        with pytest.raises(ACPAgentClosedError):
+            agent.step(conversation, on_event=lambda _: None)
+
+        assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+
+    def test_astep_after_teardown_reports_closed_agent(self, tmp_path):
+        """Async path guards the executor read the same way as :meth:`step`."""
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+
+        agent._client = _OpenHandsACPBridge()
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+        agent._executor = None
+
+        with pytest.raises(ACPAgentClosedError):
+            asyncio.run(agent.astep(conversation, on_event=lambda _: None))
+
+        assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+
+    def test_close_during_astep_aborts_without_retry_delay(self, tmp_path):
+        """Async retry loop also stops as soon as teardown starts."""
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        call_count = 0
+
+        class _ClosingPortal:
+            def start_task_soon(self, fn, *args):  # noqa: ANN001, ANN202
+                nonlocal call_count
+                call_count += 1
+                agent._closed = True
+                agent._executor = None
+                failed: Future = Future()
+                failed.set_exception(ConnectionError("Connection closed"))
+                return failed
+
+        mock_executor = MagicMock()
+        mock_executor.portal = _ClosingPortal()
+        agent._executor = mock_executor
+
+        with pytest.raises(ACPAgentClosedError):
+            asyncio.run(agent.astep(conversation, on_event=events.append))
+
+        assert call_count == 1
         assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
 
 
