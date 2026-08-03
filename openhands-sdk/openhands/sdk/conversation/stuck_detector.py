@@ -42,6 +42,10 @@ class StuckDetector:
     ):
         self.state = state
         self.thresholds = thresholds or StuckDetectionThresholds()
+        # Id of the AgentErrorEvent already nudged for, so a frozen streak
+        # (e.g. an empty/reasoning-only response that adds no new action)
+        # doesn't re-emit the same nudge every iteration.
+        self._last_nudged_error_event_id: str | None = None
 
     @property
     def action_observation_threshold(self) -> int:
@@ -212,7 +216,12 @@ class StuckDetector:
         return False
 
     def get_action_error_nudge(self) -> str | None:
-        """Nudge text once an action-error streak first hits the threshold."""
+        """Nudge text once an action-error streak first hits the threshold.
+
+        Nudges once per streak: if the streak is still frozen on the same
+        error event (e.g. an empty/reasoning-only response added no new
+        action) we've already nudged for it, so we don't re-fire.
+        """
         events = self._events_since_last_user_message()
         threshold = self.action_error_threshold
         last_actions, last_observations = self._collect_actions_and_observations(
@@ -225,10 +234,15 @@ class StuckDetector:
         error = last_observations[0]
         assert isinstance(action, ActionEvent)
         assert isinstance(error, AgentErrorEvent)
+
+        if error.id == self._last_nudged_error_event_id:
+            return None
+        self._last_nudged_error_event_id = error.id
+
         return (
             f"You've called `{action.tool_name}` with the same arguments "
             f"{threshold} times in a row and gotten the same error each "
-            f"time: {error.error!r}. Repeating the exact same call again "
+            f"time: {error.error}. Repeating the exact same call again "
             "will not work — review the error message and either correct "
             "the arguments or try a different approach."
         )

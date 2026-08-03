@@ -151,3 +151,49 @@ def test_run_recovers_after_nudge_when_model_self_corrects():
         if isinstance(e, MessageEvent) and e.source == "environment"
     ]
     assert len(nudges) == 1
+
+
+def test_run_does_not_renudge_action_error_while_streak_is_frozen():
+    """An empty response after the nudge must not re-fire the same nudge.
+
+    3 identical failing calls hit the nudge threshold and emit one nudge.
+    The model then stalls with an empty response, which adds no new
+    action/observation, so the action-error streak stays frozen at the
+    threshold. The unrelated EMPTY corrective nudge fires for that, but
+    the action-error nudge must not re-fire on the frozen streak.
+    """
+    scripted_messages: list[Message | Exception] = [
+        *[_bad_tool_call_message(f"call_{i}") for i in range(3)],
+        Message(role="assistant", content=[]),
+        Message(
+            role="assistant",
+            content=[TextContent(text="I see the issue, stopping here.")],
+        ),
+    ]
+    conversation = _make_conversation(scripted_messages)
+    conversation.send_message(
+        Message(role="user", content=[TextContent(text="Create /tmp/foo.py")])
+    )
+    conversation.run()
+
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+
+    error_events = [
+        e for e in conversation.state.events if isinstance(e, AgentErrorEvent)
+    ]
+    assert len(error_events) == 3
+
+    nudges = [
+        e
+        for e in conversation.state.events
+        if isinstance(e, MessageEvent) and e.source == "environment"
+    ]
+    # One action-error nudge plus the unrelated EMPTY corrective nudge —
+    # not a second action-error nudge for the already-nudged, frozen streak.
+    assert len(nudges) == 2
+    action_error_nudge = nudges[0].llm_message.content[0]
+    empty_corrective_nudge = nudges[1].llm_message.content[0]
+    assert isinstance(action_error_nudge, TextContent)
+    assert isinstance(empty_corrective_nudge, TextContent)
+    assert "always_error_tool" in action_error_nudge.text
+    assert "did not include a function call" in empty_corrective_nudge.text
