@@ -316,18 +316,19 @@ class TestRunGitCommandCredentialRedaction:
         assert "SUPERSECRET" not in exc_info.value.stderr
         assert REDACTED_URL in exc_info.value.stderr
 
-    def test_stderr_credentials_redacted_in_log(self, caplog):
-        """Credentials echoed in stderr must not leak into the error log line."""
+    def test_stderr_credentials_redacted_in_debug_log(self, caplog):
+        """Credentials echoed in stderr must not leak into the debug log line."""
         leaky_stderr = f"fatal: Authentication failed for '{CREDENTIAL_URL}/'"
         completed = subprocess.CompletedProcess(
             args=self._args(), returncode=128, stdout="", stderr=leaky_stderr
         )
         with patch("subprocess.run", return_value=completed):
-            with caplog.at_level(logging.ERROR):
+            with caplog.at_level(logging.DEBUG):
                 with pytest.raises(GitCommandError):
                     run_git_command(self._args())
         assert "SUPERSECRET" not in caplog.text
         assert REDACTED_URL in caplog.text
+        assert all(record.levelno < logging.ERROR for record in caplog.records)
 
 
 def test_run_git_command_replaces_undecodable_stdout_bytes():

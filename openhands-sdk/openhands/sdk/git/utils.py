@@ -94,7 +94,7 @@ def run_git_command(
             # stderr can echo the remote URL (with embedded credentials on some
             # git versions / error paths), so redact before logging and storing.
             redacted_stderr = redact_url_credentials_in_text(result.stderr)
-            logger.error(
+            logger.debug(
                 f"{error_msg}. Exit code: {result.returncode}. "
                 f"Stderr: {redacted_stderr}"
             )
