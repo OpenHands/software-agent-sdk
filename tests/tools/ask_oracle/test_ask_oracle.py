@@ -14,6 +14,7 @@ from openhands.sdk.llm import (
     TokenCallbackType,
     llm_profile_store,
 )
+from openhands.sdk.llm.llm import LLMCallContext
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.tool import ToolDefinition
@@ -43,6 +44,7 @@ class CapturingTestLLM(TestLLM):
         tools: Sequence[ToolDefinition] | None = None,
         add_security_risk_prediction: bool = False,
         on_token: TokenCallbackType | None = None,
+        call_context: LLMCallContext | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
         self._last_messages = list(messages)
@@ -52,6 +54,7 @@ class CapturingTestLLM(TestLLM):
             tools=tools,
             add_security_risk_prediction=add_security_risk_prediction,
             on_token=on_token,
+            call_context=call_context,
             **kwargs,
         )
 
@@ -103,7 +106,9 @@ def test_ask_oracle_tool_added_by_name() -> None:
     )
     conversation = LocalConversation(agent=agent, workspace=Path.cwd())
     conversation._ensure_agent_ready()
-    assert "ask_oracle" in agent.tools_map
+    # Plugin loading replaces conversation.agent with an initialized copy, so
+    # assert on the live agent rather than the now-stale local reference.
+    assert "ask_oracle" in conversation.agent.tools_map
 
 
 def test_ask_oracle_tool_returns_oracle_recommendation(

@@ -8,7 +8,7 @@ consults the ``oracle`` profile, and the agent uses the Oracle's answer to reply
 
 Usage:
     LLM_API_KEY=... LLM_BASE_URL=https://llm-proxy.app.all-hands.dev \
-        uv run python examples/01_standalone_sdk/55_ask_oracle_tool/main.py
+        uv run python examples/01_standalone_sdk/56_ask_oracle_tool/main.py
 """
 
 import os

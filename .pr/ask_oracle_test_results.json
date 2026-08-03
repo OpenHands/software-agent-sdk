@@ -4,7 +4,7 @@
     "result": "10 passed"
   },
   "example_pytest": {
-    "command": "uv run pytest tests/examples/test_examples.py --run-examples -k 55_ask_oracle_tool",
+    "command": "uv run pytest tests/examples/test_examples.py --run-examples -k 56_ask_oracle_tool",
     "result": "1 passed, 66 deselected"
   },
   "pre_commit": {
@@ -17,7 +17,7 @@
     "result": "passed (end-to-end: agent called ask_oracle, oracle logged response matches observation, conversation finished)"
   },
   "live_example": {
-    "command": "LLM_API_KEY=... LLM_BASE_URL=... LLM_MODEL=litellm_proxy/openai/gpt-5.1 uv run pytest tests/examples/test_examples.py --run-examples -k 55_ask_oracle_tool",
+    "command": "LLM_API_KEY=... LLM_BASE_URL=... LLM_MODEL=litellm_proxy/openai/gpt-5.1 uv run pytest tests/examples/test_examples.py --run-examples -k 56_ask_oracle_tool",
     "result": "1 passed, 66 deselected"
   }
 }

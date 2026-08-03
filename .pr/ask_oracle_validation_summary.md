@@ -71,7 +71,7 @@ Result: `10 passed`.
 Command run:
 
 ```bash
-uv run pytest tests/examples/test_examples.py --run-examples -k 55_ask_oracle_tool
+uv run pytest tests/examples/test_examples.py --run-examples -k 56_ask_oracle_tool
 ```
 
 Result: `1 passed, 66 deselected`.
