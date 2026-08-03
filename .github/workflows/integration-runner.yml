@@ -594,6 +594,7 @@ jobs:
               run: |
                   REPORT=$(find compliance-results -name compliance_report.md -type f -print -quit)
                   if [ -n "$REPORT" ]; then
-                    gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
-                      --body-file "$REPORT"
+                    COMMENT_BODY=$(uv run python -c "from openhands.sdk.utils.github import sanitize_openhands_mentions; import sys; print(sanitize_openhands_mentions(sys.stdin.read()), end='')" < "$REPORT")
+                    printf '%s' "$COMMENT_BODY" | gh issue comment "$ISSUE_NUMBER" \
+                      --repo "$GITHUB_REPOSITORY" --body-file -
                   fi
