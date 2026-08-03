@@ -13,6 +13,8 @@ dependencies = [
     "libtmux>=0.53.0",
     "pydantic>=2.11.7",
     "browser-use>=0.8.0",
+    # browser_use's MCP server uses Server.list_tools, removed in mcp 2.0.
+    "mcp<2",
     "func-timeout>=4.3.5",
     "tom-swe>=1.0.3",
 ]
