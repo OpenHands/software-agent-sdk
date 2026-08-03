@@ -39,6 +39,8 @@ ENV_BACKUP_COUNT = int(os.getenv("LOG_BACKUP_COUNT", "7"))
 
 # Rich vs JSON
 ENV_JSON = os.getenv("LOG_JSON", "false").lower() in {"1", "true", "yes"}
+# JSON log level field name (defaults to 'status' for Datadog compatibility)
+ENV_JSON_LEVEL_KEY = os.getenv("LOG_JSON_LEVEL_KEY", "status")
 IN_CI = os.getenv("CI", "false").lower() in {"1", "true", "yes"} or bool(
     os.environ.get("GITHUB_ACTIONS")
 )
@@ -125,7 +127,8 @@ def setup_logging(
             ch.setFormatter(
                 JsonFormatter(
                     fmt="%(asctime)s %(levelname)s %(name)s "
-                    "%(filename)s %(lineno)d %(message)s"
+                    "%(filename)s %(lineno)d %(message)s",
+                    rename_fields={"levelname": ENV_JSON_LEVEL_KEY},
                 )
             )
             root.addHandler(ch)
@@ -153,7 +156,8 @@ def setup_logging(
             fh.setFormatter(
                 JsonFormatter(
                     fmt="%(asctime)s %(levelname)s %(name)s "
-                    "%(filename)s %(lineno)d %(message)s"
+                    "%(filename)s %(lineno)d %(message)s",
+                    rename_fields={"levelname": ENV_JSON_LEVEL_KEY},
                 )
             )
         else:
