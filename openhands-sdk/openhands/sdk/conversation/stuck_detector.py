@@ -60,7 +60,11 @@ class StuckDetector:
         return self.thresholds.alternating_pattern
 
     def _events_since_last_user_message(self) -> list[Event]:
-        """Events in the scan window, after the last user message (if any)."""
+        """Events in the scan window, after the last user message (if any).
+
+        Windowed rather than full-history to avoid materializing large
+        file-backed event logs.
+        """
         events = self.state.active_branch(limit=MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION)
 
         last_user_msg_index = next(
@@ -201,9 +205,8 @@ class StuckDetector:
         self, last_actions: list[Event], last_observations: list[Event]
     ) -> bool:
         # scenario 2: same action, errors — one repeat past the threshold
-        if self._action_error_streak(last_actions, last_observations) > (
-            self.action_error_threshold
-        ):
+        threshold = self.action_error_threshold
+        if self._action_error_streak(last_actions, last_observations) > threshold:
             logger.warning("Action, Error loop detected")
             return True
         return False
