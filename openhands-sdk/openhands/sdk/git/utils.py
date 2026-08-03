@@ -69,6 +69,8 @@ def run_git_command(
     args: list[str],
     cwd: str | Path | None = None,
     timeout: int = 30,
+    *,
+    expected_failure: bool = False,
 ) -> str:
     """Run a git command safely without shell injection vulnerabilities.
 
@@ -76,6 +78,8 @@ def run_git_command(
         args: List of command arguments (e.g., ['git', 'status', '--porcelain'])
         cwd: Working directory to run the command in (optional for commands like clone)
         timeout: Timeout in seconds (default: 30)
+        expected_failure: Log a non-zero exit at debug level when the caller
+            intentionally probes for a fallback condition.
 
     Returns:
         Command output as string
@@ -94,7 +98,8 @@ def run_git_command(
             # stderr can echo the remote URL (with embedded credentials on some
             # git versions / error paths), so redact before logging and storing.
             redacted_stderr = redact_url_credentials_in_text(result.stderr)
-            logger.debug(
+            log = logger.debug if expected_failure else logger.error
+            log(
                 f"{error_msg}. Exit code: {result.returncode}. "
                 f"Stderr: {redacted_stderr}"
             )
@@ -154,7 +159,9 @@ def _rev_parse(repo_dir: str | Path, ref: str) -> str | None:
     """Resolve ``ref`` to a commit SHA, or None if it doesn't resolve."""
     try:
         result = run_git_command(
-            ["git", "--no-pager", "rev-parse", "--verify", ref], repo_dir
+            ["git", "--no-pager", "rev-parse", "--verify", ref],
+            repo_dir,
+            expected_failure=True,
         )
         return result or None
     except GitCommandError:
@@ -166,7 +173,9 @@ def _merge_base(repo_dir: str | Path, ref_a: str, ref_b: str) -> str | None:
     (e.g. unrelated histories, shallow clone)."""
     try:
         result = run_git_command(
-            ["git", "--no-pager", "merge-base", ref_a, ref_b], repo_dir
+            ["git", "--no-pager", "merge-base", ref_a, ref_b],
+            repo_dir,
+            expected_failure=True,
         )
         return result or None
     except GitCommandError:
@@ -177,7 +186,9 @@ def _get_current_branch(repo_dir: str | Path) -> str | None:
     """Return the current branch name, or None when detached/unborn."""
     try:
         branch = run_git_command(
-            ["git", "--no-pager", "rev-parse", "--abbrev-ref", "HEAD"], repo_dir
+            ["git", "--no-pager", "rev-parse", "--abbrev-ref", "HEAD"],
+            repo_dir,
+            expected_failure=True,
         )
         if branch and branch != "HEAD":
             return branch
@@ -197,6 +208,7 @@ def _get_remote_default_branch(repo_dir: str | Path) -> str | None:
         symref = run_git_command(
             ["git", "--no-pager", "rev-parse", "--abbrev-ref", "origin/HEAD"],
             repo_dir,
+            expected_failure=True,
         )
         prefix = "origin/"
         if symref.startswith(prefix) and len(symref) > len(prefix):
@@ -378,6 +390,7 @@ def get_valid_ref(
                     f"{override}^{{commit}}",
                 ],
                 repo_dir,
+                expected_failure=override == "HEAD",
             )
         except GitCommandError:
             # ``HEAD`` is the canonical "current branch tip"; if it doesn't
@@ -413,7 +426,9 @@ def get_valid_ref(
     # Try current branch's origin
     try:
         current_branch = run_git_command(
-            ["git", "--no-pager", "rev-parse", "--abbrev-ref", "HEAD"], repo_dir
+            ["git", "--no-pager", "rev-parse", "--abbrev-ref", "HEAD"],
+            repo_dir,
+            expected_failure=True,
         )
         if current_branch and current_branch != "HEAD":  # Not in detached HEAD state
             refs_to_try.append(f"origin/{current_branch}")
@@ -446,6 +461,7 @@ def get_valid_ref(
                                 f"origin/{default_branch}",
                             ],
                             repo_dir,
+                            expected_failure=True,
                         )
                         if merge_base:
                             refs_to_try.append(merge_base)
@@ -460,7 +476,9 @@ def get_valid_ref(
     for ref in refs_to_try:
         try:
             result = run_git_command(
-                ["git", "--no-pager", "rev-parse", "--verify", ref], repo_dir
+                ["git", "--no-pager", "rev-parse", "--verify", ref],
+                repo_dir,
+                expected_failure=True,
             )
             if result:
                 logger.debug(f"Using valid reference: {ref} -> {result}")
