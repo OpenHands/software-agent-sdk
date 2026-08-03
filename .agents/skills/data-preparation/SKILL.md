@@ -16,6 +16,8 @@ description: >-
 - Storage 数据和平台产物只能用 `preview_dataset` 查看，不得用本地文件工具读取。
 - `df_run_pipeline` 只运行本地 Sample；用户确认前不得调用 `df_submit_pipeline`。
 - 新链路直接生成规范 JSONL，不以 `df_convert` 或 Parquet 作为正式产物。
+- 新链路优先复用 DataFlow Storage 和 Operator 编排；生成、打分、过滤、去重等已有
+  算子能覆盖的环节，尽量不要手写重复实现。
 - 使用 LLM 的 DataFlow 算子必须由 `LoggingLLMServing` 包装。
 
 ## 执行流程
@@ -25,9 +27,9 @@ description: >-
 2. 根据下表只读取相关场景 reference，同时读取
    [通用约定](references/dataflow-common.md) 和
    [输出契约](references/schema-conventions.md)。
-3. 从 [文本模板](references/text_pipeline.py) 或
-   [图片模板](references/multimodal_pipeline.py) 修改 Pipeline；场景 reference
-   中的算子链负责处理中间字段，Pipeline 末尾负责映射正式 Schema。
+3. 优先从场景 reference 的 DataFlow 算子模板修改 Pipeline；只有图片任务使用
+   [图片模板](references/multimodal_pipeline.py)。场景 reference 中的算子链负责处理中间
+   字段，Pipeline 末尾负责映射正式 Schema。
 4. 调用 `df_run_pipeline`，显式设置 `model_profile` 和 `output_schema`，检查
    `processed.sample.jsonl`、`validation.json` 和 `report.json`。
 5. 展示 Sample 结果并等待用户明确确认。

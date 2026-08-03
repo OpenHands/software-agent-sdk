@@ -6,6 +6,10 @@
 `gt` 和 `rejected_answer`。审计、分数、生成策略和过滤原因只写入 Report 或
 `scenario_metrics.json`。
 
+DPO Pipeline 优先使用 DataFlow 算子作为主流程；生成、过滤、打标、去重等已有算子
+能覆盖的环节，建议复用算子而不是手写重复逻辑。普通 Python 可用于字段别名归一、
+解析算子输出、补充业务校验和最终 Schema 写出。
+
 支持两类输入：
 
 - 已有偏好对：源数据已有 chosen/rejected、preferred/rejected、accept/reject 等字段。
@@ -81,6 +85,11 @@ storage = storage.step()
 随后在 Pipeline 内解析 `dpo_pair`，写入 `gt` 和 `rejected_answer`，并复用已有偏好对清洗
 链路。若模型返回无法解析、字段为空或两答案相同，该样本应丢弃并计入
 `scenario_metrics.json`。
+
+推荐从 [`dpo_pipeline.py`](dpo_pipeline.py) 复制模板：它使用
+`LazyFileStorage`、`PandasOperator`、`FormatStrPromptedGenerator`、`GeneralFilter`、
+`ContentNullFilter` 和 `HashDeduplicateFilter` 完成 input-only 到 DPO JSONL 的生成、
+过滤和去重。
 
 ## 可选打标与过滤
 
