@@ -5953,6 +5953,50 @@ class TestACPPromptRetry:
         assert call_count == 1
         assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
 
+    def test_astep_reports_closed_agent_when_teardown_lands_between_retries(
+        self, tmp_path
+    ):
+        """The async path re-reads the executor per attempt, like ``step``.
+
+        Teardown that lands after a retriable failure leaves a dead portal
+        behind; reading it once up front would surface anyio's "portal is not
+        running" as a generic prompt error instead of a closed agent.
+        """
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        call_count = 0
+
+        class _PortalTornDownAfterFirstAttempt:
+            def start_task_soon(self, fn, *args):  # noqa: ANN001, ANN202
+                nonlocal call_count
+                call_count += 1
+                agent._executor = None
+                failed: Future = Future()
+                failed.set_exception(ConnectionError("Connection reset by peer"))
+                return failed
+
+        mock_executor = MagicMock()
+        mock_executor.portal = _PortalTornDownAfterFirstAttempt()
+        agent._executor = mock_executor
+
+        with patch(
+            "openhands.sdk.agent.acp_agent._ACP_PROMPT_RETRY_DELAYS", (0.0, 0.0, 0.0)
+        ):
+            with pytest.raises(ACPAgentClosedError):
+                asyncio.run(agent.astep(conversation, on_event=events.append))
+
+        assert call_count == 1
+        assert [e.code for e in events if isinstance(e, ConversationErrorEvent)] == [
+            "ACPAgentClosed"
+        ]
+
 
 # ---------------------------------------------------------------------------
 # Gemini-specific tests

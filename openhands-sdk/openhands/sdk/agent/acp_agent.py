@@ -3728,12 +3728,14 @@ class ACPAgent(AgentBase):
                 self.acp_prompt_timeout,
                 len(prompt_blocks),
             )
-            portal = self._require_executor().portal
-
             response: PromptResponse | None = None
             max_retries = _ACP_PROMPT_MAX_RETRIES
             for attempt in range(max_retries + 1):
                 try:
+                    # Re-read per attempt, like step() does, so a teardown
+                    # between retries surfaces as a closed agent rather than
+                    # anyio's "portal is not running".
+                    portal = self._require_executor().portal
                     # Schedule the ACP prompt on the portal loop (where the
                     # connection lives); await the future back on the caller
                     # loop.  Shield the portal task from wait_for timeout so
