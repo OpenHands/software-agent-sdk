@@ -12,6 +12,11 @@ user's home directory (~/.openhands/plugins/installed/).
 Note: Marketplace classes live in ``openhands.sdk.marketplace``.
 """
 
+from openhands.sdk.plugin.discovery import (
+    load_available_plugins,
+    load_project_plugins,
+    load_user_plugins,
+)
 from openhands.sdk.plugin.fetch import (
     PluginFetchError,
     fetch_plugin_with_resolution,
@@ -58,6 +63,10 @@ __all__ = [
     # Plugin loading
     "load_plugins",
     "fetch_plugin_with_resolution",
+    # Local plugin discovery (ambient auto-load)
+    "load_user_plugins",
+    "load_project_plugins",
+    "load_available_plugins",
     # Source path utilities
     "GitHubURLComponents",
     "parse_github_url",

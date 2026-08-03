@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
+import subprocess
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from fastmcp.mcp_config import MCPConfig
@@ -166,23 +168,6 @@ def find_mcp_config(skill_dir: Path) -> Path | None:
     return None
 
 
-def _serialize_for_json(obj: object) -> object:
-    """Recursively convert Pydantic models to dicts for JSON serialization.
-
-    This handles the case where MCP config contains Pydantic model objects
-    (RemoteMCPServer, StdioMCPServer) instead of plain dicts.
-    """
-    # Check for Pydantic v2 model_dump method
-    model_dump = getattr(obj, "model_dump", None)
-    if callable(model_dump):
-        return model_dump()
-    elif isinstance(obj, dict):
-        return {k: _serialize_for_json(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [_serialize_for_json(item) for item in obj]
-    return obj
-
-
 def expand_mcp_variables(
     config: dict,
     variables: dict[str, str],
@@ -203,9 +188,7 @@ def expand_mcp_variables(
     4. Default value (if specified and expand_defaults=True)
 
     Args:
-        config: MCP configuration dictionary. May contain Pydantic model objects
-            (e.g., RemoteMCPServer, StdioMCPServer) which will be converted to
-            dicts before JSON serialization.
+        config: MCP configuration dictionary.
         variables: Dictionary of variable names to values (e.g., SKILL_ROOT).
         get_secret: Callback to look up a secret by name. We use a callback
             rather than a dict to avoid extracting all secrets into plain text.
@@ -217,14 +200,11 @@ def expand_mcp_variables(
     Returns:
         Configuration with variables expanded.
     """
-    # Convert Pydantic models to plain containers before variable expansion.
-    serializable_config = _serialize_for_json(config)
-
     # Use the shared expansion function with MCP config settings:
     # - check_env=True (check environment variables)
     # - support_unbraced=False (only ${VAR} syntax for config files)
     expanded_config = expand_variable_references(
-        serializable_config,
+        config,
         variables=variables,
         get_secret=get_secret,
         check_env=True,
@@ -284,7 +264,7 @@ def load_mcp_config(
         config, variables, get_secret=get_secret, expand_defaults=expand_defaults
     )
 
-    # Validate using MCPConfig
+    # Validate the external .mcp.json shape using FastMCP's config model.
     try:
         MCPConfig.model_validate(config)
     except Exception as e:
@@ -376,6 +356,86 @@ def find_third_party_files(
             seen_names.add(name_lower)
             seen_real_paths.add(real_path)
     return files
+
+
+def _git_worktree_relpaths(work_dir: Path) -> list[PurePosixPath] | None:
+    """Return worktree file paths under ``work_dir`` (relative to it): tracked
+    plus untracked files that ``.gitignore`` does not exclude, so a freshly
+    written (uncommitted) file still counts. None when git is unavailable, so the
+    caller can walk instead."""
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        proc = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(work_dir),
+                "ls-files",
+                "-z",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+            ],
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+        if proc.returncode != 0:
+            return None
+        text = proc.stdout.decode("utf-8", "surrogateescape")
+        return [PurePosixPath(p) for p in text.split("\0") if p]
+    return None
+
+
+def _walk_relpaths(work_dir: Path) -> list[PurePosixPath]:
+    """Filesystem-walk fallback: file paths under ``work_dir`` (relative to it),
+    skipping hidden and ``node_modules`` directories. Used only when git is
+    unavailable (the git path relies on ``.gitignore`` instead)."""
+    results: list[PurePosixPath] = []
+    for dirpath, dirnames, filenames in os.walk(work_dir):
+        # Prune in place so os.walk does not descend into skipped directories.
+        dirnames[:] = [
+            d for d in dirnames if not d.startswith(".") and d != "node_modules"
+        ]
+        rel_dir = Path(dirpath).relative_to(work_dir)
+        for filename in filenames:
+            results.append(PurePosixPath((rel_dir / filename).as_posix()))
+    return results
+
+
+def find_nested_third_party_files(
+    work_dir: Path, third_party_skill_names: dict[str, str]
+) -> list[tuple[Path, PurePosixPath]]:
+    """Find third-party instruction files *nested* under ``work_dir`` (top-level
+    ones are handled by :func:`find_third_party_files`), so each can become a
+    directory-scoped path rule. Uses ``git ls-files`` when available, else a
+    pruned walk. Returns ``(absolute_path, relative_dir)`` tuples with
+    ``relative_dir`` POSIX-relative to ``work_dir``."""
+    if not work_dir.exists():
+        return []
+
+    target_names = {name.lower() for name in third_party_skill_names}
+    rel_paths = _git_worktree_relpaths(work_dir)
+    if rel_paths is None:
+        rel_paths = _walk_relpaths(work_dir)
+
+    results: list[tuple[Path, PurePosixPath]] = []
+    seen_real_paths: set[Path] = set()
+    for rel in rel_paths:
+        if rel.name.lower() not in target_names:
+            continue
+        rel_dir = rel.parent
+        # Skip top-level files: those belong to find_third_party_files.
+        if rel_dir == PurePosixPath("."):
+            continue
+        abs_path = work_dir / rel
+        if not abs_path.is_file():
+            continue
+        real_path = abs_path.resolve()
+        if real_path in seen_real_paths:
+            continue
+        seen_real_paths.add(real_path)
+        results.append((abs_path, rel_dir))
+    return sorted(results, key=lambda pair: pair[1].as_posix())
 
 
 def find_skill_md_directories(skill_dir: Path) -> list[Path]:

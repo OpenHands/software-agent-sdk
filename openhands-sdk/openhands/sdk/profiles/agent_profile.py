@@ -20,6 +20,7 @@ from pydantic import (
     Field,
     Tag,
     TypeAdapter,
+    ValidationError,
 )
 
 from openhands.sdk.settings.model import (
@@ -27,11 +28,12 @@ from openhands.sdk.settings.model import (
     CondenserSettingsConfig,
     CriticMode,
     LLMSummarizingCondenserSettings,
+    VerificationSettings,
 )
-from openhands.sdk.skills import Skill
+from openhands.sdk.tool import Tool
 
 
-AGENT_PROFILE_SCHEMA_VERSION = 1
+AGENT_PROFILE_SCHEMA_VERSION = 2
 
 
 class ProfileVerificationSettings(BaseModel):
@@ -50,6 +52,26 @@ class ProfileVerificationSettings(BaseModel):
     max_refinement_iterations: int = Field(default=3, ge=1)
     critic_server_url: str | None = None
     critic_model_name: str | None = None
+
+
+def build_profile_verification(
+    v: VerificationSettings,
+) -> ProfileVerificationSettings:
+    """Project the secret-free subset of ``VerificationSettings`` onto a profile.
+
+    Drops ``critic_api_key`` — the profile is secret-free; the critic reuses the
+    resolved LLM profile's key. Hoisted from the agent-server router so the
+    local and cloud seeds build verification identically.
+    """
+    return ProfileVerificationSettings(
+        critic_enabled=v.critic_enabled,
+        critic_mode=v.critic_mode,
+        enable_iterative_refinement=v.enable_iterative_refinement,
+        critic_threshold=v.critic_threshold,
+        max_refinement_iterations=v.max_refinement_iterations,
+        critic_server_url=v.critic_server_url,
+        critic_model_name=v.critic_model_name,
+    )
 
 
 class AgentProfileBase(BaseModel):
@@ -81,7 +103,13 @@ class AgentProfileBase(BaseModel):
         description="Monotonic revision counter, bumped on each saved edit.",
     )
     # null = all of the user's MCP servers; [] = none; a non-null list filters
-    # to the named keys. null and [] are deliberately distinct.
+    # to the named keys. null and [] are deliberately distinct. MCP servers are
+    # user-configured and persisted, so this reference is safe: every name that
+    # can be referenced is present in ``mcp_config``. Skills are NOT modeled this
+    # way — they are discovered from many lazy/incomplete sources, so a profile
+    # selects them by *exclusion* (``OpenHandsAgentProfile.disabled_skills``, a
+    # deny-list) rather than by an allow-list of names that can dangle. See the
+    # #4017 architecture discussion.
     mcp_server_refs: list[str] | None = Field(
         default=None,
         description=(
@@ -120,13 +148,33 @@ class OpenHandsAgentProfile(AgentProfileBase):
         default="CodeActAgent",
         description="Agent class to build.",
     )
-    skills: list[Skill] = Field(
-        default_factory=list,
-        description="Skills that extend the agent's context.",
+    # Same tri-state as the resolved settings' ``tools``: passed through
+    # verbatim by the resolver, so ``create_agent`` is the single defaulting
+    # point (#3978). Secret-free by construction (``Tool`` is name + params).
+    tools: list[Tool] | None = Field(
+        default=None,
+        description=(
+            "Tool selection for the resolved agent. None (the default) = the "
+            "server's standard tool set; [] = an explicitly bare agent; a "
+            "non-empty list is used exactly as given."
+        ),
     )
+
     system_message_suffix: str | None = Field(
         default=None,
         description="Optional suffix appended to the system prompt.",
+    )
+    disabled_skills: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of server-discovered skills to EXCLUDE from this agent's "
+            "prompt — a deny-list over the discovered catalog. [] (the default) "
+            "= all discovered skills; a listed name that is absent from the "
+            "catalog is simply a no-op, so the field never fails a launch when "
+            "the catalog drifts. Replaces the former allow-list ``skill_refs`` "
+            "(#4017): skills are discovered from many incomplete sources, so "
+            "exclusion is the only selection model that can't dangle."
+        ),
     )
     condenser: CondenserSettingsConfig = Field(
         default_factory=LLMSummarizingCondenserSettings,
@@ -139,6 +187,14 @@ class OpenHandsAgentProfile(AgentProfileBase):
     enable_sub_agents: bool = Field(
         default=False,
         description="Enable sub-agent delegation via TaskToolSet.",
+    )
+    enable_switch_llm_tool: bool = Field(
+        default=True,
+        description=(
+            "Enable the built-in switch_llm tool for switching between saved "
+            "LLM profiles. Defaults True to match the global agent settings "
+            "default (AgentSettingsConfig.enable_switch_llm_tool)."
+        ),
     )
     tool_concurrency_limit: int = Field(
         default=1,
@@ -167,6 +223,10 @@ class ACPAgentProfile(AgentProfileBase):
             "ACP-delegating agent."
         ),
     )
+    # No skill-selection field: ACP agents own their tooling and prompt
+    # construction, so no user/public discovered skills are injected. (Only
+    # repo-scoped project skills reach an ACP agent, via the resolver's
+    # ``load_project_skills`` — see #4019 for whether even those should.)
     acp_server: ACPServerKind = Field(
         default="claude-code",
         description=(
@@ -194,6 +254,14 @@ class ACPAgentProfile(AgentProfileBase):
         description=(
             "Inactivity timeout (seconds) for a single ACP prompt() round-trip; "
             "resets on every update from the server."
+        ),
+    )
+    acp_startup_timeout: float = Field(
+        default=90.0,
+        gt=0,
+        description=(
+            "Timeout (seconds) for ACP server startup: spawn, "
+            "initialize/authenticate, and new_session()/load_session()."
         ),
     )
     acp_command: str | None = Field(
@@ -254,26 +322,31 @@ validate/construct instances from raw payloads.
 
 PersistedProfileMigrator = Callable[[dict[str, Any]], dict[str, Any]]
 
-# Registered per *source* schema_version; each migrator returns a payload with
-# an advanced ``schema_version``. Empty while only v1 exists — the first schema
-# bump adds ``{1: _migrate_v1_to_v2}`` here.
-_AGENT_PROFILE_MIGRATIONS: dict[int, PersistedProfileMigrator] = {}
+
+def _migrate_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
+    if (
+        payload.get("agent_kind", "openhands") == "openhands"
+        and payload.get("name") == "default"
+        and payload.get("revision", 0) == 0
+        and payload.get("tools") == []
+    ):
+        payload["tools"] = None
+    payload["schema_version"] = 2
+    return payload
+
+
+_AGENT_PROFILE_MIGRATIONS: dict[int, PersistedProfileMigrator] = {
+    1: _migrate_v1_to_v2,
+}
 
 
 def _apply_persisted_migrations(payload: dict[str, Any]) -> dict[str, Any]:
-    """Bring a persisted ``AgentProfile`` payload up to the current schema.
-
-    A payload missing ``schema_version`` predates versioning (or is a freshly
-    authored dict); canonicalize it by stamping the field to ``1``. Otherwise
-    the version is validated and walked forward through
-    :data:`_AGENT_PROFILE_MIGRATIONS`. Mirrors the migration dispatcher in
-    ``settings/model.py``.
-    """
+    """Bring an ``AgentProfile`` payload up to the current schema."""
     migrated = dict(payload)
     version_raw = migrated.get("schema_version")
     if version_raw is None:
-        migrated["schema_version"] = 1
-        version = 1
+        migrated["schema_version"] = AGENT_PROFILE_SCHEMA_VERSION
+        version = AGENT_PROFILE_SCHEMA_VERSION
     elif isinstance(version_raw, int) and not isinstance(version_raw, bool):
         version = version_raw
     else:
@@ -339,3 +412,23 @@ def validate_agent_profile(
         raise TypeError("AgentProfile payload must be a mapping or BaseModel.")
     payload = _apply_persisted_migrations(payload)
     return _AGENT_PROFILE_ADAPTER.validate_python(payload, context=context)
+
+
+def safe_validation_error_detail(exc: ValidationError) -> list[dict[str, Any]]:
+    """FastAPI-shaped ``detail`` for a 422 from a failed profile validation.
+
+    Surfaces ``loc``/``type``/``msg`` per error. The profile carries no
+    secret-bearing field — embedded ``skills[].mcp_tools`` was removed in #4017,
+    and the ``disabled_skills`` deny-list holds only skill *names* — so the full
+    validation message is safe to return, and a client needs it to see *why* a
+    save failed (e.g. an invalid ``acp_server`` value). ``input`` is still
+    dropped: it echoes the whole rejected payload, which is noisy and not needed
+    to explain the error. Shaped like FastAPI's request-validation ``detail`` (a
+    list of error objects) so routers can hand it straight to ``HTTPException``.
+    Hoisted from the agent-server router so the local and cloud routers behave
+    identically.
+    """
+    return [
+        {"loc": list(err["loc"]), "type": str(err["type"]), "msg": str(err["msg"])}
+        for err in exc.errors()
+    ]

@@ -25,10 +25,24 @@ class MarketplaceRegistration(BaseModel):
             "Only relevant for git sources."
         ),
     )
-    auto_load: bool = Field(
+    auto_load: bool | list[str] = Field(
         default=False,
-        description="Whether to load all marketplace plugins at conversation start.",
+        description=(
+            "Whether to load marketplace plugins and standalone skills at "
+            "conversation start. Use True for all, False or [] for none, or a "
+            "list of plugin/skill names for selective loading."
+        ),
     )
+
+    def auto_loads_plugin(self, plugin_name: str) -> bool:
+        if isinstance(self.auto_load, bool):
+            return self.auto_load
+        return plugin_name in self.auto_load
+
+    def auto_loads_skill(self, skill_name: str) -> bool:
+        if isinstance(self.auto_load, bool):
+            return self.auto_load
+        return skill_name in self.auto_load
 
     @field_validator("repo_path")
     @classmethod

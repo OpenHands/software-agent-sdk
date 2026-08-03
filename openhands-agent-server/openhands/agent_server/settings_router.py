@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from functools import lru_cache
 from typing import cast
 
@@ -6,18 +7,23 @@ from pydantic import ValidationError
 
 from openhands.agent_server._secrets_exposure import (
     build_expose_context,
+    get_cipher,
     get_config,
     parse_expose_secrets_header,
+    store_errors,
     translate_missing_cipher,
 )
 from openhands.agent_server.persistence import (
     SECRET_NAME_PATTERN,
     PersistedSettings,
+    get_llm_profile_store,
     get_secrets_store,
     get_settings_store,
 )
 from openhands.agent_server.persistence.models import SettingsUpdatePayload
+from openhands.agent_server.telemetry import notify_misc_settings_changed
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.settings import (
     ConversationSettings,
     SecretCreateRequest,
@@ -28,6 +34,7 @@ from openhands.sdk.settings import (
     SettingsUpdateRequest,
     export_agent_settings_schema,
 )
+from openhands.sdk.settings.api_models import MCPServerPatch
 
 
 logger = get_logger(__name__)
@@ -39,6 +46,7 @@ logger = get_logger(__name__)
 # while this router uses relative paths. The paths are intentionally separate
 # to match their respective contexts (router prefix vs full URL path).
 SETTINGS_PATH = ""  # -> /api/settings
+MCP_SERVER_PATH = "/mcp/{settings_key}"  # -> /api/settings/mcp/{settings_key}
 SECRETS_PATH = "/secrets"  # -> /api/settings/secrets
 SECRET_VALUE_PATH = "/secrets/{name}"  # -> /api/settings/secrets/{name}
 
@@ -174,6 +182,10 @@ async def update_settings(
 
     Accepts ``agent_settings_diff``, ``conversation_settings_diff``,
     ``misc_settings_diff``, and/or ``active_profile`` for incremental updates.
+    Setting ``active_profile`` loads and applies that profile's LLM, same as
+    ``POST /api/profiles/{name}/activate``, unless ``agent_settings_diff.llm``
+    is also given.
+
     The three ``*_settings_diff`` fields are deep-merged; nested objects merge
     recursively, and a ``null`` value **inside a nested map deletes that entry**
     — the "unset" primitive that lets a client remove a single map key without
@@ -181,7 +193,7 @@ async def update_settings(
 
         PATCH /api/settings
         {"agent_settings_diff":
-            {"mcp_config": {"mcpServers": {"svc": {"headers": {"X-Old": null}}}}}}
+            {"mcp_config": {"svc": {"headers": {"X-Old": null}}}}}
 
     A ``null`` on a top-level *field* (e.g. ``{"confirmation_mode": null}``)
     is **not** an unset — it flows to model validation as before, so it still
@@ -197,9 +209,6 @@ async def update_settings(
     Raises:
         HTTPException: 400 if the update payload contains invalid values.
     """
-    config = get_config(request)
-    store = get_settings_store(config)
-
     update_data = payload.model_dump(exclude_none=True)
     # exclude_none drops an explicit null, so re-add nullable pointers when the
     # client set them (including to None) to allow clearing.
@@ -218,11 +227,63 @@ async def update_settings(
             ),
         )
 
+    return _apply_settings_update(
+        request,
+        cast(SettingsUpdatePayload, update_data),
+    )
+
+
+def _resolve_active_profile_llm(
+    request: Request, update_data: SettingsUpdatePayload
+) -> SettingsUpdatePayload:
+    """Fold the named profile's LLM into ``agent_settings_diff`` unless the
+    caller already gave one explicitly. Mirrors ``/activate``."""
+    profile_name = update_data.get("active_profile")
+    agent_diff = update_data.get("agent_settings_diff")
+    explicit_llm_diff = isinstance(agent_diff, dict) and "llm" in agent_diff
+    if not profile_name or explicit_llm_diff:
+        return update_data
+
+    cipher = get_cipher(request)
+    profile_store = get_llm_profile_store()
+    try:
+        with store_errors():
+            llm = profile_store.load(profile_name, cipher=cipher)
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Profile '{profile_name}' not found",
+        )
+
+    return cast(
+        SettingsUpdatePayload,
+        {
+            **update_data,
+            "agent_settings_diff": {
+                **(agent_diff if isinstance(agent_diff, dict) else {}),
+                "llm": llm.model_dump(mode="json", context={"expose_secrets": True}),
+            },
+        },
+    )
+
+
+def _apply_settings_update(
+    request: Request,
+    update_data: SettingsUpdatePayload,
+    before_update: Callable[[PersistedSettings], None] | None = None,
+) -> SettingsResponse:
+    update_data = _resolve_active_profile_llm(request, update_data)
+
     # Apply updates atomically with file locking
     def apply_update(settings: PersistedSettings) -> PersistedSettings:
-        settings.update(cast(SettingsUpdatePayload, update_data))
+        if before_update is not None:
+            before_update(settings)
+        context = {"cipher": config.cipher} if config.cipher is not None else None
+        settings.update(update_data, context=context)
         return settings
 
+    config = get_config(request)
+    store = get_settings_store(config)
     client_host = request.client.host if request.client else "unknown"
     try:
         settings = store.update(apply_update)
@@ -238,6 +299,12 @@ async def update_settings(
                 "misc_settings_modified": "misc_settings_diff" in update_data,
             },
         )
+        # Consent lives in misc_settings.telemetry.consent, so a settings write
+        # is the only way it changes. Re-resolve before returning: a revocation
+        # must stop delivery and discard the queue while the caller is still
+        # waiting, not on the sink's next refresh.
+        if "misc_settings_diff" in update_data:
+            notify_misc_settings_changed(settings.misc_settings)
     except (ValueError, ValidationError):
         # Audit log: validation failed
         # Note: PersistedSettings.update() raises ValueError (sanitized message)
@@ -264,7 +331,7 @@ async def update_settings(
         logger.error("Settings update failed - file I/O error")
         raise HTTPException(status_code=500, detail="Failed to update settings")
 
-    # Don't expose secrets in PATCH response (consistent with GET behavior)
+    # Don't expose secrets in mutation responses (consistent with GET behavior)
     return SettingsResponse(
         agent_settings=settings.agent_settings.model_dump(mode="json"),
         conversation_settings=settings.conversation_settings.model_dump(mode="json"),
@@ -272,6 +339,87 @@ async def update_settings(
         active_profile=settings.active_profile,
         active_agent_profile_id=settings.active_agent_profile_id,
         misc_settings=settings.misc_settings,
+    )
+
+
+def _require_mcp_server_absent(settings: PersistedSettings, settings_key: str) -> None:
+    if settings_key in settings.agent_settings.mcp_config:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"MCP server '{settings_key}' already exists",
+        )
+
+
+def _require_mcp_server_present(settings: PersistedSettings, settings_key: str) -> None:
+    if settings_key not in settings.agent_settings.mcp_config:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"MCP server '{settings_key}' was not found",
+        )
+
+
+@settings_router.post(
+    MCP_SERVER_PATH,
+    response_model=SettingsResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_mcp_server(
+    request: Request,
+    settings_key: str,
+    server: MCPServer,
+) -> SettingsResponse:
+    """Create one named MCP server without replacing an existing map entry."""
+    server_data = server.model_dump(
+        mode="python",
+        context={"expose_secrets": "plaintext"},
+        exclude_none=True,
+        exclude_defaults=True,
+    )
+    update_data = cast(
+        SettingsUpdatePayload,
+        {"agent_settings_diff": {"mcp_config": {settings_key: server_data}}},
+    )
+    return _apply_settings_update(
+        request,
+        update_data,
+        lambda settings: _require_mcp_server_absent(settings, settings_key),
+    )
+
+
+@settings_router.patch(MCP_SERVER_PATH, response_model=SettingsResponse)
+async def patch_mcp_server(
+    request: Request,
+    settings_key: str,
+    patch: MCPServerPatch,
+) -> SettingsResponse:
+    """Sparsely update one existing named MCP server."""
+    patch_data = patch.model_dump(
+        mode="python",
+        context={"expose_secrets": "plaintext"},
+        exclude_unset=True,
+    )
+    update_data = cast(
+        SettingsUpdatePayload,
+        {"agent_settings_diff": {"mcp_config": {settings_key: patch_data}}},
+    )
+    return _apply_settings_update(
+        request,
+        update_data,
+        lambda settings: _require_mcp_server_present(settings, settings_key),
+    )
+
+
+@settings_router.delete(MCP_SERVER_PATH, response_model=SettingsResponse)
+async def delete_mcp_server(request: Request, settings_key: str) -> SettingsResponse:
+    """Delete one existing named MCP server without altering sibling entries."""
+    update_data = cast(
+        SettingsUpdatePayload,
+        {"agent_settings_diff": {"mcp_config": {settings_key: None}}},
+    )
+    return _apply_settings_update(
+        request,
+        update_data,
+        lambda settings: _require_mcp_server_present(settings, settings_key),
     )
 
 

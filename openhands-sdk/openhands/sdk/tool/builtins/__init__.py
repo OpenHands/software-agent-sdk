@@ -30,6 +30,12 @@ from openhands.sdk.tool.builtins.think import (
     ThinkObservation,
     ThinkTool,
 )
+from openhands.sdk.tool.builtins.vision_inspect import (
+    VisionInspectAction,
+    VisionInspectExecutor,
+    VisionInspectObservation,
+    VisionInspectTool,
+)
 
 
 # Tools attached to every agent by default. `InvokeSkillTool` is deliberately
@@ -44,6 +50,7 @@ BUILT_IN_TOOL_CLASSES = {
     **{tool.__name__: tool for tool in BUILT_IN_TOOLS},
     InvokeSkillTool.__name__: InvokeSkillTool,
     SwitchLLMTool.__name__: SwitchLLMTool,
+    VisionInspectTool.__name__: VisionInspectTool,
 }
 
 __all__ = [
@@ -65,4 +72,8 @@ __all__ = [
     "ThinkAction",
     "ThinkObservation",
     "ThinkExecutor",
+    "VisionInspectTool",
+    "VisionInspectAction",
+    "VisionInspectObservation",
+    "VisionInspectExecutor",
 ]

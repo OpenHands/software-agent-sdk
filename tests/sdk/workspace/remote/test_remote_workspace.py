@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, Mock, patch
 import httpx
 import pytest
 
+from openhands.sdk.mcp.config import dump_mcp_config
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 from openhands.sdk.workspace.remote.base import RemoteWorkspace
 
@@ -657,7 +658,7 @@ def test_get_secrets_raises_on_undefined_host():
 
 
 def test_get_mcp_config_returns_config():
-    """Test get_mcp_config returns MCP configuration."""
+    """Test get_mcp_config returns MCP servers."""
     workspace = RemoteWorkspace(
         host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
     )
@@ -667,11 +668,9 @@ def test_get_mcp_config_returns_config():
     mock_response.json.return_value = {
         "agent_settings": {
             "mcp_config": {
-                "mcpServers": {
-                    "shttp_0": {
-                        "url": "https://mcp.example.com/api",
-                        "transport": "streamable-http",
-                    }
+                "shttp_0": {
+                    "url": "https://mcp.example.com/api",
+                    "transport": "streamable-http",
                 }
             }
         },
@@ -683,10 +682,10 @@ def test_get_mcp_config_returns_config():
     workspace._client = mock_client
 
     config = workspace.get_mcp_config()
+    dumped = dump_mcp_config(config)
 
-    assert "mcpServers" in config
-    assert "shttp_0" in config["mcpServers"]
-    assert config["mcpServers"]["shttp_0"]["url"] == "https://mcp.example.com/api"
+    assert "shttp_0" in dumped
+    assert dumped["shttp_0"]["url"] == "https://mcp.example.com/api"
 
     # Verify API was called with correct headers
     call_args = mock_client.get.call_args
@@ -694,7 +693,7 @@ def test_get_mcp_config_returns_config():
 
 
 def test_get_mcp_config_returns_empty_dict_when_no_config(monkeypatch):
-    """Test get_mcp_config returns empty dict when no MCP config exists."""
+    """Test get_mcp_config returns empty dict when no MCP servers exists."""
     monkeypatch.setenv("ALLOW_SHORT_CONTEXT_WINDOWS", "true")
     workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/tmp")
 
@@ -702,27 +701,6 @@ def test_get_mcp_config_returns_empty_dict_when_no_config(monkeypatch):
     mock_response = Mock()
     mock_response.json.return_value = {
         "agent_settings": {"llm": {"model": "gpt-4"}},
-        "conversation_settings": {},
-        "llm_api_key_is_set": True,
-    }
-    mock_response.raise_for_status = Mock()
-    mock_client.get.return_value = mock_response
-    workspace._client = mock_client
-
-    config = workspace.get_mcp_config()
-
-    assert config == {}
-
-
-def test_get_mcp_config_returns_empty_dict_when_mcp_config_is_none(monkeypatch):
-    """Test get_mcp_config returns empty dict when mcp_config is None."""
-    monkeypatch.setenv("ALLOW_SHORT_CONTEXT_WINDOWS", "true")
-    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/tmp")
-
-    mock_client = MagicMock()
-    mock_response = Mock()
-    mock_response.json.return_value = {
-        "agent_settings": {"llm": {"model": "gpt-4"}, "mcp_config": None},
         "conversation_settings": {},
         "llm_api_key_is_set": True,
     }

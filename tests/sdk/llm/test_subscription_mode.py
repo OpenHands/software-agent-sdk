@@ -5,20 +5,26 @@ Tests cover four bugs that made LLM.subscription_login() unusable:
 2. include/reasoning params cause silent empty output
 3. Streaming output items lost (response.completed has output=[])
 4. Reasoning item IDs cause 404 on follow-up requests (store=false)
+5. Retry path must not add unsupported temperature param
 
 See: https://github.com/OpenHands/software-agent-sdk/issues/2797
 """
 
 import json
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, ClassVar
+from unittest.mock import patch
 
 import pytest
 from litellm.types.llms.base import BaseLiteLLMOpenAIResponseObject
+from litellm.types.llms.openai import ResponsesAPIResponse
+from openai.types.responses import ResponseOutputMessage, ResponseOutputText
 from openai.types.responses.response_function_tool_call import (
     ResponseFunctionToolCall,
 )
+from pydantic import ConfigDict, model_validator
 
+from openhands.sdk.llm.exceptions import LLMNoResponseError
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.message import (
     Message,
@@ -41,7 +47,7 @@ def _make_subscription_llm() -> LLM:
         base_url="https://chatgpt.com/backend-api/codex",
         reasoning_effort="high",
     )
-    llm._is_subscription = True
+    llm.is_subscription = True
     llm.enable_encrypted_reasoning = True
     return llm
 
@@ -50,6 +56,26 @@ def _make_generic_output_item(**kwargs: Any) -> BaseLiteLLMOpenAIResponseObject:
     """Build a BaseLiteLLMOpenAIResponseObject (the type litellm uses for
     streaming output items) with the given attributes."""
     return BaseLiteLLMOpenAIResponseObject.model_construct(**kwargs)
+
+
+def _make_responses_api_response(text: str = "ok") -> ResponsesAPIResponse:
+    return ResponsesAPIResponse(
+        id="resp-1",
+        created_at=1,
+        output=[
+            ResponseOutputMessage(
+                id="msg-1",
+                type="message",
+                role="assistant",
+                status="completed",
+                content=[
+                    ResponseOutputText(type="output_text", text=text, annotations=[])
+                ],
+            )
+        ],
+        model="gpt-5.2-codex",
+        object="response",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +106,6 @@ def test_subscription_skips_unsupported_param(param: str):
     "param,expected_value",
     [
         ("prompt_cache_retention", "24h"),
-        ("temperature", 1.0),
     ],
 )
 def test_non_subscription_keeps_scalar_param(param: str, expected_value: Any):
@@ -90,6 +115,14 @@ def test_non_subscription_keeps_scalar_param(param: str, expected_value: Any):
     assert not llm.is_subscription
     opts = select_responses_options(llm, {}, include=None, store=None)
     assert opts.get(param) == expected_value
+
+
+def test_non_subscription_does_not_invent_temperature():
+    llm = LLM(model="openai/gpt-5.2-codex", reasoning_effort="high")
+
+    opts = select_responses_options(llm, {}, include=None, store=None)
+
+    assert "temperature" not in opts
 
 
 @pytest.mark.parametrize(
@@ -107,6 +140,41 @@ def test_non_subscription_keeps_structured_param(param: str, check: Any):
     opts = select_responses_options(llm, {}, include=["text.output_text"], store=None)
     assert param in opts
     assert check(opts[param])
+
+
+# ---------------------------------------------------------------------------
+# Bug 5: Retry path must preserve omitted subscription params
+# ---------------------------------------------------------------------------
+
+
+@patch("openhands.sdk.llm.llm.litellm_responses")
+def test_subscription_retry_does_not_add_temperature(mock_responses: Any):
+    """Subscription mode intentionally omits temperature.
+
+    A retry after LLMNoResponseError must not manufacture temperature=1.0,
+    because the ChatGPT subscription endpoint rejects the parameter.
+    """
+    llm = _make_subscription_llm()
+    llm.num_retries = 2
+    llm.retry_min_wait = 0
+    llm.retry_max_wait = 0
+    llm.stream = True
+
+    mock_responses.side_effect = [
+        LLMNoResponseError("empty response"),
+        _make_responses_api_response("ok"),
+    ]
+
+    # Subscription auth loads OAuth credentials from disk; stub it out so the
+    # test does not depend on a real ChatGPT login being present.
+    with patch.object(llm, "_get_litellm_auth_values", return_value=(None, {})):
+        llm.responses(messages=[Message(role="user", content=[TextContent(text="hi")])])
+
+    assert mock_responses.call_count == 2
+    _, first_kwargs = mock_responses.call_args_list[0]
+    _, second_kwargs = mock_responses.call_args_list[1]
+    assert "temperature" not in first_kwargs
+    assert "temperature" not in second_kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -329,7 +397,7 @@ def test_format_messages_reasoning_item_handling(
     can't be resolved).  Non-subscription mode must preserve them."""
     llm = LLM(model="openai/gpt-5.2-codex")
     if is_subscription:
-        llm._is_subscription = True
+        llm.is_subscription = True
 
     sys_msg, user_msg, assistant_msg, tool_msg = _make_conversation_messages()
     _, input_items = llm.format_messages_for_responses(
@@ -357,3 +425,30 @@ def test_is_subscription_survives_serialization_round_trip():
         plain.model_dump(context={"expose_secrets": True})
     )
     assert restored_plain.is_subscription is False
+
+
+def test_is_subscription_runtime_update_is_the_serialized_state():
+    llm = LLM(model="gpt-4o")
+
+    llm.is_subscription = True
+
+    assert llm.model_dump()["is_subscription"] is True
+    assert LLM.model_validate(llm.model_dump()).is_subscription is True
+
+
+def test_is_subscription_restore_respects_subclass_before_validator():
+    class StrictLLM(LLM):
+        model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
+
+        @model_validator(mode="before")
+        @classmethod
+        def _drop_is_subscription(cls, data: Any) -> Any:
+            if isinstance(data, dict):
+                return {k: v for k, v in data.items() if k != "is_subscription"}
+            return data
+
+    restored = StrictLLM.model_validate(
+        {"model": "openai/gpt-4o-mini", "is_subscription": True}
+    )
+
+    assert restored.is_subscription is False

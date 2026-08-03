@@ -20,6 +20,7 @@ from openhands.sdk.llm.exceptions import (
     LLMContextWindowExceedError,
     LLMServiceUnavailableError,
 )
+from openhands.sdk.llm.llm import LLMCallContext
 
 
 def _get_mock_response(content: str = "ok", model: str = "gpt-4o") -> ModelResponse:
@@ -470,3 +471,151 @@ def test_fallback_forwards_caller_kwargs(mock_comp):
     assert mock_comp.call_count == 2
     fallback_call_kwargs = mock_comp.call_args_list[1].kwargs
     assert fallback_call_kwargs.get("metadata") == {"trace": "fallback-kwargs"}
+
+
+# =========================================================================
+# call_context propagation through fallback paths (#3443)
+# =========================================================================
+
+_CTX = LLMCallContext(prompt_cache_key="cache-abc", session_id="sess-xyz")
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_completion_fallback_receives_call_context(mock_comp):
+    """call_context must reach the fallback LLM's completion call."""
+    primary_error = APIConnectionError(
+        message="down", llm_provider="openai", model="gpt-4o"
+    )
+
+    def side_effect(**kwargs):
+        if kwargs.get("model") == "gpt-4o":
+            raise primary_error
+        return _get_mock_response("fb ok", model="fb")
+
+    mock_comp.side_effect = side_effect
+
+    fb = _get_llm("fb")
+    strategy = FallbackStrategy(fallback_llms=["fb-profile"])
+    primary = _get_llm("gpt-4o", fallback_strategy=strategy)
+    _patch_resolve(primary, [fb])
+
+    resp = primary.completion(_MSGS, call_context=_CTX)
+    assert resp.message.content[0].text == "fb ok"  # type: ignore[union-attr]
+
+    # The fallback call (second call) must carry the context values
+    fb_call_kwargs = mock_comp.call_args_list[-1].kwargs
+    assert fb_call_kwargs.get("prompt_cache_key") == "cache-abc"
+    assert fb_call_kwargs["extra_headers"]["x-litellm-session-id"] == "sess-xyz"
+
+
+@patch("openhands.sdk.llm.llm.litellm_responses")
+def test_responses_fallback_receives_call_context(mock_resp):
+    """call_context must reach the fallback LLM's responses call."""
+    primary_error = APIConnectionError(
+        message="down", llm_provider="openai", model="gpt-4o"
+    )
+    fallback_response = ResponsesAPIResponse(
+        id="resp-fb",
+        created_at=1,
+        model="fb",
+        object="response",
+        output=[
+            {
+                "type": "message",
+                "id": "msg-1",
+                "role": "assistant",
+                "status": "completed",
+                "content": [
+                    {"type": "output_text", "text": "fb ok", "annotations": []}
+                ],
+            }
+        ],
+        parallel_tool_calls=False,
+        tool_choice="auto",
+        tools=[],
+    )
+
+    def side_effect(**kwargs):
+        if kwargs.get("model") == "gpt-4o":
+            raise primary_error
+        return fallback_response
+
+    mock_resp.side_effect = side_effect
+
+    fb = _get_llm("fb")
+    strategy = FallbackStrategy(fallback_llms=["fb-profile"])
+    primary = _get_llm("gpt-4o", fallback_strategy=strategy)
+    _patch_resolve(primary, [fb])
+
+    resp = primary.responses(_MSGS, call_context=_CTX)
+    assert resp.message.content[0].text == "fb ok"  # type: ignore[union-attr]
+
+    fb_call_kwargs = mock_resp.call_args_list[-1].kwargs
+    assert fb_call_kwargs.get("prompt_cache_key") == "cache-abc"
+    assert fb_call_kwargs["extra_headers"]["x-litellm-session-id"] == "sess-xyz"
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion", new_callable=AsyncMock)
+async def test_acompletion_fallback_receives_call_context(mock_acomp, mock_comp):
+    """call_context must reach the fallback through acompletion."""
+    mock_acomp.side_effect = APIConnectionError(
+        message="down", llm_provider="openai", model="gpt-4o"
+    )
+    mock_comp.return_value = _get_mock_response("fb ok", model="fb")
+
+    fb = _get_llm("fb")
+    strategy = FallbackStrategy(fallback_llms=["fb-profile"])
+    primary = _get_llm("gpt-4o", fallback_strategy=strategy)
+    _patch_resolve(primary, [fb])
+
+    resp = await primary.acompletion(_MSGS, call_context=_CTX)
+    assert resp.message.content[0].text == "fb ok"  # type: ignore[union-attr]
+
+    fb_call_kwargs = mock_comp.call_args_list[-1].kwargs
+    assert fb_call_kwargs.get("prompt_cache_key") == "cache-abc"
+    assert fb_call_kwargs["extra_headers"]["x-litellm-session-id"] == "sess-xyz"
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.litellm_responses")
+@patch("openhands.sdk.llm.llm.litellm_aresponses", new_callable=AsyncMock)
+async def test_aresponses_fallback_receives_call_context(mock_aresp, mock_resp):
+    """call_context must reach the fallback through aresponses."""
+    mock_aresp.side_effect = APIConnectionError(
+        message="down", llm_provider="openai", model="gpt-4o"
+    )
+    fallback_response = ResponsesAPIResponse(
+        id="resp-fb",
+        created_at=1,
+        model="fb",
+        object="response",
+        output=[
+            {
+                "type": "message",
+                "id": "msg-1",
+                "role": "assistant",
+                "status": "completed",
+                "content": [
+                    {"type": "output_text", "text": "fb ok", "annotations": []}
+                ],
+            }
+        ],
+        parallel_tool_calls=False,
+        tool_choice="auto",
+        tools=[],
+    )
+    mock_resp.return_value = fallback_response
+
+    fb = _get_llm("fb")
+    strategy = FallbackStrategy(fallback_llms=["fb-profile"])
+    primary = _get_llm("gpt-4o", fallback_strategy=strategy)
+    _patch_resolve(primary, [fb])
+
+    resp = await primary.aresponses(_MSGS, call_context=_CTX)
+    assert resp.message.content[0].text == "fb ok"  # type: ignore[union-attr]
+
+    fb_call_kwargs = mock_resp.call_args_list[-1].kwargs
+    assert fb_call_kwargs.get("prompt_cache_key") == "cache-abc"
+    assert fb_call_kwargs["extra_headers"]["x-litellm-session-id"] == "sess-xyz"

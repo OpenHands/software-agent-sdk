@@ -6,7 +6,11 @@ from openhands.sdk.llm.auth import (
 )
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.llm import LLM, LLM_PROFILE_SCHEMA_VERSION
-from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.llm.llm_profile_store import (
+    LLMProfileLoader,
+    LLMProfileMutator,
+    LLMProfileStore,
+)
 from openhands.sdk.llm.llm_registry import LLMRegistry, RegistryEvent
 from openhands.sdk.llm.llm_response import LLMResponse
 from openhands.sdk.llm.message import (
@@ -45,6 +49,8 @@ __all__ = [
     "LLM",
     "LLM_PROFILE_SCHEMA_VERSION",
     "LLMRegistry",
+    "LLMProfileLoader",
+    "LLMProfileMutator",
     "LLMProfileStore",
     "RouterLLM",
     "RegistryEvent",

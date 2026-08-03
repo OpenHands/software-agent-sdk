@@ -42,7 +42,11 @@ class TestACPProviderInfo:
         assert info.supports_runtime_model_switch is True
         assert info.session_meta_key == "claudeCode"
         assert info.default_model == "opus[1m]"
-        assert any(m.id == "opus[1m]" for m in info.available_models)
+        models = {model.id: model.label for model in info.available_models}
+        assert models["opus[1m]"] == "Claude Opus (1M)"
+        assert models["claude-opus-5"] == "Claude Opus 5"
+        assert models["sonnet"] == "Claude Sonnet"
+        assert models["haiku"] == "Claude Haiku"
         # Pinned binary exposed by the agent-server image wrappers.
         assert info.binary_name == "claude-agent-acp"
         assert info.data_dir_env_var == "CLAUDE_CONFIG_DIR"
@@ -51,15 +55,19 @@ class TestACPProviderInfo:
         info = ACP_PROVIDERS["codex"]
         assert info.key == "codex"
         assert info.display_name == "Codex"
-        assert "@zed-industries/codex-acp" in info.default_command[-1]
+        assert "@agentclientprotocol/codex-acp" in info.default_command[-1]
         assert info.api_key_env_var == "OPENAI_API_KEY"
         assert info.base_url_env_var == "OPENAI_BASE_URL"
-        assert info.default_session_mode == "full-access"
+        assert info.default_session_mode == "agent-full-access"
         assert "codex-acp" in info.agent_name_patterns
         assert info.supports_set_session_model is True
         assert info.supports_runtime_model_switch is True
         assert info.session_meta_key is None
         assert info.default_model == "gpt-5.5"
+        assert any(m.id == "gpt-5.6" for m in info.available_models)
+        assert any(m.id == "gpt-5.6-sol" for m in info.available_models)
+        assert any(m.id == "gpt-5.6-terra" for m in info.available_models)
+        assert any(m.id == "gpt-5.6-luna" for m in info.available_models)
         assert any(m.id == "gpt-5.5" for m in info.available_models)
         assert info.binary_name == "codex-acp"
         assert info.data_dir_env_var == "CODEX_HOME"

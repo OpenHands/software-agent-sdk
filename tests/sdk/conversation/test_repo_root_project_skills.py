@@ -174,6 +174,40 @@ def test_load_project_skills_flag_merges_with_project_precedence(tmp_path: Path)
     conversation.close()
 
 
+def test_disabled_skills_drops_project_skill_at_lazy_merge(tmp_path: Path):
+    """A project skill whose name is in ``disabled_skills`` is dropped during the
+    lazy ``LocalConversation`` merge — the ``model_copy`` path that bypasses the
+    ``AgentContext`` validator. An unrelated disabled name is a harmless no-op.
+    """
+    # AGENTS.md becomes a project skill named "agents".
+    (tmp_path / "AGENTS.md").write_text("# Guidelines\n\nSENTINEL\n")
+
+    agent = _agent(
+        AgentContext(
+            skills=[Skill(name="keep", content="keep me")],
+            load_project_skills=True,
+            disabled_skills=["agents", "not-in-catalog"],
+            current_datetime="2026-01-01T00:00:00Z",
+        )
+    )
+    conversation = LocalConversation(
+        agent=agent,
+        workspace=tmp_path,
+        persistence_dir=tmp_path / "conversation",
+        delete_on_close=True,
+    )
+    conversation.send_message("hi")
+
+    assert conversation.agent.agent_context is not None
+    names = {s.name for s in conversation.agent.agent_context.skills}
+    # The lazily-loaded project skill "agents" is disabled -> dropped at merge.
+    assert "agents" not in names
+    # A non-disabled skill is unaffected; the absent "not-in-catalog" is a no-op.
+    assert "keep" in names
+
+    conversation.close()
+
+
 def test_load_project_skills_failure_does_not_block_conversation(tmp_path: Path):
     """Project-skill loading is best-effort: a load error must not break startup."""
     (tmp_path / "AGENTS.md").write_text("# Guidelines\n\nSENTINEL\n")

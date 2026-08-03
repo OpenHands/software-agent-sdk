@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import frontmatter
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_serializer, field_validator
 
 from openhands.sdk.utils.path import to_posix_path
 from openhands.sdk.utils.redact import redact_url_credentials
@@ -63,6 +63,15 @@ class PluginSource(BaseModel):
                 "repo_path cannot contain '..' (parent directory traversal)"
             )
         return v
+
+    @field_serializer("source", when_used="always")
+    def _redact_source(self, source: str) -> str:
+        """Mask inline URL credentials on dump; ${VAR} refs survive (not secrets).
+
+        The raw value stays on the attribute for fetch/clone — only serialized
+        forms (persisted state, the plugins tag, the remote payload) are masked.
+        """
+        return redact_url_credentials(source, preserve_placeholders=True)
 
     @property
     def source_url(self) -> str | None:

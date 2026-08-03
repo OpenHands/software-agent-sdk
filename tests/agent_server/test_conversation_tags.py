@@ -270,3 +270,43 @@ async def test_event_service_start_forwards_tags_to_local_conversation(tmp_path)
         MockConversation.assert_called_once()
         call_kwargs = MockConversation.call_args.kwargs
         assert call_kwargs["tags"] == tags
+
+
+@pytest.mark.asyncio
+async def test_event_service_start_forwards_observability_span_name(tmp_path):
+    """EventService.start() must pass stored child span names to LocalConversation."""
+    stored = StoredConversation(
+        id=uuid4(),
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(tmp_path)),
+        confirmation_policy=NeverConfirm(),
+        observability_span_name="pr_review_evaluation",
+        created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+        updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+    )
+
+    event_service = EventService(
+        stored=stored,
+        conversations_dir=tmp_path / "conversations",
+    )
+
+    with patch(
+        "openhands.agent_server.event_service.LocalConversation"
+    ) as MockConversation:
+        mock_conv = MagicMock()
+        mock_state = MagicMock()
+        mock_state.execution_status = ConversationExecutionStatus.IDLE
+        mock_state.events = []
+        mock_agent = MagicMock()
+        mock_agent.get_all_llms.return_value = []
+        mock_conv._state = mock_state
+        mock_conv.state = mock_state
+        mock_conv.agent = mock_agent
+        mock_conv._on_event = MagicMock()
+        MockConversation.return_value = mock_conv
+
+        await event_service.start()
+
+        MockConversation.assert_called_once()
+        call_kwargs = MockConversation.call_args.kwargs
+        assert call_kwargs["observability_span_name"] == "pr_review_evaluation"

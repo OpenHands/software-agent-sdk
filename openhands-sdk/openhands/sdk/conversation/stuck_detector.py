@@ -63,11 +63,12 @@ class StuckDetector:
         """Check if the agent is currently stuck.
 
         Note: To avoid materializing potentially large file-backed event histories,
-        only the last MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION events are analyzed.
-        If a user message exists within this window, only events after it are checked.
-        Otherwise, all events in the window are analyzed.
+        only the last MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION events of the active
+        branch are analyzed (abandoned branches are excluded). If a user message
+        exists within this window, only events after it are checked. Otherwise, all
+        events in the window are analyzed.
         """
-        events = list(self.state.events[-MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION:])
+        events = self.state.active_branch(limit=MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION)
 
         # Only look at history after the last user message
         last_user_msg_index = next(

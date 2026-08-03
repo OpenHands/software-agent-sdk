@@ -74,6 +74,10 @@ class PubSub[T]:
             )
             return False
 
+    def subscriber_ids(self) -> set[UUID]:
+        """Return the ids of all currently-registered subscribers."""
+        return set(self._subscribers.keys())
+
     async def __call__(self, event: T) -> None:
         """Invoke all registered callbacks with the given event.
         Subscribers are notified concurrently so a slow client cannot

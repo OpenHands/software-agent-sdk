@@ -72,11 +72,21 @@ def test_build_authorize_url():
 
 def test_openai_codex_models():
     """Test that OPENAI_CODEX_MODELS contains expected models."""
-    assert "gpt-5.3-codex" in OPENAI_CODEX_MODELS
-    assert "gpt-5.2-codex" in OPENAI_CODEX_MODELS
-    assert "gpt-5.2" in OPENAI_CODEX_MODELS
-    assert "gpt-5.1-codex-max" in OPENAI_CODEX_MODELS
-    assert "gpt-5.1-codex-mini" in OPENAI_CODEX_MODELS
+    from openhands.sdk.settings.acp_providers import get_acp_provider
+
+    codex_provider = get_acp_provider("codex")
+    assert codex_provider is not None
+    assert OPENAI_CODEX_MODELS.issuperset(
+        model.id for model in codex_provider.available_models
+    )
+    assert "gpt-5.6" in OPENAI_CODEX_MODELS
+    assert "gpt-5.6-sol" in OPENAI_CODEX_MODELS
+    assert "gpt-5.6-terra" in OPENAI_CODEX_MODELS
+    assert "gpt-5.6-luna" in OPENAI_CODEX_MODELS
+    assert "gpt-5.5" in OPENAI_CODEX_MODELS
+    assert "gpt-5.4" in OPENAI_CODEX_MODELS
+    assert "gpt-5.4-mini" in OPENAI_CODEX_MODELS
+    assert "gpt-5.3-codex" not in OPENAI_CODEX_MODELS
 
 
 def test_openai_subscription_auth_vendor():
@@ -184,7 +194,7 @@ def test_openai_subscription_auth_create_llm_no_credentials(tmp_path):
     auth = OpenAISubscriptionAuth(credential_store=store)
 
     with pytest.raises(ValueError, match="No credentials available"):
-        auth.create_llm(model="gpt-5.2-codex")
+        auth.create_llm(model="gpt-5.6")
 
 
 def test_openai_subscription_auth_create_llm_success(tmp_path):
@@ -201,9 +211,9 @@ def test_openai_subscription_auth_create_llm_success(tmp_path):
     )
     store.save(creds)
 
-    llm = auth.create_llm(model="gpt-5.2-codex")
+    llm = auth.create_llm(model="gpt-5.6")
 
-    assert llm.model == "openai/gpt-5.2-codex"
+    assert llm.model == "openai/gpt-5.6"
     assert llm.api_key is None
     assert llm._get_litellm_api_key_value() == "test_access_token"
     assert llm.auth_type == "subscription"

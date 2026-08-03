@@ -214,9 +214,11 @@ class FileEditor:
         if not occurrences:
             # We found no occurrences, possibly because of extra white spaces at
             # either the front or back of the string.
-            # Remove the white spaces and try again.
+            # Strip old_str to retry the *match* only. Do NOT strip new_str: it
+            # is the replacement content, and stripping it would silently drop
+            # meaningful leading/trailing whitespace (e.g. a Markdown hard line
+            # break or intentional indentation) the caller asked to write.
             old_str = old_str.strip()
-            new_str = new_str.strip()
             pattern = re.escape(old_str)
             occurrences = [
                 (

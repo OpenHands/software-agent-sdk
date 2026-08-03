@@ -20,8 +20,11 @@ from openhands.sdk.skills import (
 )
 
 
-def test_agentskills_loads_mcp_json(tmp_path: Path) -> None:
+def test_agentskills_loads_mcp_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """AgentSkills (SKILL.md) should load .mcp.json with variable expansion."""
+    monkeypatch.delenv("PORT", raising=False)
     skill_dir = tmp_path / "my-skill"
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text("# My Skill")
@@ -39,9 +42,9 @@ def test_agentskills_loads_mcp_json(tmp_path: Path) -> None:
 
     assert skill.mcp_tools is not None
     # ${SKILL_ROOT} should be expanded
-    assert skill.mcp_tools["mcpServers"]["server"]["command"] == f"{skill_dir}/run.py"
+    assert skill.mcp_tools["server"].command == f"{skill_dir}/run.py"
     # ${PORT:-8080} should use default
-    assert skill.mcp_tools["mcpServers"]["server"]["args"] == ["--port", "8080"]
+    assert skill.mcp_tools["server"].args == ["--port", "8080"]
 
 
 def test_agentskills_ignores_frontmatter_mcp_tools(tmp_path: Path) -> None:
@@ -50,7 +53,7 @@ def test_agentskills_ignores_frontmatter_mcp_tools(tmp_path: Path) -> None:
     skill_dir.mkdir()
     # Frontmatter has mcp_tools but no .mcp.json file
     (skill_dir / "SKILL.md").write_text(
-        "---\nmcp_tools:\n  mcpServers:\n    server: {command: python}\n---\n# Skill"
+        "---\nmcp_tools:\n  server: {command: python}\n---\n# Skill"
     )
 
     skill = Skill.load(skill_dir / "SKILL.md")
@@ -62,13 +65,13 @@ def test_legacy_skill_loads_frontmatter_mcp_tools(tmp_path: Path) -> None:
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
     (skills_dir / "legacy.md").write_text(
-        "---\nmcp_tools:\n  mcpServers:\n    server: {command: python}\n---\n# Legacy"
+        "---\nmcp_tools:\n  server: {command: python}\n---\n# Legacy"
     )
 
     skill = Skill.load(skills_dir / "legacy.md", skills_dir)
 
     assert skill.mcp_tools is not None
-    assert "server" in skill.mcp_tools["mcpServers"]
+    assert "server" in skill.mcp_tools
 
 
 def test_legacy_skill_ignores_mcp_json_in_directory(tmp_path: Path) -> None:

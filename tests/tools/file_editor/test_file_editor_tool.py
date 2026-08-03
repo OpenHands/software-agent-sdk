@@ -337,3 +337,62 @@ def test_file_editor_tool_image_viewing_line_with_vision_disabled():
         # Check that the image viewing line is NOT included in description
         assert "is an image file" not in tool.description
         assert "displays the image content" not in tool.description
+
+
+def test_str_replace_fallback_preserves_new_str_whitespace():
+    """When the whitespace-tolerant fallback is used (old_str not verbatim),
+    meaningful leading/trailing whitespace in new_str must be preserved.
+
+    Regression test: previously the fallback stripped new_str as well as
+    old_str, silently dropping intentional whitespace (e.g. a Markdown hard
+    line break) while reporting success.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        conv_state = _create_test_conv_state(temp_dir)
+        tool = FileEditorTool.create(conv_state)[0]
+
+        test_file = os.path.join(temp_dir, "test.md")
+        with open(test_file, "w") as f:
+            f.write("hello world\nsecond line\n")
+
+        # Leading space in old_str -> exact match fails -> fallback runs.
+        # Trailing spaces in new_str are meaningful (Markdown hard line break).
+        action = FileEditorAction(
+            command="str_replace",
+            path=test_file,
+            old_str=" hello world",
+            new_str="HELLO WORLD  ",
+        )
+        result = tool(action)
+
+        assert result is not None
+        assert not result.is_error
+        with open(test_file) as f:
+            content = f.read()
+        assert content == "HELLO WORLD  \nsecond line\n"
+
+
+def test_str_replace_exact_match_preserves_new_str_whitespace():
+    """The exact-match path (no fallback) must also preserve new_str
+    whitespace. Guards against regressions in the normal code path."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        conv_state = _create_test_conv_state(temp_dir)
+        tool = FileEditorTool.create(conv_state)[0]
+
+        test_file = os.path.join(temp_dir, "test.md")
+        with open(test_file, "w") as f:
+            f.write("hello world\nsecond line\n")
+
+        action = FileEditorAction(
+            command="str_replace",
+            path=test_file,
+            old_str="hello world",
+            new_str="HELLO WORLD  ",
+        )
+        result = tool(action)
+
+        assert result is not None
+        assert not result.is_error
+        with open(test_file) as f:
+            content = f.read()
+        assert content == "HELLO WORLD  \nsecond line\n"

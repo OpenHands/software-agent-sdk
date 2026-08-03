@@ -3,6 +3,7 @@
 import json
 from collections.abc import Sequence
 
+import pytest
 from pydantic import Field
 
 from openhands.sdk.llm import ImageContent, TextContent
@@ -386,3 +387,48 @@ class TestCircularSchemaHandling:
         assert result["properties"]["next"]["type"] == "object"
 
         json.dumps(result)
+
+
+@pytest.mark.parametrize(
+    ("node", "expected"),
+    [
+        ({"type": "array", "items": True}, {"type": "array", "items": {}}),
+        ({"type": "array", "items": False}, {"type": "array", "items": {"not": {}}}),
+        ({"anyOf": [True, {"type": "null"}]}, {}),
+        (
+            {"type": "object", "properties": {"anything": True}},
+            {"type": "object", "properties": {"anything": {}}},
+        ),
+        (
+            {
+                "type": "object",
+                "properties": {
+                    "cursor": {
+                        "description": "Pagination cursor",
+                        "anyOf": [{"type": "array", "items": True}, {"type": "null"}],
+                    }
+                },
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "cursor": {
+                        "type": "array",
+                        "items": {},
+                        "description": "Pagination cursor",
+                    }
+                },
+            },
+        ),
+    ],
+)
+def test_boolean_schema_nodes_are_normalized(node, expected):
+    """Boolean sub-schemas normalize to their object equivalents.
+
+    ``true`` accepts any value and ``false`` accepts none; both are valid
+    wherever a schema is expected.
+    """
+    result = _process_schema_node(node, {})
+
+    assert result == expected
+    json.dumps(result)

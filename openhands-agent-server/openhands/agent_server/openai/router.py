@@ -1,11 +1,13 @@
 """OpenAI-compatible gateway routes for the agent server."""
 
+import json
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from fastapi.responses import StreamingResponse
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import TypeAdapter, ValidationError
 
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
@@ -20,12 +22,20 @@ from openhands.agent_server.openai.service import (
     list_openai_models,
     run_chat_completion,
 )
+from openhands.sdk.conversation.types import (
+    ConversationObservabilityMetadata,
+    ConversationObservabilitySpanName,
+    ConversationObservabilityTags,
+)
 
 
 openai_router = APIRouter(tags=["OpenAI Compatibility"])
 
 _SESSION_API_KEY_HEADER = APIKeyHeader(name="X-Session-API-Key", auto_error=False)
 _AUTHORIZATION_HEADER = HTTPBearer(auto_error=False)
+_OBSERVABILITY_SPAN_NAME_ADAPTER = TypeAdapter(ConversationObservabilitySpanName)
+_OBSERVABILITY_TAGS_ADAPTER = TypeAdapter(ConversationObservabilityTags)
+_OBSERVABILITY_METADATA_ADAPTER = TypeAdapter(ConversationObservabilityMetadata)
 
 
 def check_openai_api_key(
@@ -66,6 +76,41 @@ def _get_config(request: Request) -> Config:
     return config
 
 
+def _parse_observability_overrides(
+    *,
+    span_name: str | None,
+    tags: str | None,
+    metadata: str | None,
+) -> dict[str, object]:
+    overrides: dict[str, object] = {}
+    try:
+        if span_name:
+            overrides["observability_span_name"] = (
+                _OBSERVABILITY_SPAN_NAME_ADAPTER.validate_python(span_name)
+            )
+        if tags:
+            tag_values = [tag.strip() for tag in tags.split(",") if tag.strip()]
+            overrides["observability_tags"] = (
+                _OBSERVABILITY_TAGS_ADAPTER.validate_python(tag_values)
+            )
+        if metadata:
+            metadata_payload = json.loads(metadata)
+            overrides["observability_metadata"] = (
+                _OBSERVABILITY_METADATA_ADAPTER.validate_python(metadata_payload)
+            )
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="X-OpenHands-Observability-Metadata must be a JSON object",
+        ) from exc
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=exc.errors(include_context=False),
+        ) from exc
+    return overrides
+
+
 @openai_router.get("/v1/models", response_model=OpenAIModelListResponse)
 async def get_openai_models(request: Request) -> OpenAIModelListResponse:
     _get_config(request)
@@ -84,6 +129,15 @@ async def create_chat_completion(
     x_openhands_server_conversation_id: Annotated[
         UUID | None, Header(alias="X-OpenHands-ServerConversation-ID")
     ] = None,
+    x_openhands_observability_span_name: Annotated[
+        str | None, Header(alias="X-OpenHands-Observability-Span-Name")
+    ] = None,
+    x_openhands_observability_tags: Annotated[
+        str | None, Header(alias="X-OpenHands-Observability-Tags")
+    ] = None,
+    x_openhands_observability_metadata: Annotated[
+        str | None, Header(alias="X-OpenHands-Observability-Metadata")
+    ] = None,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> OpenAIChatCompletionResponse | StreamingResponse:
     result = await run_chat_completion(
@@ -91,6 +145,11 @@ async def create_chat_completion(
         config=_get_config(request),
         conversation_service=conversation_service,
         reusable_conversation_id=x_openhands_server_conversation_id,
+        observability_overrides=_parse_observability_overrides(
+            span_name=x_openhands_observability_span_name,
+            tags=x_openhands_observability_tags,
+            metadata=x_openhands_observability_metadata,
+        ),
     )
     conversation_id = str(result.conversation_id)
     if body.stream:

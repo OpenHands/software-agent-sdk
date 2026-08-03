@@ -6,7 +6,7 @@ when conversations are closed or destroyed.
 """
 
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, ClassVar, Literal
 from unittest.mock import Mock
 
@@ -39,6 +39,8 @@ class _InjectedExecutorTerminalTool(TerminalTool):
         terminal_type: Literal["tmux", "subprocess", "powershell"] | None = None,
         shell_path: str | None = None,
         executor: ToolExecutor | None = None,
+        *,
+        env: Mapping[str, str] | None = None,
     ) -> Sequence[TerminalTool]:
         tools = TerminalTool.create(
             conv_state,
@@ -47,6 +49,7 @@ class _InjectedExecutorTerminalTool(TerminalTool):
             terminal_type=terminal_type,
             shell_path=shell_path,
             executor=executor,
+            env=env,
         )
         return [
             tool.model_copy(update={"executor": cls.injected_executor})

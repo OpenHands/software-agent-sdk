@@ -97,6 +97,17 @@ class DelegateExecutor(ToolExecutor):
             return "default"
         return action.agent_types[index].strip() or "default"
 
+    def _close_sub_agent(self, agent_id: str, conversation: LocalConversation) -> None:
+        try:
+            conversation.close()
+        except Exception as e:
+            logger.warning(f"Error closing sub-agent '{agent_id}': {e}")
+
+    def close(self) -> None:
+        for agent_id, conversation in list(self._sub_agents.items()):
+            self._close_sub_agent(agent_id, conversation)
+        self._sub_agents.clear()
+
     def _run_until_finished(
         self, agent_id: str, conversation: LocalConversation
     ) -> None:
@@ -139,7 +150,8 @@ class DelegateExecutor(ToolExecutor):
                     is_error=True,
                 )
 
-        if len(self._sub_agents) + len(action.ids) > self._max_children:
+        new_agent_ids = set(action.ids) - set(self._sub_agents)
+        if len(self._sub_agents) + len(new_agent_ids) > self._max_children:
             return DelegateObservation.from_text(
                 text=(
                     f"Cannot spawn {len(action.ids)} agents. "
@@ -150,6 +162,7 @@ class DelegateExecutor(ToolExecutor):
                 is_error=True,
             )
 
+        created_sub_agents: list[tuple[str, str, LocalConversation]] = []
         try:
             parent_conversation = self.parent_conversation
             parent_llm = parent_conversation.agent.llm
@@ -159,14 +172,19 @@ class DelegateExecutor(ToolExecutor):
             resolved_agent_types = [
                 self._resolve_agent_type(action, i) for i in range(len(action.ids))
             ]
+            factories = [
+                get_agent_factory(name=agent_type)
+                for agent_type in resolved_agent_types
+            ]
 
-            for agent_id, agent_type in zip(action.ids, resolved_agent_types):
+            for agent_id, agent_type, factory in zip(
+                action.ids, resolved_agent_types, factories
+            ):
                 sub_agent_llm = parent_llm.model_copy()
                 # resetting metrics such that the sub-agent has its own
                 # Metrics object
                 sub_agent_llm.reset_metrics()
 
-                factory = get_agent_factory(name=agent_type)
                 worker_agent = factory.factory_func(sub_agent_llm)
 
                 # ensuring that the sub-agent LLM has stream deactivated
@@ -210,6 +228,7 @@ class DelegateExecutor(ToolExecutor):
                     )
 
                 sub_conversation = LocalConversation(**conv_kwargs)
+                created_sub_agents.append((agent_id, agent_type, sub_conversation))
 
                 # Apply permission_mode: explicit mode from definition,
                 # or inherit the parent's policy when None.
@@ -221,6 +240,10 @@ class DelegateExecutor(ToolExecutor):
                 else:
                     sub_conversation.set_confirmation_policy(confirmation_policy)
 
+            for agent_id, agent_type, sub_conversation in created_sub_agents:
+                previous_conversation = self._sub_agents.get(agent_id)
+                if previous_conversation is not None:
+                    self._close_sub_agent(agent_id, previous_conversation)
                 self._sub_agents[agent_id] = sub_conversation
 
                 # Log what type of agent was created
@@ -244,6 +267,8 @@ class DelegateExecutor(ToolExecutor):
             )
 
         except Exception as e:
+            for agent_id, _, sub_conversation in created_sub_agents:
+                self._close_sub_agent(agent_id, sub_conversation)
             logger.error(f"Error: failed to spawn agents: {e}", exc_info=True)
             return DelegateObservation.from_text(
                 text=f"failed to spawn agents: {str(e)}",

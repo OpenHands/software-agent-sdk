@@ -104,6 +104,35 @@ ConversationObservabilityTags = Annotated[
 """Validated list of Laminar/OTel span tags for a conversation."""
 
 
+OBSERVABILITY_SPAN_NAME_PATTERN = re.compile(r"^[A-Za-z0-9._:/-]+$")
+OBSERVABILITY_SPAN_NAME_MAX_LENGTH = 128
+
+
+def _validate_observability_span_name(v: Any) -> str:
+    if v is None:
+        return "conversation"
+    if not isinstance(v, str) or not v:
+        raise ValueError("Observability span name must be a non-empty string")
+    if len(v) > OBSERVABILITY_SPAN_NAME_MAX_LENGTH:
+        raise ValueError(
+            "Observability span name exceeds maximum length of "
+            f"{OBSERVABILITY_SPAN_NAME_MAX_LENGTH} characters"
+        )
+    if not OBSERVABILITY_SPAN_NAME_PATTERN.match(v):
+        raise ValueError(
+            "Observability span name may only contain letters, numbers, dots, "
+            "underscores, colons, slashes, and hyphens"
+        )
+    return v
+
+
+ConversationObservabilitySpanName = Annotated[
+    str,
+    BeforeValidator(_validate_observability_span_name),
+]
+"""Validated Laminar/OTel span name for conversation observability."""
+
+
 class StuckDetectionThresholds(BaseModel):
     """Configuration for stuck detection thresholds.
 

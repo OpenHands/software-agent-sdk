@@ -45,6 +45,7 @@ class _GatedLLM(TestLLM):
         tools=None,
         add_security_risk_prediction=False,
         on_token=None,
+        call_context=None,
         **kwargs,
     ):
         self._entered.set()
@@ -54,6 +55,7 @@ class _GatedLLM(TestLLM):
             tools,
             add_security_risk_prediction,
             on_token,
+            call_context,
             **kwargs,
         )
 
