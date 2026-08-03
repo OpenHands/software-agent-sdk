@@ -376,11 +376,7 @@ def test_repeating_action_observation_stuck():
 
 
 def test_repeating_action_error_nudges_before_stuck():
-    """A repeating action-error pattern gets one corrective nudge before
-    ``is_stuck()`` reports it as terminal (#4331): reaching the threshold
-    (3 by default) is nudge-eligible, not yet stuck; only a further repeat
-    of the identical action-error pair is a hard stuck.
-    """
+    """Reaching the threshold nudges once; a further repeat is a hard stuck."""
     llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
     agent = Agent(llm=llm)
     state = ConversationState.create(
@@ -426,28 +422,26 @@ def test_repeating_action_error_nudges_before_stuck():
         state.events.append(action)
         state.events.append(error)
 
-    # Should not be stuck (nor nudge-eligible) with only 2 identical pairs
+    # 2 pairs: not stuck, no nudge yet
     assert stuck_detector.is_stuck() is False
     assert stuck_detector.get_action_error_nudge() is None
 
-    # Add 1 more identical action-error pair to reach the threshold (3)
+    # 3rd pair reaches the threshold: nudge, not yet stuck
     action, error = create_action_and_error(2)
     state.events.append(action)
     state.events.append(error)
 
-    # Threshold reached: nudge-eligible, but not yet a hard stuck
     assert stuck_detector.is_stuck() is False
     nudge = stuck_detector.get_action_error_nudge()
     assert nudge is not None
     assert "terminal" in nudge
     assert "Command 'invalid_command' not found" in nudge
 
-    # Model repeats the exact same action-error again despite the nudge
+    # 4th pair despite the nudge: hard stuck
     action, error = create_action_and_error(3)
     state.events.append(action)
     state.events.append(error)
 
-    # Now it's a hard stuck, and there's no further nudge to give
     assert stuck_detector.is_stuck() is True
     assert stuck_detector.get_action_error_nudge() is None
 

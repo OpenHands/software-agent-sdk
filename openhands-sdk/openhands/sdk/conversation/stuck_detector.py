@@ -60,14 +60,7 @@ class StuckDetector:
         return self.thresholds.alternating_pattern
 
     def _events_since_last_user_message(self) -> list[Event]:
-        """Events in the scan window, after the last user message (if any).
-
-        To avoid materializing potentially large file-backed event histories,
-        only the last MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION events of the active
-        branch are analyzed (abandoned branches are excluded). If a user message
-        exists within this window, only events after it are returned. Otherwise,
-        all events in the window are returned.
-        """
+        """Events in the scan window, after the last user message (if any)."""
         events = self.state.active_branch(limit=MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION)
 
         last_user_msg_index = next(
@@ -118,10 +111,8 @@ class StuckDetector:
             f"Events after last user message: {[type(e).__name__ for e in events]}"
         )
 
-        # Collect enough actions and observations for detection. The action-error
-        # scan needs one extra pair beyond its threshold to tell a fresh streak
-        # (nudge-eligible, see get_action_error_nudge()) apart from one that
-        # continued past the nudge (hard stuck).
+        # action_error needs one extra pair to tell a fresh streak from one
+        # that already continued past the nudge (see get_action_error_nudge)
         max_needed = max(
             self.action_observation_threshold, self.action_error_threshold + 1
         )
@@ -193,12 +184,7 @@ class StuckDetector:
     def _action_error_streak(
         self, last_actions: list[Event], last_observations: list[Event]
     ) -> int:
-        """Length of the trailing run of one action repeatedly erroring.
-
-        Counts, from the most recent pair backwards, how many consecutive
-        (action, observation) pairs have an action equal to the most recent
-        one and an observation that is an :class:`AgentErrorEvent`.
-        """
+        """Length of the trailing run of one action repeatedly erroring."""
         if not last_actions or not last_observations:
             return 0
         reference = last_actions[0]
@@ -214,10 +200,7 @@ class StuckDetector:
     def _is_stuck_repeating_action_error(
         self, last_actions: list[Event], last_observations: list[Event]
     ) -> bool:
-        # scenario 2: same action, errors. Requires one repeat *beyond* the
-        # threshold: the streak reaching the threshold itself is handled by
-        # get_action_error_nudge(), which gives the model one explicit chance
-        # to self-correct before this reports the pattern as terminal.
+        # scenario 2: same action, errors — one repeat past the threshold
         if self._action_error_streak(last_actions, last_observations) > (
             self.action_error_threshold
         ):
@@ -226,16 +209,7 @@ class StuckDetector:
         return False
 
     def get_action_error_nudge(self) -> str | None:
-        """Corrective nudge for a repeating action-error streak, once.
-
-        Returns a message naming the repeated action and its error the first
-        time the identical-action streak reaches ``action_error_threshold``,
-        so the caller can inject it and give the model one explicit,
-        higher-salience chance to self-correct before ``is_stuck()`` reports
-        the pattern as terminal. Returns ``None`` before the threshold is
-        reached, and again once the streak continues past it — at that point
-        the nudge already failed and ``is_stuck()`` takes over.
-        """
+        """Nudge text once an action-error streak first hits the threshold."""
         events = self._events_since_last_user_message()
         threshold = self.action_error_threshold
         last_actions, last_observations = self._collect_actions_and_observations(

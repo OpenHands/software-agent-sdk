@@ -649,16 +649,7 @@ class LocalConversation(BaseConversation):
         )
 
     def _check_stuck_or_nudge(self) -> bool:
-        """Run stuck-pattern detection for the current run loop iteration.
-
-        A repeating action-error pattern gets one explicit corrective nudge
-        (naming the repeated action and its error) before the conversation is
-        hard-terminated, mirroring how an EMPTY/reasoning-only LLM response
-        already gets `_send_corrective_nudge()` instead of an immediate stop
-        (#4331). The nudge is injected and the loop is left free to run
-        another `agent.step()` this same iteration so the model can react to
-        it; only a pattern that persists past that nudge, or any other stuck
-        pattern, sets STUCK.
+        """Nudge once on a repeating action-error streak, else apply is_stuck().
 
         Returns True if STUCK was set and the run loop should stop.
         """

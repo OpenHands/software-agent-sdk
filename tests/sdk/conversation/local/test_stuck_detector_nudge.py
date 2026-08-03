@@ -1,12 +1,4 @@
-"""Integration tests for the repeating action-error corrective nudge (#4331).
-
-Before this fix, a repeating action-error pattern (same malformed tool call,
-same validation error, N times in a row) went straight to a terminal STUCK
-status. These tests drive a real `Conversation.run()` loop with a tool that
-always errors, verifying the run loop now gives the model one explicit
-corrective nudge before hard-terminating, and that it only terminates if the
-identical action-error pair continues past that nudge.
-"""
+"""Integration tests for the repeating action-error corrective nudge (#4331)."""
 
 from collections.abc import Sequence
 from typing import ClassVar
@@ -29,8 +21,6 @@ from openhands.sdk.tool import (
 
 
 class _AlwaysErrorAction(Action):
-    """Mock action for a tool call that always fails validation/execution."""
-
     command: str
 
 
@@ -43,8 +33,6 @@ class _AlwaysErrorObservation(Observation):
 
 
 class _AlwaysErrorExecutor(ToolExecutor[_AlwaysErrorAction, _AlwaysErrorObservation]):
-    """Executor that always raises, mirroring a missing-required-arg error."""
-
     def __call__(self, action: _AlwaysErrorAction, conversation=None):
         raise ValueError("`file_text` is required for command: create.")
 
@@ -123,7 +111,6 @@ def test_run_nudges_before_going_stuck_on_repeating_action_error():
     assert "always_error_tool" in nudge_text.text
     assert "file_text" in nudge_text.text
 
-    # The nudge must land right after the 3rd error and before the 4th action.
     events = list(conversation.state.events)
     nudge_index = events.index(nudges[0])
     preceding_errors = [
