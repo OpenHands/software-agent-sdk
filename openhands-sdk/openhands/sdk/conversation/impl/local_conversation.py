@@ -69,6 +69,7 @@ from openhands.sdk.mcp.utils import (
     DefaultMCPToolProvider,
     MCPToolProvider,
     ToolsChangedCallback,
+    ToolsReconciledCallback,
 )
 from openhands.sdk.observability.laminar import observe
 from openhands.sdk.plugin import (
@@ -1277,6 +1278,7 @@ class LocalConversation(BaseConversation):
         mcp_config: dict[str, MCPServer],
         *,
         on_tools_changed: ToolsChangedCallback | None = None,
+        on_tools_reconciled: ToolsReconciledCallback | None = None,
     ) -> list[ToolDefinition]:
         # Servers the user switched off stay in the settings map but must not
         # be connected to. Filter before the emptiness check so an all-disabled
@@ -1288,6 +1290,7 @@ class LocalConversation(BaseConversation):
             mcp_config,
             _RUNTIME_MCP_TIMEOUT_SECS,
             on_tools_changed=on_tools_changed,
+            on_tools_reconciled=on_tools_reconciled,
         )
         return list(client.tools)
 
@@ -1296,7 +1299,7 @@ class LocalConversation(BaseConversation):
             return []
         return self._runtime_mcp_tools(
             self.agent.mcp_config,
-            on_tools_changed=self.agent._on_mcp_tools_changed,
+            on_tools_reconciled=self.agent._on_mcp_tools_reconciled,
         )
 
     def _runtime_skill_tools_for_agent(self) -> list[ToolDefinition]:

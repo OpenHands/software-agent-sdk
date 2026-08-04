@@ -27,8 +27,9 @@ from openhands.sdk.critic.base import CriticBase
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import MCPServer
-from openhands.sdk.mcp.tool import MCPToolExecutor
+from openhands.sdk.mcp.tool import MCPToolDefinition, MCPToolExecutor
 from openhands.sdk.tool import (
     BUILT_IN_TOOL_CLASSES,
     BUILT_IN_TOOLS,
@@ -561,6 +562,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         if self.filter_tools_regex:
             pattern = re.compile(self.filter_tools_regex)
             tools = [tool for tool in tools if pattern.match(tool.name)]
+            tool_names = [tool.name for tool in tools]
             logger.info("Filtered to %d tools after applying regex filter", len(tools))
 
         # Include default tools from include_default_tools; not subject to regex
@@ -939,6 +941,61 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 len(replacements),
                 ", ".join(tool.name for tool in replacements),
             )
+
+    def _on_mcp_tools_reconciled(
+        self,
+        client: MCPClient,
+        tools: Sequence[MCPToolDefinition],
+    ) -> None:
+        """Replace this MCP client's tools with its current server snapshot."""
+        if not self._initialized:
+            logger.warning(
+                "MCP tools reconciled before agent initialization; skipping %d tools",
+                len(tools),
+            )
+            return
+
+        tool_names = [tool.name for tool in tools]
+        if len(tool_names) != len(set(tool_names)):
+            duplicates = {
+                name for name, count in Counter(tool_names).items() if count > 1
+            }
+            raise ValueError(f"Duplicate MCP tool names found: {duplicates}")
+
+        invalid = [
+            tool.name
+            for tool in tools
+            if not isinstance(tool.executor, MCPToolExecutor)
+            or tool.executor.client is not client
+        ]
+        if invalid:
+            raise ValueError(
+                "Reconciled MCP tools must belong to the callback client: "
+                f"{sorted(invalid)}"
+            )
+
+        if self.filter_tools_regex:
+            pattern = re.compile(self.filter_tools_regex)
+            tools = [tool for tool in tools if pattern.match(tool.name)]
+
+        owned_names = {
+            name
+            for name, tool in self._tools.items()
+            if isinstance(tool.executor, MCPToolExecutor)
+            and tool.executor.client is client
+        }
+        conflicts = (set(tool_names) & set(self._tools)) - owned_names
+        if conflicts:
+            raise ValueError(
+                "Dynamically advertised MCP tools conflict with existing runtime "
+                f"tools: {sorted(conflicts)}"
+            )
+
+        reconciled = {
+            name: tool for name, tool in self._tools.items() if name not in owned_names
+        }
+        reconciled.update((tool.name, tool) for tool in tools)
+        object.__setattr__(self, "_tools", reconciled)
 
     @property
     def tools_map(self) -> dict[str, ToolDefinition]:

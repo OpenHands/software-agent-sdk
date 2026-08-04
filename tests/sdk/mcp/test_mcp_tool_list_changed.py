@@ -25,6 +25,7 @@ import mcp.types as mcp_types
 import pytest
 from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_context
+from pydantic import ValidationError
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.llm import TextContent
@@ -145,6 +146,61 @@ def test_refresh_tools_drops_removed_tools():
     asyncio.new_event_loop().run_until_complete(run())
 
     assert {t.name for t in client._tools} == {"a"}
+
+
+def test_refresh_tools_reconciles_updates_and_removals():
+    """The full snapshot callback receives updated definitions and removals."""
+    old_tool = mcp_types.Tool(
+        name="changing",
+        description="old schema",
+        inputSchema={
+            "type": "object",
+            "properties": {"old": {"type": "string"}},
+            "required": ["old"],
+        },
+    )
+    new_tool = mcp_types.Tool(
+        name="changing",
+        description="new schema",
+        inputSchema={
+            "type": "object",
+            "properties": {"new": {"type": "integer"}},
+            "required": ["new"],
+        },
+    )
+    client = _FakeClient([new_tool])
+    old_definition = MCPToolDefinition.create(
+        mcp_tool=old_tool,
+        mcp_client=cast(MCPClient, client),
+    )[0]
+    old_definition.action_from_arguments({"old": "value"})
+    client._tools = [
+        old_definition,
+        MCPToolDefinition.create(
+            mcp_tool=_make_mcp_tool("gone"),
+            mcp_client=cast(MCPClient, client),
+        )[0],
+    ]
+    received: list[tuple[object, list[MCPToolDefinition]]] = []
+
+    async def run():
+        await _refresh_tools(
+            cast(MCPClient, client),
+            on_tools_reconciled=lambda owner, tools: received.append(
+                (owner, list(tools))
+            ),
+        )
+
+    asyncio.new_event_loop().run_until_complete(run())
+
+    assert len(received) == 1
+    owner, tools = received[0]
+    assert owner is client
+    assert [tool.name for tool in tools] == ["changing"]
+    assert tools[0].description == "new schema"
+    tools[0].action_from_arguments({"new": 42})
+    with pytest.raises(ValidationError):
+        tools[0].action_from_arguments({"old": "value"})
 
 
 def test_refresh_tools_no_callback_still_reconciles():
@@ -301,12 +357,15 @@ def test_list_changed_notification_reconciles_readded_agent_tool(
 
     def on_tools_changed(tools):  # noqa: ANN001
         received.extend(tool.name for tool in tools)
-        agent._on_mcp_tools_changed(tools)
+
+    def on_tools_reconciled(client, tools):  # noqa: ANN001
+        agent._on_mcp_tools_reconciled(client, tools)
 
     with create_mcp_tools(
         config,
         timeout=10.0,
         on_tools_changed=on_tools_changed,
+        on_tools_reconciled=on_tools_reconciled,
     ) as client:
         agent.add_runtime_tools(client.tools)
         initial_names = {t.name for t in client.tools}
@@ -350,13 +409,13 @@ def test_list_changed_notification_reconciles_readded_agent_tool(
             time.sleep(0.1)
 
         assert all(tool.name != "extra" for tool in client.tools)
-        assert agent.tools_map["extra"] is first_agent_extra
+        assert "extra" not in agent.tools_map
 
         register_observation = register_tool(register_tool.action_from_arguments({}))
         assert not register_observation.is_error
 
         deadline = time.time() + 10.0
-        while time.time() < deadline and agent.tools_map["extra"] is first_agent_extra:
+        while time.time() < deadline and "extra" not in agent.tools_map:
             time.sleep(0.1)
 
         readded_agent_extra = agent.tools_map["extra"]
@@ -391,3 +450,33 @@ def test_on_mcp_tools_changed_skips_when_not_initialized():
 
     # Must not raise even though add_runtime_tools would warn.
     agent._on_mcp_tools_changed([])  # type: ignore[arg-type]
+
+
+def test_on_mcp_tools_reconciled_does_not_remove_other_client_tools():
+    """A client snapshot only replaces tools owned by that client."""
+    first_client = _FakeClient([])
+    second_client = _FakeClient([])
+    first_tool = MCPToolDefinition.create(
+        mcp_tool=_make_mcp_tool("first"),
+        mcp_client=cast(MCPClient, first_client),
+    )[0]
+    second_tool = MCPToolDefinition.create(
+        mcp_tool=_make_mcp_tool("second"),
+        mcp_client=cast(MCPClient, second_client),
+    )[0]
+    replacement = MCPToolDefinition.create(
+        mcp_tool=_make_mcp_tool("replacement"),
+        mcp_client=cast(MCPClient, first_client),
+    )[0]
+    agent = _ConcreteAgent(
+        _initialized=True,
+        _tools={"first": first_tool, "second": second_tool},
+    )
+
+    agent._on_mcp_tools_reconciled(
+        cast(MCPClient, first_client),
+        [replacement],
+    )
+
+    assert set(agent.tools_map) == {"replacement", "second"}
+    assert agent.tools_map["second"] is second_tool
