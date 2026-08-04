@@ -6,6 +6,7 @@ from openhands.sdk.llm.auth import (
 )
 from openhands.sdk.llm.cleanup_profile import (
     CLEANUP_PROFILE_NAME,
+    aclean_outward_text,
     clean_outward_text,
 )
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
@@ -49,6 +50,7 @@ __all__ = [
     "OPENAI_CODEX_MODELS",
     # Core
     "CLEANUP_PROFILE_NAME",
+    "aclean_outward_text",
     "clean_outward_text",
     "FallbackStrategy",
     "LLMResponse",

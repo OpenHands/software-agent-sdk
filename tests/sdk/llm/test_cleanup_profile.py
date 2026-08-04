@@ -19,6 +19,7 @@ from openhands.sdk.llm import (
     LLMResponse,
     Message,
     TextContent,
+    aclean_outward_text,
     clean_outward_text,
     llm_profile_store,
 )
@@ -102,8 +103,29 @@ def test_returns_cleaned_text_from_cleanup_profile(
     assert result == "Done! I appreciate the nudge."
     # Stateless call: only a system + user message, no tools, no history.
     assert [message.role for message in cleanup_llm.last_messages] == ["system", "user"]
+    assert cleanup_llm.last_tools == []
     assert "repair" in _message_text(cleanup_llm.last_messages[0]).lower()
     assert original in _message_text(cleanup_llm.last_messages[1])
+
+
+def test_cipher_is_forwarded_to_profile_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The cipher argument must reach LLMProfileStore.load so the encrypted-secret
+    # path works when a caller passes one.
+    cleanup_llm = _capturing_llm("clean")
+    sentinel = object()
+    seen: dict[str, Any] = {}
+
+    def load_profile(self: LLMProfileStore, name: str, *, cipher: Any = None) -> LLM:
+        seen["cipher"] = cipher
+        return cleanup_llm
+
+    monkeypatch.setattr(LLMProfileStore, "load", load_profile)
+
+    clean_outward_text("draft \u00f0", cipher=cast(Any, sentinel))
+
+    assert seen["cipher"] is sentinel
 
 
 def test_missing_profile_returns_original_text(
@@ -161,3 +183,45 @@ def test_blank_input_short_circuits_without_loading_profile(
     monkeypatch.setattr(LLMProfileStore, "load", fail_load)
 
     assert clean_outward_text(blank) == blank
+
+
+async def test_async_returns_cleaned_text_from_cleanup_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cleanup_llm = _capturing_llm("Done! I appreciate the nudge.")
+
+    def load_profile(self: LLMProfileStore, name: str, *, cipher: Any = None) -> LLM:
+        assert name == CLEANUP_PROFILE_NAME
+        return cleanup_llm
+
+    monkeypatch.setattr(LLMProfileStore, "load", load_profile)
+
+    result = await aclean_outward_text("Done! I appreciate the nudge! \u00f0")
+
+    assert result == "Done! I appreciate the nudge."
+    assert [message.role for message in cleanup_llm.last_messages] == ["system", "user"]
+
+
+async def test_async_missing_profile_returns_original_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir()
+    monkeypatch.setattr(llm_profile_store, "_DEFAULT_PROFILE_DIR", profile_dir)
+
+    original = "Ship it \u00f0"
+    assert await aclean_outward_text(original) == original
+
+
+async def test_async_call_failure_returns_original_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failing_llm = _capturing_llm()
+    monkeypatch.setattr(
+        LLMProfileStore,
+        "load",
+        lambda self, name, *, cipher=None: failing_llm,
+    )
+
+    original = "Keep me exactly \u00e2 as is"
+    assert await aclean_outward_text(original) == original

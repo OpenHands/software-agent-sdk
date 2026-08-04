@@ -9,7 +9,7 @@ This module runs the agent's outward text through a small, saved LLM profile —
 resolved by convention under the name ``cleanup`` (:data:`CLEANUP_PROFILE_NAME`) —
 and returns the repaired text. It mirrors the ``ask_oracle`` pattern: no agent
 setting and no wiring; a caller saves a profile named ``cleanup`` and calls
-:func:`clean_outward_text`.
+:func:`clean_outward_text` (or the async :func:`aclean_outward_text`).
 
 The pass is deliberately narrow:
 
@@ -28,7 +28,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Final
 
+from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.llm.llm_response import LLMResponse
 from openhands.sdk.llm.message import Message, TextContent
 from openhands.sdk.logger import get_logger
 
@@ -62,6 +64,44 @@ Repair this message and return only the repaired text:
 {text}"""
 
 
+def _load_cleanup_llm(cipher: Cipher | None) -> LLM | None:
+    """Load the ``cleanup`` profile, or ``None`` when cleanup is unavailable.
+
+    Returns ``None`` (feature off / fail-open) when no ``cleanup`` profile is
+    saved or the profile cannot be loaded, so callers can pass the original text
+    through unchanged.
+    """
+    try:
+        return LLMProfileStore().load(CLEANUP_PROFILE_NAME, cipher=cipher)
+    except FileNotFoundError:
+        # No cleanup profile configured: feature is simply off.
+        return None
+    except Exception as exc:
+        logger.warning("Cleanup profile could not be loaded: %s", exc)
+        return None
+
+
+def _cleanup_messages(text: str) -> list[Message]:
+    return [
+        Message(role="system", content=[TextContent(text=_CLEANUP_SYSTEM_PROMPT)]),
+        Message(
+            role="user",
+            content=[TextContent(text=_CLEANUP_USER_PROMPT_TEMPLATE.format(text=text))],
+        ),
+    ]
+
+
+def _repaired_or_original(response: LLMResponse, text: str) -> str:
+    cleaned = "".join(
+        content.text
+        for content in response.message.content
+        if isinstance(content, TextContent)
+    ).strip()
+    # An empty reply means the cleanup model gave us nothing usable; keep the
+    # original rather than sending a blank message.
+    return cleaned or text
+
+
 def clean_outward_text(text: str, *, cipher: Cipher | None = None) -> str:
     """Return ``text`` repaired by the ``cleanup`` LLM profile, or unchanged.
 
@@ -83,39 +123,44 @@ def clean_outward_text(text: str, *, cipher: Cipher | None = None) -> str:
     if not text.strip():
         return text
 
-    try:
-        cleanup_llm = LLMProfileStore().load(CLEANUP_PROFILE_NAME, cipher=cipher)
-    except FileNotFoundError:
-        # No cleanup profile configured: feature is simply off.
+    cleanup_llm = _load_cleanup_llm(cipher)
+    if cleanup_llm is None:
         return text
-    except Exception as exc:
-        logger.warning("Cleanup profile could not be loaded: %s", exc)
-        return text
-
-    messages = [
-        Message(role="system", content=[TextContent(text=_CLEANUP_SYSTEM_PROMPT)]),
-        Message(
-            role="user",
-            content=[TextContent(text=_CLEANUP_USER_PROMPT_TEMPLATE.format(text=text))],
-        ),
-    ]
 
     # Imported lazily: ``agent.utils`` imports from ``openhands.sdk.llm``, so a
     # module-level import here would create a circular import at package init.
     from openhands.sdk.agent.utils import make_llm_completion
 
     try:
-        response = make_llm_completion(cleanup_llm, messages)
+        response = make_llm_completion(cleanup_llm, _cleanup_messages(text))
     except Exception as exc:
         logger.warning("Cleanup profile call failed; sending original text: %s", exc)
         return text
 
-    cleaned = "".join(
-        content.text
-        for content in response.message.content
-        if isinstance(content, TextContent)
-    ).strip()
+    return _repaired_or_original(response, text)
 
-    # An empty reply means the cleanup model gave us nothing usable; keep the
-    # original rather than sending a blank message.
-    return cleaned or text
+
+async def aclean_outward_text(text: str, *, cipher: Cipher | None = None) -> str:
+    """Async variant of :func:`clean_outward_text`.
+
+    Same fail-open contract, for async outward paths (e.g. the agent-server
+    outbound surface). See :func:`clean_outward_text` for details.
+    """
+    if not text.strip():
+        return text
+
+    cleanup_llm = _load_cleanup_llm(cipher)
+    if cleanup_llm is None:
+        return text
+
+    # Imported lazily: ``agent.utils`` imports from ``openhands.sdk.llm``, so a
+    # module-level import here would create a circular import at package init.
+    from openhands.sdk.agent.utils import amake_llm_completion
+
+    try:
+        response = await amake_llm_completion(cleanup_llm, _cleanup_messages(text))
+    except Exception as exc:
+        logger.warning("Cleanup profile call failed; sending original text: %s", exc)
+        return text
+
+    return _repaired_or_original(response, text)
