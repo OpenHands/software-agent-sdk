@@ -2,7 +2,7 @@
 
 An ``OpenHandsAgentProfile.llm_profile_ref`` is a soft FK onto an LLM-profile
 store key. ``find_referrers`` / ``cascade_rename`` / ``delete_llm_profile`` /
-``rename_llm_profile`` keep that FK from dangling.
+``rename_llm_profile`` / ``sync_seed_llm_ref`` keep that FK from dangling.
 
 Store-agnostic: these touch the agent-profile store only through
 :class:`~openhands.sdk.profiles.agent_profile_store.AgentProfileStoreProtocol`,
@@ -182,6 +182,34 @@ def sync_seed_llm_ref(
     ``old_ref=None`` only the second branch can match — a stored ref is always
     a string, never ``None``, so the first comparison can't accidentally
     succeed.
+
+    Known gap — state C is never repaired: the seeded profile is born in one
+    of three states. (A) an LLM profile was already active, so the ref names
+    it — repaired by the first branch above. (B) no active profile and no
+    real LLM config, so the ref is ``SEED_PROFILE_NAME`` and dangles —
+    repaired by the soft-ref branch above. (C) no active profile but a
+    *real* LLM config, so ``_seed_default_llm_profile`` mints an actual LLM
+    profile named ``SEED_PROFILE_NAME`` mirroring it and the ref resolves.
+    State C is indistinguishable from a user having deliberately pinned a
+    profile they authored and named ``"default"`` themselves — there is no
+    sound discriminator between the two. In particular ``revision`` does not
+    work: ``save_profile_preserving_identity`` bumps it only on overwrite,
+    never on create, and it defaults to ``0``, so a user's own first save of
+    a ``"default"`` profile is ``revision == 0``, identical to the seed.
+    Treating state C as eligible would risk exactly the clobber this
+    function exists to prevent, so it stays unrepaired; the resulting drift
+    is not invisible — ``llm_profile_ref_matches_active`` in
+    ``agent_profiles_router.py`` reports it as ``False``, which is what that
+    flag is for.
+
+    Concurrency note: two overlapping activations can interleave their
+    read-check-write windows and settle with the seed ref naming one
+    activated profile while ``active_profile`` names another — e.g. the
+    later activation's sync runs first, finds itself ineligible, and
+    declines, then the earlier activation's sync runs after and writes. The
+    outcome is a stale ref, the same condition the staleness flag surfaces;
+    it is not corruption, since each write is still atomic under the store
+    lock.
 
     ``known_llm_profiles`` is a plain collection of names rather than an LLM
     store/mutator handle: ``LLMProfileMutator`` exposes only

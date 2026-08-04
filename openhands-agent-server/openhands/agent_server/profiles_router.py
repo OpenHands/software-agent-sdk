@@ -297,6 +297,10 @@ async def activate_profile(
     1. Loads the named profile's LLM configuration
     2. Applies it to the current agent settings (updates ``agent_settings.llm``)
     3. Records the profile name as the active profile for frontend tracking
+    4. Best-effort: repoints the seeded default AgentProfile's
+       ``llm_profile_ref`` to track this activation, if still eligible
+       (#4338) — reported via ``llm_profile_ref_synced``; this step never
+       fails the activation itself
 
     Returns 404 if the profile does not exist.
 
@@ -351,9 +355,16 @@ async def activate_profile(
     # settings_store.update() has returned and released the settings-store
     # lock: _seed_default_profile already nests agent-profile-lock ->
     # settings-lock, so acquiring the agent-profile lock while the settings
-    # lock is still held here would invert that order and deadlock. It is
-    # also best-effort — activation has already succeeded and must still
-    # return 200 even if the sync itself fails.
+    # lock is still held here would invert that order and deadlock.
+    # profile_store.list_summaries() below acquires and releases the
+    # LLM-profile lock entirely before sync_seed_llm_ref acquires the
+    # agent-profile lock, so this call site as a whole still resolves
+    # agent-before-llm — the same order rename_llm_profile and
+    # delete_llm_profile depend on. Keep it that way if this ever gets
+    # inlined/reordered. It is also best-effort — activation has already
+    # succeeded and been persisted by this point, so nothing from this
+    # diagnostic side effect may escape and turn a successful activation
+    # into a failed request.
     llm_profile_ref_synced = False
     try:
         known_llm_profiles = {s["name"] for s in profile_store.list_summaries()}
@@ -363,10 +374,11 @@ async def activate_profile(
             new_ref=name,
             known_llm_profiles=known_llm_profiles,
         )
-    except (TimeoutError, ValueError, OSError) as e:
+    except Exception as e:
         logger.warning(
             f"Failed to sync seed profile llm_profile_ref after activating "
-            f"'{name}': {e}"
+            f"'{name}': {e}",
+            exc_info=True,
         )
 
     return ActivateProfileResponse(

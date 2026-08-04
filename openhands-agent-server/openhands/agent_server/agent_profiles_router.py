@@ -39,6 +39,7 @@ from openhands.sdk.profiles import (
     SEED_PROFILE_NAME,
     AgentProfileDiagnostics,
     AgentProfileStore,
+    OpenHandsAgentProfile,
     ProfileLimitExceeded,
     build_seed_profile,
     resolve_agent_profile_dry_run,
@@ -348,16 +349,29 @@ async def get_agent_profile(
         )
 
     settings_store = get_settings_store(get_config(request))
-    settings = settings_store.load() or PersistedSettings()
+    # The staleness flag below is an optional diagnostic (#4338) riding along
+    # on the primary read — it must never turn a successful profile load into
+    # a 500. FileSettingsStore.load() deliberately re-raises PermissionError/
+    # OSError for a genuinely unreadable settings file; degrade to
+    # active_profile=None (the flag's own "unknown" state) instead of
+    # propagating.
+    try:
+        settings = settings_store.load() or PersistedSettings()
+        active_profile = settings.active_profile
+    except OSError:
+        active_profile = None
 
     payload = profile.model_dump(mode="json")
+    llm_profile_ref = (
+        profile.llm_profile_ref if isinstance(profile, OpenHandsAgentProfile) else None
+    )
     return AgentProfileDetailResponse(
         name=name,
         profile=payload,
         llm_profile_ref_matches_active=_llm_profile_ref_matches_active(
             profile.agent_kind,
-            getattr(profile, "llm_profile_ref", None),
-            settings.active_profile,
+            llm_profile_ref,
+            active_profile,
         ),
     )
 

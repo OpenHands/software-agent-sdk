@@ -1300,18 +1300,28 @@ def test_list_profiles_no_auto_create_after_deleting_active_profile(client, stor
 
 
 def test_activate_profile_syncs_seed_default_llm_profile_ref(
-    client_with_agent_profiles_router, store, agent_store
+    client_with_agent_profiles_router, store
 ):
     """End-to-end repro of the issue's steps: save profile-a/profile-b,
-    activate profile-a, create a 'default' AgentProfile tracking profile-a,
-    then activate profile-b -- the seeded default's llm_profile_ref must
-    follow the new activation instead of silently pointing at profile-a."""
+    activate profile-a, let GET /api/agent-profiles lazily seed the 'default'
+    AgentProfile the way a real client triggers it, then activate profile-b
+    -- the seeded default's llm_profile_ref must follow the new activation
+    instead of silently pointing at profile-a."""
     llm = LLM(model="gpt-4o")
     store.save("profile-a", llm)
     store.save("profile-b", llm)
 
     client_with_agent_profiles_router.post("/api/profiles/profile-a/activate")
-    agent_store.save(OpenHandsAgentProfile(name="default", llm_profile_ref="profile-a"))
+
+    # Trigger the real lazy seed (rather than hand-writing the 'default'
+    # AgentProfile via agent_store.save), so this test verifies the helper
+    # against a state the seeding logic itself produced. profile-a is active
+    # at seed time, so this lands in state A and the seed must already track
+    # it -- assert that precondition explicitly so the test fails loudly if
+    # seeding behavior ever changes, instead of silently testing nothing.
+    seeded = client_with_agent_profiles_router.get("/api/agent-profiles").json()
+    default_summary = next(p for p in seeded["profiles"] if p["name"] == "default")
+    assert default_summary["llm_profile_ref"] == "profile-a"
 
     response = client_with_agent_profiles_router.post(
         "/api/profiles/profile-b/activate"
