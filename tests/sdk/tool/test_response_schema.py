@@ -232,9 +232,11 @@ def test_action_event_roundtrips_with_static_kind():
 
     assert isinstance(restored, ActionEvent)
     assert type(restored.action) is FinishAction
+    assert restored.action.structured_output is None
     result = tool.parse_last_response([restored])
     assert isinstance(result, TaskResult)
     assert result.success is True
+    assert restored.action.structured_output is None
 
 
 def test_response_schema_preserves_constraints():
@@ -250,6 +252,18 @@ def test_response_schema_preserves_constraints():
     assert properties["code"]["maxLength"] == 3
     assert properties["count"]["minimum"] == 1
     assert properties["count"]["maximum"] == 5
+
+
+def test_response_schema_preserves_additional_properties_false():
+    tool = _finish_with_schema(
+        {
+            "type": "object",
+            "properties": {"value": {"type": "string"}},
+            "additionalProperties": False,
+        }
+    )
+
+    assert tool._get_tool_schema()["additionalProperties"] is False
 
 
 def test_response_schema_rejects_object_level_constraints():

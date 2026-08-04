@@ -582,8 +582,9 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         if structured_output is None:
             return None
         assert event.action is not None
-        event.action._structured_output = structured_output
-        return self.parse_response(event.action)
+        action = event.action.model_copy()
+        action._structured_output = structured_output
+        return self.parse_response(action)
 
     def __call__(
         self, action: ActionT, conversation: "LocalConversation | None" = None
@@ -711,6 +712,8 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         for field_name in response_schema.get("required", []):
             if field_name not in required:
                 required.append(field_name)
+        if response_schema.get("additionalProperties") is False:
+            merged["additionalProperties"] = False
         return merged
 
     def to_openai_tool(
