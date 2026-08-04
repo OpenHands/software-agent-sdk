@@ -20,8 +20,10 @@ from openhands.sdk.tool.builtins import (
 def make_runtime(tmp_path: Path) -> SkillRuntime:
     root = tmp_path / "reader"
     (root / "references").mkdir(parents=True)
+    (root / "scripts").mkdir()
     (root / "SKILL.md").write_text("# Reader", encoding="utf-8")
     (root / "references" / "guide.md").write_text("guide", encoding="utf-8")
+    (root / "scripts" / "run.py").write_text("print('ok')", encoding="utf-8")
     return SkillRuntime(
         [
             Skill(
@@ -30,7 +32,11 @@ def make_runtime(tmp_path: Path) -> SkillRuntime:
                 description="Read workflow references",
                 source=str(root / "SKILL.md"),
                 is_agentskills_format=True,
-                resources=SkillResources(skill_root=str(root), references=["guide.md"]),
+                resources=SkillResources(
+                    skill_root=str(root),
+                    references=["guide.md"],
+                    scripts=["run.py"],
+                ),
             )
         ]
     )
@@ -97,6 +103,17 @@ def test_list_and_read_tools_execute(tmp_path):
     ).to_llm_message()
     assert isinstance(message.content[0], TextContent)
     assert message.content[0].text == "guide"
+
+    denied = cast(
+        SkillsReadObservation,
+        read_tool(
+            SkillsReadAction(skill_name="reader", path="scripts/run.py"),
+            conversation=cast(LocalConversation, conversation),
+        ),
+    )
+    assert denied.is_error is True
+    assert denied.contents == ""
+    assert "Skill scripts are executable helpers" in denied.text
 
 
 def test_tools_declare_read_only_resources(tmp_path):

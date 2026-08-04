@@ -16,17 +16,20 @@ description: >-
 - Storage 数据和平台产物只能用 `preview_dataset` 查看，不得用本地文件工具读取。
 - `df_run_pipeline` 只运行本地 Sample；用户确认前不得调用 `df_submit_pipeline`。
 - 新链路直接生成规范 JSONL，不以 `df_convert` 或 Parquet 作为正式产物。
+- 新链路优先复用 DataFlow Storage 和 Operator 编排；生成、打分、过滤、去重等已有
+  算子能覆盖的环节，尽量不要手写重复实现。
 - 使用 LLM 的 DataFlow 算子必须由 `LoggingLLMServing` 包装。
 
 ## 执行流程
 
-1. `preview_dataset(mode="inspect")` 确认结构，再用 `mode="sample"` 物化最多 3 条。
+1. `preview_dataset(mode="inspect")` 确认结构；目录输入先读取
+   `directory_summary`，再决定继续 inspect、sample 哪些路径，或向用户确认格式意图。
 2. 根据下表只读取相关场景 reference，同时读取
    [通用约定](references/dataflow-common.md) 和
    [输出契约](references/schema-conventions.md)。
-3. 从 [文本模板](references/text_pipeline.py) 或
-   [图片模板](references/multimodal_pipeline.py) 修改 Pipeline；场景 reference
-   中的算子链负责处理中间字段，Pipeline 末尾负责映射正式 Schema。
+3. 优先从场景 reference 的 DataFlow 算子模板修改 Pipeline；只有图片任务使用
+   [图片模板](references/multimodal_pipeline.py)。场景 reference 中的算子链负责处理中间
+   字段，Pipeline 末尾负责映射正式 Schema。
 4. 调用 `df_run_pipeline`，显式设置 `model_profile` 和 `output_schema`，检查
    `processed.sample.jsonl`、`validation.json` 和 `report.json`。
 5. 展示 Sample 结果并等待用户明确确认。
@@ -47,6 +50,7 @@ description: >-
 | 规则清洗、语言/长度过滤、去重 | [文本规则清洗](references/text-cleaning.md) | 下游 Schema |
 | 通用生成、改写、打分、过滤 | [通用 LLM 处理](references/generic-llm-processing.md) | `text` |
 | SFT 合成与筛选 | [SFT 数据](references/sft-data.md) | `text` |
+| DPO 偏好对清洗或生成 | [DPO 数据](references/dpo-data.md) | `dpo` |
 | 推理问题和答案合成 | [Reasoning 数据](references/reasoning-data.md) | `text` |
 | 代码指令和代码生成 | [Code 数据](references/code-data.md) | `text` |
 | 文本/Markdown 清洗并生成 QA | [知识库与 QA](references/knowledge-qa.md) | `text` |
@@ -63,6 +67,8 @@ description: >-
 - 文本任务使用 `model_profile="text"`；图片任务使用 `model_profile="vision"`。
 - 图片 Pipeline 只配置 `ImagePipelineConfig`，不得自行实现 HTTP、Base64、重试或
   Checkpoint。
+- `directory_summary` 只是结构摘要，不是数据 Schema；低置信度、混合结构或需要
+  类别/异常/大小/命名模式覆盖时，继续 inspect 或自行选择 `sample_paths`。
 - Text2SQL Sample 使用 Python 3.10 的 `DATAFLOW_PYTHON`；Pyromind 固定
   `open-dataflow==1.0.10`、CPU 执行。
 - `processed.jsonl` 必须通过所选 Schema 校验，ID 唯一且不含运行审计字段。

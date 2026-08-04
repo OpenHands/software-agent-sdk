@@ -11,6 +11,7 @@ from typing import Any, Literal
 
 SchemaName = Literal[
     "text",
+    "dpo",
     "vision",
     "multiturn",
     "function_call",
@@ -19,6 +20,7 @@ SchemaName = Literal[
 ]
 SCHEMA_CHOICES = (
     "text",
+    "dpo",
     "vision",
     "multiturn",
     "function_call",
@@ -26,6 +28,7 @@ SCHEMA_CHOICES = (
     "text2sql",
 )
 TEXT_FIELDS = {"id", "system_prompt", "user_prompt", "gt"}
+DPO_FIELDS = {"id", "system_prompt", "user_prompt", "gt", "rejected_answer"}
 VISION_FIELDS = {
     "id",
     "image_path",
@@ -177,6 +180,25 @@ def _validate_text_or_vision(
         if image_root is not None:
             _validate_image_file(image_root / item, line_number, item)
     _validate_gt(gt, line_number)
+    return record_id
+
+
+def _validate_dpo(row: dict[str, Any], *, line_number: int) -> str:
+    _expect_exact_fields(
+        row,
+        DPO_FIELDS,
+        line_number=line_number,
+        label="dpo schema",
+    )
+    record_id = _nonempty_string(row, "id", line_number)
+    _nonempty_string(row, "system_prompt", line_number)
+    _nonempty_string(row, "user_prompt", line_number)
+    gt = _nonempty_string(row, "gt", line_number)
+    rejected = _nonempty_string(row, "rejected_answer", line_number)
+    if gt.strip() == rejected.strip():
+        raise ValueError(
+            f"line {line_number}: gt and rejected_answer must be different"
+        )
     return record_id
 
 
@@ -770,6 +792,8 @@ def validate_row(
             line_number=line_number,
             image_root=image_root,
         )
+    if schema == "dpo":
+        return _validate_dpo(row, line_number=line_number)
     if schema == "multiturn":
         return _validate_multiturn(row, line_number=line_number)
     if schema == "function_call":

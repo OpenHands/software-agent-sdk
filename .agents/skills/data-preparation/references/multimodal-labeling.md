@@ -7,7 +7,18 @@ Base64、重试或 Checkpoint。完整字段见
 
 ## 输入
 
-优先使用 `preview_dataset(mode="sample")` 返回的 Manifest。默认字段：
+图片原始数据集格式不可预设。先用 `preview_dataset(mode="inspect")` 的
+`directory_summary` 判断结构：
+
+- `detected_layout` 只是摘要里的弱信号；查看实际文件和 metadata 后再决定
+  Prompt/字段映射。
+- `flat_file_collection`、`mixed_directory`、`unknown` 或低置信度结构：继续 inspect
+  具体文件或向用户确认样本边界，不要假设每个目录就是一条样本。
+- 如需代表性、类别覆盖、异常覆盖、大小覆盖或命名模式覆盖，应基于
+  `directory_summary` 继续 inspect 或自行选择 `sample_paths`。
+- layout hint 只是弱信号，不是 Schema；Pipeline 仍以 sample 后看到的真实字段为准。
+
+本地验证优先使用 `preview_dataset(mode="sample")` 返回的 Manifest。默认字段：
 
 ```json
 {

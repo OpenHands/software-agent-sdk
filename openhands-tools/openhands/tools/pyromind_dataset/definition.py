@@ -80,6 +80,7 @@ _MAX_SAMPLE_DIRECTORY_DEPTH = 6
 _MAX_VISION_PREVIEW_IMAGES = 12
 _MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024
 _VISION_RETRYABLE_STATUS_CODES = {408, 409, 425, 429}
+_MAX_DIRECTORY_CHILD_SAMPLES = 3
 
 
 @dataclass(frozen=True)
@@ -244,6 +245,13 @@ class PreviewDatasetObservation(Observation):
     entries: list[dict[str, Any]] = Field(
         default_factory=list,
         description="Files and folders found directly under a storage directory.",
+    )
+    directory_summary: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Machine-readable structural summary for storage directories. "
+            "This is a decision aid only; it does not define a dataset schema."
+        ),
     )
     local_sample_paths: list[str] = Field(
         default_factory=list,
@@ -1260,6 +1268,7 @@ class PreviewDatasetExecutor(
                 files=file_paths,
                 is_dir=True,
                 source="storage",
+                directory_summary=_empty_directory_summary(),
             )
 
         if len(entries) == 1 and len(file_paths) == 1:
@@ -1288,14 +1297,66 @@ class PreviewDatasetExecutor(
                 "files or folders."
             )
             list_label = "Available entries"
+        directory_summary = self._build_directory_summary(entries, headers)
+        directory_summary.update(_infer_directory_layout(entries, directory_summary))
+        summary_text = (
+            f"{summary}\n{list_label}:\n{file_list_text}\n\n"
+            f"Directory summary: {directory_summary['layout_evidence']}"
+        )
         return PreviewDatasetObservation.from_text(
-            text=f"{summary}\n{list_label}:\n{file_list_text}",
+            text=summary_text,
             dataset_path=dataset_path,
             files=file_paths,
             entries=[_storage_entry_dict(entry) for entry in entries],
             is_dir=True,
             source="storage",
+            directory_summary=directory_summary,
         )
+
+    def _build_directory_summary(
+        self,
+        entries: list[_StorageFileInfo],
+        headers: dict[str, str],
+    ) -> dict[str, Any]:
+        files = [entry for entry in entries if not entry.is_dir]
+        folders = [entry for entry in entries if entry.is_dir]
+        top_suffix_counts = _suffix_counts(files)
+        sampled_child_folders: list[dict[str, Any]] = []
+        child_listing_errors: list[dict[str, str]] = []
+
+        for folder in folders[:_MAX_DIRECTORY_CHILD_SAMPLES]:
+            child_result = self._list_entries(folder.path, headers)
+            if isinstance(child_result, PreviewDatasetObservation):
+                child_listing_errors.append(
+                    {"path": folder.path, "error": child_result.text}
+                )
+                continue
+            child_files = [entry for entry in child_result if not entry.is_dir]
+            child_folders = [entry for entry in child_result if entry.is_dir]
+            sampled_child_folders.append(
+                {
+                    "path": folder.path,
+                    "file_count": len(child_files),
+                    "folder_count": len(child_folders),
+                    "file_names": sorted(entry.name for entry in child_files),
+                    "suffix_counts": _suffix_counts(child_files),
+                }
+            )
+
+        return {
+            "top_level_folder_count": len(folders),
+            "top_level_file_count": len(files),
+            "top_level_suffix_counts": top_suffix_counts,
+            "top_level_type_counts": _type_counts(top_suffix_counts),
+            "sampled_child_folders": sampled_child_folders,
+            "child_listing_errors": child_listing_errors,
+            "repeated_file_name_set": _shared_child_value(
+                sampled_child_folders, "file_names"
+            ),
+            "repeated_suffix_set": _shared_child_value(
+                sampled_child_folders, "suffix_counts"
+            ),
+        }
 
     def _get_metadata(
         self,
@@ -2420,6 +2481,156 @@ def _storage_entry_dict(entry: _StorageFileInfo) -> dict[str, Any]:
         "type": "folder" if entry.is_dir else "file",
         "size": entry.size,
         "last_modified": entry.last_modified,
+    }
+
+
+def _empty_directory_summary() -> dict[str, Any]:
+    return {
+        "top_level_folder_count": 0,
+        "top_level_file_count": 0,
+        "top_level_suffix_counts": {},
+        "top_level_type_counts": {
+            "image": 0,
+            "video": 0,
+            "text": 0,
+            "table": 0,
+            "json": 0,
+            "other": 0,
+        },
+        "sampled_child_folders": [],
+        "child_listing_errors": [],
+        "repeated_file_name_set": None,
+        "repeated_suffix_set": None,
+        "detected_layout": "unknown",
+        "layout_confidence": "low",
+        "layout_evidence": "directory is empty",
+    }
+
+
+def _suffix_counts(entries: list[_StorageFileInfo]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for entry in entries:
+        suffix = PurePosixPath(entry.path).suffix.lower() or "<none>"
+        counts[suffix] = counts.get(suffix, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _type_counts(suffix_counts: dict[str, int]) -> dict[str, int]:
+    result = {
+        "image": 0,
+        "video": 0,
+        "text": 0,
+        "table": 0,
+        "json": 0,
+        "other": 0,
+    }
+    for suffix, count in suffix_counts.items():
+        if suffix in _IMAGE_SUFFIXES:
+            result["image"] += count
+        elif suffix in {".mp4", ".mov", ".avi", ".webm"}:
+            result["video"] += count
+        elif suffix in _TEXT_PREVIEW_SUFFIXES:
+            result["text"] += count
+        elif suffix in {".csv", ".tsv"}:
+            result["table"] += count
+        elif suffix in {".json", ".jsonl"}:
+            result["json"] += count
+        else:
+            result["other"] += count
+    return result
+
+
+def _shared_child_value(
+    sampled_child_folders: list[dict[str, Any]],
+    key: str,
+) -> Any | None:
+    values = [folder.get(key) for folder in sampled_child_folders]
+    if not values:
+        return None
+    first = values[0]
+    if all(value == first for value in values):
+        return first
+    return None
+
+
+def _infer_directory_layout(
+    entries: list[_StorageFileInfo],
+    directory_summary: dict[str, Any],
+) -> dict[str, Any]:
+    folders = [entry for entry in entries if entry.is_dir]
+    files = [entry for entry in entries if not entry.is_dir]
+    sampled_folders = directory_summary.get("sampled_child_folders") or []
+    repeated_names = directory_summary.get("repeated_file_name_set")
+    repeated_suffixes = directory_summary.get("repeated_suffix_set")
+    top_type_counts = directory_summary.get("top_level_type_counts") or {}
+
+    if folders and len(sampled_folders) >= 2 and (repeated_names or repeated_suffixes):
+        sampled_count = min(len(folders), _MAX_DIRECTORY_CHILD_SAMPLES)
+        if repeated_names:
+            evidence = (
+                f"{len(sampled_folders)}/{sampled_count} "
+                "sampled child folders share files: "
+                f"{', '.join(repeated_names)}"
+            )
+        else:
+            suffix_text = ", ".join(
+                f"{suffix}:{count}" for suffix, count in repeated_suffixes.items()
+            )
+            evidence = (
+                f"{len(sampled_folders)}/{sampled_count} "
+                f"sampled child folders share suffix counts: {suffix_text}"
+            )
+        return {
+            "detected_layout": "repeated_sample_folders",
+            "layout_confidence": "high",
+            "layout_evidence": evidence,
+        }
+
+    if not folders and files:
+        if top_type_counts.get("table", 0) or top_type_counts.get("json", 0):
+            evidence = (
+                f"top-level files include table/json data; suffixes="
+                f"{directory_summary.get('top_level_suffix_counts') or {}}"
+            )
+            return {
+                "detected_layout": "tabular_or_manifest_files",
+                "layout_confidence": "medium",
+                "layout_evidence": evidence,
+            }
+        evidence = (
+            f"directory contains {len(files)} top-level files and no folders; "
+            f"suffixes={directory_summary.get('top_level_suffix_counts') or {}}"
+        )
+        return {
+            "detected_layout": "flat_file_collection",
+            "layout_confidence": "medium",
+            "layout_evidence": evidence,
+        }
+
+    if folders and files:
+        return {
+            "detected_layout": "mixed_directory",
+            "layout_confidence": "low",
+            "layout_evidence": (
+                f"directory mixes {len(folders)} top-level folders and "
+                f"{len(files)} top-level files without a repeated sampled structure"
+            ),
+        }
+
+    if folders:
+        return {
+            "detected_layout": "unknown",
+            "layout_confidence": "low",
+            "layout_evidence": (
+                f"directory contains {len(folders)} folders, but sampled child "
+                "folders do not share a clear structure"
+            ),
+        }
+
+    return {
+        "detected_layout": "unknown",
+        "layout_confidence": "low",
+        "layout_evidence": "directory is empty or structure could not be inferred",
     }
 
 

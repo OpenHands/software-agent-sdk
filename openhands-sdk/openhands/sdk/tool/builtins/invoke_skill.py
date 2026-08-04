@@ -9,7 +9,6 @@ from rich.text import Text
 
 from openhands.sdk.skills.catalog import SkillCatalog, SkillCatalogEntry
 from openhands.sdk.skills.execute import render_content_with_commands
-from openhands.sdk.skills.resource_router import SkillResourceRouter
 from openhands.sdk.tool.tool import (
     Action,
     DeclaredResources,
@@ -126,7 +125,6 @@ class InvokeSkillExecutor(ToolExecutor):
         rendered = self._append_skill_location_footer(
             rendered, match.source, working_dir
         )
-        rendered = self._append_resource_index(rendered, match)
         self._record_invocation(conversation, name)
         return InvokeSkillObservation.from_text(text=rendered, skill_name=name)
 
@@ -156,35 +154,6 @@ class InvokeSkillExecutor(ToolExecutor):
             f"`assets/`) are relative to that directory."
         )
         return rendered + footer
-
-    @staticmethod
-    def _append_resource_index(rendered: str, entry: SkillCatalogEntry) -> str:
-        router = SkillResourceRouter()
-        root = entry.resource_root
-        if not root:
-            return rendered
-        skill_root = Path(root)
-        sections: list[str] = []
-        for rel in ("references", "scripts", "assets"):
-            subdir = skill_root / rel
-            if not subdir.is_dir():
-                continue
-            files = sorted(p for p in subdir.rglob("*") if p.is_file())
-            if not files:
-                continue
-            handles = []
-            for file_path in files:
-                relative_path = file_path.relative_to(skill_root).as_posix()
-                try:
-                    handle = router.read(entry, relative_path)
-                except Exception:
-                    continue
-                handles.append(f"- {handle.relative_path}")
-            if handles:
-                sections.append(f"{rel}:\n" + "\n".join(handles))
-        if not sections:
-            return rendered
-        return rendered + "\n\n---\nSkill resources:\n" + "\n\n".join(sections)
 
 
 class InvokeSkillTool(ToolDefinition[InvokeSkillAction, InvokeSkillObservation]):

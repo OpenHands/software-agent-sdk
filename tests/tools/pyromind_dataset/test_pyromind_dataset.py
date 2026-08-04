@@ -1196,6 +1196,275 @@ def test_storage_directory_lists_folders(monkeypatch, tmp_path):
             "last_modified": None,
         },
     ]
+    assert observation.directory_summary["detected_layout"] == "mixed_directory"
+    assert observation.directory_summary["top_level_folder_count"] == 1
+    assert observation.directory_summary["top_level_file_count"] == 1
+
+
+def test_storage_directory_summary_detects_repeated_sample_folders(
+    monkeypatch,
+    tmp_path,
+):
+    _patch_shared_empty(monkeypatch)
+
+    def fake_post(url, *, headers, json, timeout):
+        if url.endswith("/file_list"):
+            path = json["path"]
+            if path == "aoi/":
+                return _Response(
+                    200,
+                    {
+                        "success": True,
+                        "data": {
+                            "list": [
+                                {
+                                    "name": "sample-a",
+                                    "path": "aoi/sample-a",
+                                    "type": "Folder",
+                                },
+                                {
+                                    "name": "sample-b",
+                                    "path": "aoi/sample-b",
+                                    "type": "Folder",
+                                },
+                                {
+                                    "name": "sample-c",
+                                    "path": "aoi/sample-c",
+                                    "type": "Folder",
+                                },
+                            ]
+                        },
+                    },
+                )
+            if path in {"aoi/sample-a", "aoi/sample-b", "aoi/sample-c"}:
+                return _Response(
+                    200,
+                    {
+                        "success": True,
+                        "data": {
+                            "list": [
+                                {
+                                    "name": "defect.jpg",
+                                    "path": f"{path}/defect.jpg",
+                                    "type": "File",
+                                    "size": 10,
+                                },
+                                {
+                                    "name": "diff.jpg",
+                                    "path": f"{path}/diff.jpg",
+                                    "type": "File",
+                                    "size": 10,
+                                },
+                                {
+                                    "name": "gt.jpg",
+                                    "path": f"{path}/gt.jpg",
+                                    "type": "File",
+                                    "size": 10,
+                                },
+                                {
+                                    "name": "meta.json",
+                                    "path": f"{path}/meta.json",
+                                    "type": "File",
+                                    "size": 10,
+                                },
+                            ]
+                        },
+                    },
+                )
+        raise AssertionError(f"unexpected POST URL/path: {url} {json}")
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    observation = PreviewDatasetExecutor(
+        storage_base_url="https://portal.test/storage_api",
+    )(
+        PreviewDatasetAction(dataset_path="aoi/"),
+        cast(Any, _fake_conversation(tmp_path)),
+    )
+
+    assert not observation.is_error
+    assert (
+        observation.directory_summary["detected_layout"]
+        == "repeated_sample_folders"
+    )
+    assert observation.directory_summary["layout_confidence"] == "high"
+    assert observation.directory_summary["top_level_folder_count"] == 3
+    assert observation.directory_summary["sampled_child_folders"][0]["file_names"] == [
+        "defect.jpg",
+        "diff.jpg",
+        "gt.jpg",
+        "meta.json",
+    ]
+    assert "share files" in observation.directory_summary["layout_evidence"]
+
+
+def test_storage_directory_summary_detects_flat_file_collection(
+    monkeypatch,
+    tmp_path,
+):
+    _patch_shared_empty(monkeypatch)
+
+    def fake_post(url, *, headers, json, timeout):
+        if url.endswith("/file_list"):
+            return _Response(
+                200,
+                {
+                    "success": True,
+                    "data": {
+                        "list": [
+                            {
+                                "name": "front.jpg",
+                                "path": "images/front.jpg",
+                                "type": "File",
+                                "size": 10,
+                            },
+                            {
+                                "name": "back.png",
+                                "path": "images/back.png",
+                                "type": "File",
+                                "size": 10,
+                            },
+                        ]
+                    },
+                },
+            )
+        raise AssertionError(f"unexpected POST URL: {url}")
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    observation = PreviewDatasetExecutor(
+        storage_base_url="https://portal.test/storage_api",
+    )(
+        PreviewDatasetAction(dataset_path="images/"),
+        cast(Any, _fake_conversation(tmp_path)),
+    )
+
+    assert not observation.is_error
+    assert observation.directory_summary["detected_layout"] == "flat_file_collection"
+    assert observation.directory_summary["layout_confidence"] == "medium"
+    assert observation.directory_summary["top_level_type_counts"]["image"] == 2
+
+
+def test_storage_directory_summary_detects_tabular_or_manifest_files(
+    monkeypatch,
+    tmp_path,
+):
+    _patch_shared_empty(monkeypatch)
+
+    def fake_post(url, *, headers, json, timeout):
+        if url.endswith("/file_list"):
+            return _Response(
+                200,
+                {
+                    "success": True,
+                    "data": {
+                        "list": [
+                            {
+                                "name": "train.jsonl",
+                                "path": "dataset/train.jsonl",
+                                "type": "File",
+                                "size": 10,
+                            },
+                            {
+                                "name": "index.csv",
+                                "path": "dataset/index.csv",
+                                "type": "File",
+                                "size": 10,
+                            },
+                        ]
+                    },
+                },
+            )
+        raise AssertionError(f"unexpected POST URL: {url}")
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    observation = PreviewDatasetExecutor(
+        storage_base_url="https://portal.test/storage_api",
+    )(
+        PreviewDatasetAction(dataset_path="dataset/"),
+        cast(Any, _fake_conversation(tmp_path)),
+    )
+
+    assert not observation.is_error
+    assert (
+        observation.directory_summary["detected_layout"]
+        == "tabular_or_manifest_files"
+    )
+    assert observation.directory_summary["top_level_type_counts"]["json"] == 1
+    assert observation.directory_summary["top_level_type_counts"]["table"] == 1
+
+
+def test_storage_directory_summary_detects_mixed_without_repeated_structure(
+    monkeypatch,
+    tmp_path,
+):
+    _patch_shared_empty(monkeypatch)
+
+    def fake_post(url, *, headers, json, timeout):
+        if url.endswith("/file_list"):
+            path = json["path"]
+            if path == "mixed/":
+                return _Response(
+                    200,
+                    {
+                        "success": True,
+                        "data": {
+                            "list": [
+                                {
+                                    "name": "sample-a",
+                                    "path": "mixed/sample-a",
+                                    "type": "Folder",
+                                },
+                                {
+                                    "name": "sample-b",
+                                    "path": "mixed/sample-b",
+                                    "type": "Folder",
+                                },
+                                {
+                                    "name": "notes.txt",
+                                    "path": "mixed/notes.txt",
+                                    "type": "File",
+                                    "size": 10,
+                                },
+                            ]
+                        },
+                    },
+                )
+            if path == "mixed/sample-a":
+                files = ["front.jpg", "meta.json"]
+            elif path == "mixed/sample-b":
+                files = ["image.png", "label.txt"]
+            else:
+                raise AssertionError(f"unexpected child path: {path}")
+            return _Response(
+                200,
+                {
+                    "success": True,
+                    "data": {
+                        "list": [
+                            {
+                                "name": name,
+                                "path": f"{path}/{name}",
+                                "type": "File",
+                                "size": 10,
+                            }
+                            for name in files
+                        ]
+                    },
+                },
+            )
+        raise AssertionError(f"unexpected POST URL/path: {url} {json}")
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    observation = PreviewDatasetExecutor(
+        storage_base_url="https://portal.test/storage_api",
+    )(
+        PreviewDatasetAction(dataset_path="mixed/"),
+        cast(Any, _fake_conversation(tmp_path)),
+    )
+
+    assert not observation.is_error
+    assert observation.directory_summary["detected_layout"] == "mixed_directory"
+    assert observation.directory_summary["layout_confidence"] == "low"
+    assert observation.directory_summary["repeated_file_name_set"] is None
 
 
 def test_storage_virtual_directory_without_slash_falls_back_to_listing(

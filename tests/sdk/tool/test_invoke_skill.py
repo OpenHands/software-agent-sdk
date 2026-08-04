@@ -244,7 +244,7 @@ def test_footer_omitted_when_source_is_not_a_real_path():
     assert "located at" not in obs.text
 
 
-def test_resource_index_is_appended_when_skill_has_resources(tmp_path):
+def test_resource_index_is_not_appended_when_skill_has_resources(tmp_path):
     workspace = tmp_path / "ws"
     skill_dir = workspace / "skills" / "reader"
     (skill_dir / "references").mkdir(parents=True)
@@ -272,10 +272,10 @@ def test_resource_index_is_appended_when_skill_has_resources(tmp_path):
     obs = _run("reader", conv)
 
     assert obs.is_error is False
-    assert "Skill resources:" in obs.text
-    assert "references/guide.md" in obs.text
-    assert "scripts/run.py" in obs.text
-    assert "assets/logo.txt" in obs.text
+    assert "Skill resources:" not in obs.text
+    assert "references/guide.md" not in obs.text
+    assert "scripts/run.py" not in obs.text
+    assert "assets/logo.txt" not in obs.text
 
 
 def test_invoked_skills_dedupes():
