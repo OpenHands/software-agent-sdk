@@ -30,6 +30,7 @@ from openhands.sdk.profiles import (
     ProfileReferenced,
     delete_llm_profile,
     rename_llm_profile,
+    sync_seed_llm_ref,
 )
 
 
@@ -283,6 +284,7 @@ class ActivateProfileResponse(BaseModel):
     name: str
     message: str
     llm_applied: bool = True
+    llm_profile_ref_synced: bool = False
 
 
 @profiles_router.post("/{name}/activate", response_model=ActivateProfileResponse)
@@ -317,8 +319,13 @@ async def activate_profile(
 
     # Apply the LLM config to settings and record active profile
     settings_store = get_settings_store(config)
+    previous_active_profile: str | None = None
 
     def apply_profile(settings: PersistedSettings) -> PersistedSettings:
+        # Captured under the settings-store lock, so this is an exact
+        # pre-update read (not a separate load() -> TOCTOU race).
+        nonlocal previous_active_profile
+        previous_active_profile = settings.active_profile
         settings.agent_settings = settings.agent_settings.model_copy(
             update={"llm": llm}
         )
@@ -338,8 +345,33 @@ async def activate_profile(
         )
 
     logger.info(f"Activated profile '{name}'")
+
+    # Repoint the seeded default AgentProfile's llm_profile_ref to track this
+    # activation, if it is still eligible (#4338). This runs *after*
+    # settings_store.update() has returned and released the settings-store
+    # lock: _seed_default_profile already nests agent-profile-lock ->
+    # settings-lock, so acquiring the agent-profile lock while the settings
+    # lock is still held here would invert that order and deadlock. It is
+    # also best-effort — activation has already succeeded and must still
+    # return 200 even if the sync itself fails.
+    llm_profile_ref_synced = False
+    try:
+        known_llm_profiles = {s["name"] for s in profile_store.list_summaries()}
+        llm_profile_ref_synced = sync_seed_llm_ref(
+            get_agent_profile_store(),
+            old_ref=previous_active_profile,
+            new_ref=name,
+            known_llm_profiles=known_llm_profiles,
+        )
+    except (TimeoutError, ValueError, OSError) as e:
+        logger.warning(
+            f"Failed to sync seed profile llm_profile_ref after activating "
+            f"'{name}': {e}"
+        )
+
     return ActivateProfileResponse(
         name=name,
         message=f"Profile '{name}' activated and applied to current settings",
         llm_applied=True,
+        llm_profile_ref_synced=llm_profile_ref_synced,
     )
