@@ -27,7 +27,7 @@ class RecordingMCPToolProvider:
 
     def __init__(self, client: EmptyMCPClient | None = None) -> None:
         self.calls: list[dict[str, MCPServer]] = []
-        self.client = client or EmptyMCPClient()
+        self.client = client if client is not None else EmptyMCPClient()
 
     def create_tools(
         self,

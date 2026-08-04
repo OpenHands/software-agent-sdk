@@ -952,13 +952,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         tools: Sequence[MCPToolDefinition],
     ) -> None:
         """Replace this MCP client's tools with its current server snapshot."""
-        if not self._initialized:
-            logger.warning(
-                "MCP tools reconciled before agent initialization; skipping %d tools",
-                len(tools),
-            )
-            return
-
         tool_names = [tool.name for tool in tools]
         if len(tool_names) != len(set(tool_names)):
             duplicates = {
