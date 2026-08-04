@@ -8,7 +8,6 @@ from openhands.sdk.llm.options.common import (
     apply_extra_body,
     apply_extra_headers,
 )
-from openhands.sdk.llm.utils.model_features import get_features
 
 
 if TYPE_CHECKING:
@@ -43,24 +42,24 @@ def select_chat_options(
 
     out = apply_extra_headers(out, llm)
 
-    # Reasoning-model quirks
-    supports_reasoning_effort = get_features(llm.model).supports_reasoning_effort
+    model_features = llm._model_features()
+    supports_reasoning_effort = model_features.supports_reasoning_effort
     if supports_reasoning_effort:
-        # LiteLLM automatically handles reasoning_effort for all models, including
-        # Claude Opus 4.5 (maps to output_config and adds beta header automatically)
         if llm.reasoning_effort is not None:
             out["reasoning_effort"] = llm.reasoning_effort
 
-        # All reasoning models ignore temp/top_p, except Gemini
-        if "gemini" not in llm.model.lower():
-            out.pop("temperature", None)
-            out.pop("top_p", None)
+    model_name = llm._model_name_for_capabilities()
+    if model_features.supports_sampling_params is False or (
+        model_features.supports_sampling_params is None
+        and supports_reasoning_effort
+        and "gemini" not in model_name.lower()
+    ):
+        out.pop("temperature", None)
+        out.pop("top_p", None)
+        out.pop("top_k", None)
 
-    # Extended thinking models
-    if get_features(llm.model).supports_extended_thinking:
+    if model_features.thinking_mode == "manual":
         if llm.extended_thinking_budget and max_output_tokens:
-            # Anthropic throws errors if thinking budget equals or exceeds max output
-            # tokens -- force the thinking budget lower if there's a conflict
             budget_tokens = min(
                 llm.extended_thinking_budget,
                 max_output_tokens - 1,
@@ -69,18 +68,15 @@ def select_chat_options(
                 "type": "enabled",
                 "budget_tokens": budget_tokens,
             }
-            # Enable interleaved thinking
-            # Merge default header with any user-provided headers; user wins on conflict
             existing = out.get("extra_headers") or {}
             out["extra_headers"] = {
                 "anthropic-beta": "interleaved-thinking-2025-05-14",
                 **existing,
             }
-            # Fix litellm behavior
             out["max_tokens"] = max_output_tokens
-        # Anthropic models ignore temp/top_p
         out.pop("temperature", None)
         out.pop("top_p", None)
+        out.pop("top_k", None)
 
     # Tools: if not using native, strip tool_choice so we don't confuse providers
     if not has_tools:
@@ -88,10 +84,7 @@ def select_chat_options(
         out.pop("tool_choice", None)
 
     # Send prompt_cache_retention only if model supports it
-    if (
-        get_features(llm.model).supports_prompt_cache_retention
-        and llm.prompt_cache_retention
-    ):
+    if model_features.supports_prompt_cache_retention and llm.prompt_cache_retention:
         out["prompt_cache_retention"] = llm.prompt_cache_retention
 
     out = apply_extra_body(out, llm)

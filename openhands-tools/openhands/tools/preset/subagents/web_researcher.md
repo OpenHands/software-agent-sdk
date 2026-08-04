@@ -10,7 +10,7 @@ tools:
 mcp_servers:
   fetch:
     command: uvx
-    args: ["mcp-server-fetch"]
+    args: ["--with", "mcp==1.29.0", "mcp-server-fetch==2026.7.10"]
   tavily:
     command: npx
     args: ["-y", "tavily-mcp@0.2.1"]

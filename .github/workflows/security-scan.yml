@@ -12,7 +12,7 @@ run-name: >-
 #      sources.
 #
 # Two behaviors, one job:
-#   A. Always-on for `release/**` PRs — these are internal repo branches (never
+#   A. Always-on for `rel-*` PRs — these are internal repo branches (never
 #      forks), so this is the guaranteed gate on the thing that actually ships,
 #      and it cannot be skipped (no label required).
 #   B. Best-effort for any other branch via the `security-scan` label or manual
@@ -28,8 +28,7 @@ run-name: >-
 
 on:
     pull_request:
-        # `opened/synchronize/reopened` drive behavior A on release/** PRs;
-        # `labeled` drives behavior B anywhere.
+        # `labeled` drives rel-* release PRs and opt-in scans.
         types: [labeled]
     workflow_dispatch:
         inputs:
@@ -51,13 +50,13 @@ permissions:
 
 jobs:
     security-scan:
-        # Behavior A: always on release/** PRs. Behavior B: the label, or manual
+        # Behavior A: always on rel-* PRs. Behavior B: the label, or manual
         # dispatch. Non-release PRs without the label are skipped so this does
         # not run on every open PR.
         if: >-
             github.event_name == 'workflow_dispatch' ||
             github.event.label.name == 'security-scan' ||
-            startsWith(github.event.pull_request.head.ref, 'release/')
+            startsWith(github.event.pull_request.head.ref, 'rel-')
         runs-on: ubuntu-24.04
         timeout-minutes: 15
         steps:

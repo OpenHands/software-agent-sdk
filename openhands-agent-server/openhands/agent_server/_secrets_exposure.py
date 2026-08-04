@@ -120,3 +120,22 @@ def translate_missing_cipher() -> Iterator[None]:
                 ),
             )
         raise
+
+
+@contextmanager
+def store_errors() -> Iterator[None]:
+    """Map profile-store errors (``LLMProfileStore``/``AgentProfileStore``) to
+    HTTP responses. Shared by the settings, profiles, and agent-profiles
+    routers."""
+    try:
+        yield
+    except TimeoutError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Profile store is busy. Please retry.",
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )

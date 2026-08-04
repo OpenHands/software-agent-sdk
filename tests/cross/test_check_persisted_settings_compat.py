@@ -8,8 +8,10 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
+from pydantic import BaseModel
 
 
 os.environ.setdefault("OPENHANDS_SUPPRESS_BANNER", "1")
@@ -28,11 +30,59 @@ def _load_script_module(name: str):
 
 _prod = _load_script_module("check_persisted_settings_compat")
 PersistedSettingsCompatError = _prod.PersistedSettingsCompatError
+BaselinePayloadCase = _prod.BaselinePayloadCase
 FixtureCase = _prod.FixtureCase
 SURFACES = _prod.SURFACES
+SurfaceConfig = _prod.SurfaceConfig
 collect_fixture_cases = _prod.collect_fixture_cases
 get_pypi_baseline_version = _prod.get_pypi_baseline_version
+validate_baseline_payload_cases = _prod.validate_baseline_payload_cases
 validate_fixture_cases = _prod.validate_fixture_cases
+
+
+class _FlattenedMCPSettings(BaseModel):
+    schema_version: int
+    mcp_config: dict[str, Any]
+
+
+class _AdditiveItem(BaseModel):
+    existing: str
+    added: str | None = None
+
+
+class _AdditiveSettings(BaseModel):
+    schema_version: int
+    items: list[_AdditiveItem]
+
+
+def _load_and_flatten_mcp_settings(data: Any) -> _FlattenedMCPSettings:
+    payload = dict(data)
+    payload["schema_version"] = 1
+    mcp_config = payload["mcp_config"]
+    if "mcpServers" in mcp_config:
+        payload["mcp_config"] = mcp_config["mcpServers"]
+    return _FlattenedMCPSettings.model_validate(payload)
+
+
+def _load_additive_settings(data: Any) -> _AdditiveSettings:
+    return _AdditiveSettings.model_validate(data)
+
+
+_SHAPE_CHANGING_SURFACE = SurfaceConfig(
+    key="agent_settings",
+    display_name="AgentSettings",
+    current_version=1,
+    loader=_load_and_flatten_mcp_settings,
+    migration_guidance="Bump the schema version and add a migration.",
+)
+
+_ADDITIVE_SURFACE = SurfaceConfig(
+    key="agent_settings",
+    display_name="AgentSettings",
+    current_version=1,
+    loader=_load_additive_settings,
+    migration_guidance="Bump the schema version and add a migration.",
+)
 
 
 def _mock_pypi_releases(monkeypatch, releases: dict[str, list[dict[str, str]]]) -> None:
@@ -203,6 +253,78 @@ def test_get_pypi_baseline_version_raises_on_metadata_failure(monkeypatch) -> No
         match="Failed to fetch PyPI metadata for openhands-sdk",
     ):
         get_pypi_baseline_version("openhands-sdk", "1.2.0")
+
+
+def test_validate_baseline_rejects_shape_change_without_version_bump() -> None:
+    case = BaselinePayloadCase(
+        source="PyPI baseline openhands-sdk==1.0.0",
+        key="agent_settings/populated",
+        surface_key="agent_settings",
+        payload={
+            "schema_version": 1,
+            "mcp_config": {
+                "mcpServers": {
+                    "shttp": {
+                        "url": "https://example.com/mcp",
+                        "timeout": 60,
+                    }
+                }
+            },
+        },
+    )
+
+    with pytest.raises(
+        PersistedSettingsCompatError,
+        match=(
+            "did not preserve persisted field 'mcp_config.mcpServers' "
+            "without advancing schema_version 1"
+        ),
+    ):
+        validate_baseline_payload_cases(
+            [case],
+            surfaces={"agent_settings": _SHAPE_CHANGING_SURFACE},
+        )
+
+
+def test_validate_baseline_allows_shape_change_with_version_bump() -> None:
+    case = BaselinePayloadCase(
+        source="PyPI baseline openhands-sdk==0.9.0",
+        key="agent_settings/populated",
+        surface_key="agent_settings",
+        payload={
+            "schema_version": 0,
+            "mcp_config": {
+                "mcpServers": {
+                    "shttp": {
+                        "url": "https://example.com/mcp",
+                        "timeout": 60,
+                    }
+                }
+            },
+        },
+    )
+
+    validate_baseline_payload_cases(
+        [case],
+        surfaces={"agent_settings": _SHAPE_CHANGING_SURFACE},
+    )
+
+
+def test_validate_baseline_allows_additive_same_version_fields() -> None:
+    case = BaselinePayloadCase(
+        source="PyPI baseline openhands-sdk==1.0.0",
+        key="agent_settings/default",
+        surface_key="agent_settings",
+        payload={
+            "schema_version": 1,
+            "items": [{"existing": "preserved"}],
+        },
+    )
+
+    validate_baseline_payload_cases(
+        [case],
+        surfaces={"agent_settings": _ADDITIVE_SURFACE},
+    )
 
 
 def test_generate_baseline_payloads_uses_uv_with_release_cutoff(monkeypatch) -> None:
