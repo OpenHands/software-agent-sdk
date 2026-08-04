@@ -70,7 +70,7 @@ from openhands.sdk.mcp.utils import (
     MCPToolProvider,
     ToolsChangedCallback,
 )
-from openhands.sdk.observability.laminar import observe
+from openhands.sdk.observability.laminar import OPERATION_METADATA_KEY, observe
 from openhands.sdk.plugin import (
     Plugin,
     PluginSource,
@@ -2631,6 +2631,10 @@ class LocalConversation(BaseConversation):
         self._cleanup_complete = True
         atexit.unregister(self.close)
 
+    @observe(
+        name="conversation.ask_agent",
+        metadata={OPERATION_METADATA_KEY: "ask_agent"},
+    )
     def ask_agent(self, question: str) -> str:
         """Ask the agent a simple, stateless question and get a direct LLM response.
 
@@ -2706,7 +2710,11 @@ class LocalConversation(BaseConversation):
 
         raise Exception("Failed to generate summary")
 
-    @observe(name="conversation.generate_title", ignore_inputs=["llm"])
+    @observe(
+        name="conversation.generate_title",
+        ignore_inputs=["llm"],
+        metadata={OPERATION_METADATA_KEY: "title_generation"},
+    )
     def generate_title(self, llm: LLM | None = None, max_length: int = 50) -> str:
         """Generate a title for the conversation based on the first user message.
 

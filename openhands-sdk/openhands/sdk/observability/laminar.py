@@ -32,6 +32,14 @@ _OBSERVABILITY_ENV_KEYS: Final[tuple[str, ...]] = (
 )
 
 
+OPERATION_METADATA_KEY: Final[str] = "openhands.operation"
+"""Trace-metadata key naming the side-utility operation a span subtree belongs to.
+
+Spans without it belong to the main agent loop. Namespaced so it cannot collide
+with caller-supplied ``observability_metadata``, which shares this namespace.
+"""
+
+
 def _get_int_env(key: str) -> int | None:
     """Read an environment variable as an optional int."""
     val = get_env(key)

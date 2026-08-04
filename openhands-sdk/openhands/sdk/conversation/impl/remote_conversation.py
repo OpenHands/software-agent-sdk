@@ -51,7 +51,7 @@ from openhands.sdk.event.types import EventID
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.logger import DEBUG, get_logger
-from openhands.sdk.observability.laminar import observe
+from openhands.sdk.observability.laminar import OPERATION_METADATA_KEY, observe
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
@@ -1480,6 +1480,10 @@ class RemoteConversation(BaseConversation):
             json=payload,
         )
 
+    @observe(
+        name="conversation.ask_agent",
+        metadata={OPERATION_METADATA_KEY: "ask_agent"},
+    )
     def ask_agent(self, question: str) -> str:
         """Ask the agent a simple, stateless question and get a direct LLM response.
 
@@ -1507,7 +1511,11 @@ class RemoteConversation(BaseConversation):
         data = resp.json()
         return data["response"]
 
-    @observe(name="conversation.generate_title", ignore_inputs=["llm"])
+    @observe(
+        name="conversation.generate_title",
+        ignore_inputs=["llm"],
+        metadata={OPERATION_METADATA_KEY: "title_generation"},
+    )
     def generate_title(self, llm: LLM | None = None, max_length: int = 50) -> str:
         """Generate a title for the conversation based on the first user message.
 
