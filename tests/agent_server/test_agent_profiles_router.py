@@ -575,6 +575,109 @@ def test_get_corrupted_returns_400(client, temp_agent_profiles_dir):
     assert response.status_code == 400
 
 
+# ── Staleness flag (llm_profile_ref_matches_active, #4338) ─────────────────
+
+
+def test_list_llm_profile_ref_matches_active_true_and_false(
+    client, store, default_llm_profile_store
+):
+    """Two OpenHands profiles in one list response: current vs. drifted.
+
+    Activating an LLM profile never updates AgentProfile.llm_profile_ref
+    (#4338), so a profile whose ref still names the old active LLM must read
+    False, while one whose ref already matches reads True.
+    """
+    default_llm_profile_store.save("my-llm", LLM(model="gpt-4o-mini"))
+    store.save(OpenHandsAgentProfile(name="current", llm_profile_ref="my-llm"))
+    store.save(OpenHandsAgentProfile(name="stale", llm_profile_ref="old-llm"))
+    client.patch("/api/settings", json={"active_profile": "my-llm"})
+
+    body = client.get("/api/agent-profiles").json()
+    by_name = {p["name"]: p for p in body["profiles"]}
+    assert by_name["current"]["llm_profile_ref_matches_active"] is True
+    assert by_name["stale"]["llm_profile_ref_matches_active"] is False
+
+
+def test_get_llm_profile_ref_matches_active_consistent_with_list(
+    client, store, default_llm_profile_store
+):
+    """The detail endpoint agrees with that profile's list entry."""
+    default_llm_profile_store.save("my-llm", LLM(model="gpt-4o-mini"))
+    store.save(OpenHandsAgentProfile(name="stale", llm_profile_ref="old-llm"))
+    client.patch("/api/settings", json={"active_profile": "my-llm"})
+
+    list_entry = next(
+        p
+        for p in client.get("/api/agent-profiles").json()["profiles"]
+        if p["name"] == "stale"
+    )
+    detail = client.get("/api/agent-profiles/stale").json()
+
+    assert (
+        detail["llm_profile_ref_matches_active"]
+        == list_entry["llm_profile_ref_matches_active"]
+    )
+    assert detail["llm_profile_ref_matches_active"] is False
+
+
+def test_llm_profile_ref_matches_active_none_for_acp_profile(
+    client, store, default_llm_profile_store
+):
+    """An ACP profile carries no llm_profile_ref, so the flag is null (not
+    False) in both the list entry and the detail response."""
+    default_llm_profile_store.save("my-llm", LLM(model="gpt-4o-mini"))
+    store.save(ACPAgentProfile(name="acp-p", acp_server="codex"))
+    client.patch("/api/settings", json={"active_profile": "my-llm"})
+
+    list_entry = next(
+        p
+        for p in client.get("/api/agent-profiles").json()["profiles"]
+        if p["name"] == "acp-p"
+    )
+    assert list_entry["llm_profile_ref_matches_active"] is None
+
+    detail = client.get("/api/agent-profiles/acp-p").json()
+    assert detail["llm_profile_ref_matches_active"] is None
+
+
+def test_llm_profile_ref_matches_active_none_when_no_active_llm_profile(client, store):
+    """No active LLM profile -> null, never False.
+
+    Tri-state pin: null means "not applicable / unknown", not "stale". A
+    naive `llm_profile_ref == active_profile` comparison would read False
+    here (a real string never equals None), which would misreport an
+    unconfigured account as drifted.
+    """
+    store.save(OpenHandsAgentProfile(name="p", llm_profile_ref="some-llm"))
+
+    list_entry = next(
+        p
+        for p in client.get("/api/agent-profiles").json()["profiles"]
+        if p["name"] == "p"
+    )
+    assert list_entry["llm_profile_ref_matches_active"] is None
+
+    detail = client.get("/api/agent-profiles/p").json()
+    assert detail["llm_profile_ref_matches_active"] is None
+
+
+def test_llm_profile_ref_matches_active_is_additive_only(client, store):
+    """The new field doesn't disturb any pre-existing field on either
+    endpoint (additive-only contract)."""
+    store.save(OpenHandsAgentProfile(name="p", llm_profile_ref="base"))
+
+    list_entry = client.get("/api/agent-profiles").json()["profiles"][0]
+    assert list_entry["name"] == "p"
+    assert list_entry["agent_kind"] == "openhands"
+    assert list_entry["llm_profile_ref"] == "base"
+    assert list_entry["mcp_server_refs"] is None
+
+    detail = client.get("/api/agent-profiles/p").json()
+    assert detail["name"] == "p"
+    assert detail["profile"]["llm_profile_ref"] == "base"
+    assert detail["profile"]["agent_kind"] == "openhands"
+
+
 def test_delete_removes_existing(client, store):
     store.save(OpenHandsAgentProfile(name="to-delete", llm_profile_ref="x"))
 
