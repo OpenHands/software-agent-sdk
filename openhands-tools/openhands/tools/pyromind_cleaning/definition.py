@@ -27,6 +27,7 @@ from openhands.tools.pyromind_cleaning.task_store import (
     DatasetCleaningTaskStore,
 )
 from openhands.tools.pyromind_dataset.definition import (
+    PYROMIND_AGENT_STORAGE_ROOT,
     _default_storage_base_url,
     _resolve_conversation_headers,
     _resolve_secret_headers,
@@ -45,7 +46,6 @@ if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
 
 
-DEFAULT_CLEANING_OUTPUT_ROOT = "/agentTest/data_cleaning"
 DEFAULT_GPU_PRODUCT = "NVIDIA-H100-NVL"
 RUNTIME_FILENAMES = ("cleaning_utils.py", "validate_format.py")
 MAX_CLEANING_SCRIPT_BYTES = 1024 * 1024
@@ -127,7 +127,8 @@ and optional `--limit N`. `--output` is the concrete output.jsonl path, while
 by that invocation. Output is homogeneous messages or text DPO preference JSONL.
 
 The submission is asynchronous. A new run gets a unique result directory under
-`/agentTest/data_cleaning/<run_id>`. The tool uploads `cleaning_utils.py` and
+`/.pyromind-agent/<conversation_id>/data_cleaning/<run_id>`. The tool uploads
+`cleaning_utils.py` and
 `validate_format.py` beside the frozen `clean_script.py`, runs the cleaner, then
 validates output.jsonl in the same Pod and merges validation into report.json.
 The only generated artifacts are output.jsonl and report.json. Before creating a
@@ -154,7 +155,7 @@ class RunDatasetCleaningExecutor(
         *,
         env: str | None = None,
         cluster: str | None = None,
-        output_root: str = DEFAULT_CLEANING_OUTPUT_ROOT,
+        output_root: str | None = None,
         headers: dict[str, str] | None = None,
         runtime_dir: str | None = None,
         storage_base_url: str | None = None,
@@ -165,7 +166,11 @@ class RunDatasetCleaningExecutor(
     ) -> None:
         self._env = env
         self._cluster = cluster
-        self._output_root = _normalize_storage_path(output_root, "output_root")
+        self._output_root = (
+            _normalize_storage_path(output_root, "output_root")
+            if output_root is not None
+            else None
+        )
         self._headers = dict(headers or {})
         self._runtime_dir = Path(runtime_dir) if runtime_dir else None
         self._storage_base_url = (
@@ -187,6 +192,10 @@ class RunDatasetCleaningExecutor(
                     "run_dataset_cleaning requires an active conversation."
                 )
             input_path = _normalize_storage_path(action.input_path, "input_path")
+            output_root = (
+                self._output_root
+                or f"{PYROMIND_AGENT_STORAGE_ROOT}/{conversation.id}/data_cleaning"
+            )
             uploaded_script_path = None
             if action.script_path is not None:
                 uploaded_script_path = _normalize_storage_path(
@@ -220,13 +229,13 @@ class RunDatasetCleaningExecutor(
                 if uploaded_script_path is None:
                     raise ValueError("script_path is required for a new run.")
                 effective_script_path = uploaded_script_path
-                output_dir = str(PurePosixPath(self._output_root) / str(run_id))
+                output_dir = str(PurePosixPath(output_root) / str(run_id))
                 self._preflight_script(effective_script_path, conversation)
                 self._stage_runtime_files(output_dir, conversation)
             command = _build_cleaning_command(
                 input_path=input_path,
                 script_path=effective_script_path,
-                output_root=self._output_root,
+                output_root=output_root,
                 output_dir=output_dir,
                 limit=action.limit,
                 resumed=resumed,
@@ -428,7 +437,8 @@ class RunDatasetCleaningTool(
         cluster_value = params.pop("cluster", None)
         cluster = str(cluster_value) if cluster_value is not None else None
         params.pop("current_user", None)
-        output_root = str(params.pop("output_root", DEFAULT_CLEANING_OUTPUT_ROOT))
+        output_root_value = params.pop("output_root", None)
+        output_root = str(output_root_value) if output_root_value is not None else None
         headers = _normalize_headers(params.pop("headers", None))
         runtime_dir_value = params.pop("runtime_dir", None)
         runtime_dir = str(runtime_dir_value) if runtime_dir_value is not None else None
@@ -453,7 +463,8 @@ class RunDatasetCleaningTool(
             raise ValueError(f"RunDatasetCleaningTool got unknown params: {names}")
         if timeout <= 0:
             raise ValueError("timeout must be greater than 0")
-        _normalize_storage_path(output_root, "output_root")
+        if output_root is not None:
+            _normalize_storage_path(output_root, "output_root")
         return [
             cls(
                 description=TOOL_DESCRIPTION,

@@ -39,7 +39,7 @@ PRE_STORAGE_API_BASE_URL = "https://pre-api-portal.pyromind.ai/storage_api"
 PROD_STORAGE_API_BASE_URL = "https://api-portal.pyromind.ai/storage_api"
 PYROMIND_STORAGE_AUTH_COOKIE_SECRET = "PYROMIND_STORAGE_AUTH_COOKIE"
 PYROMIND_STORAGE_HEADERS_STATE_KEY = "pyromind_storage_headers"
-DEFAULT_UPLOAD_TARGET_DIR = "/agentTest"
+PYROMIND_AGENT_STORAGE_ROOT = "/.pyromind-agent"
 
 _PROD_APP_ENVS = {"prod", "production", "online"}
 _SMALL_FILE_THRESHOLD = 10 * 1024
@@ -49,6 +49,7 @@ _DEFAULT_PREVIEW_BYTES = _LARGE_FILE_RANGE_BYTES * _LARGE_FILE_RANGE_COUNT
 _MAX_PREVIEW_BYTES = _DEFAULT_PREVIEW_BYTES
 _MAX_REQUESTED_SAMPLES = 100
 _DELIMITED_HEADER_BYTES = 4096
+_MAX_XLSX_BYTES = 10 * 1024 * 1024
 _MAX_SAMPLE_STRING_CHARS = 2000
 _TEXT_PREVIEW_SUFFIXES = {".txt", ".md", ".log", ".sh"}
 _SUPPORTED_PREVIEW_SUFFIXES = {
@@ -56,6 +57,7 @@ _SUPPORTED_PREVIEW_SUFFIXES = {
     ".json",
     ".csv",
     ".tsv",
+    ".xlsx",
     *_TEXT_PREVIEW_SUFFIXES,
 }
 _VISION_SUFFIXES = {
@@ -325,12 +327,17 @@ df_run_pipeline. Image samples are sent to the configured DF vision model
 Returns:
 - files found under the path
 - row count (exact for small files, estimated for large)
-- column names and sample rows for JSONL, CSV/TSV, and text formats
+- column names and sample rows for JSONL, CSV/TSV, text, and Excel (.xlsx) formats
 - source indicator ('shared' or 'storage')
 
 For user storage: files up to 10KB are downloaded in full; larger files use one
 head byte range plus random ranges. When preview_truncated=true, sample lines may
 be partial byte fragments, num_rows is unset, and samples are format hints only.
+
+**Excel (.xlsx) preview**: the entire file is downloaded (up to 10MB) and parsed
+with openpyxl. Column names are taken from the first row of the active sheet;
+subsequent rows become sample data. Very large xlsx files (over 10MB) are
+rejected with an error message.
 """
 
 
@@ -1495,6 +1502,31 @@ class PreviewDatasetExecutor(
         file_size: int | None,
         content_type: str,
     ) -> tuple[list[_PreviewChunk], bool] | PreviewDatasetObservation:
+        # Excel files need the full binary content (zip format), not byte ranges
+        suffix = PurePosixPath(dataset_path).suffix.lower()
+        if suffix in {".xlsx", ".xlsm"}:
+            if file_size is None or file_size > _MAX_XLSX_BYTES:
+                return PreviewDatasetObservation.from_text(
+                    text=(
+                        f"Excel file too large to preview "
+                        f"({_human_size(file_size)}). "
+                        f"Maximum preview size is "
+                        f"{_human_size(_MAX_XLSX_BYTES)}."
+                    ),
+                    is_error=True,
+                    dataset_path=dataset_path,
+                )
+            result = self._download_range(url, dataset_path, 0, file_size - 1)
+            if isinstance(result, PreviewDatasetObservation):
+                return result
+            return [
+                _PreviewChunk(
+                    content=result,
+                    starts_at_zero=True,
+                    ends_at_eof=True,
+                )
+            ], False
+
         kind = _preview_kind(dataset_path, content_type)
         ranges = _build_preview_ranges(
             file_size=file_size,
@@ -1641,9 +1673,12 @@ class UploadFileToPyromindAction(Action):
             "upload (e.g. 'acc.py')."
         ),
     )
-    target_dir: str = Field(
-        default=DEFAULT_UPLOAD_TARGET_DIR,
-        description="Storage directory to upload into. Defaults to /agentTest.",
+    target_dir: str | None = Field(
+        default=None,
+        description=(
+            "Storage directory to upload into. Defaults to the "
+            "conversation-scoped /.pyromind-agent/<conversation_id>/ directory."
+        ),
     )
 
     @property
@@ -1661,7 +1696,7 @@ class UploadFileToPyromindObservation(Observation):
         default=None,
         description=(
             "Absolute storage path of the uploaded file, usable in node "
-            "parameters (e.g. /agentTest/acc.py)."
+            "parameters (e.g. /.pyromind-agent/<conversation_id>/acc.py)."
         ),
     )
 
@@ -1682,7 +1717,8 @@ Use this when a workflow node needs a server-side file path, most commonly a
 custom evaluation metric or reward script for MetricsConfigBuilderCustomNode:
 write the Python file locally first, upload it with this tool, then use the
 returned storage path in the node's `entry` parameter as
-`<storage_path>:<function_name>` (e.g. /agentTest/acc.py:acc_func).
+`<storage_path>:<function_name>`
+(e.g. /.pyromind-agent/<conversation_id>/acc.py:acc_func).
 
 Returns the absolute storage path of the uploaded file.
 """
@@ -1712,6 +1748,10 @@ class UploadFileToPyromindExecutor(
         conversation: BaseConversation | None = None,
     ) -> UploadFileToPyromindObservation:
         try:
+            if conversation is None:
+                raise ValueError(
+                    "upload_file_to_pyromind requires an active conversation."
+                )
             local_path = _resolve_workspace_file(action.file_path, conversation)
             headers = self._resolve_headers(conversation)
         except ValueError as exc:
@@ -1720,10 +1760,13 @@ class UploadFileToPyromindExecutor(
                 is_error=True,
             )
 
+        target_dir = (
+            action.target_dir or f"{PYROMIND_AGENT_STORAGE_ROOT}/{conversation.id}"
+        )
         try:
             storage_path = upload_local_file_to_pyromind(
                 local_path=local_path,
-                target_dir=action.target_dir,
+                target_dir=target_dir,
                 storage_base_url=self._storage_base_url,
                 headers=headers,
                 timeout=self._timeout,
@@ -2155,6 +2198,12 @@ def _parse_preview_chunks(
     truncated: bool,
 ) -> dict[str, Any]:
     kind = _preview_kind(file_path, content_type)
+    # Excel files need the full binary content parsed with openpyxl
+    suffix = PurePosixPath(file_path).suffix.lower()
+    if suffix in {".xlsx", ".xlsm"}:
+        full_content = b"".join(chunk.content for chunk in chunks)
+        return _parse_excel_bytes(full_content, max_samples, truncated)
+
     lines = _complete_lines_from_chunks(chunks)
     if kind == "jsonl":
         parsed = _parse_jsonl_lines(lines, max_samples, truncated)
@@ -2165,6 +2214,78 @@ def _parse_preview_chunks(
         parsed = _parse_raw_text_lines(lines, max_samples, truncated)
     parsed["format_hint"] = _preview_format_hint(kind, chunks)
     return parsed
+
+
+def _parse_excel_bytes(
+    content: bytes,
+    max_samples: int,
+    truncated: bool,
+) -> dict[str, Any]:
+    """Parse xlsx bytes with openpyxl, returning column names and sample rows.
+
+    Column names are taken from the first row of the active sheet.
+    Only the first (max_samples + 1) rows are read from the workbook.
+    """
+    try:
+        from io import BytesIO
+
+        from openpyxl import load_workbook
+
+        wb = load_workbook(BytesIO(content), read_only=True, data_only=True)
+    except Exception as exc:
+        return {
+            "columns": [],
+            "sample_rows": [],
+            "num_rows": None,
+            "previewed_rows": 0,
+            "preview_error": f"Failed to open Excel file: {exc}",
+            "format_hint": "excel",
+        }
+
+    ws = wb.active
+    if ws is None:
+        wb.close()
+        return {
+            "columns": [],
+            "sample_rows": [],
+            "num_rows": 0,
+            "previewed_rows": 0,
+            "format_hint": "excel",
+        }
+
+    rows = list(ws.iter_rows(values_only=True, max_row=max_samples + 2))
+    wb.close()
+
+    columns: list[str] = []
+    if rows:
+        header = rows[0]
+        columns = [
+            str(c) if c is not None else f"column_{i}" for i, c in enumerate(header)
+        ]
+
+    data_rows = rows[1 : max_samples + 1] if len(rows) > 1 else []
+    has_more = len(rows) > max_samples + 1
+
+    sample_rows: list[dict[str, Any]] = []
+    for row in data_rows:
+        row_dict: dict[str, Any] = {}
+        for i, val in enumerate(row):
+            if val is not None:
+                col_name = columns[i] if i < len(columns) else f"column_{i}"
+                row_dict[col_name] = str(val)
+        if row_dict:
+            sample_rows.append(row_dict)
+
+    num_rows = None if truncated or has_more else len(data_rows)
+
+    return {
+        "columns": columns,
+        "sample_rows": sample_rows,
+        "num_rows": num_rows,
+        "previewed_rows": len(sample_rows),
+        "preview_error": None,
+        "format_hint": "excel",
+    }
 
 
 def _preview_format_hint(
@@ -2573,6 +2694,7 @@ def _infer_directory_layout(
                 f"{', '.join(repeated_names)}"
             )
         else:
+            assert repeated_suffixes is not None
             suffix_text = ", ".join(
                 f"{suffix}:{count}" for suffix, count in repeated_suffixes.items()
             )

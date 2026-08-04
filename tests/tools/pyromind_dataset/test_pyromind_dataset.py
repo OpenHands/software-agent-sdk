@@ -1,6 +1,7 @@
 import json as jsonlib
 from pathlib import Path
 from typing import Any, cast
+from uuid import UUID
 
 import httpx
 from pydantic import SecretStr
@@ -88,6 +89,9 @@ class _StreamResponse:
         return self._content
 
 
+_CONVERSATION_ID = UUID("00000000-0000-0000-0000-000000000456")
+
+
 def _fake_conversation(
     tmp_path: Path,
     *,
@@ -98,6 +102,7 @@ def _fake_conversation(
         "FakeConversation",
         (),
         {
+            "id": _CONVERSATION_ID,
             "workspace": _FakeWorkspace(tmp_path),
             "state": type(
                 "FakeState",
@@ -511,14 +516,58 @@ def test_upload_file_to_pyromind_posts_workspace_file(
     )
 
     assert not observation.is_error
-    assert observation.storage_path == "/agentTest/metric.py"
+    assert observation.storage_path == (
+        f"/.pyromind-agent/{_CONVERSATION_ID}/metric.py"
+    )
     assert calls["url"] == "https://portal.test/storage_api/upload_file"
     assert calls["headers"]["cookie"] == "auth_token=session-token"
     assert calls["headers"]["x-cluster"] == "pre"
-    assert calls["data"]["path"] == "/agentTest"
+    assert calls["data"]["path"] == f"/.pyromind-agent/{_CONVERSATION_ID}"
     assert calls["filename"] == "metric.py"
     assert calls["content"] == b"def acc():\n    return 1\n"
     assert calls["timeout"] == 7.0
+
+
+def test_upload_file_to_pyromind_explicit_target_dir_wins(
+    monkeypatch,
+    tmp_path,
+):
+    local_file = tmp_path / "metric.py"
+    local_file.write_text("def acc():\n    return 1\n", encoding="utf-8")
+    posted_path: dict[str, str] = {}
+
+    def fake_post(url, *, headers, data, files, timeout):
+        posted_path["path"] = data["path"]
+        return _Response(
+            200,
+            {
+                "success": True,
+                "data": {
+                    "uploaded": True,
+                    "success_count": 1,
+                    "failed_count": 0,
+                    "success_files": [{"filename": "metric.py"}],
+                    "failed_files": [],
+                },
+            },
+        )
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    conversation = _fake_conversation(tmp_path, secret_registry=_secret_registry())
+
+    observation = UploadFileToPyromindExecutor(
+        storage_base_url="https://portal.test/storage_api",
+    )(
+        UploadFileToPyromindAction(
+            file_path="metric.py",
+            target_dir="/custom/dir",
+        ),
+        cast(Any, conversation),
+    )
+
+    assert not observation.is_error
+    assert observation.storage_path == "/custom/dir/metric.py"
+    assert posted_path["path"] == "/custom/dir"
 
 
 def test_download_file_from_pyromind_returns_bounded_script(monkeypatch):
@@ -1282,10 +1331,7 @@ def test_storage_directory_summary_detects_repeated_sample_folders(
     )
 
     assert not observation.is_error
-    assert (
-        observation.directory_summary["detected_layout"]
-        == "repeated_sample_folders"
-    )
+    assert observation.directory_summary["detected_layout"] == "repeated_sample_folders"
     assert observation.directory_summary["layout_confidence"] == "high"
     assert observation.directory_summary["top_level_folder_count"] == 3
     assert observation.directory_summary["sampled_child_folders"][0]["file_names"] == [
@@ -1385,8 +1431,7 @@ def test_storage_directory_summary_detects_tabular_or_manifest_files(
 
     assert not observation.is_error
     assert (
-        observation.directory_summary["detected_layout"]
-        == "tabular_or_manifest_files"
+        observation.directory_summary["detected_layout"] == "tabular_or_manifest_files"
     )
     assert observation.directory_summary["top_level_type_counts"]["json"] == 1
     assert observation.directory_summary["top_level_type_counts"]["table"] == 1

@@ -495,3 +495,57 @@ def test_compatible_resume_accepts_agent_assessment(
     assert saved is not None
     assert saved.reuse_assessment is not None
     assert saved.reuse_assessment["decision"] == "compatible_resume"
+
+
+def test_new_full_run_uses_conversation_scoped_output_root(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    executor = _make_executor(tmp_path)
+    script = tmp_path / "pipeline.py"
+    script.write_text("print('hi')")
+    conversation = _make_conversation_with_llm()
+    conversation.id = "conv-1"
+    conversation.workspace = MagicMock()
+    conversation.workspace.working_dir = str(tmp_path / "conversation")
+
+    monkeypatch.setattr(
+        executor,
+        "_stage_runtime_files",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        executor,
+        "_stage_script",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "openhands.tools.data_preparation.platform_submit.create_workflow_api_client",
+        lambda **kwargs: object(),
+    )
+    response = MagicMock()
+    response.task_id = "task-new"
+    response.status = "Pending"
+    monkeypatch.setattr(
+        "openhands.tools.data_preparation.platform_submit.submit_workflow_task",
+        lambda **kwargs: response,
+    )
+
+    observation = executor(
+        DfSubmitPipelineAction(
+            script_path=str(script),
+            input_path="/data/in.jsonl",
+            output_schema="text",
+        ),
+        conversation=conversation,
+    )
+
+    assert not observation.is_error
+    assert observation.resumed is False
+    assert observation.run_id is not None
+    assert observation.output_dir == (
+        f"/.pyromind-agent/conv-1/data_preparation/{observation.run_id}"
+    )
+    saved = DataPreparationTaskStore(tmp_path / "tasks").get("task-new")
+    assert saved is not None
+    assert saved.output_dir == observation.output_dir

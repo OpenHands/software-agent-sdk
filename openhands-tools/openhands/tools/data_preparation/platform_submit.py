@@ -37,6 +37,7 @@ from openhands.tools.data_preparation.runner import (
     validate_managed_image_pipeline,
 )
 from openhands.tools.pyromind_dataset.definition import (
+    PYROMIND_AGENT_STORAGE_ROOT,
     _default_storage_base_url,
     _resolve_conversation_headers,
     _resolve_secret_headers,
@@ -54,7 +55,6 @@ if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
 
 
-DEFAULT_PREPARATION_OUTPUT_ROOT = "/agentTest/data_preparation"
 RUNTIME_FILENAMES = (
     "df_logging.py",
     "generate_report.py",
@@ -407,7 +407,7 @@ class DfSubmitPipelineExecutor(
         *,
         env: str | None = None,
         cluster: str | None = None,
-        output_root: str = DEFAULT_PREPARATION_OUTPUT_ROOT,
+        output_root: str | None = None,
         headers: dict[str, str] | None = None,
         runtime_dir: str | None = None,
         storage_base_url: str | None = None,
@@ -418,7 +418,11 @@ class DfSubmitPipelineExecutor(
     ) -> None:
         self._env = env
         self._cluster = cluster
-        self._output_root = _normalize_storage_path(output_root, "output_root")
+        self._output_root = (
+            _normalize_storage_path(output_root, "output_root")
+            if output_root is not None
+            else None
+        )
         self._headers = dict(headers or {})
         self._runtime_dir = Path(runtime_dir) if runtime_dir else None
         self._storage_base_url = (
@@ -531,7 +535,12 @@ class DfSubmitPipelineExecutor(
                     raise ValueError("script_path is required for a new full run.")
                 script_path = _validate_local_pipeline(action.script_path)
                 run_id = uuid.uuid4()
-                output_dir = str(PurePosixPath(self._output_root) / str(run_id))
+                output_root = (
+                    self._output_root
+                    or f"{PYROMIND_AGENT_STORAGE_ROOT}/{conversation.id}/"
+                    "data_preparation"
+                )
+                output_dir = str(PurePosixPath(output_root) / str(run_id))
                 execution_revision = 1
                 model_profile = action.model_profile or "text"
                 output_schema = action.output_schema
@@ -793,7 +802,8 @@ class DfSubmitPipelineTool(
         cluster_value = params.pop("cluster", None)
         cluster = str(cluster_value) if cluster_value is not None else None
         params.pop("current_user", None)
-        output_root = str(params.pop("output_root", DEFAULT_PREPARATION_OUTPUT_ROOT))
+        output_root_value = params.pop("output_root", None)
+        output_root = str(output_root_value) if output_root_value is not None else None
         headers = _normalize_headers(params.pop("headers", None))
         runtime_dir_value = params.pop("runtime_dir", None)
         runtime_dir = str(runtime_dir_value) if runtime_dir_value is not None else None
@@ -818,7 +828,8 @@ class DfSubmitPipelineTool(
             raise ValueError(f"DfSubmitPipelineTool got unknown params: {names}")
         if timeout <= 0:
             raise ValueError("timeout must be greater than 0")
-        _normalize_storage_path(output_root, "output_root")
+        if output_root is not None:
+            _normalize_storage_path(output_root, "output_root")
         return [
             cls(
                 description=TOOL_DESCRIPTION,

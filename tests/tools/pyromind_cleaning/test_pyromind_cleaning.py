@@ -121,7 +121,9 @@ def test_run_dataset_cleaning_submits_fixed_workflow_and_persists_task(
     assert not observation.is_error
     assert observation.task_id == "9876"
     assert observation.run_id is not None
-    assert observation.output_dir == (f"/agentTest/data_cleaning/{observation.run_id}")
+    assert observation.output_dir == (
+        f"/.pyromind-agent/{_CONVERSATION_ID}/data_cleaning/{observation.run_id}"
+    )
     assert observation.resumed is False
     assert f"{observation.output_dir}/report.json" in observation.text
     assert "then output.jsonl" in observation.text
@@ -153,7 +155,9 @@ def test_run_dataset_cleaning_submits_fixed_workflow_and_persists_task(
     assert node["data"]["config"]["cpu"] == 4
     command = node["data"]["config"]["command"]
     pod_output_dir = f"/target-workspace{observation.output_dir}"
-    assert "mkdir -p /target-workspace/agentTest/data_cleaning" in command
+    assert (
+        f"mkdir -p /target-workspace/.pyromind-agent/{_CONVERSATION_ID}/data_cleaning"
+    ) in command
     assert f"mkdir -p {pod_output_dir}" in command
     assert (
         f"cp /target-workspace/agentTest/clean.py {pod_output_dir}/clean_script.py"

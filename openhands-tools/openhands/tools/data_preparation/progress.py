@@ -71,8 +71,8 @@ class DfCheckProgressAction(Action):
     output_dir: str = Field(
         description=(
             "Storage output directory of the run, e.g. "
-            "'/agentTest/data_preparation/<run_id>' (the `output_dir` "
-            "returned by df_submit_pipeline)."
+            "'/.pyromind-agent/<conversation_id>/data_preparation/<run_id>' "
+            "(the `output_dir` returned by df_submit_pipeline)."
         )
     )
     tail_lines: int = Field(
