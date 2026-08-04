@@ -118,6 +118,38 @@ def test_pause_and_resume_flip_operating_mode(k8s_mocks):
     assert patch_call.call_args.kwargs["body"] == {"spec": {"operatingMode": "Running"}}
 
 
+def test_failed_connect_terminates_claim(k8s_mocks):
+    """A failure after the claim is created must not leak the sandbox."""
+    from openhands.workspace import AgentSandboxWorkspace
+
+    with (
+        patch.object(
+            AgentSandboxWorkspace,
+            "_connect_port_forward_with_retry",
+            side_effect=RuntimeError("boom"),
+        ),
+        patch.object(AgentSandboxWorkspace, "_stop_port_forward"),
+        pytest.raises(RuntimeError, match="boom"),
+    ):
+        AgentSandboxWorkspace(warmpool="openhands-pool", detach_logs=False)
+
+    k8s_mocks.handle.terminate.assert_called_once()
+
+
+def test_resume_reconnects_on_a_fresh_port(k8s_mocks):
+    """resume() must not reuse the previous session's local port."""
+    ws = _make_ws(host_port=45000)
+
+    with (
+        patch.object(type(ws), "_stop_port_forward"),
+        patch.object(type(ws), "_connect_port_forward_with_retry") as connect,
+        patch.object(type(ws), "reset_client"),
+    ):
+        ws.resume()
+
+    assert connect.call_args.kwargs["preferred_port"] is None
+
+
 def test_cleanup_terminates_sandbox(k8s_mocks):
     """cleanup() deletes the claim via the handle and is idempotent."""
     ws = _make_ws()

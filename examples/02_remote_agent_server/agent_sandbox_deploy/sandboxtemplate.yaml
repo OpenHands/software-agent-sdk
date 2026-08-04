@@ -23,7 +23,7 @@ spec:
         fsGroup: 10001
       containers:
         - name: agent-server
-          image: ghcr.io/openhands/agent-server:latest-python
+          image: ghcr.io/openhands/agent-server:1.38.0-python
           args: ["--host", "0.0.0.0", "--port", "8000"]
           workingDir: /workspace
           ports:

@@ -10,6 +10,26 @@ metadata:
   name: openhands-agent-server
   namespace: default
 spec:
+  # The controller-managed NetworkPolicy (the default) allows public egress but
+  # blocks private ranges, so a sandbox cannot reach an in-cluster or on-host LLM.
+  # Rather than switching the template to `networkPolicyManagement: Unmanaged`,
+  # keep it Managed and allow just what the agent needs, e.g.:
+  #
+  # networkPolicy:
+  #   egress:
+  #     # DNS
+  #     - to:
+  #         - namespaceSelector:
+  #             matchLabels: { kubernetes.io/metadata.name: kube-system }
+  #       ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+  #     # In-cluster LLM (adjust selector/namespace/port to your deployment)
+  #     - to:
+  #         - podSelector:
+  #             matchLabels: { app: ollama }
+  #       ports: [{ protocol: TCP, port: 11434 }]
+  #     # Hosted LLM APIs over HTTPS
+  #     - ports: [{ protocol: TCP, port: 443 }]
+  #
   # A persistent volume mounted at /workspace so the workspace (and anything the
   # agent writes) survives a suspend/resume cycle.
   volumeClaimTemplates:
@@ -30,7 +50,7 @@ spec:
         fsGroup: 10001
       containers:
         - name: agent-server
-          image: ghcr.io/openhands/agent-server:latest-python
+          image: ghcr.io/openhands/agent-server:1.38.0-python
           args: ["--host", "0.0.0.0", "--port", "8000"]
           workingDir: /workspace
           ports:

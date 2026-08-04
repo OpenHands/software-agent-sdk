@@ -138,6 +138,9 @@ class AgentSandboxWorkspace(RemoteWorkspace):
     _pf_process: subprocess.Popen[str] | None = PrivateAttr(default=None)
     _logs_thread: threading.Thread | None = PrivateAttr(default=None)
     _stop_logs: threading.Event = PrivateAttr(default_factory=threading.Event)
+    # The caller's explicit host_port, if any. `host_port` itself tracks the port
+    # currently in use, so it cannot double as the preference across reconnects.
+    _preferred_host_port: int | None = PrivateAttr(default=None)
 
     def model_post_init(self, context: Any) -> None:
         """Claim a sandbox pod, connect to the agent server, and initialize."""
@@ -147,6 +150,8 @@ class AgentSandboxWorkspace(RemoteWorkspace):
             raise ValueError(
                 "connection='direct' requires 'host' to be set to the agent-server URL."
             )
+
+        self._preferred_host_port = self.host_port
 
         try:
             import k8s_agent_sandbox  # type: ignore[import-not-found]
@@ -178,30 +183,45 @@ class AgentSandboxWorkspace(RemoteWorkspace):
             self._sandbox.claim_name,
         )
 
-        # 2) Establish the connection to the agent server and wait for health.
-        if self.connection == "port_forward":
-            self._connect_port_forward_with_retry()
-        else:
-            # 'direct': self.host was provided by the caller.
-            self._wait_for_health(timeout=self.health_check_timeout)
-        logger.info("agent-sandbox workspace is ready at %s", self.host)
+        # Everything past this point must clean up the claim on failure: the
+        # constructor raising means the caller never gets an object to close, so
+        # the claim (and its pod) would leak until GC -- or forever, since
+        # shutdown_after_seconds is None by default.
+        try:
+            # 2) Establish the connection to the agent server and wait for health.
+            if self.connection == "port_forward":
+                self._connect_port_forward_with_retry(
+                    preferred_port=self._preferred_host_port
+                )
+            else:
+                # 'direct': self.host was provided by the caller.
+                self._wait_for_health(timeout=self.health_check_timeout)
+            logger.info("agent-sandbox workspace is ready at %s", self.host)
 
-        # 4) Initialize the parent RemoteWorkspace against the agent server URL.
-        super().model_post_init(context)
+            # 3) Initialize the parent RemoteWorkspace against the agent server URL.
+            super().model_post_init(context)
+        except Exception:
+            self.cleanup()
+            raise
 
-    def _connect_port_forward_with_retry(self, attempts: int = 5) -> None:
+    def _connect_port_forward_with_retry(
+        self, attempts: int = 5, *, preferred_port: int | None = None
+    ) -> None:
         """Start a port-forward and wait for health, retrying transient failures.
 
         Right after a resume the pod's network namespace can still be churning, so
         kubectl port-forward may drop with "network namespace ... is closed". A
         dead forward is detected quickly, so retrying with a fresh local port is
         cheap and lets the pod settle.
+
+        ``preferred_port`` is only honored on the first attempt; pass None (the
+        default, used on resume) to always take a freshly allocated port, since
+        the previous session's port may still be in TIME_WAIT.
         """
-        preferred = self.host_port
         last_error: Exception | None = None
         for i in range(attempts):
             # Honor a caller-provided port on the first try; auto-pick on retries.
-            self.host_port = preferred if i == 0 else None
+            self.host_port = preferred_port if i == 0 else None
             try:
                 self._start_port_forward()
                 self._wait_for_health(timeout=self.health_check_timeout)
@@ -220,6 +240,28 @@ class AgentSandboxWorkspace(RemoteWorkspace):
             f"Could not reach agent server after {attempts} attempts: {last_error}"
         )
 
+    def _resolve_pod_name(self) -> str:
+        """Read the current pod name from the live Sandbox object.
+
+        The pod name can change across a suspend/resume cycle, so this always
+        re-reads it rather than using ``Sandbox.get_pod_name()``, which caches the
+        first value for the lifetime of the handle. Uses only public client API;
+        if ``k8s_agent_sandbox`` grows a public refresh (e.g.
+        ``get_pod_name(refresh=True)``), this can defer to it.
+        """
+        from k8s_agent_sandbox.constants import (  # type: ignore[import-not-found]
+            POD_NAME_ANNOTATION,
+        )
+
+        sandbox_object = (
+            self._sb_client.k8s_helper.get_sandbox(
+                self._sandbox.sandbox_id, self.namespace
+            )
+            or {}
+        )
+        annotations = (sandbox_object.get("metadata") or {}).get("annotations") or {}
+        return annotations.get(POD_NAME_ANNOTATION) or self._sandbox.sandbox_id
+
     def _start_port_forward(self) -> None:
         """Start (or restart) kubectl port-forward to the sandbox pod."""
         if self.host_port is None:
@@ -227,10 +269,7 @@ class AgentSandboxWorkspace(RemoteWorkspace):
         elif not check_port_available(self.host_port):
             raise RuntimeError(f"Port {self.host_port} is not available")
 
-        # The pod name can change across a suspend/resume cycle, so drop the handle's
-        # cached value and re-resolve it from the live Sandbox object each time.
-        self._sandbox._pod_name = None
-        pod = self._sandbox.get_pod_name()
+        pod = self._resolve_pod_name()
 
         cmd = ["kubectl", "port-forward"]
         if self.kube_context:
@@ -292,7 +331,13 @@ class AgentSandboxWorkspace(RemoteWorkspace):
         raise RuntimeError("agent server failed to become healthy in time")
 
     def _patch_operating_mode(self, mode: str) -> None:
-        """Patch the Sandbox spec.operatingMode ('Running' or 'Suspended')."""
+        """Patch the Sandbox spec.operatingMode ('Running' or 'Suspended').
+
+        TODO: agent-sandbox #1160 (claim-level idle lifecycle) and #1296
+        (traffic-triggered resume) will make this a claim-level concern; once they
+        land, pause/resume should move to the claim API instead of patching the
+        Sandbox directly.
+        """
         from k8s_agent_sandbox.constants import (  # type: ignore[import-not-found]
             SANDBOX_API_GROUP,
             SANDBOX_API_VERSION,
@@ -333,7 +378,7 @@ class AgentSandboxWorkspace(RemoteWorkspace):
         if self.connection == "port_forward":
             # Reconnect on a fresh local port (the old one may be in TIME_WAIT) and
             # rebuild the HTTP client so it targets the new host URL.
-            self._connect_port_forward_with_retry()
+            self._connect_port_forward_with_retry(preferred_port=None)
             self.reset_client()
         else:
             self._wait_for_health(timeout=self.health_check_timeout)

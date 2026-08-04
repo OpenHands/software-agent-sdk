@@ -55,8 +55,8 @@ The first pull of `ghcr.io/openhands/agent-server` can take a minute. On kind yo
 pre-load it to avoid an in-cluster pull:
 
 ```bash
-docker pull ghcr.io/openhands/agent-server:latest-python
-kind load docker-image ghcr.io/openhands/agent-server:latest-python --name <cluster>
+docker pull ghcr.io/openhands/agent-server:1.38.0-python
+kind load docker-image ghcr.io/openhands/agent-server:1.38.0-python --name <cluster>
 ```
 
 ## 3. Keyless workspace smoke test (no LLM)
@@ -90,8 +90,11 @@ An OpenHands agent runs *inside* the sandbox pod and calls the LLM from there, s
   kubectl patch sandboxwarmpool openhands-pool --type merge -p '{"spec":{"replicas":1}}'
   ```
 
-  For production, prefer a **scoped egress `NetworkPolicy`** to the LLM endpoint
-  instead of `Unmanaged`.
+  `Unmanaged` drops the policy entirely, which is fine for a throwaway test cluster
+  but not for real use. For anything beyond a local test, keep the policy **Managed**
+  and allow only what the agent needs — see the commented `networkPolicy` block in
+  [`deploy/sandboxtemplate.yaml`](deploy/sandboxtemplate.yaml) for a copy-pasteable
+  scoped-egress rule (DNS + your LLM endpoint).
 
 ### 4a. No key — local Ollama
 
@@ -178,7 +181,7 @@ kubectl delete -f ../deploy/sandboxwarmpool.yaml -f ../deploy/sandboxtemplate.ya
 
 | Symptom | Cause / fix |
 |---|---|
-| Agent connects but the LLM call times out; nothing reaches Ollama | The sandbox pod can't reach the LLM. The default `NetworkPolicy` blocks private ranges (cluster ClusterIPs, host IPs). Set the template `networkPolicyManagement: Unmanaged` (test) or add a scoped egress rule (prod). Public/hosted APIs are already allowed. |
+| Agent connects but the LLM call times out; nothing reaches Ollama | The sandbox pod can't reach the LLM. The default `NetworkPolicy` blocks private ranges (cluster ClusterIPs, host IPs). Add a scoped egress rule (see the commented block in `deploy/sandboxtemplate.yaml`), or `networkPolicyManagement: Unmanaged` for a throwaway test cluster. Public/hosted APIs are already allowed. |
 | Agent replies with text and `finish`es without doing anything (no `ActionEvent`) | The model returns tool calls as text. Use `qwen2.5` (7b) or `llama3.1:8b`; avoid `qwen2.5-coder` and `:3b`. Verify with the raw `/api/chat` probe above. |
 | `litellm ... "<model>" does not support thinking` | Set `reasoning_effort="none"` on the `LLM` (qwen2.5 has no thinking mode). |
 | Agent plans/thinks/finishes but never runs the command | The default 7-tool agent is too heavy for a small model. Use a minimal terminal-only agent (as in `agent_ollama_example.py`), or a larger/hosted model. |
