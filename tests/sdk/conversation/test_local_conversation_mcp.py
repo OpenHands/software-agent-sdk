@@ -140,3 +140,26 @@ def test_legacy_provider_without_on_tools_reconciled_still_works(
     conversation._ensure_agent_ready()
 
     conversation.close()
+
+
+class _KwargsMCPToolProvider:
+    """A provider that accepts arbitrary keywords via **kwargs."""
+
+    def create_tools(
+        self, mcp_config: dict[str, MCPServer], timeout: float = 30.0, **kwargs: Any
+    ) -> MCPClient:
+        return cast(MCPClient, EmptyMCPClient())
+
+
+def test_provider_supports_on_tools_reconciled() -> None:
+    from openhands.sdk.mcp.utils import (
+        DefaultMCPToolProvider,
+        provider_supports_on_tools_reconciled,
+    )
+
+    assert provider_supports_on_tools_reconciled(DefaultMCPToolProvider())
+    assert provider_supports_on_tools_reconciled(RecordingMCPToolProvider())
+    assert provider_supports_on_tools_reconciled(_KwargsMCPToolProvider())
+    assert not provider_supports_on_tools_reconciled(
+        cast(MCPToolProvider, LegacyMCPToolProvider())
+    )
