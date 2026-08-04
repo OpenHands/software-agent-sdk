@@ -106,9 +106,24 @@ class WebhookSpec(BaseModel):
         default=1000,
         ge=1,
         description=(
-            "Upper bound on the number of events buffered for delivery. When the "
-            "downstream is failing and events are re-queued for retry, the oldest "
+            "Upper bound on the number of events buffered for delivery. The oldest "
             "events are dropped past this bound to prevent unbounded memory growth."
+        ),
+    )
+    max_batch_bytes: int = Field(
+        default=5 * 1024 * 1024,
+        ge=1,
+        description=(
+            "Upper bound on the serialized size of each webhook request. A single "
+            "event larger than this limit is sent by itself."
+        ),
+    )
+    max_queue_bytes: int = Field(
+        default=50 * 1024 * 1024,
+        ge=1,
+        description=(
+            "Upper bound on the serialized size of events buffered for delivery. "
+            "The oldest events are dropped when the queue exceeds this bound."
         ),
     )
 

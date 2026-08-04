@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from deprecation import DeprecatedWarning
 from pydantic import ValidationError
 
 from openhands.sdk.hooks.config import HookConfig
@@ -383,6 +384,25 @@ Content.
         """Test creating AgentDefinition with typed MCP servers."""
         servers = {"fetch": MCPServer(command="uvx", args=["mcp-server-fetch"])}
         agent = AgentDefinition(name="mcp-agent", mcp_config=servers)
+        assert agent.mcp_config is not None
+        assert dump_mcp_config(agent.mcp_config) == {
+            "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}
+        }
+
+    def test_legacy_mcp_servers_warns_and_populates_mcp_config(self):
+        """Test the deprecated mcp_servers alias still loads with a warning."""
+        with pytest.warns(
+            DeprecatedWarning,
+            match="AgentDefinition\\.mcp_servers",
+        ) as warning_records:
+            agent = AgentDefinition(
+                name="mcp-agent",
+                mcp_servers={"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}},
+            )
+
+        warning_message = str(warning_records[0].message)
+        assert "deprecated as of 1.36.0" in warning_message
+        assert "removed in 1.41.0" in warning_message
         assert agent.mcp_config is not None
         assert dump_mcp_config(agent.mcp_config) == {
             "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}

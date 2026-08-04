@@ -1,6 +1,7 @@
 """Utility functions for MCP integration."""
 
 import copy
+import json
 import re
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
@@ -195,7 +196,7 @@ class MCPToolExecutor(ToolExecutor):
         self.client.sync_close()
 
 
-_mcp_dynamic_action_type: dict[str, type[Schema]] = {}
+_mcp_dynamic_action_type: dict[tuple[str, str], type[Schema]] = {}
 
 
 def _create_mcp_action_type(action_type: mcp.types.Tool) -> type[Schema]:
@@ -213,14 +214,17 @@ def _create_mcp_action_type(action_type: mcp.types.Tool) -> type[Schema]:
     to openai tool schema.
     """
 
-    # Tool.name should be unique, so we can cache the created types.
-    mcp_action_type = _mcp_dynamic_action_type.get(action_type.name)
+    cache_key = (
+        action_type.name,
+        json.dumps(action_type.inputSchema, sort_keys=True, separators=(",", ":")),
+    )
+    mcp_action_type = _mcp_dynamic_action_type.get(cache_key)
     if mcp_action_type:
         return mcp_action_type
 
     model_name = f"MCP{to_camel_case(action_type.name)}Action"
     mcp_action_type = Schema.from_mcp_schema(model_name, action_type.inputSchema)
-    _mcp_dynamic_action_type[action_type.name] = mcp_action_type
+    _mcp_dynamic_action_type[cache_key] = mcp_action_type
     return mcp_action_type
 
 
