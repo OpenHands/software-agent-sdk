@@ -5,7 +5,7 @@ import json
 import re
 from collections import OrderedDict
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 
 if TYPE_CHECKING:
@@ -197,7 +197,7 @@ class MCPToolExecutor(ToolExecutor):
         self.client.sync_close()
 
 
-_MCP_ACTION_TYPE_CACHE_MAX = 512
+_MCP_ACTION_TYPE_CACHE_MAX: Final[int] = 512
 # LRU-bounded: keyed by (name, schema), so a tool whose schema keeps changing
 # no longer grows this cache without limit.
 _mcp_dynamic_action_type: OrderedDict[tuple[str, str], type[Schema]] = OrderedDict()
