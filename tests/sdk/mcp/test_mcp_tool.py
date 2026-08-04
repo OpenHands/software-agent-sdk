@@ -440,3 +440,25 @@ class TestMCPTool:
         assert isinstance(self.tool.executor, MCPToolExecutor)
         assert self.tool.executor.tool_name == "test_tool"
         assert self.tool.executor.client == self.mock_client
+
+
+def test_action_type_cache_is_bounded():
+    """A tool whose schema keeps changing must not grow the cache forever."""
+    from openhands.sdk.mcp.tool import (
+        _MCP_ACTION_TYPE_CACHE_MAX,
+        _create_mcp_action_type,
+        _mcp_dynamic_action_type,
+    )
+
+    for i in range(_MCP_ACTION_TYPE_CACHE_MAX + 50):
+        tool = mcp.types.Tool(
+            name="churning_tool",
+            description="d",
+            inputSchema={
+                "type": "object",
+                "properties": {f"field_{i}": {"type": "string"}},
+            },
+        )
+        _create_mcp_action_type(tool)
+
+    assert len(_mcp_dynamic_action_type) <= _MCP_ACTION_TYPE_CACHE_MAX

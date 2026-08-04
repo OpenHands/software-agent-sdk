@@ -1292,8 +1292,8 @@ class LocalConversation(BaseConversation):
             mcp_config,
             _RUNTIME_MCP_TIMEOUT_SECS,
             on_tools_changed=on_tools_changed,
+            on_tools_reconciled=on_tools_reconciled,
         )
-        client._tools_reconciled_callback = on_tools_reconciled
         return list(client.tools)
 
     def _on_mcp_tools_reconciled(

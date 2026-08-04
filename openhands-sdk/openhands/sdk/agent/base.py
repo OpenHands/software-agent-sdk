@@ -564,7 +564,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         if self.filter_tools_regex:
             pattern = re.compile(self.filter_tools_regex)
             tools = [tool for tool in tools if pattern.match(tool.name)]
-            tool_names = [tool.name for tool in tools]
             logger.info("Filtered to %d tools after applying regex filter", len(tools))
 
         # Include default tools from include_default_tools; not subject to regex
@@ -876,9 +875,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             if existing:
                 raise ValueError(f"Duplicate tool names found: {existing}")
 
-            # AgentBase is frozen, so update its mutable tool map in place.
-            for tool in tools:
-                self._tools[tool.name] = tool
+            # AgentBase is frozen; replace the tool map rather than mutating
+            # it in place, so Agent.model_copy() snapshots don't share state.
+            updated = {**self._tools, **{tool.name: tool for tool in tools}}
+            object.__setattr__(self, "_tools", updated)
 
     def _on_mcp_tools_changed(self, tools: Sequence[ToolDefinition]) -> None:
         """Handle dynamically advertised MCP tools.
@@ -930,8 +930,12 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 )
 
             self.add_runtime_tools(additions)
-            for tool in replacements:
-                self._tools[tool.name] = tool
+            if replacements:
+                updated = {
+                    **self._tools,
+                    **{tool.name: tool for tool in replacements},
+                }
+                object.__setattr__(self, "_tools", updated)
 
         if additions:
             logger.info(

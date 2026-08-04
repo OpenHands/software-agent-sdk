@@ -35,8 +35,10 @@ class RecordingMCPToolProvider:
         timeout: float = 30.0,
         *,
         on_tools_changed: Any = None,
+        on_tools_reconciled: Any = None,
     ) -> MCPClient:
         self.calls.append(mcp_config)
+        self.client._tools_reconciled_callback = on_tools_reconciled
         return cast(MCPClient, self.client)
 
 

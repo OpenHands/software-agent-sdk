@@ -25,10 +25,11 @@ import mcp.types as mcp_types
 import pytest
 from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_context
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
+from openhands.sdk.agent import Agent
 from openhands.sdk.agent.base import AgentBase
-from openhands.sdk.llm import TextContent
+from openhands.sdk.llm import LLM, TextContent
 from openhands.sdk.mcp import MCPClient, create_mcp_tools
 from openhands.sdk.mcp.config import coerce_mcp_config
 from openhands.sdk.mcp.tool import MCPToolDefinition
@@ -339,6 +340,40 @@ def test_no_callback_still_connects(progressive_server: int):
         assert "register_extra_tool" in names
 
 
+def test_default_provider_wires_on_tools_reconciled_before_connect(
+    progressive_server: int,
+):
+    """DefaultMCPToolProvider must forward on_tools_reconciled to
+    create_mcp_tools() so it's attached before the client connects, instead
+    of being set on the client after create_tools() already returned (which
+    would drop any notification that arrives during the initial connect).
+    """
+    from openhands.sdk.mcp.utils import DefaultMCPToolProvider
+
+    port = progressive_server
+    config = _native_config(
+        {
+            "mcpServers": {
+                "progressive": {
+                    "transport": "http",
+                    "url": f"http://127.0.0.1:{port}/mcp",
+                }
+            }
+        }
+    )
+
+    def on_tools_reconciled(client, tools):  # noqa: ANN001
+        pass
+
+    client = DefaultMCPToolProvider().create_tools(
+        config, timeout=10.0, on_tools_reconciled=on_tools_reconciled
+    )
+    try:
+        assert client._tools_reconciled_callback is on_tools_reconciled
+    finally:
+        client.sync_close()
+
+
 def test_list_changed_notification_reconciles_readded_agent_tool(
     progressive_server: int,
 ):
@@ -444,6 +479,27 @@ def test_on_mcp_tools_changed_registers_runtime_tools():
     agent._on_mcp_tools_changed([tool])
 
     assert agent.tools_map["dynamic"] is tool
+
+
+def test_add_runtime_tools_does_not_leak_into_model_copy():
+    """Registering a tool on a copied Agent must not mutate the original.
+
+    Agent.model_copy() shares private-attr objects (e.g. _tools) by
+    reference, so mutating the tool map in place would leak across copies.
+    """
+    original = Agent(llm=LLM(model="test-model", api_key=SecretStr("k")), tools=[])
+    original._initialized = True
+    copy = original.model_copy()
+    client = _FakeClient([])
+    tool = MCPToolDefinition.create(
+        mcp_tool=_make_mcp_tool("dynamic"),
+        mcp_client=cast(MCPClient, client),
+    )[0]
+
+    copy.add_runtime_tools([tool])
+
+    assert "dynamic" in copy.tools_map
+    assert "dynamic" not in original.tools_map
 
 
 def test_on_mcp_tools_changed_skips_when_not_initialized():
