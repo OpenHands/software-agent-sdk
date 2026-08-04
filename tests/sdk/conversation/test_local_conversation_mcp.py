@@ -16,16 +16,18 @@ from openhands.sdk.mcp.tool import MCPToolDefinition
 class EmptyMCPClient:
     def __init__(self) -> None:
         self.tools: list[MCPToolDefinition] = []
+        self._tools_reconciled_callback: Any = None
 
-    def set_tools_reconciled_callback(self, callback):  # noqa: ANN001
-        self.on_tools_reconciled = callback
+    def sync_close(self) -> None:
+        pass
 
 
 class RecordingMCPToolProvider:
     """Records every attempt to open an MCP connection."""
 
-    def __init__(self) -> None:
+    def __init__(self, client: EmptyMCPClient | None = None) -> None:
         self.calls: list[dict[str, MCPServer]] = []
+        self.client = client or EmptyMCPClient()
 
     def create_tools(
         self,
@@ -35,7 +37,7 @@ class RecordingMCPToolProvider:
         on_tools_changed: Any = None,
     ) -> MCPClient:
         self.calls.append(mcp_config)
-        return cast(MCPClient, EmptyMCPClient())
+        return cast(MCPClient, self.client)
 
 
 def test_disabling_every_server_skips_the_mcp_connection(tmp_path: Path) -> None:
@@ -60,24 +62,7 @@ def test_disabling_every_server_skips_the_mcp_connection(tmp_path: Path) -> None
 
 
 def test_reconciliation_targets_replaced_agent(tmp_path: Path) -> None:
-    class CallbackMCPClient(EmptyMCPClient):
-        def sync_close(self) -> None:
-            pass
-
-    class LegacyMCPToolProvider:
-        def __init__(self, client: CallbackMCPClient) -> None:
-            self.client = client
-
-        def create_tools(
-            self,
-            mcp_config: dict[str, MCPServer],
-            timeout: float = 30.0,
-            *,
-            on_tools_changed: Any = None,
-        ) -> MCPClient:
-            return cast(MCPClient, self.client)
-
-    client = CallbackMCPClient()
+    client = EmptyMCPClient()
     initial = MCPToolDefinition.create(
         mcp_tool=mcp_types.Tool(
             name="initial",
@@ -96,7 +81,7 @@ def test_reconciliation_targets_replaced_agent(tmp_path: Path) -> None:
         ),
         workspace=str(tmp_path),
         visualizer=None,
-        mcp_tool_provider=LegacyMCPToolProvider(client),
+        mcp_tool_provider=RecordingMCPToolProvider(client),
     )
     conversation._ensure_agent_ready()
     old_agent = conversation.agent
@@ -110,7 +95,7 @@ def test_reconciliation_targets_replaced_agent(tmp_path: Path) -> None:
         mcp_client=cast(MCPClient, client),
     )[0]
 
-    client.on_tools_reconciled(cast(MCPClient, client), [replacement])
+    client._tools_reconciled_callback(cast(MCPClient, client), [replacement])
 
     assert set(conversation.agent.tools_map) == {"replacement"}
     assert set(old_agent.tools_map) == {"initial"}

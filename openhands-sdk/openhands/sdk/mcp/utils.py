@@ -333,7 +333,7 @@ def create_mcp_tools(
     )
     client = MCPClient(config, log_handler=log_handler, message_handler=handler)
     handler._client = client
-    client.set_tools_reconciled_callback(on_tools_reconciled)
+    client._tools_reconciled_callback = on_tools_reconciled
 
     try:
         client.call_async_from_sync(

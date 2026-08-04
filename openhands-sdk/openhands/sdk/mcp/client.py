@@ -55,13 +55,6 @@ class MCPClient(AsyncMCPClient):
         """The MCP tools using this client connection (returns a copy)."""
         return list(self._tools)
 
-    def set_tools_reconciled_callback(
-        self,
-        callback: ToolsReconciledCallback | None,
-    ) -> None:
-        """Set the callback for complete tool-list snapshots."""
-        self._tools_reconciled_callback = callback
-
     async def connect(self) -> None:
         """Establish connection to the MCP server."""
         try:

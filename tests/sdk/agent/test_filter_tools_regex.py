@@ -242,9 +242,6 @@ class _StaticMCPClient:
     def __init__(self, tools: list[ToolDefinition]):
         self.tools = tools
 
-    def set_tools_reconciled_callback(self, callback):  # noqa: ANN001
-        self.on_tools_reconciled = callback
-
 
 class _StaticMCPToolProvider:
     """Stands in for a live MCP server advertising two tools."""

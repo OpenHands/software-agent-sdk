@@ -966,18 +966,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             }
             raise ValueError(f"Duplicate MCP tool names found: {duplicates}")
 
-        invalid = [
-            tool.name
-            for tool in tools
-            if not isinstance(tool.executor, MCPToolExecutor)
-            or tool.executor.client is not client
-        ]
-        if invalid:
-            raise ValueError(
-                "Reconciled MCP tools must belong to the callback client: "
-                f"{sorted(invalid)}"
-            )
-
         if self.filter_tools_regex:
             pattern = re.compile(self.filter_tools_regex)
             tools = [tool for tool in tools if pattern.match(tool.name)]
