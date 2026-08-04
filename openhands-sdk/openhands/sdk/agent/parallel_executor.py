@@ -97,8 +97,8 @@ class ParallelToolExecutor:
             ]
 
         with ThreadPoolExecutor(max_workers=self._max_workers) as executor:
-            # ThreadPoolExecutor does not propagate contextvars; a fresh copy
-            # per task because one Context cannot be entered by two threads.
+            # submit() itself propagates no contextvars; a fresh copy per task
+            # because one Context cannot be entered by two threads.
             futures = [
                 executor.submit(
                     contextvars.copy_context().run,
@@ -201,7 +201,7 @@ class ParallelToolExecutor:
         timeout.
         """
         loop = asyncio.get_running_loop()
-        # run_in_executor does not copy contextvars, unlike asyncio.to_thread.
+        # run_in_executor copies no contextvars, unlike asyncio.to_thread.
         ctx = contextvars.copy_context()
 
         def run_in_caller_context() -> list[Event]:
