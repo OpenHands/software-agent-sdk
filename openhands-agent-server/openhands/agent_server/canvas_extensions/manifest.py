@@ -38,8 +38,6 @@ class CanvasExtensionPage(BaseModel):
     @field_validator("id")
     @classmethod
     def _validate_id(cls, v: str) -> str:
-        # Same kebab-case rule as extension names, with a message scoped
-        # to page contributions rather than validate_extension_name's own.
         try:
             validate_extension_name(v)
         except ValueError as e:
@@ -151,7 +149,7 @@ def resolve_entrypoint(manifest: CanvasExtensionManifest, package_root: Path) ->
     """
     root = package_root.resolve()
     candidate = (root / manifest.entrypoint).resolve()
-    if candidate != root and not candidate.is_relative_to(root):
+    if not candidate.is_relative_to(root):
         raise ValueError(
             f"entrypoint {manifest.entrypoint!r} resolves outside the "
             "extension package root"
