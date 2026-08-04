@@ -19,6 +19,7 @@ while tools touching *different* resources can run concurrently.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
@@ -96,8 +97,11 @@ class ParallelToolExecutor:
             ]
 
         with ThreadPoolExecutor(max_workers=self._max_workers) as executor:
+            # ThreadPoolExecutor does not propagate contextvars; a fresh copy
+            # per task because one Context cannot be entered by two threads.
             futures = [
                 executor.submit(
+                    contextvars.copy_context().run,
                     self._run_safe,
                     action,
                     tool_runner,
@@ -197,9 +201,13 @@ class ParallelToolExecutor:
         timeout.
         """
         loop = asyncio.get_running_loop()
-        fut = loop.run_in_executor(
-            executor, self._run_safe, action, tool_runner, tool, cancel_token
-        )
+        # run_in_executor does not copy contextvars, unlike asyncio.to_thread.
+        ctx = contextvars.copy_context()
+
+        def run_in_caller_context() -> list[Event]:
+            return ctx.run(self._run_safe, action, tool_runner, tool, cancel_token)
+
+        fut = loop.run_in_executor(executor, run_in_caller_context)
         try:
             return await fut
         except asyncio.CancelledError:
