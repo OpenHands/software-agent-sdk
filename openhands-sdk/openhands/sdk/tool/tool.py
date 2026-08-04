@@ -29,7 +29,6 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    PrivateAttr,
     computed_field,
     field_serializer,
     field_validator,
@@ -55,6 +54,10 @@ type ResponseSchema = type[BaseModel] | dict[str, Any]
 _action_types_with_risk: dict[type, type] = {}
 _action_types_with_summary: dict[type, type] = {}
 _action_type_lock = threading.Lock()
+# JSON schema for Pydantic-model response schemas, cached by the immutable class
+# so model_json_schema() runs at most once per class. Dict schemas are not cached
+# (they are not safely identity-keyed); they use the cheap deepcopy path below.
+_response_schema_json_cache: dict[type[BaseModel], dict[str, Any]] = {}
 _RESERVED_RESPONSE_FIELDS = frozenset(
     {"kind", "security_risk", "structured_output", "summary"}
 )
@@ -84,6 +87,9 @@ _SUPPORTED_RESPONSE_SCHEMA_KEYS = frozenset(
 
 def _response_schema_json(response_schema: ResponseSchema) -> dict[str, Any]:
     if isinstance(response_schema, type) and issubclass(response_schema, BaseModel):
+        cached = _response_schema_json_cache.get(response_schema)
+        if cached is not None:
+            return copy.deepcopy(cached)
         schema = response_schema.model_json_schema()
     elif isinstance(response_schema, dict):
         schema = copy.deepcopy(response_schema)
@@ -96,6 +102,8 @@ def _response_schema_json(response_schema: ResponseSchema) -> dict[str, Any]:
         raise ValueError(f"Invalid response_schema: {exc.message}") from exc
     if schema.get("type") != "object":
         raise ValueError("response_schema must describe a JSON object")
+    if isinstance(response_schema, type):
+        _response_schema_json_cache[response_schema] = copy.deepcopy(schema)
     return schema
 
 
@@ -389,9 +397,6 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         default=None, repr=False, exclude=True
     )
 
-    # Cached JSON schema for response_schema, computed once in set_response_schema
-    _response_schema_json_cache: dict[str, Any] = PrivateAttr(default_factory=dict)
-
     @classmethod
     def is_usable(cls) -> bool:
         """Return whether the tool can be used in the current environment."""
@@ -463,8 +468,9 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         if response_schema is None:
             return self.model_copy(update={"response_schema": None})
 
-        response_tool_schema = _response_tool_schema(response_schema)
-        response_fields = set(response_tool_schema.get("properties", {}))
+        response_fields = set(
+            _response_tool_schema(response_schema).get("properties", {})
+        )
         reserved = response_fields & _RESERVED_RESPONSE_FIELDS
         if reserved:
             raise ValueError(f"response_schema fields {sorted(reserved)} are reserved")
@@ -477,10 +483,7 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
                 f"response_schema fields {sorted(overlap)} collide with "
                 f"existing fields on {self.action_type.__name__}"
             )
-        new_tool = self.model_copy(update={"response_schema": response_schema})
-        # Cache the normalized JSON schema on the new tool instance
-        new_tool._response_schema_json_cache = _response_schema_json(response_schema)
-        return new_tool
+        return self.model_copy(update={"response_schema": response_schema})
 
     def as_executable(self) -> ExecutableTool:
         """Return this tool as an ExecutableTool, ensuring it has an executor.
@@ -521,11 +524,7 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         if self.response_schema is None:
             return dict(arguments), None
 
-        # Use cached schema if available, otherwise compute (fallback for old instances)
-        if self._response_schema_json_cache:
-            schema = self._response_schema_json_cache
-        else:
-            schema = _response_schema_json(self.response_schema)
+        schema = _response_schema_json(self.response_schema)
         response_fields = set(schema.get("properties", {}))
         response_arguments = {
             key: value for key, value in arguments.items() if key in response_fields
@@ -559,14 +558,10 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
             return self.response_schema.model_validate(
                 action.structured_output, by_name=True
             )
-        # Use cached schema for dict-based validation
-        schema = (
-            self._response_schema_json_cache
-            if self._response_schema_json_cache
-            else _response_schema_json(self.response_schema)
-        )
         try:
-            Draft202012Validator(schema).validate(action.structured_output)
+            Draft202012Validator(self.response_schema).validate(
+                action.structured_output
+            )
         except JSONSchemaValidationError as exc:
             raise ValueError(
                 f"response_schema validation failed: {exc.message}"

@@ -436,36 +436,43 @@ def test_mcp_tool_supports_response_schema():
     assert action.structured_output["success"] is True
 
 
-def test_response_schema_is_cached_on_set():
-    """The normalized JSON schema is computed once in set_response_schema and
-    reused on subsequent action_from_arguments calls instead of regenerating it."""
-    from openhands.sdk.tool.tool import _response_schema_json
+def test_response_schema_json_is_cached_per_class():
+    """The Pydantic model_json_schema() result is cached by the immutable class so
+    repeated _response_schema_json calls reuse the cached schema."""
+    from openhands.sdk.tool.tool import _response_schema_json_cache
 
-    tool = _finish_with_schema(TaskResult)
-    # set_response_schema already ran inside resolve_tool -> cache is populated
-    assert tool._response_schema_json_cache, "cache should be populated"
+    # Prime the cache by resolving a tool with a schema.
+    _finish_with_schema(TaskResult)
+    assert TaskResult in _response_schema_json_cache
 
-    expected = _response_schema_json(TaskResult)
-    assert tool._response_schema_json_cache == expected
-
-    # Multiple calls should reuse the cached schema, not recompute it.
-    tool.action_from_arguments(
+    cached = _response_schema_json_cache[TaskResult]
+    # Subsequent calls return deep copies of the same cached schema.
+    again = _finish_with_schema(TaskResult)
+    assert _response_schema_json_cache[TaskResult] == cached
+    # Multiple action_from_arguments calls do not regenerate the cache.
+    again.action_from_arguments(
         {"message": "m", "success": True, "summary_text": "s", "files_changed": []}
     )
-    tool.action_from_arguments(
+    again.action_from_arguments(
         {"message": "m2", "success": False, "summary_text": "s2", "files_changed": []}
     )
-    assert tool._response_schema_json_cache == expected
+    assert _response_schema_json_cache[TaskResult] == cached
 
 
-def test_response_schema_cache_is_absent_without_schema():
-    """Tools without a response_schema use the no-schema fast path."""
-    register_tool("FinishTool", FinishTool)
-    [base] = resolve_tool(
-        Tool(name="FinishTool", params={}),
-        conv_state=MagicMock(),
+def test_response_schema_cache_does_not_go_stale_on_model_copy():
+    """A tool rebuilt via model_copy (bypassing set_response_schema) with a
+    different schema must not reuse a stale cache."""
+    tool = _finish_with_schema(TaskResult)
+
+    class OtherResult(BaseModel):
+        score: int = Field(description="A score.")
+        summary_text: str = Field(description="One-line summary.")
+
+    bypassed = tool.model_copy(update={"response_schema": OtherResult})
+    action = bypassed.action_from_arguments(
+        {"message": "m", "score": 5, "summary_text": "s"}
     )
-    assert base._response_schema_json_cache == {}
-    # Fast path: no schema, no validation, returns dict unchanged
-    action = base.action_from_arguments({"message": "m"})
-    assert action.structured_output is None
+    # score routed to the structured output, not swallowed as a stale field
+    assert action.structured_output == {"score": 5, "summary_text": "s"}
+    assert isinstance(action, FinishAction)
+    assert action.message == "m"
