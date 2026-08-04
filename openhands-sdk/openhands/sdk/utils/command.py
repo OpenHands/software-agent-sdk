@@ -4,6 +4,7 @@ import subprocess
 import sys
 import threading
 from collections.abc import Mapping
+from typing import Final
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.redact import redact_text_secrets
@@ -16,7 +17,7 @@ logger = get_logger(__name__)
 # executed by the agent). These credentials allow access to user secrets via
 # the SaaS API and must remain isolated to the SDK's Python process.
 _SENSITIVE_ENV_VARS = frozenset({"SESSION_API_KEY"})
-_AI_AGENT_ENV_VAR = "AI_AGENT"
+_AI_AGENT_ENV_VAR: Final[str] = "AI_AGENT"
 
 
 def sanitized_env(
