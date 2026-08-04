@@ -254,6 +254,14 @@ class Config(BaseModel):
             "Default workspace directory for conversations created by the server."
         ),
     )
+    conversation_worktree_root: Path = Field(
+        default=Path("/tmp/conversation-worktrees"),
+        description=(
+            "Root directory for conversation git worktrees. Each conversation gets a "
+            "subdirectory under this root when using git-backed workspaces with "
+            "worktree=True."
+        ),
+    )
     bash_events_dir: Path = Field(
         default=Path("workspace/bash_events"),
         description=(
