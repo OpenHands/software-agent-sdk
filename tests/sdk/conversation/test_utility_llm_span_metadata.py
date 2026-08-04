@@ -14,6 +14,9 @@ from openhands.sdk.conversation.impl.remote_conversation import RemoteConversati
 from openhands.sdk.observability.laminar import OPERATION_METADATA_KEY
 
 
+METADATA_ATTRIBUTE_PREFIX = "lmnr.association.properties.metadata."
+
+
 def _record_observe_kwargs(unbound_method: Any) -> dict[str, Any]:
     """Trigger the lazy ``observe`` build on a method and return the observe kwargs."""
     recorded: dict[str, Any] = {}
@@ -53,7 +56,6 @@ def _record_observe_kwargs(unbound_method: Any) -> dict[str, Any]:
             "title_generation",
         ),
         (LocalConversation.ask_agent, "conversation.ask_agent", "ask_agent"),
-        (RemoteConversation.ask_agent, "conversation.ask_agent", "ask_agent"),
     ],
 )
 def test_utility_methods_declare_operation_metadata(
@@ -128,14 +130,21 @@ def _probe_exported_spans() -> list[dict[str, Any]]:
         {
             "name": span.name,
             "parent": names_by_id.get(span.parent.span_id) if span.parent else None,
-            "metadata": {
-                key.removeprefix("lmnr.association.properties.metadata."): value
+            "attributes": {
+                key: value
                 for key, value in (span.attributes or {}).items()
-                if key.startswith("lmnr.association.properties.metadata.")
+                if key.startswith(METADATA_ATTRIBUTE_PREFIX)
             },
         }
         for span in spans
     ]
+
+
+def _metadata(span: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key.removeprefix(METADATA_ATTRIBUTE_PREFIX): value
+        for key, value in span["attributes"].items()
+    }
 
 
 def test_operation_metadata_reaches_the_exported_llm_span() -> None:
@@ -162,14 +171,26 @@ def test_operation_metadata_reaches_the_exported_llm_span() -> None:
     ask_llm = by_parent["conversation.ask_agent"]
     main_loop_llm = by_parent["agent.step"]
 
-    assert title_llm["metadata"][OPERATION_METADATA_KEY] == "title_generation"
-    assert ask_llm["metadata"][OPERATION_METADATA_KEY] == "ask_agent"
+    # Spelled out, not derived from OPERATION_METADATA_KEY: this exact attribute
+    # name is the wire contract downstream consumers hard-code.
+    assert (
+        title_llm["attributes"][
+            "lmnr.association.properties.metadata.openhands.operation"
+        ]
+        == "title_generation"
+    )
+    assert (
+        ask_llm["attributes"][
+            "lmnr.association.properties.metadata.openhands.operation"
+        ]
+        == "ask_agent"
+    )
 
     # Subtree-scoped: the main agent loop is untouched, and the conversation's
     # own trace metadata still reaches every span.
-    assert OPERATION_METADATA_KEY not in main_loop_llm["metadata"]
+    assert OPERATION_METADATA_KEY not in _metadata(main_loop_llm)
     for span in llm_spans:
-        assert span["metadata"]["repo"] == "OpenHands/software-agent-sdk"
+        assert _metadata(span)["repo"] == "OpenHands/software-agent-sdk"
 
 
 if __name__ == "__main__":

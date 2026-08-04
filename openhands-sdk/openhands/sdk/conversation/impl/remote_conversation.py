@@ -1480,10 +1480,6 @@ class RemoteConversation(BaseConversation):
             json=payload,
         )
 
-    @observe(
-        name="conversation.ask_agent",
-        metadata={OPERATION_METADATA_KEY: "ask_agent"},
-    )
     def ask_agent(self, question: str) -> str:
         """Ask the agent a simple, stateless question and get a direct LLM response.
 
