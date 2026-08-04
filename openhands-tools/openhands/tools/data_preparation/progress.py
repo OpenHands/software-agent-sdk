@@ -9,6 +9,7 @@ platform job is still running.
 from __future__ import annotations
 
 import json
+import posixpath
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Self
 
@@ -153,7 +154,7 @@ class DfCheckProgressExecutor(
         action: DfCheckProgressAction,
         conversation: BaseConversation | None = None,
     ) -> DfCheckProgressObservation:
-        output_dir = action.output_dir.strip().rstrip("/")
+        output_dir = action.output_dir.strip().strip("/")
         headers = self._resolved_headers(conversation)
 
         progress_path = f"{output_dir}/{PROGRESS_FILENAME}"
@@ -220,13 +221,18 @@ class DfCheckProgressExecutor(
     def _get_size_and_url(
         self, path: str, headers: dict[str, str]
     ) -> tuple[int | None, str] | str:
-        meta_result = self._post_json("get_file_metadata", {"path": path}, headers)
-        if isinstance(meta_result, str):
-            return meta_result
-        meta = _extract_api_data("get_file_metadata", meta_result)
-        if isinstance(meta, str):
-            return meta
-        size = _optional_int(meta.get("size"))
+        size = self._live_size(path, headers)
+        if size is None:
+            # file_list could not see the file: fall back to HEAD metadata so
+            # a missing file still surfaces a real error (the size may be a
+            # stale cached value, but the caller then reports not-found).
+            meta_result = self._post_json("get_file_metadata", {"path": path}, headers)
+            if isinstance(meta_result, str):
+                return meta_result
+            meta = _extract_api_data("get_file_metadata", meta_result)
+            if isinstance(meta, str):
+                return meta
+            size = _optional_int(meta.get("size"))
 
         url_result = self._post_json("get_url", {"path": path}, headers)
         if isinstance(url_result, str):
@@ -238,6 +244,26 @@ class DfCheckProgressExecutor(
         if not isinstance(url, str) or not url.strip():
             return f"Pyromind storage get_url API returned no url for {path}."
         return size, url
+
+    def _live_size(self, path: str, headers: dict[str, str]) -> int | None:
+        # file_list reflects live gateway metadata, while the HEAD-based
+        # get_file_metadata API can serve a stale cached size for frequently
+        # overwritten files — prefer it when the file is visible.
+        parent = posixpath.dirname(path)
+        name = posixpath.basename(path)
+        result = self._post_json("file_list", {"path": parent}, headers)
+        if isinstance(result, str):
+            return None
+        payload = _extract_api_data("file_list", result)
+        if isinstance(payload, str) or not isinstance(payload, dict):
+            return None
+        entries = payload.get("list")
+        if not isinstance(entries, list):
+            return None
+        for entry in entries:
+            if isinstance(entry, dict) and entry.get("name") == name:
+                return _optional_int(entry.get("size"))
+        return None
 
     def _download_range(
         self, url: str, start: int | None, end: int | None
@@ -277,16 +303,25 @@ class DfCheckProgressExecutor(
         if isinstance(result, str):
             return None
         size, url = result
-        # Use a Range request (like _read_tail) to bypass CDN caching of the
-        # pre-signed URL — progress.json is overwritten in-place frequently.
+        # Prefer a size-derived Range: it forces the CDN/gateway to revalidate
+        # against the live object (a plain full GET can be served from a stale
+        # cache), and the size now comes from file_list (live metadata), not
+        # the HEAD API's cached attr. A full GET remains as a fallback.
+        parsed = None
         if size is not None and size > 0:
             content = self._download_range(url, 0, size - 1)
-        else:
+            if not isinstance(content, str):
+                parsed = self._try_parse_json(content)
+        if parsed is None:
             content = self._download_range(url, None, None)
-        if isinstance(content, str):
-            return None
+            if not isinstance(content, str):
+                parsed = self._try_parse_json(content)
+        return parsed
+
+    @staticmethod
+    def _try_parse_json(data: bytes) -> dict[str, Any] | None:
         try:
-            parsed = json.loads(content.decode("utf-8", errors="replace"))
+            parsed = json.loads(data.decode("utf-8", errors="replace"))
         except json.JSONDecodeError:
             return None
         return parsed if isinstance(parsed, dict) else None

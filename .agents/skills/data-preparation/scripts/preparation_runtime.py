@@ -146,11 +146,9 @@ def write_progress(
     counts records attempted since that baseline, so the derived rate and ETA
     reflect the current run rather than any resumed prefix.
 
-    The snapshot is written directly (open -> write -> close) rather than via
-    ``_atomic_json_write``'s tmp+rename: the platform's FUSE-mounted object
-    storage only uploads bytes on ``close()``, so a rename would leave
-    ``progress.json`` stale/0B for ``df_check_progress`` (which polls it through
-    the Storage API).
+    Uses ``_atomic_json_write`` (tmp + fsync + rename) so that JuiceFS persists
+    the data to its local cache before the atomic rename — the Storage API
+    always sees a consistent file with the correct size.
     """
     elapsed_ms = int((time.monotonic() - started_at) * 1000)
     elapsed_s = elapsed_ms / 1000
@@ -171,11 +169,7 @@ def write_progress(
         "eta_ms": eta_ms,
         "updated_at": datetime.now(_UTC).isoformat(),
     }
-    path = Path(progress_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as target:
-        json.dump(payload, target, ensure_ascii=False)
-        target.write("\n")
+    _atomic_json_write(Path(progress_path), payload)
 
 
 class RetryingVisionClient:
