@@ -17,7 +17,7 @@ See the [project root AGENTS.md](../../../AGENTS.md) for repository-wide policie
 
 ## Coding Style & Naming Conventions
 
-- Python target is 3.12; keep code Ruff-compliant (line length 88).
+- Packages support Python 3.12 and later; repository tooling targets Python 3.13. Keep code Ruff-compliant (line length 88).
 - Prefer explicit, accurate type annotations; use Pyright for type checking (do not add mypy).
 - Avoid `# type: ignore` unless there is no reasonable typing fix.
 - Keep imports at the top of files; avoid `sys.path` hacks and in-line imports unless required for circular dependencies.
@@ -46,6 +46,19 @@ When changing a persisted settings model (for example `AgentSettings`, `Conversa
   `Invalid API Key format: Must start with pre-defined prefix`.
 - If you need Bedrock bearer-token auth, set `AWS_BEARER_TOKEN_BEDROCK` in the environment
   (instead of using `LLM_API_KEY`).
+- Prefer `openhands.sdk.llm.utils.litellm_provider.LLMProvider` for LiteLLM-facing runtime
+  logic instead of manually splitting `LLM.model`. Accept the full model string at the SDK
+  boundary, then normalize immediately into LiteLLM's parsed `provider` + `model` view.
+- Do not duplicate multiple provider objects for transport versus capabilities. Initialize
+  the LiteLLM-facing transport provider once during `LLM` setup, and keep
+  capability/feature lookups on the canonical model string (`LLM.model_canonical_name` or
+  `LLM.model`).
+- Avoid per-call provider cache-refresh logic in `LLM`. If the provider/model changes,
+  construct a new `LLM` instance rather than trying to mutate transport provider state in
+  place.
+- Keep `unverified_models` conservative for UI bucketing: LiteLLM inference is useful for
+  transport behavior, but it can classify ambiguous raw IDs (for example regional Bedrock IDs)
+  more aggressively than the UI should.
 
 ## Event Type Deprecation Policy
 
