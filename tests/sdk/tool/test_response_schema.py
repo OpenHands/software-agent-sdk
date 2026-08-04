@@ -434,3 +434,38 @@ def test_mcp_tool_supports_response_schema():
     assert action.data == {"url": "https://example.com"}
     assert action.structured_output is not None
     assert action.structured_output["success"] is True
+
+
+def test_response_schema_is_cached_on_set():
+    """The normalized JSON schema is computed once in set_response_schema and
+    reused on subsequent action_from_arguments calls instead of regenerating it."""
+    from openhands.sdk.tool.tool import _response_schema_json
+
+    tool = _finish_with_schema(TaskResult)
+    # set_response_schema already ran inside resolve_tool -> cache is populated
+    assert tool._response_schema_json_cache, "cache should be populated"
+
+    expected = _response_schema_json(TaskResult)
+    assert tool._response_schema_json_cache == expected
+
+    # Multiple calls should reuse the cached schema, not recompute it.
+    tool.action_from_arguments(
+        {"message": "m", "success": True, "summary_text": "s", "files_changed": []}
+    )
+    tool.action_from_arguments(
+        {"message": "m2", "success": False, "summary_text": "s2", "files_changed": []}
+    )
+    assert tool._response_schema_json_cache == expected
+
+
+def test_response_schema_cache_is_absent_without_schema():
+    """Tools without a response_schema use the no-schema fast path."""
+    register_tool("FinishTool", FinishTool)
+    [base] = resolve_tool(
+        Tool(name="FinishTool", params={}),
+        conv_state=MagicMock(),
+    )
+    assert base._response_schema_json_cache == {}
+    # Fast path: no schema, no validation, returns dict unchanged
+    action = base.action_from_arguments({"message": "m"})
+    assert action.structured_output is None
