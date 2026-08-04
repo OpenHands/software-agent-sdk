@@ -648,6 +648,31 @@ class LocalConversation(BaseConversation):
             ConversationErrorEvent(source="environment", code=code, detail=detail)
         )
 
+    def _check_stuck_or_nudge(self) -> bool:
+        """Nudge once on a repeating action-error streak, else apply is_stuck().
+
+        Returns True if STUCK was set and the run loop should stop.
+        """
+        if not self._stuck_detector:
+            return False
+
+        nudge = self._stuck_detector.get_action_error_nudge()
+        if nudge is not None:
+            self._on_event(
+                MessageEvent(
+                    source="environment",
+                    llm_message=Message(role="user", content=[TextContent(text=nudge)]),
+                )
+            )
+            return False
+
+        if self._stuck_detector.is_stuck():
+            logger.warning("Stuck pattern detected.")
+            self._state.execution_status = ConversationExecutionStatus.STUCK
+            return True
+
+        return False
+
     @property
     def stuck_detector(self) -> StuckDetector | None:
         """Get the stuck detector instance if enabled."""
@@ -1869,15 +1894,8 @@ class LocalConversation(BaseConversation):
                         break
 
                     # Check for stuck patterns if enabled
-                    if self._stuck_detector:
-                        is_stuck = self._stuck_detector.is_stuck()
-
-                        if is_stuck:
-                            logger.warning("Stuck pattern detected.")
-                            self._state.execution_status = (
-                                ConversationExecutionStatus.STUCK
-                            )
-                            continue
+                    if self._check_stuck_or_nudge():
+                        continue
 
                     # clear the flag before calling agent.step() (user approved)
                     if (
@@ -2069,14 +2087,8 @@ class LocalConversation(BaseConversation):
                                 continue
                         break
 
-                    if self._stuck_detector:
-                        is_stuck = self._stuck_detector.is_stuck()
-                        if is_stuck:
-                            logger.warning("Stuck pattern detected.")
-                            self._state.execution_status = (
-                                ConversationExecutionStatus.STUCK
-                            )
-                            continue
+                    if self._check_stuck_or_nudge():
+                        continue
 
                     if (
                         self._state.execution_status
