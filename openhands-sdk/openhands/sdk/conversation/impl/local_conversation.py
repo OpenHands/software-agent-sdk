@@ -59,12 +59,14 @@ from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
 from openhands.sdk.marketplace.registry import MarketplaceRegistry
+from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import (
     MCPServer,
     coerce_mcp_config,
     dump_mcp_config,
     enabled_mcp_servers,
 )
+from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.mcp.utils import (
     DefaultMCPToolProvider,
     MCPToolProvider,
@@ -1290,16 +1292,24 @@ class LocalConversation(BaseConversation):
             mcp_config,
             _RUNTIME_MCP_TIMEOUT_SECS,
             on_tools_changed=on_tools_changed,
-            on_tools_reconciled=on_tools_reconciled,
         )
+        client.set_tools_reconciled_callback(on_tools_reconciled)
         return list(client.tools)
+
+    def _on_mcp_tools_reconciled(
+        self,
+        client: MCPClient,
+        tools: Sequence[MCPToolDefinition],
+    ) -> None:
+        self.agent._on_mcp_tools_reconciled(client, tools)
 
     def _runtime_mcp_tools_for_agent(self) -> list[ToolDefinition]:
         if not self.agent.supports_openhands_tools or not self.agent.mcp_config:
             return []
         return self._runtime_mcp_tools(
             self.agent.mcp_config,
-            on_tools_reconciled=self.agent._on_mcp_tools_reconciled,
+            on_tools_changed=lambda tools: self.agent._on_mcp_tools_changed(tools),
+            on_tools_reconciled=self._on_mcp_tools_reconciled,
         )
 
     def _runtime_skill_tools_for_agent(self) -> list[ToolDefinition]:
@@ -1369,7 +1379,13 @@ class LocalConversation(BaseConversation):
             )
             merged_mcp = coerce_mcp_config(expanded_mcp["mcpServers"])
         runtime_mcp_tools = (
-            self._runtime_mcp_tools(runtime_plugin_mcp) if self._agent_ready else []
+            self._runtime_mcp_tools(
+                runtime_plugin_mcp,
+                on_tools_changed=lambda tools: self.agent._on_mcp_tools_changed(tools),
+                on_tools_reconciled=self._on_mcp_tools_reconciled,
+            )
+            if self._agent_ready
+            else []
         )
 
         with self._state:

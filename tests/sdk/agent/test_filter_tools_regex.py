@@ -19,7 +19,7 @@ from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.llm.message import ImageContent, TextContent
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import MCPServer
-from openhands.sdk.mcp.utils import ToolsChangedCallback, ToolsReconciledCallback
+from openhands.sdk.mcp.utils import ToolsChangedCallback
 from openhands.sdk.tool import ToolDefinition
 from openhands.sdk.tool.builtins import ThinkTool
 from openhands.sdk.tool.registry import register_tool
@@ -242,6 +242,9 @@ class _StaticMCPClient:
     def __init__(self, tools: list[ToolDefinition]):
         self.tools = tools
 
+    def set_tools_reconciled_callback(self, callback):  # noqa: ANN001
+        self.on_tools_reconciled = callback
+
 
 class _StaticMCPToolProvider:
     """Stands in for a live MCP server advertising two tools."""
@@ -252,7 +255,6 @@ class _StaticMCPToolProvider:
         timeout: float = 30.0,
         *,
         on_tools_changed: ToolsChangedCallback | None = None,
-        on_tools_reconciled: ToolsReconciledCallback | None = None,
     ) -> MCPClient:
         return cast(
             MCPClient,

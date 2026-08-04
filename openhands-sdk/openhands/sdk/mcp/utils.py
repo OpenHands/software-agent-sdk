@@ -13,7 +13,7 @@ from fastmcp.mcp_config import MCPConfig as FastMCPConfig, RemoteMCPServer
 from key_value.aio.protocols import AsyncKeyValue
 
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp.client import MCPClient
+from openhands.sdk.mcp.client import MCPClient, ToolsReconciledCallback
 from openhands.sdk.mcp.config import (
     MCPOAuthAuthCredential,
     MCPOAuthAuthentication,
@@ -36,12 +36,6 @@ MCPOAuthFactory = Callable[
 # Backward-compatible callback that reports only newly added tools.
 ToolsChangedCallback = Callable[[Sequence[MCPToolDefinition]], None]
 
-# Callback that receives the owning client and its complete current tool snapshot.
-ToolsReconciledCallback = Callable[
-    [MCPClient, Sequence[MCPToolDefinition]],
-    None,
-]
-
 
 class MCPToolProvider(Protocol):
     """Runtime-only MCP tool materializer."""
@@ -52,7 +46,6 @@ class MCPToolProvider(Protocol):
         timeout: float = 30.0,
         *,
         on_tools_changed: ToolsChangedCallback | None = None,
-        on_tools_reconciled: ToolsReconciledCallback | None = None,
     ) -> MCPClient: ...
 
 
@@ -65,14 +58,8 @@ class DefaultMCPToolProvider:
         timeout: float = 30.0,
         *,
         on_tools_changed: ToolsChangedCallback | None = None,
-        on_tools_reconciled: ToolsReconciledCallback | None = None,
     ) -> MCPClient:
-        return create_mcp_tools(
-            mcp_config,
-            timeout,
-            on_tools_changed=on_tools_changed,
-            on_tools_reconciled=on_tools_reconciled,
-        )
+        return create_mcp_tools(mcp_config, timeout, on_tools_changed=on_tools_changed)
 
 
 def _oauth_auth_from_authentication_config(
@@ -262,12 +249,10 @@ class _ToolListChangedHandler(MessageHandler):
         self,
         client: MCPClient,
         on_tools_changed: ToolsChangedCallback | None = None,
-        on_tools_reconciled: ToolsReconciledCallback | None = None,
     ):
         super().__init__()
         self._client = client
         self._on_tools_changed = on_tools_changed
-        self._on_tools_reconciled = on_tools_reconciled
         self._refresh_lock = asyncio.Lock()
         self._refresh_tasks: set[asyncio.Task[None]] = set()
 
@@ -293,7 +278,7 @@ class _ToolListChangedHandler(MessageHandler):
                 await _refresh_tools(
                     client,
                     self._on_tools_changed,
-                    self._on_tools_reconciled,
+                    client._tools_reconciled_callback,
                 )
         except Exception:
             logger.warning(
@@ -345,10 +330,10 @@ def create_mcp_tools(
     handler = _ToolListChangedHandler(
         client=None,  # type: ignore[arg-type]
         on_tools_changed=on_tools_changed,
-        on_tools_reconciled=on_tools_reconciled,
     )
     client = MCPClient(config, log_handler=log_handler, message_handler=handler)
     handler._client = client
+    client.set_tools_reconciled_callback(on_tools_reconciled)
 
     try:
         client.call_async_from_sync(

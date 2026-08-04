@@ -3,12 +3,22 @@
 from pathlib import Path
 from typing import Any, cast
 
+import mcp.types as mcp_types
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config
+from openhands.sdk.mcp.tool import MCPToolDefinition
+
+
+class EmptyMCPClient:
+    def __init__(self) -> None:
+        self.tools: list[MCPToolDefinition] = []
+
+    def set_tools_reconciled_callback(self, callback):  # noqa: ANN001
+        self.on_tools_reconciled = callback
 
 
 class RecordingMCPToolProvider:
@@ -23,10 +33,9 @@ class RecordingMCPToolProvider:
         timeout: float = 30.0,
         *,
         on_tools_changed: Any = None,
-        on_tools_reconciled: Any = None,
     ) -> MCPClient:
         self.calls.append(mcp_config)
-        return cast(MCPClient, type("EmptyMCPClient", (), {"tools": []})())
+        return cast(MCPClient, EmptyMCPClient())
 
 
 def test_disabling_every_server_skips_the_mcp_connection(tmp_path: Path) -> None:
@@ -47,4 +56,62 @@ def test_disabling_every_server_skips_the_mcp_connection(tmp_path: Path) -> None
     conversation._ensure_agent_ready()
 
     assert provider.calls == []
+    conversation.close()
+
+
+def test_reconciliation_targets_replaced_agent(tmp_path: Path) -> None:
+    class CallbackMCPClient(EmptyMCPClient):
+        def sync_close(self) -> None:
+            pass
+
+    class LegacyMCPToolProvider:
+        def __init__(self, client: CallbackMCPClient) -> None:
+            self.client = client
+
+        def create_tools(
+            self,
+            mcp_config: dict[str, MCPServer],
+            timeout: float = 30.0,
+            *,
+            on_tools_changed: Any = None,
+        ) -> MCPClient:
+            return cast(MCPClient, self.client)
+
+    client = CallbackMCPClient()
+    initial = MCPToolDefinition.create(
+        mcp_tool=mcp_types.Tool(
+            name="initial",
+            description="initial",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        mcp_client=cast(MCPClient, client),
+    )[0]
+    client.tools = [initial]
+    conversation = LocalConversation(
+        agent=Agent(
+            llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+            mcp_config=coerce_mcp_config({"fake": {"command": "true"}}),
+        ),
+        workspace=str(tmp_path),
+        visualizer=None,
+        mcp_tool_provider=LegacyMCPToolProvider(client),
+    )
+    conversation._ensure_agent_ready()
+    old_agent = conversation.agent
+    conversation.agent = old_agent.model_copy()
+    replacement = MCPToolDefinition.create(
+        mcp_tool=mcp_types.Tool(
+            name="replacement",
+            description="replacement",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        mcp_client=cast(MCPClient, client),
+    )[0]
+
+    client.on_tools_reconciled(cast(MCPClient, client), [replacement])
+
+    assert set(conversation.agent.tools_map) == {"replacement"}
+    assert set(old_agent.tools_map) == {"initial"}
     conversation.close()

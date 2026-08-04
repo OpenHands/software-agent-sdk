@@ -26,7 +26,6 @@ from openhands.sdk.mcp.config import (
 )
 from openhands.sdk.mcp.utils import (
     ToolsChangedCallback,
-    ToolsReconciledCallback,
     create_mcp_tools,
 )
 
@@ -338,14 +337,12 @@ class SettingsBackedMCPToolProvider:
         timeout: float = 30.0,
         *,
         on_tools_changed: ToolsChangedCallback | None = None,
-        on_tools_reconciled: ToolsReconciledCallback | None = None,
     ) -> MCPClient:
         return create_mcp_tools(
             mcp_config,
             timeout,
             mcp_oauth_token_storage=MCPSettingsOAuthTokenStore(),
             on_tools_changed=on_tools_changed,
-            on_tools_reconciled=on_tools_reconciled,
         )
 
 

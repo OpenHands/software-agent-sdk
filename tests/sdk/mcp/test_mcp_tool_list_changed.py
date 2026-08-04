@@ -86,6 +86,7 @@ class _FakeClient:
         self._server_tools = list(tools)
         self._tools: list[MCPToolDefinition] = []
         self._closed = False
+        self._tools_reconciled_callback = None
 
     async def list_tools(self) -> list[mcp_types.Tool]:
         return list(self._server_tools)
@@ -103,6 +104,7 @@ class _ConcreteAgent(AgentBase):
         # Skip pydantic validation; set the attributes the helpers read.
         object.__setattr__(self, "_initialized", _initialized)
         object.__setattr__(self, "_tools", _tools)
+        object.__setattr__(self, "_tools_lock", threading.RLock())
         object.__setattr__(self, "filter_tools_regex", None)
 
     def step(self, conversation, on_event, on_token=None):  # noqa: ARG002, ANN001
@@ -480,3 +482,91 @@ def test_on_mcp_tools_reconciled_does_not_remove_other_client_tools():
 
     assert set(agent.tools_map) == {"replacement", "second"}
     assert agent.tools_map["second"] is second_tool
+
+
+def test_on_mcp_tools_reconciled_filters_before_conflict_check():
+    first_client = _FakeClient([])
+    second_client = _FakeClient([])
+    blocked = MCPToolDefinition.create(
+        mcp_tool=_make_mcp_tool("blocked"),
+        mcp_client=cast(MCPClient, first_client),
+    )[0]
+    filtered_conflict = MCPToolDefinition.create(
+        mcp_tool=_make_mcp_tool("blocked"),
+        mcp_client=cast(MCPClient, second_client),
+    )[0]
+    allowed = MCPToolDefinition.create(
+        mcp_tool=_make_mcp_tool("allowed"),
+        mcp_client=cast(MCPClient, second_client),
+    )[0]
+    agent = _ConcreteAgent(_initialized=True, _tools={"blocked": blocked})
+    object.__setattr__(agent, "filter_tools_regex", r"^allowed$")
+
+    agent._on_mcp_tools_reconciled(
+        cast(MCPClient, second_client),
+        [filtered_conflict, allowed],
+    )
+
+    assert set(agent.tools_map) == {"blocked", "allowed"}
+
+
+def test_on_mcp_tools_reconciled_serializes_client_updates():
+    first_snapshot = threading.Event()
+    second_snapshot = threading.Event()
+
+    class CoordinatedDict(dict[str, MCPToolDefinition]):
+        def __init__(self, values: dict[str, MCPToolDefinition]):
+            super().__init__(values)
+            self.local = threading.local()
+
+        def items(self):  # type: ignore[override]  # noqa: ANN201
+            snapshot = list(super().items())
+            count = getattr(self.local, "count", 0) + 1
+            self.local.count = count
+            if count == 2:
+                if first_snapshot.is_set():
+                    second_snapshot.set()
+                else:
+                    first_snapshot.set()
+                    second_snapshot.wait(0.2)
+            return snapshot
+
+    first_client = _FakeClient([])
+    second_client = _FakeClient([])
+    first_old = MCPToolDefinition.create(
+        mcp_tool=_make_mcp_tool("first_old"),
+        mcp_client=cast(MCPClient, first_client),
+    )[0]
+    second_old = MCPToolDefinition.create(
+        mcp_tool=_make_mcp_tool("second_old"),
+        mcp_client=cast(MCPClient, second_client),
+    )[0]
+    first_new = MCPToolDefinition.create(
+        mcp_tool=_make_mcp_tool("first_new"),
+        mcp_client=cast(MCPClient, first_client),
+    )[0]
+    second_new = MCPToolDefinition.create(
+        mcp_tool=_make_mcp_tool("second_new"),
+        mcp_client=cast(MCPClient, second_client),
+    )[0]
+    agent = _ConcreteAgent(
+        _initialized=True,
+        _tools=CoordinatedDict({"first_old": first_old, "second_old": second_old}),
+    )
+    threads = [
+        threading.Thread(
+            target=agent._on_mcp_tools_reconciled,
+            args=(cast(MCPClient, first_client), [first_new]),
+        ),
+        threading.Thread(
+            target=agent._on_mcp_tools_reconciled,
+            args=(cast(MCPClient, second_client), [second_new]),
+        ),
+    ]
+
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert set(agent.tools_map) == {"first_new", "second_new"}

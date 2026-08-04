@@ -32,6 +32,9 @@ class EmptyMCPClient:
     def __init__(self):
         self.tools = []
 
+    def set_tools_reconciled_callback(self, callback):  # noqa: ANN001
+        self.on_tools_reconciled = callback
+
 
 class RecordingMCPToolProvider:
     def __init__(
@@ -50,7 +53,6 @@ class RecordingMCPToolProvider:
         timeout: float = 30.0,
         *,
         on_tools_changed: Any = None,
-        on_tools_reconciled: Any = None,
     ) -> MCPClient:
         if self.state_locked is None:
             self.created.append(mcp_config)
@@ -796,6 +798,9 @@ class TestLocalConversationPlugins:
             def __init__(self):
                 self.tools = [runtime_tool]
 
+            def set_tools_reconciled_callback(self, callback):  # noqa: ANN001
+                self.on_tools_reconciled = callback
+
         marketplace_dir = create_test_marketplace(
             tmp_path / "marketplace",
             plugins=[
@@ -818,13 +823,14 @@ class TestLocalConversationPlugins:
                 ]
             ),
         )
+        runtime_client = RuntimeMCPClient()
         conversation = LocalConversation(
             agent=agent,
             workspace=workspace,
             visualizer=None,
             mcp_tool_provider=RecordingMCPToolProvider(
                 mcp_tools_created,
-                RuntimeMCPClient(),
+                runtime_client,
                 state_locked=lambda: conversation.state.locked(),
             ),
         )
@@ -836,6 +842,7 @@ class TestLocalConversationPlugins:
         for name, tool in existing_tools.items():
             assert conversation.agent.tools_map[name] is tool
         assert conversation.agent.tools_map[runtime_tool.name] is runtime_tool
+        assert callable(runtime_client.on_tools_reconciled)
         assert "runtime-server" in conversation.agent.mcp_config
         assert len(mcp_tools_created) == 1
         created_config, state_locked = mcp_tools_created[0]
