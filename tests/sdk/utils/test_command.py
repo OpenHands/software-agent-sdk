@@ -10,8 +10,13 @@ def test_sanitized_env_returns_copy():
     """Returns a dict copy, not the original."""
     env = {"FOO": "bar"}
     result = sanitized_env(env)
-    assert result == {"FOO": "bar"}
+    assert result == {"FOO": "bar", "AI_AGENT": "openhands"}
     assert result is not env
+
+
+def test_sanitized_env_preserves_explicit_ai_agent():
+    result = sanitized_env({"AI_AGENT": "wrapper"})
+    assert result["AI_AGENT"] == "wrapper"
 
 
 def test_sanitized_env_defaults_to_os_environ(monkeypatch):
