@@ -11,6 +11,7 @@ from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config
 from openhands.sdk.mcp.tool import MCPToolDefinition
+from openhands.sdk.mcp.utils import MCPToolProvider
 
 
 class EmptyMCPClient:
@@ -101,4 +102,41 @@ def test_reconciliation_targets_replaced_agent(tmp_path: Path) -> None:
 
     assert set(conversation.agent.tools_map) == {"replacement"}
     assert set(old_agent.tools_map) == {"initial"}
+    conversation.close()
+
+
+class LegacyMCPToolProvider:
+    """A custom provider written against the pre-reconciliation protocol."""
+
+    def create_tools(
+        self,
+        mcp_config: dict[str, MCPServer],
+        timeout: float = 30.0,
+        *,
+        on_tools_changed: Any = None,
+    ) -> MCPClient:
+        return cast(MCPClient, EmptyMCPClient())
+
+
+def test_legacy_provider_without_on_tools_reconciled_still_works(
+    tmp_path: Path,
+) -> None:
+    """A custom MCPToolProvider that predates on_tools_reconciled must not
+    break; it just won't receive full-snapshot reconciliation."""
+    conversation = LocalConversation(
+        agent=Agent(
+            llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+            mcp_config=coerce_mcp_config({"fake": {"command": "true"}}),
+        ),
+        workspace=str(tmp_path),
+        visualizer=None,
+        # Deliberately incompatible with the current MCPToolProvider
+        # protocol shape; that's the scenario under test.
+        mcp_tool_provider=cast(MCPToolProvider, LegacyMCPToolProvider()),
+    )
+
+    conversation._ensure_agent_ready()
+
     conversation.close()

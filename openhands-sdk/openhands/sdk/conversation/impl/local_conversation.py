@@ -72,6 +72,7 @@ from openhands.sdk.mcp.utils import (
     MCPToolProvider,
     ToolsChangedCallback,
     ToolsReconciledCallback,
+    provider_supports_on_tools_reconciled,
 )
 from openhands.sdk.observability.laminar import OPERATION_METADATA_KEY, observe
 from openhands.sdk.plugin import (
@@ -1288,11 +1289,17 @@ class LocalConversation(BaseConversation):
         mcp_config = enabled_mcp_servers(mcp_config)
         if not mcp_config:
             return []
+        create_kwargs: dict[str, Any] = {"on_tools_changed": on_tools_changed}
+        if provider_supports_on_tools_reconciled(self._mcp_tool_provider):
+            create_kwargs["on_tools_reconciled"] = on_tools_reconciled
+        elif on_tools_reconciled is not None:
+            logger.debug(
+                "%s does not accept on_tools_reconciled; dynamic MCP tool "
+                "removals/updates won't reach the agent for this provider",
+                type(self._mcp_tool_provider).__name__,
+            )
         client = self._mcp_tool_provider.create_tools(
-            mcp_config,
-            _RUNTIME_MCP_TIMEOUT_SECS,
-            on_tools_changed=on_tools_changed,
-            on_tools_reconciled=on_tools_reconciled,
+            mcp_config, _RUNTIME_MCP_TIMEOUT_SECS, **create_kwargs
         )
         return list(client.tools)
 
