@@ -19,6 +19,11 @@ def test_sanitized_env_preserves_explicit_ai_agent():
     assert result["AI_AGENT"] == "wrapper"
 
 
+def test_sanitized_env_replaces_blank_ai_agent():
+    result = sanitized_env({"AI_AGENT": "  "})
+    assert result["AI_AGENT"] == "openhands"
+
+
 def test_sanitized_env_defaults_to_os_environ(monkeypatch):
     """When env is None, returns a dict based on os.environ."""
     monkeypatch.setenv("TEST_SANITIZED_ENV_VAR", "test_value")
