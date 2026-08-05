@@ -794,6 +794,7 @@ class TestLocalConversationPlugins:
         class RuntimeMCPClient:
             def __init__(self):
                 self.tools = [runtime_tool]
+                self._tools_reconciled_callback: Any = None
 
         marketplace_dir = create_test_marketplace(
             tmp_path / "marketplace",
@@ -817,13 +818,14 @@ class TestLocalConversationPlugins:
                 ]
             ),
         )
+        runtime_client = RuntimeMCPClient()
         conversation = LocalConversation(
             agent=agent,
             workspace=workspace,
             visualizer=None,
             mcp_tool_provider=RecordingMCPToolProvider(
                 mcp_tools_created,
-                RuntimeMCPClient(),
+                runtime_client,
                 state_locked=lambda: conversation.state.locked(),
             ),
         )
@@ -835,6 +837,7 @@ class TestLocalConversationPlugins:
         for name, tool in existing_tools.items():
             assert conversation.agent.tools_map[name] is tool
         assert conversation.agent.tools_map[runtime_tool.name] is runtime_tool
+        assert callable(runtime_client._tools_reconciled_callback)
         assert "runtime-server" in conversation.agent.mcp_config
         assert len(mcp_tools_created) == 1
         created_config, state_locked = mcp_tools_created[0]
