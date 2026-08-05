@@ -6,8 +6,9 @@ memory address, and dead weight through every downstream stage that scans it.
 """
 
 import json
-import os
-from typing import Any
+import threading
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any, Self
 from unittest.mock import patch
 
 import pytest
@@ -18,47 +19,93 @@ from litellm.types.utils import (
     Message as LiteLLMMessage,
     ModelResponse,
 )
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.llm import LLM, Message, TextContent
-from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.terminal import TerminalTool
+from openhands.sdk.tool import Action, Observation, Tool, ToolExecutor, register_tool
+from openhands.sdk.tool.tool import ToolDefinition
 
 
-register_tool("TerminalTool", TerminalTool)
+if TYPE_CHECKING:
+    from openhands.sdk.conversation.state import ConversationState
+
+
+class _SpanInputAction(Action):
+    value: str = ""
+
+
+class _SpanInputObservation(Observation):
+    result: str = ""
+
+
+class _SpanInputExecutor(ToolExecutor[_SpanInputAction, _SpanInputObservation]):
+    def __call__(
+        self, action: _SpanInputAction, conversation=None
+    ) -> _SpanInputObservation:
+        return _SpanInputObservation(result=action.value)
+
+
+class _SpanInputTool(ToolDefinition[_SpanInputAction, _SpanInputObservation]):
+    name = "span_input_echo_tool"
+
+    @classmethod
+    def create(cls, conv_state: "ConversationState | None" = None) -> Sequence[Self]:
+        return [
+            cls(
+                description="Echoes its input",
+                action_type=_SpanInputAction,
+                observation_type=_SpanInputObservation,
+                executor=_SpanInputExecutor(),
+            )
+        ]
+
+
+register_tool("SpanInputEchoTool", _SpanInputTool)
 
 
 @pytest.fixture
 def exported():
-    os.environ["LMNR_PROJECT_API_KEY"] = "test-key"
-    from lmnr import Instruments, Laminar
-    from lmnr.opentelemetry_lib.tracing import TracerWrapper
-    from lmnr.opentelemetry_lib.tracing.processor import LaminarSpanProcessor
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
-        InMemorySpanExporter,
-    )
+    """Real Laminar tracer writing to an in-memory exporter, torn down after.
 
-    if not Laminar.is_initialized():
-        Laminar.initialize(
-            project_api_key="test-key",
-            base_url="http://localhost",
-            http_port=1,
-            grpc_port=1,
-            disable_batch=True,
-            instruments={Instruments.LITELLM},
-        )
+    The exporter is installed *before* ``initialize`` so no OTLP endpoint is ever
+    created; an unreachable one leaves every later test in the process retrying
+    exports with backoff.
+    """
+    from lmnr import Laminar
+    from lmnr.opentelemetry_lib.opentelemetry.instrumentation.threading import (
+        ThreadingInstrumentor,
+    )
+    from lmnr.opentelemetry_lib.tracing import TracerWrapper
+
+    if TracerWrapper.verify_initialized():
+        pytest.skip("lmnr already initialized by another test in this process")
+
     exporter = InMemorySpanExporter()
-    processor = TracerWrapper.instance._span_processor
-    assert isinstance(processor, LaminarSpanProcessor)
-    previous = processor.instance
-    processor.instance = SimpleSpanProcessor(exporter)
+    original_thread_init = threading.Thread.__init__
+    TracerWrapper(
+        exporter=exporter,
+        disable_batch=True,
+        instruments=set(),
+        set_global_tracer_provider=False,
+    )
+    Laminar.initialize(
+        project_api_key="test-key",
+        disable_batch=True,
+        instruments=set(),
+        set_global_tracer_provider=False,
+    )
     try:
-        yield lambda: exporter.get_finished_spans()
+        yield exporter.get_finished_spans
     finally:
-        processor.instance = previous
+        Laminar.shutdown()
+        ThreadingInstrumentor().uninstrument()
+        threading.Thread.__init__ = original_thread_init  # type: ignore[method-assign]
+        TracerWrapper._original_thread_init = None
+        if hasattr(TracerWrapper, "instance"):
+            del TracerWrapper.instance
 
 
 def _responses() -> Any:
@@ -75,8 +122,8 @@ def _responses() -> Any:
                         id="call_x",
                         type="function",
                         function=Function(
-                            name="execute_bash",
-                            arguments=json.dumps({"command": "echo hi"}),
+                            name="span_input_echo_tool",
+                            arguments=json.dumps({"value": "hi"}),
                         ),
                     )
                 ],
@@ -96,12 +143,11 @@ def _responses() -> Any:
     return fake
 
 
-def test_tool_span_input_is_the_action_only(exported, tmp_path):
+def test_tool_span_input_is_the_action_only(exported):
     llm = LLM(usage_id="probe", model="gpt-4o", api_key=SecretStr("k"))
     conversation = Conversation(
-        agent=Agent(llm=llm, tools=[Tool(name="TerminalTool")]),
+        agent=Agent(llm=llm, tools=[Tool(name="SpanInputEchoTool")]),
         callbacks=[],
-        workspace=str(tmp_path),
     )
     with patch("openhands.sdk.llm.llm.litellm_completion", side_effect=_responses()):
         conversation.send_message(
@@ -117,4 +163,4 @@ def test_tool_span_input_is_the_action_only(exported, tmp_path):
     payload = json.loads((tool_spans[0].attributes or {})["lmnr.span.input"])
 
     assert "conversation" not in payload
-    assert payload["action"]["command"] == "echo hi"
+    assert payload["action"]["value"] == "hi"
