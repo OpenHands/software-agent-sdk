@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from acp.exceptions import RequestError as ACPRequestError
-from acp.schema import NewSessionResponse, PromptResponse
+from acp.schema import ConfigOptionUpdate, NewSessionResponse, PromptResponse
 from pydantic import SecretStr
 
 import openhands.sdk.agent.acp_agent as acp_agent_module
@@ -37,6 +37,7 @@ from openhands.sdk.agent.acp_agent import (
     _extract_session_efforts,
     _extract_session_models,
     _extract_token_usage,
+    _flatten_select_options,
     _image_url_to_acp_block,
     _mask_json_value,
     _maybe_set_session_model,
@@ -45,6 +46,7 @@ from openhands.sdk.agent.acp_agent import (
     _model_config_options,
     _OpenHandsACPBridge,
     _reapply_session_model_on_resume,
+    _reconcile_current_model_id,
     _select_auth_method,
     _serialize_tool_content,
     _stringify_acp_error_data,
@@ -1111,6 +1113,135 @@ class TestOpenHandsACPClient:
     async def test_ext_notification_is_noop(self):
         client = _OpenHandsACPBridge()
         await client.ext_notification("test", {})  # Should not raise
+
+
+class TestConfigOptionUpdateBridge:
+    """``_OpenHandsACPBridge.session_update`` relays ``ConfigOptionUpdate``
+    notifications (the agent MUST resend the full ``configOptions`` state
+    after ``set_config_option``, and MAY push updates spontaneously — e.g. a
+    model fallback on rate limit) to ``on_config_options_update``.
+
+    Bound once per conversation by
+    ``ACPAgent._bind_config_option_update_callback`` (see
+    ``TestConfigOptionUpdateCallbackBinding`` below) — unlike ``on_event``
+    it is not rewired per-turn, since a config update can arrive with no
+    turn in flight.
+    """
+
+    def _update(self, config_options: list[Any]) -> Any:
+        # ConfigOptionUpdate.config_options validates its entries against the
+        # real SessionConfigOptionSelect/Boolean union, which the
+        # SimpleNamespace stand-ins used elsewhere in this file don't satisfy
+        # — mirrors the MagicMock(spec=UsageUpdate) pattern used for the
+        # other notification types in TestACPAgentTelemetry.
+        update = MagicMock(spec=ConfigOptionUpdate)
+        update.config_options = config_options
+        return update
+
+    @pytest.mark.asyncio
+    async def test_dispatches_config_options_to_callback(self):
+        client = _OpenHandsACPBridge()
+        received: list[Any] = []
+        client.on_config_options_update = received.append
+        options = [
+            SimpleNamespace(id="model", type="select", current_value="x", options=[])
+        ]
+        await client.session_update("sess-1", self._update(options))
+        assert len(received) == 1
+        assert received[0][0].id == "model"
+
+    @pytest.mark.asyncio
+    async def test_no_callback_registered_is_noop(self):
+        client = _OpenHandsACPBridge()
+        await client.session_update("sess-1", self._update([]))  # must not raise
+
+    @pytest.mark.asyncio
+    async def test_callback_error_is_swallowed(self):
+        client = _OpenHandsACPBridge()
+
+        def boom(_config_options: list[Any]) -> None:
+            raise RuntimeError("boom")
+
+        client.on_config_options_update = boom
+        await client.session_update("sess-1", self._update([]))  # must not raise
+
+    @pytest.mark.asyncio
+    async def test_fork_session_update_does_not_reach_callback(self):
+        # A config-option update on the ask_agent() fork session must not
+        # leak into the main session's tracked model/effort state.
+        client = _OpenHandsACPBridge()
+        client._fork_session_id = "fork-1"
+        received: list[Any] = []
+        client.on_config_options_update = received.append
+        await client.session_update(
+            "fork-1",
+            self._update(
+                [
+                    SimpleNamespace(
+                        id="model", type="select", current_value="x", options=[]
+                    )
+                ]
+            ),
+        )
+        assert received == []
+
+    @pytest.mark.asyncio
+    async def test_signals_activity(self):
+        client = _OpenHandsACPBridge()
+        signals: list[None] = []
+        client.on_activity = lambda: signals.append(None)
+        await client.session_update("sess-1", self._update([]))
+        assert signals == [None]
+
+
+class TestConfigOptionUpdateCallbackBinding:
+    """``ACPAgent._bind_config_option_update_callback`` wires the bridge's
+    live sink to ``ACPAgent._on_config_options_update`` via a weakref
+    indirection, mirroring ``_bind_file_credential_masking``.
+    """
+
+    def test_bind_wires_agent_state_update(self):
+        agent = _make_agent()
+        agent._agent_name = "codex-acp"
+        agent._client = _OpenHandsACPBridge()
+        agent._bind_config_option_update_callback()
+
+        config_options = [
+            SimpleNamespace(
+                id="model",
+                type="select",
+                current_value="gpt-5.5",
+                options=[
+                    SimpleNamespace(value="gpt-5.5", name="GPT-5.5", description=None)
+                ],
+            )
+        ]
+        agent._client.on_config_options_update(config_options)
+
+        assert agent._current_model_id == "gpt-5.5"
+        assert agent._available_models is not None
+        assert [m.model_id for m in agent._available_models] == ["gpt-5.5"]
+
+    def test_bind_without_client_is_noop(self):
+        agent = _make_agent()
+        agent._client = None
+        agent._bind_config_option_update_callback()  # must not raise
+
+    def test_bind_does_not_retain_agent(self):
+        # Same weak-reference contract as _bind_file_credential_masking's
+        # before_mask: once the agent is gone, the bridge's stored callback
+        # becomes a no-op rather than keeping the agent alive.
+        agent = _make_agent()
+        agent._client = _OpenHandsACPBridge()
+        agent._bind_config_option_update_callback()
+        callback = agent._client.on_config_options_update
+        agent_ref = weakref.ref(agent)
+
+        del agent
+        gc.collect()
+
+        assert agent_ref() is None
+        assert callback([]) is None  # no-op once the agent is gone
 
 
 # ---------------------------------------------------------------------------
@@ -7942,6 +8073,79 @@ class TestACPAgentAvailableEffortsProperty:
         assert agent.available_efforts == ["low", "high"]
 
 
+class TestFlattenSelectOptions:
+    """``_flatten_select_options`` normalizes a ``configOptions`` select's
+    ``options`` into a flat list of leaf options.
+
+    The pinned acp lib (0.10.1) types ``SessionConfigSelect.options`` as
+    ``List[SessionConfigSelectOption] | List[SessionConfigSelectGroup]``: an
+    agent may group its selectable values under a labelled heading instead
+    of listing them flat. A flat entry has no nested ``options`` of its own
+    and passes through unchanged; a group is replaced by its nested leaf
+    options, in order.
+    """
+
+    def test_flat_list_is_unchanged(self):
+        opts = [SimpleNamespace(value="a"), SimpleNamespace(value="b")]
+        assert _flatten_select_options(opts) == opts
+
+    def test_groups_flatten_in_order(self):
+        g1 = SimpleNamespace(
+            group="anthropic",
+            name="Anthropic",
+            options=[SimpleNamespace(value="sonnet"), SimpleNamespace(value="opus")],
+        )
+        g2 = SimpleNamespace(
+            group="bedrock",
+            name="Bedrock",
+            options=[SimpleNamespace(value="sonnet-bedrock")],
+        )
+        flattened = _flatten_select_options([g1, g2])
+        assert [o.value for o in flattened] == ["sonnet", "opus", "sonnet-bedrock"]
+
+    def test_mixed_flat_and_grouped_entries(self):
+        # Not how the wire schema shapes ``options`` (it's one arm of a
+        # union, flat XOR grouped) but the helper decides per-entry, by
+        # shape, so a mixed list still flattens correctly.
+        flat = SimpleNamespace(value="solo")
+        group = SimpleNamespace(
+            group="g", name="G", options=[SimpleNamespace(value="nested")]
+        )
+        assert [o.value for o in _flatten_select_options([flat, group])] == [
+            "solo",
+            "nested",
+        ]
+
+    def test_empty_group_contributes_nothing(self):
+        empty_group = SimpleNamespace(group="g", name="G", options=[])
+        assert _flatten_select_options([empty_group]) == []
+
+    def test_all_empty_groups_yield_empty_list(self):
+        g1 = SimpleNamespace(group="g1", name="G1", options=[])
+        g2 = SimpleNamespace(group="g2", name="G2", options=[])
+        assert _flatten_select_options([g1, g2]) == []
+
+    def test_empty_input_yields_empty_list(self):
+        assert _flatten_select_options([]) == []
+
+    def test_real_acp_types(self):
+        # Sanity check against the actual pinned lib classes, not just
+        # duck-typed SimpleNamespace stand-ins used elsewhere in this file.
+        from acp.schema import SessionConfigSelectGroup, SessionConfigSelectOption
+
+        group = SessionConfigSelectGroup(
+            group="anthropic",
+            name="Anthropic",
+            options=[
+                SessionConfigSelectOption(value="sonnet", name="Sonnet"),
+                SessionConfigSelectOption(value="opus", name="Opus"),
+            ],
+        )
+        flat = SessionConfigSelectOption(value="haiku", name="Haiku")
+        flattened = _flatten_select_options([flat, group])
+        assert [o.value for o in flattened] == ["haiku", "sonnet", "opus"]
+
+
 class TestExtractSessionModels:
     """``_extract_session_models`` reads the model the ACP server reports.
 
@@ -8197,6 +8401,73 @@ class TestConfigOptionModelMechanism:
     def test_none_response_is_not_config_option(self):
         assert _extract_session_models(None)[2] is False
 
+    def test_extracts_models_from_grouped_select(self):
+        # A provider may group its model options under labelled headings
+        # (e.g. by backend/region) rather than a flat list — the pinned acp
+        # lib types this arm of ``options`` as List[SessionConfigSelectGroup].
+        response = self._response(
+            config_options=[
+                self._select(
+                    current_value="sonnet",
+                    options=[
+                        SimpleNamespace(
+                            group="anthropic",
+                            name="Anthropic",
+                            options=[
+                                self._opt("sonnet", "Sonnet"),
+                                self._opt("opus", "Opus"),
+                            ],
+                        ),
+                        SimpleNamespace(
+                            group="bedrock",
+                            name="Bedrock",
+                            options=[self._opt("sonnet-bedrock", "Sonnet (Bedrock)")],
+                        ),
+                    ],
+                )
+            ],
+        )
+        cur, avail, via = _extract_session_models(response)
+        assert cur == "sonnet"
+        assert via is True
+        assert avail is not None
+        assert [m.model_id for m in avail] == ["sonnet", "opus", "sonnet-bedrock"]
+
+    def test_mixed_flat_and_grouped_options(self):
+        response = self._response(
+            config_options=[
+                self._select(
+                    current_value="haiku",
+                    options=[
+                        self._opt("haiku", "Haiku"),
+                        SimpleNamespace(
+                            group="anthropic",
+                            name="Anthropic",
+                            options=[self._opt("sonnet", "Sonnet")],
+                        ),
+                    ],
+                )
+            ],
+        )
+        _cur, avail, _via = _extract_session_models(response)
+        assert avail is not None
+        assert [m.model_id for m in avail] == ["haiku", "sonnet"]
+
+    def test_empty_groups_yield_no_usable_models(self):
+        response = self._response(
+            config_options=[
+                self._select(
+                    current_value="",
+                    options=[
+                        SimpleNamespace(group="g1", name="G1", options=[]),
+                        SimpleNamespace(group="g2", name="G2", options=[]),
+                    ],
+                )
+            ],
+        )
+        _cur, avail, _via = _extract_session_models(response)
+        assert avail == []
+
     def test_default_via_config_option_used_when_no_block_present(self):
         # On resume a load_session that omits both the models capability and the
         # model config-option must not blindly default to set_session_model: the
@@ -8352,6 +8623,70 @@ class TestExtractSessionEfforts:
         )
         assert _extract_session_efforts(response) == (None, None)
 
+    def test_extracts_efforts_from_grouped_select(self):
+        response = self._response(
+            config_options=[
+                self._select(
+                    id="effort",
+                    current_value="high",
+                    options=[
+                        SimpleNamespace(
+                            group="thinking",
+                            name="Thinking",
+                            options=[
+                                self._opt("low"),
+                                self._opt("medium"),
+                                self._opt("high"),
+                            ],
+                        ),
+                        SimpleNamespace(
+                            group="extended",
+                            name="Extended",
+                            options=[self._opt("max")],
+                        ),
+                    ],
+                ),
+            ]
+        )
+        cur, avail = _extract_session_efforts(response)
+        assert cur == "high"
+        assert avail == ["low", "medium", "high", "max"]
+
+    def test_mixed_flat_and_grouped_effort_options(self):
+        response = self._response(
+            config_options=[
+                self._select(
+                    id="reasoning_effort",
+                    current_value="low",
+                    options=[
+                        self._opt("low"),
+                        SimpleNamespace(
+                            group="extended",
+                            name="Extended",
+                            options=[self._opt("xhigh")],
+                        ),
+                    ],
+                ),
+            ]
+        )
+        cur, avail = _extract_session_efforts(response)
+        assert cur == "low"
+        assert avail == ["low", "xhigh"]
+
+    def test_empty_effort_groups_yield_empty_list(self):
+        response = self._response(
+            config_options=[
+                self._select(
+                    id="reasoning_effort",
+                    current_value="",
+                    options=[SimpleNamespace(group="g", name="G", options=[])],
+                ),
+            ]
+        )
+        cur, avail = _extract_session_efforts(response)
+        assert cur is None
+        assert avail == []
+
 
 class TestModelConfigOptionEffort:
     """``_model_config_option_effort`` mirrors the effort split
@@ -8400,6 +8735,292 @@ class TestModelConfigOptionEffort:
             )
             is None
         )
+
+
+class TestReconcileCurrentModelId:
+    """``_reconcile_current_model_id`` reconciles a tracked (possibly
+    composite) ``_current_model_id`` against a fresh server report of
+    ``(model, effort)`` — e.g. from a live ``config_option_update``
+    notification — without clobbering a composite id that's still accurate.
+    """
+
+    def test_composite_preserved_when_split_matches_report(self):
+        # Tracked "sonnet/high"; server reports model="sonnet" + effort="high"
+        # (an unchanged resend) -> the tracked composite survives verbatim.
+        result = _reconcile_current_model_id(
+            "sonnet/high",
+            "sonnet",
+            "high",
+            agent_name="claude-agent-acp",
+            model_override_applied=True,
+        )
+        assert result == "sonnet/high"
+
+    def test_fallback_to_different_model_adopts_server_state(self):
+        # Genuine server-side change (e.g. a rate-limit fallback): the base
+        # model differs from what's tracked -> adopt the server's report,
+        # still recomposed as a composite since an effort is present.
+        result = _reconcile_current_model_id(
+            "sonnet/high",
+            "opus",
+            "high",
+            agent_name="claude-agent-acp",
+            model_override_applied=True,
+        )
+        assert result == "opus/high"
+
+    def test_effort_change_adopts_server_state(self):
+        result = _reconcile_current_model_id(
+            "sonnet/high",
+            "sonnet",
+            "medium",
+            agent_name="claude-agent-acp",
+            model_override_applied=True,
+        )
+        assert result == "sonnet/medium"
+
+    def test_codex_provider_same_gating(self):
+        result = _reconcile_current_model_id(
+            "gpt-5.5/high",
+            "gpt-5.5",
+            "high",
+            agent_name="codex-acp",
+            model_override_applied=True,
+        )
+        assert result == "gpt-5.5/high"
+
+    def test_no_effort_reported_adopts_bare_server_model(self):
+        # No effort option present in this update -> nothing to recompose;
+        # take the server's bare id as-is.
+        result = _reconcile_current_model_id(
+            "sonnet/high",
+            "sonnet",
+            None,
+            agent_name="claude-agent-acp",
+            model_override_applied=True,
+        )
+        assert result == "sonnet"
+
+    def test_override_not_applied_adopts_bare_server_model(self):
+        # The tracked id was never actually pushed to the server -> nothing
+        # trustworthy to reconcile against; adopt the server's bare report.
+        result = _reconcile_current_model_id(
+            "sonnet/high",
+            "sonnet",
+            "high",
+            agent_name="claude-agent-acp",
+            model_override_applied=False,
+        )
+        assert result == "sonnet"
+
+    def test_non_composite_provider_adopts_bare_server_model(self):
+        # gemini-cli doesn't split composite ids -> always bare.
+        result = _reconcile_current_model_id(
+            "gemini-2.5-pro/high",
+            "gemini-2.5-pro",
+            "high",
+            agent_name="gemini-cli",
+            model_override_applied=True,
+        )
+        assert result == "gemini-2.5-pro"
+
+    def test_no_tracked_model_id_builds_fresh_composite(self):
+        result = _reconcile_current_model_id(
+            None,
+            "sonnet",
+            "high",
+            agent_name="claude-agent-acp",
+            model_override_applied=True,
+        )
+        assert result == "sonnet/high"
+
+    def test_tracked_model_id_without_slash_adopts_server_composite(self):
+        # A previously-tracked bare id ("sonnet", no effort suffix) can't
+        # split into (base, effort) -> treated as a mismatch, so the server's
+        # composite is adopted.
+        result = _reconcile_current_model_id(
+            "sonnet",
+            "sonnet",
+            "high",
+            agent_name="claude-agent-acp",
+            model_override_applied=True,
+        )
+        assert result == "sonnet/high"
+
+    def test_unknown_provider_adopts_bare_server_model(self):
+        result = _reconcile_current_model_id(
+            "custom/high",
+            "custom",
+            "high",
+            agent_name="some-custom-acp",
+            model_override_applied=True,
+        )
+        assert result == "custom"
+
+    def test_reported_model_id_none_returns_none(self):
+        assert (
+            _reconcile_current_model_id(
+                "sonnet/high",
+                None,
+                "high",
+                agent_name="claude-agent-acp",
+                model_override_applied=True,
+            )
+            is None
+        )
+
+
+class TestOnConfigOptionsUpdate:
+    """``ACPAgent._on_config_options_update`` — applied when a live
+    ``config_option_update`` notification arrives on the bridge (see
+    ``TestConfigOptionUpdateBridge``), refreshing model/effort runtime state
+    without clobbering an override-applied composite id still in effect.
+    """
+
+    def _model_select(self, current_value, options):
+        return SimpleNamespace(
+            id="model", type="select", current_value=current_value, options=options
+        )
+
+    def _effort_select(self, id, current_value, options):
+        return SimpleNamespace(
+            id=id, type="select", current_value=current_value, options=options
+        )
+
+    def _opt(self, value, name=None):
+        return SimpleNamespace(value=value, name=name)
+
+    def test_updates_available_models_and_current_model_id(self):
+        agent = _make_agent()
+        agent._agent_name = "codex-acp"
+        config_options = [
+            self._model_select(
+                "gpt-5.5",
+                [self._opt("gpt-5.5", "GPT-5.5"), self._opt("gpt-5.4", "GPT-5.4")],
+            )
+        ]
+
+        agent._on_config_options_update(config_options)
+
+        assert agent._current_model_id == "gpt-5.5"
+        assert agent._available_models is not None
+        assert [m.model_id for m in agent._available_models] == [
+            "gpt-5.5",
+            "gpt-5.4",
+        ]
+
+    def test_updates_available_efforts_and_current_effort(self):
+        agent = _make_agent()
+        agent._agent_name = "codex-acp"
+        config_options = [
+            self._effort_select(
+                "reasoning_effort",
+                "high",
+                [self._opt("low"), self._opt("medium"), self._opt("high")],
+            )
+        ]
+
+        agent._on_config_options_update(config_options)
+
+        assert agent._current_effort == "high"
+        assert agent._available_efforts == ["low", "medium", "high"]
+
+    def test_composite_preserved_when_report_matches_tracked_split(self):
+        # Tracked composite "sonnet/high" must survive a resend that reports
+        # the base id + effort separately -- per protocol, not a real change.
+        agent = _make_agent()
+        agent._agent_name = "claude-agent-acp"
+        agent._model_via_config_option = True
+        agent._model_override_applied = True
+        agent._current_model_id = "sonnet/high"
+        config_options = [
+            self._model_select("sonnet", [self._opt("sonnet"), self._opt("opus")]),
+            self._effort_select(
+                "effort", "high", [self._opt("low"), self._opt("high")]
+            ),
+        ]
+
+        agent._on_config_options_update(config_options)
+
+        assert agent._current_model_id == "sonnet/high"
+        assert agent._current_effort == "high"
+
+    def test_genuine_fallback_adopts_new_model(self):
+        # A spontaneous update (e.g. a rate-limit fallback) reports a
+        # different base model -> a real change, so the tracked composite is
+        # rebuilt around the server's new state instead of being kept.
+        agent = _make_agent()
+        agent._agent_name = "claude-agent-acp"
+        agent._model_via_config_option = True
+        agent._model_override_applied = True
+        agent._current_model_id = "sonnet/high"
+        config_options = [
+            self._model_select("opus", [self._opt("sonnet"), self._opt("opus")]),
+            self._effort_select(
+                "effort", "high", [self._opt("low"), self._opt("high")]
+            ),
+        ]
+
+        agent._on_config_options_update(config_options)
+
+        assert agent._current_model_id == "opus/high"
+        assert agent._current_effort == "high"
+
+    def test_update_without_model_option_leaves_model_state_untouched(self):
+        agent = _make_agent()
+        agent._agent_name = "claude-agent-acp"
+        agent._current_model_id = "sonnet/high"
+        agent._available_models = [ACPModelInfo(model_id="sonnet", name="Sonnet")]
+        config_options = [
+            SimpleNamespace(
+                id="permission-mode", type="select", current_value="x", options=[]
+            ),
+        ]
+
+        agent._on_config_options_update(config_options)
+
+        assert agent._current_model_id == "sonnet/high"
+        assert agent._available_models == [
+            ACPModelInfo(model_id="sonnet", name="Sonnet")
+        ]
+
+    def test_update_without_effort_option_leaves_effort_state_untouched(self):
+        agent = _make_agent()
+        agent._agent_name = "codex-acp"
+        agent._current_effort = "high"
+        agent._available_efforts = ["low", "high"]
+        config_options = [self._model_select("gpt-5.5", [self._opt("gpt-5.5")])]
+
+        agent._on_config_options_update(config_options)
+
+        assert agent._current_effort == "high"
+        assert agent._available_efforts == ["low", "high"]
+
+    def test_grouped_model_options_flow_through(self):
+        # End-to-end through _on_config_options_update: grouped selects are
+        # flattened the same way init_state's extraction path handles them.
+        agent = _make_agent()
+        agent._agent_name = "claude-agent-acp"
+        config_options = [
+            self._model_select(
+                "sonnet",
+                [
+                    SimpleNamespace(
+                        group="anthropic",
+                        name="Anthropic",
+                        options=[
+                            self._opt("sonnet", "Sonnet"),
+                            self._opt("opus", "Opus"),
+                        ],
+                    ),
+                ],
+            )
+        ]
+
+        agent._on_config_options_update(config_options)
+
+        assert agent._available_models is not None
+        assert [m.model_id for m in agent._available_models] == ["sonnet", "opus"]
 
 
 # Real ``session/new`` wire payloads (by-alias) captured from the pinned CLIs.
