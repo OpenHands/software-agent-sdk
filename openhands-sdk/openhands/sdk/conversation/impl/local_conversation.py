@@ -224,6 +224,7 @@ class LocalConversation(BaseConversation):
         prompt_cache_key: str | None = None,
         file_store: FileStore | None = None,
         mcp_tool_provider: MCPToolProvider | None = None,
+        observability_delegate: bool = False,
         **_: object,
     ):
         """Initialize the conversation.
@@ -279,6 +280,8 @@ class LocalConversation(BaseConversation):
             prompt_cache_key: Override for the prompt-cache shard key. Defaults
                 to the conversation's own ID. Sub-conversations set this to
                 the parent's ID to share the same cache shard.
+            observability_delegate: Whether this conversation is a sub-agent
+                delegate. See ``BaseConversation._start_observability_span``.
             file_store: Optional FileStore to use for conversation state and EventLog
                 persistence. If provided, this takes precedence over persistence_dir
                 for state and EventLog storage.
@@ -473,6 +476,7 @@ class LocalConversation(BaseConversation):
             metadata=observability_metadata,
             tags=observability_tags,
             conversation_tags=tags,
+            delegate=observability_delegate,
         )
         self.delete_on_close = delete_on_close
 

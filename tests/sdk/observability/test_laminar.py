@@ -583,6 +583,79 @@ def test_root_span_sets_trace_metadata_and_tags():
         )
 
 
+def test_root_span_detached_severs_ambient_context_and_links_parent():
+    """detached=True must not just call ``start_span(name)``: it must pass a
+    context that severs whatever span is currently active, and record the
+    severed parent (trace_id, span_id, tool_call_id) so the two traces stay
+    correlatable (software-agent-sdk#4365)."""
+    from types import SimpleNamespace
+
+    from openhands.sdk.observability.laminar import RootSpan
+
+    fake_span = MagicMock()
+    parent_ctx = SimpleNamespace(
+        trace_id="11111111-1111-1111-1111-111111111111",
+        span_id="22222222-2222-2222-2222-222222222222",
+        metadata={"tool_call_id": "call_abc123"},
+    )
+
+    with patch("lmnr.Laminar") as mock_laminar:
+        mock_laminar.start_span.return_value = fake_span
+        mock_laminar.get_laminar_span_context.return_value = parent_ctx
+
+        RootSpan(
+            "conversation",
+            session_id="delegate-session",
+            metadata={"is_delegate": True},
+            detached=True,
+        )
+
+        # Must NOT be the bare ``start_span(name)`` call used for a
+        # non-detached root — that would silently join the ambient trace.
+        call = mock_laminar.start_span.call_args
+        assert call.args == ("conversation",)
+        assert "context" in call.kwargs
+
+        attrs = {c.args[0]: c.args[1] for c in fake_span.set_attribute.call_args_list}
+        assert attrs["delegate.parent_trace_id"] == str(parent_ctx.trace_id)
+        assert attrs["delegate.parent_span_id"] == str(parent_ctx.span_id)
+
+        mock_laminar.set_trace_metadata.assert_called_once_with(
+            {"is_delegate": True, "tool_call_id": "call_abc123"}
+        )
+
+
+def test_root_span_detached_without_ambient_parent():
+    """No active span to sever must not crash and must not fabricate a link."""
+    from openhands.sdk.observability.laminar import RootSpan
+
+    fake_span = MagicMock()
+
+    with patch("lmnr.Laminar") as mock_laminar:
+        mock_laminar.start_span.return_value = fake_span
+        mock_laminar.get_laminar_span_context.return_value = None
+
+        RootSpan("conversation", metadata={"is_delegate": True}, detached=True)
+
+        fake_span.set_attribute.assert_not_called()
+        mock_laminar.set_trace_metadata.assert_called_once_with({"is_delegate": True})
+
+
+def test_root_span_not_detached_does_not_consult_ambient_parent():
+    """Non-delegate roots must keep the original bare ``start_span`` call."""
+    from openhands.sdk.observability.laminar import RootSpan
+
+    fake_span = MagicMock()
+
+    with patch("lmnr.Laminar") as mock_laminar:
+        mock_laminar.start_span.return_value = fake_span
+
+        RootSpan("conversation")
+
+        mock_laminar.start_span.assert_called_once_with("conversation")
+        mock_laminar.get_laminar_span_context.assert_not_called()
+
+
 def test_deprecated_shims_are_removed():
     """The legacy global-stack API (deprecated 1.22.0) was removed in 1.27.0."""
     from openhands.sdk.observability import laminar as lam

@@ -332,6 +332,7 @@ class TestTaskManager:
         conv = manager._get_conversation(
             description="quiz",
             task_id=task_id,
+            subagent_type="default",
             worker_agent=agent,
             max_iteration_per_run=500,
             conversation_id=conversation_id,
@@ -349,6 +350,7 @@ class TestTaskManager:
             description=None,
             max_iteration_per_run=500,
             task_id=task_id,
+            subagent_type="default",
             worker_agent=agent,
             conversation_id=conversation_id,
         )
@@ -368,6 +370,7 @@ class TestTaskManager:
             description="test",
             max_iteration_per_run=500,
             task_id=task_id,
+            subagent_type="default",
             conversation_id=conversation_id,
             worker_agent=agent,
         )
@@ -387,12 +390,82 @@ class TestTaskManager:
                 description=None,
                 max_iteration_per_run=500,
                 task_id=task_id,
+                subagent_type="default",
                 conversation_id=conversation_id,
                 worker_agent=agent,
             )
             sub_keys.append(conv.get_llm_call_context().prompt_cache_key)
 
         assert sub_keys == [parent_key, parent_key]
+
+    def test_marks_conversation_as_delegate_with_linking_metadata(self, tmp_path):
+        """A sub-agent conversation must start a detached trace tagged with
+        the originating task_id/subagent_type (software-agent-sdk#4365)."""
+        manager, parent = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+        task_id, conversation_id = manager._generate_ids()
+        agent = manager._get_sub_agent("general-purpose")
+
+        with (
+            patch(
+                "openhands.sdk.conversation.base.should_enable_observability",
+                return_value=True,
+            ),
+            patch(
+                "openhands.sdk.conversation.base.start_root_span",
+                return_value=None,
+            ) as mock_start_root_span,
+        ):
+            manager._get_conversation(
+                description="test",
+                max_iteration_per_run=500,
+                task_id=task_id,
+                subagent_type="general-purpose",
+                conversation_id=conversation_id,
+                worker_agent=agent,
+            )
+
+        mock_start_root_span.assert_called_once()
+        kwargs = mock_start_root_span.call_args.kwargs
+        assert kwargs["detached"] is True
+        assert kwargs["tags"] == ["delegate"]
+        assert kwargs["metadata"] == {
+            "is_delegate": True,
+            "task_id": task_id,
+            "subagent_type": "general-purpose",
+            "parent_session_id": str(parent.state.id),
+        }
+
+    def test_resume_task_marks_conversation_as_delegate(self, tmp_path):
+        """Resuming a task must also start a detached, delegate-tagged trace."""
+        manager, parent = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+
+        task = manager._create_task(subagent_type="general-purpose", description=None)
+        manager._evict_task(task)
+
+        with (
+            patch(
+                "openhands.sdk.conversation.base.should_enable_observability",
+                return_value=True,
+            ),
+            patch(
+                "openhands.sdk.conversation.base.start_root_span",
+                return_value=None,
+            ) as mock_start_root_span,
+        ):
+            manager._resume_task(resume=task.id, subagent_type="general-purpose")
+
+        mock_start_root_span.assert_called_once()
+        kwargs = mock_start_root_span.call_args.kwargs
+        assert kwargs["detached"] is True
+        assert kwargs["tags"] == ["delegate"]
+        assert kwargs["metadata"] == {
+            "is_delegate": True,
+            "task_id": task.id,
+            "subagent_type": "general-purpose",
+            "parent_session_id": str(parent.state.id),
+        }
 
 
 def _make_task_with_mock_conv(task_id: str, **conv_kwargs) -> Task:
@@ -858,6 +931,7 @@ class TestTaskManagerHooks:
             description="test",
             max_iteration_per_run=100,
             task_id=task_id,
+            subagent_type="default",
             conversation_id=conversation_id,
             worker_agent=agent,
             hook_config=hook_config,
@@ -879,6 +953,7 @@ class TestTaskManagerHooks:
             description="test",
             max_iteration_per_run=100,
             task_id=task_id,
+            subagent_type="default",
             conversation_id=conversation_id,
             worker_agent=agent,
         )
@@ -958,6 +1033,7 @@ class TestTaskManagerPersistence:
             description=None,
             max_iteration_per_run=500,
             task_id=task_id,
+            subagent_type="default",
             worker_agent=agent,
             conversation_id=conversation_id,
         )

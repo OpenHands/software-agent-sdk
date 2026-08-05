@@ -114,6 +114,7 @@ def test_base_conversation_span_management():
             metadata=None,
             tags=None,
             attributes=None,
+            detached=False,
         )
         assert conversation._span_ended is False
         assert conversation._observability_root_span is fake_root
@@ -170,6 +171,7 @@ def test_base_conversation_passes_observability_metadata_and_tag_attributes():
                 "conversation.tags.automationid": "auto-1",
                 "conversation.tags.automationrunid": "run-1",
             },
+            detached=False,
         )
 
 
@@ -197,6 +199,7 @@ def test_base_conversation_uses_custom_observability_span_name_as_child_span():
             metadata=None,
             tags=None,
             attributes=None,
+            detached=False,
         )
         mock_child_span.assert_called_once_with(
             mock_start_span.return_value,

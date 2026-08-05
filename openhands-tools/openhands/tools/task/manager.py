@@ -28,6 +28,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.conversation.types import TraceMetadataValue
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.logger import get_logger
@@ -217,6 +218,11 @@ class TaskManager:
                 conversation_id=conversation_id,
                 hook_config=factory.definition.hooks,
                 delete_on_close=True,
+                observability_delegate=True,
+                observability_metadata=self._delegate_observability_metadata(
+                    task_id=resume, subagent_type=subagent_type
+                ),
+                observability_tags=["delegate"],
             )
 
             self._set_confirmation_policy(
@@ -266,6 +272,7 @@ class TaskManager:
                 max_iteration_per_run=effective_max_iter,
                 max_budget_per_run=effective_max_budget,
                 task_id=task_id,
+                subagent_type=subagent_type,
                 worker_agent=worker_agent,
                 conversation_id=conversation_id,
                 hook_config=factory.definition.hooks,
@@ -289,6 +296,7 @@ class TaskManager:
         description: str | None,
         max_iteration_per_run: int,
         task_id: str,
+        subagent_type: str,
         conversation_id: uuid.UUID,
         worker_agent: Agent,
         hook_config: HookConfig | None = None,
@@ -313,7 +321,22 @@ class TaskManager:
             hook_config=hook_config,
             delete_on_close=True,
             prompt_cache_key=str(parent.state.id),
+            observability_delegate=True,
+            observability_metadata=self._delegate_observability_metadata(
+                task_id=task_id, subagent_type=subagent_type
+            ),
+            observability_tags=["delegate"],
         )
+
+    def _delegate_observability_metadata(
+        self, task_id: str, subagent_type: str
+    ) -> dict[str, TraceMetadataValue]:
+        """Trace metadata identifying a delegate conversation to its task."""
+        return {
+            "task_id": task_id,
+            "subagent_type": subagent_type,
+            "parent_session_id": str(self.parent_conversation.state.id),
+        }
 
     def _get_sub_agent(self, subagent_type: str) -> Agent:
         """Return the subagent assigned to the task.

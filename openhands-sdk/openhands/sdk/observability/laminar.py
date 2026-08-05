@@ -232,6 +232,15 @@ def _is_otel_backend_laminar():
 
 _ROOT_SPAN_ATTR: Final[str] = "_observability_root_span"
 
+# Span attributes (see RootSpan.__init__(detached=True)) linking a delegate's
+# detached root span back to the parent span it was severed from.
+_DELEGATE_PARENT_TRACE_ID_ATTR: Final[str] = "delegate.parent_trace_id"
+_DELEGATE_PARENT_SPAN_ID_ATTR: Final[str] = "delegate.parent_span_id"
+# Trace-metadata key set by software-agent-sdk#4010 on the parent's `task`
+# TOOL span; copied onto a detached delegate root span when present so the
+# originating tool call is visible from the delegate's trace alone.
+_DELEGATE_TOOL_CALL_ID_META_KEY: Final[str] = "tool_call_id"
+
 
 class RootSpan:
     """A long-lived Laminar span owned by a single object (e.g. a Conversation).
@@ -263,17 +272,59 @@ class RootSpan:
         attributes: Mapping[str, str] | None = None,
         metadata: dict[str, TraceMetadataValue] | None = None,
         tags: list[str] | None = None,
+        detached: bool = False,
     ) -> None:
         from lmnr import Laminar
 
-        # ``start_span`` returns a span without attaching it as the current
-        # OTel context; we'll restore it on every entry point via ``use_span``.
-        self.span = Laminar.start_span(name)
-        if attributes:
+        span_attributes: dict[str, str] = dict(attributes) if attributes else {}
+        span_metadata = dict(metadata) if metadata else None
+
+        if detached:
+            # ``start_span`` without an explicit ``context=`` parents onto
+            # whatever OTel span is currently active — its "isolated context"
+            # helper just returns the ambient one (`get_current_context()`),
+            # so a sub-agent conversation created synchronously inside its
+            # parent's ``task`` TOOL span (see TaskManager) would otherwise
+            # inherit the parent's trace_id instead of starting its own trace
+            # (software-agent-sdk#4365). Passing an empty Context forces a
+            # genuinely new trace; we capture the severed parent span first
+            # and record it as attributes/metadata so the two traces stay
+            # correlatable.
+            from opentelemetry import trace as otel_trace
+
+            parent = Laminar.get_laminar_span_context()
+            # A bare ``Context()`` is falsy (it's an empty dict under the
+            # hood), so ``context or isolated_context`` in ``start_span``
+            # would silently discard it and fall back to the ambient
+            # context — explicitly parenting to INVALID_SPAN instead keeps
+            # the context truthy while still carrying no real parent.
+            detached_context = otel_trace.set_span_in_context(otel_trace.INVALID_SPAN)
+            self.span = Laminar.start_span(
+                name,
+                context=detached_context,  # type: ignore[arg-type]
+            )
+            if parent is not None:
+                span_attributes[_DELEGATE_PARENT_TRACE_ID_ATTR] = str(parent.trace_id)
+                span_attributes[_DELEGATE_PARENT_SPAN_ID_ATTR] = str(parent.span_id)
+                tool_call_id = (parent.metadata or {}).get(
+                    _DELEGATE_TOOL_CALL_ID_META_KEY
+                )
+                if tool_call_id and not (
+                    span_metadata and _DELEGATE_TOOL_CALL_ID_META_KEY in span_metadata
+                ):
+                    span_metadata = span_metadata or {}
+                    span_metadata[_DELEGATE_TOOL_CALL_ID_META_KEY] = tool_call_id
+        else:
+            # ``start_span`` returns a span without attaching it as the
+            # current OTel context; we'll restore it on every entry point
+            # via ``use_span``.
+            self.span = Laminar.start_span(name)
+
+        if span_attributes:
             with contextlib.suppress(Exception):
-                for key, value in attributes.items():
+                for key, value in span_attributes.items():
                     self.span.set_attribute(key, value)
-        if session_id or user_id or metadata or tags:
+        if session_id or user_id or span_metadata or tags:
             # These trace/span helpers require an active span; briefly enter
             # the span context to apply conversation-level observability data.
             with contextlib.suppress(Exception):
@@ -287,10 +338,10 @@ class RootSpan:
                         Laminar.set_trace_session_id(session_id)
                     if user_id:
                         Laminar.set_trace_user_id(user_id)
-                    if metadata:
+                    if span_metadata:
                         # dict is invariant: dict[str, TraceMetadataValue] is
                         # not assignable to dict[str, Any] without a cast.
-                        Laminar.set_trace_metadata(cast(dict[str, Any], metadata))
+                        Laminar.set_trace_metadata(cast(dict[str, Any], span_metadata))
                     if tags:
                         Laminar.set_span_tags(tags)
         self._ended = False
@@ -313,8 +364,15 @@ def start_root_span(
     attributes: Mapping[str, str] | None = None,
     metadata: dict[str, TraceMetadataValue] | None = None,
     tags: list[str] | None = None,
+    detached: bool = False,
 ) -> RootSpan | None:
     """Create a long-lived root span for an owning object.
+
+    Args:
+        detached: Start a genuinely new trace instead of joining whatever
+            span is currently active (e.g. for a sub-agent conversation
+            spawned synchronously from inside its parent's tool-call span).
+            See ``RootSpan.__init__``.
 
     Returns ``None`` if observability is not enabled.
     """
@@ -328,6 +386,7 @@ def start_root_span(
             attributes=attributes,
             metadata=metadata,
             tags=tags,
+            detached=detached,
         )
     except Exception:
         logger.debug("Failed to create observability root span", exc_info=True)
