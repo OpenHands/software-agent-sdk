@@ -840,7 +840,8 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         ``AUTOMATION_CALLBACK_URL`` env var was not set.
 
         Includes ``conversation_id`` in the payload if one was registered via
-        ``register_conversation()``.
+        ``register_conversation()``, and ``cost`` if one was registered via
+        ``register_cost()``.
         """
         try:
             callback_url = self._automation_callback_url
@@ -860,6 +861,10 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         # Include conversation_id if one was registered
         if self._conversation_id is not None:
             payload["conversation_id"] = self._conversation_id
+
+        # Include accumulated LLM cost if one was registered
+        if self._accumulated_cost is not None:
+            payload["cost"] = self._accumulated_cost
 
         try:
             headers = {"Authorization": f"Bearer {self.cloud_api_key}"}

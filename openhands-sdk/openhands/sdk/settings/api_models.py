@@ -82,6 +82,14 @@ class MCPServerPatch(BaseModel):
     keep_alive: bool | None = None
     headers: dict[str, SecretStr | None] | None = None
     auth: MCPAuthCredential | None = None
+    enabled: bool | None = Field(
+        default=None,
+        description=(
+            "Switch the server off (false) or back on (true) without touching "
+            "the rest of its configuration. A null clears the override, which "
+            "restores the canonical default (enabled)."
+        ),
+    )
 
 
 class MCPConfigPatch(RootModel[dict[str, MCPServerPatch | None]]):

@@ -1,7 +1,5 @@
 """HTTP endpoints for managing named LLM configurations (profiles)."""
 
-from collections.abc import Iterator
-from contextlib import contextmanager
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Path, Request, status
@@ -13,6 +11,7 @@ from openhands.agent_server._secrets_exposure import (
     get_cipher,
     get_config,
     parse_expose_secrets_header,
+    store_errors,
     translate_missing_cipher,
 )
 from openhands.agent_server.persistence import (
@@ -88,23 +87,6 @@ class RenameProfileRequest(BaseModel):
     )
 
 
-@contextmanager
-def _store_errors() -> Iterator[None]:
-    """Map ``LLMProfileStore`` errors to HTTP responses."""
-    try:
-        yield
-    except TimeoutError:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Profile store is busy. Please retry.",
-        )
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
-
-
 def _has_api_key(llm: LLM) -> bool:
     if not isinstance(llm.api_key, SecretStr):
         return False
@@ -141,7 +123,7 @@ async def list_profiles(request: Request) -> ProfileListResponse:
     settings = settings_store.load() or PersistedSettings()
 
     store = get_llm_profile_store()
-    with _store_errors():
+    with store_errors():
         summaries = store.list_summaries()
 
     return ProfileListResponse(
@@ -164,7 +146,7 @@ async def get_profile(request: Request, name: ProfileName) -> ProfileDetailRespo
 
     store = get_llm_profile_store()
     try:
-        with _store_errors():
+        with store_errors():
             llm = store.load(name, cipher=cipher)
     except FileNotFoundError:
         raise HTTPException(
@@ -208,7 +190,7 @@ async def save_profile(
     llm = decrypt_incoming_llm_secrets(body.llm, cipher) if cipher else body.llm
     store = get_llm_profile_store()
     try:
-        with _store_errors():
+        with store_errors():
             store.save(
                 name,
                 llm,
@@ -241,7 +223,7 @@ async def delete_profile(
     store = get_llm_profile_store()
     agent_store = get_agent_profile_store()
     try:
-        with _store_errors():
+        with store_errors():
             delete_llm_profile(agent_store, store, name)
     except ProfileReferenced as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
@@ -269,7 +251,7 @@ async def rename_profile(
     store = get_llm_profile_store()
     agent_store = get_agent_profile_store()
     try:
-        with _store_errors():
+        with store_errors():
             rename_llm_profile(agent_store, store, name, body.new_name)
     except FileNotFoundError:
         raise HTTPException(
@@ -325,7 +307,7 @@ async def activate_profile(
     # Load the profile
     profile_store = get_llm_profile_store()
     try:
-        with _store_errors():
+        with store_errors():
             llm = profile_store.load(name, cipher=cipher)
     except FileNotFoundError:
         raise HTTPException(

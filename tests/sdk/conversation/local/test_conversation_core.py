@@ -14,6 +14,7 @@ from openhands.sdk.conversation import Conversation
 from openhands.sdk.credential import CredentialSyncError
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm.utils.metrics import Metrics
 from tests.platform_utils import maybe_mark_forked
 
 
@@ -249,6 +250,34 @@ def test_close_propagates_agent_failure_and_allows_retry(tmp_path):
         conv.close()
 
     assert close.call_count == 2
+
+
+def test_close_reports_accumulated_cost_to_workspace(tmp_path):
+    """close() hands the run's accumulated LLM cost to the workspace, which is
+    what puts it in the automation completion callback."""
+    agent = create_test_agent()
+    conv = Conversation(agent=agent, persistence_dir=tmp_path, workspace=tmp_path)
+    metrics = Metrics()
+    metrics.add_cost(0.75)
+    conv.conversation_stats.usage_to_metrics["test-llm"] = metrics
+
+    conv.close()
+
+    assert conv.workspace.accumulated_cost == 0.75
+
+
+def test_close_reports_zero_cost_when_no_llm_calls(tmp_path):
+    """A run that ends before any LLM call — e.g. it errors during setup —
+    reports a genuine 0.0, not an omitted cost. Local state is in-process and
+    authoritative, so zero spend is a fact here; this deliberately differs from
+    RemoteConversation.close(), where missing cached stats means the cost is
+    unknown and is therefore left unreported."""
+    agent = create_test_agent()
+    conv = Conversation(agent=agent, persistence_dir=tmp_path, workspace=tmp_path)
+
+    conv.close()
+
+    assert conv.workspace.accumulated_cost == 0.0
 
 
 def test_close_logs_noncredential_agent_failure_without_retry(tmp_path):

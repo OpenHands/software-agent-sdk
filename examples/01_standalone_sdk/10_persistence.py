@@ -40,7 +40,10 @@ tools = [
 
 # Add MCP Tools
 mcp_config = {
-    "fetch": MCPServer(command="uvx", args=["mcp-server-fetch"]),
+    "fetch": MCPServer(
+        command="uvx",
+        args=["--with", "mcp==1.29.0", "mcp-server-fetch==2026.7.10"],
+    ),
 }
 # Agent
 agent = Agent(llm=llm, tools=tools, mcp_config=mcp_config)

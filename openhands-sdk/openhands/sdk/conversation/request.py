@@ -41,6 +41,7 @@ from openhands.sdk.security.confirmation_policy import (
 )
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.tool.client_tool import ClientToolSpec
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.models import kind_of
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -350,3 +351,16 @@ class StartACPConversationRequest(StartConversationRequest):
     Use :class:`StartConversationRequest` instead. It now supports both regular
     OpenHands agents and ACP agents through the same request contract.
     """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        warn_deprecated(
+            "StartACPConversationRequest",
+            deprecated_in="1.36.0",
+            removed_in="1.41.0",
+            details=(
+                "Use StartConversationRequest instead. It supports both regular "
+                "OpenHands agents and ACP agents through the same request contract."
+            ),
+            stacklevel=2,
+        )
+        super().__init__(*args, **kwargs)

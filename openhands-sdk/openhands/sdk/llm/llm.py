@@ -7,11 +7,12 @@ import json
 import os
 import threading
 import warnings
-from collections.abc import AsyncIterable, Callable, Iterable, Sequence
+from collections.abc import AsyncIterable, Callable, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, get_args, get_origin
 
 from pydantic import (
     BaseModel,
@@ -107,7 +108,7 @@ from openhands.sdk.llm.utils.image_inline import (
     maybe_inline_image_urls,
 )
 from openhands.sdk.llm.utils.image_resize import maybe_resize_messages_for_provider
-from openhands.sdk.llm.utils.litellm_provider import infer_litellm_provider
+from openhands.sdk.llm.utils.litellm_provider import LLMProvider
 from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.llm.utils.model_features import ModelFeatures, get_features
 from openhands.sdk.llm.utils.openhands_provider import (
@@ -122,6 +123,10 @@ from openhands.sdk.logger import ENV_LOG_DIR, get_logger
 
 
 logger = get_logger(__name__)
+_serialized_is_subscription = ContextVar(
+    "serialized_is_subscription",
+    default=False,
+)
 
 __all__ = ["LLM"]
 
@@ -616,7 +621,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _is_subscription: bool = PrivateAttr(default=False)
     _subscription_credential_store: Any = PrivateAttr(default=None)
     _subscription_credentials: Any = PrivateAttr(default=None)
-    _litellm_provider: str | None = PrivateAttr(default=None)
+    _provider_info: LLMProvider | None = PrivateAttr(default=None)
     _call_context: LLMCallContext = PrivateAttr(default_factory=LLMCallContext)
     _effective_max_input_tokens: int | None = PrivateAttr(default=None)
     _effective_max_output_tokens: int | None = PrivateAttr(default=None)
@@ -643,6 +648,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     # Validators
     # =========================================================================
+    @model_validator(mode="before")
+    @classmethod
+    def _capture_serialized_is_subscription(cls, data):
+        if isinstance(data, dict):
+            _serialized_is_subscription.set(bool(data.get("is_subscription")))
+        return data
+
     @field_validator(
         "api_key", "aws_access_key_id", "aws_secret_access_key", "aws_session_token"
     )
@@ -717,8 +729,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     )
                     self._tokenizer = None
 
-        # Capabilities + model info
-        self._init_model_info_and_caps()
+        self._refresh_litellm_metadata()
 
         logger.debug(
             f"LLM ready: model={self.model} base_url={self.base_url} "
@@ -726,6 +737,27 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             f"temperature={self.temperature}"
         )
         return self
+
+    def _refresh_litellm_metadata(self) -> None:
+        call_kwargs = self._litellm_call_kwargs()
+        self._provider_info = LLMProvider.from_model(
+            model=call_kwargs["model"],
+            api_base=call_kwargs["api_base"],
+        )
+        self._init_model_info_and_caps()
+
+    def model_copy(
+        self,
+        *,
+        update: Mapping[str, Any] | None = None,
+        deep: bool = False,
+    ) -> Self:
+        # Pydantic copies private attrs without re-running validators, even for
+        # deep copies, so routing-field updates must rebuild derived metadata.
+        copied = super().model_copy(update=update, deep=deep)
+        if update is not None and ("model" in update or "base_url" in update):
+            copied._refresh_litellm_metadata()
+        return copied
 
     def _openrouter_headers(self) -> dict[str, str]:
         """Build OpenRouter HTTP-Referer / X-Title headers for per-call use.
@@ -837,34 +869,24 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     )
     @property
     def is_subscription(self) -> bool:
-        """Check if this LLM uses subscription-based authentication.
-
-        Returns True when the LLM was created via `LLM.subscription_login()`,
-        which uses the ChatGPT subscription Codex backend rather than the
-        standard OpenAI API.
-
-        Returns:
-            bool: True if using subscription-based transport, False otherwise.
-        """
+        """Check if this LLM uses subscription-based authentication."""
         return self._is_subscription
+
+    @is_subscription.setter
+    def is_subscription(self, value: bool) -> None:
+        self._is_subscription = value
 
     @model_validator(mode="wrap")
     @classmethod
     def _restore_is_subscription(cls, data, handler):
-        """Restore the subscription flag when validating serialized data.
-
-        ``is_subscription`` is a computed field backed by the private
-        ``_is_subscription`` attribute, so plain validation would drop it.
-        Without this, an LLM created via ``LLM.subscription_login()`` loses
-        its subscription-specific request handling (streaming exemption,
-        Codex system prompt transform, reasoning-item stripping) after a
-        dump/validate round trip - e.g. when shipped to a remote
-        agent-server.
-        """
-        llm = handler(data)
-        if isinstance(data, dict) and data.get("is_subscription"):
-            llm._is_subscription = True
-        return llm
+        token = _serialized_is_subscription.set(False)
+        try:
+            llm = handler(data)
+            if _serialized_is_subscription.get():
+                llm._is_subscription = True
+            return llm
+        finally:
+            _serialized_is_subscription.reset(token)
 
     def restore_metrics(self, metrics: Metrics) -> None:
         # Only used by ConversationStats to seed metrics
@@ -1004,6 +1026,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         typed_input: ResponseInputParam | str = (
             cast(ResponseInputParam, input_items) if input_items else ""
         )
+        provider_info = self._provider_info
+        assert provider_info is not None
         api_key_value, subscription_headers = (
             auth_values if auth_values is not None else self._get_litellm_auth_values()
         )
@@ -1016,11 +1040,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 },
             }
         return {
-            **self._litellm_call_kwargs(),
+            **provider_info.as_litellm_call_kwargs(api_key=api_key_value),
             "input": typed_input,
             "instructions": instructions,
             "tools": resp_tools,
-            "api_key": api_key_value,
+            "api_base": provider_info.api_base,
             "api_version": self.api_version,
             "timeout": self.timeout,
             "drop_params": self.drop_params,
@@ -1094,7 +1118,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             completed_resp.output = collected_output_items
 
         assert self._telemetry is not None
-        self._telemetry.on_response(completed_resp)
+        self._telemetry.on_response(
+            completed_resp,
+            provider_info=self._provider_info,
+        )
         return completed_resp
 
     def _prepare_completion_params(
@@ -1409,7 +1436,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         # 6) telemetry
         assert self._telemetry is not None
-        self._telemetry.on_response(resp, raw_resp=raw_resp)
+        self._telemetry.on_response(
+            resp,
+            raw_resp=raw_resp,
+            provider_info=self._provider_info,
+        )
 
         # Ensure at least one choice.
         # Gemini sometimes returns empty choices; we raise LLMNoResponseError here
@@ -1724,7 +1755,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                                 "provider returned a non-streaming response; "
                                 "no on_token deltas will be emitted."
                             )
-                        self._telemetry.on_response(ret)
+                        self._telemetry.on_response(
+                            ret,
+                            provider_info=self._provider_info,
+                        )
                         return ret
 
                     # When stream=True, LiteLLM returns a streaming
@@ -1878,7 +1912,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                                 "provider returned a non-streaming response; "
                                 "no on_token deltas will be emitted."
                             )
-                        self._telemetry.on_response(ret)
+                        self._telemetry.on_response(
+                            ret,
+                            provider_info=self._provider_info,
+                        )
                         return ret
 
                     # When stream=True, LiteLLM returns a streaming
@@ -1983,16 +2020,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         return litellm_call_kwargs(self.model, self.base_url)
 
     def _infer_litellm_provider(self) -> str | None:
-        if self._litellm_provider is not None:
-            return self._litellm_provider
-
-        call_kwargs = self._litellm_call_kwargs()
-        provider = infer_litellm_provider(
-            model=call_kwargs["model"],
-            api_base=call_kwargs["api_base"],
-        )
-        self._litellm_provider = provider
-        return provider
+        provider_info = self._provider_info
+        if provider_info is None:
+            return None
+        return provider_info.name
 
     def _infer_model_info_provider(self) -> str | None:
         if self._model_info is not None:
@@ -2001,6 +2032,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 return provider
 
         return self._infer_litellm_provider()
+
+    def _get_api_key_value(self) -> str | None:
+        if self.api_key is None:
+            return None
+        assert isinstance(self.api_key, SecretStr)
+        return self.api_key.get_secret_value()
 
     def _subscription_headers_from_credentials(
         self, auth: Any, credentials: Any
@@ -2014,13 +2051,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         return credentials.access_token
 
     def _normalize_litellm_api_key_value(self, api_key_value: str | None) -> str | None:
-        # LiteLLM treats api_key for Bedrock as an AWS bearer token.
-        # Passing a non-Bedrock key (e.g. OpenAI/Anthropic) can cause Bedrock
-        # to reject the request with an "Invalid API Key format" error.
-        # For IAM/SigV4 auth (the default Bedrock path), do not forward api_key.
-        if api_key_value is not None and self._infer_litellm_provider() == "bedrock":
-            return None
-        return api_key_value
+        provider_info = self._provider_info
+        if provider_info is None:
+            return api_key_value
+        return provider_info.api_key_for_litellm(api_key_value)
 
     def _get_litellm_auth_values(self) -> tuple[str | None, dict[str, str]]:
         api_key_value: str | None = None
@@ -2043,8 +2077,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 auth, credentials
             )
         elif self.api_key:
-            assert isinstance(self.api_key, SecretStr)
-            api_key_value = self.api_key.get_secret_value()
+            api_key_value = self._get_api_key_value()
 
         return self._normalize_litellm_api_key_value(api_key_value), extra_headers
 
@@ -2135,8 +2168,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         **kwargs,
     ) -> dict[str, Any]:
         """Build the keyword arguments for a litellm (a)completion call."""
-        provider = self._infer_litellm_provider()
-        assert_vertex_sdk_available(provider)
+        provider_info = self._provider_info
+        assert provider_info is not None
+        assert_vertex_sdk_available(provider_info.name)
 
         # When streaming, request usage in the final chunk so that detailed
         # token breakdowns (prompt_tokens_details with cached_tokens, etc.) are
@@ -2152,8 +2186,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 **subscription_headers,
             }
         return {
-            **self._litellm_call_kwargs(),
-            "api_key": api_key_value,
+            **provider_info.as_litellm_call_kwargs(api_key=api_key_value),
+            "api_base": provider_info.api_base,
             "api_version": self.api_version,
             "timeout": self.timeout,
             "drop_params": self.drop_params,

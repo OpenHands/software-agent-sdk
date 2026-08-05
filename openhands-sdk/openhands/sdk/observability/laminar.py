@@ -32,6 +32,10 @@ _OBSERVABILITY_ENV_KEYS: Final[tuple[str, ...]] = (
 )
 
 
+OPERATION_METADATA_KEY: Final[str] = "openhands.operation"
+"""Metadata key naming the side-utility operation a span subtree belongs to."""
+
+
 def _get_int_env(key: str) -> int | None:
     """Read an environment variable as an optional int."""
     val = get_env(key)

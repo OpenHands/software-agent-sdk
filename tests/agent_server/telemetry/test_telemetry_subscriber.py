@@ -15,6 +15,7 @@ from openhands.agent_server.telemetry.subscriber import (
 )
 from openhands.sdk.event import AgentErrorEvent, ConversationStateUpdateEvent
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
+from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
 
 
 class CollectingSink:
@@ -257,6 +258,76 @@ async def test_conversation_error_event_reports_only_the_code(factory):
     assert detail not in serialized
     assert "/home/bob" not in serialized
     assert sink.events[0].to_payload()["error_class"] == "LLMAuthError"
+    assert sink.events[0].to_payload()["error_telemetry"] == "diagnostic"
+
+
+async def test_known_error_outcomes_are_not_diagnostics(factory):
+    sink = CollectingSink()
+    sub = make_subscriber(sink, factory)
+
+    await sub(
+        ConversationErrorEvent(
+            source="environment",
+            code="OpenAIError",
+            detail="Incorrect API key provided",
+        )
+    )
+
+    assert sink.events[0].to_payload()["error_telemetry"] == "outcome"
+
+
+async def test_agent_error_with_agent_action_classification_is_outcome(factory):
+    """A tool validation error (agent_action) is an outcome, not a diagnostic."""
+    sink = CollectingSink()
+    sub = make_subscriber(sink, factory)
+
+    await sub(
+        AgentErrorEvent(
+            error="Error executing tool 'bash': invalid argument",
+            tool_name="bash",
+            tool_call_id="call-1",
+            classification=ErrorClassification(
+                kind=FailureKind.AGENT_ACTION, retryable=True, user_action="retry"
+            ),
+        )
+    )
+
+    assert sink.events[0].to_payload()["error_telemetry"] == "outcome"
+
+
+async def test_agent_error_with_internal_classification_is_diagnostic(factory):
+    """An unexpected crash (internal) is a diagnostic, not an outcome."""
+    sink = CollectingSink()
+    sub = make_subscriber(sink, factory)
+
+    await sub(
+        AgentErrorEvent(
+            error="A restart occurred while this tool was in progress.",
+            tool_name="bash",
+            tool_call_id="call-1",
+            classification=ErrorClassification(
+                kind=FailureKind.INTERNAL, retryable=False
+            ),
+        )
+    )
+
+    assert sink.events[0].to_payload()["error_telemetry"] == "diagnostic"
+
+
+async def test_agent_error_without_classification_is_diagnostic(factory):
+    """A bare AgentErrorEvent (unknown) defaults to diagnostic."""
+    sink = CollectingSink()
+    sub = make_subscriber(sink, factory)
+
+    await sub(
+        AgentErrorEvent(
+            error="something unexpected",
+            tool_name="bash",
+            tool_call_id="call-1",
+        )
+    )
+
+    assert sink.events[0].to_payload()["error_telemetry"] == "diagnostic"
 
 
 # ── isolation ─────────────────────────────────────────────────────────────
