@@ -23,36 +23,49 @@ METADATA_PREFIX = "lmnr.association.properties.metadata."
 
 @pytest.fixture
 def exported():
-    """Real Laminar tracer with an in-memory exporter; yields a span getter."""
-    import os
+    """Real Laminar tracer writing to an in-memory exporter, torn down after.
 
-    os.environ["LMNR_PROJECT_API_KEY"] = "test-key"
+    The exporter is installed *before* ``initialize`` so no OTLP endpoint is ever
+    created; an unreachable one leaves every later test in the process retrying
+    exports with backoff.
+    """
+    import threading
+
     from lmnr import Laminar
+    from lmnr.opentelemetry_lib.opentelemetry.instrumentation.threading import (
+        ThreadingInstrumentor,
+    )
     from lmnr.opentelemetry_lib.tracing import TracerWrapper
-    from lmnr.opentelemetry_lib.tracing.processor import LaminarSpanProcessor
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
         InMemorySpanExporter,
     )
 
-    if not Laminar.is_initialized():
-        Laminar.initialize(
-            project_api_key="test-key",
-            base_url="http://localhost",
-            http_port=1,
-            grpc_port=1,
-            disable_batch=True,
-            instruments=set(),
-        )
+    if TracerWrapper.verify_initialized():
+        pytest.skip("lmnr already initialized by another test in this process")
+
     exporter = InMemorySpanExporter()
-    processor = TracerWrapper.instance._span_processor
-    assert isinstance(processor, LaminarSpanProcessor)
-    previous = processor.instance
-    processor.instance = SimpleSpanProcessor(exporter)
+    original_thread_init = threading.Thread.__init__
+    TracerWrapper(
+        exporter=exporter,
+        disable_batch=True,
+        instruments=set(),
+        set_global_tracer_provider=False,
+    )
+    Laminar.initialize(
+        project_api_key="test-key",
+        disable_batch=True,
+        instruments=set(),
+        set_global_tracer_provider=False,
+    )
     try:
-        yield lambda: exporter.get_finished_spans()
+        yield exporter.get_finished_spans
     finally:
-        processor.instance = previous
+        Laminar.shutdown()
+        ThreadingInstrumentor().uninstrument()
+        threading.Thread.__init__ = original_thread_init  # type: ignore[method-assign]
+        TracerWrapper._original_thread_init = None
+        if hasattr(TracerWrapper, "instance"):
+            del TracerWrapper.instance
 
 
 def _tool_entry(call_id: str, **over: Any) -> dict[str, Any]:
