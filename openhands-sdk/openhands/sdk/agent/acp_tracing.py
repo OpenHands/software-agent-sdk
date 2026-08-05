@@ -10,6 +10,7 @@ trace consumer needs no ACP-specific branch.
 from __future__ import annotations
 
 import json
+import threading
 from typing import TYPE_CHECKING, Any
 
 from openhands.sdk.logger import get_logger
@@ -31,19 +32,6 @@ ACP_MODEL_METADATA_KEY = "acp_model"
 TURN_SPAN_NAME = "acp.completion"
 
 
-def _to_laminar_context(span: Any) -> LaminarSpanContext:
-    """Freeze a span's identity so another thread can parent onto it."""
-    import uuid
-
-    from lmnr.sdk.types import LaminarSpanContext
-
-    ctx = span.get_span_context()
-    return LaminarSpanContext(
-        trace_id=uuid.UUID(int=ctx.trace_id),
-        span_id=uuid.UUID(int=ctx.span_id),
-    )
-
-
 def _truncate(value: Any, limit: int = 100_000) -> Any:
     if isinstance(value, str) and len(value) > limit:
         return value[:limit] + "…[truncated]"
@@ -57,8 +45,9 @@ class ACPTurnTrace:
     raise: a tracing failure must not take down the turn it is describing.
 
     Tool notifications arrive on the ACP executor's event-loop thread while the
-    turn span was opened on the caller's, so children are parented by explicit
-    span context rather than by ambient ``contextvars``.
+    turn is opened and closed on the caller's, so children are parented by explicit
+    span context rather than by ambient ``contextvars`` and the open-span table is
+    mutated under a lock. Span I/O stays outside the lock.
     """
 
     def __init__(self, acp_server: str | None, model_id: str | None) -> None:
@@ -71,6 +60,7 @@ class ACPTurnTrace:
         self._turn_span: Any = None
         self._turn_context: LaminarSpanContext | None = None
         self._tool_spans: dict[str, Any] = {}
+        self._lock = threading.Lock()
 
     def start_turn(self, prompt: Any) -> None:
         if not self._enabled or self._turn_span is not None:
@@ -84,7 +74,7 @@ class ACPTurnTrace:
                 span_type="LLM",
                 metadata=dict(self._metadata),
             )
-            self._turn_context = _to_laminar_context(self._turn_span)
+            self._turn_context = Laminar.get_laminar_span_context(self._turn_span)
         except Exception:
             logger.debug("ACP turn span could not be started", exc_info=True)
             self._turn_span = None
@@ -94,25 +84,31 @@ class ACPTurnTrace:
         if not self._enabled or self._turn_span is None:
             return
         call_id = str(entry.get("tool_call_id") or "")
-        if not call_id or call_id in self._tool_spans:
+        if not call_id:
             return
         try:
             from lmnr import Laminar
 
             metadata = dict(self._metadata)
             metadata["tool_call_id"] = call_id
-            self._tool_spans[call_id] = Laminar.start_span(
-                name=str(entry.get("title") or entry.get("tool_kind") or "acp_tool"),
-                input=_truncate(_tool_input(entry)),
-                span_type="TOOL",
-                parent_span_context=self._turn_context,
-                metadata=metadata,
-            )
+            with self._lock:
+                if call_id in self._tool_spans or self._turn_span is None:
+                    return
+                self._tool_spans[call_id] = Laminar.start_span(
+                    name=str(
+                        entry.get("title") or entry.get("tool_kind") or "acp_tool"
+                    ),
+                    input=_truncate(_tool_input(entry)),
+                    span_type="TOOL",
+                    parent_span_context=self._turn_context,
+                    metadata=metadata,
+                )
         except Exception:
             logger.debug("ACP tool span could not be started", exc_info=True)
 
     def tool_finished(self, entry: dict[str, Any]) -> None:
-        span = self._tool_spans.pop(str(entry.get("tool_call_id") or ""), None)
+        with self._lock:
+            span = self._tool_spans.pop(str(entry.get("tool_call_id") or ""), None)
         if span is None:
             return
         self._close_tool_span(span, entry)
@@ -124,14 +120,16 @@ class ACPTurnTrace:
         tool_calls: list[dict[str, Any]],
     ) -> None:
         """Set the turn's assistant message and close every span it opened."""
-        for call_id, span in list(self._tool_spans.items()):
+        with self._lock:
+            open_spans = list(self._tool_spans.items())
+            self._tool_spans.clear()
+            span, self._turn_span, self._turn_context = self._turn_span, None, None
+        for call_id, tool_span in open_spans:
             entry = next(
                 (t for t in tool_calls if str(t.get("tool_call_id")) == call_id), {}
             )
-            self._close_tool_span(span, entry)
-        self._tool_spans.clear()
+            self._close_tool_span(tool_span, entry)
 
-        span, self._turn_span, self._turn_context = self._turn_span, None, None
         if span is None:
             return
         try:
@@ -145,10 +143,12 @@ class ACPTurnTrace:
 
     def abandon(self) -> None:
         """Close whatever is still open after a timed-out or failed turn."""
-        for span in self._tool_spans.values():
-            self._close_tool_span(span, {})
-        self._tool_spans.clear()
-        span, self._turn_span, self._turn_context = self._turn_span, None, None
+        with self._lock:
+            open_spans = list(self._tool_spans.values())
+            self._tool_spans.clear()
+            span, self._turn_span, self._turn_context = self._turn_span, None, None
+        for tool_span in open_spans:
+            self._close_tool_span(tool_span, {})
         if span is None:
             return
         try:

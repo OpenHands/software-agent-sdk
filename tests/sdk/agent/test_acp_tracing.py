@@ -7,6 +7,7 @@ span's ``output`` (a list of assistant messages) and each TOOL span's
 
 import json
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -252,3 +253,28 @@ def test_a_server_that_omits_raw_input_still_records_what_it_could(exported):
     (llm,) = _by_type(exported(), "LLM")
     (call,) = json.loads((llm.attributes or {})["lmnr.span.output"])[0]["tool_calls"]
     assert json.loads(call["function"]["arguments"]) == {"title": "Read file '/a/b.py'"}
+
+
+def test_a_tool_starting_during_teardown_does_not_break_it(exported):
+    """A timed-out turn tears down on the caller thread while the ACP portal
+    thread can still deliver a ToolCallStart, so the open-span table is mutated
+    mid-teardown. Deterministic here: the racing insert happens from inside the
+    close callback rather than from a real thread."""
+    trace = ACPTurnTrace(acp_server="codex", model_id=None)
+    trace.start_turn("go")
+    trace.tool_started(_tool_entry("call_1", status="in_progress"))
+
+    original_close = ACPTurnTrace._close_tool_span
+    raced: list[str] = []
+
+    def racing_close(span, entry):
+        if not raced:
+            raced.append("x")
+            trace.tool_started(_tool_entry("call_racer", status="in_progress"))
+        original_close(span, entry)
+
+    with patch.object(ACPTurnTrace, "_close_tool_span", staticmethod(racing_close)):
+        trace.abandon()  # must not raise "dictionary changed size during iteration"
+
+    trace.abandon()  # idempotent, and closes anything the race left open
+    assert len(_by_type(exported(), "LLM")) == 1
