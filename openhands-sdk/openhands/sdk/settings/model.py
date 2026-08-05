@@ -1030,7 +1030,15 @@ class ConversationSettings(BaseModel):
     )
     security_analyzer: SecurityAnalyzerType | None = Field(
         default="llm",
-        description="Security analyzer that evaluates actions before execution.",
+        description=(
+            "Security analyzer that evaluates actions before execution. "
+            '"llm" pairs the acting model\'s self-assessed risk with the '
+            "deterministic policy rails and takes the worst case, so a model "
+            "cannot skip confirmation by labelling a dangerous action low risk. "
+            "The rails are an enumerated set, so they do not replace review of "
+            "what the agent is allowed to reach; compose your own "
+            "EnsembleSecurityAnalyzer for stricter environments."
+        ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Security analyzer",
@@ -1078,9 +1086,27 @@ class ConversationSettings(BaseModel):
         if not analyzer_kind or analyzer_kind == "none":
             return None
         if analyzer_kind == "llm":
+            from openhands.sdk.security.defense_in_depth import (
+                PolicyRailSecurityAnalyzer,
+            )
+            from openhands.sdk.security.ensemble import EnsembleSecurityAnalyzer
             from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 
-            return LLMSecurityAnalyzer()
+            # LLMSecurityAnalyzer reports the acting model's *self-assessed*
+            # risk, so on its own a model that labels a destructive action LOW
+            # slips past ConfirmRisky and auto-executes. Pair it with the
+            # deterministic rails as a floor: the ensemble takes the worst case,
+            # so an affirmatively-LOW label on `curl | bash`, a catastrophic
+            # `rm`, `dd` to a device, or `mkfs` still reaches HIGH and prompts.
+            #
+            # propagate_unknown=True keeps today's behavior for an action whose
+            # risk the model never stated: the rails return a concrete LOW when
+            # nothing fires, which would otherwise outvote the LLM analyzer's
+            # UNKNOWN and silently drop the confirmation ConfirmRisky gives it.
+            return EnsembleSecurityAnalyzer(
+                analyzers=[LLMSecurityAnalyzer(), PolicyRailSecurityAnalyzer()],
+                propagate_unknown=True,
+            )
         return None
 
     def _start_request_kwargs(self, **kwargs: Any) -> dict[str, Any]:
