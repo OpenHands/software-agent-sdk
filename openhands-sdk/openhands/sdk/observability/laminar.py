@@ -364,6 +364,75 @@ def start_child_span(
         logger.debug("Failed to create observability child span", exc_info=True)
 
 
+# Trace-metadata key set by software-agent-sdk#4010 on the parent's `task`
+# TOOL span; copied onto a detached delegate trace when present so the
+# originating tool call is visible from the delegate's trace alone.
+_TOOL_CALL_ID_META_KEY: Final[str] = "tool_call_id"
+
+
+@contextlib.contextmanager
+def detached_delegate_context() -> Iterator[dict[str, TraceMetadataValue]]:
+    """Clear the ambient span so a conversation constructed inside this block
+    starts a genuinely new Laminar trace, instead of ``RootSpan`` silently
+    joining whatever span is currently active.
+
+    ``Laminar.start_span`` without an explicit ``context=`` parents onto the
+    ambient span — its "isolated context" helper just returns whatever is
+    current. Laminar tracks that "current" span via its OWN isolated
+    ``ContextVar`` (``lmnr...tracing.context._ISOLATED_RUNTIME_CONTEXT``),
+    separate from the standard ``opentelemetry.context`` one, so attaching an
+    empty/no-parent context through the standard API (as ``RootSpan`` does
+    for cross-thread re-attachment) has no effect here — ``Laminar.use_span``
+    is the one call that updates both. Pushing ``INVALID_SPAN`` through it is
+    what actually severs the link, so a sub-agent conversation constructed
+    synchronously inside its parent's ``task`` TOOL span (see TaskManager)
+    starts its own trace instead of inheriting the parent's
+    (software-agent-sdk#4365).
+
+    Yields trace-metadata linking the delegate back to the severed parent
+    span (``delegate.parent_trace_id``/``delegate.parent_span_id``, plus a
+    best-effort ``tool_call_id`` copied from the parent's TOOL span) for the
+    caller to merge into the delegate's ``observability_metadata``. Yields an
+    empty dict if there is no active span, or if observability is disabled.
+    """
+    if not should_enable_observability():
+        yield {}
+        return
+    try:
+        from lmnr import Laminar
+        from opentelemetry import trace as otel_trace
+
+        parent = Laminar.get_laminar_span_context()
+    except Exception:
+        logger.debug("Failed to capture parent span for delegate", exc_info=True)
+        yield {}
+        return
+
+    link: dict[str, TraceMetadataValue] = {}
+    if parent is not None:
+        link["delegate.parent_trace_id"] = str(parent.trace_id)
+        link["delegate.parent_span_id"] = str(parent.span_id)
+        tool_call_id = (parent.metadata or {}).get(_TOOL_CALL_ID_META_KEY)
+        if tool_call_id:
+            link[_TOOL_CALL_ID_META_KEY] = tool_call_id
+
+    # Only guard *entering* Laminar.use_span (a caller exception raised
+    # inside the ``with`` block below must propagate normally, not be
+    # swallowed here).
+    with contextlib.ExitStack() as stack:
+        try:
+            stack.enter_context(
+                Laminar.use_span(
+                    otel_trace.INVALID_SPAN,
+                    record_exception=False,
+                    set_status_on_exception=False,
+                )
+            )
+        except Exception:
+            logger.debug("Failed to detach ambient span for delegate", exc_info=True)
+        yield link
+
+
 @contextlib.contextmanager
 def _maybe_use_root_span(args: tuple[Any, ...]) -> Iterator[None]:
     """If the first positional arg owns a ``RootSpan``, re-attach it.
