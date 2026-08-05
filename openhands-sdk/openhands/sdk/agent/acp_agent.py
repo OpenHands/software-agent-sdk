@@ -390,6 +390,13 @@ _MODEL_CONFIG_OPTION_ID = "model"
 _CODEX_REASONING_EFFORTS: Final[frozenset[str]] = frozenset(
     {"low", "medium", "high", "xhigh"}
 )
+# claude-agent-acp's ``effort`` config option (thought_level category) adds
+# ``max`` on top of the levels codex-acp's ``reasoning_effort`` accepts — do
+# not fold this into ``_CODEX_REASONING_EFFORTS``, the two are gated to
+# different providers below.
+_CLAUDE_EFFORT_LEVELS: Final[frozenset[str]] = frozenset(
+    {"low", "medium", "high", "xhigh", "max"}
+)
 
 
 def _codex_model_config_options(model: str) -> tuple[tuple[str, str], ...]:
@@ -403,6 +410,26 @@ def _codex_model_config_options(model: str) -> tuple[tuple[str, str], ...]:
     return ((_MODEL_CONFIG_OPTION_ID, model),)
 
 
+def _claude_model_config_options(model: str) -> tuple[tuple[str, str], ...]:
+    """Map combined Canvas Claude Code model IDs to claude-agent-acp config
+    options.
+
+    Mirrors :func:`_codex_model_config_options`, but claude-agent-acp exposes
+    thinking effort as its own ``effort`` config option (not
+    ``reasoning_effort``). Splitting on the last ``/`` also handles ids that
+    themselves contain a ``/`` in the base (none of the curated Claude ids
+    do today, but ``opus[1m]/max`` still splits into base ``opus[1m]`` +
+    effort ``max`` since ``max`` is only valid for Claude, not Codex).
+    """
+    base_model, sep, effort = model.rpartition("/")
+    if sep and base_model and effort in _CLAUDE_EFFORT_LEVELS:
+        return (
+            (_MODEL_CONFIG_OPTION_ID, base_model),
+            ("effort", effort),
+        )
+    return ((_MODEL_CONFIG_OPTION_ID, model),)
+
+
 def _model_config_options(
     agent_name: str | None,
     model: str,
@@ -410,6 +437,8 @@ def _model_config_options(
     provider = detect_acp_provider_by_agent_name(agent_name or "")
     if provider is not None and provider.key == "codex":
         return _codex_model_config_options(model)
+    if provider is not None and provider.key == "claude-code":
+        return _claude_model_config_options(model)
     return ((_MODEL_CONFIG_OPTION_ID, model),)
 
 
@@ -451,9 +480,11 @@ async def _apply_acp_model(
     servers (codex-acp, claude-agent-acp 0.44+), else ``set_session_model``.
 
     The model id is normally the bare preset id listed by the server. For
-    Codex, callers may still pass a combined Canvas id such as ``gpt-5.5/high``;
-    codex-acp exposes reasoning effort as a separate config option, so split it
-    only on the config-options mechanism.
+    Codex and Claude Code, callers may still pass a combined Canvas id such as
+    ``gpt-5.5/high`` or ``sonnet/high``; codex-acp exposes reasoning effort as
+    a separate ``reasoning_effort`` config option and claude-agent-acp exposes
+    thinking effort as a separate ``effort`` config option, so split it only
+    on the config-options mechanism (see :func:`_model_config_options`).
     """
     if via_config_option:
         for config_id, value in _model_config_options(agent_name, model):

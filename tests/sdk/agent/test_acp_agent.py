@@ -31,6 +31,7 @@ from openhands.sdk.agent.acp_agent import (
     _apply_acp_model,
     _classify_acp_init_error,
     _classify_acp_turn_error,
+    _claude_model_config_options,
     _codex_model_config_options,
     _estimate_cost_from_tokens,
     _extract_session_models,
@@ -39,6 +40,7 @@ from openhands.sdk.agent.acp_agent import (
     _mask_json_value,
     _maybe_set_session_model,
     _mcp_config_to_acp_servers,
+    _model_config_options,
     _OpenHandsACPBridge,
     _reapply_session_model_on_resume,
     _select_auth_method,
@@ -5062,6 +5064,73 @@ class TestCodexModelConfigOptions:
             ("model", "custom/provider/model"),
         )
 
+    def test_rejects_max_effort_which_is_claude_only(self):
+        # "max" is a valid thought_level for claude-agent-acp's ``effort``
+        # config option but not codex-acp's ``reasoning_effort`` — codex must
+        # not split it.
+        assert _codex_model_config_options("gpt-5.5/max") == (("model", "gpt-5.5/max"),)
+
+
+class TestClaudeModelConfigOptions:
+    def test_splits_combined_model_and_effort(self):
+        assert _claude_model_config_options("sonnet/high") == (
+            ("model", "sonnet"),
+            ("effort", "high"),
+        )
+
+    def test_splits_max_effort_which_is_claude_only(self):
+        # "max" is only valid for claude-agent-acp's ``effort`` config option
+        # (not codex-acp's ``reasoning_effort``), and the composite id itself
+        # contains a ``/`` before the effort suffix (``opus[1m]``).
+        assert _claude_model_config_options("opus[1m]/max") == (
+            ("model", "opus[1m]"),
+            ("effort", "max"),
+        )
+
+    def test_leaves_base_model_id_unchanged(self):
+        assert _claude_model_config_options("sonnet") == (("model", "sonnet"),)
+
+    def test_leaves_unknown_effort_suffix_unchanged(self):
+        # "turbo" is not a recognised thought_level, so the full original
+        # string is kept as a single ``model`` value rather than mis-split.
+        assert _claude_model_config_options("sonnet/turbo") == (
+            ("model", "sonnet/turbo"),
+        )
+
+
+class TestModelConfigOptionsProviderGating:
+    """``_model_config_options`` dispatches the composite-id splitter by
+    detected provider; every other provider gets a single, unsplit pair."""
+
+    def test_claude_provider_splits_via_effort(self):
+        assert _model_config_options("claude-agent-acp", "sonnet/high") == (
+            ("model", "sonnet"),
+            ("effort", "high"),
+        )
+
+    def test_codex_provider_splits_via_reasoning_effort(self):
+        assert _model_config_options("codex-acp", "gpt-5.5/high") == (
+            ("model", "gpt-5.5"),
+            ("reasoning_effort", "high"),
+        )
+
+    def test_codex_provider_rejects_max(self):
+        assert _model_config_options("codex-acp", "gpt-5.5/max") == (
+            ("model", "gpt-5.5/max"),
+        )
+
+    def test_gemini_provider_never_splits(self):
+        # gemini-cli is neither codex nor claude-code, so a composite-looking
+        # id is passed through verbatim as a single ``model`` value.
+        assert _model_config_options("gemini-cli", "gemini-3-pro-preview/high") == (
+            ("model", "gemini-3-pro-preview/high"),
+        )
+
+    def test_unknown_provider_never_splits(self):
+        assert _model_config_options("some-custom-acp", "sonnet/high") == (
+            ("model", "sonnet/high"),
+        )
+
 
 # ---------------------------------------------------------------------------
 # ACP model overrides
@@ -5459,6 +5528,32 @@ class TestSetACPModel:
             config_id="model", value="sonnet", session_id="sess-1"
         )
         assert agent._current_model_id == "sonnet"
+
+    def test_switches_claude_via_config_option_splits_effort(self):
+        # Canvas may persist Claude ids as ``model/effort``; claude-agent-acp
+        # exposes thinking effort as its own ``effort`` config option
+        # (symmetric with codex's ``reasoning_effort`` split above, but "max"
+        # is a valid level here too).
+        agent = self._wire(_make_agent(), "claude-agent-acp", via_config_option=True)
+        agent.set_acp_model("sonnet/high")
+        _agent_conn(agent).set_config_option.assert_has_awaits(
+            [
+                call(config_id="model", value="sonnet", session_id="sess-1"),
+                call(
+                    config_id="effort",
+                    value="high",
+                    session_id="sess-1",
+                ),
+            ]
+        )
+        assert _agent_conn(agent).set_config_option.await_count == 2
+        _agent_conn(agent).set_session_model.assert_not_called()
+        # The sentinel LLM + persisted current_model_id store the full
+        # composite id (matching codex's symmetric behavior above), not just
+        # the base model — downstream consumers (e.g. Canvas) read the
+        # composite back from ``current_model_id``.
+        assert agent.llm.model == "sonnet/high"
+        assert agent._current_model_id == "sonnet/high"
 
     def test_switch_method_not_found_raises_no_fallback(self):
         # No cross-mechanism fallback: a -32601 surfaces as a ValueError naming
@@ -8178,6 +8273,71 @@ class TestApplyAcpModel:
                 call(
                     config_id="reasoning_effort",
                     value="xhigh",
+                    session_id="sess-1",
+                ),
+            ]
+        )
+        assert conn.set_config_option.await_count == 2
+        conn.set_session_model.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_codex_config_option_rejects_max_effort(self):
+        # "max" is claude-only; codex's split must not fire for it, so the
+        # full composite id is sent as a single ``model`` value.
+        conn = AsyncMock()
+        await _apply_acp_model(
+            conn,
+            "sess-1",
+            "gpt-5.5/max",
+            agent_name="codex-acp",
+            via_config_option=True,
+        )
+        conn.set_config_option.assert_awaited_once_with(
+            config_id="model", value="gpt-5.5/max", session_id="sess-1"
+        )
+        conn.set_session_model.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_claude_config_option_splits_effort(self):
+        conn = AsyncMock()
+        await _apply_acp_model(
+            conn,
+            "sess-1",
+            "sonnet/high",
+            agent_name="claude-agent-acp",
+            via_config_option=True,
+        )
+        conn.set_config_option.assert_has_awaits(
+            [
+                call(config_id="model", value="sonnet", session_id="sess-1"),
+                call(
+                    config_id="effort",
+                    value="high",
+                    session_id="sess-1",
+                ),
+            ]
+        )
+        assert conn.set_config_option.await_count == 2
+        conn.set_session_model.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_claude_config_option_splits_max_effort(self):
+        # "max" is valid for claude's ``effort`` option (unlike codex's
+        # ``reasoning_effort``).
+        conn = AsyncMock()
+        await _apply_acp_model(
+            conn,
+            "sess-1",
+            "opus[1m]/max",
+            agent_name="claude-agent-acp",
+            via_config_option=True,
+        )
+        conn.set_config_option.assert_has_awaits(
+            [
+                call(config_id="model", value="opus[1m]", session_id="sess-1"),
+                call(
+                    config_id="effort",
+                    value="max",
                     session_id="sess-1",
                 ),
             ]
