@@ -502,6 +502,36 @@ def test_add_runtime_tools_does_not_leak_into_model_copy():
     assert "dynamic" not in original.tools_map
 
 
+def test_add_runtime_tools_tolerates_notification_installed_before_return():
+    """A tool installed mid-connect by the reconciliation callback must not
+    collide with the caller's own add_runtime_tools() call.
+
+    If notifications/tools/list_changed arrives while the initial
+    tools/list request is still in flight, on_tools_changed can install the
+    tool via this same MCPClient before create_tools() returns. The caller
+    (e.g. LocalConversation._ensure_agent_ready()) then calls
+    add_runtime_tools() again with the client's returned snapshot, which
+    already contains that tool; this must be treated as a refresh rather
+    than a duplicate-tool conflict.
+    """
+    agent = _ConcreteAgent(_initialized=True, _tools={})
+    client = _FakeClient([])
+    tool = MCPToolDefinition.create(
+        mcp_tool=_make_mcp_tool("only_tool"),
+        mcp_client=cast(MCPClient, client),
+    )[0]
+
+    # Simulates the mid-flight on_tools_changed callback installing the tool
+    # before create_tools() returns.
+    agent._on_mcp_tools_changed([tool])
+
+    # Simulates the caller's add_runtime_tools() call using the client's
+    # returned snapshot, which already includes the same tool.
+    agent.add_runtime_tools([tool])
+
+    assert agent.tools_map["only_tool"] is tool
+
+
 def test_on_mcp_tools_changed_skips_when_not_initialized():
     """Before initialization, notifications are dropped, not crashed on."""
     agent = _ConcreteAgent(_initialized=False, _tools=None)
