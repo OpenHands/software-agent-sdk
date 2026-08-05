@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import Config, TelemetrySpec, WebhookSpec
 from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.persistence.store import reset_stores
 from openhands.agent_server.server_details_router import mark_initialization_complete
 from openhands.agent_server.telemetry import (
     build_telemetry_sink,
@@ -217,6 +218,14 @@ class InitService:
                 # tools pick up credentials.
                 for key, value in req.env.items():
                     os.environ[key] = value
+
+            # The dormant boot already primed the persistence-store singletons
+            # (build_telemetry_sink's consent check goes through
+            # get_settings_store), fixing their cipher to the dormant
+            # secret_key. Drop them so everything after this point — including
+            # the telemetry rebuild below — re-creates them from the merged
+            # config, whose secret_key may differ.
+            reset_stores()
 
             # Must precede get_instance(), which captures the sink. The
             # matching emit_server_started() is deferred until the ``ready``

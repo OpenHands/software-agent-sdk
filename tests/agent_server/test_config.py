@@ -59,3 +59,28 @@ def test_conversation_idle_ttl_can_be_disabled_and_overridden(monkeypatch, tmp_p
 def test_conversation_idle_ttl_rejects_non_positive_values():
     with pytest.raises(ValidationError):
         Config(conversation_idle_ttl_seconds=0)
+
+
+def test_cipher_recomputed_when_secret_key_changes_across_model_copy():
+    """Regression (deferred-init stale cipher): ``Config.cipher`` caches the
+    built ``Cipher`` on the instance, and ``model_copy`` duplicates that cache.
+    A copy carrying a *new* secret_key must not keep encrypting under the old
+    one — that is exactly how /api/init's delivered secret_key was ignored."""
+    from pydantic import SecretStr
+
+    from openhands.sdk.utils.cipher import Cipher
+
+    base = Config(secret_key=SecretStr("old-key"))
+    assert base.cipher is not None  # prime the instance cache
+
+    copied = Config.model_copy(base, update={"secret_key": SecretStr("new-key")})
+    cipher = copied.cipher
+    assert cipher is not None
+    token = cipher.encrypt(SecretStr("payload"))
+    assert token is not None
+
+    decrypted = Cipher("new-key").decrypt(token)
+    assert decrypted is not None
+    assert decrypted.get_secret_value() == "payload"
+    # And the original config still uses its own key.
+    assert Cipher("old-key").decrypt(base.cipher.encrypt(SecretStr("x"))) is not None

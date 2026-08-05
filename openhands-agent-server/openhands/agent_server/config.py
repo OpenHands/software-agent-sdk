@@ -389,16 +389,20 @@ class Config(BaseModel):
 
     @property
     def cipher(self) -> Cipher | None:
+        if self.secret_key is None:
+            _logger.warning(
+                "⚠️ OH_SECRET_KEY was not defined. Secrets will not "
+                "be persisted between restarts."
+            )
+            return None
+        secret_key = self.secret_key.get_secret_value()
         cipher = getattr(self, "_cipher", None)
-        if cipher is None:
-            if self.secret_key is None:
-                _logger.warning(
-                    "⚠️ OH_SECRET_KEY was not defined. Secrets will not "
-                    "be persisted between restarts."
-                )
-                cipher = None
-            else:
-                cipher = Cipher(self.secret_key.get_secret_value())
+        # Validate the cache against the current secret_key: model_copy (e.g.
+        # deferred-init's _build_initialized_config) duplicates the instance
+        # __dict__ including a cipher cached under the old key, which would
+        # silently override the secret_key delivered via /api/init.
+        if cipher is None or cipher.secret_key != secret_key:
+            cipher = Cipher(secret_key)
             setattr(self, "_cipher", cipher)
         return cipher
 

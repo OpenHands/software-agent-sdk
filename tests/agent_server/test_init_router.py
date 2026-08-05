@@ -106,6 +106,31 @@ class TestBuildInitializedConfig:
         assert merged.secret_key is not None
         assert merged.secret_key.get_secret_value() == "explicit-secret"
 
+    def test_delivered_secret_key_wins_over_cached_dormant_cipher(self):
+        """Regression: the dormant boot accesses ``config.cipher`` (the
+        telemetry consent check goes through ``get_settings_store``), caching
+        a Cipher built from the pod's boot-time secret_key. ``model_copy``
+        carried that cache into the merged config, so the secret_key delivered
+        via /api/init was silently ignored and every pod encrypted persisted
+        secrets under its own throwaway key — nothing survived a warm-pool
+        pause/resume onto a new pod."""
+        from openhands.sdk.utils.cipher import Cipher
+
+        base = Config(deferred_init=True, secret_key=SecretStr("dormant-boot-key"))
+        assert base.cipher is not None  # prime the cache, as the dormant boot does
+
+        merged = _build_initialized_config(
+            base,
+            InitRequest(session_api_keys=["sk"], secret_key=SecretStr("delivered-key")),
+        )
+        merged_cipher = merged.cipher
+        assert merged_cipher is not None
+        token = merged_cipher.encrypt(SecretStr("payload"))
+        assert token is not None
+        decrypted = Cipher("delivered-key").decrypt(token)
+        assert decrypted is not None
+        assert decrypted.get_secret_value() == "payload"
+
 
 class TestRouterMounting:
     """Behavior of the /api/init endpoint outside the lifespan."""
@@ -163,6 +188,56 @@ class TestInitServiceTransitions:
             await svc.teardown()
             _reset_conversation_singleton()
             _reset_bash_singleton()
+
+    @pytest.mark.asyncio
+    async def test_init_rebuilds_persistence_stores_with_delivered_secret_key(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression: the dormant boot primes the persistence-store
+        singletons (build_telemetry_sink's consent check goes through
+        get_settings_store), fixing their cipher to the boot-time secret_key.
+        /api/init must drop them so they rebuild from the merged config."""
+        from openhands.agent_server.persistence.store import (
+            get_settings_store,
+            reset_stores,
+        )
+
+        _reset_conversation_singleton()
+        _reset_bash_singleton()
+        reset_stores()
+        monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persist"))
+
+        base = Config(
+            deferred_init=True,
+            secret_key=SecretStr("dormant-boot-key"),
+            conversations_path=tmp_path / "convs",
+            bash_events_dir=tmp_path / "bash",
+        )
+        # Prime the singleton exactly like the dormant lifespan does.
+        primed = get_settings_store(base)
+        assert primed.cipher is not None
+        assert primed.cipher.secret_key == "dormant-boot-key"
+
+        app = SimpleNamespace(state=SimpleNamespace(config=base))
+        svc = InitService(app, base_config=base)  # type: ignore[arg-type]
+        try:
+            await svc.initialize(
+                InitRequest(
+                    session_api_keys=["user-key"],
+                    secret_key=SecretStr("delivered-key"),
+                    conversations_path=tmp_path / "user" / "convs",
+                    bash_events_dir=tmp_path / "user" / "bash",
+                )
+            )
+            store = get_settings_store()
+            assert store is not primed
+            assert store.cipher is not None
+            assert store.cipher.secret_key == "delivered-key"
+        finally:
+            await svc.teardown()
+            _reset_conversation_singleton()
+            _reset_bash_singleton()
+            reset_stores()
 
     @pytest.mark.asyncio
     async def test_second_init_rejected_with_400(self, tmp_path):
