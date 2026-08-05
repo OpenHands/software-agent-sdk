@@ -1,7 +1,10 @@
 """Canvas Extensions: installable UI bundles that contribute pages to Canvas."""
 
 from openhands.agent_server.canvas_extensions.installed import (
+    CanvasExtensionUpdateCheck,
     InstalledCanvasExtensionInfo,
+    apply_canvas_extension_update,
+    check_canvas_extension_update,
     disable_canvas_extension,
     enable_canvas_extension,
     get_installed_canvas_extension,
@@ -35,4 +38,7 @@ __all__ = [
     "load_installed_canvas_extensions",
     "get_installed_canvas_extension",
     "get_installed_canvas_extensions_dir",
+    "CanvasExtensionUpdateCheck",
+    "check_canvas_extension_update",
+    "apply_canvas_extension_update",
 ]

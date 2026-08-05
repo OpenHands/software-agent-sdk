@@ -1,31 +1,43 @@
-"""Installed Canvas Extensions: the disabled-by-default guarantee.
+"""Installed Canvas Extensions.
 
-Built on ``openhands.sdk.extensions.installation``, the shared install-
-tracking framework Plugins/Skills also use. Not reused unmodified though:
-``InstallationInfo.enabled`` defaults to ``True``, and neither
-``InstallationManager.install()`` nor its self-healing directory discovery
-override that for a genuinely new entry (only a force-reinstall of an
-already-tracked name preserves its prior state). This module corrects that,
-as an explicit post-write step, so any newly created entry — from an
-install or from discovery — lands disabled until explicitly enabled.
+Built on ``openhands.sdk.extensions.installation``, shared with Plugins/
+Skills, with two behaviors specific to this module:
+
+Disabled by default -- ``InstallationInfo.enabled`` defaults to ``True``
+and neither ``InstallationManager.install()`` nor its directory discovery
+override that for a new entry, so every write path that can create one
+forces ``enabled=False`` as an explicit post-write step.
+
+Staged refresh -- ``check``/``apply`` replace ``update()``/
+``install(force=True)``, which rmtree+copytree straight onto the live
+install path with no staging directory. ``check`` fetches and validates
+into ``.staging/`` without touching the active install; ``apply`` swaps it
+in via two atomic renames (POSIX can't atomically replace a non-empty
+directory in one rename), rolling back if the second fails.
 """
 
+import os
+import shutil
 from pathlib import Path
+
+from pydantic import BaseModel, Field, ValidationError
 
 from openhands.agent_server.canvas_extensions.manifest import (
     MANIFEST_FILENAME,
     CanvasExtensionManifest,
     resolve_entrypoint,
 )
+from openhands.sdk.extensions.fetch import fetch_with_resolution
 from openhands.sdk.extensions.installation import (
     InstallationInfo,
     InstallationInterface,
     InstallationManager,
     InstallationMetadata,
 )
+from openhands.sdk.extensions.installation.manager import DEFAULT_CACHE_DIR
 
 
-# Public type alias, matching the InstalledPluginInfo convention.
+# Matches the InstalledPluginInfo naming convention.
 InstalledCanvasExtensionInfo = InstallationInfo
 
 
@@ -43,8 +55,7 @@ class CanvasExtensionInstallationInterface(
         manifest = CanvasExtensionManifest.model_validate_json(
             manifest_path.read_text()
         )
-        # Runs on every load (install + discovery): a parseable manifest
-        # isn't enough to trust the directory, containment must hold too.
+        # Containment must hold too -- a parseable manifest alone isn't enough.
         resolve_entrypoint(manifest, extension_dir)
         return manifest
 
@@ -65,12 +76,11 @@ def _manager(installed_dir: Path) -> InstallationManager[CanvasExtensionManifest
 
 
 def _tracked_names(installed_dir: Path) -> set[str]:
-    """Names backed by a real, valid tracked entry -- not just a metadata key.
+    """Names with a real, valid tracked entry, not just a metadata key.
 
-    A stale record with no matching directory (e.g. seeded to smuggle
-    ``enabled: true`` ahead of an install it doesn't correspond to yet)
-    must not count as "already installed", or a real install of that name
-    would inherit it as if it were a legitimate force-reinstall.
+    A stale record with no matching directory must not count as "already
+    installed" -- otherwise a real install of that name would wrongly
+    inherit its state as if this were a force-reinstall.
     """
     if not installed_dir.exists():
         return set()
@@ -85,10 +95,8 @@ def _force_disable_new(
 ) -> InstallationInfo:
     """Force a newly created tracked entry to ``enabled=False``.
 
-    ``pre_existing`` (names tracked *before* the write that produced
-    ``info``) distinguishes a genuinely new entry from a force-reinstall of
-    an already-tracked one, whose prior enabled state is already preserved
-    correctly -- see the module docstring.
+    ``pre_existing`` distinguishes a genuinely new entry from a
+    force-reinstall, whose prior enabled state is already preserved.
     """
     if info.name in pre_existing or not info.enabled:
         return info
@@ -106,22 +114,18 @@ def install_canvas_extension(
 ) -> InstalledCanvasExtensionInfo:
     """Install a canvas extension from a source.
 
-    A newly created tracked entry always lands disabled — enabling is a
-    separate, explicit step, regardless of anything a caller passes in.
-    See the module docstring for why this doesn't just delegate to
-    ``InstallationManager.install()`` unmodified.
+    A newly created entry always lands disabled, regardless of what the
+    caller passes in.
 
     Args:
-        source: Extension source — ``"github:owner/repo"``, git URL, or
-            local path.
+        source: ``"github:owner/repo"``, a git URL, or a local path.
         ref: Optional branch, tag, or commit to install.
-        repo_path: Subdirectory path within the repository (for monorepos).
-        installed_dir: Directory for installed canvas extensions. Defaults
-            to ``~/.openhands/canvas-extensions/installed/``.
+        repo_path: Subdirectory within the repository (for monorepos).
+        installed_dir: Defaults to ``~/.openhands/canvas-extensions/installed/``.
         force: If True, overwrite an existing installation.
 
     Returns:
-        InstalledCanvasExtensionInfo with details about the installation.
+        InstalledCanvasExtensionInfo for the installed extension.
     """
     installed_dir = _resolve_installed_dir(installed_dir)
     manager = _manager(installed_dir)
@@ -133,10 +137,17 @@ def install_canvas_extension(
 def uninstall_canvas_extension(name: str, installed_dir: Path | None = None) -> bool:
     """Uninstall a canvas extension by name.
 
+    Also drops any staged, not-yet-applied update for *name*, so refreshing
+    a since-uninstalled name never leaves an orphaned staging slot behind.
+
     Returns:
-        True if the extension was uninstalled, False if it wasn't installed.
+        True if uninstalled, False if it wasn't installed.
     """
-    return _manager(_resolve_installed_dir(installed_dir)).uninstall(name)
+    installed_dir = _resolve_installed_dir(installed_dir)
+    uninstalled = _manager(installed_dir).uninstall(name)
+    if uninstalled:
+        shutil.rmtree(_staging_root(installed_dir) / name, ignore_errors=True)
+    return uninstalled
 
 
 def enable_canvas_extension(name: str, installed_dir: Path | None = None) -> bool:
@@ -154,10 +165,8 @@ def list_installed_canvas_extensions(
 ) -> list[InstalledCanvasExtensionInfo]:
     """List all installed canvas extensions.
 
-    Self-healing like ``InstallationManager.list_installed()``. A directory
-    discovered this way (dropped in directly, bypassing
-    ``install_canvas_extension``) also lands disabled — see the module
-    docstring.
+    Self-healing like ``InstallationManager.list_installed()``; directories
+    discovered this way also land disabled.
     """
     installed_dir = _resolve_installed_dir(installed_dir)
     manager = _manager(installed_dir)
@@ -195,3 +204,200 @@ def get_installed_canvas_extension(
 ) -> InstalledCanvasExtensionInfo | None:
     """Get information about a specific installed canvas extension."""
     return _manager(_resolve_installed_dir(installed_dir)).get(name)
+
+
+class CanvasExtensionUpdateCheck(BaseModel):
+    """Result of ``check_canvas_extension_update``.
+
+    The active install is untouched; only ``.staging/`` is written. Pass
+    ``resolved_ref`` back to ``apply_canvas_extension_update`` to confirm
+    and swap this exact staged content into place.
+    """
+
+    requested_ref: str | None = Field(
+        description="Ref the staged fetch was resolved against"
+    )
+    resolved_ref: str | None = Field(
+        description="Commit SHA the staged content was resolved to"
+    )
+    validated: bool = Field(
+        description="Whether staged content passed validation; only True may be applied"
+    )
+
+
+def _staging_root(installed_dir: Path) -> Path:
+    return installed_dir / ".staging"
+
+
+def _staged_path(installed_dir: Path, name: str, resolved_ref: str | None) -> Path:
+    """Path to the staging slot for (*name*, *resolved_ref*).
+
+    *resolved_ref* is untrusted (``apply_canvas_extension_update`` takes it
+    as a caller-supplied argument), so it's rejected if it could escape the
+    staging directory -- same check as ``entrypoint`` in manifest.py.
+    """
+    if resolved_ref is not None and (
+        not resolved_ref
+        or resolved_ref.startswith("/")
+        or ".." in Path(resolved_ref).parts
+    ):
+        raise ValueError(f"Invalid resolved_ref: {resolved_ref!r}")
+    return _staging_root(installed_dir) / name / (resolved_ref or "local")
+
+
+def _stage_fetched_content(
+    installed_dir: Path, name: str, resolved_ref: str | None, fetched_path: Path
+) -> Path:
+    """Copy fetched content into a clean staging slot for *name*.
+
+    Clears any previously staged candidate first -- at most one is kept
+    per extension at a time.
+    """
+    slot_root = _staging_root(installed_dir) / name
+    shutil.rmtree(slot_root, ignore_errors=True)
+    staged_path = _staged_path(installed_dir, name, resolved_ref)
+    # symlinks=True: dereferencing here would copy a malicious symlink's
+    # target in as a plain file, defeating containment validation below.
+    shutil.copytree(fetched_path, staged_path, symlinks=True)
+    return staged_path
+
+
+def _load_validated_manifest(
+    staged_path: Path, expected_name: str
+) -> CanvasExtensionManifest:
+    """Load and validate a staged extension's manifest.
+
+    Raises if the manifest is malformed, its entrypoint escapes the package
+    root, or its name no longer matches *expected_name*.
+    """
+    manifest = CanvasExtensionInstallationInterface.load_from_dir(staged_path)
+    if manifest.name != expected_name:
+        raise ValueError(
+            f"Staged content for {expected_name!r} declares a different "
+            f"name {manifest.name!r}; refusing to treat it as an update"
+        )
+    return manifest
+
+
+def check_canvas_extension_update(
+    name: str, installed_dir: Path | None = None
+) -> CanvasExtensionUpdateCheck | None:
+    """Check for an update to *name*, staging and validating it.
+
+    Re-fetches the tracked source at its original ref (never "latest")
+    into ``.staging/``; the active install is untouched. See
+    ``apply_canvas_extension_update`` for the step that swaps it into
+    place.
+
+    Args:
+        name: Name of the installed extension to check.
+        installed_dir: Defaults to ``~/.openhands/canvas-extensions/installed/``.
+
+    Returns:
+        None if not installed, else a result -- only apply when ``validated``.
+
+    Raises:
+        ValueError: If *name* is not valid kebab-case.
+        ExtensionFetchError: If fetching the tracked source fails.
+    """
+    installed_dir = _resolve_installed_dir(installed_dir)
+    manager = _manager(installed_dir)
+    current_info = manager.get(name)
+    if current_info is None:
+        return None
+
+    fetched_path, resolved_ref = fetch_with_resolution(
+        source=current_info.source,
+        cache_dir=DEFAULT_CACHE_DIR,
+        ref=current_info.requested_ref,
+        repo_path=current_info.repo_path,
+        update=True,
+    )
+
+    staged_path = _stage_fetched_content(
+        installed_dir, name, resolved_ref, fetched_path
+    )
+    try:
+        _load_validated_manifest(staged_path, name)
+        validated = True
+    except (ValidationError, ValueError, OSError):
+        validated = False
+        shutil.rmtree(staged_path.parent, ignore_errors=True)
+
+    return CanvasExtensionUpdateCheck(
+        requested_ref=current_info.requested_ref,
+        resolved_ref=resolved_ref,
+        validated=validated,
+    )
+
+
+def apply_canvas_extension_update(
+    name: str,
+    resolved_ref: str | None,
+    enabled: bool,
+    installed_dir: Path | None = None,
+) -> InstalledCanvasExtensionInfo | None:
+    """Apply a previously checked and validated update.
+
+    *resolved_ref* must match a staged candidate already validated by
+    ``check_canvas_extension_update``, reconfirming what's being applied.
+    Atomically swaps staged content into the active install path;
+    *enabled* is always applied explicitly, never inherited.
+
+    Args:
+        name: Name of the installed extension to update.
+        resolved_ref: The ``resolved_ref`` from a prior, validated check.
+        enabled: Enabled state to apply to the new bundle.
+        installed_dir: Defaults to ``~/.openhands/canvas-extensions/installed/``.
+
+    Returns:
+        None if not installed, else the InstallationInfo for the new bundle.
+
+    Raises:
+        ValueError: If *name* is invalid, *resolved_ref* could escape the
+            staging directory, or no validated staged candidate matches it
+            -- call check first.
+    """
+    installed_dir = _resolve_installed_dir(installed_dir)
+    manager = _manager(installed_dir)
+    current_info = manager.get(name)
+    if current_info is None:
+        return None
+
+    staged_path = _staged_path(installed_dir, name, resolved_ref)
+    if not staged_path.is_dir():
+        raise ValueError(
+            f"No validated staged update found for {name!r} at ref "
+            f"{resolved_ref!r}. Call check_canvas_extension_update() first."
+        )
+    manifest = _load_validated_manifest(staged_path, name)
+
+    install_path = installed_dir / name
+    backup_path = _staging_root(installed_dir) / f"{name}.previous"
+    shutil.rmtree(backup_path, ignore_errors=True)
+
+    # POSIX rename() can't atomically replace a non-empty directory, so the
+    # active bundle moves aside first; roll back if the second rename fails.
+    os.replace(install_path, backup_path)
+    try:
+        os.replace(staged_path, install_path)
+    except OSError:
+        os.replace(backup_path, install_path)
+        raise
+    shutil.rmtree(backup_path, ignore_errors=True)
+    shutil.rmtree(_staging_root(installed_dir) / name, ignore_errors=True)
+
+    info = InstallationInfo.from_extension(
+        manifest,
+        source=current_info.source,
+        install_path=install_path,
+        requested_ref=current_info.requested_ref,
+        resolved_ref=resolved_ref,
+        repo_path=current_info.repo_path,
+    )
+    info.enabled = enabled
+
+    with manager.metadata_session as session:
+        session.extensions[name] = info
+
+    return info
