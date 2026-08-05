@@ -4,6 +4,7 @@ from openhands.sdk.llm.auth import (
     OAuthCredentials,
     OpenAISubscriptionAuth,
 )
+from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.llm import LLM, LLM_PROFILE_SCHEMA_VERSION
 from openhands.sdk.llm.llm_profile_store import (
@@ -47,6 +48,7 @@ __all__ = [
     "FallbackStrategy",
     "LLMResponse",
     "LLM",
+    "LLMCallContext",
     "LLM_PROFILE_SCHEMA_VERSION",
     "LLMRegistry",
     "LLMProfileLoader",
