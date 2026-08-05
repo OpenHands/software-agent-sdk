@@ -449,6 +449,20 @@ def _compose_conversation_info(
         or agent_state.get("acp_available_models")
         or []
     )
+    # current_effort / available_efforts: same live → persisted precedence as
+    # the model fields above, but with no third ``acp_model``-derived
+    # fallback for cold reads. Splitting the effort component off a composite
+    # ``acp_model`` (e.g. ``"sonnet/high"``) is provider-specific logic
+    # (``_model_config_option_effort``) that lives in ``acp_agent`` and isn't
+    # reproduced here, so a cold read with no live PrivateAttr and no
+    # persisted hint honestly reports ``None`` rather than guessing — there
+    # is no ``agent_initialized`` gate to apply on this field.
+    current_effort = getattr(agent, "current_effort", None) or agent_state.get(
+        "acp_current_effort"
+    )
+    available_efforts = getattr(agent, "available_efforts", None) or agent_state.get(
+        "acp_available_efforts"
+    )
     # Static provider capability. Unlike the two fields above it has no
     # meaningful live-vs-persisted distinction — it's derived from the stable
     # provider identity and written once at session init — so we read the
@@ -469,6 +483,8 @@ def _compose_conversation_info(
         sub_conversation_ids=sub_conversation_ids or [],
         current_model_id=current_model_id,
         available_models=available_models,
+        current_effort=current_effort,
+        available_efforts=available_efforts,
         supports_runtime_model_switch=supports_runtime_model_switch,
         client_tools=stored.client_tools,
         launched_agent_profile=stored.launched_agent_profile,

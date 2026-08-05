@@ -1739,10 +1739,18 @@ class LocalConversation(BaseConversation):
             # otherwise still name the pre-switch model until the next resume.
             # Write unconditionally: a successful switch is authoritative even
             # for an older/custom server that reported no ``models`` at init
-            # (so the key may not exist yet).
+            # (so the key may not exist yet). Same for ``acp_current_effort``:
+            # ``new_agent.current_effort`` already carries whatever the live
+            # switch resolved (see ``ACPAgent.set_acp_model``) — the effort
+            # component of a composite ``model/effort`` id when the switch
+            # applied one, or the prior value unchanged otherwise (a bare
+            # model id, or a deferred pre-session switch that made no
+            # protocol call yet) — so persisting it here keeps the cold-read
+            # hint from lagging the (correctly refreshed) live PrivateAttr.
             self._state.agent_state = {
                 **self._state.agent_state,
                 "acp_current_model_id": model,
+                "acp_current_effort": new_agent.current_effort,
             }
 
     @observe(name="conversation.send_message")
