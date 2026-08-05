@@ -399,35 +399,39 @@ class TestTaskManager:
         assert sub_keys == [parent_key, parent_key]
 
     def test_marks_conversation_as_delegate_with_linking_metadata(self, tmp_path):
-        """A sub-agent conversation must start a detached trace tagged with
-        the originating task_id/subagent_type (software-agent-sdk#4365)."""
+        """A sub-agent conversation must be built inside a detached trace,
+        tagged with the originating task_id/subagent_type (software-agent-sdk#4365).
+        Exercises the real `detached_delegate_context`, not a mock of it."""
+        from openhands.sdk.observability import laminar as lam
+
         manager, parent = _manager_with_parent(tmp_path)
         register_builtins_agents()
         task_id, conversation_id = manager._generate_ids()
         agent = manager._get_sub_agent("general-purpose")
 
         with (
-            patch(
-                "openhands.sdk.conversation.base.should_enable_observability",
-                return_value=True,
-            ),
+            patch("lmnr.Laminar") as mock_laminar,
             patch(
                 "openhands.sdk.conversation.base.start_root_span",
                 return_value=None,
             ) as mock_start_root_span,
         ):
-            manager._get_conversation(
-                description="test",
-                max_iteration_per_run=500,
-                task_id=task_id,
-                subagent_type="general-purpose",
-                conversation_id=conversation_id,
-                worker_agent=agent,
-            )
+            mock_laminar.get_laminar_span_context.return_value = None
+            lam._observability_enabled = True
+            try:
+                manager._get_conversation(
+                    description="test",
+                    max_iteration_per_run=500,
+                    task_id=task_id,
+                    subagent_type="general-purpose",
+                    conversation_id=conversation_id,
+                    worker_agent=agent,
+                )
+            finally:
+                lam._observability_enabled = False
 
         mock_start_root_span.assert_called_once()
         kwargs = mock_start_root_span.call_args.kwargs
-        assert kwargs["detached"] is True
         assert kwargs["tags"] == ["delegate"]
         assert kwargs["metadata"] == {
             "is_delegate": True,
@@ -437,7 +441,9 @@ class TestTaskManager:
         }
 
     def test_resume_task_marks_conversation_as_delegate(self, tmp_path):
-        """Resuming a task must also start a detached, delegate-tagged trace."""
+        """Resuming a task must also build a detached, delegate-tagged trace."""
+        from openhands.sdk.observability import laminar as lam
+
         manager, parent = _manager_with_parent(tmp_path)
         register_builtins_agents()
 
@@ -445,26 +451,77 @@ class TestTaskManager:
         manager._evict_task(task)
 
         with (
-            patch(
-                "openhands.sdk.conversation.base.should_enable_observability",
-                return_value=True,
-            ),
+            patch("lmnr.Laminar") as mock_laminar,
             patch(
                 "openhands.sdk.conversation.base.start_root_span",
                 return_value=None,
             ) as mock_start_root_span,
         ):
-            manager._resume_task(resume=task.id, subagent_type="general-purpose")
+            mock_laminar.get_laminar_span_context.return_value = None
+            lam._observability_enabled = True
+            try:
+                manager._resume_task(resume=task.id, subagent_type="general-purpose")
+            finally:
+                lam._observability_enabled = False
 
         mock_start_root_span.assert_called_once()
         kwargs = mock_start_root_span.call_args.kwargs
-        assert kwargs["detached"] is True
         assert kwargs["tags"] == ["delegate"]
         assert kwargs["metadata"] == {
             "is_delegate": True,
             "task_id": task.id,
             "subagent_type": "general-purpose",
             "parent_session_id": str(parent.state.id),
+        }
+
+    def test_delegate_metadata_includes_parent_span_link(self, tmp_path):
+        """When a parent span is active, its trace_id/span_id/tool_call_id must
+        be merged into the delegate's observability metadata."""
+        from types import SimpleNamespace
+
+        from openhands.sdk.observability import laminar as lam
+
+        manager, parent = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+        task_id, conversation_id = manager._generate_ids()
+        agent = manager._get_sub_agent("general-purpose")
+
+        parent_ctx = SimpleNamespace(
+            trace_id="11111111-1111-1111-1111-111111111111",
+            span_id="22222222-2222-2222-2222-222222222222",
+            metadata={"tool_call_id": "call_abc123"},
+        )
+
+        with (
+            patch("lmnr.Laminar") as mock_laminar,
+            patch(
+                "openhands.sdk.conversation.base.start_root_span",
+                return_value=None,
+            ) as mock_start_root_span,
+        ):
+            mock_laminar.get_laminar_span_context.return_value = parent_ctx
+            lam._observability_enabled = True
+            try:
+                manager._get_conversation(
+                    description="test",
+                    max_iteration_per_run=500,
+                    task_id=task_id,
+                    subagent_type="general-purpose",
+                    conversation_id=conversation_id,
+                    worker_agent=agent,
+                )
+            finally:
+                lam._observability_enabled = False
+
+        kwargs = mock_start_root_span.call_args.kwargs
+        assert kwargs["metadata"] == {
+            "is_delegate": True,
+            "task_id": task_id,
+            "subagent_type": "general-purpose",
+            "parent_session_id": str(parent.state.id),
+            "delegate.parent_trace_id": str(parent_ctx.trace_id),
+            "delegate.parent_span_id": str(parent_ctx.span_id),
+            "tool_call_id": "call_abc123",
         }
 
 

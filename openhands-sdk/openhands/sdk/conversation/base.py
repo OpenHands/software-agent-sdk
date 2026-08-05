@@ -147,7 +147,6 @@ class BaseConversation(ABC):
         metadata: dict[str, TraceMetadataValue] | None = None,
         tags: list[str] | None = None,
         conversation_tags: Mapping[str, str] | None = None,
-        delegate: bool = False,
     ) -> None:
         """Start a per-conversation observability root span.
 
@@ -158,29 +157,19 @@ class BaseConversation(ABC):
             metadata: Optional trace-level metadata to attach to observability backends
             tags: Optional span tags to attach to the conversation root span
             conversation_tags: Optional conversation tags to add as root span attributes
-            delegate: Whether this conversation is a sub-agent delegate (e.g.
-                spawned by the ``task`` tool). Delegates get their own detached
-                trace instead of joining whatever span is currently active —
-                see ``RootSpan.__init__`` — and are marked ``is_delegate`` in
-                their trace metadata.
         """
         if not should_enable_observability():
             return
         if self._observability_root_span is not None:
             # Idempotent: never start two roots for one conversation.
             return
-        span_metadata = dict(metadata) if metadata else None
-        if delegate:
-            span_metadata = span_metadata or {}
-            span_metadata.setdefault("is_delegate", True)
         self._observability_root_span = start_root_span(
             "conversation",
             session_id=session_id,
             user_id=user_id,
-            metadata=span_metadata,
+            metadata=metadata,
             tags=tags,
             attributes=_conversation_tag_attributes(conversation_tags),
-            detached=delegate,
         )
         if span_name != "conversation":
             start_child_span(self._observability_root_span, span_name, tags=tags)

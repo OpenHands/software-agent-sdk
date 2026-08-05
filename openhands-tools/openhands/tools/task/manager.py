@@ -32,6 +32,7 @@ from openhands.sdk.conversation.types import TraceMetadataValue
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.logger import get_logger
+from openhands.sdk.observability.laminar import detached_delegate_context
 from openhands.sdk.security import ConfirmationPolicyBase
 from openhands.sdk.subagent.registry import AgentFactory, get_agent_factory
 
@@ -211,19 +212,19 @@ class TaskManager:
             factory = get_agent_factory(subagent_type)
             worker_agent = self._get_sub_agent_from_factory(factory)
             conversation_id = self._tasks[resume].conversation_id
-            conversation = LocalConversation(
-                agent=worker_agent,
-                workspace=self.parent_conversation.state.workspace.working_dir,
-                persistence_dir=self._persistence_dir,
-                conversation_id=conversation_id,
-                hook_config=factory.definition.hooks,
-                delete_on_close=True,
-                observability_delegate=True,
-                observability_metadata=self._delegate_observability_metadata(
-                    task_id=resume, subagent_type=subagent_type
-                ),
-                observability_tags=["delegate"],
-            )
+            with detached_delegate_context() as link:
+                conversation = LocalConversation(
+                    agent=worker_agent,
+                    workspace=self.parent_conversation.state.workspace.working_dir,
+                    persistence_dir=self._persistence_dir,
+                    conversation_id=conversation_id,
+                    hook_config=factory.definition.hooks,
+                    delete_on_close=True,
+                    observability_metadata=self._delegate_observability_metadata(
+                        task_id=resume, subagent_type=subagent_type, link=link
+                    ),
+                    observability_tags=["delegate"],
+                )
 
             self._set_confirmation_policy(
                 conversation,
@@ -310,32 +311,42 @@ class TaskManager:
             label = description or task_id
             visualizer = parent_visualizer.create_sub_visualizer(label)
 
-        return LocalConversation(
-            agent=worker_agent,
-            workspace=parent.state.workspace.working_dir,
-            visualizer=visualizer,
-            persistence_dir=self._persistence_dir,
-            conversation_id=conversation_id,
-            max_iteration_per_run=max_iteration_per_run,
-            max_budget_per_run=max_budget_per_run,
-            hook_config=hook_config,
-            delete_on_close=True,
-            prompt_cache_key=str(parent.state.id),
-            observability_delegate=True,
-            observability_metadata=self._delegate_observability_metadata(
-                task_id=task_id, subagent_type=subagent_type
-            ),
-            observability_tags=["delegate"],
-        )
+        with detached_delegate_context() as link:
+            return LocalConversation(
+                agent=worker_agent,
+                workspace=parent.state.workspace.working_dir,
+                visualizer=visualizer,
+                persistence_dir=self._persistence_dir,
+                conversation_id=conversation_id,
+                max_iteration_per_run=max_iteration_per_run,
+                max_budget_per_run=max_budget_per_run,
+                hook_config=hook_config,
+                delete_on_close=True,
+                prompt_cache_key=str(parent.state.id),
+                observability_metadata=self._delegate_observability_metadata(
+                    task_id=task_id, subagent_type=subagent_type, link=link
+                ),
+                observability_tags=["delegate"],
+            )
 
     def _delegate_observability_metadata(
-        self, task_id: str, subagent_type: str
+        self,
+        task_id: str,
+        subagent_type: str,
+        link: dict[str, TraceMetadataValue],
     ) -> dict[str, TraceMetadataValue]:
-        """Trace metadata identifying a delegate conversation to its task."""
+        """Trace metadata identifying a delegate conversation to its task.
+
+        ``link`` is the parent-trace linkage yielded by
+        ``detached_delegate_context`` (``delegate.parent_trace_id``/
+        ``delegate.parent_span_id``/``tool_call_id``, best-effort).
+        """
         return {
+            "is_delegate": True,
             "task_id": task_id,
             "subagent_type": subagent_type,
             "parent_session_id": str(self.parent_conversation.state.id),
+            **link,
         }
 
     def _get_sub_agent(self, subagent_type: str) -> Agent:
