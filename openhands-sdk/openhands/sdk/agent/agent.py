@@ -1325,6 +1325,9 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 observation: Observation = observe(
                     name=tool_name,
                     span_type="TOOL",
+                    # Only the action is input; the conversation would serialize
+                    # as a bare object repr carrying a memory address.
+                    ignore_inputs=["conversation"],
                     metadata={"tool_call_id": action_event.tool_call.id},
                 )(tool)(action_event.action, conversation)
             else:
