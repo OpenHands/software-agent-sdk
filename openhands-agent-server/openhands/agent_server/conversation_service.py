@@ -50,6 +50,7 @@ from openhands.sdk import LLM, AgentContext, Event, Message
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.agent.acp_file_credentials import CODEX_AUTH_SECRET_NAME
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.persistence_const import BASE_STATE
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
@@ -65,6 +66,7 @@ from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.mcp.utils import MCPToolProvider
+from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
 from openhands.sdk.tool import BROWSER_TOOL_NAME, Tool, is_tool_usable
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.utils.cipher import Cipher
@@ -2201,6 +2203,22 @@ class _EventSubscriber(Subscriber):
         update_last_execution_time()
 
 
+@observe(
+    name="conversation.generate_title",
+    ignore_inputs=["conversation", "llm"],
+    metadata={OPERATION_METADATA_KEY: "title_generation"},
+)
+def _generate_title_traced(
+    # Unused, but must stay first and positional: ``observe`` re-attaches the
+    # root span it carries, and this runs on a context-less executor thread.
+    conversation: LocalConversation | None,  # noqa: ARG001
+    message: str,
+    llm: LLM | None,
+    max_length: int,
+) -> str:
+    return generate_title_from_message(message, llm, max_length)
+
+
 @dataclass
 class AutoTitleSubscriber(Subscriber):
     service: EventService
@@ -2223,9 +2241,9 @@ class AutoTitleSubscriber(Subscriber):
         # Precedence: title_llm_profile (if configured and loads) → agent.llm →
         # truncation. This keeps auto-titling non-breaking for consumers who
         # don't configure title_llm_profile.
+        conversation = self.service._conversation
         title_llm = self._load_title_llm()
         if title_llm is None:
-            conversation = self.service._conversation
             title_llm = conversation.agent.llm if conversation else None
 
         async def _generate_and_save() -> None:
@@ -2233,7 +2251,8 @@ class AutoTitleSubscriber(Subscriber):
                 loop = asyncio.get_running_loop()
                 title = await loop.run_in_executor(
                     None,
-                    generate_title_from_message,
+                    _generate_title_traced,
+                    conversation,
                     message_text,
                     title_llm,
                     50,
