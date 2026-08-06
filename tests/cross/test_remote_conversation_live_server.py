@@ -1126,6 +1126,49 @@ def test_conversation_stats_with_live_server(
     conv.close()
 
 
+def test_conversation_effort_fields_round_trip_over_rest(server_env):
+    """GET /api/conversations/{id} surfaces the ACP effort fields end-to-end.
+
+    A native agent leaves current_effort/available_efforts unset. Seeding the
+    server-side conversation's persisted agent_state (the acp_current_effort /
+    acp_available_efforts keys ACPAgent._init writes, read on cold list reads)
+    makes them round-trip through the REST ConversationInfo payload — mirrors
+    tests/agent_server/test_conversation_info_model.py::
+    test_effort_fields_read_from_persisted_agent_state, but over the real HTTP
+    stack instead of calling _compose_conversation_info directly.
+    """
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+    agent = Agent(llm=llm, tools=[])
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir="/tmp/workspace/project"
+    )
+    conv: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+
+    with httpx.Client(base_url=server_env["host"]) as client:
+        response = client.get(f"/api/conversations/{conv.id}", timeout=5.0)
+        assert response.status_code == 200
+        body = response.json()
+        assert body["current_effort"] is None
+        assert body["available_efforts"] is None
+
+        event_service = server_env["conversation_service"]._event_services[conv.id]
+        assert event_service._conversation is not None
+        with event_service._conversation._state as state:
+            state.agent_state = {
+                **state.agent_state,
+                "acp_current_effort": "high",
+                "acp_available_efforts": ["low", "medium", "high", "default"],
+            }
+
+        response = client.get(f"/api/conversations/{conv.id}", timeout=5.0)
+        assert response.status_code == 200
+        body = response.json()
+        assert body["current_effort"] == "high"
+        assert body["available_efforts"] == ["low", "medium", "high", "default"]
+
+    conv.close()
+
+
 def test_events_not_lost_during_client_disconnection(
     server_env, monkeypatch: pytest.MonkeyPatch
 ):

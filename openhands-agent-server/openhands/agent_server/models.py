@@ -292,6 +292,36 @@ class _ConversationInfoBase(BaseModel):
             '``"Opus 4.7 with 1M context · ..."``).'
         ),
     )
+    current_effort: str | None = Field(
+        default=None,
+        description=(
+            "Effort/reasoning-effort level the agent is actually using for "
+            "this session. For ACP agents, this is lifted off "
+            "``ACPAgent.current_effort`` (populated from the ``effort`` "
+            "(claude-agent-acp) or ``reasoning_effort`` (codex-acp) "
+            "``configOptions`` select on the ACP session response, or from "
+            "the effort component of a forced ``acp_model`` override such as "
+            '``"sonnet/high"``). ``None`` for older ACP servers or providers '
+            "that don't surface effort selection, or while the agent is "
+            "still initializing. Native OpenHands agents leave this "
+            "``None``."
+        ),
+    )
+    available_efforts: list[str] | None = Field(
+        default=None,
+        description=(
+            "Effort/reasoning-effort levels the ACP server offers for this "
+            "session, lifted off ``ACPAgent.available_efforts`` (the "
+            "``effort``/``reasoning_effort`` ``configOptions`` select's "
+            "``options`` on the ACP session response). Surfaced verbatim so "
+            "clients can render an effort picker and resolve "
+            "``current_effort`` against it. ``None`` when no effort-capable "
+            "select was reported (older ACP servers, providers without "
+            "effort selection, and native OpenHands agents) — distinct from "
+            "``[]``, which means the select was present but offered no "
+            "usable levels."
+        ),
+    )
     supports_runtime_model_switch: bool = Field(
         default=False,
         description=(

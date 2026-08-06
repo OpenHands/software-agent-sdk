@@ -201,6 +201,31 @@ def test_switch_acp_model_refreshes_surfaced_current_model_id(tmp_path):
     assert conv.state.agent_state["acp_current_model_id"] == "model-b"
 
 
+def test_switch_acp_model_refreshes_surfaced_current_effort(tmp_path):
+    """A live switch to a composite ``model/effort`` id refreshes
+    ``current_effort`` the same way it refreshes ``current_model_id``.
+
+    Mirrors ``test_switch_acp_model_refreshes_surfaced_current_model_id`` for
+    the effort component: the chip/picker reads
+    ``ACPAgent.current_effort`` (and the persisted ``acp_current_effort``
+    hint on cold reads), both of which must reflect the switch.
+    """
+    conv, agent = _make_acp_conversation(tmp_path)
+    agent._agent_name = "claude-agent-acp"
+    agent._model_via_config_option = True
+    agent._current_effort = "low"  # what _init captured at session start
+    assert "acp_current_effort" not in conv.state.agent_state
+
+    conv.switch_acp_model("sonnet/high")
+
+    switched = conv.agent
+    assert isinstance(switched, ACPAgent)
+    # Live PrivateAttr (carried onto the persisted agent by the model_copy).
+    assert switched.current_effort == "high"
+    # Persisted hint written unconditionally for cold reads before re-init.
+    assert conv.state.agent_state["acp_current_effort"] == "high"
+
+
 def test_switch_acp_model_disarms_discarded_agent_finalizer(tmp_path):
     """The pre-switch agent must not tear down the shared live session.
 

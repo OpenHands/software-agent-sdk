@@ -29,6 +29,7 @@ import weakref
 from collections.abc import Awaitable, Callable, Collection, Generator, Iterable
 from concurrent.futures import Future
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
 
 from acp.client.connection import ClientSideConnection
@@ -38,6 +39,7 @@ from acp.schema import (
     AgentMessageChunk,
     AgentThoughtChunk,
     AllowedOutcome,
+    ConfigOptionUpdate,
     EnvVariable,
     HttpHeader,
     HttpMcpServer,
@@ -387,8 +389,21 @@ def _with_codex_base_url(
 # (codex-acp, claude-agent-acp 0.44+) rather than the UNSTABLE ``models``
 # capability + ``session/set_model`` (gemini-cli, older codex/claude).
 _MODEL_CONFIG_OPTION_ID = "model"
+# Session config-option ids that select the reasoning/thinking effort level,
+# gated by provider: claude-agent-acp exposes ``effort``, codex-acp exposes
+# ``reasoning_effort``. Recognized generically (id membership only) by
+# ``_extract_session_efforts`` so either provider's select is picked up
+# without provider detection at read time.
+_EFFORT_CONFIG_OPTION_IDS: Final[tuple[str, ...]] = ("effort", "reasoning_effort")
 _CODEX_REASONING_EFFORTS: Final[frozenset[str]] = frozenset(
     {"low", "medium", "high", "xhigh"}
+)
+# claude-agent-acp's ``effort`` config option (thought_level category) adds
+# ``max`` on top of the levels codex-acp's ``reasoning_effort`` accepts — do
+# not fold this into ``_CODEX_REASONING_EFFORTS``, the two are gated to
+# different providers below.
+_CLAUDE_EFFORT_LEVELS: Final[frozenset[str]] = frozenset(
+    {"low", "medium", "high", "xhigh", "max"}
 )
 
 
@@ -403,6 +418,26 @@ def _codex_model_config_options(model: str) -> tuple[tuple[str, str], ...]:
     return ((_MODEL_CONFIG_OPTION_ID, model),)
 
 
+def _claude_model_config_options(model: str) -> tuple[tuple[str, str], ...]:
+    """Map combined Canvas Claude Code model IDs to claude-agent-acp config
+    options.
+
+    Mirrors :func:`_codex_model_config_options`, but claude-agent-acp exposes
+    thinking effort as its own ``effort`` config option (not
+    ``reasoning_effort``). Splitting on the last ``/`` also handles ids that
+    themselves contain a ``/`` in the base (none of the curated Claude ids
+    do today, but ``opus[1m]/max`` still splits into base ``opus[1m]`` +
+    effort ``max`` since ``max`` is only valid for Claude, not Codex).
+    """
+    base_model, sep, effort = model.rpartition("/")
+    if sep and base_model and effort in _CLAUDE_EFFORT_LEVELS:
+        return (
+            (_MODEL_CONFIG_OPTION_ID, base_model),
+            ("effort", effort),
+        )
+    return ((_MODEL_CONFIG_OPTION_ID, model),)
+
+
 def _model_config_options(
     agent_name: str | None,
     model: str,
@@ -410,6 +445,8 @@ def _model_config_options(
     provider = detect_acp_provider_by_agent_name(agent_name or "")
     if provider is not None and provider.key == "codex":
         return _codex_model_config_options(model)
+    if provider is not None and provider.key == "claude-code":
+        return _claude_model_config_options(model)
     return ((_MODEL_CONFIG_OPTION_ID, model),)
 
 
@@ -451,9 +488,11 @@ async def _apply_acp_model(
     servers (codex-acp, claude-agent-acp 0.44+), else ``set_session_model``.
 
     The model id is normally the bare preset id listed by the server. For
-    Codex, callers may still pass a combined Canvas id such as ``gpt-5.5/high``;
-    codex-acp exposes reasoning effort as a separate config option, so split it
-    only on the config-options mechanism.
+    Codex and Claude Code, callers may still pass a combined Canvas id such as
+    ``gpt-5.5/high`` or ``sonnet/high``; codex-acp exposes reasoning effort as
+    a separate ``reasoning_effort`` config option and claude-agent-acp exposes
+    thinking effort as a separate ``effort`` config option, so split it only
+    on the config-options mechanism (see :func:`_model_config_options`).
     """
     if via_config_option:
         for config_id, value in _model_config_options(agent_name, model):
@@ -462,6 +501,40 @@ async def _apply_acp_model(
             )
     else:
         await conn.set_session_model(model_id=model, session_id=session_id)
+
+
+def _flatten_select_options(options: Iterable[Any]) -> list[Any]:
+    """Flatten a ``configOptions`` select's ``options`` into leaf options.
+
+    The pinned ``agent-client-protocol`` lib (0.10.1) types
+    ``SessionConfigSelect.options`` (the base of both ``SessionConfigOptionSelect``
+    — the ``model``/``effort``/``reasoning_effort`` selects — and
+    ``SetSessionConfigOptionSelectRequest``) as
+    ``List[SessionConfigSelectOption] | List[SessionConfigSelectGroup]``: an
+    agent may present its selectable values either as a flat list, or grouped
+    under a labelled heading (``SessionConfigSelectGroup``, carrying its
+    ``group``/``name`` plus a nested ``options: List[SessionConfigSelectOption]``).
+    Reading every entry as a flat option — the prior behavior — silently drops
+    group entries: a group has no ``value``/``model_id`` of its own, so
+    :meth:`ACPModelInfo.from_protocol` yields an empty id that
+    :func:`_usable_models` then filters out, leaving an agent using grouped
+    selects with an apparently empty model/effort list.
+
+    A flat ``SessionConfigSelectOption`` has no nested ``options`` of its own
+    (``getattr`` returns ``None``), so it is appended as-is; a
+    ``SessionConfigSelectGroup`` is replaced by its nested leaf options.
+    Order is preserved — groups are flattened in place, each group's members
+    in the order the server sent them — and an empty group (or an all-empty
+    list of groups) simply contributes nothing.
+    """
+    flattened: list[Any] = []
+    for entry in options:
+        nested = getattr(entry, "options", None)
+        if nested is not None:
+            flattened.extend(nested)
+        else:
+            flattened.append(entry)
+    return flattened
 
 
 def _usable_models(infos: Iterable[ACPModelInfo]) -> list[ACPModelInfo]:
@@ -506,13 +579,16 @@ def _extract_session_models(
     # Prefer configOptions when an adapter advertises both it and the legacy
     # ``models`` extension. The ``model`` select carries the same state, with
     # each option's ``value`` as the model id (== the ``set_config_option`` target).
+    # ``options`` may be flat or grouped under labelled headings — see
+    # :func:`_flatten_select_options`.
     opt = _model_config_option(response)
     if opt is not None:
         current = getattr(opt, "current_value", None)
         current = current if isinstance(current, str) and current else None
         options = getattr(opt, "options", None) or []
         usable = _usable_models(
-            ACPModelInfo.from_protocol(o, id_attr="value") for o in options
+            ACPModelInfo.from_protocol(o, id_attr="value")
+            for o in _flatten_select_options(options)
         )
         return current, usable, True
     models = getattr(response, "models", None)
@@ -523,6 +599,157 @@ def _extract_session_models(
         usable = _usable_models(ACPModelInfo.from_protocol(m) for m in raw)
         return current, usable, False
     return None, None, default_via_config_option
+
+
+def _effort_config_option(response: Any) -> Any | None:
+    """Return the first ``configOptions`` select whose id names an effort
+    level (see :data:`_EFFORT_CONFIG_OPTION_IDS`), or ``None``.
+
+    Mirrors :func:`_model_config_option`: unwraps the ``agent-client-protocol``
+    0.8.x ``SessionConfigOption`` RootModel wrapper (access via ``.root``) so
+    detection works on either 0.8.x or 0.10.x of the vendored lib.
+    """
+    for raw in getattr(response, "config_options", None) or []:
+        opt = getattr(raw, "root", raw)
+        if (
+            getattr(opt, "type", None) == "select"
+            and getattr(opt, "id", None) in _EFFORT_CONFIG_OPTION_IDS
+        ):
+            return opt
+    return None
+
+
+def _extract_session_efforts(response: Any) -> tuple[str | None, list[str] | None]:
+    """Extract the effort/reasoning-effort state off a session response.
+
+    Returns ``(current_effort, available_efforts)``, best-effort. Reads the
+    ``effort`` (claude-agent-acp) or ``reasoning_effort`` (codex-acp)
+    ``configOptions`` select, mirroring :func:`_model_config_option`; both
+    flat and grouped ``options`` are handled (see
+    :func:`_flatten_select_options`). There is no legacy ``models``-capability
+    equivalent for effort, so unlike :func:`_extract_session_models` this has
+    a single mechanism to check.
+
+    ``available_efforts`` distinguishes **absent** from **empty**, same as
+    ``_extract_session_models``'s ``available_models``:
+
+    - ``None``  — no effort-like select was present in the response (older
+      agent, a provider without effort selection, or a ``load_session`` not
+      carrying it).
+    - ``[]``    — the select was present but offered no usable (non-empty
+      string) values.
+    - ``[...]`` — the reported effort levels, in the order the server sent
+      them. The ``"default"`` value is a real selectable option and is kept.
+
+    ``getattr`` keeps the helper tolerant of agents that emit a partial
+    structure.
+    """
+    if response is None:
+        return None, None
+    opt = _effort_config_option(response)
+    if opt is None:
+        return None, None
+    current = getattr(opt, "current_value", None)
+    current = current if isinstance(current, str) and current else None
+    options = getattr(opt, "options", None) or []
+    available = [
+        value
+        for o in _flatten_select_options(options)
+        if isinstance((value := getattr(o, "value", None)), str) and value
+    ]
+    return current, available
+
+
+def _model_config_option_effort(
+    agent_name: str | None,
+    model: str,
+    *,
+    via_config_option: bool,
+) -> str | None:
+    """Return the effort value ``_apply_acp_model`` would actually push for
+    ``model``, or ``None`` if none.
+
+    Mirrors the branch in :func:`_apply_acp_model` that splits a composite
+    Canvas model id (e.g. ``"sonnet/high"``) into ``configOptions`` pairs:
+    that split — and with it, an effort component — only happens when the
+    session uses the configOptions mechanism (``via_config_option``); a
+    session on the legacy ``set_session_model`` call sends the id whole, with
+    no way to express effort separately. ``None`` also covers a bare model id
+    (no effort suffix) and a provider :func:`_model_config_options` doesn't
+    split (e.g. gemini-cli).
+    """
+    if not via_config_option:
+        return None
+    for config_id, value in _model_config_options(agent_name, model):
+        if config_id in _EFFORT_CONFIG_OPTION_IDS:
+            return value
+    return None
+
+
+def _reconcile_current_model_id(
+    tracked_model_id: str | None,
+    reported_model_id: str | None,
+    reported_effort: str | None,
+    *,
+    agent_name: str | None,
+    model_override_applied: bool,
+) -> str | None:
+    """Reconcile a tracked (possibly composite) ``_current_model_id`` against a
+    fresh server report of ``(model, effort)`` — e.g. from a live
+    ``config_option_update`` notification.
+
+    codex-acp and claude-agent-acp split a composite Canvas model id (e.g.
+    ``"sonnet/high"``) into two independent ``configOptions`` values (see
+    :func:`_model_config_options`): a ``model`` select carrying the *base* id
+    alone, plus a separate effort select. A server report of that state is
+    therefore always two bare values, never the composite string
+    ``_current_model_id`` tracks locally. Adopting ``reported_model_id``
+    verbatim would silently regress ``"sonnet/high"`` down to ``"sonnet"``
+    on every resend even though nothing actually changed server-side.
+
+    Composite reconstruction is only attempted when all of the following
+    hold — otherwise ``reported_model_id`` is returned as-is (a bare id, the
+    correct behavior for providers that don't split, or a session where the
+    tracked id was never actually pushed to the server so there is nothing
+    trustworthy to reconcile against):
+
+    - ``model_override_applied`` is ``True`` — the tracked id is one we know
+      was actually applied on the wire, not merely inherited from the
+      server's own default.
+    - ``agent_name`` resolves to one of the composite-id providers gated by
+      :func:`_model_config_options` (``codex`` / ``claude-code``).
+    - ``reported_effort`` is present — the update also reports an effort
+      option; without one there is no effort component to recompose.
+
+    Within that composite-aware case: if ``tracked_model_id`` splits (on the
+    last ``/``) into exactly ``(reported_model_id, reported_effort)``, the
+    server's report matches what we already track — nothing changed, so the
+    tracked composite is returned verbatim. Any other outcome — a different
+    base model (e.g. a rate-limit fallback to another model), a different
+    effort level, or no usable tracked composite to compare against — means
+    the server state genuinely moved; the *server's* report is adopted,
+    re-composed as ``reported_model_id + "/" + reported_effort`` so the
+    result keeps the composite shape callers (Canvas) expect from these two
+    providers.
+
+    Returns ``None`` when ``reported_model_id`` is ``None`` (nothing to
+    reconcile against — callers should not invoke this in that case, but the
+    function stays total as a safety net).
+    """
+    if reported_model_id is None:
+        return None
+    provider = detect_acp_provider_by_agent_name(agent_name or "")
+    composite_provider = provider is not None and provider.key in (
+        "codex",
+        "claude-code",
+    )
+    if not (model_override_applied and composite_provider and reported_effort):
+        return reported_model_id
+    if tracked_model_id:
+        base, sep, effort = tracked_model_id.rpartition("/")
+        if sep and base == reported_model_id and effort == reported_effort:
+            return tracked_model_id
+    return f"{reported_model_id}/{reported_effort}"
 
 
 # The ACP MCP server union accepted by new_session() / load_session().
@@ -1106,6 +1333,16 @@ class _OpenHandsACPBridge:
         # event stream in cleartext. ``None`` ⇒ no-op (bridge used standalone).
         self.mask: Callable[[str], str] | None = None
         self.before_mask: Callable[[], None] | None = None
+        # Live model/effort config-option sink — fired from session_update on
+        # every ConfigOptionUpdate notification (the agent MUST resend the
+        # full configOptions state after set_config_option, and MAY push
+        # spontaneous updates, e.g. a model fallback on rate limit). Bound
+        # once for the conversation's lifetime by
+        # ACPAgent._bind_config_option_update_callback (same lifecycle as
+        # ``mask``/``before_mask`` above — NOT rewired per-turn like
+        # on_event/on_token, since a config update can arrive with no turn in
+        # flight). ``None`` ⇒ no-op (bridge used standalone, e.g. tests).
+        self.on_config_options_update: Callable[[list[Any]], None] | None = None
         self._masking_error: CredentialBindingError | None = None
         self._last_activity_signal: float = float("-inf")
         # Monotonic timestamp of the most recent ``session_update``. Unlike the
@@ -1333,6 +1570,24 @@ class _OpenHandsACPBridge:
             )
             if target is not None and became_terminal:
                 self._emit_tool_call_event(target)
+            self._maybe_signal_activity()
+        elif isinstance(update, ConfigOptionUpdate):
+            # Per the ACP spec the agent MUST resend the complete
+            # configOptions state after set_config_option, and MAY push this
+            # spontaneously (e.g. a model fallback on rate limit). Relay the
+            # full list to the agent-side sink so model/effort state stays
+            # live between turns, not just at session start/resume.
+            logger.debug(
+                "ACP config_option_update: %d option(s)",
+                len(update.config_options),
+            )
+            if self.on_config_options_update is not None:
+                try:
+                    self.on_config_options_update(update.config_options)
+                except Exception:
+                    logger.debug(
+                        "on_config_options_update callback failed", exc_info=True
+                    )
             self._maybe_signal_activity()
         else:
             logger.debug("ACP session update: %s", type(update).__name__)
@@ -1702,6 +1957,24 @@ class ACPAgent(AgentBase):
     # in ``init_state`` uses that distinction to preserve vs clear the stored
     # list on resume. The public ``available_models`` property coerces to ``[]``.
     _available_models: list[ACPModelInfo] | None = PrivateAttr(default=None)
+    # The effort/reasoning-effort level the ACP server reported as active for
+    # this session, captured from the ``effort`` (claude-agent-acp) or
+    # ``reasoning_effort`` (codex-acp) ``configOptions`` select on the
+    # new_session / load_session response — see ``_extract_session_efforts``.
+    # Also updated when a composite ``model/effort`` id (e.g. ``"sonnet/high"``)
+    # is applied via ``set_config_option``, at session init, resume, and
+    # runtime switch — see ``_model_config_option_effort``. ``None`` when the
+    # server/provider doesn't surface effort state.
+    #
+    # Same PrivateAttr rationale as ``_current_model_id``: ``AgentBase`` is
+    # frozen, and the agent-server lifts this onto ``ConversationInfo`` for
+    # cross-process consumers.
+    _current_effort: str | None = PrivateAttr(default=None)
+    # The effort select's ``options`` from the same session response,
+    # normalized to a plain list of level strings. ``None``/``[]`` distinction
+    # mirrors ``_available_models`` (see ``_extract_session_efforts``); the
+    # public ``available_efforts`` property coerces to ``[]``.
+    _available_efforts: list[str] | None = PrivateAttr(default=None)
     # Whether the caller's ``acp_model`` was actually pushed to the server in
     # the most recent session init (via session ``_meta`` or ``set_session_model``).
     # ``False`` when there's no override, the provider can't apply it (unknown
@@ -1948,6 +2221,45 @@ class ACPAgent(AgentBase):
         return list(self._available_models or [])
 
     @property
+    def current_effort(self) -> str | None:
+        """The effort/reasoning-effort level the ACP server is currently
+        using for this session.
+
+        Captured from the ``effort`` (claude-agent-acp) or ``reasoning_effort``
+        (codex-acp) ``configOptions`` select on the ``new_session`` /
+        ``load_session`` response, or updated to match the effort component of
+        a composite ``model/effort`` id (e.g. ``"sonnet/high"``) applied via
+        ``set_config_option`` — at session init, resume, and runtime switch
+        (:meth:`set_acp_model`). ``None`` for providers/servers that don't
+        surface effort state — callers should treat the value as best-effort.
+
+        Note: this is in-process runtime state; it does not round-trip
+        through ``model_dump()``. Consumers that need to read it across the
+        API boundary should look at ``ConversationInfo.current_effort``,
+        which the agent-server lifts off the agent into the response.
+        """
+        return self._current_effort
+
+    @property
+    def available_efforts(self) -> list[str]:
+        """Effort/reasoning-effort levels the ACP server offers for this
+        session.
+
+        Captured verbatim from the ``effort``/``reasoning_effort``
+        ``configOptions`` select's ``options`` on the ``new_session`` /
+        ``load_session`` response; empty for providers/servers that don't
+        surface it. Enough for a client to render an effort picker and
+        resolve ``current_effort`` against it — the SDK does no curation.
+
+        Same lifecycle and serialization caveats as ``current_effort``:
+        in-process runtime state, lifted onto
+        ``ConversationInfo.available_efforts`` by the agent-server for
+        cross-process consumers. Always a list (the internal ``None``
+        "not-reported" sentinel is coerced to ``[]`` here).
+        """
+        return list(self._available_efforts or [])
+
+    @property
     def supports_runtime_model_switch(self) -> bool:
         """Whether a live, mid-conversation model switch will be attempted.
 
@@ -2159,6 +2471,22 @@ class ACPAgent(AgentBase):
             ]
         elif not truly_resumed:
             new_agent_state.pop("acp_available_models", None)
+        # Effort state tracking: same gating as the model fields above — an
+        # override attempted-but-not-applied invalidates a stale persisted
+        # effort just like it does the model, since both ride the same
+        # configOptions call.
+        if self._current_effort is not None:
+            new_agent_state["acp_current_effort"] = self._current_effort
+        elif (
+            not truly_resumed
+            or self._available_efforts is not None
+            or override_attempted_not_applied
+        ):
+            new_agent_state.pop("acp_current_effort", None)
+        if self._available_efforts is not None:
+            new_agent_state["acp_available_efforts"] = list(self._available_efforts)
+        elif not truly_resumed:
+            new_agent_state.pop("acp_available_efforts", None)
         state.agent_state = new_agent_state
 
         if self._installed_suffix:
@@ -2493,6 +2821,108 @@ class ACPAgent(AgentBase):
 
         client.before_mask = track_file_credentials
 
+    def _bind_config_option_update_callback(self) -> None:
+        """Wire the bridge's live ``config_option_update`` sink to this agent.
+
+        Same weakref-indirection pattern as :meth:`_bind_file_credential_masking`
+        immediately above: the bridge is a plain object with no reference back
+        to the agent, so a closure capturing a *weak* reference is handed to
+        it instead of ``self`` directly — a strong reference from the
+        long-lived bridge back to the agent would keep the agent (and its
+        subprocess/executor) alive past what ``__del__``/``release_runtime``
+        expect. Bound once here, for the conversation's lifetime, alongside
+        ``client.mask`` — not per-turn like ``on_event``/``on_token`` — since
+        a config update can arrive with no turn in flight (see
+        :attr:`_OpenHandsACPBridge.on_config_options_update`).
+        """
+        client = self._client
+        if client is None:
+            return
+        agent_ref = weakref.ref(self)
+
+        def on_config_options_update(config_options: list[Any]) -> None:
+            agent = agent_ref()
+            if agent is not None:
+                agent._on_config_options_update(config_options)
+
+        client.on_config_options_update = on_config_options_update
+
+    def _on_config_options_update(self, config_options: list[Any]) -> None:
+        """Apply a live ``config_option_update`` notification's model/effort
+        state to this agent's runtime attrs.
+
+        Per the ACP spec the agent MUST resend the complete ``configOptions``
+        list after ``set_config_option``, and MAY push this spontaneously
+        (e.g. a model fallback on rate limit) — see
+        :class:`acp.schema.ConfigOptionUpdate`. Invoked by the bridge (via
+        :meth:`_bind_config_option_update_callback`) for every such
+        notification on the *main* session; a notification on an
+        ``ask_agent`` fork session never reaches here (see the fork
+        short-circuit at the top of
+        :meth:`_OpenHandsACPBridge.session_update`).
+
+        Re-runs the same extraction ``init_state`` performs at session
+        start/resume (:func:`_extract_session_models` /
+        :func:`_extract_session_efforts`) over the updated list, wrapped in a
+        minimal object exposing ``.config_options`` since both helpers only
+        ever read that one attribute off their ``response`` argument. Keeps
+        the file's established None-vs-absent convention: a value is only
+        overwritten when *this* update actually reports that option
+        (``available_models`` / ``available_efforts`` not ``None``) — an
+        update that, say, only touches an unrelated boolean config option
+        leaves model/effort state untouched rather than clearing it.
+
+        ``_current_model_id`` is resolved through
+        :func:`_reconcile_current_model_id` rather than a plain overwrite, so
+        a composite id tracked locally (e.g. ``"sonnet/high"``) survives a
+        report that — correctly, per-protocol — echoes only its base
+        component plus a separate effort value, instead of being clobbered
+        down to the bare base id every time the server resends state.
+
+        Threading: this runs on the ACP client's async portal thread, inside
+        ``session_update`` (see the concurrency-model docstring on
+        :class:`_OpenHandsACPBridge`). Like
+        ``_track_file_credentials_for_masking`` (also invoked from that
+        thread, via ``before_mask``), it touches agent state with plain
+        attribute writes and no additional locking: the caller thread is
+        either parked inside ``portal.call()``/``run_async`` for the
+        duration of any turn that could read these attrs, or there is no
+        turn in flight at all, so nothing else in-process races these
+        writes.
+
+        Persistence: unlike
+        :meth:`~openhands.sdk.conversation.impl.local_conversation.LocalConversation.switch_acp_model`,
+        there is no established hook from here into
+        ``ConversationState.agent_state`` — that write happens only in
+        :meth:`init_state` (session start/resume), and this method (reached
+        from the bridge, not the conversation) has no reference to
+        ``ConversationState`` to reuse it safely off the portal thread.
+        Refreshed values therefore live in-memory only until the next
+        ``init_state`` (fresh process, or a resumed session) recomputes and
+        persists them from the server's response at that point; a mid-life
+        update is not durable across an agent-server restart. This is a
+        deliberate scope cut, not an oversight.
+        """
+        response = SimpleNamespace(config_options=config_options)
+        reported_model_id, available_models, _ = _extract_session_models(
+            response, default_via_config_option=self._model_via_config_option
+        )
+        reported_effort, available_efforts = _extract_session_efforts(response)
+
+        if available_models is not None:
+            self._current_model_id = _reconcile_current_model_id(
+                self._current_model_id,
+                reported_model_id,
+                reported_effort,
+                agent_name=self._agent_name,
+                model_override_applied=self._model_override_applied,
+            )
+            self._available_models = available_models
+
+        if available_efforts is not None:
+            self._current_effort = reported_effort
+            self._available_efforts = available_efforts
+
     async def _flush_file_credentials(self) -> None:
         with self._file_credential_lock:
             if not self._file_credential_lifecycles:
@@ -2542,6 +2972,7 @@ class ACPAgent(AgentBase):
         # client and may fire while no step()/astep() turn is active.
         client.mask = state.secret_registry.mask_secrets_in_output
         self._bind_file_credential_masking()
+        self._bind_config_option_update_callback()
 
         # Build the subprocess environment. Precedence, highest first:
         #   state.secret_registry > os.environ > default_environment
@@ -2648,7 +3079,14 @@ class ACPAgent(AgentBase):
             prior_session_id = None
 
         async def _init() -> tuple[
-            str, str, str, str | None, list[ACPModelInfo] | None, bool
+            str,
+            str,
+            str,
+            str | None,
+            list[ACPModelInfo] | None,
+            str | None,
+            list[str] | None,
+            bool,
         ]:
             # Spawn the subprocess directly so we can install a
             # filtering reader that skips non-JSON-RPC lines some
@@ -2787,6 +3225,8 @@ class ACPAgent(AgentBase):
             session_id: str | None = None
             reported_model_id: str | None = None
             available_models: list[ACPModelInfo] | None = None
+            reported_effort: str | None = None
+            available_efforts: list[str] | None = None
             if prior_session_id is not None:
                 try:
                     load_response = await conn.load_session(
@@ -2810,6 +3250,9 @@ class ACPAgent(AgentBase):
                     ) = _extract_session_models(
                         load_response,
                         default_via_config_option=persisted_via_config_option,
+                    )
+                    reported_effort, available_efforts = _extract_session_efforts(
+                        load_response
                     )
                     logger.info(
                         "Resumed ACP session %s (cwd=%s)",
@@ -2849,6 +3292,7 @@ class ACPAgent(AgentBase):
                     available_models,
                     self._model_via_config_option,
                 ) = _extract_session_models(response)
+                reported_effort, available_efforts = _extract_session_efforts(response)
                 # Initial-model protocol call for every built-in provider
                 # (codex, gemini, claude-code). The pinned claude/codex CLIs
                 # ignore the _meta above, so this protocol call is what actually
@@ -2890,6 +3334,22 @@ class ACPAgent(AgentBase):
                 else reported_model_id
             )
 
+            # Resolve effort the same way: the server's report is the base
+            # value, overridden by the effort component of a composite
+            # ``acp_model`` (e.g. ``"sonnet/high"``) when that override was
+            # actually applied via the configOptions mechanism. A bare model
+            # id (no effort suffix) or a legacy ``set_session_model`` session
+            # yields no override here, leaving the server-reported value.
+            current_effort = reported_effort
+            if self.acp_model and override_applied:
+                applied_effort = _model_config_option_effort(
+                    agent_name,
+                    self.acp_model,
+                    via_config_option=self._model_via_config_option,
+                )
+                if applied_effort is not None:
+                    current_effort = applied_effort
+
             # Resolve the permission mode. Known providers each have their own
             # mode ID; unknown/custom servers get None — skip the call rather
             # than sending a provider-specific string they won't recognise.
@@ -2907,6 +3367,8 @@ class ACPAgent(AgentBase):
                 agent_version,
                 current_model_id,
                 available_models,
+                current_effort,
+                available_efforts,
                 override_applied,
             )
 
@@ -2920,6 +3382,8 @@ class ACPAgent(AgentBase):
                 self._agent_version,
                 self._current_model_id,
                 self._available_models,
+                self._current_effort,
+                self._available_efforts,
                 self._model_override_applied,
             ) = self._executor.run_async(_init, timeout=self.acp_startup_timeout)
         except TimeoutError:
@@ -4034,6 +4498,19 @@ class ACPAgent(AgentBase):
         # this updated value onto the persisted agent. ``available_models`` is
         # unchanged by a model switch, so it is intentionally left alone.
         self._current_model_id = model
+        # Keep effort in sync when ``model`` is a composite ``model/effort`` id
+        # (e.g. ``"sonnet/high"``) applied via the configOptions mechanism —
+        # mirrors ``_current_model_id`` above. A bare model id (no effort
+        # component actually applied on the wire) leaves ``_current_effort``
+        # untouched rather than clearing it: this switch said nothing about
+        # effort, so the previously-known value is still the best guess.
+        # ``_available_efforts`` is intentionally left alone, same as
+        # ``available_models``.
+        applied_effort = _model_config_option_effort(
+            self._agent_name, model, via_config_option=self._model_via_config_option
+        )
+        if applied_effort is not None:
+            self._current_effort = applied_effort
         logger.info(
             "Switched ACP session model to %s (provider=%s, session=%s)",
             model,

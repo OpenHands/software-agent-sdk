@@ -309,6 +309,112 @@ def test_current_model_id_falls_back_to_acp_model_on_cold_read():
     assert info.current_model_id == "enterprise-x"
 
 
+def test_current_effort_is_lifted_from_acp_agent():
+    """When the ACP agent has resolved an effort level, it surfaces on the
+    response, mirroring ``current_model_id``.
+    """
+    agent = ACPAgent(acp_command=["echo", "test"])
+    agent._current_effort = "high"
+    state = _make_state(agent)
+    stored = _make_stored(state)
+
+    info = _compose_conversation_info(stored, state)
+
+    assert info.current_effort == "high"
+
+
+def test_current_effort_is_none_when_acp_agent_has_no_effort():
+    """Providers/servers without effort selection (or older ACP servers)
+    leave ``_current_effort`` at its default -> ``None``.
+    """
+    agent = ACPAgent(acp_command=["echo", "test"])
+    state = _make_state(agent)
+    stored = _make_stored(state)
+
+    info = _compose_conversation_info(stored, state)
+
+    assert info.current_effort is None
+    assert info.available_efforts is None
+
+
+def test_available_efforts_lifted_from_acp_agent():
+    """``ConversationInfo.available_efforts`` mirrors the agent's effort
+    level list verbatim, resolving ``current_effort`` against it is left to
+    the client.
+    """
+    agent = ACPAgent(acp_command=["echo", "test"])
+    agent._current_effort = "high"
+    agent._available_efforts = ["low", "medium", "high", "max", "default"]
+    state = _make_state(agent)
+    stored = _make_stored(state)
+
+    info = _compose_conversation_info(stored, state)
+
+    assert info.current_effort == "high"
+    assert info.available_efforts == ["low", "medium", "high", "max", "default"]
+
+
+def test_effort_fields_read_from_persisted_agent_state():
+    """Cold conversation list: the live agent's PrivateAttrs are still None
+    because ``init_state`` hasn't fired, but ``agent_state`` persisted the
+    values from the last session — the lift should source from there,
+    mirroring ``test_current_model_fields_read_from_persisted_agent_state``.
+    """
+    agent = ACPAgent(acp_command=["echo", "test"])
+    state = _make_state(agent)
+    state.agent_state = {
+        "acp_session_id": "prior-session",
+        "acp_current_effort": "high",
+        "acp_available_efforts": ["low", "medium", "high"],
+    }
+    stored = _make_stored(state)
+
+    info = _compose_conversation_info(stored, state)
+
+    assert info.current_effort == "high"
+    assert info.available_efforts == ["low", "medium", "high"]
+
+
+def test_live_effort_attrs_take_precedence_over_persisted_state():
+    """Within an active session, the live agent is the freshest source for
+    effort state too — mirrors
+    ``test_live_agent_attrs_take_precedence_over_persisted_state``.
+    """
+    agent = ACPAgent(acp_command=["echo", "test"])
+    agent._current_effort = "high"
+    agent._available_efforts = ["low", "high"]
+    state = _make_state(agent)
+    # Stale persisted state from a prior session that picked a different
+    # effort level.
+    state.agent_state = {
+        "acp_current_effort": "low",
+        "acp_available_efforts": ["low"],
+    }
+    stored = _make_stored(state)
+
+    info = _compose_conversation_info(stored, state)
+
+    assert info.current_effort == "high"
+    assert info.available_efforts == ["low", "high"]
+
+
+def test_current_effort_does_not_fall_back_to_acp_model_on_cold_read():
+    """Unlike ``current_model_id``, ``current_effort`` has no third fallback
+    that parses the effort component out of a composite ``acp_model`` (e.g.
+    ``"sonnet/high"``) — that split lives in ``acp_agent`` and isn't
+    reproduced here. A pure cold read (no live PrivateAttr, no persisted
+    hint) honestly reports ``None`` rather than guessing.
+    """
+    agent = ACPAgent(acp_command=["echo", "test"], acp_model="sonnet/high")
+    # _initialized defaults to False (cold read); _current_effort defaults None.
+    state = _make_state(agent)
+    stored = _make_stored(state)
+
+    info = _compose_conversation_info(stored, state)
+
+    assert info.current_effort is None
+
+
 def test_supports_runtime_model_switch_lifted_from_agent_state():
     """The static provider capability is read from persisted ``agent_state``
     (written at session init), so it's correct on cold list reads too.
