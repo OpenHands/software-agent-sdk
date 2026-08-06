@@ -4970,7 +4970,7 @@ class TestWithCodexBaseUrl:
         original = env.copy()
         result = _with_codex_base_url(
             "npx",
-            ["-y", "@agentclientprotocol/codex-acp@1.1.9"],
+            ["-y", "@agentclientprotocol/codex-acp@1.1.7"],
             env,
         )
         assert json.loads(result["CODEX_CONFIG"]) == {
@@ -5006,7 +5006,7 @@ class TestWithCodexBaseUrl:
         }
         result = _with_codex_base_url(
             "npx",
-            ["-y", "@agentclientprotocol/codex-acp@1.1.9"],
+            ["-y", "@agentclientprotocol/codex-acp@1.1.7"],
             env,
         )
         assert json.loads(result["CODEX_CONFIG"])["openai_base_url"] == (
@@ -5021,7 +5021,7 @@ class TestWithCodexBaseUrl:
         }
         result = _with_codex_base_url(
             "npx",
-            ["-y", "@agentclientprotocol/codex-acp@1.1.9"],
+            ["-y", "@agentclientprotocol/codex-acp@1.1.7"],
             env,
         )
         assert result == env

@@ -313,7 +313,7 @@ _CLAUDE_MODELS: tuple[ACPModelOption, ...] = (
 )
 
 # Bare preset ids advertised by the Codex app server through
-# ``@agentclientprotocol/codex-acp`` 1.1.2. The reasoning-effort tier is a
+# ``@agentclientprotocol/codex-acp``. The reasoning-effort tier is a
 # separate ``reasoning_effort`` configOption, not part of the model id, so it is
 # not encoded here. GPT-5.6 variants are rollout/account-dependent suggestions;
 # the adapter's live model list remains authoritative.
@@ -390,8 +390,8 @@ _GEMINI_FILE_SECRETS: tuple[ACPFileSecretSpec, ...] = (
 # claude-agent-acp 0.44+ / codex-acp select the model via a ``model``
 # ``configOptions`` entry (and retain the legacy ``session/set_model``
 # extension); the SDK detects which mechanism each session advertises.
-CLAUDE_AGENT_ACP_VERSION = "0.65.0"
-CODEX_ACP_VERSION = "1.1.9"
+CLAUDE_AGENT_ACP_VERSION = "0.63.0"
+CODEX_ACP_VERSION = "1.1.7"
 GEMINI_CLI_VERSION = "0.46.0"
 
 

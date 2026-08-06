@@ -1179,7 +1179,7 @@ def test_acp_create_agent_uses_server_default_command(
     assert agent.acp_command == [
         "npx",
         "-y",
-        "@agentclientprotocol/claude-agent-acp@0.65.0",
+        "@agentclientprotocol/claude-agent-acp@0.63.0",
     ]
     assert agent.acp_model == "claude-opus-4-6"
     # The authoritative provider key is carried onto the agent.
@@ -1335,7 +1335,7 @@ def test_acp_resolve_command_rewrites_versioned_npx_to_pinned_binary(
     monkeypatch.setattr(shutil, "which", _which_returning("codex-acp"))
     for pkg in (
         "@agentclientprotocol/codex-acp",
-        "@agentclientprotocol/codex-acp@1.1.9",
+        "@agentclientprotocol/codex-acp@1.1.7",
     ):
         settings = ACPAgentSettings(
             acp_server="codex",
@@ -1357,7 +1357,7 @@ def test_acp_resolve_command_keeps_npx_when_binary_absent(
     assert settings.resolve_acp_command() == [
         "npx",
         "-y",
-        "@agentclientprotocol/codex-acp@1.1.9",
+        "@agentclientprotocol/codex-acp@1.1.7",
     ]
 
 
