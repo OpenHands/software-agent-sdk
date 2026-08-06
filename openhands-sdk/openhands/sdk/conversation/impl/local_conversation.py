@@ -3,8 +3,10 @@ import atexit
 import contextlib
 import copy
 import json
+import threading
+import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path, PurePath
 from typing import Any, Final, TypeGuard, cast
 
@@ -160,6 +162,11 @@ def _is_acp_prompt_message(event: Event) -> TypeGuard[MessageEvent]:
 def _copy_event_for_fork(event: Event) -> Event:
     # Mirrors persisted event loading and skips runtime-only fields like executors.
     return Event.model_validate_json(event.model_dump_json(exclude_none=True))
+
+
+# Minimum interval between activity heartbeat signals (seconds). Matches the
+# ACP bridge throttle so idle trackers stay warm without flooding callbacks.
+_ACTIVITY_SIGNAL_INTERVAL_SECONDS: Final[float] = 30.0
 
 
 class LocalConversation(BaseConversation):
@@ -408,6 +415,12 @@ class LocalConversation(BaseConversation):
             if token_callbacks
             else None
         )
+
+        # Optional activity heartbeat for host idle trackers (agent-server).
+        # TaskToolSet subagents pulse this while the parent event log is stalled.
+        self._on_activity: Callable[[], None] | None = None
+        self._activity_lock = threading.Lock()
+        self._last_activity_signal = 0.0
 
         self.max_iteration_per_run = max_iteration_per_run
         # Hard cost ceiling (USD) for a run; None disables the budget check.
@@ -2561,6 +2574,39 @@ class LocalConversation(BaseConversation):
                 pause_event = PauseEvent()
                 self._on_event(pause_event)
                 logger.info("Agent execution pause requested")
+
+    def set_on_activity(self, callback: Callable[[], None] | None) -> None:
+        """Register a host-side activity heartbeat callback.
+
+        The agent-server uses this to refresh idle timers while work continues
+        without parent conversation events (e.g. blocking TaskToolSet
+        delegation). Callbacks should be cheap and thread-safe.
+        """
+        with self._activity_lock:
+            self._on_activity = callback
+
+    def notify_activity(self, *, force: bool = False) -> None:
+        """Pulse the activity heartbeat (throttled unless ``force``).
+
+        Safe to call from worker threads during tool execution. Failures in the
+        host callback are swallowed so tool execution is never interrupted by
+        idle-tracker errors.
+        """
+        with self._activity_lock:
+            callback = self._on_activity
+            if callback is None:
+                return
+            now = time.monotonic()
+            if (
+                not force
+                and now - self._last_activity_signal < _ACTIVITY_SIGNAL_INTERVAL_SECONDS
+            ):
+                return
+            self._last_activity_signal = now
+        try:
+            callback()
+        except Exception:
+            logger.debug("on_activity callback failed", exc_info=True)
 
     def interrupt(self) -> None:
         """Immediately cancel an in-flight ``arun()``, including mid-LLM-call.

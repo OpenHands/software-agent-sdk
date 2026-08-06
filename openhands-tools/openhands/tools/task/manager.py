@@ -224,6 +224,7 @@ class TaskManager:
                         task_id=resume, subagent_type=subagent_type, link=link
                     ),
                     observability_tags=["delegate"],
+                    callbacks=[self._pulse_parent_activity],
                 )
 
             self._set_confirmation_policy(
@@ -327,6 +328,7 @@ class TaskManager:
                     task_id=task_id, subagent_type=subagent_type, link=link
                 ),
                 observability_tags=["delegate"],
+                callbacks=[self._pulse_parent_activity],
             )
 
     def _delegate_observability_metadata(
@@ -377,6 +379,37 @@ class TaskManager:
         )
         return sub_agent
 
+    def _pulse_parent_activity(self, _event: object = None) -> None:
+        """Refresh the parent conversation's host idle timer during delegation.
+
+        Subagent events stay on the child conversation, so the parent event
+        log (and EventService idle subscriber) would otherwise go silent for
+        the entire blocking TaskExecutor call — the gap that lets runtime
+        idle killers restart the process mid ``code-explorer`` / task tool.
+        """
+        parent = self._parent_conversation
+        if parent is not None:
+            parent.notify_activity()
+
+    def interrupt_running_tasks(self) -> None:
+        """Interrupt any in-flight subagent conversations (thread-safe)."""
+        with self._tasks_lock:
+            running = [
+                task
+                for task in self._tasks.values()
+                if task.status == TaskStatus.RUNNING and task.conversation is not None
+            ]
+        for task in running:
+            conversation = task.conversation
+            if conversation is None:
+                continue
+            try:
+                conversation.interrupt()
+            except Exception:
+                logger.debug(
+                    "Failed to interrupt subagent task %s", task.id, exc_info=True
+                )
+
     def _run_task(self, task: Task, prompt: str) -> Task:
         """Run a task synchronously."""
         if task.conversation is None:
@@ -388,6 +421,9 @@ class TaskManager:
             parent_name = getattr(parent._visualizer, "_name", None)
 
         try:
+            # Force an immediate pulse before the child goes quiet so idle
+            # trackers know the parent is still doing work.
+            parent.notify_activity(force=True)
             task.conversation.send_message(prompt, sender=parent_name)
             self._run_until_finished(task.id, task.conversation)
             status = task.conversation.state.execution_status

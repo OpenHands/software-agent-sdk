@@ -52,6 +52,7 @@ from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
+from openhands.tools.task.definition import TaskAction
 from openhands.tools.terminal import TerminalAction, TerminalObservation
 from tests.agent_server.stress.scripts import (
     SlowTestLLM,
@@ -1973,6 +1974,85 @@ class TestEventServiceStartWithRunningStatus:
             assert error_event.tool_call_id == "call_1"
             assert "restart occurred" in error_event.error
             assert "fatal memory error" in error_event.error
+
+    @pytest.mark.asyncio
+    async def test_issue_16341_code_explorer_task_restart_recovery(
+        self, event_service, tmp_path
+    ):
+        """OpenHands#16341: reload mid code-explorer task → screenshot error.
+
+        Agent Canvas shows an AgentErrorEvent titled "Agent error" with the
+        crash-recovery text when a ``task`` ActionEvent for ``code-explorer``
+        is still unmatched after the agent-server process reloads.
+        """
+        event_service.conversations_dir = tmp_path
+        conv_dir = tmp_path / event_service.stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+        event_service.stored.workspace = LocalWorkspace(working_dir=str(tmp_path))
+
+        unmatched_task = ActionEvent(
+            source="agent",
+            thought=[TextContent(text="Explore the frontend files tab code")],
+            action=TaskAction(
+                prompt=(
+                    "Search frontend/src for workspace file listing components "
+                    "and APIs. Compare with how VSCode populates its file tree."
+                ),
+                subagent_type="code-explorer",
+                description="Explore files-tab vs VSCode file tree",
+            ),
+            tool_name="task",
+            tool_call_id="call_code_explorer_1",
+            tool_call=MessageToolCall(
+                id="call_code_explorer_1",
+                name="task",
+                arguments=(
+                    '{"prompt":"Search frontend/src for workspace file listing",'
+                    '"subagent_type":"code-explorer",'
+                    '"description":"Explore files-tab vs VSCode file tree"}'
+                ),
+                origin="completion",
+            ),
+            llm_response_id="response_code_explorer_1",
+        )
+
+        with patch(
+            "openhands.agent_server.event_service.LocalConversation"
+        ) as MockConversation:
+            mock_conv = MagicMock()
+            mock_state = MagicMock()
+            mock_agent = MagicMock()
+
+            mock_state.execution_status = ConversationExecutionStatus.RUNNING
+            mock_state.events = [unmatched_task]
+            mock_state.stats = MagicMock()
+            mock_agent.get_all_llms.return_value = []
+
+            mock_conv._state = mock_state
+            mock_conv.state = mock_state
+            mock_conv.agent = mock_agent
+            mock_conv._on_event = MagicMock()
+            MockConversation.return_value = mock_conv
+
+            await event_service.start()
+
+            assert mock_state.execution_status == ConversationExecutionStatus.ERROR
+
+            error_event_calls = [
+                call
+                for call in mock_conv._on_event.call_args_list
+                if isinstance(call[0][0], AgentErrorEvent)
+            ]
+            assert len(error_event_calls) == 1
+
+            error_event = error_event_calls[0][0][0]
+            assert error_event.tool_name == "task"
+            assert error_event.tool_call_id == "call_code_explorer_1"
+            assert error_event.error == (
+                "A restart occurred while this tool was in progress. "
+                "This may indicate a fatal memory error or system crash. "
+                "The tool execution was interrupted and did not complete."
+            )
 
     @pytest.mark.asyncio
     async def test_start_does_not_add_error_event_when_no_unmatched_actions(
