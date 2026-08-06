@@ -63,22 +63,30 @@ class ACPTurnTrace:
         self._lock = threading.Lock()
 
     def start_turn(self, prompt: Any) -> None:
-        if not self._enabled or self._turn_span is not None:
+        if not self._enabled:
             return
         try:
             from lmnr import Laminar
 
-            self._turn_span = Laminar.start_span(
-                name=TURN_SPAN_NAME,
-                input=_truncate(prompt),
-                span_type="LLM",
-                metadata=dict(self._metadata),
-            )
-            self._turn_context = Laminar.get_laminar_span_context(self._turn_span)
+            # Under the lock like every other mutation: a retry re-enters this
+            # while the portal thread may still be delivering notifications from
+            # the attempt that just failed.
+            with self._lock:
+                if self._turn_span is not None:
+                    return
+                span = Laminar.start_span(
+                    name=TURN_SPAN_NAME,
+                    input=_truncate(prompt),
+                    span_type="LLM",
+                    metadata=dict(self._metadata),
+                )
+                self._turn_span = span
+                self._turn_context = Laminar.get_laminar_span_context(span)
         except Exception:
             logger.debug("ACP turn span could not be started", exc_info=True)
-            self._turn_span = None
-            self._turn_context = None
+            with self._lock:
+                self._turn_span = None
+                self._turn_context = None
 
     def tool_started(self, entry: dict[str, Any]) -> None:
         if not self._enabled or self._turn_span is None:
