@@ -25,7 +25,6 @@ from openhands.agent_server.conversation_service import (
 )
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
-    ACPConversationInfo,
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
@@ -2043,7 +2042,7 @@ class TestConversationServiceStartConversation:
                 ) = await conversation_service.start_conversation(request)
 
                 assert is_new is False
-                assert isinstance(conversation_info, ACPConversationInfo)
+                assert isinstance(conversation_info, ConversationInfo)
                 assert conversation_info.agent.kind == "ACPAgent"
                 mock_start.assert_not_called()
 
@@ -2387,7 +2386,7 @@ class TestConversationServiceUpdateConversation:
             assert result is True
             mock_notify.assert_called_once()
             conversation_info = mock_notify.call_args[0][0]
-            assert isinstance(conversation_info, ACPConversationInfo)
+            assert isinstance(conversation_info, ConversationInfo)
             assert conversation_info.agent.kind == "ACPAgent"
 
     @pytest.mark.asyncio
