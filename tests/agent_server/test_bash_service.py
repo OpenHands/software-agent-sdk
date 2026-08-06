@@ -202,7 +202,7 @@ async def test_run_retention_cleanup_loop_purges_old_events(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_order_filter_does_not_undersize_pages(tmp_path: Path):
+async def test_order_filter_does_not_undersize_pages(tmp_path: Path):
     """The page boundary must count returned events, not files read (#4388).
 
     Filtering after the page was already sized by file count let `order__gt`
@@ -223,17 +223,15 @@ def test_order_filter_does_not_undersize_pages(tmp_path: Path):
             )
         )
 
-    page = asyncio.run(
-        service.search_bash_events(order__gt=9, limit=5, kind__eq="BashOutput")
-    )
+    page = await service.search_bash_events(order__gt=9, limit=5, kind__eq="BashOutput")
 
-    # Files sort by name (timestamp + id), so compare the set of orders rather
-    # than their sequence.
-    assert sorted(event.order for event in page.items) == [10, 11, 12, 13, 14]
+    # `items` is typed as the event base class, so narrow before reading `order`.
+    orders = sorted(e.order for e in page.items if isinstance(e, BashOutput))
+    assert orders == [10, 11, 12, 13, 14]
     assert page.next_page_id is None
 
 
-def test_order_filter_never_returns_an_empty_page_with_a_cursor(tmp_path: Path):
+async def test_order_filter_never_returns_an_empty_page_with_a_cursor(tmp_path: Path):
     """An all-filtered range must terminate instead of handing back a cursor."""
     service = BashEventService(bash_events_dir=tmp_path / "bash_events")
     command_id = uuid4()
@@ -248,8 +246,8 @@ def test_order_filter_never_returns_an_empty_page_with_a_cursor(tmp_path: Path):
             )
         )
 
-    page = asyncio.run(
-        service.search_bash_events(order__gt=100, limit=5, kind__eq="BashOutput")
+    page = await service.search_bash_events(
+        order__gt=100, limit=5, kind__eq="BashOutput"
     )
 
     assert page.items == []
