@@ -3235,6 +3235,41 @@ class TestACPAgentCleanup:
         # terminate/kill should only be called once
         mock_process.terminate.assert_called_once()
 
+    def test_close_reaps_process_tree_after_terminate(self):
+        """terminate() is single-PID on Windows; the job object is what takes
+        the descendants. It must close after the graceful path, so a
+        well-behaved server still gets to exit on its own."""
+        agent = _make_agent()
+        calls: list[str] = []
+        mock_process = MagicMock()
+        mock_process.terminate.side_effect = lambda: calls.append("terminate")
+        mock_guard = MagicMock()
+        mock_guard.close.side_effect = lambda: calls.append("guard")
+        agent._process = mock_process
+        agent._process_tree_guard = mock_guard
+        agent._executor = MagicMock()
+        agent._conn = None
+
+        agent.close()
+
+        assert calls == ["terminate", "guard"]
+        assert agent._process_tree_guard is None
+
+    def test_close_survives_a_failing_process_tree_guard(self):
+        """Teardown is best-effort: a Win32 failure must not propagate."""
+        agent = _make_agent()
+        mock_guard = MagicMock()
+        mock_guard.close.side_effect = OSError("CloseHandle failed")
+        agent._process = MagicMock()
+        agent._process_tree_guard = mock_guard
+        agent._executor = MagicMock()
+        agent._conn = None
+
+        agent.close()
+
+        mock_guard.close.assert_called_once()
+        assert agent._process_tree_guard is None
+
     def test_close_closes_executor(self):
         agent = _make_agent()
         mock_executor = MagicMock()
