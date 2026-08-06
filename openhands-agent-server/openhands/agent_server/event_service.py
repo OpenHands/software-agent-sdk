@@ -855,7 +855,15 @@ class EventService:
             # exception, so a dropped stats or LLM-log event leaves no signal
             # beyond a GC-time warning.
             future = main_loop.run_in_executor(None, locked_on_event)
-            future.add_done_callback(partial(_log_emit_failure, type(event).__name__))
+            # Attach from the loop thread. This helper is called from foreign
+            # threads, and `add_done_callback` on an already-done future uses
+            # plain `call_soon`, which neither is thread-safe nor wakes an idle
+            # loop -- the report could then sit unfired, which is the failure
+            # this callback exists to prevent.
+            main_loop.call_soon_threadsafe(
+                future.add_done_callback,
+                partial(_log_emit_failure, type(event).__name__),
+            )
 
     def _setup_llm_log_streaming(self, agent: AgentBase) -> None:
         """Configure LLM log callbacks to stream logs via events."""

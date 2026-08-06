@@ -16,7 +16,10 @@ import pytest_asyncio
 
 from openhands.agent_server.conversation_lease import LEASE_FILE_NAME
 from openhands.agent_server.conversation_service import ConversationService
-from openhands.agent_server.event_service import EventService
+from openhands.agent_server.event_service import (
+    EventService,
+    _log_emit_failure,
+)
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
     EventPage,
@@ -3463,3 +3466,55 @@ class TestEmitEventFromThreadFailures:
             f"emission failure was not surfaced; captured={messages}"
         )
         assert any("disk full" in m for m in messages)
+
+    @pytest.mark.asyncio
+    async def test_cancelled_future_is_not_reported(self, caplog):
+        """A cancelled emission is not a failure and must not log or raise."""
+        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        future.cancel()
+        # Let the cancellation settle so `cancelled()` is True.
+        with suppress(asyncio.CancelledError):
+            await future
+
+        with caplog.at_level(logging.ERROR):
+            _log_emit_failure("MessageEvent", future)
+
+        assert [record.getMessage() for record in caplog.records] == []
+
+    @pytest.mark.asyncio
+    async def test_callback_is_attached_from_the_loop_thread(
+        self, sample_stored_conversation, tmp_path
+    ):
+        """`add_done_callback` must be scheduled with call_soon_threadsafe.
+
+        This helper runs on foreign threads, and attaching directly to an
+        already-done future would use plain `call_soon`, which does not wake an
+        idle loop.
+        """
+        service = EventService(
+            stored=sample_stored_conversation, conversations_dir=tmp_path
+        )
+        conversation = MagicMock()
+        conversation._state = MagicMock()
+        conversation._state.__enter__ = MagicMock(return_value=None)
+        conversation._state.__exit__ = MagicMock(return_value=False)
+        service._conversation = conversation
+
+        real_loop = asyncio.get_running_loop()
+        mock_loop = MagicMock()
+        mock_loop.is_running.return_value = True
+        finished: asyncio.Future[None] = real_loop.create_future()
+        finished.set_result(None)
+        mock_loop.run_in_executor.return_value = finished
+        service._main_loop = mock_loop
+
+        event = MessageEvent(
+            id="thread-safety", source="agent", llm_message=Message(role="assistant")
+        )
+        service._emit_event_from_thread(event)
+
+        assert mock_loop.call_soon_threadsafe.called, (
+            "done-callback must be attached via call_soon_threadsafe"
+        )
+        scheduled = mock_loop.call_soon_threadsafe.call_args.args
+        assert scheduled[0] == finished.add_done_callback
