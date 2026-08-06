@@ -546,6 +546,12 @@
     "owner": "OpenHands OSS"
   },
   {
+    "pointer": "/paths/~1api~1canvas-extensions~1installed~1{extension_name}~1bundle/get/responses/200/content/application~1json/schema",
+    "kind": "empty-object-schema",
+    "reason": "This existing endpoint has an opaque or non-JSON response contract and is tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
     "pointer": "/paths/~1api~1conversations~1{conversation_id}~1events~1search/get/responses/200/content/application~1json/schema",
     "kind": "empty-object-schema",
     "reason": "This existing endpoint has an opaque or non-JSON response contract and is tracked by the weak-type ratchet.",
