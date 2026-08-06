@@ -47,9 +47,15 @@ def exported():
         InMemorySpanExporter,
     )
 
+    from openhands.sdk.observability import laminar as laminar_module
+
     exporter = InMemorySpanExporter()
     borrowed = TracerWrapper.verify_initialized()
     original_thread_init = threading.Thread.__init__
+    # `should_enable_observability` latches True for the rest of the process once
+    # lmnr is up. Leaving it latched makes every later `@observe` build its real
+    # wrapper, which breaks tests that rely on triggering that build themselves.
+    previously_enabled = laminar_module._observability_enabled
 
     if not borrowed:
         TracerWrapper(
@@ -75,6 +81,7 @@ def exported():
         yield exporter.get_finished_spans
     finally:
         processor.instance = previous
+        laminar_module._observability_enabled = previously_enabled
         if not borrowed:
             Laminar.shutdown()
             ThreadingInstrumentor().uninstrument()
