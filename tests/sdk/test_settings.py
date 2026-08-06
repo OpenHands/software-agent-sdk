@@ -2366,13 +2366,13 @@ def test_create_subscription_llm_from_config_preserves_non_auth_options(
 def _self_assessed_action(command: str, claimed: SecurityRisk | None) -> ActionEvent:
     """An action event as the acting model would emit it.
 
-    ``claimed`` is the model's own label, or ``None`` if it omits the field.
+    ``claimed`` is the model's own label, or ``None`` if it omits the field,
+    which the event models as UNKNOWN.
     """
 
     class _BashLike(Action):
         command: str = "ls"
 
-    risk_field = {} if claimed is None else {"security_risk": claimed}
     return ActionEvent(
         thought=[TextContent(text="proceeding")],
         action=_BashLike(command=command),
@@ -2385,7 +2385,7 @@ def _self_assessed_action(command: str, claimed: SecurityRisk | None) -> ActionE
             origin="completion",
         ),
         llm_response_id="resp_1",
-        **risk_field,
+        security_risk=claimed if claimed is not None else SecurityRisk.UNKNOWN,
     )
 
 
