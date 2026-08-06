@@ -21,7 +21,7 @@ from openhands.sdk.mcp.config import (
     enabled_mcp_servers,
     to_fastmcp_mcp_config,
 )
-from openhands.sdk.mcp.exceptions import MCPTimeoutError
+from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
 from openhands.sdk.mcp.tool import MCPToolDefinition
 
 
@@ -165,8 +165,48 @@ async def log_handler(message: LogMessage):
 
 async def _connect_and_list_tools(client: MCPClient) -> None:
     """Connect to MCP server and populate client._tools."""
-    await client.connect()
-    await _refresh_tools(client)
+    await _refresh_connected_tools(client)
+
+
+async def _refresh_connected_tools(
+    client: MCPClient,
+    on_tools_changed: ToolsChangedCallback | None = None,
+    on_tools_reconciled: ToolsReconciledCallback | None = None,
+) -> None:
+    """Ensure the MCP session is connected, then refresh its tool snapshot."""
+    async with client._tools_refresh_lock:
+        if client._closed:
+            raise MCPError("Cannot refresh tools on a closed MCP client")
+        if not client.is_connected():
+            await client.connect()
+        await _refresh_tools(client, on_tools_changed, on_tools_reconciled)
+
+
+async def _reconnect_and_refresh_tools(
+    client: MCPClient,
+    on_tools_reconciled: ToolsReconciledCallback | None = None,
+) -> None:
+    """Replace an MCP session before re-listing its tools."""
+    async with client._tools_refresh_lock:
+        await client._reconnect()
+        await _refresh_tools(client)
+        if on_tools_reconciled is not None:
+            on_tools_reconciled(client, client.tools)
+
+
+def _refresh_mcp_client_tools(
+    client: MCPClient,
+    timeout: float = 30.0,
+    *,
+    on_tools_reconciled: ToolsReconciledCallback | None = None,
+) -> None:
+    """Start a fresh MCP session and refresh its advertised tools."""
+    client.call_async_from_sync(
+        _reconnect_and_refresh_tools,
+        timeout=timeout,
+        client=client,
+        on_tools_reconciled=on_tools_reconciled,
+    )
 
 
 async def _refresh_tools(
@@ -177,8 +217,8 @@ async def _refresh_tools(
     """Re-list tools from the server and reconcile ``client._tools``.
 
     Called after the initial connection and whenever the server sends a
-    ``notifications/tools/list_changed`` notification. When an
-    ``on_tools_changed`` preserves the original additions-only callback contract.
+    ``notifications/tools/list_changed`` notification. ``on_tools_changed``
+    preserves the original additions-only callback contract.
     ``on_tools_reconciled`` receives the complete current snapshot so a running
     agent can add, replace, and remove tools owned by this client.
     """
@@ -253,7 +293,6 @@ class _ToolListChangedHandler(MessageHandler):
         super().__init__()
         self._client = client
         self._on_tools_changed = on_tools_changed
-        self._refresh_lock = asyncio.Lock()
         self._refresh_tasks: set[asyncio.Task[None]] = set()
 
     async def on_tool_list_changed(
@@ -272,14 +311,13 @@ class _ToolListChangedHandler(MessageHandler):
     async def _refresh_tools(self) -> None:
         client = self._client
         try:
-            async with self._refresh_lock:
-                if client._closed:
-                    return
-                await _refresh_tools(
-                    client,
-                    self._on_tools_changed,
-                    client._tools_reconciled_callback,
-                )
+            if client._closed:
+                return
+            await _refresh_connected_tools(
+                client,
+                self._on_tools_changed,
+                client._tools_reconciled_callback,
+            )
         except Exception:
             logger.warning(
                 "Failed to refresh MCP tools after list_changed notification",

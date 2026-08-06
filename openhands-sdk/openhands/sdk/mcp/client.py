@@ -41,6 +41,7 @@ class MCPClient(AsyncMCPClient):
     _executor: AsyncExecutor
     _closed: bool
     _tools: "list[MCPToolDefinition]"
+    _tools_refresh_lock: asyncio.Lock
     _tools_reconciled_callback: ToolsReconciledCallback | None
 
     def __init__(self, *args, **kwargs):
@@ -48,6 +49,7 @@ class MCPClient(AsyncMCPClient):
         self._executor = AsyncExecutor()
         self._closed = False
         self._tools = []
+        self._tools_refresh_lock = asyncio.Lock()
         self._tools_reconciled_callback = None
 
     @property
@@ -61,6 +63,13 @@ class MCPClient(AsyncMCPClient):
             await self.__aenter__()
         except RuntimeError as exc:
             raise MCPError("MCP Connection Failure") from exc
+
+    async def _reconnect(self) -> None:
+        """Replace the current MCP session while preserving client configuration."""
+        if self._closed:
+            raise MCPError("Cannot reconnect a closed MCP client")
+        await self.__aexit__(None, None, None)
+        await self.connect()
 
     def call_async_from_sync(
         self,
