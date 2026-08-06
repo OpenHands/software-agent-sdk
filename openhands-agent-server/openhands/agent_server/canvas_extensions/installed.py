@@ -169,8 +169,25 @@ def list_installed_canvas_extensions(
 def load_installed_canvas_extensions(
     installed_dir: Path | None = None,
 ) -> list[CanvasExtensionManifest]:
-    """Load all enabled canvas extensions' manifests."""
-    return _manager(_resolve_installed_dir(installed_dir)).load_installed()
+    """Load all enabled canvas extensions' manifests.
+
+    Runs through ``list_installed_canvas_extensions`` first so discovery
+    is force-disabled before anything is loaded -- see the module
+    docstring. Mirrors ``InstallationManager.load_installed()``'s own
+    enabled-filter/load logic on top of the corrected info list.
+    """
+    installed_dir = _resolve_installed_dir(installed_dir)
+    manager = _manager(installed_dir)
+    manifests: list[CanvasExtensionManifest] = []
+    for info in list_installed_canvas_extensions(installed_dir):
+        if not info.enabled:
+            continue
+        extension_path = installed_dir / info.name
+        if extension_path.exists():
+            manifests.append(
+                manager.installation_interface.load_from_dir(extension_path)
+            )
+    return manifests
 
 
 def get_installed_canvas_extension(

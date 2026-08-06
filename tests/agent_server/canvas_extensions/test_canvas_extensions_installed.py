@@ -158,6 +158,25 @@ def test_manually_placed_directory_discovered_disabled(
     assert info.enabled is False
 
 
+def test_manually_placed_directory_discovered_disabled_excludes_from_load(
+    installed_dir: Path,
+):
+    """load_installed_canvas_extensions() must apply the same
+    disabled-by-default guarantee as list_installed_canvas_extensions() --
+    discovery here must not leave the extension loadable.
+    """
+    installed_dir.mkdir(parents=True)
+    manual = installed_dir / "manual-ext"
+    _write_extension(manual, name="manual-ext")
+    assert not (installed_dir / InstallationMetadata.metadata_filename).exists()
+
+    loaded = load_installed_canvas_extensions(installed_dir=installed_dir)
+
+    assert loaded == []
+    on_disk = InstallationMetadata.load_from_dir(installed_dir)
+    assert on_disk.extensions["manual-ext"].enabled is False
+
+
 def test_previously_enabled_tracked_extension_not_reset_by_listing(
     extension_dir: Path, installed_dir: Path
 ):
