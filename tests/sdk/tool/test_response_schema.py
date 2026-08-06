@@ -476,3 +476,47 @@ def test_response_schema_cache_does_not_go_stale_on_model_copy():
     assert action.structured_output == {"score": 5, "summary_text": "s"}
     assert isinstance(action, FinishAction)
     assert action.message == "m"
+
+
+def test_response_schema_json_built_once_per_class_under_concurrency():
+    """The per-class cache is built under its own lock, so concurrent callers
+    trigger model_json_schema() at most once and all get an equal, private copy."""
+    import threading
+
+    from openhands.sdk.tool.tool import (
+        _response_schema_json,
+        _response_schema_json_cache,
+    )
+
+    builds = 0
+    build_lock = threading.Lock()
+
+    class Counted(BaseModel):
+        value: str = Field(description="counted")
+
+        @classmethod
+        def model_json_schema(cls, *args, **kwargs):  # type: ignore[override]
+            nonlocal builds
+            with build_lock:
+                builds += 1
+            return BaseModel.model_json_schema.__func__(cls, *args, **kwargs)
+
+    _response_schema_json_cache.pop(Counted, None)
+    results: list[dict] = []
+    barrier = threading.Barrier(8)
+
+    def worker() -> None:
+        barrier.wait()
+        results.append(_response_schema_json(Counted))
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert builds == 1
+    assert len(results) == 8
+    assert all(result == results[0] for result in results)
+    # Each caller gets its own copy, so mutating one cannot poison the cache.
+    assert all(result is not results[0] for result in results[1:])

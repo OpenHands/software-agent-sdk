@@ -57,7 +57,10 @@ _action_type_lock = threading.Lock()
 # JSON schema for Pydantic-model response schemas, cached by the immutable class
 # so model_json_schema() runs at most once per class. Dict schemas are not cached
 # (they are not safely identity-keyed); they use the cheap deepcopy path below.
+# Guarded by its own lock rather than _action_type_lock: the two never nest, and
+# a separate lock keeps schema building off the action-type critical section.
 _response_schema_json_cache: dict[type[BaseModel], dict[str, Any]] = {}
+_response_schema_json_lock = threading.Lock()
 _RESERVED_RESPONSE_FIELDS = frozenset(
     {"kind", "security_risk", "structured_output", "summary"}
 )
@@ -85,26 +88,32 @@ _SUPPORTED_RESPONSE_SCHEMA_KEYS = frozenset(
 )
 
 
-def _response_schema_json(response_schema: ResponseSchema) -> dict[str, Any]:
-    if isinstance(response_schema, type) and issubclass(response_schema, BaseModel):
-        cached = _response_schema_json_cache.get(response_schema)
-        if cached is not None:
-            return copy.deepcopy(cached)
-        schema = response_schema.model_json_schema()
-    elif isinstance(response_schema, dict):
-        schema = copy.deepcopy(response_schema)
-    else:
-        raise TypeError("response_schema must be a Pydantic model or JSON Schema")
-
+def _validated_response_schema(schema: dict[str, Any]) -> dict[str, Any]:
     try:
         Draft202012Validator.check_schema(schema)
     except SchemaError as exc:
         raise ValueError(f"Invalid response_schema: {exc.message}") from exc
     if schema.get("type") != "object":
         raise ValueError("response_schema must describe a JSON object")
-    if isinstance(response_schema, type):
-        _response_schema_json_cache[response_schema] = copy.deepcopy(schema)
     return schema
+
+
+def _response_schema_json(response_schema: ResponseSchema) -> dict[str, Any]:
+    if isinstance(response_schema, dict):
+        return _validated_response_schema(copy.deepcopy(response_schema))
+    if not (
+        isinstance(response_schema, type) and issubclass(response_schema, BaseModel)
+    ):
+        raise TypeError("response_schema must be a Pydantic model or JSON Schema")
+
+    # Build under the lock so model_json_schema() really does run at most once
+    # per class, and hand back a private copy so callers cannot mutate the cache.
+    with _response_schema_json_lock:
+        cached = _response_schema_json_cache.get(response_schema)
+        if cached is None:
+            cached = _validated_response_schema(response_schema.model_json_schema())
+            _response_schema_json_cache[response_schema] = cached
+        return copy.deepcopy(cached)
 
 
 def _response_tool_schema(response_schema: ResponseSchema) -> dict[str, Any]:
