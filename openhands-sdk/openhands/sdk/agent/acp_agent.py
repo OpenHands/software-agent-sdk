@@ -22,6 +22,7 @@ import inspect
 import json
 import os
 import re
+import shutil
 import threading
 import time
 import uuid
@@ -332,6 +333,29 @@ def _select_auth_method(
         if method_id in method_ids and env_var in env:
             return method_id
     return None
+
+
+def _resolve_executable(program: str) -> str:
+    """Resolve *program* against ``PATH`` before handing it to ``exec``.
+
+    ``asyncio.create_subprocess_exec`` bottoms out in ``CreateProcess`` on
+    Windows, which resolves a bare name against ``PATH`` but only ever appends
+    ``.exe`` — it never consults ``PATHEXT``. Every npm-installed CLI entry
+    point is a ``.cmd`` shim (``npx.cmd``, ``claude-agent-acp.cmd``), so the
+    registry's default ``npx -y <pkg>`` launch command raises
+    ``FileNotFoundError`` on Windows even with npm correctly on ``PATH``.
+    :func:`shutil.which` does honour ``PATHEXT``, so resolving first makes the
+    shim spawnable.
+
+    A name that already carries a directory component is returned untouched, as
+    is one ``which`` cannot resolve — the latter keeps the existing
+    ``ACPSpawnError`` behaviour for a genuinely missing CLI rather than
+    swallowing it here. On POSIX ``which`` finds the same file ``execvp`` would,
+    so this is behaviour-preserving.
+    """
+    if os.path.dirname(program):
+        return program
+    return shutil.which(program) or program
 
 
 def _with_codex_base_url(
@@ -2596,7 +2620,9 @@ class ACPAgent(AgentBase):
                 for conflict in conflicts:
                     env.pop(conflict, None)
 
-        command = self.acp_command[0]
+        # Resolve through PATHEXT-aware lookup: create_subprocess_exec cannot
+        # spawn npm's .cmd shims from a bare name on Windows. No-op on POSIX.
+        command = _resolve_executable(self.acp_command[0])
         args = list(self.acp_command[1:]) + list(self.acp_args)
         # Codex ignores OPENAI_BASE_URL; translate it into the config key read by
         # the adapter. The helper returns a child-only environment and never
