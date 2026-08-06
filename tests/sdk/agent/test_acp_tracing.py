@@ -342,3 +342,39 @@ async def test_a_call_that_starts_terminal_closes_at_that_notification(exported)
     (llm,) = _by_type(exported(), "LLM")
     assert tool.end_time == closed_at, "finish_turn must not re-close the span"
     assert llm.end_time is not None and closed_at <= llm.end_time
+
+
+def test_an_oversized_block_prompt_is_capped(exported):
+    """Production passes ``prompt_blocks`` — a list of ACP content blocks, not a
+    string — so a cap that only understood strings never applied to the real
+    prompt, and one base64 image block can be megabytes."""
+    from acp.schema import TextContentBlock
+
+    blocks = [
+        TextContentBlock(text="describe this", type="text"),
+        TextContentBlock(
+            text="A" * 400_000, type="text"
+        ),  # stands in for base64 image data
+    ]
+    trace = ACPTurnTrace(acp_server="claude-code", model_id=None)
+    trace.start_turn(blocks)
+    trace.finish_turn("done", "", [])
+
+    (llm,) = _by_type(exported(), "LLM")
+    recorded = (llm.attributes or {})["lmnr.span.input"]
+    assert len(recorded) < 200_000, "oversized prompt reached the backend uncapped"
+    assert "[truncated]" in recorded
+    assert "describe this" in recorded  # the head of the prompt survives
+
+
+def test_a_normal_block_prompt_is_recorded_unchanged(exported):
+    from acp.schema import TextContentBlock
+
+    trace = ACPTurnTrace(acp_server="claude-code", model_id=None)
+    trace.start_turn([TextContentBlock(text="read the file", type="text")])
+    trace.finish_turn("done", "", [])
+
+    (llm,) = _by_type(exported(), "LLM")
+    recorded = (llm.attributes or {})["lmnr.span.input"]
+    assert "read the file" in recorded
+    assert "[truncated]" not in recorded

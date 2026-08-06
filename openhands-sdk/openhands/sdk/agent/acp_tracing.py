@@ -33,9 +33,21 @@ TURN_SPAN_NAME = "acp.completion"
 
 
 def _truncate(value: Any, limit: int = 100_000) -> Any:
-    if isinstance(value, str) and len(value) > limit:
-        return value[:limit] + "…[truncated]"
-    return value
+    """Cap what a span carries.
+
+    Non-strings are measured by their serialized size and replaced wholesale when
+    oversized, rather than passed through: an ACP prompt is a list of content
+    blocks, and one image block can be megabytes of base64.
+    """
+    if isinstance(value, str):
+        return value[:limit] + "…[truncated]" if len(value) > limit else value
+    try:
+        rendered = json.dumps(value, default=str)
+    except Exception:
+        return value
+    if len(rendered) <= limit:
+        return value
+    return rendered[:limit] + "…[truncated]"
 
 
 class ACPTurnTrace:
@@ -46,8 +58,10 @@ class ACPTurnTrace:
 
     Tool notifications arrive on the ACP executor's event-loop thread while the
     turn is opened and closed on the caller's, so children are parented by explicit
-    span context rather than by ambient ``contextvars`` and the open-span table is
-    mutated under a lock. Span I/O stays outside the lock.
+    span context rather than by ambient ``contextvars`` and the shared state is
+    mutated under a lock. Span I/O stays outside the lock, except in
+    ``start_turn``, where the span must be created and stored as one step so a
+    retry cannot open a second one.
     """
 
     def __init__(self, acp_server: str | None, model_id: str | None) -> None:
