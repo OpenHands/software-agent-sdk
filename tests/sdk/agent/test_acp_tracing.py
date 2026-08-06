@@ -300,3 +300,45 @@ def test_a_tool_starting_during_teardown_does_not_break_it(exported):
 
     trace.abandon()  # idempotent, and closes anything the race left open
     assert len(_by_type(exported(), "LLM")) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_call_that_starts_terminal_closes_at_that_notification(exported):
+    """Some servers report a terminal status on the very first notification, so no
+    later transition arrives. Closing only at ``finish_turn`` would bill the rest of
+    the turn to that tool call. Driven through ``session_update`` so the wiring in
+    ``acp_agent`` is what is under test, not just ``ACPTurnTrace``.
+    """
+    from unittest.mock import MagicMock
+
+    from acp.schema import ToolCallStart
+
+    from openhands.sdk.agent.acp_agent import _OpenHandsACPBridge
+
+    start = MagicMock(spec=ToolCallStart)
+    start.tool_call_id = "tc-terminal"
+    start.title = "git status"
+    start.kind = "execute"
+    start.status = "completed"  # terminal on the very first notification
+    start.raw_input = {"command": "git status"}
+    start.raw_output = "nothing to commit"
+    start.content = None
+
+    client = _OpenHandsACPBridge()
+    client.on_event = lambda _event: None
+    client.trace = ACPTurnTrace(acp_server="codex", model_id=None)
+    client.trace.start_turn("go")
+
+    await client.session_update("s1", start)
+
+    # Already exported, i.e. ended — before the turn is finished at all.
+    (tool,) = _by_type(exported(), "TOOL")
+    assert _meta(tool, "tool_call_id") == "tc-terminal"
+    assert tool.end_time is not None
+    closed_at = tool.end_time
+
+    client.trace.finish_turn("done", "", client.accumulated_tool_calls)
+
+    (llm,) = _by_type(exported(), "LLM")
+    assert tool.end_time == closed_at, "finish_turn must not re-close the span"
+    assert llm.end_time is not None and closed_at <= llm.end_time

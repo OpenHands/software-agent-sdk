@@ -1288,6 +1288,10 @@ class _OpenHandsACPBridge:
             self._mask_tool_call_entry(entry)
             self.accumulated_tool_calls.append(entry)
             self.trace.tool_started(entry)
+            if entry.get("status") in _TERMINAL_TOOL_CALL_STATUSES:
+                # No later transition will arrive for this call, so close its
+                # span now; leaving it open would bill the rest of the turn to it.
+                self.trace.tool_finished(entry)
             logger.debug("ACP tool call start: %s", update.tool_call_id)
             # Emit one early "started" event — the action half of the
             # action->observation pair. (If the server reports a terminal
