@@ -3423,3 +3423,107 @@ async def test_event_service_creates_lease_with_custom_ttl(tmp_path: Path) -> No
     assert service._lease is not None
     assert service._lease._ttl_seconds == 10.0
     assert (tmp_path / stored.id.hex / LEASE_FILE_NAME).exists()
+
+
+class TestRunAdmissionLimit:
+    """`max_concurrent_runs` must bound the native async path too (#4063)."""
+
+    @staticmethod
+    def _make_conversation(arun_body):
+        """A conversation the run path treats as natively async.
+
+        ``has_native_arun`` inspects the *types*, so ``arun``/``astep`` have to
+        be defined on classes rather than patched onto instances.
+        """
+
+        class _Agent(MagicMock):
+            async def astep(self, *args, **kwargs):
+                return None
+
+        class _Conversation(MagicMock):
+            async def arun(self):
+                await arun_body()
+
+        conversation = _Conversation(spec_set=None)
+        conversation.agent = _Agent()
+        return conversation
+
+    def _service(self, stored, tmp_path, semaphore, conversation):
+        service = EventService(stored=stored, conversations_dir=tmp_path)
+        service._conversation = conversation
+        service._run_semaphore = semaphore
+
+        async def idle():
+            return ConversationExecutionStatus.IDLE
+
+        service._get_execution_status = idle
+        return service
+
+    @pytest.mark.asyncio
+    async def test_concurrent_native_runs_never_exceed_the_limit(
+        self, sample_stored_conversation, tmp_path
+    ):
+        semaphore = asyncio.Semaphore(1)
+        release = asyncio.Event()
+        tracker = {"active": 0, "peak": 0}
+
+        async def body():
+            tracker["active"] += 1
+            tracker["peak"] = max(tracker["peak"], tracker["active"])
+            try:
+                await release.wait()
+            finally:
+                tracker["active"] -= 1
+
+        services = [
+            self._service(
+                sample_stored_conversation,
+                tmp_path,
+                semaphore,
+                self._make_conversation(body),
+            )
+            for _ in range(3)
+        ]
+
+        for service in services:
+            await service.run()
+
+        # Capture the handles now: each run clears `_run_task` when it finishes.
+        tasks = [service._run_task for service in services]
+        assert all(task is not None for task in tasks)
+
+        for _ in range(10):
+            await asyncio.sleep(0)
+
+        assert tracker["peak"] == 1, (
+            f"{tracker['peak']} conversations ran concurrently under a limit of 1"
+        )
+
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=5.0)
+
+        assert tracker["peak"] == 1
+        assert tracker["active"] == 0
+        assert not semaphore.locked()
+
+    @pytest.mark.asyncio
+    async def test_permit_is_released_when_a_run_raises(
+        self, sample_stored_conversation, tmp_path
+    ):
+        semaphore = asyncio.Semaphore(1)
+
+        async def body():
+            raise RuntimeError("boom")
+
+        service = self._service(
+            sample_stored_conversation,
+            tmp_path,
+            semaphore,
+            self._make_conversation(body),
+        )
+
+        await service.run()
+        assert service._run_task is not None
+        await asyncio.wait_for(service._run_task, timeout=5.0)
+
+        assert not semaphore.locked()
