@@ -390,8 +390,8 @@ _GEMINI_FILE_SECRETS: tuple[ACPFileSecretSpec, ...] = (
 # claude-agent-acp 0.44+ / codex-acp select the model via a ``model``
 # ``configOptions`` entry (and retain the legacy ``session/set_model``
 # extension); the SDK detects which mechanism each session advertises.
-CLAUDE_AGENT_ACP_VERSION = "0.44.0"
-CODEX_ACP_VERSION = "1.1.2"
+CLAUDE_AGENT_ACP_VERSION = "0.65.0"
+CODEX_ACP_VERSION = "1.1.9"
 GEMINI_CLI_VERSION = "0.46.0"
 
 
