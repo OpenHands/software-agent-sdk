@@ -76,21 +76,28 @@ def _make_mcp_tool(name: str) -> mcp_types.Tool:
 
 
 class _FakeClient:
-    """Minimal stand-in for ``MCPClient`` used by ``_refresh_tools``.
-
-    ``_refresh_tools`` only needs ``list_tools()`` (async) and the
-    ``_tools`` / ``_closed`` attributes, so a lightweight fake keeps the diff
-    logic unit-testable without spinning up a real server.
-    """
+    """Minimal stand-in for focused tool-list reconciliation tests."""
 
     def __init__(self, tools: list[mcp_types.Tool]):
         self._server_tools = list(tools)
         self._tools: list[MCPToolDefinition] = []
         self._closed = False
+        self._tools_refresh_lock = asyncio.Lock()
         self._tools_reconciled_callback = None
+        self._connected = True
+
+    def is_connected(self) -> bool:
+        return self._connected
+
+    async def connect(self) -> None:
+        self._connected = True
 
     async def list_tools(self) -> list[mcp_types.Tool]:
         return list(self._server_tools)
+
+    @property
+    def tools(self) -> list[MCPToolDefinition]:
+        return list(self._tools)
 
 
 class _ConcreteAgent(AgentBase):

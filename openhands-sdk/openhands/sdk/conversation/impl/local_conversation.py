@@ -72,6 +72,7 @@ from openhands.sdk.mcp.utils import (
     MCPToolProvider,
     ToolsChangedCallback,
     ToolsReconciledCallback,
+    _refresh_mcp_client_tools,
     provider_supports_on_tools_reconciled,
 )
 from openhands.sdk.observability.laminar import (
@@ -308,6 +309,7 @@ class LocalConversation(BaseConversation):
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
         self._subscription_disabled_condenser = None
         self._mcp_tool_provider = mcp_tool_provider or DefaultMCPToolProvider()
+        self._mcp_clients: list[MCPClient] = []
 
         # Create-or-resume: factory inspects BASE_STATE to decide
         desired_id = conversation_id or uuid.uuid4()
@@ -1281,19 +1283,19 @@ class LocalConversation(BaseConversation):
         self._hook_processor.set_conversation_state(self._state)
         self._hook_processor.run_session_start()
 
-    def _runtime_mcp_tools(
+    def _runtime_mcp_client(
         self,
         mcp_config: dict[str, MCPServer],
         *,
         on_tools_changed: ToolsChangedCallback | None = None,
         on_tools_reconciled: ToolsReconciledCallback | None = None,
-    ) -> list[ToolDefinition]:
+    ) -> MCPClient | None:
         # Servers the user switched off stay in the settings map but must not
         # be connected to. Filter before the emptiness check so an all-disabled
         # config is a plain no-op rather than a zero-server MCP client.
         mcp_config = enabled_mcp_servers(mcp_config)
         if not mcp_config:
-            return []
+            return None
         create_kwargs: dict[str, Any] = {"on_tools_changed": on_tools_changed}
         if provider_supports_on_tools_reconciled(self._mcp_tool_provider):
             create_kwargs["on_tools_reconciled"] = on_tools_reconciled
@@ -1306,7 +1308,8 @@ class LocalConversation(BaseConversation):
         client = self._mcp_tool_provider.create_tools(
             mcp_config, _RUNTIME_MCP_TIMEOUT_SECS, **create_kwargs
         )
-        return list(client.tools)
+        self._mcp_clients.append(client)
+        return client
 
     def _on_mcp_tools_reconciled(
         self,
@@ -1315,10 +1318,10 @@ class LocalConversation(BaseConversation):
     ) -> None:
         self.agent._on_mcp_tools_reconciled(client, tools)
 
-    def _runtime_mcp_tools_for_agent(self) -> list[ToolDefinition]:
+    def _runtime_mcp_client_for_agent(self) -> MCPClient | None:
         if not self.agent.supports_openhands_tools or not self.agent.mcp_config:
-            return []
-        return self._runtime_mcp_tools(
+            return None
+        return self._runtime_mcp_client(
             self.agent.mcp_config,
             on_tools_changed=lambda tools: self.agent._on_mcp_tools_changed(tools),
             on_tools_reconciled=self._on_mcp_tools_reconciled,
@@ -1337,18 +1340,23 @@ class LocalConversation(BaseConversation):
             return list(InvokeSkillTool.create(self._state))
         return []
 
-    def _close_runtime_tools(self, tools: Sequence[ToolDefinition]) -> None:
-        for tool in tools:
-            try:
-                tool.as_executable().executor.close()
-            except NotImplementedError:
-                continue
-            except Exception as exc:
-                logger.warning(
-                    "Error closing runtime tool executor for tool '%s': %s",
-                    tool.name,
-                    exc,
-                )
+    def refresh_mcp_tools(self) -> None:
+        """Re-fetch and reconcile every MCP tool snapshot between runs."""
+        if not self._agent_ready:
+            self._ensure_agent_ready()
+            return
+        for client in tuple(self._mcp_clients):
+            _refresh_mcp_client_tools(
+                client,
+                _RUNTIME_MCP_TIMEOUT_SECS,
+                on_tools_reconciled=self._on_mcp_tools_reconciled,
+            )
+
+    def _close_mcp_client(self, client: MCPClient | None) -> None:
+        if client is None:
+            return
+        client.sync_close()
+        self._mcp_clients.remove(client)
 
     def load_plugin(self, plugin_ref: str) -> None:
         """Load a plugin from the conversation's registered marketplaces."""
@@ -1390,14 +1398,14 @@ class LocalConversation(BaseConversation):
                 expand_defaults=True,
             )
             merged_mcp = coerce_mcp_config(expanded_mcp["mcpServers"])
-        runtime_mcp_tools = (
-            self._runtime_mcp_tools(
+        runtime_mcp_client = (
+            self._runtime_mcp_client(
                 runtime_plugin_mcp,
                 on_tools_changed=lambda tools: self.agent._on_mcp_tools_changed(tools),
                 on_tools_reconciled=self._on_mcp_tools_reconciled,
             )
             if self._agent_ready
-            else []
+            else None
         )
 
         with self._state:
@@ -1423,6 +1431,9 @@ class LocalConversation(BaseConversation):
 
             self._state.agent = self.agent
             if self._agent_ready:
+                runtime_mcp_tools = (
+                    runtime_mcp_client.tools if runtime_mcp_client is not None else []
+                )
                 runtime_tools = [
                     *runtime_mcp_tools,
                     *self._runtime_skill_tools_for_agent(),
@@ -1430,7 +1441,7 @@ class LocalConversation(BaseConversation):
                 try:
                     self.agent.add_runtime_tools(runtime_tools)
                 except Exception:
-                    self._close_runtime_tools(runtime_mcp_tools)
+                    self._close_mcp_client(runtime_mcp_client)
                     raise
 
     def _register_file_based_agents(self) -> None:
@@ -1488,19 +1499,23 @@ class LocalConversation(BaseConversation):
             # register file-based agents
             self._register_file_based_agents()
 
-            runtime_mcp_tools: list[ToolDefinition] = []
+            runtime_mcp_client: MCPClient | None = None
             try:
                 if self.agent.supports_openhands_tools:
                     self.agent._initialize(self._state)
-                    runtime_mcp_tools = self._runtime_mcp_tools_for_agent()
-                    self.agent.add_runtime_tools(runtime_mcp_tools)
+                    runtime_mcp_client = self._runtime_mcp_client_for_agent()
+                    self.agent.add_runtime_tools(
+                        runtime_mcp_client.tools
+                        if runtime_mcp_client is not None
+                        else []
+                    )
 
                 self.agent.init_state(
                     self._state,
                     on_event=self._on_event,
                 )
             except Exception:
-                self._close_runtime_tools(runtime_mcp_tools)
+                self._close_mcp_client(runtime_mcp_client)
                 raise
 
             # Register LLMs in the registry (still holding lock).
@@ -2666,6 +2681,9 @@ class LocalConversation(BaseConversation):
                 self._end_observability_span()
             except AttributeError:
                 pass
+        for client in self._mcp_clients:
+            client.sync_close()
+        self._mcp_clients.clear()
         # Clean up agent resources (e.g., ACPAgent subprocess)
         agent_error: Exception | None = None
         try:
