@@ -1032,11 +1032,8 @@ class ConversationSettings(BaseModel):
         default="llm",
         description=(
             "Security analyzer that evaluates actions before execution. "
-            '"llm" pairs the acting model\'s self-assessed risk with the '
-            "deterministic policy rails and takes the worst case, so a model "
-            "cannot skip confirmation by labelling a dangerous action low risk. "
-            "The rails are an enumerated set, so they do not replace review of "
-            "what the agent is allowed to reach; compose your own "
+            '"llm" floors the model\'s self-assessed risk with the policy '
+            "rails, which are an enumerated set; compose your own "
             "EnsembleSecurityAnalyzer for stricter environments."
         ),
         json_schema_extra={
@@ -1092,17 +1089,11 @@ class ConversationSettings(BaseModel):
             from openhands.sdk.security.ensemble import EnsembleSecurityAnalyzer
             from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 
-            # LLMSecurityAnalyzer reports the acting model's *self-assessed*
-            # risk, so on its own a model that labels a destructive action LOW
-            # slips past ConfirmRisky and auto-executes. Pair it with the
-            # deterministic rails as a floor: the ensemble takes the worst case,
-            # so an affirmatively-LOW label on `curl | bash`, a catastrophic
-            # `rm`, `dd` to a device, or `mkfs` still reaches HIGH and prompts.
-            #
-            # propagate_unknown=True keeps today's behavior for an action whose
-            # risk the model never stated: the rails return a concrete LOW when
-            # nothing fires, which would otherwise outvote the LLM analyzer's
-            # UNKNOWN and silently drop the confirmation ConfirmRisky gives it.
+            # Floor the model's self-assessed risk with the deterministic
+            # rails, so a LOW label on a destructive action still reaches HIGH.
+            # propagate_unknown keeps UNKNOWN winning: the rails return a
+            # concrete LOW when nothing fires, which would otherwise drop the
+            # confirmation ConfirmRisky gives an unlabelled action.
             return EnsembleSecurityAnalyzer(
                 analyzers=[LLMSecurityAnalyzer(), PolicyRailSecurityAnalyzer()],
                 propagate_unknown=True,
