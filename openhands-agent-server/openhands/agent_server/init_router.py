@@ -173,7 +173,15 @@ def _build_initialized_config(base: Config, req: InitRequest) -> Config:
         updates["max_concurrent_runs"] = req.max_concurrent_runs
     if req.telemetry is not None:
         updates["telemetry"] = req.telemetry
-    return base.model_copy(update=updates)
+    merged = base.model_copy(update=updates)
+    # ``Config.cipher`` memoises the built Cipher onto the instance, and
+    # ``model_copy`` copies that alongside the fields. Left in place, a dormant
+    # config whose cipher had been read would hand the boot key to the
+    # initialized server: ``secret_key`` would read as the new value while every
+    # decrypt still used the old one, nulling persisted secrets on the way past.
+    # Drop it so the cipher is rebuilt from the merged ``secret_key``.
+    merged.__dict__.pop("_cipher", None)
+    return merged
 
 
 class InitService:

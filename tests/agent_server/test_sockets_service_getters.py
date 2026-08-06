@@ -2,24 +2,33 @@
 
 The websocket handlers must read ``ConversationService`` and
 ``BashEventService`` from ``app.state`` (set by the lifespan or by
-``POST /api/init`` in deferred-init mode) rather than the module-level
-singletons captured at import time. These helpers encapsulate that lookup
-and gracefully fall back to the module-level default when ``app.state``
-is not configured (e.g. when sockets.py is imported as a library without
-a lifespan).
+``POST /api/init`` in deferred-init mode) rather than a singleton captured
+at import time. These helpers encapsulate that lookup and gracefully fall
+back to the process default when ``app.state`` is not configured (e.g. when
+sockets.py is imported as a library without a lifespan) — built lazily, so
+importing the module constructs nothing.
 """
 
+import json
+import subprocess
+import sys
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
 from fastapi import WebSocketDisconnect
 
 import openhands.agent_server.sockets as sockets_mod
-from openhands.agent_server.bash_service import BashEventService
+from openhands.agent_server.bash_service import (
+    BashEventService,
+    get_default_bash_event_service,
+)
 from openhands.agent_server.config import Config
-from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.conversation_service import (
+    ConversationService,
+    get_default_conversation_service,
+)
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.sockets import (
     _get_bash_event_service,
@@ -56,12 +65,20 @@ def test_get_conversation_service_prefers_app_state(conv_service):
     assert _get_conversation_service(ws) is conv_service
 
 
-def test_get_conversation_service_falls_back_to_module_singleton():
-    """When ``app.state`` has no conversation service, the module-level
-    default is returned (preserves the behaviour of tests that patch the
-    module-level singleton)."""
+def test_get_conversation_service_falls_back_to_injected_module_singleton(
+    conv_service,
+):
+    """A module-level singleton injected by a test still wins when
+    ``app.state`` has no conversation service."""
+    with patch.object(sockets_mod, "conversation_service", conv_service):
+        assert _get_conversation_service(_make_ws()) is conv_service
+
+
+def test_get_conversation_service_falls_back_to_process_default():
+    """With neither ``app.state`` nor an injected singleton, the process
+    default is built lazily rather than at import time."""
     ws = _make_ws()
-    assert _get_conversation_service(ws) is sockets_mod.conversation_service
+    assert _get_conversation_service(ws) is get_default_conversation_service()
 
 
 def test_get_conversation_service_ignores_wrong_type():
@@ -83,9 +100,14 @@ def test_get_bash_event_service_prefers_app_state(bash_service):
     assert _get_bash_event_service(ws) is bash_service
 
 
-def test_get_bash_event_service_falls_back_to_module_singleton():
+def test_get_bash_event_service_falls_back_to_injected_module_singleton(bash_service):
+    with patch.object(sockets_mod, "bash_event_service", bash_service):
+        assert _get_bash_event_service(_make_ws()) is bash_service
+
+
+def test_get_bash_event_service_falls_back_to_process_default():
     ws = _make_ws()
-    assert _get_bash_event_service(ws) is sockets_mod.bash_event_service
+    assert _get_bash_event_service(ws) is get_default_bash_event_service()
 
 
 def test_get_bash_event_service_ignores_wrong_type():
@@ -203,3 +225,55 @@ async def test_bash_events_socket_uses_app_state_bash_event_service():
 
     per_app_bash_svc.subscribe_to_events.assert_called_once()
     per_app_bash_svc.unsubscribe_from_events.assert_called_once()
+
+
+# -- Import-time purity (deferred-init regression) --
+
+
+_IMPORT_PROBE = """
+import json
+import openhands.agent_server.sockets as sockets_mod
+from openhands.agent_server import bash_service, conversation_service
+from openhands.agent_server import persistence
+
+print(json.dumps({
+    "module_conversation_service": sockets_mod.conversation_service is not None,
+    "module_bash_event_service": sockets_mod.bash_event_service is not None,
+    "default_conversation_service": conversation_service._conversation_service
+        is not None,
+    "default_bash_event_service": bash_service._bash_event_service is not None,
+    "settings_store": persistence.store._settings_store is not None,
+    "secrets_store": persistence.store._secrets_store is not None,
+}))
+"""
+
+
+def test_importing_sockets_builds_no_services():
+    """Importing sockets.py must not construct any service.
+
+    Building the default ConversationService at import time also builds a
+    ``Cipher`` and the settings/secrets stores from the boot-time config. On a
+    deferred-init pod that memoises the dormant config's cipher, which then
+    survives the ``model_copy`` in ``_build_initialized_config`` — so a pod
+    handed a different ``secret_key`` via ``POST /api/init`` decrypts persisted
+    secrets with the boot key and silently overwrites them with null.
+
+    Run in a subprocess so the assertion is about a clean interpreter rather
+    than whatever the rest of the suite has already imported.
+    """
+    proc = subprocess.run(
+        [sys.executable, "-c", _IMPORT_PROBE],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert proc.returncode == 0, proc.stderr
+    built = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert built == {
+        "module_conversation_service": False,
+        "module_bash_event_service": False,
+        "default_conversation_service": False,
+        "default_bash_event_service": False,
+        "settings_store": False,
+        "secrets_store": False,
+    }

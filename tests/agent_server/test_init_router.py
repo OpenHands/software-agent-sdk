@@ -5,6 +5,7 @@ Background: https://github.com/OpenHands/software-agent-sdk/issues/2523
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,6 +21,7 @@ from openhands.agent_server.init_router import (
     InitService,
     _build_initialized_config,
 )
+from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX
 
 
 @pytest.fixture(autouse=True)
@@ -105,6 +107,35 @@ class TestBuildInitializedConfig:
         )
         assert merged.secret_key is not None
         assert merged.secret_key.get_secret_value() == "explicit-secret"
+
+    def test_cipher_is_rebuilt_when_secret_key_changes(self):
+        """A memoised cipher on the dormant config must not survive the merge.
+
+        ``Config.cipher`` caches the built Cipher on the instance and
+        ``model_copy`` copies it along with the fields. Without an explicit
+        eviction the initialized server reports the new ``secret_key`` while
+        every encrypt/decrypt still uses the boot key, which silently nulls
+        the secrets of a conversation directory attached at /api/init time.
+        """
+        base = Config(
+            deferred_init=True,
+            session_api_keys=["pod-boot"],
+            secret_key=SecretStr("pod-boot"),
+        )
+        boot_cipher = base.cipher
+        assert boot_cipher is not None and boot_cipher.secret_key == "pod-boot"
+
+        merged = _build_initialized_config(
+            base,
+            InitRequest(
+                session_api_keys=["user-session"],
+                secret_key=SecretStr("conversation-key"),
+            ),
+        )
+        assert merged.cipher is not None
+        assert merged.cipher.secret_key == "conversation-key"
+        # The dormant config keeps its own cipher — the merge is not in place.
+        assert base.cipher is boot_cipher
 
 
 class TestRouterMounting:
@@ -440,6 +471,107 @@ class TestEndToEndOverLifespan:
                 assert app.state.config.session_api_keys == ["user-session-key"]
             finally:
                 _reset_conversation_singleton()
+
+
+class TestSecretsOnAnAttachedConversationDirectory:
+    """Warm-pool flow: a conversation directory written by an earlier server is
+    attached to a dormant pod, and /api/init supplies the key it was encrypted
+    with. See https://github.com/OpenHands/software-agent-sdk/issues/2523.
+    """
+
+    @pytest.mark.asyncio
+    async def test_init_secret_key_decrypts_attached_conversation(self, tmp_path):
+        from openhands.agent_server.conversation_service import ConversationService
+        from openhands.sdk import LLM, Agent, LocalWorkspace
+        from openhands.sdk.conversation.request import StartConversationRequest
+        from openhands.sdk.secret.secrets import StaticSecret
+        from openhands.sdk.security.confirmation_policy import NeverConfirm
+        from openhands.sdk.utils.cipher import Cipher
+
+        volume_key = "volume-cipher-key"
+        convs = tmp_path / "volume" / "conversations"
+        workspace = tmp_path / "volume" / "project"
+        workspace.mkdir(parents=True)
+
+        # An earlier server writes the volume under ``volume_key``.
+        _reset_conversation_singleton()
+        _reset_bash_singleton()
+        async with ConversationService(
+            conversations_dir=convs,
+            cipher=Cipher(volume_key),
+            lease_ttl_seconds=0.0,
+        ) as writer:
+            info, _ = await writer.start_conversation(
+                StartConversationRequest(
+                    agent=Agent(
+                        llm=LLM(
+                            model="gpt-4o",
+                            usage_id="test-llm",
+                            api_key=SecretStr("sk-persisted"),
+                        ),
+                        tools=[],
+                    ),
+                    workspace=LocalWorkspace(working_dir=str(workspace)),
+                    confirmation_policy=NeverConfirm(),
+                    secrets={
+                        "DEPLOY_TOKEN": StaticSecret(value=SecretStr("dpl-persisted"))
+                    },
+                )
+            )
+            conversation_id = info.id
+        _reset_conversation_singleton()
+        _reset_bash_singleton()
+
+        # A warm pod boots with its own throwaway key, pointed at the volume.
+        cfg = Config(
+            deferred_init=True,
+            session_api_keys=["pod-boot"],
+            secret_key=SecretStr("pod-boot"),
+            conversations_path=convs,
+            bash_events_dir=tmp_path / "volume" / "bash",
+            lease_ttl_seconds=0.0,
+            enable_vscode=False,
+        )
+        app = create_app(cfg)
+        with TestClient(app) as client:
+            try:
+                # Force the dormant config to memoise its boot cipher, the way
+                # any import-time or pre-init read of ``config.cipher`` would.
+                assert app.state.config.cipher is not None
+
+                resp = client.post(
+                    "/api/init",
+                    headers={"X-Init-API-Key": "pod-boot"},
+                    json={
+                        "session_api_keys": ["user-session"],
+                        "secret_key": volume_key,
+                    },
+                )
+                assert resp.status_code == 200, resp.text
+
+                service = app.state.conversation_service
+                assert service.cipher is not None
+                assert service.cipher.secret_key == volume_key
+
+                stored = service._conversation_records[conversation_id].stored
+                assert stored.agent.llm.api_key is not None, (
+                    "llm.api_key decrypted to None: the attached conversation was "
+                    "read with the pod's boot key instead of the key delivered "
+                    "by /api/init"
+                )
+                assert stored.agent.llm.api_key.get_secret_value() == "sk-persisted"
+                assert stored.secrets["DEPLOY_TOKEN"].get_value() == "dpl-persisted"
+            finally:
+                _reset_conversation_singleton()
+                _reset_bash_singleton()
+
+        # The volume must still hold ciphertext — a wrong-key read would have
+        # rewritten these as null on the way out.
+        meta = json.loads((convs / conversation_id.hex / "meta.json").read_text())
+        assert str(meta["agent"]["llm"]["api_key"]).startswith(FERNET_TOKEN_PREFIX)
+        assert str(meta["secrets"]["DEPLOY_TOKEN"]["value"]).startswith(
+            FERNET_TOKEN_PREFIX
+        )
 
 
 class TestNonDeferredPathUnchanged:

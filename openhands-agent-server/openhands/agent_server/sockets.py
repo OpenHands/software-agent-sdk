@@ -52,8 +52,17 @@ from openhands.sdk.utils.paging import page_iterator
 
 
 sockets_router = APIRouter(prefix="/sockets", tags=["WebSockets"])
-conversation_service = get_default_conversation_service()
-bash_event_service = get_default_bash_event_service()
+# Deliberately not built at import time. Constructing the default
+# ConversationService here would build a Cipher and the settings/secrets store
+# singletons from the boot-time config. On a deferred-init pod that config is
+# the dormant placeholder, and ``Config.cipher`` memoises onto the instance —
+# which ``model_copy`` then carries into the config assembled by
+# ``POST /api/init``, so a pod handed a different ``secret_key`` decrypts
+# persisted secrets with the boot key and silently nulls them. The service
+# getters below resolve the default lazily instead. Tests may still patch
+# these names to inject doubles.
+conversation_service: ConversationService | None = None
+bash_event_service: BashEventService | None = None
 logger = logging.getLogger(__name__)
 
 
@@ -75,16 +84,17 @@ def _get_conversation_service(websocket: WebSocket) -> ConversationService:
 
     Looks up ``app.state.conversation_service`` at request time so that the
     service delivered via ``POST /api/init`` (deferred-init / dormant mode)
-    is used instead of the module-level default captured at import. When
-    ``app.state`` is not configured (e.g. when sockets.py is imported as a
-    library without a lifespan), falls back to the module-level singleton,
-    which keeps the behaviour of existing tests that patch the module-level
-    variable.
+    is used. When ``app.state`` is not configured (e.g. when sockets.py is
+    imported as a library without a lifespan), falls back to the module-level
+    ``conversation_service`` if a test has injected one, and otherwise builds
+    the process default on first use.
     """
     service = getattr(websocket.app.state, "conversation_service", None)
     if isinstance(service, ConversationService):
         return service
-    return conversation_service
+    if conversation_service is not None:
+        return conversation_service
+    return get_default_conversation_service()
 
 
 def _get_bash_event_service(websocket: WebSocket) -> BashEventService:
@@ -92,14 +102,17 @@ def _get_bash_event_service(websocket: WebSocket) -> BashEventService:
 
     Looks up ``app.state.bash_event_service`` at request time so that the
     service delivered via ``POST /api/init`` (deferred-init / dormant mode)
-    is used instead of the module-level default captured at import. When
-    ``app.state`` is not configured (e.g. when sockets.py is imported as a
-    library without a lifespan), falls back to the module-level singleton.
+    is used. When ``app.state`` is not configured (e.g. when sockets.py is
+    imported as a library without a lifespan), falls back to the module-level
+    ``bash_event_service`` if a test has injected one, and otherwise builds the
+    process default on first use.
     """
     service = getattr(websocket.app.state, "bash_event_service", None)
     if isinstance(service, BashEventService):
         return service
-    return bash_event_service
+    if bash_event_service is not None:
+        return bash_event_service
+    return get_default_bash_event_service()
 
 
 def _resolve_websocket_session_api_key(
