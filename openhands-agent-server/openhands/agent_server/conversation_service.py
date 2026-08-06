@@ -1974,7 +1974,9 @@ class ConversationService:
         if self._run_executor is not None:
             self._run_executor.shutdown(wait=False)
             self._run_executor = None
-        self._run_semaphore = None
+        # The semaphore is left in place on purpose: it owns no resources, and
+        # clearing it here would hand a service started by a partial-failure
+        # retry `_run_semaphore=None`, permanently removing its concurrency cap.
         if failures:
             assert self._event_services is not None
             for event_service in self._event_services.values():

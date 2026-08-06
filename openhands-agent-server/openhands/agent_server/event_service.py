@@ -1199,7 +1199,14 @@ class EventService:
                     # Hold the admission permit across the whole run so both
                     # paths count against max_concurrent_runs. `async with`
                     # releases it on exception and on cancellation.
+                    queued_generation = self._explicit_interrupt_generation
                     async with self._run_semaphore or nullcontext():
+                        # A pause()/interrupt() that lands while this run is
+                        # still queued has nothing to cancel, so honour it here
+                        # rather than starting the run and overwriting the
+                        # requested state once the permit arrives.
+                        if self._explicit_interrupt_generation != queued_generation:
+                            return
                         if has_native_arun:
                             await conversation.arun()
                         else:
