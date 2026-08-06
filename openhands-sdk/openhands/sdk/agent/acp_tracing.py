@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from openhands.sdk.logger import get_logger
@@ -64,7 +65,13 @@ class ACPTurnTrace:
     retry cannot open a second one.
     """
 
-    def __init__(self, acp_server: str | None, model_id: str | None) -> None:
+    def __init__(
+        self,
+        acp_server: str | None,
+        model_id: str | None,
+        mask: Callable[[str], str] | None = None,
+    ) -> None:
+        self._mask = mask
         self._enabled = should_enable_observability()
         self._metadata: dict[str, Any] = {AGENT_KIND_METADATA_KEY: "acp"}
         if acp_server:
@@ -90,7 +97,7 @@ class ACPTurnTrace:
                     return
                 span = Laminar.start_span(
                     name=TURN_SPAN_NAME,
-                    input=_truncate(prompt),
+                    input=_truncate(_mask_prompt(prompt, self._mask)),
                     span_type="LLM",
                     metadata=dict(self._metadata),
                 )
@@ -191,6 +198,32 @@ class ACPTurnTrace:
             span.end()
         except Exception:
             logger.debug("ACP tool span could not be ended", exc_info=True)
+
+
+def _mask_prompt(prompt: Any, mask: Callable[[str], str] | None) -> Any:
+    """Run the conversation's secret masker over every string in the prompt.
+
+    Returns ``None`` rather than the original if masking fails: an unrecorded
+    prompt is recoverable, an unmasked one shipped to the backend is not.
+    """
+    if mask is None:
+        return prompt
+
+    def walk(node: Any) -> Any:
+        if isinstance(node, str):
+            return mask(node)
+        if isinstance(node, list):
+            return [walk(v) for v in node]
+        if isinstance(node, dict):
+            return {k: walk(v) for k, v in node.items()}
+        dump = getattr(node, "model_dump", None)
+        return walk(dump()) if callable(dump) else node
+
+    try:
+        return walk(prompt)
+    except Exception:
+        logger.debug("ACP prompt could not be masked", exc_info=True)
+        return None
 
 
 def _observation(output: Any) -> dict[str, Any]:

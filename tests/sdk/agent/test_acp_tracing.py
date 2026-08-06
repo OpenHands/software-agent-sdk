@@ -378,3 +378,37 @@ def test_a_normal_block_prompt_is_recorded_unchanged(exported):
     recorded = (llm.attributes or {})["lmnr.span.input"]
     assert "read the file" in recorded
     assert "[truncated]" not in recorded
+
+
+def test_a_secret_in_the_prompt_is_masked_before_it_is_recorded(exported):
+    """The prompt is the user's own text, so it can carry a pasted credential."""
+    from acp.schema import TextContentBlock
+
+    secret = "ghp_averyrealisticlookingtoken0123456789"
+
+    def mask(text: str) -> str:
+        return text.replace(secret, "<secret-hidden>")
+
+    trace = ACPTurnTrace(acp_server="claude-code", model_id=None, mask=mask)
+    trace.start_turn(
+        [TextContentBlock(text=f"deploy using {secret} please", type="text")]
+    )
+    trace.finish_turn("done", "", [])
+
+    (llm,) = _by_type(exported(), "LLM")
+    recorded = (llm.attributes or {})["lmnr.span.input"]
+    assert secret not in recorded
+    assert "<secret-hidden>" in recorded
+    assert "deploy using" in recorded
+
+
+def test_the_prompt_is_dropped_rather_than_recorded_raw_if_masking_fails(exported):
+    def broken_mask(text: str) -> str:
+        raise RuntimeError("masker unavailable")
+
+    trace = ACPTurnTrace(acp_server="claude-code", model_id=None, mask=broken_mask)
+    trace.start_turn("deploy using ghp_secret please")
+    trace.finish_turn("done", "", [])
+
+    (llm,) = _by_type(exported(), "LLM")
+    assert "ghp_secret" not in str((llm.attributes or {}).get("lmnr.span.input"))

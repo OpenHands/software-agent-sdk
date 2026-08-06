@@ -2943,6 +2943,7 @@ class ACPAgent(AgentBase):
         on_token: ConversationTokenCallbackType | None,
         on_event: ConversationCallbackType,
         prompt: Any = None,
+        mask: Callable[[str], str] | None = None,
     ) -> None:
         """Reset per-turn client state and (re)wire live callbacks.
 
@@ -2958,7 +2959,9 @@ class ACPAgent(AgentBase):
         self._client.trace.abandon()
         self._client.reset()
         self._client.trace = ACPTurnTrace(
-            acp_server=self.acp_server, model_id=self._current_model_id
+            acp_server=self.acp_server,
+            model_id=self._current_model_id,
+            mask=mask,
         )
         self._client.trace.start_turn(prompt)
         self._client.on_token = on_token
@@ -3563,7 +3566,12 @@ class ACPAgent(AgentBase):
             state.execution_status = ConversationExecutionStatus.FINISHED
             return
 
-        self._reset_client_for_turn(on_token, on_event, prompt_blocks)
+        self._reset_client_for_turn(
+            on_token,
+            on_event,
+            prompt_blocks,
+            state.secret_registry.mask_secrets_in_output,
+        )
 
         t0 = time.monotonic()
         try:
@@ -3605,7 +3613,12 @@ class ACPAgent(AgentBase):
                         )
                         time.sleep(delay)
                         self._cancel_inflight_tool_calls()
-                        self._reset_client_for_turn(on_token, on_event, prompt_blocks)
+                        self._reset_client_for_turn(
+                            on_token,
+                            on_event,
+                            prompt_blocks,
+                            state.secret_registry.mask_secrets_in_output,
+                        )
                     else:
                         raise
                 except ACPRequestError as e:
@@ -3630,7 +3643,12 @@ class ACPAgent(AgentBase):
                         )
                         time.sleep(delay)
                         self._cancel_inflight_tool_calls()
-                        self._reset_client_for_turn(on_token, on_event, prompt_blocks)
+                        self._reset_client_for_turn(
+                            on_token,
+                            on_event,
+                            prompt_blocks,
+                            state.secret_registry.mask_secrets_in_output,
+                        )
                     else:
                         raise
 
@@ -3706,7 +3724,12 @@ class ACPAgent(AgentBase):
             state.execution_status = ConversationExecutionStatus.FINISHED
             return
 
-        self._reset_client_for_turn(on_token, on_event, prompt_blocks)
+        self._reset_client_for_turn(
+            on_token,
+            on_event,
+            prompt_blocks,
+            state.secret_registry.mask_secrets_in_output,
+        )
 
         t0 = time.monotonic()
         prompt_future: Future[PromptResponse | None] | None = None
@@ -3756,7 +3779,12 @@ class ACPAgent(AgentBase):
                         )
                         await asyncio.sleep(delay)
                         self._cancel_inflight_tool_calls()
-                        self._reset_client_for_turn(on_token, on_event, prompt_blocks)
+                        self._reset_client_for_turn(
+                            on_token,
+                            on_event,
+                            prompt_blocks,
+                            state.secret_registry.mask_secrets_in_output,
+                        )
                     else:
                         raise
                 except ACPRequestError as e:
@@ -3778,7 +3806,12 @@ class ACPAgent(AgentBase):
                         )
                         await asyncio.sleep(delay)
                         self._cancel_inflight_tool_calls()
-                        self._reset_client_for_turn(on_token, on_event, prompt_blocks)
+                        self._reset_client_for_turn(
+                            on_token,
+                            on_event,
+                            prompt_blocks,
+                            state.secret_registry.mask_secrets_in_output,
+                        )
                     else:
                         raise
 
