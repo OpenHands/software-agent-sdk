@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import cast
 from uuid import UUID, uuid4
@@ -90,6 +91,17 @@ logger = get_logger(__name__)
 
 class CredentialBindingActivationTooLate(RuntimeError):
     pass
+
+
+def _log_emit_failure(event_kind: str, future: "asyncio.Future[None]") -> None:
+    """Log an event emission that failed inside the executor thread."""
+    if future.cancelled():
+        return
+    error = future.exception()
+    if error is not None:
+        logger.error(
+            "Failed to emit %s from thread: %s", event_kind, error, exc_info=error
+        )
 
 
 def _without_agent_context_secret(
@@ -838,8 +850,12 @@ class EventService:
                     conversation._on_event(event)
 
             # Run the locked callback in an executor to ensure the event is
-            # both persisted and sent to WebSocket subscribers
-            main_loop.run_in_executor(None, locked_on_event)
+            # both persisted and sent to WebSocket subscribers. The future
+            # needs a done-callback: otherwise it is collected with an unread
+            # exception, so a dropped stats or LLM-log event leaves no signal
+            # beyond a GC-time warning.
+            future = main_loop.run_in_executor(None, locked_on_event)
+            future.add_done_callback(partial(_log_emit_failure, type(event).__name__))
 
     def _setup_llm_log_streaming(self, agent: AgentBase) -> None:
         """Configure LLM log callbacks to stream logs via events."""
