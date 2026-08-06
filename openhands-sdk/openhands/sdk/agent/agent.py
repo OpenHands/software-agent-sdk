@@ -1325,7 +1325,10 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 observation: Observation = observe(
                     name=tool_name,
                     span_type="TOOL",
-                    metadata={"tool_call_id": action_event.tool_call.id},
+                    metadata={
+                        "tool_call_id": action_event.tool_call.id,
+                        "action_event_id": action_event.id,
+                    },
                 )(tool)(action_event.action, conversation)
             else:
                 observation = tool(action_event.action, conversation)
