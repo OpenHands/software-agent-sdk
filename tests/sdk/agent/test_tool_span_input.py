@@ -68,44 +68,59 @@ register_tool("SpanInputEchoTool", _SpanInputTool)
 
 @pytest.fixture
 def exported():
-    """Real Laminar tracer writing to an in-memory exporter, torn down after.
+    """Capture the spans this test emits, whatever the ambient lmnr state.
 
-    The exporter is installed *before* ``initialize`` so no OTLP endpoint is ever
-    created; an unreachable one leaves every later test in the process retrying
-    exports with backoff.
+    Two paths, because this test must never skip — a skipped tracing test is
+    indistinguishable from a passing one, and ``LMNR_*`` env vars are set in real
+    CI. When lmnr is already up its span processor is borrowed and restored,
+    which also keeps test spans off whatever real endpoint it was configured
+    with. Otherwise one is built here, with the in-memory exporter installed
+    *before* ``initialize`` so no OTLP endpoint is created — an unreachable one
+    leaves later tests retrying exports with backoff.
     """
     from lmnr import Laminar
     from lmnr.opentelemetry_lib.opentelemetry.instrumentation.threading import (
         ThreadingInstrumentor,
     )
     from lmnr.opentelemetry_lib.tracing import TracerWrapper
-
-    if TracerWrapper.verify_initialized():
-        pytest.skip("lmnr already initialized by another test in this process")
+    from lmnr.opentelemetry_lib.tracing.processor import LaminarSpanProcessor
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
     exporter = InMemorySpanExporter()
+    borrowed = TracerWrapper.verify_initialized()
     original_thread_init = threading.Thread.__init__
-    TracerWrapper(
-        exporter=exporter,
-        disable_batch=True,
-        instruments=set(),
-        set_global_tracer_provider=False,
-    )
-    Laminar.initialize(
-        project_api_key="test-key",
-        disable_batch=True,
-        instruments=set(),
-        set_global_tracer_provider=False,
-    )
+
+    if not borrowed:
+        TracerWrapper(
+            exporter=exporter,
+            disable_batch=True,
+            instruments=set(),
+            set_global_tracer_provider=False,
+        )
+    if not Laminar.is_initialized():
+        # Respects an existing TracerWrapper rather than building a second one.
+        Laminar.initialize(
+            project_api_key="test-key",
+            disable_batch=True,
+            instruments=set(),
+            set_global_tracer_provider=False,
+        )
+
+    processor = TracerWrapper.instance._span_processor
+    assert isinstance(processor, LaminarSpanProcessor)
+    previous = processor.instance
+    processor.instance = SimpleSpanProcessor(exporter)
     try:
         yield exporter.get_finished_spans
     finally:
-        Laminar.shutdown()
-        ThreadingInstrumentor().uninstrument()
-        threading.Thread.__init__ = original_thread_init  # type: ignore[method-assign]
-        TracerWrapper._original_thread_init = None
-        if hasattr(TracerWrapper, "instance"):
-            del TracerWrapper.instance
+        processor.instance = previous
+        if not borrowed:
+            Laminar.shutdown()
+            ThreadingInstrumentor().uninstrument()
+            threading.Thread.__init__ = original_thread_init  # type: ignore[method-assign]
+            TracerWrapper._original_thread_init = None
+            if hasattr(TracerWrapper, "instance"):
+                del TracerWrapper.instance
 
 
 def _responses() -> Any:
