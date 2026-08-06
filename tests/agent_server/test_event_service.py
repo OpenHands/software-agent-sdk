@@ -3489,8 +3489,11 @@ class TestRunAdmissionLimit:
             await service.run()
 
         # Capture the handles now: each run clears `_run_task` when it finishes.
-        tasks = [service._run_task for service in services]
-        assert all(task is not None for task in tasks)
+        tasks = []
+        for service in services:
+            task = service._run_task
+            assert task is not None
+            tasks.append(task)
 
         for _ in range(10):
             await asyncio.sleep(0)
@@ -3550,8 +3553,11 @@ class TestRunAdmissionLimit:
 
         for service in services:
             await service.run()
-        tasks = [service._run_task for service in services]
-        assert all(task is not None for task in tasks)
+        tasks = []
+        for service in services:
+            task = service._run_task
+            assert task is not None
+            tasks.append(task)
 
         # Wait until the first run is actually inside the executor. This has
         # to yield to the loop: a blocking wait here would stop the tasks ever
