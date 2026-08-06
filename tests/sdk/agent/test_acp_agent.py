@@ -29,6 +29,7 @@ from openhands.sdk.agent.acp_agent import (
     _acp_error_detail,
     _acp_error_indicates_auth,
     _apply_acp_model,
+    _auth_selection_failure_reason,
     _classify_acp_init_error,
     _classify_acp_turn_error,
     _codex_model_config_options,
@@ -36,6 +37,7 @@ from openhands.sdk.agent.acp_agent import (
     _extract_session_models,
     _extract_token_usage,
     _image_url_to_acp_block,
+    _log_acp_subprocess_stderr,
     _mask_json_value,
     _maybe_set_session_model,
     _mcp_config_to_acp_servers,
@@ -45,6 +47,7 @@ from openhands.sdk.agent.acp_agent import (
     _serialize_tool_content,
     _stringify_acp_error_data,
     _strip_inherited_npm_env,
+    _warn_auth_selection_failure,
     _with_codex_base_url,
 )
 from openhands.sdk.agent.acp_file_credentials import (
@@ -3426,6 +3429,29 @@ class TestFilterJsonrpcLines:
         assert result2 == b""
 
     @pytest.mark.asyncio
+    async def test_logs_non_jsonrpc_stdout(self, caplog):
+        source = asyncio.StreamReader()
+        dest = asyncio.StreamReader()
+        source.feed_data(b"codex-acp startup detail\n")
+        source.feed_eof()
+
+        with caplog.at_level("INFO"):
+            await acp_agent_module._filter_jsonrpc_lines(source, dest)
+
+        assert "ACP stdout (non-JSON): codex-acp startup detail" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_logs_subprocess_stderr(self, caplog):
+        source = asyncio.StreamReader()
+        source.feed_data(b"codex-acp diagnostic\n")
+        source.feed_eof()
+
+        with caplog.at_level("INFO"):
+            await _log_acp_subprocess_stderr(source)
+
+        assert "ACP stderr: codex-acp diagnostic" in caplog.text
+
+    @pytest.mark.asyncio
     async def test_filters_pretty_printed_json(self):
         from openhands.sdk.agent.acp_agent import _filter_jsonrpc_lines
 
@@ -4765,6 +4791,38 @@ class TestSelectAuthMethod:
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
             assert _select_auth_method(methods, env) is None
 
+    def test_missing_codex_auth_reason(self, tmp_path, caplog):
+        methods = [
+            self._make_auth_method("chat-gpt"),
+            self._make_auth_method("api-key"),
+        ]
+        with (
+            patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path),
+            caplog.at_level("WARNING"),
+        ):
+            _warn_auth_selection_failure(methods, {})
+
+        assert (
+            f"Codex auth file {tmp_path / '.codex' / 'auth.json'} is missing"
+            in caplog.text
+        )
+        assert "CODEX_API_KEY and OPENAI_API_KEY are unset" in caplog.text
+
+    def test_invalid_codex_auth_reason(self, tmp_path):
+        auth_dir = tmp_path / ".codex"
+        auth_dir.mkdir()
+        auth_path = auth_dir / "auth.json"
+        auth_path.write_text('{"auth_mode": "apikey"}', encoding="utf-8")
+        methods = [
+            self._make_auth_method("chat-gpt"),
+            self._make_auth_method("api-key"),
+        ]
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            reason = _auth_selection_failure_reason(methods, {})
+
+        assert f"Codex auth file {auth_path} is not valid ChatGPT auth" in reason
+        assert "CODEX_API_KEY and OPENAI_API_KEY are unset" in reason
+
     def test_chatgpt_auth_file(self, tmp_path):
         methods = [self._make_auth_method("chat-gpt")]
         auth_dir = tmp_path / ".codex"
@@ -6009,6 +6067,7 @@ class TestACPSessionIdPersistence:
         mock_process.wait = AsyncMock(return_value=0)
         mock_process.stdin = MagicMock()
         mock_process.stdout = MagicMock()
+        mock_process.stderr = MagicMock()
 
         async def _fake_create_subprocess_exec(*_args, **_kwargs):
             return mock_process
@@ -7129,6 +7188,7 @@ class TestACPSecretsEnvInjection:
         mock_process.wait = AsyncMock(return_value=0)
         mock_process.stdin = MagicMock()
         mock_process.stdout = MagicMock()
+        mock_process.stderr = MagicMock()
 
         async def _fake_create_subprocess_exec(*_args, env=None, **_kwargs):
             captured.update(env or {})
@@ -7286,6 +7346,7 @@ class TestACPSecretRegistryEnvInjection:
         mock_process.wait = AsyncMock(return_value=0)
         mock_process.stdin = MagicMock()
         mock_process.stdout = MagicMock()
+        mock_process.stderr = MagicMock()
 
         async def _fake_create_subprocess_exec(*_args, env=None, **_kwargs):
             captured.update(env or {})
@@ -7521,6 +7582,7 @@ class TestACPEnvConflictSuppression:
         mock_process.wait = AsyncMock(return_value=0)
         mock_process.stdin = MagicMock()
         mock_process.stdout = MagicMock()
+        mock_process.stderr = MagicMock()
 
         async def _fake_create_subprocess_exec(*_args, env=None, **_kwargs):
             captured.update(env or {})
@@ -8536,6 +8598,7 @@ class TestACPFileSecretMaterialisation:
         mock_process.wait = AsyncMock(return_value=0)
         mock_process.stdin = MagicMock()
         mock_process.stdout = MagicMock()
+        mock_process.stderr = MagicMock()
 
         async def _fake_exec(*_args, **kwargs):
             captured["env"] = kwargs.get("env")

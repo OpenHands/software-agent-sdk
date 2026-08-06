@@ -167,6 +167,7 @@ _RETRIABLE_SERVER_ERROR_CODES: frozenset[int] = frozenset({-32603})
 # Maximum characters for ACP tool call content — matches MAX_CMD_OUTPUT_SIZE
 # used by the terminal tool and the default max_message_chars in LLM config.
 MAX_ACP_CONTENT_CHARS: int = 30_000
+_ACP_SUBPROCESS_LOG_LINE_CHARS = 4_000
 
 # Env vars that must be removed from the subprocess environment when a
 # particular "dominant" env var is present.
@@ -332,6 +333,31 @@ def _select_auth_method(
         if method_id in method_ids and env_var in env:
             return method_id
     return None
+
+
+def _auth_selection_failure_reason(auth_methods: list[Any], env: dict[str, str]) -> str:
+    method_ids = {m.id for m in auth_methods}
+    reasons: list[str] = []
+    if "chat-gpt" in method_ids:
+        auth_path = codex_auth_file(env)
+        if auth_path.is_file():
+            reasons.append(f"Codex auth file {auth_path} is not valid ChatGPT auth")
+        else:
+            reasons.append(f"Codex auth file {auth_path} is missing")
+    if "api-key" in method_ids and not any(
+        env.get(name) for name in ("CODEX_API_KEY", "OPENAI_API_KEY")
+    ):
+        reasons.append("CODEX_API_KEY and OPENAI_API_KEY are unset")
+    return "; ".join(reasons) or "no supported credential source is available"
+
+
+def _warn_auth_selection_failure(auth_methods: list[Any], env: dict[str, str]) -> None:
+    logger.warning(
+        "ACP server offers auth methods %s but no matching credential is available "
+        "(%s) — session creation may fail",
+        [m.id for m in auth_methods],
+        _auth_selection_failure_reason(auth_methods, env),
+    )
 
 
 def _with_codex_base_url(
@@ -880,13 +906,30 @@ async def _filter_jsonrpc_lines(source: Any, dest: Any) -> None:
             if stripped.startswith(b"{") and b'"jsonrpc"' in line:
                 dest.feed_data(line)
             else:
-                logger.debug(
+                logger.info(
                     "ACP stdout (non-JSON): %s",
-                    line.decode(errors="replace").rstrip(),
+                    maybe_truncate(
+                        redact_text_secrets(line.decode(errors="replace").rstrip()),
+                        truncate_after=_ACP_SUBPROCESS_LOG_LINE_CHARS,
+                    ),
                 )
     except Exception:
         logger.debug("_filter_jsonrpc_lines stopped", exc_info=True)
         dest.feed_eof()
+
+
+async def _log_acp_subprocess_stderr(source: Any) -> None:
+    try:
+        while line := await source.readline():
+            logger.info(
+                "ACP stderr: %s",
+                maybe_truncate(
+                    redact_text_secrets(line.decode(errors="replace").rstrip()),
+                    truncate_after=_ACP_SUBPROCESS_LOG_LINE_CHARS,
+                ),
+            )
+    except Exception:
+        logger.debug("_log_acp_subprocess_stderr stopped", exc_info=True)
 
 
 # Substrings that mark a generic ``-32603 Internal error`` as really a credential
@@ -2674,12 +2717,16 @@ class ACPAgent(AgentBase):
             )
             assert process.stdin is not None
             assert process.stdout is not None
+            assert process.stderr is not None
 
             # Wrap the subprocess stdout in a filtering reader that
             # only passes lines starting with '{' (JSON-RPC messages).
             filtered_reader = asyncio.StreamReader(limit=_STREAM_READER_LIMIT)
             asyncio.get_event_loop().create_task(
                 _filter_jsonrpc_lines(process.stdout, filtered_reader)
+            )
+            asyncio.get_event_loop().create_task(
+                _log_acp_subprocess_stderr(process.stderr)
             )
 
             conn = ClientSideConnection(
@@ -2778,11 +2825,7 @@ class ACPAgent(AgentBase):
                         ) from exc
                     await self._flush_file_credentials()
                 else:
-                    logger.warning(
-                        "ACP server offers auth methods %s but no matching "
-                        "env var is set — session creation may fail",
-                        [m.id for m in auth_methods],
-                    )
+                    _warn_auth_selection_failure(auth_methods, env)
 
             # Resume the prior ACP session if we have its id.  If the server
             # has forgotten it (state wiped, new host, etc.) fall through to
