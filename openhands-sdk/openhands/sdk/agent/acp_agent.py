@@ -71,6 +71,7 @@ from openhands.sdk.agent.acp_file_credentials import (
     write_secret_file,
 )
 from openhands.sdk.agent.acp_models import ACPModelInfo
+from openhands.sdk.agent.acp_tracing import ACPTurnTrace
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context import AgentContext
 from openhands.sdk.conversation.state import ConversationExecutionStatus
@@ -1088,6 +1089,8 @@ class _OpenHandsACPBridge:
         self.accumulated_text: list[str] = []
         self.accumulated_thoughts: list[str] = []
         self.accumulated_tool_calls: list[dict[str, Any]] = []
+        # Emits the LLM/TOOL spans an ACP turn would otherwise never produce.
+        self.trace = ACPTurnTrace(acp_server=None, model_id=None)
         self.on_token: Any = None  # ConversationTokenCallbackType | None
         # Live event sink — fired from session_update as ACP tool-call
         # updates arrive, so the event stream reflects real subprocess
@@ -1284,6 +1287,11 @@ class _OpenHandsACPBridge:
             }
             self._mask_tool_call_entry(entry)
             self.accumulated_tool_calls.append(entry)
+            self.trace.tool_started(entry)
+            if entry.get("status") in _TERMINAL_TOOL_CALL_STATUSES:
+                # No later transition will arrive for this call, so close its
+                # span now; leaving it open would bill the rest of the turn to it.
+                self.trace.tool_finished(entry)
             logger.debug("ACP tool call start: %s", update.tool_call_id)
             # Emit one early "started" event — the action half of the
             # action->observation pair. (If the server reports a terminal
@@ -1332,6 +1340,7 @@ class _OpenHandsACPBridge:
                 and prev_status not in _TERMINAL_TOOL_CALL_STATUSES
             )
             if target is not None and became_terminal:
+                self.trace.tool_finished(target)
                 self._emit_tool_call_event(target)
             self._maybe_signal_activity()
         else:
@@ -2933,6 +2942,8 @@ class ACPAgent(AgentBase):
         self,
         on_token: ConversationTokenCallbackType | None,
         on_event: ConversationCallbackType,
+        prompt: Any = None,
+        mask: Callable[[str], str] | None = None,
     ) -> None:
         """Reset per-turn client state and (re)wire live callbacks.
 
@@ -2945,7 +2956,14 @@ class ACPAgent(AgentBase):
         a single end-of-turn burst.  The secret masker is bound once in
         ``_start_acp_server`` (conversation-stable), not here.
         """
+        self._client.trace.abandon()
         self._client.reset()
+        self._client.trace = ACPTurnTrace(
+            acp_server=self.acp_server,
+            model_id=self._current_model_id,
+            mask=mask,
+        )
+        self._client.trace.start_turn(prompt)
         self._client.on_token = on_token
         self._client.on_event = on_event
         self._client.on_activity = self._on_activity
@@ -3341,6 +3359,10 @@ class ACPAgent(AgentBase):
         if not response_text:
             response_text = "(No response from ACP server)"
 
+        self._client.trace.finish_turn(
+            response_text, thought_text, self._client.accumulated_tool_calls
+        )
+
         # ACP step() boundaries are full remote assistant turns, not
         # partial planning steps. Emit FinishAction to delimit that
         # completed turn for eval/remote consumers, matching #2190.
@@ -3504,6 +3526,7 @@ class ACPAgent(AgentBase):
         """
         if self._client is None:
             return
+        self._client.trace.abandon()
         self._client.on_event = None
         self._client.on_token = None
         self._client.on_activity = None
@@ -3543,7 +3566,12 @@ class ACPAgent(AgentBase):
             state.execution_status = ConversationExecutionStatus.FINISHED
             return
 
-        self._reset_client_for_turn(on_token, on_event)
+        self._reset_client_for_turn(
+            on_token,
+            on_event,
+            prompt_blocks,
+            state.secret_registry.mask_secrets_in_output,
+        )
 
         t0 = time.monotonic()
         try:
@@ -3585,7 +3613,12 @@ class ACPAgent(AgentBase):
                         )
                         time.sleep(delay)
                         self._cancel_inflight_tool_calls()
-                        self._reset_client_for_turn(on_token, on_event)
+                        self._reset_client_for_turn(
+                            on_token,
+                            on_event,
+                            prompt_blocks,
+                            state.secret_registry.mask_secrets_in_output,
+                        )
                     else:
                         raise
                 except ACPRequestError as e:
@@ -3610,7 +3643,12 @@ class ACPAgent(AgentBase):
                         )
                         time.sleep(delay)
                         self._cancel_inflight_tool_calls()
-                        self._reset_client_for_turn(on_token, on_event)
+                        self._reset_client_for_turn(
+                            on_token,
+                            on_event,
+                            prompt_blocks,
+                            state.secret_registry.mask_secrets_in_output,
+                        )
                     else:
                         raise
 
@@ -3686,7 +3724,12 @@ class ACPAgent(AgentBase):
             state.execution_status = ConversationExecutionStatus.FINISHED
             return
 
-        self._reset_client_for_turn(on_token, on_event)
+        self._reset_client_for_turn(
+            on_token,
+            on_event,
+            prompt_blocks,
+            state.secret_registry.mask_secrets_in_output,
+        )
 
         t0 = time.monotonic()
         prompt_future: Future[PromptResponse | None] | None = None
@@ -3736,7 +3779,12 @@ class ACPAgent(AgentBase):
                         )
                         await asyncio.sleep(delay)
                         self._cancel_inflight_tool_calls()
-                        self._reset_client_for_turn(on_token, on_event)
+                        self._reset_client_for_turn(
+                            on_token,
+                            on_event,
+                            prompt_blocks,
+                            state.secret_registry.mask_secrets_in_output,
+                        )
                     else:
                         raise
                 except ACPRequestError as e:
@@ -3758,7 +3806,12 @@ class ACPAgent(AgentBase):
                         )
                         await asyncio.sleep(delay)
                         self._cancel_inflight_tool_calls()
-                        self._reset_client_for_turn(on_token, on_event)
+                        self._reset_client_for_turn(
+                            on_token,
+                            on_event,
+                            prompt_blocks,
+                            state.secret_registry.mask_secrets_in_output,
+                        )
                     else:
                         raise
 
