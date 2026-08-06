@@ -15,6 +15,7 @@ from openhands.sdk.credential import (
     CredentialAuthorizationRejected,
     CredentialBindingError,
     CredentialConflict,
+    CredentialInvalidResponse,
     CredentialNeedsReauthentication,
     CredentialSyncError,
     ResolvedCredential,
@@ -245,15 +246,21 @@ class _CodexAuthLifecycle:
                     value = self._read_stable(attempts=1)
                     if value is not None:
                         self._sync_value(value)
-            except (CredentialNeedsReauthentication, CredentialSyncError) as exc:
+            except (
+                CredentialNeedsReauthentication,
+                CredentialConflict,
+                CredentialInvalidResponse,
+            ) as exc:
                 self._set_error(exc)
                 return
+            except CredentialSyncError as exc:
+                self._set_error(exc)
+                logger.warning("credential_binding_monitor_failed", exc_info=exc)
             except Exception as exc:
                 self._set_error(
                     CredentialSyncError("Codex credential monitoring failed.")
                 )
                 logger.warning("credential_binding_monitor_failed", exc_info=exc)
-                return
 
     def _read_current(self) -> str | None:
         with self._lock:
@@ -426,13 +433,32 @@ class _CodexAuthLifecycle:
 
     def _refresh_authorization_state(self) -> None:
         revision = self._authorization_revision()
-        if revision is None:
+        with self._lock:
+            error = self._error
+            if (
+                revision is not None
+                and revision != self._binding_authorization_revision
+            ):
+                self._binding_authorization_revision = revision
+                if isinstance(error, CredentialAuthorizationRejected):
+                    self._error = None
+                    return
+            if error is None or isinstance(
+                error,
+                (
+                    CredentialAuthorizationRejected,
+                    CredentialConflict,
+                    CredentialInvalidResponse,
+                    CredentialNeedsReauthentication,
+                ),
+            ):
+                return
+        try:
+            self._load()
+        except CredentialBindingError:
             return
         with self._lock:
-            if revision == self._binding_authorization_revision:
-                return
-            self._binding_authorization_revision = revision
-            if isinstance(self._error, CredentialAuthorizationRejected):
+            if self._error is error:
                 self._error = None
 
     def _authorization_revision(self) -> int | None:

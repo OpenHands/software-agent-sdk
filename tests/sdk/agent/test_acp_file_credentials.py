@@ -98,7 +98,20 @@ class RevokedBinding(MemoryBinding):
 
 class FailingBinding(MemoryBinding):
     async def replace(self, expected_version: str, value: str) -> str:
+        self.replace_calls += 1
         raise CredentialSyncError("unavailable")
+
+
+class FlakyBinding(MemoryBinding):
+    def __init__(self, value: str) -> None:
+        super().__init__(value)
+        self.first_replace_failed = threading.Event()
+
+    async def replace(self, expected_version: str, value: str) -> str:
+        if not self.first_replace_failed.is_set():
+            self.first_replace_failed.set()
+            raise CredentialSyncError("temporarily unavailable")
+        return await super().replace(expected_version, value)
 
 
 def _lifecycle(binding: MemoryBinding, registry: SecretRegistry):
@@ -239,6 +252,22 @@ def test_unstable_read_does_not_poison_lifecycle() -> None:
     lifecycle.close()
 
 
+def test_monitor_recovers_after_transient_writeback_failure() -> None:
+    rotated = _auth("refresh-r1")
+    binding = FlakyBinding(_auth("refresh-r0"))
+    lifecycle, _ = _lifecycle(binding, SecretRegistry())
+    assert lifecycle.path is not None
+    runtime = cast(Any, lifecycle)
+    try:
+        lifecycle.path.write_text(rotated, encoding="utf-8")
+        assert binding.first_replace_failed.wait(2)
+        assert runtime._monitor.is_alive()
+        _wait_for_value(binding, rotated)
+        lifecycle.flush()
+    finally:
+        lifecycle.close()
+
+
 def test_unchanged_file_does_not_write() -> None:
     binding = MemoryBinding(_auth("refresh-r0"))
     lifecycle, _ = _lifecycle(binding, SecretRegistry())
@@ -259,7 +288,7 @@ def test_ambiguous_committed_write_converges() -> None:
     lifecycle.close()
 
 
-def test_exhausted_writeback_failure_is_sticky() -> None:
+def test_writeback_failure_is_retried_after_successful_load() -> None:
     binding = FailingBinding(_auth("refresh-r0"))
     lifecycle, _ = _lifecycle(binding, SecretRegistry())
     assert lifecycle.path is not None
@@ -274,6 +303,7 @@ def test_exhausted_writeback_failure_is_sticky() -> None:
     with pytest.raises(CredentialSyncError, match="unavailable"):
         lifecycle.close()
 
+    assert binding.replace_calls == 3
     assert runtime_dir.exists()
     lifecycle.discard()
     assert not runtime_dir.exists()
