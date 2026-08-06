@@ -1,5 +1,6 @@
 """Test BrowserToolSet functionality."""
 
+import logging
 import tempfile
 import threading
 from unittest.mock import MagicMock, patch
@@ -11,7 +12,8 @@ from pydantic import SecretStr
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.llm import LLM
-from openhands.sdk.tool import ToolDefinition
+from openhands.sdk.tool import Tool, ToolDefinition
+from openhands.sdk.tool.registry import resolve_tool
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.browser_use import BrowserToolSet
 from openhands.tools.browser_use.impl import BrowserToolExecutor
@@ -435,3 +437,37 @@ def test_browser_toolset_inheritance():
         for tool in tools:
             assert not isinstance(tool, BrowserToolSet)
             assert isinstance(tool, ToolDefinition)
+
+
+def test_browser_toolset_create_degrades_when_executor_fails(caplog):
+    """A browser that cannot start yields no browser tools instead of raising."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        conv_state = _create_test_conv_state(temp_dir)
+        with patch.object(
+            BrowserToolSet,
+            "_get_or_create_shared_executor",
+            side_effect=AttributeError("'Server' object has no attribute 'list_tools'"),
+        ):
+            with caplog.at_level(logging.WARNING):
+                tools = BrowserToolSet.create(conv_state=conv_state)
+
+    assert tools == []
+    assert "Browser tools are unavailable" in caplog.text
+
+
+def test_resolve_tool_survives_browser_executor_failure():
+    """Tool resolution must not propagate a browser startup failure.
+
+    That exception used to reach the agent-server as a 500 on every chat
+    request whenever an incompatible browser_use/mcp pair was installed.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        conv_state = _create_test_conv_state(temp_dir)
+        with patch.object(
+            BrowserToolSet,
+            "_get_or_create_shared_executor",
+            side_effect=AttributeError("'Server' object has no attribute 'list_tools'"),
+        ):
+            resolved = resolve_tool(Tool(name=BrowserToolSet.name), conv_state)
+
+    assert list(resolved) == []
