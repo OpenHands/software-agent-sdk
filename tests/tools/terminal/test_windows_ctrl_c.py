@@ -2,6 +2,7 @@
 
 import platform
 import subprocess
+import time
 
 import pytest
 
@@ -50,14 +51,18 @@ def _stop_powershell_process(pid: int) -> None:
     )
 
 
-@pytest.mark.timeout(20)
-def test_windows_ctrl_c_interrupt_kills_child_process_tree(tmp_path) -> None:
-    """Ctrl-C after a timeout should stop the process that kept the command alive.
+def _wait_for_powershell_process_exit(pid: int, timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _powershell_process_exists(pid):
+            return True
+        time.sleep(0.1)
+    return not _powershell_process_exists(pid)
 
-    This captures the behavior promised by the timeout prompt. The current
-    PowerShell backend sends CTRL_BREAK to the persistent PowerShell process, but
-    does not ensure child processes launched by the command are terminated.
-    """
+
+@pytest.mark.timeout(20)
+def test_windows_ctrl_c_interrupt_kills_child_process(tmp_path) -> None:
+    """Ctrl-C after a timeout stops the child that kept the command alive."""
     pid_path = tmp_path / "child.pid"
     script_path = tmp_path / "wait_on_child.ps1"
     # Use native path for PowerShell (str() gives Windows-style on Windows)
@@ -83,7 +88,7 @@ def test_windows_ctrl_c_interrupt_kills_child_process_tree(tmp_path) -> None:
         no_change_timeout_seconds=1,
     )
     child_pid: int | None = None
-    child_was_still_running = False
+    child_exited = False
     try:
         session.initialize()
 
@@ -97,13 +102,13 @@ def test_windows_ctrl_c_interrupt_kills_child_process_tree(tmp_path) -> None:
 
         session.execute(TerminalAction(command="C-c", is_input=True, timeout=3))
 
-        child_was_still_running = _powershell_process_exists(child_pid)
+        child_exited = _wait_for_powershell_process_exit(child_pid)
     finally:
         if child_pid is not None:
             _stop_powershell_process(child_pid)
         session.close()
 
-    assert not child_was_still_running, (
+    assert child_exited, (
         "Windows Ctrl-C reported through the terminal did not terminate the "
         "child process that kept the timed-out command alive."
     )
