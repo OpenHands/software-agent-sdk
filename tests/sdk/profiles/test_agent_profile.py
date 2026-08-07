@@ -7,6 +7,7 @@ distinction. Adds the profile-specific contract: secret-free at rest.
 """
 
 import json
+import shlex
 from uuid import UUID, uuid4
 
 import pytest
@@ -119,7 +120,7 @@ def test_acp_profile_round_trips() -> None:
         acp_model="gpt-5.5/medium",
         acp_session_mode="full-access",
         acp_prompt_timeout=600.0,
-        acp_command="codex-acp",
+        acp_command=["codex-acp"],
         acp_args=["--flag"],
         mcp_server_refs=None,
     )
@@ -130,7 +131,7 @@ def test_acp_profile_round_trips() -> None:
     assert reloaded.agent_kind == "acp"
     assert reloaded.acp_server == "codex"
     assert reloaded.acp_model == "gpt-5.5/medium"
-    assert reloaded.acp_command == "codex-acp"
+    assert reloaded.acp_command == ["codex-acp"]
     assert reloaded.acp_args == ["--flag"]
     assert reloaded.mcp_server_refs is None
 
@@ -329,6 +330,68 @@ def test_v1_explicit_empty_tools_remain_empty(payload: dict[str, object]) -> Non
     )
     assert isinstance(profile, OpenHandsAgentProfile)
     assert profile.tools == []
+
+
+def _v2_acp_payload(command: object) -> dict[str, object]:
+    return {
+        "schema_version": 2,
+        "agent_kind": "acp",
+        "name": "acp",
+        "acp_server": "custom",
+        "acp_command": command,
+    }
+
+
+def test_v2_acp_command_string_migrates_to_token_list() -> None:
+    profile = validate_agent_profile(_v2_acp_payload("codex-acp --foo bar"))
+    assert isinstance(profile, ACPAgentProfile)
+    assert profile.schema_version == AGENT_PROFILE_SCHEMA_VERSION
+    assert profile.acp_command == ["codex-acp", "--foo", "bar"]
+
+
+def test_v2_acp_command_migration_inverts_shlex_join() -> None:
+    """Every persisted v2 string came from ``shlex.join`` in profiles/seed.py.
+
+    The migration must return the exact tokens that produced it, including for
+    arguments containing spaces.
+    """
+    tokens = ["/opt/my acp/bin/server", "--flag", "a b"]
+    profile = validate_agent_profile(_v2_acp_payload(shlex.join(tokens)))
+    assert isinstance(profile, ACPAgentProfile)
+    assert profile.acp_command == tokens
+
+
+def test_v2_acp_command_malformed_quotes_becomes_none() -> None:
+    """Loading a stored profile must not raise, whatever is in the field.
+
+    Before v3 an unbalanced quote surfaced from ``resolve_agent_profile`` as a
+    diagnostic; ``None`` keeps it there (a ``custom`` server with no command
+    reports the same resolver error) instead of failing the load.
+    """
+    profile = validate_agent_profile(_v2_acp_payload("unterminated 'quote"))
+    assert isinstance(profile, ACPAgentProfile)
+    assert profile.acp_command is None
+
+
+@pytest.mark.parametrize("command", [None, ""])
+def test_v2_acp_command_empty_migrates_to_none(command: object) -> None:
+    profile = validate_agent_profile(_v2_acp_payload(command))
+    assert isinstance(profile, ACPAgentProfile)
+    assert profile.acp_command is None
+
+
+def test_windows_path_command_survives_round_trip() -> None:
+    """The bug this schema change removes.
+
+    As a v2 shell string, POSIX ``shlex.split`` ate every backslash, so the
+    launch failed on a path the user never typed. As a token list there is no
+    parsing step to corrupt it.
+    """
+    command = [r"C:\Program Files\nodejs\node.exe", r"C:\Users\me\dist\index.js"]
+    profile = ACPAgentProfile(name="acp", acp_server="custom", acp_command=command)
+    reloaded = validate_agent_profile(profile.model_dump(mode="json"))
+    assert isinstance(reloaded, ACPAgentProfile)
+    assert reloaded.acp_command == command
 
 
 def test_rejects_newer_schema_version() -> None:

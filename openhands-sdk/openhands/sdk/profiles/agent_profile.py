@@ -9,6 +9,7 @@ See epic #3713 for the resolution model.
 
 from __future__ import annotations
 
+import shlex
 from collections.abc import Callable, Mapping
 from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
@@ -33,7 +34,7 @@ from openhands.sdk.settings.model import (
 from openhands.sdk.tool import Tool
 
 
-AGENT_PROFILE_SCHEMA_VERSION = 2
+AGENT_PROFILE_SCHEMA_VERSION = 3
 
 
 class ProfileVerificationSettings(BaseModel):
@@ -264,11 +265,14 @@ class ACPAgentProfile(AgentProfileBase):
             "initialize/authenticate, and new_session()/load_session()."
         ),
     )
-    acp_command: str | None = Field(
+    acp_command: list[str] | None = Field(
         default=None,
         description=(
-            "Optional explicit command to launch the ACP subprocess. Leave "
-            "blank to use the default for ``acp_server``."
+            "Optional explicit command to launch the ACP subprocess, as an "
+            "argv token list (e.g. ``['npx', '-y', 'some-acp@1.2.3']``). The "
+            "tokens are passed to the subprocess verbatim — no shell is "
+            "involved, so nothing needs quoting or escaping. Leave unset to "
+            "use the default for ``acp_server``."
         ),
     )
     acp_args: list[str] | None = Field(
@@ -335,8 +339,39 @@ def _migrate_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _migrate_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
+    """``acp_command`` moved from a shell string to an argv token list.
+
+    Legacy strings are split with the same POSIX ``shlex.split`` the resolver
+    used to apply, so a profile resolves to exactly the tokens it resolved to
+    before. That is an exact inverse for everything this codebase wrote — the
+    strings came from ``shlex.join`` in ``profiles/seed.py`` — and matches what
+    a hand-written POSIX string already resolved to.
+
+    A Windows path typed unquoted (``C:\\Users\\me\\x.js``) was already being
+    destroyed by that same split, so it cannot be recovered here; such a
+    profile has never launched and the command has to be re-entered. Splitting
+    it is still the honest migration: it changes nothing about what the profile
+    does. Removing the split for *new* values is the point of the change.
+
+    Malformed input (unbalanced quotes) becomes ``None`` rather than raising:
+    loading a stored profile must not fail. Today the failure surfaces from
+    ``resolve_agent_profile`` as a diagnostic, and ``None`` keeps it there — a
+    ``custom`` server with no command still reports the same resolver error.
+    """
+    command = payload.get("acp_command")
+    if isinstance(command, str):
+        try:
+            payload["acp_command"] = shlex.split(command) or None
+        except ValueError:
+            payload["acp_command"] = None
+    payload["schema_version"] = 3
+    return payload
+
+
 _AGENT_PROFILE_MIGRATIONS: dict[int, PersistedProfileMigrator] = {
     1: _migrate_v1_to_v2,
+    2: _migrate_v2_to_v3,
 }
 
 
