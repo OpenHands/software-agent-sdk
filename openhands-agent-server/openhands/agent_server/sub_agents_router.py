@@ -9,11 +9,11 @@ delegate agents from the top-level agent and ``agent_profiles``.
 from typing import Any
 
 from fastapi import APIRouter
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SerializationInfo, field_serializer
 
 from openhands.sdk.context.condenser import CondenserBase
 from openhands.sdk.hooks.config import HookConfig
-from openhands.sdk.mcp.config import MCPServer
+from openhands.sdk.mcp.config import MCPServer, dump_mcp_config
 from openhands.sdk.subagent import (
     AgentDefinition,
     AgentDefinitionLevel,
@@ -106,6 +106,14 @@ class SubAgentInfo(BaseModel):
             source=agent_def.source,
             is_builtin=agent_def.level == "builtin",
         )
+
+    @field_serializer("mcp_config", "mcp_servers")
+    def _serialize_mcp_config(
+        self, value: dict[str, MCPServer] | None, info: SerializationInfo
+    ):
+        if value is None:
+            return None
+        return dump_mcp_config(value, context=info.context or {})
 
 
 class SubAgentsResponse(BaseModel):
