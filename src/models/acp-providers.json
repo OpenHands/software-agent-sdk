@@ -2,7 +2,7 @@
   "claude-code": {
     "key": "claude-code",
     "display_name": "Claude Code",
-    "default_command": ["npx", "-y", "@agentclientprotocol/claude-agent-acp@0.44.0"],
+    "default_command": ["npx", "-y", "@agentclientprotocol/claude-agent-acp@0.63.0"],
     "api_key_env_var": "ANTHROPIC_API_KEY",
     "base_url_env_var": "ANTHROPIC_BASE_URL",
     "default_session_mode": "bypassPermissions",
@@ -16,15 +16,19 @@
       },
       {
         "id": "opus[1m]",
-        "label": "Claude Opus 4.8 (1M)"
+        "label": "Claude Opus (1M)"
+      },
+      {
+        "id": "claude-opus-5",
+        "label": "Claude Opus 5"
       },
       {
         "id": "sonnet",
-        "label": "Claude Sonnet 4.6"
+        "label": "Claude Sonnet"
       },
       {
         "id": "haiku",
-        "label": "Claude Haiku 4.5"
+        "label": "Claude Haiku"
       }
     ],
     "default_model": "opus[1m]",
@@ -36,7 +40,7 @@
   "codex": {
     "key": "codex",
     "display_name": "Codex",
-    "default_command": ["npx", "-y", "@agentclientprotocol/codex-acp@1.1.2"],
+    "default_command": ["npx", "-y", "@agentclientprotocol/codex-acp@1.1.7"],
     "api_key_env_var": "OPENAI_API_KEY",
     "base_url_env_var": "OPENAI_BASE_URL",
     "default_session_mode": "agent-full-access",
