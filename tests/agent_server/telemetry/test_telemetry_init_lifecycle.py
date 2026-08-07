@@ -11,6 +11,7 @@ Regression coverage for two review findings:
 from types import SimpleNamespace
 
 import pytest
+from pydantic import SecretStr
 
 import openhands.agent_server.telemetry.service as service_mod
 from openhands.agent_server.config import Config
@@ -117,13 +118,13 @@ async def test_failed_init_emits_no_start_and_retry_emits_exactly_one(
 
     try:
         with pytest.raises(HTTPException):
-            await svc.initialize(InitRequest())
+            await svc.initialize(InitRequest(secret_key=SecretStr("cipher-key")))
         assert svc.state == "dormant", "failed init should roll back to dormant"
         assert recording.events == [], "a failed init must not emit server_started"
 
         # Retry succeeds.
         boom["raise"] = False
-        result = await svc.initialize(InitRequest())
+        result = await svc.initialize(InitRequest(secret_key=SecretStr("cipher-key")))
         assert result.state == "ready"
         assert recording.events == [m.EventName.SERVER_STARTED], (
             "retry must emit exactly one server_started"

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import secrets as secrets_module
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 
@@ -38,9 +39,11 @@ logger = get_logger(__name__)
 
 # The init endpoint uses its own header (distinct from X-Session-API-Key)
 # because session keys aren't known to the pool at warm-up time — they
-# arrive *inside* the /api/init body. The value is checked against the
-# dormant server's ``secret_key``, which the orchestrator already holds
-# for encryption purposes and which will be overwritten by the init payload.
+# arrive *inside* the /api/init body. The value is checked against
+# ``Config.init_api_key``, a single-purpose bootstrap credential the pool
+# gives the pod at birth. It is deliberately *not* the cipher key: the
+# orchestrator must know this value ahead of time, so it has to live in the
+# pod environment, and the agent can read the pod environment.
 _INIT_API_KEY_HEADER = APIKeyHeader(name="X-Init-API-Key", auto_error=False)
 
 
@@ -72,9 +75,11 @@ class InitRequest(BaseModel):
     secret_key: SecretStr | None = Field(
         default=None,
         description=(
-            "Symmetric secret used to encrypt persisted secrets. If not "
-            "provided, falls back to the first session_api_key (matching the "
-            "default Config behavior)."
+            "Symmetric secret used to encrypt persisted secrets. Required: a "
+            "dormant server has no cipher key of its own, deliberately, so that "
+            "the key never sits in the pod environment where the agent could "
+            "read it. Held in memory only, and re-sent by the orchestrator to "
+            "every pod that serves this workspace."
         ),
     )
     conversations_path: Path | None = Field(
@@ -149,16 +154,30 @@ class InitStatus(BaseModel):
 
 
 def _build_initialized_config(base: Config, req: InitRequest) -> Config:
-    """Merge dormant ``base`` config with ``req`` and clear ``deferred_init``."""
-    updates: dict[str, Any] = {"deferred_init": False}
+    """Merge dormant ``base`` config with ``req`` and clear ``deferred_init``.
+
+    Raises HTTPException(400) if the payload carries no ``secret_key``.
+    """
+    # ``init_api_key`` is cleared because it is a one-shot bootstrap credential:
+    # it authorises this call and nothing after it.
+    updates: dict[str, Any] = {"deferred_init": False, "init_api_key": None}
     if req.session_api_keys is not None:
         updates["session_api_keys"] = req.session_api_keys
-    if req.secret_key is not None:
-        updates["secret_key"] = req.secret_key
-    elif req.session_api_keys and base.secret_key is None:
-        # Match the Config default: fall back to first session key when no
-        # secret_key was provided.
-        updates["secret_key"] = SecretStr(req.session_api_keys[0])
+    if req.secret_key is None:
+        # There is deliberately nothing to fall back to. A dormant Config takes
+        # no cipher key from the environment, and defaulting to the caller's
+        # first session key — as this did — just reinstates the same leak under a
+        # different name: session keys are handed to the client, and after a
+        # resume rotates them the old workspace no longer decrypts.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "secret_key is required: a deferred-init server holds no cipher "
+                "key of its own, so persisted secrets would be unrecoverable "
+                "without one delivered here"
+            ),
+        )
+    updates["secret_key"] = req.secret_key
     if req.conversations_path is not None:
         updates["conversations_path"] = req.conversations_path
     if req.bash_events_dir is not None:
@@ -220,11 +239,24 @@ class InitService:
         try:
             new_config = _build_initialized_config(self._base_config, req)
             if req.env:
-                # Setting env vars before services boot lets things like
-                # the cipher pick up OH_SECRET_KEY-style overrides, and
-                # tools pick up credentials.
+                # Set before services boot so tools pick up credentials and
+                # path-shaped vars like OH_PERSISTENCE_DIR take effect. Note the
+                # cipher key is *not* among these: it comes from req.secret_key
+                # and stays out of the environment.
                 for key, value in req.env.items():
                     os.environ[key] = value
+
+            # The settings/secrets/profile stores are process-wide singletons
+            # that capture their cipher and persistence directory from whoever
+            # builds them first. On a dormant pod that can happen before init —
+            # telemetry with a configured exporter reads the settings store at
+            # startup — which would pin cipher=None and the pre-init
+            # OH_PERSISTENCE_DIR for the life of the process, silently dropping
+            # every secret written afterwards. Rebuild them against the merged
+            # config and the env applied above.
+            from openhands.agent_server.persistence.store import reset_stores
+
+            reset_stores()
 
             # Must precede get_instance(), which captures the sink. The
             # matching emit_server_started() is deferred until the ``ready``
@@ -265,6 +297,14 @@ class InitService:
             emit_server_started()
             logger.info("deferred_init: server transitioned to ready")
             return self.snapshot()
+        except HTTPException as exc:
+            # A rejected payload (e.g. no secret_key) keeps its own status code
+            # rather than being reported as a server error, but still rolls the
+            # state back so the orchestrator can retry with a corrected body.
+            logger.warning("deferred_init: /api/init rejected: %s", exc.detail)
+            self._error = f"HTTP {exc.status_code}: {exc.detail}"
+            self._state = "dormant"
+            raise
         except Exception as exc:  # pragma: no cover - logged + re-raised
             logger.exception("deferred_init: /api/init failed; rolling back to dormant")
             self._error = f"{type(exc).__name__}: {exc}"
@@ -305,16 +345,28 @@ def check_init_api_key(
     request: Request,
     init_api_key: str | None = Depends(_INIT_API_KEY_HEADER),
 ) -> None:
-    """Auth gate for /api/init. Uses the dormant server's ``secret_key`` as the
-    bootstrap credential — the orchestrator already holds it because it is
-    required for encryption. The key is replaced when /api/init delivers the
-    per-user runtime config."""
+    """Auth gate for /api/init, checked against ``Config.init_api_key``.
+
+    Fails closed. With no credential configured the endpoint 401s unless
+    ``allow_unauthenticated_init`` is set, because an open init endpoint on a
+    reachable dormant pod lets anyone install their own session keys, cipher key
+    and webhooks.
+    """
     config: Config | None = getattr(request.app.state, "config", None)
-    if config is None or config.secret_key is None:
-        # No key configured → endpoint is open. Acceptable for dev.
-        return
-    expected = config.secret_key.get_secret_value()
-    if init_api_key != expected:
+    expected = config.init_api_key if config is not None else None
+    if expected is None:
+        if config is not None and config.allow_unauthenticated_init:
+            return
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=(
+                "no init credential is configured; set OH_INIT_API_KEY, or "
+                "OH_ALLOW_UNAUTHENTICATED_INIT=true for local development"
+            ),
+        )
+    if not secrets_module.compare_digest(
+        init_api_key or "", expected.get_secret_value()
+    ):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
 

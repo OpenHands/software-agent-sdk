@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
@@ -36,8 +37,36 @@ def _clean_env(monkeypatch):
         "SESSION_API_KEY",
         "OH_SESSION_API_KEYS_0",
         "OH_SECRET_KEY",
+        "OH_INIT_API_KEY",
     ):
         monkeypatch.delenv(key, raising=False)
+
+
+# A dormant server has no cipher key of its own, so every /api/init must carry
+# one. Tests that aren't about the key itself use this to supply a throwaway.
+CIPHER_KEY = "test-cipher-key"
+# The bootstrap credential the pool gives the pod at birth. Distinct from
+# CIPHER_KEY throughout: keeping the two apart is the point of the split.
+BOOT_KEY = "test-boot-key"
+
+
+def _init_request(**kwargs) -> InitRequest:
+    """An InitRequest with the now-mandatory ``secret_key`` filled in."""
+    kwargs.setdefault("secret_key", SecretStr(CIPHER_KEY))
+    return InitRequest(**kwargs)
+
+
+def _dormant_config(**kwargs) -> Config:
+    """A dormant Config carrying an init credential, the way a warm pod does."""
+    kwargs.setdefault("deferred_init", True)
+    kwargs.setdefault("init_api_key", SecretStr(BOOT_KEY))
+    return Config(**kwargs)
+
+
+def _post_init(client: TestClient, **body):
+    """POST /api/init authenticated, with the mandatory cipher key filled in."""
+    body.setdefault("secret_key", CIPHER_KEY)
+    return client.post("/api/init", headers={"X-Init-API-Key": BOOT_KEY}, json=body)
 
 
 def _reset_conversation_singleton():
@@ -60,10 +89,66 @@ class TestConfigDefaults:
         assert Config().deferred_init is False
 
 
+class TestDeferredInitKeepsTheCipherKeyOutOfTheEnvironment:
+    """``deferred_init=True`` refuses to take a cipher key from the environment.
+
+    The agent that a dormant pod goes on to run can read its own pod
+    environment, so a cipher key resolved from there is one the agent can use to
+    decrypt the user's own secrets. The key arrives in the /api/init payload
+    instead. See spec/FUSEY_CIPHER_KEY_PLAN.md in the runtime-api repo.
+    """
+
+    def test_explicit_secret_key_is_discarded(self):
+        cfg = Config(deferred_init=True, secret_key=SecretStr("from-the-env"))
+        assert cfg.secret_key is None
+        assert cfg.cipher is None
+
+    @pytest.mark.parametrize(
+        "env_var", ["SESSION_API_KEY", "OH_SESSION_API_KEYS_0", "OH_SECRET_KEY"]
+    )
+    def test_no_env_var_supplies_a_cipher_key(self, env_var, monkeypatch):
+        monkeypatch.setenv(env_var, "env-key")
+        assert Config(deferred_init=True).secret_key is None
+
+    def test_non_deferred_config_keeps_env_resolution(self, monkeypatch):
+        monkeypatch.setenv("SESSION_API_KEY", "env-key")
+        cfg = Config()
+        assert cfg.secret_key is not None
+        assert cfg.secret_key.get_secret_value() == "env-key"
+
+
+class TestInitApiKey:
+    """The bootstrap credential, which *may* live in the environment."""
+
+    def test_defaults_to_none_without_env(self):
+        assert Config().init_api_key is None
+
+    @pytest.mark.parametrize(
+        "env_var",
+        [
+            "OH_INIT_API_KEY",
+            "SESSION_API_KEY",
+            "OH_SESSION_API_KEYS_0",
+            "OH_SECRET_KEY",
+        ],
+    )
+    def test_resolves_from_env(self, env_var, monkeypatch):
+        monkeypatch.setenv(env_var, "boot-key")
+        cfg = Config(deferred_init=True)
+        assert cfg.init_api_key is not None
+        assert cfg.init_api_key.get_secret_value() == "boot-key"
+
+    def test_survives_deferred_mode(self):
+        """Unlike secret_key: this one is meant to come from the environment."""
+        cfg = Config(deferred_init=True, init_api_key=SecretStr("boot-key"))
+        assert cfg.init_api_key is not None
+        assert cfg.init_api_key.get_secret_value() == "boot-key"
+
+
 class TestBuildInitializedConfig:
     def test_clears_deferred_init_flag(self):
         base = Config(deferred_init=True)
-        merged = _build_initialized_config(base, InitRequest())
+        merged = _build_initialized_config(base, _init_request())
         assert merged.deferred_init is False
 
     def test_overrides_only_provided_fields(self, tmp_path):
@@ -73,7 +158,7 @@ class TestBuildInitializedConfig:
             bash_events_dir=Path("base/bash"),
             max_concurrent_runs=5,
         )
-        req = InitRequest(
+        req = _init_request(
             session_api_keys=["k1"],
             conversations_path=tmp_path / "user-workspace" / "conversations",
         )
@@ -86,18 +171,21 @@ class TestBuildInitializedConfig:
         assert merged.bash_events_dir == Path("base/bash")
         assert merged.max_concurrent_runs == 5
 
-    def test_secret_key_falls_back_to_session_key(self):
-        base = Config(deferred_init=True)
-        # base.secret_key default is None (no env), so we should fall back
-        # to the first session key after /api/init.
-        assert base.secret_key is None
-        merged = _build_initialized_config(
-            base, InitRequest(session_api_keys=["s1", "s2"])
-        )
-        assert merged.secret_key is not None
-        assert merged.secret_key.get_secret_value() == "s1"
+    def test_init_without_a_secret_key_is_rejected(self):
+        """There is deliberately nothing left to fall back to.
 
-    def test_explicit_secret_key_wins(self):
+        This used to adopt the caller's first session key. That is the same leak
+        under another name — session keys are handed to the client, and a resume
+        rotates them, after which the workspace no longer decrypts.
+        """
+        base = Config(deferred_init=True)
+        assert base.secret_key is None
+        with pytest.raises(HTTPException) as excinfo:
+            _build_initialized_config(base, InitRequest(session_api_keys=["s1", "s2"]))
+        assert excinfo.value.status_code == 400
+        assert "secret_key is required" in str(excinfo.value.detail)
+
+    def test_secret_key_comes_from_the_payload(self):
         base = Config(deferred_init=True)
         merged = _build_initialized_config(
             base,
@@ -108,6 +196,12 @@ class TestBuildInitializedConfig:
         assert merged.secret_key is not None
         assert merged.secret_key.get_secret_value() == "explicit-secret"
 
+    def test_init_api_key_is_cleared(self):
+        """One-shot: the bootstrap credential authorises init and nothing after."""
+        base = Config(deferred_init=True, init_api_key=SecretStr("boot-key"))
+        merged = _build_initialized_config(base, _init_request())
+        assert merged.init_api_key is None
+
     def test_cipher_is_rebuilt_when_secret_key_changes(self):
         """A memoised cipher on the dormant config must not survive the merge.
 
@@ -116,12 +210,16 @@ class TestBuildInitializedConfig:
         eviction the initialized server reports the new ``secret_key`` while
         every encrypt/decrypt still uses the boot key, which silently nulls
         the secrets of a conversation directory attached at /api/init time.
+
+        A deferred config can no longer hold a boot key to be caught out by, so
+        the base is built non-deferred and flipped with ``model_copy``, which
+        skips validators. That keeps the eviction itself under test rather than
+        resting on the nulling above to make it unreachable.
         """
         base = Config(
-            deferred_init=True,
             session_api_keys=["pod-boot"],
             secret_key=SecretStr("pod-boot"),
-        )
+        ).model_copy(update={"deferred_init": True})
         boot_cipher = base.cipher
         assert boot_cipher is not None and boot_cipher.secret_key == "pod-boot"
 
@@ -136,6 +234,21 @@ class TestBuildInitializedConfig:
         assert merged.cipher.secret_key == "conversation-key"
         # The dormant config keeps its own cipher — the merge is not in place.
         assert base.cipher is boot_cipher
+
+    def test_cipher_is_built_after_a_pre_init_read_returned_none(self):
+        """The live path: a dormant config has no cipher, and reads memoise that.
+
+        ``Config.cipher`` caches ``None`` just as eagerly as it caches a real
+        Cipher, so a pre-init read must not be able to leave the initialized
+        server unable to encrypt.
+        """
+        base = Config(deferred_init=True)
+        assert base.cipher is None
+        merged = _build_initialized_config(
+            base, InitRequest(secret_key=SecretStr("conversation-key"))
+        )
+        assert merged.cipher is not None
+        assert merged.cipher.secret_key == "conversation-key"
 
 
 class TestRouterMounting:
@@ -167,7 +280,7 @@ class TestInitServiceTransitions:
         assert svc.state == "dormant"
 
         result = await svc.initialize(
-            InitRequest(
+            _init_request(
                 session_api_keys=["user-key"],
                 conversations_path=tmp_path / "user" / "convs",
                 bash_events_dir=tmp_path / "user" / "bash",
@@ -209,7 +322,7 @@ class TestInitServiceTransitions:
         svc = InitService(app, base_config=base)  # type: ignore[arg-type]
 
         await svc.initialize(
-            InitRequest(
+            _init_request(
                 conversations_path=tmp_path / "u1" / "convs",
                 bash_events_dir=tmp_path / "u1" / "bash",
             )
@@ -237,7 +350,7 @@ class TestInitServiceTransitions:
         svc = InitService(app, base_config=base)  # type: ignore[arg-type]
 
         await svc.initialize(
-            InitRequest(
+            _init_request(
                 env={"DEFERRED_INIT_TEST_VAR": "hello"},
                 conversations_path=tmp_path / "u" / "convs",
                 bash_events_dir=tmp_path / "u" / "bash",
@@ -268,7 +381,7 @@ class TestInitServiceTransitions:
 
         user_dir = tmp_path / "user" / "bash"
         await svc.initialize(
-            InitRequest(
+            _init_request(
                 conversations_path=tmp_path / "user" / "convs",
                 bash_events_dir=user_dir,
             )
@@ -297,7 +410,7 @@ class TestInitServiceTransitions:
         svc = InitService(app, base_config=base)  # type: ignore[arg-type]
 
         await svc.initialize(
-            InitRequest(
+            _init_request(
                 conversations_path=tmp_path / "u" / "convs",
                 bash_events_dir=tmp_path / "u" / "bash",
             )
@@ -314,8 +427,7 @@ class TestEndToEndOverLifespan:
 
     def test_dormant_503s_api_routes_until_init(self, tmp_path):
         _reset_conversation_singleton()
-        cfg = Config(
-            deferred_init=True,
+        cfg = _dormant_config(
             conversations_path=tmp_path / "convs",
             bash_events_dir=tmp_path / "bash",
         )
@@ -340,12 +452,10 @@ class TestEndToEndOverLifespan:
                 assert resp.json()["state"] == "dormant"
 
                 # Run /api/init.
-                resp = client.post(
-                    "/api/init",
-                    json={
-                        "conversations_path": str(tmp_path / "u" / "convs"),
-                        "bash_events_dir": str(tmp_path / "u" / "bash"),
-                    },
+                resp = _post_init(
+                    client,
+                    conversations_path=str(tmp_path / "u" / "convs"),
+                    bash_events_dir=str(tmp_path / "u" / "bash"),
                 )
                 assert resp.status_code == 200
                 assert resp.json()["state"] == "ready"
@@ -361,8 +471,7 @@ class TestEndToEndOverLifespan:
         must be re-derived from it so OpenAPI/Swagger/ReDoc URLs reflect the
         external mount path (e.g. behind a reverse proxy)."""
         _reset_conversation_singleton()
-        cfg = Config(
-            deferred_init=True,
+        cfg = _dormant_config(
             conversations_path=tmp_path / "convs",
             bash_events_dir=tmp_path / "bash",
         )
@@ -372,13 +481,11 @@ class TestEndToEndOverLifespan:
                 # Dormant server has no web_url → empty root_path.
                 assert app.root_path == ""
 
-                resp = client.post(
-                    "/api/init",
-                    json={
-                        "web_url": "https://example.com/agent-server-123/agent-server/",
-                        "conversations_path": str(tmp_path / "u" / "convs"),
-                        "bash_events_dir": str(tmp_path / "u" / "bash"),
-                    },
+                resp = _post_init(
+                    client,
+                    web_url="https://example.com/agent-server-123/agent-server/",
+                    conversations_path=str(tmp_path / "u" / "convs"),
+                    bash_events_dir=str(tmp_path / "u" / "bash"),
                 )
                 assert resp.status_code == 200
 
@@ -393,38 +500,39 @@ class TestEndToEndOverLifespan:
 
     def test_init_api_key_required_when_configured(self, tmp_path):
         _reset_conversation_singleton()
-        cfg = Config(
-            deferred_init=True,
-            secret_key=SecretStr("pool-key"),
+        cfg = _dormant_config(
             conversations_path=tmp_path / "convs",
             bash_events_dir=tmp_path / "bash",
         )
         app = create_app(cfg)
         with TestClient(app) as client:
             try:
+                body = {
+                    "secret_key": CIPHER_KEY,
+                    "conversations_path": str(tmp_path / "u" / "convs"),
+                    "bash_events_dir": str(tmp_path / "u" / "bash"),
+                }
+
                 # Wrong key → 401.
                 resp = client.post(
-                    "/api/init",
-                    headers={"X-Init-API-Key": "wrong"},
-                    json={
-                        "conversations_path": str(tmp_path / "u" / "convs"),
-                        "bash_events_dir": str(tmp_path / "u" / "bash"),
-                    },
+                    "/api/init", headers={"X-Init-API-Key": "wrong"}, json=body
                 )
                 assert resp.status_code == 401
 
                 # No key → 401.
-                resp = client.post("/api/init", json={})
+                resp = client.post("/api/init", json=body)
+                assert resp.status_code == 401
+
+                # The cipher key is not the init credential: presenting it
+                # where the boot key belongs must not authenticate.
+                resp = client.post(
+                    "/api/init", headers={"X-Init-API-Key": CIPHER_KEY}, json=body
+                )
                 assert resp.status_code == 401
 
                 # Right key → 200.
                 resp = client.post(
-                    "/api/init",
-                    headers={"X-Init-API-Key": "pool-key"},
-                    json={
-                        "conversations_path": str(tmp_path / "u" / "convs"),
-                        "bash_events_dir": str(tmp_path / "u" / "bash"),
-                    },
+                    "/api/init", headers={"X-Init-API-Key": BOOT_KEY}, json=body
                 )
                 assert resp.status_code == 200
 
@@ -434,10 +542,77 @@ class TestEndToEndOverLifespan:
             finally:
                 _reset_conversation_singleton()
 
-    def test_session_api_key_set_at_init_protects_api(self, tmp_path):
+    def test_init_fails_closed_without_a_configured_credential(self, tmp_path):
+        """An open init endpoint on a reachable dormant pod would let anyone
+        install their own session keys, cipher key and webhooks."""
         _reset_conversation_singleton()
         cfg = Config(
             deferred_init=True,
+            conversations_path=tmp_path / "convs",
+            bash_events_dir=tmp_path / "bash",
+        )
+        assert cfg.init_api_key is None
+        app = create_app(cfg)
+        with TestClient(app) as client:
+            try:
+                resp = client.post("/api/init", json={"secret_key": CIPHER_KEY})
+                assert resp.status_code == 401
+                assert "OH_INIT_API_KEY" in resp.json()["detail"]
+                # Still dormant: nothing was initialised.
+                assert client.get("/api/init").json()["state"] == "dormant"
+            finally:
+                _reset_conversation_singleton()
+
+    def test_allow_unauthenticated_init_opens_the_gate_for_dev(self, tmp_path):
+        _reset_conversation_singleton()
+        cfg = Config(
+            deferred_init=True,
+            allow_unauthenticated_init=True,
+            conversations_path=tmp_path / "convs",
+            bash_events_dir=tmp_path / "bash",
+        )
+        app = create_app(cfg)
+        with TestClient(app) as client:
+            try:
+                resp = client.post(
+                    "/api/init",
+                    json={
+                        "secret_key": CIPHER_KEY,
+                        "conversations_path": str(tmp_path / "u" / "convs"),
+                        "bash_events_dir": str(tmp_path / "u" / "bash"),
+                    },
+                )
+                assert resp.status_code == 200
+            finally:
+                _reset_conversation_singleton()
+
+    def test_init_without_a_secret_key_is_a_400_and_stays_dormant(self, tmp_path):
+        _reset_conversation_singleton()
+        cfg = _dormant_config(
+            conversations_path=tmp_path / "convs",
+            bash_events_dir=tmp_path / "bash",
+        )
+        app = create_app(cfg)
+        with TestClient(app) as client:
+            try:
+                resp = client.post(
+                    "/api/init",
+                    headers={"X-Init-API-Key": BOOT_KEY},
+                    json={"session_api_keys": ["user-session-key"]},
+                )
+                assert resp.status_code == 400, resp.text
+                assert "secret_key is required" in resp.json()["detail"]
+
+                # Rolled back, so a corrected retry still works.
+                status_resp = client.get("/api/init")
+                assert status_resp.json()["state"] == "dormant"
+                assert _post_init(client).status_code == 200
+            finally:
+                _reset_conversation_singleton()
+
+    def test_session_api_key_set_at_init_protects_api(self, tmp_path):
+        _reset_conversation_singleton()
+        cfg = _dormant_config(
             conversations_path=tmp_path / "convs",
             bash_events_dir=tmp_path / "bash",
         )
@@ -449,13 +624,11 @@ class TestEndToEndOverLifespan:
                 assert client.get("/api/conversations/count").status_code == 503
 
                 # Init delivers the session key.
-                resp = client.post(
-                    "/api/init",
-                    json={
-                        "session_api_keys": ["user-session-key"],
-                        "conversations_path": str(tmp_path / "u" / "convs"),
-                        "bash_events_dir": str(tmp_path / "u" / "bash"),
-                    },
+                resp = _post_init(
+                    client,
+                    session_api_keys=["user-session-key"],
+                    conversations_path=str(tmp_path / "u" / "convs"),
+                    bash_events_dir=str(tmp_path / "u" / "bash"),
                 )
                 assert resp.status_code == 200
 
@@ -471,6 +644,69 @@ class TestEndToEndOverLifespan:
                 assert app.state.config.session_api_keys == ["user-session-key"]
             finally:
                 _reset_conversation_singleton()
+
+
+class TestStoreSingletonsAreRebuiltAtInit:
+    """The settings/secrets stores are process-wide singletons that capture
+    their cipher and persistence directory from whoever builds them first.
+
+    On a dormant pod that can happen before /api/init — telemetry with a
+    configured exporter reads the settings store during startup — which would
+    pin ``cipher=None`` and the pre-init OH_PERSISTENCE_DIR for the life of the
+    process, silently dropping every secret written afterwards.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_pre_init_store_does_not_keep_its_null_cipher(
+        self, tmp_path, monkeypatch
+    ):
+        from openhands.agent_server.persistence.store import (
+            get_secrets_store,
+            get_settings_store,
+            reset_stores,
+        )
+
+        monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "boot"))
+        reset_stores()
+        _reset_conversation_singleton()
+        _reset_bash_singleton()
+
+        base = _dormant_config(
+            conversations_path=tmp_path / "convs",
+            bash_events_dir=tmp_path / "bash",
+        )
+        # Something reads the store while the pod is still dormant.
+        assert get_settings_store(base).cipher is None
+
+        app = SimpleNamespace(state=SimpleNamespace(config=base))
+        svc = InitService(app, base_config=base)  # type: ignore[arg-type]
+        await svc.initialize(
+            _init_request(
+                conversations_path=tmp_path / "u" / "convs",
+                bash_events_dir=tmp_path / "u" / "bash",
+                env={"OH_PERSISTENCE_DIR": str(tmp_path / "user")},
+            )
+        )
+        try:
+            settings_store = get_settings_store(app.state.config)
+            assert settings_store.cipher is not None, (
+                "the settings store kept the cipher-less instance built while "
+                "the pod was dormant; secrets written after init would be "
+                "persisted in the clear or dropped"
+            )
+            assert settings_store.cipher.secret_key == CIPHER_KEY
+            # ...and it follows the persistence dir delivered at init, not the
+            # one that was in the environment at boot.
+            assert settings_store.persistence_dir == tmp_path / "user"
+
+            secrets_store = get_secrets_store(app.state.config)
+            assert secrets_store.cipher is not None
+            assert secrets_store.cipher.secret_key == CIPHER_KEY
+        finally:
+            await svc.teardown()
+            reset_stores()
+            _reset_conversation_singleton()
+            _reset_bash_singleton()
 
 
 class TestSecretsOnAnAttachedConversationDirectory:
@@ -522,11 +758,9 @@ class TestSecretsOnAnAttachedConversationDirectory:
         _reset_conversation_singleton()
         _reset_bash_singleton()
 
-        # A warm pod boots with its own throwaway key, pointed at the volume.
-        cfg = Config(
-            deferred_init=True,
+        # A warm pod boots with a bootstrap credential and no cipher key.
+        cfg = _dormant_config(
             session_api_keys=["pod-boot"],
-            secret_key=SecretStr("pod-boot"),
             conversations_path=convs,
             bash_events_dir=tmp_path / "volume" / "bash",
             lease_ttl_seconds=0.0,
@@ -535,13 +769,13 @@ class TestSecretsOnAnAttachedConversationDirectory:
         app = create_app(cfg)
         with TestClient(app) as client:
             try:
-                # Force the dormant config to memoise its boot cipher, the way
-                # any import-time or pre-init read of ``config.cipher`` would.
-                assert app.state.config.cipher is not None
+                # Force the dormant config to memoise the absence of a cipher,
+                # the way any import-time or pre-init read would.
+                assert app.state.config.cipher is None
 
                 resp = client.post(
                     "/api/init",
-                    headers={"X-Init-API-Key": "pod-boot"},
+                    headers={"X-Init-API-Key": BOOT_KEY},
                     json={
                         "session_api_keys": ["user-session"],
                         "secret_key": volume_key,
@@ -616,7 +850,7 @@ async def test_lifespan_teardown_releases_conversation_service_after_init(
         init_svc = fake_app.state.init_service
         assert init_svc.state == "dormant"
         await init_svc.initialize(
-            InitRequest(
+            _init_request(
                 conversations_path=tmp_path / "u" / "convs",
                 bash_events_dir=tmp_path / "u" / "bash",
             )

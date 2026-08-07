@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Any, ClassVar, Final, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 from openhands.agent_server.conversation_lease import DEFAULT_LEASE_TTL_SECONDS
 from openhands.agent_server.env_parser import (
@@ -21,6 +21,8 @@ from openhands.sdk.utils.cipher import Cipher
 # Environment variable constants
 V0_SESSION_API_KEY_ENV = "SESSION_API_KEY"
 V1_SESSION_API_KEY_ENV = "OH_SESSION_API_KEYS_0"
+SECRET_KEY_ENV = "OH_SECRET_KEY"
+INIT_API_KEY_ENV = "OH_INIT_API_KEY"
 ENVIRONMENT_VARIABLE_PREFIX = "OH"
 CONFIG_PATH_ENV = "OPENHANDS_AGENT_SERVER_CONFIG_PATH"
 DEFAULT_CONFIG_PATH = Path("workspace/openhands_agent_server_config.json")
@@ -49,6 +51,9 @@ def _default_secret_key() -> SecretStr | None:
     and this function is never called. Otherwise, we fall back to using the first
     available session_api_key - which we read from the environment.
     We check both the V0 and V1 variables for this.
+
+    Note that ``deferred_init=True`` discards whatever this resolves to: see
+    ``Config._keep_the_cipher_key_out_of_the_environment``.
     """
     session_api_key = os.getenv(V0_SESSION_API_KEY_ENV)
     if session_api_key:
@@ -56,6 +61,29 @@ def _default_secret_key() -> SecretStr | None:
     session_api_key = os.getenv(V1_SESSION_API_KEY_ENV)
     if session_api_key:
         return SecretStr(session_api_key)
+    return None
+
+
+def _default_init_api_key() -> SecretStr | None:
+    """Resolve the bootstrap credential for ``POST /api/init``.
+
+    OH_INIT_API_KEY is also read by the EnvParser, which wins over this factory
+    when set; it is repeated here so a directly-constructed ``Config`` resolves
+    it too. The remaining fallbacks are the variables this credential used to
+    come from while it shared a field with ``secret_key``, so an existing
+    warm-pool deployment keeps working after the two split. OH_SECRET_KEY is
+    read from the environment directly rather than through the ``secret_key``
+    field, which is ``None`` in deferred-init mode.
+    """
+    for env_var in (
+        INIT_API_KEY_ENV,
+        V0_SESSION_API_KEY_ENV,
+        V1_SESSION_API_KEY_ENV,
+        SECRET_KEY_ENV,
+    ):
+        value = os.getenv(env_var)
+        if value:
+            return SecretStr(value)
     return None
 
 
@@ -325,7 +353,31 @@ class Config(BaseModel):
         description=(
             "Secret key used for encrypting sensitive values in all serialized data. "
             "If missing, any sensitive data is redacted, meaning full state cannot"
-            "be restored between restarts."
+            "be restored between restarts. Ignored when deferred_init is True, where "
+            "it may only be delivered by POST /api/init."
+        ),
+    )
+    init_api_key: SecretStr | None = Field(
+        default_factory=_default_init_api_key,
+        description=(
+            "Bootstrap credential for POST /api/init, presented in the "
+            "X-Init-API-Key header. Only consulted when deferred_init is True. "
+            "Set it with OH_INIT_API_KEY; for compatibility it also falls back to "
+            "SESSION_API_KEY, OH_SESSION_API_KEYS_0 and OH_SECRET_KEY, which is "
+            "where this credential came from while it shared a field with "
+            "secret_key. Unlike secret_key this one may live in the pod "
+            "environment: it authorises nothing once init has completed, and no "
+            "agent is running before then."
+        ),
+    )
+    allow_unauthenticated_init: bool = Field(
+        default=False,
+        description=(
+            "Development escape hatch: serve POST /api/init without "
+            "authentication when no init_api_key is configured. Off by default, "
+            "so a dormant pod with no credential refuses to initialise instead of "
+            "letting anyone who can reach it install their own session keys, "
+            "cipher key and webhooks."
         ),
     )
     web_url: str | None = Field(
@@ -387,15 +439,47 @@ class Config(BaseModel):
     )
     model_config: ClassVar[ConfigDict] = {"frozen": True}
 
+    @model_validator(mode="after")
+    def _keep_the_cipher_key_out_of_the_environment(self) -> "Config":
+        """Discard any env-provided ``secret_key`` when ``deferred_init`` is set.
+
+        A dormant pod goes on to run an agent, and that agent can read its own
+        pod environment — an ``env`` in a bash call is enough. A cipher key taken
+        from there is therefore a key the agent can use to decrypt the user's own
+        secrets. In deferred-init mode the key arrives in the ``POST /api/init``
+        payload instead and is held only in memory, so the resolution chain that
+        reaches the environment (including an explicit OH_SECRET_KEY) is dropped
+        here rather than being allowed to win by being set deliberately.
+
+        ``model_copy`` skips validators, so the config ``InitService`` builds from
+        the init payload keeps the delivered key.
+        """
+        if self.deferred_init and self.secret_key is not None:
+            _logger.warning(
+                "⚠️ Ignoring the configured secret_key: with deferred_init=True "
+                "the cipher key must arrive via POST /api/init and never from the "
+                "pod environment, which the agent can read."
+            )
+            # Assign through __dict__ because the model is frozen.
+            self.__dict__["secret_key"] = None
+        return self
+
     @property
     def cipher(self) -> Cipher | None:
         cipher = getattr(self, "_cipher", None)
         if cipher is None:
             if self.secret_key is None:
-                _logger.warning(
-                    "⚠️ OH_SECRET_KEY was not defined. Secrets will not "
-                    "be persisted between restarts."
-                )
+                if self.deferred_init:
+                    _logger.warning(
+                        "⚠️ The cipher was read before POST /api/init delivered a "
+                        "secret_key. Secrets cannot be persisted yet; this is not "
+                        "a missing OH_SECRET_KEY."
+                    )
+                else:
+                    _logger.warning(
+                        "⚠️ OH_SECRET_KEY was not defined. Secrets will not "
+                        "be persisted between restarts."
+                    )
                 cipher = None
             else:
                 cipher = Cipher(self.secret_key.get_secret_value())

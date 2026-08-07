@@ -53,7 +53,10 @@ The server can be configured using environment variables or a JSON configuration
 |----------|-------------|---------|
 | `OPENHANDS_AGENT_SERVER_CONFIG_PATH` | Path to JSON configuration file | `workspace/openhands_agent_server_config.json` |
 | `SESSION_API_KEY` | API key for authentication (optional) | None |
-| `OH_SECRET_KEY` | Secret key for encrypting sensitive data (LLM API keys, secrets) in stored conversations. **Required for persistence across restarts.** | None |
+| `OH_SECRET_KEY` | Secret key for encrypting sensitive data (LLM API keys, secrets) in stored conversations. **Required for persistence across restarts.** Ignored when `OH_DEFERRED_INIT=true` — see [Deferred init](#deferred-init). | None |
+| `OH_DEFERRED_INIT` | Start dormant and wait for `POST /api/init` to deliver the per-user runtime config. See [Deferred init](#deferred-init). | `false` |
+| `OH_INIT_API_KEY` | Bootstrap credential for `POST /api/init` (`X-Init-API-Key` header). Falls back to `SESSION_API_KEY`, `OH_SESSION_API_KEYS_0`, `OH_SECRET_KEY`. | None |
+| `OH_ALLOW_UNAUTHENTICATED_INIT` | Serve `POST /api/init` without authentication when no `OH_INIT_API_KEY` is configured. Development only. | `false` |
 | `OH_ALLOW_CORS_ORIGIN_REGEX` | Regular expression for additional allowed CORS origins. Use `https?://.+` to allow any HTTP(S) origin while echoing the concrete origin. | None |
 | `OH_TELEMETRY_EXPORTER` | Where events go: `none`, `posthog`, or `http`. See [Telemetry](#telemetry). | `none` |
 | `OH_TELEMETRY_POSTHOG_API_KEY` | PostHog project API key. Required by the `posthog` exporter. | None |
@@ -282,6 +285,32 @@ If `OH_SECRET_KEY` is not set:
 - Secrets will be redacted (masked) in stored conversations
 - When the server restarts, encrypted secrets cannot be decrypted and will be `None`
 - Conversations will need to be recreated with fresh API keys
+
+### Deferred init
+
+With `OH_DEFERRED_INIT=true` the server starts *dormant*: stateless services
+(VSCode, desktop, tool preload) come up as usual, but every `/api/*` route
+returns 503 until `POST /api/init` delivers the per-user runtime config. This is
+for warm-pool deployments, where a pod is booted before anyone knows which user
+it will serve.
+
+Because a dormant pod goes on to run an agent, and that agent can read its own
+process environment, **a dormant server takes no cipher key from the
+environment**. `OH_SECRET_KEY` and the `SESSION_API_KEY` fallbacks are ignored
+with a warning; the cipher key must arrive in the `secret_key` field of the
+`/api/init` body, where it is held in memory only. An init without one is
+rejected with a 400 rather than booting cipher-less. The orchestrator is expected
+to hold the key and re-send it to every pod that serves the same workspace.
+
+`POST /api/init` authenticates with `OH_INIT_API_KEY` in the `X-Init-API-Key`
+header — a single-purpose bootstrap credential, cleared once init succeeds, that
+*may* live in the pod environment because it authorises nothing afterwards and no
+agent is running before then. The gate fails closed: with no credential
+configured the endpoint 401s, unless `OH_ALLOW_UNAUTHENTICATED_INIT=true`.
+
+`GET /api/init` needs no auth and reports `dormant`, `initializing` or `ready`,
+so a pool controller can poll it. Note that `/alive` answers 200 while dormant —
+it is a process-liveness probe, not a readiness one.
 
 ### Webhook Configuration
 
