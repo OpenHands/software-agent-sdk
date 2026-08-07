@@ -19,7 +19,7 @@ from openhands.sdk.settings.acp_providers import (
 
 class TestACPProviderInfo:
     def test_known_providers_are_registered(self):
-        assert set(ACP_PROVIDERS) == {"claude-code", "codex", "gemini-cli"}
+        assert set(ACP_PROVIDERS) == {"claude-code", "codex", "gemini-cli", "pi"}
 
     def test_all_entries_are_acp_provider_info(self):
         for info in ACP_PROVIDERS.values():
@@ -91,6 +91,22 @@ class TestACPProviderInfo:
         assert info.binary_name == "gemini"
         # Gemini CLI has no dedicated config-dir var, so only HOME relocates it.
         assert info.data_dir_env_var == "HOME"
+
+    def test_pi_metadata(self):
+        info = ACP_PROVIDERS["pi"]
+        assert info.key == "pi"
+        assert info.display_name == "Pi"
+        assert info.default_command[0] == "npx"
+        assert "pi-acp" in info.default_command[-1]
+        assert info.api_key_env_var is None
+        assert info.base_url_env_var is None
+        assert info.default_session_mode == "default"
+        assert "pi-acp" in info.agent_name_patterns
+        assert info.supports_set_session_model is True
+        assert info.supports_runtime_model_switch is True
+        assert info.session_meta_key is None
+        assert info.binary_name == "pi-acp"
+        assert info.data_dir_env_var == "PI_CODING_AGENT_DIR"
 
     def test_provider_info_is_frozen(self):
         info = ACP_PROVIDERS["claude-code"]
@@ -210,8 +226,14 @@ class TestProviderRegistryConsistency:
             )
 
     def test_session_modes_are_distinct(self):
-        modes = [info.default_session_mode for info in ACP_PROVIDERS.values()]
-        assert len(modes) == len(set(modes)), "each provider should use a unique mode"
+        modes = [
+            info.default_session_mode
+            for info in ACP_PROVIDERS.values()
+            if info.default_session_mode != "default"
+        ]
+        assert len(modes) == len(set(modes)), (
+            "permission-bypassing modes should be unique"
+        )
 
     def test_detect_returns_matching_provider_for_all_registered_patterns(self):
         """Every registered pattern should resolve back to its own provider."""

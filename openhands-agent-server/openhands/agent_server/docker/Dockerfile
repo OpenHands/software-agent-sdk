@@ -182,12 +182,13 @@ RUN set -ux; \
         if "$ACP_NODE_DIR/bin/npm" install -g \
             @agentclientprotocol/claude-agent-acp@0.63.0 \
             @agentclientprotocol/codex-acp@1.1.7 \
-            @google/gemini-cli@0.46.0; then \
+            @google/gemini-cli@0.46.0 \
+            pi-acp@0.0.33; then \
           # Create wrappers in /usr/local/bin that prepend ACP's Node 22 to PATH.
           # This ensures the ACP binary's #!/usr/bin/env node shebang resolves
           # to Node 22, while the repo's own node (NVM/system) stays untouched
           # for tests.
-          for bin in claude-agent-acp codex-acp gemini; do \
+          for bin in claude-agent-acp codex-acp gemini pi-acp; do \
             if [ -e "$ACP_NODE_DIR/bin/$bin" ]; then \
               printf '#!/bin/sh\nPATH="%s/bin:$PATH" exec "%s/bin/%s" "$@"\n' \
                 "$ACP_NODE_DIR" "$ACP_NODE_DIR" "$bin" \

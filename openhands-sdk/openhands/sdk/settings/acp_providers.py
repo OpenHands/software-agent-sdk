@@ -347,6 +347,10 @@ _GEMINI_MODELS: tuple[ACPModelOption, ...] = (
     ACPModelOption(id="gemini-2.5-flash", label="Gemini 2.5 Flash"),
 )
 
+_PI_MODELS: tuple[ACPModelOption, ...] = (
+    ACPModelOption(id="default", label="Default"),
+)
+
 
 # ---------------------------------------------------------------------------
 # Reserved file-content credential secrets for the built-in providers.
@@ -393,6 +397,7 @@ _GEMINI_FILE_SECRETS: tuple[ACPFileSecretSpec, ...] = (
 CLAUDE_AGENT_ACP_VERSION = "0.63.0"
 CODEX_ACP_VERSION = "1.1.7"
 GEMINI_CLI_VERSION = "0.46.0"
+PI_ACP_VERSION = "0.0.33"
 
 
 ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
@@ -479,6 +484,26 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             # Gemini CLI has no dedicated config-dir var; it hard-codes
             # ``~/.gemini`` (ignoring XDG), so only HOME relocates its state.
             data_dir_env_var="HOME",
+        ),
+        "pi": ACPProviderInfo(
+            key="pi",
+            display_name="Pi",
+            default_command=(
+                "npx",
+                "-y",
+                f"pi-acp@{PI_ACP_VERSION}",
+            ),
+            api_key_env_var=None,
+            base_url_env_var=None,
+            default_session_mode="default",
+            agent_name_patterns=("pi-acp", "pi"),
+            supports_set_session_model=True,
+            supports_runtime_model_switch=True,
+            session_meta_key=None,
+            available_models=_PI_MODELS,
+            default_model="default",
+            binary_name="pi-acp",
+            data_dir_env_var="PI_CODING_AGENT_DIR",
         ),
     }
 )

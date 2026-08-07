@@ -388,7 +388,7 @@ def test_export_agent_settings_schema_emits_variant_tagged_sections() -> None:
     server_field = next(f for f in acp_section.fields if f.key == "acp_server")
     assert server_field.prominence is SettingProminence.CRITICAL
     server_choices = {c.value for c in server_field.choices}
-    assert server_choices == {"claude-code", "codex", "gemini-cli", "custom"}
+    assert server_choices == {"claude-code", "codex", "gemini-cli", "pi", "custom"}
 
     command_field = next(f for f in acp_section.fields if f.key == "acp_command")
     assert command_field.prominence is SettingProminence.MINOR
@@ -1195,7 +1195,7 @@ def test_acp_create_agent_carries_provider_key() -> None:
     directly (not from settings) defaults to ``None``; and the key survives a
     serialization round-trip through the ``AgentBase`` discriminated union.
     """
-    for server in ("claude-code", "codex", "gemini-cli", "custom"):
+    for server in ("claude-code", "codex", "gemini-cli", "pi", "custom"):
         kwargs: dict[str, Any] = {"acp_server": server}
         if server == "custom":
             kwargs["acp_command"] = ["my-acp"]
@@ -1218,7 +1218,7 @@ def test_acp_resolve_command_for_known_servers(
     default stays the ``npx`` invocation.
     """
     monkeypatch.setattr(shutil, "which", lambda _: None)
-    for server in ("claude-code", "codex", "gemini-cli"):
+    for server in ("claude-code", "codex", "gemini-cli", "pi"):
         settings = ACPAgentSettings(acp_server=server)
         cmd = settings.resolve_acp_command()
         assert cmd, f"expected default command for {server}, got empty"
@@ -1992,7 +1992,7 @@ def test_acp_resolve_command_uses_registry_defaults(
 
     # No pinned binary on PATH → registry npx default is returned verbatim.
     monkeypatch.setattr(shutil, "which", lambda _: None)
-    for server_key in ("claude-code", "codex", "gemini-cli"):
+    for server_key in ("claude-code", "codex", "gemini-cli", "pi"):
         settings = ACPAgentSettings(acp_server=server_key)
         expected = list(ACP_PROVIDERS[server_key].default_command)
         assert settings.resolve_acp_command() == expected

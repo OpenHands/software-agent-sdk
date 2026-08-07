@@ -9164,6 +9164,17 @@ class TestACPDataDirIsolation:
             )
         assert Path(env["CLAUDE_CONFIG_DIR"]) == Path(persist) / "acp" / "claude-code"
 
+    def test_pi_isolates_data_dir(self, tmp_path):
+        agent = self._agent(["npx", "-y", "pi-acp"])
+        state = self._H._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(
+                agent, state, conn=self._H._make_conn(agent_name="pi-acp")
+            )
+        assert Path(env["PI_CODING_AGENT_DIR"]) == Path(persist) / "acp" / "pi"
+
 
 # ---------------------------------------------------------------------------
 # Secret masking (#1023)
