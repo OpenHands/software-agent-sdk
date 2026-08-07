@@ -149,7 +149,6 @@ class BashEventService:
             files = [file for file in files if file.name < timestamp_lt_str]
 
         # Handle pagination
-        page_files = []
         start_index = 0
 
         # Find the starting point if page_id is provided
@@ -159,27 +158,29 @@ class BashEventService:
                     start_index = i
                     break
 
-        # Collect items for this page
+        # Collect items for this page. Filtering happens inside this loop so the
+        # boundary is measured in returned events rather than files read: sizing
+        # the page by file count first lets `order__gt` empty a page while
+        # `next_page_id` is still set, walking the client through under-full or
+        # entirely empty pages.
+        page_events = []
         next_page_id = None
         for i in range(start_index, len(files)):
-            if len(page_files) >= limit:
+            if len(page_events) >= limit:
                 # We have collected enough items for this page
                 # Set next_page_id to the current file for next page
                 next_page_id = str(files[i].name)
                 break
-            page_files.append(files[i])
 
-        # Load only the page files (not all files)
-        page_events = []
-        for file_path in page_files:
-            event = self._load_event_from_file(file_path)
-            if event is not None:
-                # Filter by order if specified (only applies to BashOutput events)
-                if order__gt is not None:
-                    event_order = getattr(event, "order", None)
-                    if event_order is not None and event_order <= order__gt:
-                        continue
-                page_events.append(event)
+            event = self._load_event_from_file(files[i])
+            if event is None:
+                continue
+            # Filter by order if specified (only applies to BashOutput events)
+            if order__gt is not None:
+                event_order = getattr(event, "order", None)
+                if event_order is not None and event_order <= order__gt:
+                    continue
+            page_events.append(event)
 
         return BashEventPage(items=page_events, next_page_id=next_page_id)
 

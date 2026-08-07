@@ -5,10 +5,10 @@ import contextlib
 import logging
 import time
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -18,7 +18,7 @@ from fastapi import FastAPI
 from openhands.agent_server import bash_router as bash_router_module
 from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import Config
-from openhands.agent_server.models import BashCommand
+from openhands.agent_server.models import BashCommand, BashOutput
 from openhands.agent_server.server_details_router import (
     mark_initialization_complete,
     server_details_router,
@@ -194,4 +194,63 @@ async def test_run_retention_cleanup_loop_purges_old_events(tmp_path: Path):
 
     assert len(service._get_event_files_by_pattern("*")) == 0, (
         "Old event file should have been purged by the retention loop"
+    )
+
+
+# ---------------------------------------------------------------------------
+# search_bash_events pagination with order__gt
+# ---------------------------------------------------------------------------
+
+
+async def test_order_filter_does_not_undersize_pages(tmp_path: Path):
+    """The page boundary must count returned events, not files read (#4388).
+
+    Filtering after the page was already sized by file count let `order__gt`
+    hand back a short (or empty) page while `next_page_id` was still set, so a
+    client following the cursor walked a run of near-empty pages.
+    """
+    service = BashEventService(bash_events_dir=tmp_path / "bash_events")
+    command_id = uuid4()
+
+    # 10 events the filter rejects, then 5 it accepts.
+    for order in range(15):
+        service._save_event_to_file(
+            BashOutput(
+                command_id=command_id,
+                order=order,
+                stdout=f"chunk {order}",
+                timestamp=_OLD + timedelta(seconds=order),
+            )
+        )
+
+    page = await service.search_bash_events(order__gt=9, limit=5, kind__eq="BashOutput")
+
+    # `items` is typed as the event base class, so narrow before reading `order`.
+    orders = sorted(e.order for e in page.items if isinstance(e, BashOutput))
+    assert orders == [10, 11, 12, 13, 14]
+    assert page.next_page_id is None
+
+
+async def test_order_filter_never_returns_an_empty_page_with_a_cursor(tmp_path: Path):
+    """An all-filtered range must terminate instead of handing back a cursor."""
+    service = BashEventService(bash_events_dir=tmp_path / "bash_events")
+    command_id = uuid4()
+
+    for order in range(10):
+        service._save_event_to_file(
+            BashOutput(
+                command_id=command_id,
+                order=order,
+                stdout=f"chunk {order}",
+                timestamp=_OLD + timedelta(seconds=order),
+            )
+        )
+
+    page = await service.search_bash_events(
+        order__gt=100, limit=5, kind__eq="BashOutput"
+    )
+
+    assert page.items == []
+    assert page.next_page_id is None, (
+        "an empty page must not advertise a next page, or clients loop forever"
     )
