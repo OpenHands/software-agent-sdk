@@ -303,6 +303,7 @@ def _fetch_pypi_project_metadata(distribution: str) -> dict[str, Any]:
 
 
 def get_pypi_baseline_version(distribution: str, current: str) -> str | None:
+    """Return the current release when published, else its predecessor."""
     meta = _fetch_pypi_project_metadata(distribution)
     releases = meta.get("releases")
     if not isinstance(releases, dict):
