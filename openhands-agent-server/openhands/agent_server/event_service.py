@@ -83,6 +83,13 @@ LEASE_RENEW_INTERVAL_SECONDS = 15.0
 # Bounds initial-state push so subscribe_to_events does not stall on a
 # subscriber whose __call__ blocks (e.g. WS with a full TCP send buffer).
 INITIAL_STATE_PUSH_TIMEOUT_SECONDS = 0.5
+# Ceiling for draining pending per-event callbacks in the run task's finally
+# block before the terminal state update is published.
+RUN_CALLBACK_DRAIN_TIMEOUT_SECONDS = 30.0
+# close() must wait at least as long as the drain ceiling, or its timeout would
+# force-cancel the run task while its finally block is still draining and the
+# terminal state update would never be published (#4387).
+RUN_TASK_CLOSE_TIMEOUT_SECONDS = RUN_CALLBACK_DRAIN_TIMEOUT_SECONDS + 5.0
 
 
 logger = get_logger(__name__)
@@ -1211,9 +1218,21 @@ class EventService:
                     # This prevents a race condition where the conversation status
                     # becomes FINISHED before agent events (MessageEvent, ActionEvent,
                     # etc.) are published to WebSocket subscribers.
-                    if self._callback_wrapper:
-                        await loop.run_in_executor(
-                            None, self._callback_wrapper.wait_for_pending, 30.0
+                    # If close() cancels this task while it is parked in the
+                    # drain await, swallow that cancellation so the terminal
+                    # _publish_state_update() below still runs before
+                    # close() tears down the pub_sub (#4387).
+                    try:
+                        if self._callback_wrapper:
+                            await loop.run_in_executor(
+                                None,
+                                self._callback_wrapper.wait_for_pending,
+                                RUN_CALLBACK_DRAIN_TIMEOUT_SECONDS,
+                            )
+                    except asyncio.CancelledError:
+                        logger.warning(
+                            "Callback drain interrupted; publishing final "
+                            "state update anyway"
                         )
 
                     # Clear task reference and publish state update
@@ -1678,10 +1697,19 @@ class EventService:
             # path the underlying thread keeps running but the wrapper
             # task still settles, unblocking the wait below.
             self._run_task.cancel()
+            # Shield the wait so a timeout gives up on *waiting* without
+            # force-cancelling the task a second time: that second cancel
+            # would abort the task's finally block mid-drain and skip the
+            # terminal _publish_state_update() (#4387). The timeout must
+            # exceed RUN_CALLBACK_DRAIN_TIMEOUT_SECONDS, the finally
+            # block's drain ceiling.
             try:
-                await asyncio.wait_for(self._run_task, timeout=10.0)
+                await asyncio.wait_for(
+                    asyncio.shield(self._run_task),
+                    timeout=RUN_TASK_CLOSE_TIMEOUT_SECONDS,
+                )
             except asyncio.CancelledError:
-                pass  # Expected after cancel()
+                pass  # close() itself was cancelled; shield re-raised it here
             except Exception as exc:
                 logger.warning("Run task did not exit cleanly during close: %s", exc)
             self._run_task = None
