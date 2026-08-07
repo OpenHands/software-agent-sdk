@@ -45,6 +45,7 @@ from openhands.sdk.skills.utils import (
     load_mcp_config,
     update_skills_repository,
     validate_skill_name,
+    warn_on_plugin_dirs,
 )
 from openhands.sdk.utils import DEFAULT_TRUNCATE_NOTICE, maybe_truncate
 from openhands.sdk.utils.path import to_posix_path
@@ -880,6 +881,11 @@ def load_skills_from_dir(
     skill_md_files = find_skill_md_directories(skill_dir)
     skill_md_dirs = {skill_md.parent for skill_md in skill_md_files}
     regular_md_files = find_regular_md_files(skill_dir, skill_md_dirs)
+
+    # Skills directories do not auto-load plugins. Warn (instead of silently
+    # ignoring) when a plugin folder is dropped here, so users coming from
+    # Claude Code know to load it explicitly via PluginSource.
+    warn_on_plugin_dirs(skill_dir, skill_md_dirs)
 
     # Load SKILL.md files (auto-detected and validated in Skill.load)
     # Wrap each load in try/except to ensure one bad skill doesn't break all loading
