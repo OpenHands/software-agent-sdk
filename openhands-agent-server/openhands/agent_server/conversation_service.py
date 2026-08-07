@@ -795,7 +795,9 @@ class ConversationService:
             state = await event_service.get_state()
             record.execution_status = state.execution_status
             record.state_signature = None
-            return _compose_conversation_info(event_service.stored, state, children)
+            return await asyncio.to_thread(
+                _compose_conversation_info, event_service.stored, state, children
+            )
 
         signature = _state_signature(self._base_state_path(conversation_id, record))
         state = await asyncio.to_thread(
@@ -805,7 +807,9 @@ class ConversationService:
             return None
         record.execution_status = state.execution_status
         record.state_signature = signature
-        return _compose_conversation_info(record.stored, state, children)
+        return await asyncio.to_thread(
+            _compose_conversation_info, record.stored, state, children
+        )
 
     @staticmethod
     def _refresh_persisted_statuses_sync(
