@@ -10,11 +10,41 @@ Everything *downstream* of a loaded plugin (merging skills into an agent context
 merging MCP servers, concatenating hooks) is format-agnostic and lives on
 ``Plugin`` itself, so adding a new format never touches the merge/apply path.
 
-Detection precedence (:func:`detect_format`): a root-level ``plugin.json`` selects
-the Agent Plugins layout; otherwise the Claude Code layout is used (this is also
-the fallback when no manifest is present at all). Only the Claude Code format is
-implemented today; the Agent Plugins format (agent-plugins.org) is a planned
-follow-up and is why this seam exists.
+Detection precedence (:func:`detect_format`): the first format in ``_FORMATS``
+whose :meth:`PluginFormat.detect` returns True wins. Only the Claude Code format
+is implemented today, and its ``detect`` accepts any directory, so it is the
+universal fallback (including when no manifest is present at all). The Agent
+Plugins format (agent-plugins.org) is a planned follow-up and is why this seam
+exists; when added it will sit ahead of Claude Code and claim directories with a
+root-level ``plugin.json``.
+
+How to add a new plugin format
+------------------------------
+The strategy is deliberately fill-in-the-blank. To add a format:
+
+1. Subclass :class:`PluginFormat` and give it a unique ``name`` (used in logs).
+2. Implement :meth:`PluginFormat.detect` — return True only for directories this
+   format should claim. Keep it cheap (a filesystem probe), and make it specific
+   so it does not shadow other formats.
+3. Implement the format-specific loaders: :meth:`~PluginFormat.load_manifest`,
+   :meth:`~PluginFormat.load_mcp_config`, :meth:`~PluginFormat.load_hooks`,
+   :meth:`~PluginFormat.load_agents`, and :meth:`~PluginFormat.load_commands`.
+   Each is responsible for exactly one component type and should isolate failures
+   to that component (skip/disable it, never abort the whole plugin).
+4. Reuse the base as-is where behavior is shared. In particular
+   :meth:`~PluginFormat.load_skills` implements the ``skills/<name>/SKILL.md``
+   discovery rule, which is identical across formats — do not re-implement it
+   unless your format genuinely differs. The shared :meth:`~PluginFormat.load`
+   orchestrates all of the above into a normalized ``Plugin``; you should not
+   need to override it.
+5. Register the class in ``_FORMATS`` in the position that reflects its detection
+   precedence (earlier = higher priority). Fallback formats go last.
+6. Add a test asserting :func:`detect_format` selects your format for a directory
+   it should claim and does not for one it should not (see
+   ``tests/sdk/plugin/test_plugin_loading.py::TestDetectFormat``).
+
+Because every format produces the same normalized ``Plugin``, none of this
+touches the merge/apply path or any existing call site.
 """
 
 from __future__ import annotations
