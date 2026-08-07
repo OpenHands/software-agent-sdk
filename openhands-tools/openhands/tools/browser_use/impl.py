@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import builtins
 import functools
 import json
@@ -486,6 +487,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         from openhands.tools.browser_use.definition import (
             BrowserClickAction,
             BrowserCloseTabAction,
+            BrowserExportRecordingAction,
             BrowserGetContentAction,
             BrowserGetStateAction,
             BrowserGetStorageAction,
@@ -534,6 +536,16 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                 result = await self.start_recording()
             elif isinstance(action, BrowserStopRecordingAction):
                 result = await self.stop_recording()
+            elif isinstance(action, BrowserExportRecordingAction):
+                result = await self.export_recording(
+                    recording_path=action.recording_path,
+                    output_path=action.output_path,
+                    output_format=action.format,
+                    width=action.width,
+                    height=action.height,
+                    fps=action.fps,
+                    speed=action.speed,
+                )
             else:
                 error_msg = f"Unsupported action type: {type(action)}"
                 return BrowserObservation.from_text(
@@ -682,6 +694,49 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         """
         await self._ensure_initialized()
         return await self._server._stop_recording()
+
+    async def export_recording(
+        self,
+        recording_path: str | None,
+        output_path: str | None,
+        output_format: str,
+        width: int,
+        height: int,
+        fps: int,
+        speed: float,
+    ) -> str:
+        """Export a saved rrweb recording to MP4 or GIF."""
+        from openhands.tools.browser_use.recording_exporter import (
+            BrowserRecordingExportError,
+            RecordingExportOptions,
+            export_rrweb_recording,
+            find_latest_recording,
+        )
+
+        resolved_recording_path = (
+            find_latest_recording(BROWSER_RECORDING_OUTPUT_DIR)
+            if recording_path is None
+            else Path(recording_path)
+        )
+        options = RecordingExportOptions(
+            width=width,
+            height=height,
+            fps=fps,
+            speed=speed,
+        )
+
+        try:
+            exported_path = await asyncio.to_thread(
+                export_rrweb_recording,
+                resolved_recording_path,
+                output_path=output_path,
+                output_format=output_format,
+                options=options,
+            )
+        except BrowserRecordingExportError as error:
+            return f"Error exporting browser recording: {error}"
+
+        return f"Exported browser recording to: {exported_path}"
 
     async def close_browser(self) -> str:
         """Close the browser session."""

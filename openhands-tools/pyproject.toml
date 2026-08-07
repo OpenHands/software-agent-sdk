@@ -38,5 +38,5 @@ include = ["openhands.tools*"]
 namespaces = true
 
 [tool.setuptools.package-data]
-"*" = ["py.typed", "**/*.j2"]
+"*" = ["py.typed", "**/*.j2", "**/*.js"]
 "openhands.tools.preset.subagents" = ["*.md"]

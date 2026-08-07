@@ -5,6 +5,8 @@ from openhands.tools.browser_use.definition import (
     BrowserClickTool,
     BrowserCloseTabAction,
     BrowserCloseTabTool,
+    BrowserExportRecordingAction,
+    BrowserExportRecordingTool,
     BrowserGetContentAction,
     BrowserGetContentTool,
     BrowserGetStateAction,
@@ -34,6 +36,7 @@ __all__ = [
     # Tool classes
     "BrowserNavigateTool",
     "BrowserClickTool",
+    "BrowserExportRecordingTool",
     "BrowserTypeTool",
     "BrowserGetStateTool",
     "BrowserGetContentTool",
@@ -47,6 +50,7 @@ __all__ = [
     # Actions
     "BrowserNavigateAction",
     "BrowserClickAction",
+    "BrowserExportRecordingAction",
     "BrowserTypeAction",
     "BrowserGetStateAction",
     "BrowserGetContentAction",
