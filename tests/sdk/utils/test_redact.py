@@ -198,6 +198,17 @@ class TestRedactUrlCredentialsInText:
             "fatal: unable to access 'https://****@github.com/o/r.git/': 403"
         )
 
+    def test_redacts_composite_userinfo_with_masked_component(self):
+        s = "url https://<redacted>:still-secret@example.com/repo.git"
+        result = redact_url_credentials_in_text(s)
+        assert "still-secret" not in result
+        assert result == "url https://****@example.com/repo.git"
+
+    def test_preserves_fully_masked_userinfo(self):
+        for userinfo in ("<redacted>", "<secret-hidden>"):
+            s = "url https://" + userinfo + "@example.com/repo.git"
+            assert redact_url_credentials_in_text(s) == s
+
     def test_redacts_token_only_credential(self):
         s = "Cloning https://ghp_supersecrettoken@github.com/o/r.git failed"
         result = redact_url_credentials_in_text(s)

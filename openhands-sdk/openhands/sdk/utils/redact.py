@@ -174,7 +174,7 @@ def redact_url_credentials(url: str, *, preserve_placeholders: bool = False) -> 
 # larger string. The userinfo portion excludes ``/``, ``@``, and whitespace so
 # the match stops at the first credential boundary and never spans a path
 # segment or another token.
-_EMBEDDED_URL_CREDENTIALS_RE = re.compile(r"(https?://)[^/@\s]+@", re.IGNORECASE)
+_EMBEDDED_URL_CREDENTIALS_RE = re.compile(r"(https?://)([^/@\s]+)@", re.IGNORECASE)
 
 
 def redact_url_credentials_in_text(text: str) -> str:
@@ -201,10 +201,10 @@ def redact_url_credentials_in_text(text: str) -> str:
         'no credentials here'
     """
     return _EMBEDDED_URL_CREDENTIALS_RE.sub(
-        lambda m: (
-            m.group(0)
-            if "<secret-hidden>" in m.group(0) or "<redacted>" in m.group(0)
-            else f"{m.group(1)}****@"
+        lambda match: (
+            match.group(0)
+            if match.group(2) in {"<secret-hidden>", "<redacted>"}
+            else f"{match.group(1)}****@"
         ),
         text,
     )
