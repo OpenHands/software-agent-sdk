@@ -268,6 +268,26 @@ def test_monitor_recovers_after_transient_writeback_failure() -> None:
         lifecycle.close()
 
 
+def test_monitor_logs_persistent_writeback_failure_once() -> None:
+    binding = FailingBinding(_auth("refresh-r0"))
+    lifecycle, _ = _lifecycle(binding, SecretRegistry())
+    assert lifecycle.path is not None
+    runtime = cast(Any, lifecycle)
+    try:
+        with patch(
+            "openhands.sdk.agent.acp_file_credentials.logger.warning"
+        ) as warning:
+            lifecycle.path.write_text(_auth("refresh-r1"), encoding="utf-8")
+            deadline = time.monotonic() + 2
+            while binding.replace_calls < 2 and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert binding.replace_calls >= 2
+            assert runtime._monitor.is_alive()
+            assert warning.call_count == 1
+    finally:
+        lifecycle.discard()
+
+
 def test_unchanged_file_does_not_write() -> None:
     binding = MemoryBinding(_auth("refresh-r0"))
     lifecycle, _ = _lifecycle(binding, SecretRegistry())

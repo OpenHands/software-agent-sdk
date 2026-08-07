@@ -239,6 +239,7 @@ class _CodexAuthLifecycle:
             self._closed = True
 
     def _monitor_loop(self) -> None:
+        failure_logged = False
         while not self._stop.wait(_MONITOR_INTERVAL_SECONDS):
             try:
                 with self._sync_lock:
@@ -246,6 +247,7 @@ class _CodexAuthLifecycle:
                     value = self._read_stable(attempts=1)
                     if value is not None:
                         self._sync_value(value)
+                        failure_logged = False
             except (
                 CredentialNeedsReauthentication,
                 CredentialConflict,
@@ -255,12 +257,16 @@ class _CodexAuthLifecycle:
                 return
             except CredentialSyncError as exc:
                 self._set_error(exc)
-                logger.warning("credential_binding_monitor_failed", exc_info=exc)
+                if not failure_logged:
+                    logger.warning("credential_binding_monitor_failed", exc_info=exc)
+                    failure_logged = True
             except Exception as exc:
                 self._set_error(
                     CredentialSyncError("Codex credential monitoring failed.")
                 )
-                logger.warning("credential_binding_monitor_failed", exc_info=exc)
+                if not failure_logged:
+                    logger.warning("credential_binding_monitor_failed", exc_info=exc)
+                    failure_logged = True
 
     def _read_current(self) -> str | None:
         with self._lock:
