@@ -235,6 +235,7 @@ class _ActionBatch:
         tool_runner: Callable[[ActionEvent], list[Event]],
         tools: dict[str, ToolDefinition] | None = None,
         cancel_token: CancellationToken | None = None,
+        span_owner: object | None = None,
     ) -> _ActionBatch:
         """Truncate, partition blocked actions, execute the rest, return the batch."""
         action_events, has_finish = cls._truncate_at_finish(action_events)
@@ -249,7 +250,11 @@ class _ActionBatch:
                 executable.append(ae)
 
         executed_results = executor.execute_batch(
-            executable, tool_runner, tools, cancel_token
+            executable,
+            tool_runner,
+            tools,
+            cancel_token,
+            span_owner=span_owner,
         )
         results_by_id = dict(zip([ae.id for ae in executable], executed_results))
 
@@ -269,6 +274,7 @@ class _ActionBatch:
         tool_runner: Callable[[ActionEvent], list[Event]],
         tools: dict[str, ToolDefinition] | None = None,
         cancel_token: CancellationToken | None = None,
+        span_owner: object | None = None,
     ) -> _ActionBatch:
         """Async variant of :meth:`prepare`.
 
@@ -288,7 +294,11 @@ class _ActionBatch:
                 executable.append(ae)
 
         executed_results = await executor.aexecute_batch(
-            executable, tool_runner, tools, cancel_token
+            executable,
+            tool_runner,
+            tools,
+            cancel_token,
+            span_owner=span_owner,
         )
         results_by_id = dict(zip([ae.id for ae in executable], executed_results))
 
@@ -573,6 +583,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             tool_runner=lambda ae: self._execute_action_event(conversation, ae),
             tools=self.tools_map,
             cancel_token=conversation.cancel_token,
+            span_owner=conversation,
         )
         batch.emit(conversation, on_event)
         batch.finalize(
@@ -607,6 +618,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             tool_runner=lambda ae: self._execute_action_event(conversation, ae),
             tools=self.tools_map,
             cancel_token=conversation.cancel_token,
+            span_owner=conversation,
         )
         batch.emit(conversation, on_event)
         batch.finalize(

@@ -23,9 +23,11 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
+from openhands.sdk.agent.parallel_executor import ParallelToolExecutor
 from openhands.sdk.conversation import Conversation
+from openhands.sdk.conversation.cancellation import CancellationToken
 from openhands.sdk.event import ActionEvent
-from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
 from openhands.sdk.tool import Action, Observation, Tool, ToolExecutor, register_tool
 from openhands.sdk.tool.tool import ToolDefinition
@@ -310,6 +312,51 @@ def test_rejected_pending_tool_call_emits_one_result_span(exported):
     attributes = tool_spans[0].attributes or {}
     assert attributes["lmnr.association.properties.metadata.tool_call_id"] == "call_x"
     assert "Action rejected: not approved" in attributes["lmnr.span.output"]
+    assert tool_spans[0].context is not None
+    assert root_spans[0].context is not None
+    assert tool_spans[0].context.trace_id == root_spans[0].context.trace_id
+
+
+def test_cancelled_tool_call_span_shares_conversation_trace(exported):
+    llm = LLM(usage_id="probe", model="gpt-4o", api_key=SecretStr("k"))
+    conversation = Conversation(agent=Agent(llm=llm), callbacks=[])
+    action = ActionEvent(
+        thought=[TextContent(text="test")],
+        tool_call=MessageToolCall(
+            id="call_cancelled",
+            name="span_input_echo_tool",
+            arguments=json.dumps({"value": "hi"}),
+            origin="completion",
+        ),
+        tool_name="span_input_echo_tool",
+        tool_call_id="call_cancelled",
+        llm_response_id="response",
+    )
+    token = CancellationToken()
+    token.cancel()
+
+    ParallelToolExecutor().execute_batch(
+        [action],
+        lambda _: pytest.fail("cancelled tool executed"),
+        cancel_token=token,
+        span_owner=conversation,
+    )
+    conversation.close()
+
+    tool_spans = [
+        span
+        for span in exported()
+        if (span.attributes or {}).get("lmnr.span.type") == "TOOL"
+    ]
+    root_spans = [span for span in exported() if span.name == "conversation"]
+    assert len(tool_spans) == 1
+    assert len(root_spans) == 1
+    attributes = tool_spans[0].attributes or {}
+    assert (
+        attributes["lmnr.association.properties.metadata.tool_call_id"]
+        == "call_cancelled"
+    )
+    assert "cancelled by interrupt" in attributes["lmnr.span.output"]
     assert tool_spans[0].context is not None
     assert root_spans[0].context is not None
     assert tool_spans[0].context.trace_id == root_spans[0].context.trace_id
