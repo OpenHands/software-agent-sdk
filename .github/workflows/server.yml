@@ -270,17 +270,38 @@ jobs:
         strategy:
             fail-fast: false
             matrix:
-                # Explicit matrix: 3 variants × 2 architectures = 6 jobs
+                # Explicit matrix: 4 variants × 2 architectures = 8 jobs
                 # Each job specifies exactly what it builds and where it runs
                 include:
                     # Python variant
                     - variant: python
+                      custom_tags: python
+                      image_flavor: default
                       arch: amd64
                       base_image: nikolaik/python-nodejs:python3.13-nodejs22-slim
                       runner: ubuntu-24.04
                       platform: linux/amd64
 
                     - variant: python
+                      custom_tags: python
+                      image_flavor: default
+                      arch: arm64
+                      base_image: nikolaik/python-nodejs:python3.13-nodejs22-slim
+                      runner: ubuntu-24.04-arm
+                      platform: linux/arm64
+
+                    # Python variant without preinstalled ACP providers
+                    - variant: python-lite
+                      custom_tags: python
+                      image_flavor: lite
+                      arch: amd64
+                      base_image: nikolaik/python-nodejs:python3.13-nodejs22-slim
+                      runner: ubuntu-24.04
+                      platform: linux/amd64
+
+                    - variant: python-lite
+                      custom_tags: python
+                      image_flavor: lite
                       arch: arm64
                       base_image: nikolaik/python-nodejs:python3.13-nodejs22-slim
                       runner: ubuntu-24.04-arm
@@ -288,12 +309,16 @@ jobs:
 
                     # Java variant
                     - variant: java
+                      custom_tags: java
+                      image_flavor: default
                       arch: amd64
                       base_image: eclipse-temurin:17-jdk
                       runner: ubuntu-24.04
                       platform: linux/amd64
 
                     - variant: java
+                      custom_tags: java
+                      image_flavor: default
                       arch: arm64
                       base_image: eclipse-temurin:17-jdk
                       runner: ubuntu-24.04-arm
@@ -301,12 +326,16 @@ jobs:
 
                     # Golang variant
                     - variant: golang
+                      custom_tags: golang
+                      image_flavor: default
                       arch: amd64
                       base_image: golang:1.21-bookworm
                       runner: ubuntu-24.04
                       platform: linux/amd64
 
                     - variant: golang
+                      custom_tags: golang
+                      image_flavor: default
                       arch: arm64
                       base_image: golang:1.21-bookworm
                       runner: ubuntu-24.04-arm
@@ -317,7 +346,8 @@ jobs:
         env:
             IMAGE: ${{ inputs.image != '' && inputs.image || 'ghcr.io/openhands/agent-server' }}
             BASE_IMAGE: ${{ inputs.base_image != '' && inputs.base_image || matrix.base_image }}
-            CUSTOM_TAGS: ${{ matrix.variant }}
+            CUSTOM_TAGS: ${{ matrix.custom_tags }}
+            IMAGE_FLAVOR: ${{ matrix.image_flavor }}
             VARIANT: ${{ matrix.variant }}
             ARCH: ${{ matrix.arch }}
             TARGET: binary
@@ -402,6 +432,7 @@ jobs:
                       BASE_IMAGE=${{ env.BASE_IMAGE }}
                       OPENHANDS_BUILD_GIT_SHA=${{ env.SDK_SHA }}
                       OPENHANDS_BUILD_GIT_REF=${{ env.SDK_REF }}
+                      INSTALL_ACP=${{ steps.prep.outputs.install_acp }}
 
             - name: Cleanup build context
               if: always()
@@ -472,7 +503,7 @@ jobs:
         runs-on: ubuntu-24.04
         strategy:
             matrix:
-                variant: [python, java, golang]
+                variant: [python, python-lite, java, golang]
         env:
             IMAGE: ${{ inputs.image != '' && inputs.image || 'ghcr.io/openhands/agent-server' }}
 

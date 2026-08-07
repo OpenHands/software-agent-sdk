@@ -8,6 +8,7 @@ ARG USERNAME=openhands
 ARG UID=10001
 ARG GID=10001
 ARG PORT=8000
+ARG INSTALL_ACP=1
 # Opt-in build flag for the Vertex AI extra (`openhands-sdk[vertex]`). Off by
 # default to keep the published image lean. Pass `--build-arg ENABLE_VERTEX=1`
 # to bundle google-cloud-aiplatform so the resulting binary supports
@@ -85,7 +86,7 @@ RUN test -x /agent-server/dist/openhands-agent-server
 # Suitable for running in headless/evaluation mode.
 ####################################################################################
 FROM ${BASE_IMAGE} AS base-image-minimal
-ARG USERNAME UID GID PORT
+ARG USERNAME UID GID PORT INSTALL_ACP
 
 
 ARG OPENHANDS_BUILD_GIT_SHA=unknown
@@ -160,7 +161,11 @@ RUN set -eux; \
 # 22 glibc tarball. When that happens we leave $ACP_NODE_DIR empty and skip
 # ACP setup so the rest of the build (and non-ACP agents) still work.
 ENV ACP_NODE_DIR=/opt/acp-node
-RUN set -ux; \
+RUN if [ "${INSTALL_ACP}" != "1" ]; then \
+      echo "Skipping preinstalled ACP providers"; \
+      exit 0; \
+    fi; \
+    set -ux; \
     mkdir -p "$ACP_NODE_DIR"; \
     ARCH=$(uname -m); \
     NARCH=""; \
