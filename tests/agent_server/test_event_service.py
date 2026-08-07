@@ -1887,6 +1887,218 @@ class TestEventServiceSaveMeta:
         with pytest.raises(ValueError, match="inactive_service"):
             await service.switch_acp_model("new-model")
 
+    @pytest.mark.asyncio
+    async def test_switch_llm_persists_to_meta(self, tmp_path):
+        """switch_llm mirrors the switched agent into meta.json.
+
+        start() rebuilds the runtime agent from meta.json (self.stored.agent)
+        and ConversationState.create() copies that agent over the persisted
+        base_state.json on resume. A switch that only touched the live
+        conversation would therefore be silently reverted to the
+        creation-time LLM (and its timeout) on the next agent-server restart.
+        """
+        stored = StoredConversation(
+            id=uuid4(),
+            agent=Agent(
+                llm=LLM(model="gpt-4o", usage_id="creation", timeout=300), tools=[]
+            ),
+            workspace=LocalWorkspace(working_dir=str(tmp_path)),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+        )
+        service = EventService(stored=stored, conversations_dir=tmp_path)
+        conv_dir = tmp_path / stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+
+        new_llm = LLM(model="gpt-4o", usage_id="switched", timeout=600)
+        # Stand in for a live conversation whose switch_llm installed new_llm.
+        service._conversation = MagicMock()
+        service._synced_llm = stored.agent.llm  # baseline start() would establish
+        service._conversation.agent = stored.agent.model_copy(update={"llm": new_llm})
+
+        await service.switch_llm(new_llm)
+
+        # Live switch was delegated to the conversation...
+        service._conversation.switch_llm.assert_called_once_with(new_llm)
+        # ...the in-memory stored agent carries the new LLM...
+        assert service.stored.agent.llm.timeout == 600
+        # ...and it was persisted to meta.json so it survives a restart.
+        loaded = StoredConversation.model_validate_json(
+            (conv_dir / "meta.json").read_text()
+        )
+        assert loaded.agent.llm.timeout == 600
+
+    @pytest.mark.asyncio
+    async def test_switch_profile_persists_to_meta(self, tmp_path):
+        """switch_profile mirrors the switched agent into meta.json.
+
+        Same restart-safety contract as :meth:`test_switch_llm_persists_to_meta`;
+        the profile path must persist the loaded profile's LLM too.
+        """
+        stored = StoredConversation(
+            id=uuid4(),
+            agent=Agent(
+                llm=LLM(model="gpt-4o", usage_id="creation", timeout=300), tools=[]
+            ),
+            workspace=LocalWorkspace(working_dir=str(tmp_path)),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+        )
+        service = EventService(stored=stored, conversations_dir=tmp_path)
+        conv_dir = tmp_path / stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+
+        profile_llm = LLM(model="gpt-4o", usage_id="profile:fast", timeout=600)
+        service._conversation = MagicMock()
+        service._synced_llm = stored.agent.llm  # baseline start() would establish
+        service._conversation.agent = stored.agent.model_copy(
+            update={"llm": profile_llm}
+        )
+
+        await service.switch_profile("fast")
+
+        service._conversation.switch_profile.assert_called_once_with("fast")
+        assert service.stored.agent.llm.timeout == 600
+        loaded = StoredConversation.model_validate_json(
+            (conv_dir / "meta.json").read_text()
+        )
+        assert loaded.agent.llm.timeout == 600
+
+    @pytest.mark.asyncio
+    async def test_switch_llm_inactive_service_raises_value_error(self, tmp_path):
+        """An inactive service (no live conversation) raises ``inactive_service``
+        so the conversation router maps it to 400, matching switch_acp_model."""
+        stored = StoredConversation(
+            id=uuid4(),
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="creation"), tools=[]),
+            workspace=LocalWorkspace(working_dir=str(tmp_path)),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+        )
+        service = EventService(stored=stored, conversations_dir=tmp_path)
+        assert service._conversation is None
+
+        with pytest.raises(ValueError, match="inactive_service"):
+            await service.switch_llm(LLM(model="gpt-4o", usage_id="switched"))
+
+    @pytest.mark.asyncio
+    async def test_sync_llm_to_meta_noop_when_llm_unchanged(self, tmp_path):
+        """No meta.json write when the live LLM is unchanged.
+
+        The post-run hook calls this after every run; the identity check must
+        keep it a no-op for ordinary runs so meta.json is not rewritten each
+        turn.
+        """
+        stored = StoredConversation(
+            id=uuid4(),
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="agent"), tools=[]),
+            workspace=LocalWorkspace(working_dir=str(tmp_path)),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+        )
+        service = EventService(stored=stored, conversations_dir=tmp_path)
+        service._conversation = MagicMock()
+        service._conversation.agent = stored.agent
+        # Baseline matches the live LLM (as start() leaves it after resume).
+        service._synced_llm = stored.agent.llm
+
+        with patch.object(service, "save_meta", new=AsyncMock()) as save_meta:
+            await service._sync_llm_to_meta()
+
+        save_meta.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sync_llm_to_meta_ignores_plugin_merge(self, tmp_path):
+        """A run that loads plugins replaces the agent object but keeps the same
+        LLM. That must NOT be mirrored into meta.json: the stored agent has to
+        stay plugin-unmerged, or plugins double-merge on every resume.
+        """
+        from openhands.sdk.context.agent_context import AgentContext
+
+        stored = StoredConversation(
+            id=uuid4(),
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="agent"), tools=[]),
+            workspace=LocalWorkspace(working_dir=str(tmp_path)),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+        )
+        service = EventService(stored=stored, conversations_dir=tmp_path)
+        llm = stored.agent.llm
+        service._conversation = MagicMock()
+        service._synced_llm = llm
+        # Mimic _ensure_plugins_loaded: new agent object, merged agent_context,
+        # but the same LLM object.
+        service._conversation.agent = stored.agent.model_copy(
+            update={"agent_context": AgentContext(system_message_suffix="from plugin")}
+        )
+        assert service._conversation.agent.llm is llm
+
+        with patch.object(service, "save_meta", new=AsyncMock()) as save_meta:
+            await service._sync_llm_to_meta()
+
+        save_meta.assert_not_awaited()
+        # The stored agent keeps its original context, not the merged one.
+        assert service.stored.agent.agent_context is None
+
+    @pytest.mark.asyncio
+    async def test_in_run_switch_llm_persists_to_meta(self, tmp_path):
+        """The agent's own switch_llm tool swaps the LLM mid-run, bypassing the
+        /switch_llm and /switch_profile endpoints. The post-run sync must still
+        mirror the new agent into meta.json so the switched timeout survives a
+        restart (the same reconciliation the endpoints rely on).
+        """
+        import json
+
+        from pydantic import SecretStr
+
+        from openhands.sdk.testing import TestLLM
+
+        with patch("openhands.sdk.llm.utils.model_info.httpx.get") as mock_get:
+            mock_get.return_value = MagicMock(json=lambda: {"data": []})
+            stored = StoredConversation(
+                id=uuid4(),
+                agent=Agent(
+                    llm=LLM(
+                        usage_id="agent",
+                        model="test-model",
+                        api_key=SecretStr("x"),
+                        timeout=300,
+                    ),
+                    tools=[],
+                ),
+                workspace=LocalWorkspace(working_dir=str(tmp_path / "workspace")),
+            )
+            service = EventService(
+                stored=stored, conversations_dir=tmp_path / "conversations"
+            )
+            (tmp_path / "workspace").mkdir(parents=True, exist_ok=True)
+            await service.start()
+
+            # Simulate the switch_llm tool: swap the live LLM directly on the
+            # conversation (not via EventService.switch_llm), timeout 300 -> 600.
+            switched = TestLLM.from_messages(
+                [Message(role="assistant", content=[TextContent(text="done")])],
+                usage_id="switched",
+            ).model_copy(update={"timeout": 600})
+            service.get_conversation().switch_llm(switched)
+
+            # A run finishes on the content-only reply, firing the post-run sync.
+            await service.run()
+            run_task = service._run_task
+            assert run_task is not None
+            await asyncio.wait_for(run_task, timeout=15)
+
+            conv_dir = (tmp_path / "conversations") / stored.id.hex
+            meta = json.loads((conv_dir / "meta.json").read_text())
+            assert meta["agent"]["llm"]["timeout"] == 600
+
+            await service.close()
+
 
 class TestEventServiceStartWithRunningStatus:
     """Test cases for EventService.start handling of RUNNING execution status."""
