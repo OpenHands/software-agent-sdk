@@ -574,6 +574,12 @@ class FileEditor:
                 new_lines.append(line)
                 history_lines.append(line)
 
+        # When inserting at the end of a file whose last line has no trailing
+        # newline, terminate that carried-over line first so the inserted text
+        # starts on its own line instead of being glued onto it.
+        if new_lines and not new_lines[-1].endswith("\n"):
+            new_lines[-1] += "\n"
+
         # Insert new content
         for line in new_str_lines:
             new_lines.append(line + "\n")

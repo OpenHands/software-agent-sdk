@@ -324,6 +324,24 @@ def test_view_with_a_specific_range(editor):
     assert "101" not in result.text
 
 
+def test_view_preserves_non_newline_line_terminators(tmp_path):
+    """The full view emulates ``cat -n`` and must stay content-faithful.
+
+    Rare terminators like form feed (``\\x0c`` — a page separator in Python,
+    Lisp, and C sources) are treated as line breaks by ``str.splitlines()``,
+    so any splitlines-based normalization silently rewrites them into
+    newlines. The agent then issues ``str_replace`` against text that does
+    not exist in the file. The view must render the byte as-is, glued to its
+    line, exactly as ``cat -n`` does."""
+    editor = FileEditor()
+    test_file = tmp_path / "ff.py"
+    test_file.write_bytes(b"def a():\n    pass\n\x0cdef b():\n    pass\n")
+
+    result = editor(command="view", path=str(test_file))
+    assert isinstance(result, FileEditorObservation)
+    assert "3\t\x0cdef b():" in result.text
+
+
 def test_create_file(editor):
     editor, test_file = editor
     new_file = test_file.parent / "new_file.txt"
@@ -518,6 +536,23 @@ def test_insert_no_linting(editor):
      2\tInserted line
      3\tThis file is for testing purposes.
 Review the changes and make sure they are as expected (correct indentation, no duplicate lines, etc). Edit the file again if necessary."""  # noqa: E501
+    )
+
+
+def test_insert_at_end_of_file_without_trailing_newline(editor):
+    """Inserting after the last line of a file that has no trailing newline must
+    put the new text on its own line instead of gluing it onto the last line."""
+    editor, test_file = editor
+    # The fixture file has two lines and no trailing newline.
+    result = editor(
+        command="insert",
+        path=str(test_file),
+        insert_line=2,
+        new_str="Appended line",
+    )
+    assert isinstance(result, FileEditorObservation)
+    assert test_file.read_text() == (
+        "This is a test file.\nThis file is for testing purposes.\nAppended line\n"
     )
 
 
