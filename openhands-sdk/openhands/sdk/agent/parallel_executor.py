@@ -33,6 +33,8 @@ from openhands.sdk.event.error_classification import (
 )
 from openhands.sdk.event.llm_convertible import AgentErrorEvent
 from openhands.sdk.logger import get_logger
+from openhands.sdk.observability.laminar import record_tool_result
+from openhands.sdk.observability.utils import extract_action_name
 
 
 if TYPE_CHECKING:
@@ -228,14 +230,20 @@ class ParallelToolExecutor:
     @staticmethod
     def _cancelled_error(action: ActionEvent) -> list[Event]:
         """Return a synthetic error for a tool call skipped due to cancellation."""
-        return [
-            AgentErrorEvent(
-                error="Tool call cancelled by interrupt.",
-                tool_name=action.tool_name,
-                tool_call_id=action.tool_call_id,
-                classification=AGENT_OUTCOME,
-            )
-        ]
+        error = AgentErrorEvent(
+            error="Tool call cancelled by interrupt.",
+            tool_name=action.tool_name,
+            tool_call_id=action.tool_call_id,
+            classification=AGENT_OUTCOME,
+        )
+        record_tool_result(
+            action,
+            name=extract_action_name(action),
+            tool_call_id=action.tool_call_id,
+            tool_input=action.action,
+            tool_output=error.to_llm_message(),
+        )
+        return [error]
 
     def _run_safe(
         self,
