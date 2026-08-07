@@ -31,6 +31,7 @@ CODEX_AUTH_SECRET_NAME = "CODEX_AUTH_JSON"
 
 _CHATGPT_AUTH_PATH = Path(".codex") / "auth.json"
 _MONITOR_INTERVAL_SECONDS = 0.1
+_MONITOR_MAX_RETRY_INTERVAL_SECONDS = 5.0
 _MONITOR_JOIN_TIMEOUT_SECONDS = 2.0
 _STABLE_READ_DELAY_SECONDS = 0.01
 _SYNC_RETRY_DELAYS: tuple[float, ...] = (0.1, 0.5)
@@ -240,7 +241,8 @@ class _CodexAuthLifecycle:
 
     def _monitor_loop(self) -> None:
         failure_logged = False
-        while not self._stop.wait(_MONITOR_INTERVAL_SECONDS):
+        retry_interval = _MONITOR_INTERVAL_SECONDS
+        while not self._stop.wait(retry_interval):
             try:
                 with self._sync_lock:
                     self._raise_sticky_error()
@@ -248,6 +250,7 @@ class _CodexAuthLifecycle:
                     if value is not None:
                         self._sync_value(value)
                         failure_logged = False
+                    retry_interval = _MONITOR_INTERVAL_SECONDS
             except (
                 CredentialNeedsReauthentication,
                 CredentialConflict,
@@ -260,6 +263,10 @@ class _CodexAuthLifecycle:
                 if not failure_logged:
                     logger.warning("credential_binding_monitor_failed", exc_info=exc)
                     failure_logged = True
+                retry_interval = min(
+                    retry_interval * 2,
+                    _MONITOR_MAX_RETRY_INTERVAL_SECONDS,
+                )
             except Exception as exc:
                 self._set_error(
                     CredentialSyncError("Codex credential monitoring failed.")
@@ -267,6 +274,10 @@ class _CodexAuthLifecycle:
                 if not failure_logged:
                     logger.warning("credential_binding_monitor_failed", exc_info=exc)
                     failure_logged = True
+                retry_interval = min(
+                    retry_interval * 2,
+                    _MONITOR_MAX_RETRY_INTERVAL_SECONDS,
+                )
 
     def _read_current(self) -> str | None:
         with self._lock:
@@ -461,6 +472,16 @@ class _CodexAuthLifecycle:
                 return
         try:
             self._load()
+        except (
+            CredentialAuthorizationRejected,
+            CredentialConflict,
+            CredentialInvalidResponse,
+            CredentialNeedsReauthentication,
+        ) as exc:
+            with self._lock:
+                if self._error is error:
+                    self._error = exc
+            return
         except CredentialBindingError:
             return
         with self._lock:
