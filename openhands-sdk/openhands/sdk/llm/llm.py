@@ -29,6 +29,14 @@ from pydantic.json_schema import SkipJsonSchema
 
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.utils.model_info import get_litellm_model_info
+from openhands.sdk.llm.utils.runtime_metadata import (
+    ModelRuntimeMetadata,
+    aresolve_provider_metadata,
+    cached_metadata,
+    in_negative_cache,
+    resolve_provider_metadata_sync,
+    store_result,
+)
 from openhands.sdk.settings.metadata import SettingProminence, field_meta
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
@@ -625,6 +633,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _call_context: LLMCallContext = PrivateAttr(default_factory=LLMCallContext)
     _effective_max_input_tokens: int | None = PrivateAttr(default=None)
     _effective_max_output_tokens: int | None = PrivateAttr(default=None)
+    # Provider-aware runtime metadata resolved lazily (see
+    # `utils/runtime_metadata.py`). `fetched_at` and `negative_until` are
+    # monotonic timestamps used for the positive/negative caches.
+    _runtime_metadata: ModelRuntimeMetadata | None = PrivateAttr(default=None)
+    _runtime_metadata_fetched_at: float | None = PrivateAttr(default=None)
+    _runtime_metadata_negative_until: float | None = PrivateAttr(default=None)
     # Plain (non-reentrant) Lock: the async transport path acquires this off
     # the event loop thread (see `_alitellm_modify_params_ctx`) and releases
     # it back on the event loop thread, which an RLock would reject since it
@@ -2617,10 +2631,19 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def effective_max_input_tokens(self) -> int | None:
         """Resolved context window used at runtime.
 
-        ``max_input_tokens`` remains the user-configured value. When it is
-        unset, this property reflects the value discovered from model metadata.
+        ``max_input_tokens`` remains the user-configured value and always wins.
+        When it is unset, a previously resolved provider-aware runtime limit is
+        used (this property performs no network I/O), falling back to the value
+        discovered from model metadata.
         """
-        return self.max_input_tokens or self._effective_max_input_tokens
+        if self.max_input_tokens:
+            return self.max_input_tokens
+        cached = cached_metadata(
+            self._runtime_metadata, self._runtime_metadata_fetched_at
+        )
+        if cached is not None and cached.max_input_tokens is not None:
+            return cached.max_input_tokens
+        return self._effective_max_input_tokens
 
     @property
     def effective_max_output_tokens(self) -> int | None:
@@ -2630,6 +2653,71 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         unset, this property reflects provider/model defaults and safety caps.
         """
         return self.max_output_tokens or self._effective_max_output_tokens
+
+    # =========================================================================
+    # Runtime (provider-aware) metadata
+    # =========================================================================
+    def resolve_runtime_metadata(
+        self, *, force: bool = False
+    ) -> ModelRuntimeMetadata | None:
+        """Resolve provider-aware runtime limits synchronously (lazy + cached).
+
+        Discovery never runs during construction. Unsupported providers and
+        unresolvable routes return ``None`` so callers fall back to static
+        model metadata. Successful results are cached for
+        ``RUNTIME_METADATA_TTL_SECONDS``; failures are negative-cached briefly.
+
+        Prefer :meth:`aresolve_runtime_metadata` on the agent-server event loop,
+        which performs no blocking network I/O in-process.
+        """
+        if not force:
+            cached = cached_metadata(
+                self._runtime_metadata, self._runtime_metadata_fetched_at
+            )
+            if cached is not None:
+                return cached
+            if in_negative_cache(self._runtime_metadata_negative_until):
+                return None
+
+        metadata = resolve_provider_metadata_sync(self)
+        self._store_runtime_metadata(metadata)
+        return metadata
+
+    async def aresolve_runtime_metadata(
+        self, *, force: bool = False
+    ) -> ModelRuntimeMetadata | None:
+        """Async variant of :meth:`resolve_runtime_metadata`.
+
+        Concurrent calls for the same route are deduplicated so only one
+        upstream request is issued. If the caller is configuring the condenser
+        or context management, resolve before computing a token threshold.
+        """
+        if not force:
+            cached = cached_metadata(
+                self._runtime_metadata, self._runtime_metadata_fetched_at
+            )
+            if cached is not None:
+                return cached
+            if in_negative_cache(self._runtime_metadata_negative_until):
+                return None
+
+        metadata = await aresolve_provider_metadata(self)
+        self._store_runtime_metadata(metadata)
+        return metadata
+
+    def _store_runtime_metadata(self, metadata: ModelRuntimeMetadata | None) -> None:
+        fetched_at, negative_until, resolved = store_result(metadata)
+        self._runtime_metadata_fetched_at = fetched_at
+        self._runtime_metadata_negative_until = negative_until
+        if resolved is not None:
+            self._runtime_metadata = resolved
+
+    @property
+    def resolved_runtime_metadata(self) -> ModelRuntimeMetadata | None:
+        """Currently cached runtime metadata, without triggering discovery."""
+        return cached_metadata(
+            self._runtime_metadata, self._runtime_metadata_fetched_at
+        )
 
     # =========================================================================
     # Utilities preserved from previous class
