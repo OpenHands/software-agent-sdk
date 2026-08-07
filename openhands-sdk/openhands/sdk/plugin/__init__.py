@@ -61,14 +61,14 @@ __all__ = [
     "Plugin",
     "PluginFetchError",
     "PluginManifest",
-    # Plugin format strategies
-    "PluginFormat",
-    "ClaudeCodePluginFormat",
-    "detect_format",
     "PluginAuthor",
     "PluginSource",
     "ResolvedPluginSource",
     "CommandDefinition",
+    # Plugin format strategies
+    "PluginFormat",
+    "ClaudeCodePluginFormat",
+    "detect_format",
     # Plugin loading
     "load_plugins",
     "fetch_plugin_with_resolution",

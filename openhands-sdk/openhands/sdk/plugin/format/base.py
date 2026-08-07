@@ -106,6 +106,12 @@ class PluginFormat(ABC):
 
         This orchestration is shared: every format produces the same in-memory
         model, so downstream merge/apply logic never needs to know the format.
+
+        ``plugin_dir`` is used as-is (it becomes the loaded ``Plugin.path``);
+        this method does not resolve it. ``Plugin.load()`` resolves the path
+        before dispatching here, so direct callers of
+        ``detect_format(path).load(path)`` should pass an already-resolved path
+        if they want ``Plugin.path`` fully resolved.
         """
         # Imported lazily to avoid a module-level import cycle with plugin.py,
         # which imports the format package for detect_format().
