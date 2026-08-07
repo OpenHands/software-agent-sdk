@@ -128,15 +128,16 @@ def _init_git_repo(repo_dir: Path) -> None:
 
 
 @pytest.fixture
-def conversation_service():
+def conversation_service(tmp_path):
     """Create a ConversationService instance for testing."""
-    with tempfile.TemporaryDirectory() as temp_dir:
-        service = ConversationService(
-            conversations_dir=Path(temp_dir) / "conversations",
-        )
-        # Initialize the _event_services dict to simulate an active service
-        service._event_services = {}
-        yield service
+    worktree_root = tmp_path / "conversation-worktrees"
+    service = ConversationService(
+        conversations_dir=tmp_path / "conversations",
+        conversation_worktree_root=worktree_root,
+    )
+    # Initialize the _event_services dict to simulate an active service
+    service._event_services = {}
+    yield service
 
 
 @pytest.fixture
@@ -1559,7 +1560,6 @@ class TestConversationServiceStartConversation:
         repo_dir = tmp_path / "repo"
         _init_git_repo(repo_dir)
         conversation_id = uuid4()
-        worktree_root = tmp_path / "conversation-worktrees"
 
         request = StartConversationRequest(
             conversation_id=conversation_id,
@@ -1585,15 +1585,10 @@ class TestConversationServiceStartConversation:
             )
             return mock_event_service
 
-        with (
-            patch(
-                "openhands.agent_server.conversation_service.CONVERSATION_WORKTREE_ROOT",
-                worktree_root,
-            ),
-            patch(
-                "openhands.agent_server.conversation_service.EventService",
-                side_effect=_event_service_factory,
-            ),
+        worktree_root = conversation_service.conversation_worktree_root
+        with patch(
+            "openhands.agent_server.conversation_service.EventService",
+            side_effect=_event_service_factory,
         ):
             result, _ = await conversation_service.start_conversation(request)
 
@@ -1629,7 +1624,6 @@ class TestConversationServiceStartConversation:
         workspace_dir = repo_dir / "src" / "pkg"
         workspace_dir.mkdir(parents=True)
         conversation_id = uuid4()
-        worktree_root = tmp_path / "conversation-worktrees"
 
         request = StartConversationRequest(
             conversation_id=conversation_id,
@@ -1655,15 +1649,10 @@ class TestConversationServiceStartConversation:
             )
             return mock_event_service
 
-        with (
-            patch(
-                "openhands.agent_server.conversation_service.CONVERSATION_WORKTREE_ROOT",
-                worktree_root,
-            ),
-            patch(
-                "openhands.agent_server.conversation_service.EventService",
-                side_effect=_event_service_factory,
-            ),
+        worktree_root = conversation_service.conversation_worktree_root
+        with patch(
+            "openhands.agent_server.conversation_service.EventService",
+            side_effect=_event_service_factory,
         ):
             result, _ = await conversation_service.start_conversation(request)
 
@@ -1683,7 +1672,7 @@ class TestConversationServiceStartConversation:
         workspace_dir = tmp_path / "workspace"
         workspace_dir.mkdir()
         conversation_id = uuid4()
-        worktree_root = tmp_path / "conversation-worktrees"
+        worktree_root = conversation_service.conversation_worktree_root
 
         request = StartConversationRequest(
             conversation_id=conversation_id,
@@ -1709,15 +1698,9 @@ class TestConversationServiceStartConversation:
             )
             return mock_event_service
 
-        with (
-            patch(
-                "openhands.agent_server.conversation_service.CONVERSATION_WORKTREE_ROOT",
-                worktree_root,
-            ),
-            patch(
-                "openhands.agent_server.conversation_service.EventService",
-                side_effect=_event_service_factory,
-            ),
+        with patch(
+            "openhands.agent_server.conversation_service.EventService",
+            side_effect=_event_service_factory,
         ):
             result, _ = await conversation_service.start_conversation(request)
 
