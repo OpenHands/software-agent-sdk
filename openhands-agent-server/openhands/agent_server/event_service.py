@@ -178,6 +178,56 @@ class EventService:
                 )
             )
 
+    def _resume_agent_with_live_llm(self) -> AgentBase:
+        """The agent to instantiate on start, with live-mutable config applied.
+
+        Fresh conversation (no ``base_state.json`` yet): returns
+        ``self.stored.agent`` from the create request unchanged.
+
+        Resume: ``base_state.json`` is authoritative for the fields a live
+        switch mutates and persists. ``switch_llm`` / ``switch_profile`` write
+        ``llm`` and ``condenser``; ``switch_acp_model`` writes ``acp_model`` —
+        all onto ``ConversationState.agent`` -> ``base_state.json`` only, never
+        ``meta.json``. So we keep the creation-time ``self.stored.agent`` (its
+        ``tools`` / ``agent_context`` / ``mcp_config`` are the un-merged config
+        the plugin merge expects, re-derived on first run) but override the
+        live-mutable fields from ``base_state.json``.
+
+        Without this, rebuilding the resume agent purely from the ``meta.json``
+        snapshot reinstates the stale creation-time value and then clobbers
+        ``base_state.json`` inside ``ConversationState.create()``
+        (``state.agent = agent``), reverting e.g. a switched LLM's timeout — or
+        a switched ACP model — on the next restart (issue #4032). Scoping to the
+        switch-mutated fields is exactly what lets every switch path persist to
+        ``base_state.json`` alone, with no write-side mirror into ``meta.json``.
+        """
+        stored_agent = self.stored.agent
+
+        base_state_file = self.conversation_dir / BASE_STATE
+        if not base_state_file.exists():
+            return stored_agent  # fresh conversation, never persisted
+
+        context = {"cipher": self.cipher} if self.cipher else None
+        persisted = ConversationState.model_validate_json(
+            base_state_file.read_text(), context=context
+        ).agent
+
+        if isinstance(stored_agent, ACPAgent):
+            # ACP's live-switchable field is acp_model; start() re-validates the
+            # dumped agent, so model_post_init re-derives the sentinel llm.model
+            # from it. A mismatched persisted kind can't be merged in — fall back
+            # to the stored agent rather than mixing fields across types.
+            if not isinstance(persisted, ACPAgent):
+                return stored_agent
+            return stored_agent.model_copy(update={"acp_model": persisted.acp_model})
+
+        if isinstance(persisted, ACPAgent):
+            return stored_agent
+
+        return stored_agent.model_copy(
+            update={"llm": persisted.llm, "condenser": persisted.condenser}
+        )
+
     def _without_stored_secret(self, secret_name: str) -> StoredConversation:
         secrets = dict(self.stored.secrets)
         secrets.pop(secret_name, None)
@@ -972,9 +1022,14 @@ class EventService:
         working_dir = Path(workspace.working_dir)
         working_dir.mkdir(parents=True, exist_ok=True)
         self._ensure_workspace_is_git_repo(working_dir)
-        agent_cls = type(self.stored.agent)
+        # base_state.json is authoritative for the live-mutable agent config
+        # (llm/condenser, or acp_model). meta.json's agent is only a
+        # creation-time snapshot; see _resume_agent_with_live_llm for why
+        # resuming purely from it reverts a switched config (issue #4032).
+        source_agent = self._resume_agent_with_live_llm()
+        agent_cls = type(source_agent)
         agent = agent_cls.model_validate(
-            self.stored.agent.model_dump(context={"expose_secrets": True}),
+            source_agent.model_dump(context={"expose_secrets": True}),
         )
 
         # Create LocalConversation with plugins and hook_config.
@@ -1621,13 +1676,12 @@ class EventService:
 
         For a conversation that has already started, runs the (blocking)
         protocol-level ``session/set_model`` round-trip in a worker thread; for
-        one not yet run, the SDK defers the switch (persist-only). Either way it
-        mirrors the new model into ``meta.json`` so the switch survives an
-        agent-server restart: ``start()`` rebuilds the agent from
-        ``self.stored.agent`` and ``ConversationState.create()`` copies that over
-        the persisted base_state.json on resume. Only ``acp_model`` needs
-        updating — ``model_post_init`` re-derives the sentinel ``llm.model`` on
-        reload.
+        one not yet run, the SDK defers the switch (persist-only). Either way the
+        SDK persists the new ``acp_model`` onto ``ConversationState.agent`` ->
+        ``base_state.json``, and ``_resume_agent_with_live_llm`` reads it back on
+        resume — so the switch survives an agent-server restart with no mirror
+        into ``meta.json``. ``model_post_init`` re-derives the sentinel
+        ``llm.model`` from ``acp_model`` on reload.
         """
         if self._conversation is None:
             # Match the inactive-service convention of the other event-service
@@ -1637,10 +1691,6 @@ class EventService:
             raise ValueError("inactive_service")
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.switch_acp_model, model)
-        self.stored = self.stored.model_copy(
-            update={"agent": self.stored.agent.model_copy(update={"acp_model": model})}
-        )
-        await self.save_meta()
 
     async def close(self):
         self._closing = True

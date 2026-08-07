@@ -1820,13 +1820,15 @@ class TestEventServiceSaveMeta:
         assert env["TAVILY_API_KEY"].get_secret_value() == "${TAVILY_API_KEY}"
 
     @pytest.mark.asyncio
-    async def test_switch_acp_model_persists_to_meta(self, tmp_path):
-        """switch_acp_model mirrors the new model into meta.json.
+    async def test_switch_acp_model_delegates_without_meta_mirror(self, tmp_path):
+        """switch_acp_model delegates to the SDK and does NOT mirror into meta.json.
 
-        start() rebuilds the runtime agent from meta.json (self.stored.agent),
-        and ConversationState.create() copies that agent over the persisted
-        base_state.json on resume. So the switched model must also be written
-        to meta.json, otherwise a restart silently reverts to the old model.
+        The SDK's ``switch_acp_model`` persists the new ``acp_model`` onto
+        ``ConversationState.agent`` -> ``base_state.json``, and
+        ``_resume_agent_with_live_llm`` reads it back on resume. So the event
+        service no longer writes a duplicate copy into ``meta.json`` — that
+        two-sources-of-truth mirror became redundant once base_state.json was
+        made authoritative on resume (issue #4032).
         """
         from openhands.sdk.agent import ACPAgent
 
@@ -1842,24 +1844,20 @@ class TestEventServiceSaveMeta:
         conv_dir = tmp_path / stored.id.hex
         conv_dir.mkdir(parents=True, exist_ok=True)
 
-        # Stand in for a live conversation; the protocol-level switch is
-        # covered elsewhere — here we only assert the meta.json mirroring.
+        # Stand in for a live conversation; the real base_state persistence is
+        # the SDK's job (covered by tests/sdk/.../test_switch_model.py and by
+        # test_resume_agent_recovers_switched_acp_model_from_base_state).
         service._conversation = MagicMock()
 
         await service.switch_acp_model("new-model")
 
-        # Live switch was delegated to the conversation...
+        # The live switch was delegated to the SDK conversation...
         service._conversation.switch_acp_model.assert_called_once_with("new-model")
-        # ...the in-memory stored agent was updated...
+        # ...and the event service did NOT mirror it into meta.json: `stored` is
+        # untouched and no meta.json was written by the switch.
         assert isinstance(service.stored.agent, ACPAgent)
-        assert service.stored.agent.acp_model == "new-model"
-        # ...and the new model was persisted to meta.json so it survives a
-        # restart.
-        loaded = StoredConversation.model_validate_json(
-            (conv_dir / "meta.json").read_text()
-        )
-        assert isinstance(loaded.agent, ACPAgent)
-        assert loaded.agent.acp_model == "new-model"
+        assert service.stored.agent.acp_model == "old-model"
+        assert not (conv_dir / "meta.json").exists()
 
     @pytest.mark.asyncio
     async def test_switch_acp_model_inactive_service_raises_value_error(self, tmp_path):
@@ -3423,3 +3421,39 @@ async def test_event_service_creates_lease_with_custom_ttl(tmp_path: Path) -> No
     assert service._lease is not None
     assert service._lease._ttl_seconds == 10.0
     assert (tmp_path / stored.id.hex / LEASE_FILE_NAME).exists()
+
+
+# ---------------------------------------------------------------------------
+# _resume_agent_with_live_llm — fresh-conversation no-op branch.
+#
+# The behavioral spec (a live switch_llm / switch_acp_model surviving a restart
+# because base_state.json is authoritative on resume, issue #4032) lives in
+# tests/cross/test_conversation_resume_behavior.py, exercised end-to-end through
+# ConversationService. Here we only pin the branch that spec does not reach:
+# before the first run there is no base_state.json, so the stored (create-time)
+# agent must be used verbatim.
+# ---------------------------------------------------------------------------
+
+
+def test_resume_agent_fresh_conversation_uses_stored(tmp_path: Path) -> None:
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir(parents=True)
+    cid = uuid4()
+
+    stored = StoredConversation(
+        id=cid,
+        agent=Agent(
+            llm=LLM(model="gpt-4o", usage_id="test-llm", timeout=300),
+            tools=[],
+        ),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+        initial_message=None,
+        metrics=None,
+    )
+    # No base_state.json exists yet (never run): stored agent is used verbatim.
+    service = EventService(stored=stored, conversations_dir=conversations_dir)
+    resumed = service._resume_agent_with_live_llm()
+
+    assert resumed is stored.agent

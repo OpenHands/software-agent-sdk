@@ -245,8 +245,8 @@ async def test_eviction_preserves_reassigned_stored_metadata(tmp_path):
         assert service._event_services is not None
         event_service = service._event_services[conversation_id]
 
-        # switch_acp_model / secret updates *replace* event_service.stored and
-        # persist it; the stale catalog object must not be used on rehydration.
+        # A title/secret update *replaces* event_service.stored and persists it;
+        # the stale catalog object must not be used on rehydration.
         event_service.stored = event_service.stored.model_copy(
             update={"title": "new-title"}
         )
