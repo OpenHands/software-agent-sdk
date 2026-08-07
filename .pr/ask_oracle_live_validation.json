@@ -1,0 +1,28 @@
+{
+  "started_at": "2026-06-25T13:56:19.420196+00:00",
+  "finished_at": "2026-06-25T13:57:16.615254+00:00",
+  "issue": "https://github.com/OpenHands/software-agent-sdk/issues/3672",
+  "scenario": "Agent loop: primary model calls ask_oracle, which consults the 'oracle' profile; the agent then answers in two words.",
+  "primary_profile": {
+    "model": "litellm_proxy/openai/gpt-5.1",
+    "usage_id": "primary"
+  },
+  "oracle_profile": {
+    "profile_name": "oracle",
+    "model": "litellm_proxy/openai/gpt-5-mini",
+    "base_url": "https://llm-proxy.eval.all-hands.dev",
+    "usage_id": "oracle"
+  },
+  "end_to_end": {
+    "agent_called_ask_oracle": true,
+    "oracle_question_asked_by_agent": "User asks: What is your opinion on the weather today? Please answer in a short descriptive phrase (no more than five words) suitable to summarize in two words later.",
+    "ask_oracle_observation_in_loop": true,
+    "observation_is_error": false,
+    "observation_text": "Use this exact short phrase:\nMostly mild, playfully unpredictable.\n\nWhy/how:\n- 4 words, clearly subjective and whimsical (not a factual forecast).\n- Contains an obvious two-word summary for later: \"Mostly mild.\"\n\nImportant caveats:\n- Don\u2019t imply real-time or location-specific knowledge. If the user asks for precise conditions, say you don\u2019t have live data and offer to check a trusted forecast or ask for their location.\n- Avoid giving safety or health advice based on this phrasing.",
+    "oracle_logged_response": "Use this exact short phrase:\nMostly mild, playfully unpredictable.\n\nWhy/how:\n- 4 words, clearly subjective and whimsical (not a factual forecast).\n- Contains an obvious two-word summary for later: \"Mostly mild.\"\n\nImportant caveats:\n- Don\u2019t imply real-time or location-specific knowledge. If the user asks for precise conditions, say you don\u2019t have live data and offer to check a trusted forecast or ask for their location.\n- Avoid giving safety or health advice based on this phrasing.",
+    "oracle_logged_response_matches_observation": true,
+    "final_agent_answer": "Mostly mild",
+    "conversation_finished": "finished"
+  },
+  "accumulated_cost": 0.01665125
+}
