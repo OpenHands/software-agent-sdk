@@ -604,6 +604,7 @@ class ConversationService:
     _lease_renewal_task: asyncio.Task | None = field(default=None, init=False)
     _eviction_task: asyncio.Task | None = field(default=None, init=False)
     _run_executor: ThreadPoolExecutor | None = field(default=None, init=False)
+    _run_semaphore: asyncio.Semaphore | None = field(default=None, init=False)
     _credential_bindings: dict[UUID, dict[str, VersionedCredentialBinding]] = field(
         default_factory=dict, init=False
     )
@@ -1796,6 +1797,9 @@ class ConversationService:
             max_workers=self.max_concurrent_runs,
             thread_name_prefix="conversation-run",
         )
+        # Bounds the native async path as well; the thread pool alone only
+        # limits the synchronous fallback.
+        self._run_semaphore = asyncio.Semaphore(self.max_concurrent_runs)
         self._event_services = {}
         self._conversation_records = await asyncio.to_thread(self._load_catalog_sync)
 
@@ -1977,6 +1981,9 @@ class ConversationService:
         if self._run_executor is not None:
             self._run_executor.shutdown(wait=False)
             self._run_executor = None
+        # The semaphore is left in place on purpose: it owns no resources, and
+        # clearing it here would hand a service started by a partial-failure
+        # retry `_run_semaphore=None`, permanently removing its concurrency cap.
         if failures:
             assert self._event_services is not None
             for event_service in self._event_services.values():
@@ -2043,6 +2050,7 @@ class ConversationService:
         # _renew_all_leases_loop task on ConversationService.
         event_service._external_lease_renewal = True
         event_service._run_executor = self._run_executor
+        event_service._run_semaphore = self._run_semaphore
 
         try:
             await event_service.start()
