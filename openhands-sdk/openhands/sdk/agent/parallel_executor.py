@@ -83,6 +83,8 @@ class ParallelToolExecutor:
                    locking is skipped (backward-compatible).
             cancel_token: If set and cancelled, pending tool calls are
                           skipped and return a synthetic error event.
+            span_owner: Object carrying the conversation root span for
+                        synthetic cancellation results.
 
         Returns:
             List of event lists in the same order as the input action_events.
@@ -145,6 +147,7 @@ class ParallelToolExecutor:
 
         The *tool_runner* is the same **synchronous** callable used by
         :meth:`execute_batch` (i.e. ``_execute_action_event``).
+        ``span_owner`` anchors synthetic cancellation results to their root span.
         Resource locking via :class:`ResourceLockManager` (threading
         locks) works correctly because each tool call runs in its own
         thread.

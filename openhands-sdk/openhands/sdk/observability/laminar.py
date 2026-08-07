@@ -201,6 +201,7 @@ def observe[**P, R](
     return decorator
 
 
+# Keep owner first so observe can restore its conversation root span.
 def _return_tool_result(owner: object, tool_input: Any, tool_output: Any) -> Any:
     _ = owner, tool_input
     return tool_output
