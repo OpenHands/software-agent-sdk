@@ -201,6 +201,30 @@ def observe[**P, R](
     return decorator
 
 
+# Keep owner first so observe can restore its conversation root span.
+def _return_tool_result(owner: object, tool_input: Any, tool_output: Any) -> Any:
+    _ = owner, tool_input
+    return tool_output
+
+
+def record_tool_result(
+    owner: object,
+    *,
+    name: str,
+    tool_call_id: str,
+    tool_input: Any,
+    tool_output: Any,
+) -> None:
+    if not should_enable_observability():
+        return
+    observe(
+        name=name,
+        span_type="TOOL",
+        ignore_inputs=["owner", "tool_output"],
+        metadata={"tool_call_id": tool_call_id},
+    )(_return_tool_result)(owner, tool_input, tool_output)
+
+
 def should_enable_observability() -> bool:
     global _observability_enabled
     if _observability_enabled:
