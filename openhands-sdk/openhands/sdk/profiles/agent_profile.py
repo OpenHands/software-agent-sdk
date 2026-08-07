@@ -35,9 +35,6 @@ from openhands.sdk.tool import Tool
 
 
 AGENT_PROFILE_SCHEMA_VERSION = 3
-
-# The store always writes schema_version, so a payload without one came from
-# outside it (an API body). Migrate it forward instead of assuming it current.
 _UNVERSIONED_AGENT_PROFILE_SCHEMA_VERSION = 2
 
 
@@ -342,19 +339,11 @@ def _migrate_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _migrate_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
-    """``acp_command`` moved from a shell string to an argv token list.
-
-    Splits with the same ``shlex.split`` the resolver used to apply, so a stored
-    profile resolves to the tokens it resolved to before.
-    """
     command = payload.get("acp_command")
     if isinstance(command, str):
         try:
             tokens = shlex.split(command)
         except ValueError:
-            # Unbalanced quotes. Keep the tokens rather than dropping to None,
-            # which means "use the server default" and would silently replace
-            # the user's command on a non-custom server.
             tokens = command.split()
         payload["acp_command"] = tokens or None
     payload["schema_version"] = 3

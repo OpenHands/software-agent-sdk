@@ -531,7 +531,6 @@ def test_save_extra_field_returns_422(client):
 
 
 def test_save_unversioned_body_upgrades_legacy_acp_command_string(client):
-    """A v2-era client POSTs a shell string and no ``schema_version``."""
     response = client.post(
         "/api/agent-profiles/legacy-acp",
         json={

@@ -349,12 +349,10 @@ _WIN_COMMAND = [r"C:\Program Files\nodejs\node.exe", r"C:\Users\me\dist\index.js
     ("stored", "expected"),
     [
         ("codex-acp --foo bar", ["codex-acp", "--foo", "bar"]),
-        # Every persisted v2 string came from shlex.join, so invert it exactly.
         (
             shlex.join(["/opt/my acp/bin/server", "--flag", "a b"]),
             ["/opt/my acp/bin/server", "--flag", "a b"],
         ),
-        # Unbalanced quotes must not raise, and must not drop to None.
         ("unterminated 'quote", ["unterminated", "'quote"]),
         (None, None),
         ("", None),
@@ -375,7 +373,6 @@ def test_v2_acp_command_migrates_to_token_list(stored, expected) -> None:
     ],
 )
 def test_unversioned_payload_still_migrates(stored, expected) -> None:
-    """An API body carries no ``schema_version``, so it still has to migrate."""
     payload = _v2_acp_payload(stored)
     del payload["schema_version"]
     profile = validate_agent_profile(payload)
@@ -385,7 +382,6 @@ def test_unversioned_payload_still_migrates(stored, expected) -> None:
 
 
 def test_windows_path_command_survives_round_trip() -> None:
-    """The bug this schema change removes: ``shlex`` ate every backslash."""
     profile = ACPAgentProfile(name="acp", acp_server="custom", acp_command=_WIN_COMMAND)
     reloaded = validate_agent_profile(profile.model_dump(mode="json"))
     assert isinstance(reloaded, ACPAgentProfile)

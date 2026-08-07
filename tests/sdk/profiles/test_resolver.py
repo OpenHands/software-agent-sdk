@@ -894,8 +894,6 @@ def test_custom_acp_without_command_is_invalid(
 def test_dry_run_normalizes_settings_build_failure(
     llm_store: LLMProfileStore,
 ) -> None:
-    # Validates, but a custom server has no default command to fall back on, so
-    # settings construction raises and the dry-run must report it instead.
     profile = ACPAgentProfile(name="acp", acp_server="custom", acp_command=None)
     diag = resolve_agent_profile_dry_run(
         profile,
