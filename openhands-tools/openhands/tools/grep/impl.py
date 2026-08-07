@@ -25,6 +25,131 @@ from openhands.tools.utils import (
 logger = get_logger(__name__)
 
 
+# Brace groups multiply: sixteen ``{a,b}`` groups already expand to 65,536
+# patterns, and ``include`` is agent/user-controlled tool input. Cap the number
+# of generated patterns so a malformed or adversarial filter fails cleanly
+# instead of exhausting the process. Legitimate filters are tiny (``*.{ts,tsx}``
+# is 2; three 4-way groups are 64).
+MAX_BRACE_EXPANSIONS = 64
+
+
+class BraceExpansionBudgetError(ValueError):
+    """Raised when brace alternation would expand past ``MAX_BRACE_EXPANSIONS``."""
+
+    def __init__(self, pattern: str) -> None:
+        super().__init__(
+            f"Include pattern '{pattern}' expands to more than "
+            f"{MAX_BRACE_EXPANSIONS} glob patterns; simplify the brace groups."
+        )
+
+
+def _split_first_brace_group(pattern: str) -> tuple[str, list[str], str] | None:
+    """Return ``(prefix, options, suffix)`` for the leftmost expandable group.
+
+    A balanced group without a top-level comma stays literal but does not hide
+    an expandable nested or later group. Glob character classes and escaped
+    characters are opaque to brace parsing. An unmatched opening leaves the
+    rest of the pattern unchanged.
+    """
+    stack: list[tuple[int, list[int], int]] = []
+    first_group: tuple[int, int, list[int], int] | None = None
+    in_character_class = False
+    character_class_has_member = False
+    character_class_can_negate = False
+    escaped = False
+
+    for i, ch in enumerate(pattern):
+        if escaped:
+            escaped = False
+            if in_character_class:
+                character_class_has_member = True
+                character_class_can_negate = False
+            continue
+        if ch == "\\":
+            escaped = True
+            continue
+        if in_character_class:
+            # A leading ']' is a literal class member (for example ``[]a]``),
+            # as is one immediately after the optional negation marker.
+            if ch == "]" and character_class_has_member:
+                in_character_class = False
+            elif character_class_can_negate and ch == "!":
+                character_class_can_negate = False
+            else:
+                character_class_has_member = True
+                character_class_can_negate = False
+            continue
+        if ch == "[":
+            in_character_class = True
+            character_class_has_member = False
+            character_class_can_negate = True
+        elif ch == "{":
+            stack.append((i, [], 0))
+        elif ch == "," and stack:
+            # A comma belongs to the innermost open group, so commas in nested
+            # groups are not mistaken for top-level separators of their parent.
+            start, comma_positions, comma_count = stack[-1]
+            if comma_count < MAX_BRACE_EXPANSIONS - 1:
+                comma_positions.append(i)
+            stack[-1] = (start, comma_positions, comma_count + 1)
+        elif ch == "}" and stack:
+            start, commas, comma_count = stack.pop()
+            if comma_count and (first_group is None or start < first_group[0]):
+                first_group = (start, i, commas, comma_count)
+
+    if first_group is None:
+        return None
+    if stack and stack[0][0] < first_group[0]:
+        # Preserve the existing literal treatment: once an unmatched opening
+        # appears, following text is not parsed as a separate group.
+        return None
+
+    start, end, commas, comma_count = first_group
+    if comma_count >= MAX_BRACE_EXPANSIONS:
+        raise BraceExpansionBudgetError(pattern)
+    options: list[str] = []
+    option_start = start + 1
+    for comma in commas:
+        options.append(pattern[option_start:comma])
+        option_start = comma + 1
+    options.append(pattern[option_start:end])
+
+    return pattern[:start], options, pattern[end + 1 :]
+
+
+def _expand_brace_pattern(pattern: str) -> list[str]:
+    """Expand shell-style brace alternation into concrete glob patterns.
+
+    ``fnmatch`` treats ``{``, ``}`` and ``,`` literally, but the tool documents
+    ``*.{ts,tsx}`` as a supported ``include`` example and ripgrep's ``-g`` flag
+    honors it, so the post-filter must understand it too or brace includes
+    silently match nothing. ``"*.{ts,tsx}"`` expands to ``["*.ts", "*.tsx"]``.
+
+    Handles multiple and nested groups. Returns ``[pattern]`` unchanged when
+    there is no balanced, comma-bearing brace group.
+
+    Raises:
+        BraceExpansionBudgetError: if the pattern would expand to more than
+            ``MAX_BRACE_EXPANSIONS`` patterns. The bound is enforced while
+            expanding, before the full product is ever materialized.
+    """
+    expanded: list[str] = []
+    pending: list[str] = [pattern]
+    while pending:
+        candidate = pending.pop(0)
+        group = _split_first_brace_group(candidate)
+        if group is None:
+            expanded.append(candidate)
+        else:
+            prefix, options, suffix = group
+            projected_count = len(expanded) + len(pending) + len(options)
+            if projected_count > MAX_BRACE_EXPANSIONS:
+                raise BraceExpansionBudgetError(pattern)
+            # Prepend to preserve depth-first (shell) expansion order.
+            pending = [prefix + opt + suffix for opt in options] + pending
+    return expanded
+
+
 class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
     """Executor for grep content search operations.
 
@@ -88,6 +213,22 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
                     include_pattern=action.include,
                     is_error=True,
                 )
+
+            # Validate the include filter's expansion budget up front so an
+            # oversized brace product fails cleanly before any search work
+            # (the post-filter re-expands it per matched file).
+            if action.include:
+                try:
+                    _expand_brace_pattern(action.include)
+                except BraceExpansionBudgetError as e:
+                    return GrepObservation.from_text(
+                        text=str(e),
+                        matches=[],
+                        pattern=action.pattern,
+                        search_path=str(search_path),
+                        include_pattern=action.include,
+                        is_error=True,
+                    )
 
             if self._search_backend == "ripgrep":
                 return self._execute_with_ripgrep(action, search_path)
@@ -161,7 +302,10 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
 
         filename = relative_parts[-1] if relative_parts else path.name
         if include_pattern:
-            return fnmatch.fnmatch(filename, include_pattern)
+            return any(
+                fnmatch.fnmatch(filename, pat)
+                for pat in _expand_brace_pattern(include_pattern)
+            )
         return not filename.startswith(".")
 
     def _match_mtime(self, path: Path) -> float:
@@ -234,9 +378,37 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
             action.pattern,
             str(search_path),
             "--sortr=modified",
+            "--no-config",
         ]
         if action.include:
-            cmd.extend(["-g", action.include])
+            expanded_includes = _expand_brace_pattern(action.include)
+            # Python's fnmatch is the canonical post-filter. Its backslash and
+            # globset differ for escapes, classes, Unicode '?', comments,
+            # whitespace, and Windows case normalization. For those patterns,
+            # let rg perform only the linear-time content search, then apply
+            # the canonical filename filter below.
+            requires_unfiltered_search = os.name == "nt" or any(
+                (
+                    any(ch in include_pattern for ch in "\\[]?")
+                    or include_pattern.startswith("#")
+                    or any(ch.isspace() for ch in include_pattern)
+                    or any(not ch.isprintable() for ch in include_pattern)
+                )
+                for include_pattern in expanded_includes
+            )
+            if requires_unfiltered_search:
+                # Include hidden/ignored paths before the canonical post-filter.
+                cmd.extend(["--hidden", "--no-ignore"])
+            else:
+                # Any braces left after expansion are literal and must be
+                # escaped for rg's globset. Ignore repository excludes because
+                # the other backends search all visible directories.
+                cmd.append("--no-ignore")
+                for include_pattern in expanded_includes:
+                    rg_pattern = include_pattern.replace("{", r"\{").replace("}", r"\}")
+                    if rg_pattern.startswith("!"):
+                        rg_pattern = "\\" + rg_pattern
+                    cmd.extend(["-g", rg_pattern])
 
         result = subprocess.run(
             cmd,
@@ -246,6 +418,18 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
             check=False,
             env=sanitized_env(),
         )
+
+        if result.returncode not in (0, 1):
+            detail = result.stderr.strip() or f"exit code {result.returncode}"
+            logger.warning("ripgrep backend failed: %s", detail)
+            return GrepObservation.from_text(
+                text=f"ripgrep search failed: {detail}",
+                matches=[],
+                pattern=action.pattern,
+                search_path=str(search_path),
+                include_pattern=action.include,
+                is_error=True,
+            )
 
         matches = []
         if result.stdout:
