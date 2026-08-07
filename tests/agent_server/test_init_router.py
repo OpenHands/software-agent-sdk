@@ -450,6 +450,10 @@ class TestEndToEndOverLifespan:
                 resp = client.get("/api/init")
                 assert resp.status_code == 200
                 assert resp.json()["state"] == "dormant"
+                # ...and advertises that it needs a cipher key delivered, which
+                # is how an orchestrator tells this server from one that would
+                # silently keep using its own boot key.
+                assert resp.json()["requires_secret_key"] is True
 
                 # Run /api/init.
                 resp = _post_init(

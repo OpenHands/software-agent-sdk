@@ -151,6 +151,18 @@ class InitStatus(BaseModel):
             "rolls back to ``dormant`` so /api/init can be retried."
         ),
     )
+    requires_secret_key: bool = Field(
+        default=True,
+        description=(
+            "Whether this server requires the cipher key in the init payload and "
+            "will actually use it. A server predating the bootstrap/cipher key "
+            "split omits this field entirely, so an orchestrator should read its "
+            "absence as False and refuse to activate: that server encrypts under "
+            "the key it found in its own environment, and handing it an "
+            "independent cipher key would leave the workspace written under a "
+            "key nothing else holds."
+        ),
+    )
 
 
 def _build_initialized_config(base: Config, req: InitRequest) -> Config:
