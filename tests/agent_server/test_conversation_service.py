@@ -20,6 +20,7 @@ from openhands.agent_server.conversation_lease import (
 from openhands.agent_server.conversation_service import (
     AutoTitleSubscriber,
     ConversationService,
+    _compose_conversation_info,
     _ConversationRecord,
     _get_worktree_start_point,
 )
@@ -3770,3 +3771,45 @@ class TestConversationSearchScaling:
                 )
 
             assert [item.id for item in page.items] == [target]
+
+
+@pytest.mark.asyncio
+async def test_search_composes_conversation_info_off_event_loop(persisted_conversation):
+    """Regression: composing ConversationInfo during a list/search must not run
+    on the event-loop thread.
+
+    The heavy Pydantic construction in ``_compose_conversation_info`` (with its
+    large nested object graphs) used to execute synchronously on the single
+    asyncio event-loop thread. Under load this caused long blocking GC pauses,
+    stalling every request (async and executor-backed alike) — the wedge seen in
+    production. Offloading it to a worker thread keeps GC/allocation off the loop.
+
+    This test loads a persisted (idle) conversation through ``search_conversations``
+    and asserts the composition ran on a thread other than the event loop.
+    """
+    import threading
+    from unittest.mock import patch as _patch
+
+    conversations_dir, conversation_id = persisted_conversation
+    original_compose = _compose_conversation_info
+
+    loop_ident = threading.get_ident()
+    found = {}
+
+    def spy(stored, state, children):
+        found["thread_ident"] = threading.get_ident()
+        return original_compose(stored, state, children)
+
+    async with ConversationService(conversations_dir=conversations_dir) as restarted:
+        assert restarted._event_services == {}
+        with _patch(
+            "openhands.agent_server.conversation_service._compose_conversation_info",
+            side_effect=spy,
+        ) as comp:
+            page = await restarted.search_conversations()
+            assert [item.id for item in page.items] == [conversation_id]
+            assert comp.call_count >= 1
+
+    # Prove the composition executed off the event loop.
+    assert found.get("thread_ident") is not None
+    assert found["thread_ident"] != loop_ident
