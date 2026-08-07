@@ -151,6 +151,7 @@ VERIFIED_OPENHANDS_MODELS = [
     "qwen3-coder-480b",
     "qwen3-coder-next",
     "trinity-large-thinking",
+    "claude-opus-4-5",
 ]
 
 
