@@ -46,8 +46,7 @@ def build_seed_profile(
             acp_session_mode=agent_settings.acp_session_mode,
             acp_prompt_timeout=agent_settings.acp_prompt_timeout,
             acp_startup_timeout=agent_settings.acp_startup_timeout,
-            # Both sides hold an argv token list. Empty list => use the server
-            # default.
+            # Empty list => use the server default.
             acp_command=list(agent_settings.acp_command) or None,
             acp_args=list(agent_settings.acp_args) or None,
             mcp_server_refs=None,

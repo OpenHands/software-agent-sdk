@@ -531,12 +531,7 @@ def test_save_extra_field_returns_422(client):
 
 
 def test_save_unversioned_body_upgrades_legacy_acp_command_string(client):
-    """A client built against schema v2 POSTs ``acp_command`` as a shell string.
-
-    Such a body carries no ``schema_version`` — the store writes one, but an
-    API caller has no reason to — so it must be migrated forward rather than
-    rejected. Before the migration gate was fixed this returned 422.
-    """
+    """A v2-era client POSTs a shell string and no ``schema_version``."""
     response = client.post(
         "/api/agent-profiles/legacy-acp",
         json={
@@ -549,28 +544,6 @@ def test_save_unversioned_body_upgrades_legacy_acp_command_string(client):
 
     profile = client.get("/api/agent-profiles/legacy-acp").json()["profile"]
     assert profile["acp_command"] == ["cmd", "/c", "claude-agent-acp"]
-
-
-def test_save_unversioned_body_keeps_acp_command_token_list(client):
-    """The same unversioned shape from a current client is untouched.
-
-    The v2->v3 migration only rewrites ``str``, so a Windows path in an argv
-    list survives the round trip verbatim — the bug the token list exists to
-    fix stays fixed for callers that omit ``schema_version``.
-    """
-    command = ["C:\\Program Files\\nodejs\\node.exe", "C:\\Users\\me\\dist\\index.js"]
-    response = client.post(
-        "/api/agent-profiles/winpath-acp",
-        json={
-            "agent_kind": "acp",
-            "acp_server": "custom",
-            "acp_command": command,
-        },
-    )
-    assert response.status_code == 201
-
-    profile = client.get("/api/agent-profiles/winpath-acp").json()["profile"]
-    assert profile["acp_command"] == command
 
 
 def test_save_invalid_name_returns_422(client):

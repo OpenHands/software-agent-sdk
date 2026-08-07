@@ -564,7 +564,6 @@ def test_acp_resolves_to_settings_without_credentials(
     assert settings.acp_server == "codex"
     assert settings.acp_model == "gpt-5.5/medium"
     assert settings.acp_session_mode == "full-access"
-    # Token list is copied across verbatim — no shell parsing on either side.
     assert settings.acp_command == ["codex-acp", "--foo"]
     assert settings.acp_args == ["--flag"]
     assert settings.mcp_config != {}
@@ -895,10 +894,8 @@ def test_custom_acp_without_command_is_invalid(
 def test_dry_run_normalizes_settings_build_failure(
     llm_store: LLMProfileStore,
 ) -> None:
-    # A custom server with no acp_command passes profile validation (the field
-    # is optional) but has no default launch command to fall back on, so
-    # settings construction raises; the dry-run must report it as invalid
-    # rather than raising (its contract is total).
+    # Validates, but a custom server has no default command to fall back on, so
+    # settings construction raises and the dry-run must report it instead.
     profile = ACPAgentProfile(name="acp", acp_server="custom", acp_command=None)
     diag = resolve_agent_profile_dry_run(
         profile,

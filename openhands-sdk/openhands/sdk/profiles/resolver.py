@@ -263,8 +263,7 @@ def _build_acp_settings(
 ) -> AgentSettingsConfig:
     """Compose the resolved ``ACPAgentSettings`` from a profile.
 
-    ``acp_command`` is an argv token list on both sides and is copied across
-    verbatim — no shell parsing. No credential is set — provider creds ride
+    No credential is set — provider creds ride
     ``state.secret_registry``. ACP profiles carry no user/public skills (the ACP
     subprocess owns its context), so ``agent_context`` has no discovered skills;
     it is always built (never ``None``) only so ``load_project_skills=True``

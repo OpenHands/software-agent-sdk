@@ -342,105 +342,54 @@ def _v2_acp_payload(command: object) -> dict[str, object]:
     }
 
 
-def test_v2_acp_command_string_migrates_to_token_list() -> None:
-    profile = validate_agent_profile(_v2_acp_payload("codex-acp --foo bar"))
+_WIN_COMMAND = [r"C:\Program Files\nodejs\node.exe", r"C:\Users\me\dist\index.js"]
+
+
+@pytest.mark.parametrize(
+    ("stored", "expected"),
+    [
+        ("codex-acp --foo bar", ["codex-acp", "--foo", "bar"]),
+        # Every persisted v2 string came from shlex.join, so invert it exactly.
+        (
+            shlex.join(["/opt/my acp/bin/server", "--flag", "a b"]),
+            ["/opt/my acp/bin/server", "--flag", "a b"],
+        ),
+        # Unbalanced quotes must not raise, and must not drop to None.
+        ("unterminated 'quote", ["unterminated", "'quote"]),
+        (None, None),
+        ("", None),
+    ],
+)
+def test_v2_acp_command_migrates_to_token_list(stored, expected) -> None:
+    profile = validate_agent_profile(_v2_acp_payload(stored))
     assert isinstance(profile, ACPAgentProfile)
     assert profile.schema_version == AGENT_PROFILE_SCHEMA_VERSION
-    assert profile.acp_command == ["codex-acp", "--foo", "bar"]
+    assert profile.acp_command == expected
 
 
-def test_v2_acp_command_migration_inverts_shlex_join() -> None:
-    """Every persisted v2 string came from ``shlex.join`` in profiles/seed.py.
-
-    The migration must return the exact tokens that produced it, including for
-    arguments containing spaces.
-    """
-    tokens = ["/opt/my acp/bin/server", "--flag", "a b"]
-    profile = validate_agent_profile(_v2_acp_payload(shlex.join(tokens)))
-    assert isinstance(profile, ACPAgentProfile)
-    assert profile.acp_command == tokens
-
-
-def test_v2_acp_command_malformed_quotes_falls_back_to_whitespace_split() -> None:
-    """Loading a stored profile must not raise, whatever is in the field.
-
-    ``None`` is not an option here: it means "use the server default", so a
-    configured override would be silently discarded. A whitespace split never
-    raises and keeps the tokens the user typed.
-    """
-    profile = validate_agent_profile(_v2_acp_payload("unterminated 'quote"))
-    assert isinstance(profile, ACPAgentProfile)
-    assert profile.acp_command == ["unterminated", "'quote"]
-
-
-def test_v2_malformed_command_does_not_fall_back_to_provider_default() -> None:
-    """A malformed command must not silently hand the launch to the provider.
-
-    An ``acp_server`` other than ``custom`` has a default launch command, and
-    ``None`` is the value that selects it (see
-    ``test_acp_blank_command_resolves_empty_list`` in ``test_resolver.py``), so
-    migrating a malformed override to ``None`` would start the agent with the
-    provider's command instead of the user's. On ``main`` this input raised
-    ``No closing quotation`` from ``shlex.split`` — loud, but never silent.
-    """
-    payload = _v2_acp_payload('npx -y "unbalanced')
-    payload["acp_server"] = "claude-code"
-    profile = validate_agent_profile(payload)
-    assert isinstance(profile, ACPAgentProfile)
-    assert profile.acp_command == ["npx", "-y", '"unbalanced']
-
-
-def test_unversioned_payload_migrates_legacy_command_string() -> None:
-    """A payload with no ``schema_version`` is an external one, so migrate it.
-
-    The store always persists ``schema_version``, so an absent one means a
-    hand-written or API-supplied body — the shape a client built against v2
-    still POSTs to ``/api/agent-profiles``. Assuming it is already current
-    rejects a legacy string with a 422 instead of upgrading it.
-    """
-    payload = _v2_acp_payload("cmd /c claude-agent-acp")
+@pytest.mark.parametrize(
+    ("stored", "expected"),
+    [
+        ("cmd /c claude-agent-acp", ["cmd", "/c", "claude-agent-acp"]),
+        (_WIN_COMMAND, _WIN_COMMAND),
+    ],
+)
+def test_unversioned_payload_still_migrates(stored, expected) -> None:
+    """An API body carries no ``schema_version``, so it still has to migrate."""
+    payload = _v2_acp_payload(stored)
     del payload["schema_version"]
     profile = validate_agent_profile(payload)
     assert isinstance(profile, ACPAgentProfile)
-    assert profile.acp_command == ["cmd", "/c", "claude-agent-acp"]
+    assert profile.acp_command == expected
     assert profile.schema_version == AGENT_PROFILE_SCHEMA_VERSION
-
-
-def test_unversioned_payload_leaves_a_token_list_alone() -> None:
-    """Migrating an unversioned payload must be a no-op on current-shape data.
-
-    A modern client that simply omits ``schema_version`` sends a token list;
-    the v2->v3 migration only touches ``str``, so the value survives verbatim —
-    including the Windows path the token list exists to protect.
-    """
-    command = [r"C:\Program Files\nodejs\node.exe", r"C:\Users\me\dist\index.js"]
-    payload = _v2_acp_payload(command)
-    del payload["schema_version"]
-    profile = validate_agent_profile(payload)
-    assert isinstance(profile, ACPAgentProfile)
-    assert profile.acp_command == command
-    assert profile.schema_version == AGENT_PROFILE_SCHEMA_VERSION
-
-
-@pytest.mark.parametrize("command", [None, ""])
-def test_v2_acp_command_empty_migrates_to_none(command: object) -> None:
-    profile = validate_agent_profile(_v2_acp_payload(command))
-    assert isinstance(profile, ACPAgentProfile)
-    assert profile.acp_command is None
 
 
 def test_windows_path_command_survives_round_trip() -> None:
-    """The bug this schema change removes.
-
-    As a v2 shell string, POSIX ``shlex.split`` ate every backslash, so the
-    launch failed on a path the user never typed. As a token list there is no
-    parsing step to corrupt it.
-    """
-    command = [r"C:\Program Files\nodejs\node.exe", r"C:\Users\me\dist\index.js"]
-    profile = ACPAgentProfile(name="acp", acp_server="custom", acp_command=command)
+    """The bug this schema change removes: ``shlex`` ate every backslash."""
+    profile = ACPAgentProfile(name="acp", acp_server="custom", acp_command=_WIN_COMMAND)
     reloaded = validate_agent_profile(profile.model_dump(mode="json"))
     assert isinstance(reloaded, ACPAgentProfile)
-    assert reloaded.acp_command == command
+    assert reloaded.acp_command == _WIN_COMMAND
 
 
 def test_rejects_newer_schema_version() -> None:
