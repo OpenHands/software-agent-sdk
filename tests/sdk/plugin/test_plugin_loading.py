@@ -5,7 +5,12 @@ from pathlib import Path
 import pytest
 
 from openhands.sdk.mcp.config import dump_mcp_config
-from openhands.sdk.plugin import Plugin, PluginManifest
+from openhands.sdk.plugin import (
+    ClaudeCodePluginFormat,
+    Plugin,
+    PluginManifest,
+    detect_format,
+)
 from openhands.sdk.plugin.types import (
     CommandDefinition,
     PluginAuthor,
@@ -1160,3 +1165,52 @@ description: A nested skill
         # Nested skill SHOULD have mcp_tools (not skipped)
         assert plugin.skills[0].mcp_tools is not None
         assert "nested-server" in plugin.skills[0].mcp_tools
+
+
+class TestDetectFormat:
+    """Tests for the plugin-format selection contract (detect_format()).
+
+    detect_format() is the seam that decides which PluginFormat loads a plugin
+    directory. Today only the Claude Code layout is registered, so it is the
+    fallback for every directory; these tests pin that precedence so the future
+    Agent Plugins format (root plugin.json) can be slotted ahead of it without
+    silently changing the Claude Code behavior.
+    """
+
+    def test_detects_claude_code_for_nested_manifest(self, tmp_path: Path):
+        """A directory with a nested .claude-plugin manifest selects Claude Code."""
+        plugin_dir = tmp_path / "with-manifest"
+        manifest_dir = plugin_dir / ".claude-plugin"
+        manifest_dir.mkdir(parents=True)
+        (manifest_dir / "plugin.json").write_text('{"name": "with-manifest"}')
+
+        fmt = detect_format(plugin_dir)
+
+        assert isinstance(fmt, ClaudeCodePluginFormat)
+        assert fmt.name == "claude-code"
+
+    def test_detects_claude_code_for_bare_dir(self, tmp_path: Path):
+        """A directory with no manifest still falls back to Claude Code."""
+        plugin_dir = tmp_path / "bare-plugin"
+        plugin_dir.mkdir()
+
+        assert isinstance(detect_format(plugin_dir), ClaudeCodePluginFormat)
+
+    def test_detected_format_loads_equivalent_plugin(self, tmp_path: Path):
+        """The strategy from detect_format() loads the same plugin as Plugin.load()."""
+        plugin_dir = tmp_path / "roundtrip"
+        manifest_dir = plugin_dir / ".plugin"
+        manifest_dir.mkdir(parents=True)
+        (manifest_dir / "plugin.json").write_text(
+            '{"name": "roundtrip", "version": "3.1.4"}'
+        )
+
+        # Plugin.load() must resolve first: the strategy operates on the resolved
+        # dir, and path is stored resolved on the returned Plugin.
+        resolved_dir = plugin_dir.resolve()
+        via_strategy = detect_format(resolved_dir).load(resolved_dir)
+        via_load = Plugin.load(plugin_dir)
+
+        assert via_strategy.name == via_load.name == "roundtrip"
+        assert via_strategy.version == via_load.version == "3.1.4"
+        assert via_strategy.path == via_load.path
