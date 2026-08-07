@@ -73,7 +73,12 @@ from openhands.sdk.mcp.utils import (
     ToolsChangedCallback,
     ToolsReconciledCallback,
 )
-from openhands.sdk.observability.laminar import OPERATION_METADATA_KEY, observe
+from openhands.sdk.observability.laminar import (
+    OPERATION_METADATA_KEY,
+    observe,
+    record_tool_result,
+)
+from openhands.sdk.observability.utils import extract_action_name
 from openhands.sdk.plugin import (
     Plugin,
     PluginSource,
@@ -2503,6 +2508,13 @@ class LocalConversation(BaseConversation):
                     tool_name=action_event.tool_name,
                     tool_call_id=action_event.tool_call_id,
                     rejection_reason=reason,
+                )
+                record_tool_result(
+                    self,
+                    name=extract_action_name(action_event),
+                    tool_call_id=action_event.tool_call_id,
+                    tool_input=action_event.action,
+                    tool_output=rejection_event.to_llm_message(),
                 )
                 self._on_event(rejection_event)
                 logger.info(f"Rejected pending action: {action_event} - {reason}")
