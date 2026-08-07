@@ -390,12 +390,16 @@ class Message(BaseModel):
         return message_dict
 
     def _remove_content_if_empty(self, message_dict: dict[str, Any]) -> None:
-        """Remove empty text content entries from assistant tool-call messages.
+        """Normalize empty content for assistant tool-call messages.
 
         Mutates the provided message_dict in-place:
-        - If content is a string of only whitespace, drop the 'content' key
+        - If content is a string of only whitespace, set content to ""
         - If content is a list, remove any text items with empty text; if the list
-          becomes empty, drop the 'content' key
+          becomes empty, set content to ""
+
+        Some LLMs (e.g. Gause) return HTTP 422 when an assistant message has
+        tool_calls and content=null. We normalize to content="" instead of
+        dropping the key entirely so that the payload is accepted by all providers.
         """
         if "content" not in message_dict:
             return
@@ -404,7 +408,7 @@ class Message(BaseModel):
 
         if isinstance(content, str):
             if content.strip() == "":
-                message_dict.pop("content", None)
+                message_dict["content"] = ""
             return
 
         if isinstance(content, list):
@@ -430,7 +434,7 @@ class Message(BaseModel):
             if normalized:
                 message_dict["content"] = normalized
             else:
-                message_dict.pop("content", None)
+                message_dict["content"] = ""
             return
 
         # Any other content shape is left as-is
