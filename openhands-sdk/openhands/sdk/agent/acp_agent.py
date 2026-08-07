@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import contextlib
 import inspect
 import json
 import os
@@ -1718,6 +1719,8 @@ class ACPAgent(AgentBase):
     _process: Any = PrivateAttr(default=None)  # asyncio subprocess
     _client: Any = PrivateAttr(default=None)  # _OpenHandsACPBridge
     _filtered_reader: Any = PrivateAttr(default=None)  # StreamReader
+    _stdout_filter_task: Any = PrivateAttr(default=None)  # asyncio.Task
+    _stderr_log_task: Any = PrivateAttr(default=None)  # asyncio.Task
     _closed: bool = PrivateAttr(default=False)
     _working_dir: str = PrivateAttr(default="")
     _agent_name: str = PrivateAttr(
@@ -2722,10 +2725,10 @@ class ACPAgent(AgentBase):
             # Wrap the subprocess stdout in a filtering reader that
             # only passes lines starting with '{' (JSON-RPC messages).
             filtered_reader = asyncio.StreamReader(limit=_STREAM_READER_LIMIT)
-            asyncio.get_event_loop().create_task(
+            stdout_filter_task = asyncio.get_event_loop().create_task(
                 _filter_jsonrpc_lines(process.stdout, filtered_reader)
             )
-            asyncio.get_event_loop().create_task(
+            stderr_log_task = asyncio.get_event_loop().create_task(
                 _log_acp_subprocess_stderr(process.stderr)
             )
 
@@ -2745,6 +2748,8 @@ class ACPAgent(AgentBase):
             self._process = process
             self._conn = conn
             self._filtered_reader = filtered_reader
+            self._stdout_filter_task = stdout_filter_task
+            self._stderr_log_task = stderr_log_task
 
             # Initialize the protocol and discover server identity
             init_response = await conn.initialize(protocol_version=1)
@@ -4190,6 +4195,19 @@ class ACPAgent(AgentBase):
                     logger.debug("Error killing ACP process: %s", kill_error)
             self._process = None
 
+        for task_attr in ("_stdout_filter_task", "_stderr_log_task"):
+            task = getattr(self, task_attr)
+            if task is not None:
+                task.cancel()
+                if self._executor is not None:
+                    try:
+                        self._executor.run_async(
+                            self._await_cancelled_task, task, timeout=5.0
+                        )
+                    except Exception as e:
+                        logger.debug("Error stopping %s: %s", task_attr, e)
+                setattr(self, task_attr, None)
+
         credential_failures = self._release_file_credentials_collect()
         failures.update(credential_failures)
         if discard_bindings:
@@ -4208,6 +4226,11 @@ class ACPAgent(AgentBase):
     @staticmethod
     async def _wait_for_process(process: asyncio.subprocess.Process) -> None:
         await process.wait()
+
+    @staticmethod
+    async def _await_cancelled_task(task: asyncio.Task[Any]) -> None:
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
     def release_runtime(self) -> None:
         """Disarm this agent's finalizer after handing its live ACP runtime to a

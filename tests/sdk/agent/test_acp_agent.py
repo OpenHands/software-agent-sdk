@@ -3451,6 +3451,37 @@ class TestFilterJsonrpcLines:
 
         assert "ACP stderr: codex-acp diagnostic" in caplog.text
 
+    def test_shutdown_cancels_stdout_and_stderr_drain_tasks(self):
+        """The stdout-filter and stderr-log tasks aren't referenced anywhere
+        else once started; _shutdown_runtime must cancel and clear them so
+        nothing keeps draining a closed subprocess's pipes indefinitely.
+        """
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        agent._executor = AsyncExecutor()
+
+        async def _never_ending():
+            await asyncio.sleep(3600)
+
+        async def _spawn_task():
+            # Mirrors how _init() schedules the real drain tasks: via
+            # asyncio.get_event_loop().create_task() from inside a coroutine
+            # already running on the executor's portal loop.
+            return asyncio.get_event_loop().create_task(_never_ending())
+
+        stdout_task = agent._executor.run_async(_spawn_task)
+        stderr_task = agent._executor.run_async(_spawn_task)
+        agent._stdout_filter_task = stdout_task
+        agent._stderr_log_task = stderr_task
+
+        agent._shutdown_runtime(discard_bindings=True)
+
+        assert agent._stdout_filter_task is None
+        assert agent._stderr_log_task is None
+        assert stdout_task.cancelled()
+        assert stderr_task.cancelled()
+
     @pytest.mark.asyncio
     async def test_filters_pretty_printed_json(self):
         from openhands.sdk.agent.acp_agent import _filter_jsonrpc_lines
