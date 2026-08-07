@@ -847,7 +847,7 @@ jobs:
                   } >> $GITHUB_OUTPUT
 
             - name: Update PR description with docker image details
-              uses: nefrob/pr-description@4dcc9f3ad5ec06b2a197c5f8f93db5e69d2fdca7 # v1.2.0
+              uses: nefrob/pr-description@30859d560129561327a48ec569ec3b6aa62dd2c9 # v1.3.0
               with:
                   content: ${{ steps.generate_description.outputs.pr_content }}
                   regex: <!-- AGENT_SERVER_IMAGES_START -->.*?<!-- AGENT_SERVER_IMAGES_END -->
