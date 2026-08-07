@@ -549,7 +549,7 @@ def test_acp_resolves_to_settings_without_credentials(
         acp_server="codex",
         acp_model="gpt-5.5/medium",
         acp_session_mode="full-access",
-        acp_command="codex-acp --foo",
+        acp_command=["codex-acp", "--foo"],
         acp_args=["--flag"],
         mcp_server_refs=["fetch"],
     )
@@ -564,7 +564,6 @@ def test_acp_resolves_to_settings_without_credentials(
     assert settings.acp_server == "codex"
     assert settings.acp_model == "gpt-5.5/medium"
     assert settings.acp_session_mode == "full-access"
-    # str command is tokenized into the settings' list[str] field.
     assert settings.acp_command == ["codex-acp", "--foo"]
     assert settings.acp_args == ["--flag"]
     assert settings.mcp_config != {}
@@ -851,7 +850,7 @@ def test_dry_run_acp_custom_server_has_no_credential_channels(
     llm_store: LLMProfileStore,
 ) -> None:
     profile = ACPAgentProfile(
-        name="acp", acp_server="custom", acp_command="my-acp-server"
+        name="acp", acp_server="custom", acp_command=["my-acp-server"]
     )
     diag = resolve_agent_profile_dry_run(
         profile,
@@ -895,12 +894,7 @@ def test_custom_acp_without_command_is_invalid(
 def test_dry_run_normalizes_settings_build_failure(
     llm_store: LLMProfileStore,
 ) -> None:
-    # An unbalanced-quote acp_command passes profile validation but breaks
-    # shlex.split during settings construction; the dry-run must report it as
-    # invalid rather than raising (its contract is total).
-    profile = ACPAgentProfile(
-        name="acp", acp_server="custom", acp_command="unterminated 'quote"
-    )
+    profile = ACPAgentProfile(name="acp", acp_server="custom", acp_command=None)
     diag = resolve_agent_profile_dry_run(
         profile,
         llm_store=llm_store,
