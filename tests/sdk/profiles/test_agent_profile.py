@@ -361,16 +361,65 @@ def test_v2_acp_command_migration_inverts_shlex_join() -> None:
     assert profile.acp_command == tokens
 
 
-def test_v2_acp_command_malformed_quotes_becomes_none() -> None:
+def test_v2_acp_command_malformed_quotes_falls_back_to_whitespace_split() -> None:
     """Loading a stored profile must not raise, whatever is in the field.
 
-    Before v3 an unbalanced quote surfaced from ``resolve_agent_profile`` as a
-    diagnostic; ``None`` keeps it there (a ``custom`` server with no command
-    reports the same resolver error) instead of failing the load.
+    ``None`` is not an option here: it means "use the server default", so a
+    configured override would be silently discarded. A whitespace split never
+    raises and keeps the tokens the user typed.
     """
     profile = validate_agent_profile(_v2_acp_payload("unterminated 'quote"))
     assert isinstance(profile, ACPAgentProfile)
-    assert profile.acp_command is None
+    assert profile.acp_command == ["unterminated", "'quote"]
+
+
+def test_v2_malformed_command_does_not_fall_back_to_provider_default() -> None:
+    """A malformed command must not silently hand the launch to the provider.
+
+    An ``acp_server`` other than ``custom`` has a default launch command, and
+    ``None`` is the value that selects it (see
+    ``test_acp_blank_command_resolves_empty_list`` in ``test_resolver.py``), so
+    migrating a malformed override to ``None`` would start the agent with the
+    provider's command instead of the user's. On ``main`` this input raised
+    ``No closing quotation`` from ``shlex.split`` — loud, but never silent.
+    """
+    payload = _v2_acp_payload('npx -y "unbalanced')
+    payload["acp_server"] = "claude-code"
+    profile = validate_agent_profile(payload)
+    assert isinstance(profile, ACPAgentProfile)
+    assert profile.acp_command == ["npx", "-y", '"unbalanced']
+
+
+def test_unversioned_payload_migrates_legacy_command_string() -> None:
+    """A payload with no ``schema_version`` is an external one, so migrate it.
+
+    The store always persists ``schema_version``, so an absent one means a
+    hand-written or API-supplied body — the shape a client built against v2
+    still POSTs to ``/api/agent-profiles``. Assuming it is already current
+    rejects a legacy string with a 422 instead of upgrading it.
+    """
+    payload = _v2_acp_payload("cmd /c claude-agent-acp")
+    del payload["schema_version"]
+    profile = validate_agent_profile(payload)
+    assert isinstance(profile, ACPAgentProfile)
+    assert profile.acp_command == ["cmd", "/c", "claude-agent-acp"]
+    assert profile.schema_version == AGENT_PROFILE_SCHEMA_VERSION
+
+
+def test_unversioned_payload_leaves_a_token_list_alone() -> None:
+    """Migrating an unversioned payload must be a no-op on current-shape data.
+
+    A modern client that simply omits ``schema_version`` sends a token list;
+    the v2->v3 migration only touches ``str``, so the value survives verbatim —
+    including the Windows path the token list exists to protect.
+    """
+    command = [r"C:\Program Files\nodejs\node.exe", r"C:\Users\me\dist\index.js"]
+    payload = _v2_acp_payload(command)
+    del payload["schema_version"]
+    profile = validate_agent_profile(payload)
+    assert isinstance(profile, ACPAgentProfile)
+    assert profile.acp_command == command
+    assert profile.schema_version == AGENT_PROFILE_SCHEMA_VERSION
 
 
 @pytest.mark.parametrize("command", [None, ""])

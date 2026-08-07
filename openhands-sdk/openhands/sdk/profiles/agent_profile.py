@@ -36,6 +36,17 @@ from openhands.sdk.tool import Tool
 
 AGENT_PROFILE_SCHEMA_VERSION = 3
 
+_UNVERSIONED_AGENT_PROFILE_SCHEMA_VERSION = 2
+"""Assumed ``schema_version`` for a payload that carries none.
+
+The store has always persisted ``schema_version`` (it has a model default), so
+an absent one means a hand-written or API-supplied payload — the shape a client
+built against an older release still sends. Such a payload is migrated forward
+from here rather than assumed current, so a legacy field shape is upgraded
+instead of rejected. Migrations are no-ops on values already in the new shape,
+so a current client that simply omits the field is unaffected.
+"""
+
 
 class ProfileVerificationSettings(BaseModel):
     """Secret-free critic/refinement policy for a profile.
@@ -354,17 +365,22 @@ def _migrate_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
     it is still the honest migration: it changes nothing about what the profile
     does. Removing the split for *new* values is the point of the change.
 
-    Malformed input (unbalanced quotes) becomes ``None`` rather than raising:
-    loading a stored profile must not fail. Today the failure surfaces from
-    ``resolve_agent_profile`` as a diagnostic, and ``None`` keeps it there — a
-    ``custom`` server with no command still reports the same resolver error.
+    Malformed input (unbalanced quotes) falls back to a whitespace split rather
+    than raising or dropping the value. Loading a stored profile must not fail,
+    but ``None`` would be worse than a rough tokenization: ``None`` means "use
+    the server default", so for any ``acp_server`` other than ``custom`` a
+    configured override would be silently replaced by the provider's own
+    command. Such a command never launched on ``main`` either — ``shlex.split``
+    raised on it — so keeping the tokens only changes *where* it fails, from a
+    resolver error to a spawn error naming the command the user actually typed.
     """
     command = payload.get("acp_command")
     if isinstance(command, str):
         try:
-            payload["acp_command"] = shlex.split(command) or None
+            tokens = shlex.split(command)
         except ValueError:
-            payload["acp_command"] = None
+            tokens = command.split()
+        payload["acp_command"] = tokens or None
     payload["schema_version"] = 3
     return payload
 
@@ -380,8 +396,8 @@ def _apply_persisted_migrations(payload: dict[str, Any]) -> dict[str, Any]:
     migrated = dict(payload)
     version_raw = migrated.get("schema_version")
     if version_raw is None:
-        migrated["schema_version"] = AGENT_PROFILE_SCHEMA_VERSION
-        version = AGENT_PROFILE_SCHEMA_VERSION
+        version = _UNVERSIONED_AGENT_PROFILE_SCHEMA_VERSION
+        migrated["schema_version"] = version
     elif isinstance(version_raw, int) and not isinstance(version_raw, bool):
         version = version_raw
     else:

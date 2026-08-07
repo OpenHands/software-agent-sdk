@@ -564,7 +564,7 @@ def test_acp_resolves_to_settings_without_credentials(
     assert settings.acp_server == "codex"
     assert settings.acp_model == "gpt-5.5/medium"
     assert settings.acp_session_mode == "full-access"
-    # str command is tokenized into the settings' list[str] field.
+    # Token list is copied across verbatim — no shell parsing on either side.
     assert settings.acp_command == ["codex-acp", "--foo"]
     assert settings.acp_args == ["--flag"]
     assert settings.mcp_config != {}
