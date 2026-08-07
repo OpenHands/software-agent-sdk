@@ -9,6 +9,7 @@ import pytest
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.profiles import (
+    SEED_PROFILE_NAME,
     ACPAgentProfile,
     AgentProfileStore,
     OpenHandsAgentProfile,
@@ -17,6 +18,7 @@ from openhands.sdk.profiles import (
     delete_llm_profile,
     find_referrers,
     rename_llm_profile,
+    sync_seed_llm_ref,
 )
 
 
@@ -220,3 +222,135 @@ def test_cascade_rename_atomic_under_concurrent_access(tmp_path: Path) -> None:
     assert sorted(find_referrers(store, "renamed")) == sorted(
         f"p{i}" for i in range(num)
     )
+
+
+# ── sync_seed_llm_ref ───────────────────────────────────────────────────────
+
+
+def test_sync_seed_llm_ref_repoints_when_in_sync(
+    agent_store: AgentProfileStore,
+) -> None:
+    agent_store.save(_oh(SEED_PROFILE_NAME, "profile-a"))
+
+    result = sync_seed_llm_ref(agent_store, old_ref="profile-a", new_ref="profile-b")
+
+    assert result is True
+    assert _ref(agent_store, SEED_PROFILE_NAME) == "profile-b"
+
+
+def test_sync_seed_llm_ref_does_not_clobber_pinned_ref(
+    agent_store: AgentProfileStore,
+) -> None:
+    """The anti-clobber guarantee: a seed ref that has drifted away from
+    ``old_ref`` was deliberately pinned by the user and must never be
+    overwritten by an activation-triggered sync (#4338)."""
+    agent_store.save(_oh(SEED_PROFILE_NAME, "profile-c"))
+
+    result = sync_seed_llm_ref(agent_store, old_ref="profile-a", new_ref="profile-b")
+
+    assert result is False
+    assert _ref(agent_store, SEED_PROFILE_NAME) == "profile-c"
+
+
+def test_sync_seed_llm_ref_repoints_dangling_soft_ref(
+    agent_store: AgentProfileStore,
+) -> None:
+    """A fresh instance seeds its default profile with
+    ``llm_profile_ref == SEED_PROFILE_NAME`` before any LLM profile named
+    ``"default"`` necessarily exists (#3933). When that name is not among the
+    known LLM profiles, the ref is a dangling soft-ref, not a pin."""
+    agent_store.save(_oh(SEED_PROFILE_NAME, SEED_PROFILE_NAME))
+
+    result = sync_seed_llm_ref(
+        agent_store,
+        old_ref=None,
+        new_ref="profile-b",
+        known_llm_profiles=set(),
+    )
+
+    assert result is True
+    assert _ref(agent_store, SEED_PROFILE_NAME) == "profile-b"
+
+
+def test_sync_seed_llm_ref_leaves_real_pin_matching_seed_name(
+    agent_store: AgentProfileStore,
+) -> None:
+    """If ``SEED_PROFILE_NAME`` resolves to a real, known LLM profile, the ref
+    is a genuine pin (not the #3933 dangling default) and must be left alone."""
+    agent_store.save(_oh(SEED_PROFILE_NAME, SEED_PROFILE_NAME))
+
+    result = sync_seed_llm_ref(
+        agent_store,
+        old_ref="profile-a",
+        new_ref="profile-b",
+        known_llm_profiles={SEED_PROFILE_NAME, "profile-a"},
+    )
+
+    assert result is False
+    assert _ref(agent_store, SEED_PROFILE_NAME) == SEED_PROFILE_NAME
+
+
+def test_sync_seed_llm_ref_acp_profile_returns_false(
+    agent_store: AgentProfileStore,
+) -> None:
+    agent_store.save(ACPAgentProfile(name=SEED_PROFILE_NAME, acp_server="codex"))
+    raw_before = (agent_store.base_dir / f"{SEED_PROFILE_NAME}.json").read_text()
+
+    result = sync_seed_llm_ref(agent_store, old_ref="profile-a", new_ref="profile-b")
+
+    assert result is False
+    raw_after = (agent_store.base_dir / f"{SEED_PROFILE_NAME}.json").read_text()
+    assert raw_after == raw_before
+
+
+def test_sync_seed_llm_ref_empty_store_returns_false(
+    agent_store: AgentProfileStore,
+) -> None:
+    result = sync_seed_llm_ref(agent_store, old_ref="profile-a", new_ref="profile-b")
+    assert result is False
+
+
+def test_sync_seed_llm_ref_noop_when_ref_already_matches_new(
+    agent_store: AgentProfileStore,
+) -> None:
+    agent_store.save(_oh(SEED_PROFILE_NAME, "profile-a"))
+    path = agent_store.base_dir / f"{SEED_PROFILE_NAME}.json"
+    mtime_before = path.stat().st_mtime_ns
+
+    result = sync_seed_llm_ref(agent_store, old_ref="profile-a", new_ref="profile-a")
+
+    assert result is False
+    assert path.stat().st_mtime_ns == mtime_before
+
+
+def test_sync_seed_llm_ref_only_touches_seed_profile(
+    agent_store: AgentProfileStore,
+) -> None:
+    """Proves narrow targeting: a namesake with the same stale ref but a
+    different name is never touched, even though it would match a broader
+    ``cascade_rename``-style scan."""
+    agent_store.save(_oh(SEED_PROFILE_NAME, "profile-a"))
+    agent_store.save(_oh("other", "profile-a"))
+
+    result = sync_seed_llm_ref(agent_store, old_ref="profile-a", new_ref="profile-b")
+
+    assert result is True
+    assert _ref(agent_store, SEED_PROFILE_NAME) == "profile-b"
+    assert _ref(agent_store, "other") == "profile-a"
+
+
+def test_sync_seed_llm_ref_preserves_id_and_revision(
+    agent_store: AgentProfileStore,
+) -> None:
+    before = OpenHandsAgentProfile(
+        name=SEED_PROFILE_NAME, llm_profile_ref="profile-a", revision=5
+    )
+    agent_store.save(before)
+
+    result = sync_seed_llm_ref(agent_store, old_ref="profile-a", new_ref="profile-b")
+
+    assert result is True
+    after = agent_store.load(SEED_PROFILE_NAME)
+    assert isinstance(after, OpenHandsAgentProfile)
+    assert after.id == before.id
+    assert after.revision == before.revision
