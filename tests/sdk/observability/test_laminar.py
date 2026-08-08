@@ -274,6 +274,36 @@ def test_lmnr_force_http_passed_to_laminar(force_http_value, expected_force_http
             del os.environ["LMNR_FORCE_HTTP"]
 
 
+@pytest.mark.parametrize("is_laminar_backend", [True, False])
+def test_lmnr_instruments_passed_to_laminar(is_laminar_backend):
+    """LMNR_INSTRUMENTS limits Laminar to the selected integrations."""
+    from lmnr import Instruments
+
+    with patch.dict(
+        os.environ,
+        {
+            "LMNR_PROJECT_API_KEY": "test-key",
+            "LMNR_INSTRUMENTS": "litellm,mcp",
+        },
+    ):
+        with (
+            patch("lmnr.Laminar") as mock_laminar,
+            patch(
+                "openhands.sdk.observability.laminar._is_otel_backend_laminar",
+                return_value=is_laminar_backend,
+            ),
+        ):
+            mock_laminar.is_initialized.return_value = False
+            from openhands.sdk.observability.laminar import maybe_init_laminar
+
+            maybe_init_laminar()
+
+    assert mock_laminar.initialize.call_args.kwargs["instruments"] == {
+        Instruments.LITELLM,
+        Instruments.MCP,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Cross-context root-span propagation
 # ---------------------------------------------------------------------------

@@ -84,6 +84,9 @@ def maybe_init_laminar():
 
     To force HTTP instead of gRPC for Laminar communication:
     LMNR_FORCE_HTTP=true  # or 1, yes, on
+
+    To initialize only selected Laminar integrations:
+    LMNR_INSTRUMENTS=litellm,mcp
     """
     if not should_enable_observability():
         logger.debug(
@@ -99,17 +102,25 @@ def maybe_init_laminar():
 
     base_url = get_env("LMNR_BASE_URL") or None
     force_http = _get_bool_env("LMNR_FORCE_HTTP")
+    instruments_env = get_env("LMNR_INSTRUMENTS")
+    instruments = (
+        {Instruments(value.strip()) for value in instruments_env.split(",")}
+        if instruments_env
+        else None
+    )
 
     if _is_otel_backend_laminar():
         Laminar.initialize(
             base_url=base_url,
             http_port=_get_int_env("LMNR_HTTP_PORT"),
             grpc_port=_get_int_env("LMNR_GRPC_PORT"),
+            instruments=instruments,
             force_http=force_http,
         )
     else:
         # Do not enable browser session replays for non-laminar backends
         Laminar.initialize(
+            instruments=instruments,
             disabled_instruments=[
                 Instruments.BROWSER_USE_SESSION,
                 Instruments.PATCHRIGHT,
