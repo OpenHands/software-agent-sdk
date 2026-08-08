@@ -129,3 +129,48 @@ def test_get_sub_agents_exposes_full_frontmatter(client, tmp_path: Path):
     assert agent["condenser"] is not None
     # unknown frontmatter keys are preserved in metadata
     assert agent["metadata"]["custom_key"] == "custom_value"
+
+
+def test_sub_agents_redact_mcp_secrets_by_default(client, tmp_path: Path):
+    """Default serialization redacts MCP env secrets on the response path.
+
+    The field serializer passes `context=info.context or {}` so pydantic's
+    `None` context cannot fall through to dump_mcp_config's plaintext default.
+    """
+    _write_agent(
+        tmp_path / ".agents" / "agents",
+        "secret-agent",
+        "Has an MCP server with env secrets",
+    )
+    (tmp_path / ".agents" / "agents" / "secret-agent.md").write_text(
+        "---\nname: secret-agent\ndescription: Has an MCP server with env secrets\n"
+        "mcp_config:\n"
+        "  fetch:\n"
+        "    command: uvx\n"
+        "    args:\n"
+        "      - --with\n"
+        "      - mcp==1.29.0\n"
+        "      - mcp-server-fetch==2026.7.10\n"
+        "    env:\n"
+        "      API_TOKEN: super-secret\n"
+        "---\n\nPrompt for secret-agent."
+    )
+
+    response = client.post(
+        "/api/sub-agents",
+        json={"load_builtin": False, "load_user": False, "project_dir": str(tmp_path)},
+    )
+    assert response.status_code == 200
+    agent = {a["name"]: a for a in response.json()["agents"]}["secret-agent"]
+    dumped = agent["mcp_config"]["fetch"]["env"]
+
+    # Secrets must never leak on the default /api/sub-agents path.
+    assert dumped["API_TOKEN"] != "super-secret"
+    assert "super-secret" not in response.text
+    # Non-secret fields still round-trip.
+    assert agent["mcp_config"]["fetch"]["command"] == "uvx"
+    assert agent["mcp_config"]["fetch"]["args"] == [
+        "--with",
+        "mcp==1.29.0",
+        "mcp-server-fetch==2026.7.10",
+    ]
