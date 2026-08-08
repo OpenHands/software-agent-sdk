@@ -17,7 +17,7 @@ See the [project root AGENTS.md](../../../AGENTS.md) for repository-wide policie
 
 ## Coding Style & Naming Conventions
 
-- Python target is 3.12; keep code Ruff-compliant (line length 88).
+- Packages support Python 3.12 and later; repository tooling targets Python 3.13. Keep code Ruff-compliant (line length 88).
 - Prefer explicit, accurate type annotations; use Pyright for type checking (do not add mypy).
 - Avoid `# type: ignore` unless there is no reasonable typing fix.
 - Keep imports at the top of files; avoid `sys.path` hacks and in-line imports unless required for circular dependencies.

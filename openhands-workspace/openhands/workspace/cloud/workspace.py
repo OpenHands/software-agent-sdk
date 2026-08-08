@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 from collections.abc import Mapping
 from pathlib import Path
@@ -164,15 +163,9 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
     def default_conversation_tags(self) -> dict[str, str]:
         """Build default tags from automation env vars for conversation creation.
 
-        When running inside an OpenHands Cloud Runtime (local_agent_server_mode=True),
-        this property extracts automation metadata from environment variables and
-        returns them as tags that can be attached to conversations.
-
-        The tags include (keys are lowercase alphanumeric per API requirements):
-          - automationtrigger: The trigger type (e.g., 'cron', 'webhook', 'manual')
-          - automationid: The automation's unique identifier
-          - automationname: Human-readable automation name
-          - automationrunid: The specific run identifier
+        Extends ``RemoteWorkspace.default_conversation_tags`` (derived from the
+        dispatcher-injected automation env vars) with the sandbox-scoped
+        ``_automation_run_id`` fallback captured in local agent-server mode.
 
         Note: Skills/plugins are NOT included here - they are passed when creating
         the RemoteConversation and merged at that level.
@@ -180,28 +173,9 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         These tags are automatically merged into conversations created via this
         workspace, allowing the Cloud platform to track automation context.
         """
-        tags: dict[str, str] = {}
-
-        # Parse AUTOMATION_EVENT_PAYLOAD (injected by dispatcher)
-        payload_str = os.environ.get("AUTOMATION_EVENT_PAYLOAD")
-        if payload_str:
-            try:
-                payload = json.loads(payload_str)
-                if isinstance(payload, dict):
-                    if payload.get("trigger"):
-                        tags["automationtrigger"] = str(payload["trigger"])
-                    if payload.get("automation_id"):
-                        tags["automationid"] = str(payload["automation_id"])
-                    if payload.get("automation_name"):
-                        tags["automationname"] = str(payload["automation_name"])
-            except (json.JSONDecodeError, TypeError):
-                logger.error("Failed to parse AUTOMATION_EVENT_PAYLOAD")
-
-        # Add run_id from env var or private attr
-        run_id = os.environ.get("AUTOMATION_RUN_ID") or self._automation_run_id
-        if run_id:
-            tags["automationrunid"] = run_id
-
+        tags = dict(super().default_conversation_tags or {})
+        if "automationrunid" not in tags and self._automation_run_id:
+            tags["automationrunid"] = self._automation_run_id
         return tags
 
     @property
@@ -840,7 +814,8 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         ``AUTOMATION_CALLBACK_URL`` env var was not set.
 
         Includes ``conversation_id`` in the payload if one was registered via
-        ``register_conversation()``.
+        ``register_conversation()``, and ``cost`` if one was registered via
+        ``register_cost()``.
         """
         try:
             callback_url = self._automation_callback_url
@@ -860,6 +835,10 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         # Include conversation_id if one was registered
         if self._conversation_id is not None:
             payload["conversation_id"] = self._conversation_id
+
+        # Include accumulated LLM cost if one was registered
+        if self._accumulated_cost is not None:
+            payload["cost"] = self._accumulated_cost
 
         try:
             headers = {"Authorization": f"Bearer {self.cloud_api_key}"}
