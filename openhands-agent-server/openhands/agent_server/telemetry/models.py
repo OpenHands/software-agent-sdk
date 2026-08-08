@@ -165,6 +165,7 @@ class ConversationStartedProperties(_BaseProperties):
     has_agent_profile: bool
     workspace_kind: SafeToken
     confirmation_policy: SafeToken
+    is_automation: bool = False
 
 
 class ConversationOutcomeProperties(_BaseProperties):
@@ -295,6 +296,7 @@ EXPECTED_PROPERTY_NAMES: Final[frozenset[str]] = frozenset(
         "has_agent_profile",
         "workspace_kind",
         "confirmation_policy",
+        "is_automation",
         "terminal_status",
         "duration_bucket",
         "event_count_bucket",
