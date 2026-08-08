@@ -77,6 +77,8 @@ class ConversationTelemetryContext:
     has_agent_profile: bool
     workspace_kind: str
     confirmation_policy: str
+    is_automation: bool = False
+    conversation_source: m.ConversationSource = "other"
 
 
 @dataclass(slots=True)
@@ -146,6 +148,8 @@ class TelemetrySubscriber(Subscriber[Event]):
                 has_agent_profile=self.context.has_agent_profile,
                 workspace_kind=self.context.workspace_kind,
                 confirmation_policy=self.context.confirmation_policy,
+                is_automation=self.context.is_automation,
+                conversation_source=self.context.conversation_source,
             )
             self.sink.emit(
                 self.factory.build(

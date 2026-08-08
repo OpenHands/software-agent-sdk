@@ -56,7 +56,14 @@ def factory() -> DiagnosticEventFactory:
     )
 
 
-def make_subscriber(sink, factory, user_id: str | None = "user-1"):
+def make_subscriber(
+    sink,
+    factory,
+    user_id: str | None = "user-1",
+    *,
+    is_automation: bool = False,
+    conversation_source: m.ConversationSource = "other",
+):
     conversation_id = uuid.uuid4()
     return TelemetrySubscriber(
         conversation_id=conversation_id,
@@ -72,6 +79,8 @@ def make_subscriber(sink, factory, user_id: str | None = "user-1"):
             has_agent_profile=False,
             workspace_kind="localworkspace",
             confirmation_policy="neverconfirm",
+            is_automation=is_automation,
+            conversation_source=conversation_source,
         ),
     )
 
@@ -85,6 +94,25 @@ async def test_emits_exactly_one_started_event(factory):
 
     sub.emit_started()
     assert sink.names == [m.EventName.CONVERSATION_STARTED]
+
+
+async def test_started_event_identifies_automation_conversations(factory):
+    sink = CollectingSink()
+    sub = make_subscriber(sink, factory, is_automation=True)
+
+    sub.emit_started()
+
+    assert sink.events[0].to_payload()["is_automation"] is True
+
+
+@pytest.mark.parametrize("source", ["canvas", "automation", "other"])
+async def test_started_event_includes_conversation_source(factory, source):
+    sink = CollectingSink()
+    sub = make_subscriber(sink, factory, conversation_source=source)
+
+    sub.emit_started()
+
+    assert sink.events[0].to_payload()["conversation_source"] == source
 
 
 def test_started_is_only_emitted_for_genuinely_new_conversations():
@@ -600,3 +628,52 @@ def test_confirmation_policy_is_read_from_the_field_that_exists():
     fields = asdict(ctx)
     assert "unknown" not in fields.values()
     assert "secret-project" not in repr(fields)
+
+
+@pytest.mark.parametrize(
+    ("tags", "is_automation", "source"),
+    [
+        ({"automationtrigger": "cron"}, True, "automation"),
+        ({"automationid": "auto-1"}, True, "automation"),
+        ({"automationrunid": "run-1"}, True, "automation"),
+        (
+            {"automationtrigger": "cron", "clientsource": "agentcanvas"},
+            True,
+            "automation",
+        ),
+        ({"clientsource": "agentcanvas"}, False, "canvas"),
+        ({"automationtrigger": ""}, False, "other"),
+        ({"source": "automation"}, False, "other"),
+        (None, False, "other"),
+    ],
+)
+def test_source_is_derived_from_allowlisted_conversation_tags(
+    tags, is_automation, source
+):
+    from openhands.agent_server.conversation_service import _build_telemetry_context
+    from openhands.agent_server.models import StoredConversation
+    from openhands.agent_server.telemetry.factory import (
+        DiagnosticEventFactory,
+        build_runtime_properties,
+    )
+    from openhands.sdk.agent import Agent
+    from openhands.sdk.llm import LLM
+    from openhands.sdk.workspace import LocalWorkspace
+
+    stored = StoredConversation(
+        id=uuid.uuid4(),
+        agent=Agent(llm=LLM(model="anthropic/claude-sonnet-5", usage_id="t"), tools=[]),
+        workspace=LocalWorkspace(working_dir="/tmp"),
+        user_id="canvas-user-42",
+        tags=tags,
+    )
+    context = _build_telemetry_context(
+        stored,
+        DiagnosticEventFactory(
+            runtime=build_runtime_properties(deferred_init=False),
+            salt="s",
+        ),
+    )
+
+    assert context.is_automation is is_automation
+    assert context.conversation_source == source

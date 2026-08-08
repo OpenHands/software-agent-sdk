@@ -2159,6 +2159,18 @@ def _build_telemetry_context(
     Every read is defensive: a shape change upstream should degrade a property
     to ``unknown``, never raise into conversation startup.
     """
+    tags = getattr(stored, "tags", None)
+    is_automation = isinstance(tags, dict) and any(
+        tags.get(key)
+        for key in ("automationtrigger", "automationid", "automationrunid")
+    )
+    if is_automation:
+        conversation_source = "automation"
+    elif isinstance(tags, dict) and tags.get("clientsource") == "agentcanvas":
+        conversation_source = "canvas"
+    else:
+        conversation_source = "other"
+
     agent = getattr(stored, "agent", None)
     llm = getattr(agent, "llm", None)
 
@@ -2183,6 +2195,8 @@ def _build_telemetry_context(
         confirmation_policy=safe_token(
             type(getattr(stored, "confirmation_policy", None)).__name__.lower()
         ),
+        is_automation=is_automation,
+        conversation_source=conversation_source,
     )
 
 
