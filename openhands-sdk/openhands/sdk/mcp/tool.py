@@ -291,9 +291,10 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
         Raises:
             ValidationError: If the arguments do not conform to the tool schema.
         """
-        # Drop None-valued keys before validation to avoid type errors
-        # on optional fields
-        prefiltered_args = {k: v for k, v in (arguments or {}).items() if v is not None}
+        tool_arguments, structured_output = self._split_response_arguments(arguments)
+        prefiltered_args = {
+            key: value for key, value in tool_arguments.items() if value is not None
+        }
         # Validate against the dynamically created action type (from MCP schema)
         mcp_action_type = _create_mcp_action_type(self.mcp_tool)
         validated = mcp_action_type.model_validate(prefiltered_args)
@@ -308,7 +309,9 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
             exclude_none=True,
             exclude=exclude_fields,
         )
-        return MCPToolAction(data=sanitized)
+        action = MCPToolAction(data=sanitized)
+        action._structured_output = structured_output
+        return action
 
     @classmethod
     def create(
@@ -408,6 +411,7 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
                 ),
             }
 
+        schema = self._merge_response_schema(schema)
         _prioritize_schema_fields(
             schema=schema,
             priority=("security_risk", "summary"),
