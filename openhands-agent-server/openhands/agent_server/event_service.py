@@ -868,27 +868,20 @@ class EventService:
 
             llm.telemetry.set_log_completions_callback(log_callback)
 
-    def _setup_acp_activity_heartbeat(self, agent: AgentBase) -> None:
-        """Wire ACP activity heartbeat to the idle timer.
+    def _setup_activity_heartbeat(self, conversation: LocalConversation) -> None:
+        """Wire activity heartbeats to idle timers (OpenHands + ACP)."""
+        from openhands.agent_server.server_details_router import (
+            update_last_execution_time,
+        )
 
-        ACP agents delegate to an external subprocess (e.g. gemini-cli,
-        claude-agent-acp).  Tool calls run inside that subprocess and never
-        hit the agent-server's HTTP endpoints, so update_last_execution_time()
-        is never called during conn.prompt().  Without a heartbeat the
-        runtime-api sees growing idle_time and kills the pod (~20 min).
+        def activity() -> None:
+            self.touch()
+            update_last_execution_time()
 
-        This method checks if the agent is an ACPAgent and, if so, injects a
-        callback that resets the idle timer whenever the ACP bridge receives
-        a streaming update (throttled to every 30 s by the bridge).
-        """
-        from openhands.sdk.agent import ACPAgent
-
+        conversation.set_on_activity(activity)
+        agent = conversation.agent
         if isinstance(agent, ACPAgent):
-            from openhands.agent_server.server_details_router import (
-                update_last_execution_time,
-            )
-
-            agent._on_activity = update_last_execution_time
+            agent._on_activity = activity
 
     def _setup_stats_streaming(self, agent: AgentBase) -> None:
         """Configure stats update callbacks to stream stats changes via events."""
@@ -1079,11 +1072,10 @@ class EventService:
         # Setup stats streaming for remote execution
         self._setup_stats_streaming(self._conversation.agent)
 
-        # Wire ACP activity heartbeat so ACP tool calls (which run inside
-        # the subprocess and never hit HTTP endpoints) still reset the
-        # agent-server's idle timer and prevent runtime-api from killing
-        # the pod during long conn.prompt() calls.
-        self._setup_acp_activity_heartbeat(self._conversation.agent)
+        # Wire activity heartbeats so long ACP prompts and blocking
+        # TaskToolSet subagents still reset the idle timer and prevent
+        # runtime-api from killing the pod mid-tool.
+        self._setup_activity_heartbeat(self._conversation)
 
         # Any conversation loaded from disk with RUNNING status is stale. Active
         # split-brain resumes are prevented earlier by the lease claim itself, so if
