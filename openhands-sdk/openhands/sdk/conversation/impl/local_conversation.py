@@ -49,6 +49,7 @@ from openhands.sdk.event import (
     UserRejectObservation,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
+from openhands.sdk.event.error_classification import AGENT_OUTCOME
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
@@ -58,18 +59,26 @@ from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
 from openhands.sdk.marketplace.registry import MarketplaceRegistry
+from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import (
     MCPServer,
     coerce_mcp_config,
     dump_mcp_config,
     enabled_mcp_servers,
 )
+from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.mcp.utils import (
     DefaultMCPToolProvider,
     MCPToolProvider,
     ToolsChangedCallback,
+    ToolsReconciledCallback,
 )
-from openhands.sdk.observability.laminar import observe
+from openhands.sdk.observability.laminar import (
+    OPERATION_METADATA_KEY,
+    observe,
+    record_tool_result,
+)
+from openhands.sdk.observability.utils import extract_action_name
 from openhands.sdk.plugin import (
     Plugin,
     PluginSource,
@@ -646,6 +655,31 @@ class LocalConversation(BaseConversation):
         self._on_event(
             ConversationErrorEvent(source="environment", code=code, detail=detail)
         )
+
+    def _check_stuck_or_nudge(self) -> bool:
+        """Nudge once on a repeating action-error streak, else apply is_stuck().
+
+        Returns True if STUCK was set and the run loop should stop.
+        """
+        if not self._stuck_detector:
+            return False
+
+        nudge = self._stuck_detector.get_action_error_nudge()
+        if nudge is not None:
+            self._on_event(
+                MessageEvent(
+                    source="environment",
+                    llm_message=Message(role="user", content=[TextContent(text=nudge)]),
+                )
+            )
+            return False
+
+        if self._stuck_detector.is_stuck():
+            logger.warning("Stuck pattern detected.")
+            self._state.execution_status = ConversationExecutionStatus.STUCK
+            return True
+
+        return False
 
     @property
     def stuck_detector(self) -> StuckDetector | None:
@@ -1251,6 +1285,7 @@ class LocalConversation(BaseConversation):
         mcp_config: dict[str, MCPServer],
         *,
         on_tools_changed: ToolsChangedCallback | None = None,
+        on_tools_reconciled: ToolsReconciledCallback | None = None,
     ) -> list[ToolDefinition]:
         # Servers the user switched off stay in the settings map but must not
         # be connected to. Filter before the emptiness check so an all-disabled
@@ -1263,14 +1298,23 @@ class LocalConversation(BaseConversation):
             _RUNTIME_MCP_TIMEOUT_SECS,
             on_tools_changed=on_tools_changed,
         )
+        client._tools_reconciled_callback = on_tools_reconciled
         return list(client.tools)
+
+    def _on_mcp_tools_reconciled(
+        self,
+        client: MCPClient,
+        tools: Sequence[MCPToolDefinition],
+    ) -> None:
+        self.agent._on_mcp_tools_reconciled(client, tools)
 
     def _runtime_mcp_tools_for_agent(self) -> list[ToolDefinition]:
         if not self.agent.supports_openhands_tools or not self.agent.mcp_config:
             return []
         return self._runtime_mcp_tools(
             self.agent.mcp_config,
-            on_tools_changed=self.agent._on_mcp_tools_changed,
+            on_tools_changed=lambda tools: self.agent._on_mcp_tools_changed(tools),
+            on_tools_reconciled=self._on_mcp_tools_reconciled,
         )
 
     def _runtime_skill_tools_for_agent(self) -> list[ToolDefinition]:
@@ -1340,7 +1384,13 @@ class LocalConversation(BaseConversation):
             )
             merged_mcp = coerce_mcp_config(expanded_mcp["mcpServers"])
         runtime_mcp_tools = (
-            self._runtime_mcp_tools(runtime_plugin_mcp) if self._agent_ready else []
+            self._runtime_mcp_tools(
+                runtime_plugin_mcp,
+                on_tools_changed=lambda tools: self.agent._on_mcp_tools_changed(tools),
+                on_tools_reconciled=self._on_mcp_tools_reconciled,
+            )
+            if self._agent_ready
+            else []
         )
 
         with self._state:
@@ -1868,15 +1918,8 @@ class LocalConversation(BaseConversation):
                         break
 
                     # Check for stuck patterns if enabled
-                    if self._stuck_detector:
-                        is_stuck = self._stuck_detector.is_stuck()
-
-                        if is_stuck:
-                            logger.warning("Stuck pattern detected.")
-                            self._state.execution_status = (
-                                ConversationExecutionStatus.STUCK
-                            )
-                            continue
+                    if self._check_stuck_or_nudge():
+                        continue
 
                     # clear the flag before calling agent.step() (user approved)
                     if (
@@ -2068,14 +2111,8 @@ class LocalConversation(BaseConversation):
                                 continue
                         break
 
-                    if self._stuck_detector:
-                        is_stuck = self._stuck_detector.is_stuck()
-                        if is_stuck:
-                            logger.warning("Stuck pattern detected.")
-                            self._state.execution_status = (
-                                ConversationExecutionStatus.STUCK
-                            )
-                            continue
+                    if self._check_stuck_or_nudge():
+                        continue
 
                     if (
                         self._state.execution_status
@@ -2472,6 +2509,13 @@ class LocalConversation(BaseConversation):
                     tool_call_id=action_event.tool_call_id,
                     rejection_reason=reason,
                 )
+                record_tool_result(
+                    self,
+                    name=extract_action_name(action_event),
+                    tool_call_id=action_event.tool_call_id,
+                    tool_input=action_event.action,
+                    tool_output=rejection_event.to_llm_message(),
+                )
                 self._on_event(rejection_event)
                 logger.info(f"Rejected pending action: {action_event} - {reason}")
 
@@ -2501,6 +2545,7 @@ class LocalConversation(BaseConversation):
                     ),
                     tool_name=ae.tool_name,
                     tool_call_id=ae.tool_call_id,
+                    classification=AGENT_OUTCOME,
                 )
             )
 
@@ -2595,6 +2640,17 @@ class LocalConversation(BaseConversation):
         first_attempt = not getattr(self, "_cleanup_initiated", False)
         if first_attempt:
             self._cleanup_initiated = True
+
+            # Best-effort: hand the accumulated LLM cost to the workspace so it
+            # can be included in the automation completion callback. State is
+            # in-process here, so unlike RemoteConversation there is no cache to
+            # consult and no fetch that could block against a dead server.
+            try:
+                cost = self._state.stats.get_combined_metrics().accumulated_cost
+                self.workspace.register_cost(cost)
+            except Exception as e:
+                logger.debug(f"Could not register accumulated cost: {e}")
+
             logger.debug("Closing conversation and cleaning up tool executors")
             hook_processor = getattr(self, "_hook_processor", None)
             if hook_processor is not None:
@@ -2629,6 +2685,10 @@ class LocalConversation(BaseConversation):
         self._cleanup_complete = True
         atexit.unregister(self.close)
 
+    @observe(
+        name="conversation.ask_agent",
+        metadata={OPERATION_METADATA_KEY: "ask_agent"},
+    )
     def ask_agent(self, question: str) -> str:
         """Ask the agent a simple, stateless question and get a direct LLM response.
 
@@ -2704,7 +2764,11 @@ class LocalConversation(BaseConversation):
 
         raise Exception("Failed to generate summary")
 
-    @observe(name="conversation.generate_title", ignore_inputs=["llm"])
+    @observe(
+        name="conversation.generate_title",
+        ignore_inputs=["llm"],
+        metadata={OPERATION_METADATA_KEY: "title_generation"},
+    )
     def generate_title(self, llm: LLM | None = None, max_length: int = 50) -> str:
         """Generate a title for the conversation based on the first user message.
 

@@ -1,3 +1,4 @@
+import json
 import os
 from collections.abc import Generator
 from pathlib import Path
@@ -70,7 +71,6 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
     """
 
     _client: httpx.Client | None = PrivateAttr(default=None)
-    _conversation_id: str | None = PrivateAttr(default=None)
 
     def reset_client(self) -> None:
         """Reset the HTTP client to force re-initialization.
@@ -244,13 +244,43 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
     def default_conversation_tags(self) -> dict[str, str] | None:
         """Default tags to apply to conversations created with this workspace.
 
-        Subclasses (e.g., OpenHandsCloudWorkspace) can override this to provide
-        context-specific tags like automation metadata.
+        Derives automation metadata from environment variables injected by the
+        automation dispatcher, so any remote workspace (local agent servers
+        included) stamps automation context onto the conversations it creates.
+
+        The tags include (keys are lowercase alphanumeric per API requirements):
+          - automationtrigger: The trigger type (e.g., 'cron', 'webhook', 'manual')
+          - automationid: The automation's unique identifier
+          - automationname: Human-readable automation name
+          - automationrunid: The specific run identifier
 
         Returns:
-            Dictionary of tag key-value pairs, or None if no default tags.
+            Dictionary of tag key-value pairs (empty when no automation env
+            vars are present). Subclasses (e.g., OpenHandsCloudWorkspace) can
+            extend this with additional context.
         """
-        return None
+        tags: dict[str, str] = {}
+
+        # Parse AUTOMATION_EVENT_PAYLOAD (injected by dispatcher)
+        payload_str = os.environ.get("AUTOMATION_EVENT_PAYLOAD")
+        if payload_str:
+            try:
+                payload = json.loads(payload_str)
+                if isinstance(payload, dict):
+                    if payload.get("trigger"):
+                        tags["automationtrigger"] = str(payload["trigger"])
+                    if payload.get("automation_id"):
+                        tags["automationid"] = str(payload["automation_id"])
+                    if payload.get("automation_name"):
+                        tags["automationname"] = str(payload["automation_name"])
+            except (json.JSONDecodeError, TypeError):
+                logger.error("Failed to parse AUTOMATION_EVENT_PAYLOAD")
+
+        run_id = os.environ.get("AUTOMATION_RUN_ID")
+        if run_id:
+            tags["automationrunid"] = run_id
+
+        return tags
 
     def register_conversation(self, conversation_id: str) -> None:
         """Register a conversation ID with this workspace.
@@ -273,54 +303,6 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             The conversation ID if one has been registered, None otherwise.
         """
         return self._conversation_id
-
-    def _send_completion_callback(
-        self, exc_type: type | None, exc_val: BaseException | None
-    ) -> None:
-        """POST completion status to the automation service (best-effort).
-
-        Call this from ``__exit__`` before ``cleanup()``. Does nothing when
-        ``AUTOMATION_CALLBACK_URL`` env var is not set.
-
-        Reads configuration from environment variables:
-          - ``AUTOMATION_CALLBACK_URL`` — URL to POST completion status to
-          - ``AUTOMATION_CALLBACK_API_KEY`` — Bearer token for callback auth (optional)
-          - ``AUTOMATION_RUN_ID`` — Run ID to include in callback payload (optional)
-
-        Includes ``conversation_id`` in the payload if one was registered via
-        ``register_conversation()``.
-
-        Args:
-            exc_type: Exception type if an exception was raised, None otherwise
-            exc_val: Exception value if an exception was raised, None otherwise
-        """
-        callback_url = os.environ.get("AUTOMATION_CALLBACK_URL")
-        if not callback_url:
-            return
-
-        callback_api_key = os.environ.get("AUTOMATION_CALLBACK_API_KEY")
-        run_id = os.environ.get("AUTOMATION_RUN_ID")
-
-        status = "COMPLETED" if exc_type is None else "FAILED"
-        payload: dict[str, Any] = {"status": status}
-        if run_id:
-            payload["run_id"] = run_id
-        if exc_val is not None:
-            payload["error"] = str(exc_val)
-
-        # Include conversation_id if one was registered
-        if self._conversation_id is not None:
-            payload["conversation_id"] = self._conversation_id
-
-        try:
-            headers: dict[str, str] = {}
-            if callback_api_key:
-                headers["Authorization"] = f"Bearer {callback_api_key}"
-            with httpx.Client(timeout=10.0) as cb_client:
-                resp = cb_client.post(callback_url, json=payload, headers=headers)
-                logger.info(f"Completion callback sent ({status}): {resp.status_code}")
-        except Exception as e:
-            logger.warning(f"Completion callback failed: {e}")
 
     def __exit__(
         self, exc_type: type | None, exc_val: BaseException | None, exc_tb: Any

@@ -18,7 +18,7 @@ See the [project root AGENTS.md](../../../AGENTS.md) for repository-wide policie
 
 ## Coding Style & Naming Conventions
 
-- Python target is 3.12; keep code Ruff-compliant (line length 88) and Pyright-friendly.
+- Packages support Python 3.12 and later; repository tooling targets Python 3.13. Keep code Ruff-compliant (line length 88) and Pyright-friendly.
 - Tool names, parameter schemas, and output schemas are user-facing and often referenced in tests like `tests/tools/test_tool_name_consistency.py`; avoid breaking changes. If a schema must change, provide a backward-compatible loading path.
 - When adding runtime-loaded assets (Jinja `.j2` templates or JS under `browser_use/js/`), ensure they are included as package data (and update the agent-server PyInstaller spec when needed).
 

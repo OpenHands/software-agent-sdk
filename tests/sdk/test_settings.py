@@ -1179,7 +1179,7 @@ def test_acp_create_agent_uses_server_default_command(
     assert agent.acp_command == [
         "npx",
         "-y",
-        "@agentclientprotocol/claude-agent-acp@0.44.0",
+        "@agentclientprotocol/claude-agent-acp@0.63.0",
     ]
     assert agent.acp_model == "claude-opus-4-6"
     # The authoritative provider key is carried onto the agent.
@@ -1335,7 +1335,7 @@ def test_acp_resolve_command_rewrites_versioned_npx_to_pinned_binary(
     monkeypatch.setattr(shutil, "which", _which_returning("codex-acp"))
     for pkg in (
         "@agentclientprotocol/codex-acp",
-        "@agentclientprotocol/codex-acp@1.1.2",
+        "@agentclientprotocol/codex-acp@1.1.7",
     ):
         settings = ACPAgentSettings(
             acp_server="codex",
@@ -1357,7 +1357,7 @@ def test_acp_resolve_command_keeps_npx_when_binary_absent(
     assert settings.resolve_acp_command() == [
         "npx",
         "-y",
-        "@agentclientprotocol/codex-acp@1.1.2",
+        "@agentclientprotocol/codex-acp@1.1.7",
     ]
 
 
@@ -2048,7 +2048,7 @@ def test_llm_create_agent_resolves_subscription_llm(monkeypatch) -> None:
         subscription_vendor="openai",
     )
     runtime_llm = LLM(model="openai/gpt-5.6")
-    runtime_llm._is_subscription = True
+    runtime_llm.is_subscription = True
 
     def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
         assert llm is original_llm
@@ -2070,7 +2070,7 @@ def test_llm_from_persisted_rehydrates_subscription_runtime(monkeypatch) -> None
     from openhands.sdk.llm.auth import openai
 
     runtime_llm = LLM(model="openai/gpt-5.6", auth_type="subscription")
-    runtime_llm._is_subscription = True
+    runtime_llm.is_subscription = True
 
     def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
         assert llm.auth_type == "subscription"
@@ -2100,7 +2100,7 @@ def test_llm_load_from_env_rehydrates_subscription_runtime(monkeypatch) -> None:
     from openhands.sdk.llm.auth import openai
 
     runtime_llm = LLM(model="openai/gpt-5.6", auth_type="subscription")
-    runtime_llm._is_subscription = True
+    runtime_llm.is_subscription = True
 
     def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
         assert llm.auth_type == "subscription"
@@ -2137,7 +2137,7 @@ def test_create_subscription_llm_from_config_preserves_runtime_llm(monkeypatch) 
         auth_type="subscription",
         subscription_vendor="openai",
     )
-    runtime_llm._is_subscription = True
+    runtime_llm.is_subscription = True
     runtime_llm._subscription_credentials = OAuthCredentials(
         vendor="openai",
         access_token="access-token",
@@ -2222,7 +2222,7 @@ async def test_async_subscription_api_key_uses_async_refresh(monkeypatch) -> Non
         auth_type="subscription",
         subscription_vendor="openai",
     )
-    llm._is_subscription = True
+    llm.is_subscription = True
 
     api_key, extra_headers = await llm._aget_litellm_auth_values()
     assert api_key == "access-token"
@@ -2260,7 +2260,7 @@ def test_sync_subscription_api_key_uses_valid_runtime_credentials(
         auth_type="subscription",
         subscription_vendor="openai",
     )
-    llm._is_subscription = True
+    llm.is_subscription = True
     llm._subscription_credentials = credentials
 
     api_key, extra_headers = llm._get_litellm_auth_values()
