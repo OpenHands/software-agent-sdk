@@ -28,6 +28,8 @@ TELEMETRY_SCHEMA_VERSION: Final[int] = 1
 SafeToken = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9_.:\-]{0,63}$")]
 """Lowercase enum-ish token: ``finished``, ``anthropic``, ``0-5s``."""
 
+ConversationSource = Literal["canvas", "automation", "other"]
+
 SafeIdentifier = Annotated[
     str,
     StringConstraints(
@@ -166,6 +168,7 @@ class ConversationStartedProperties(_BaseProperties):
     workspace_kind: SafeToken
     confirmation_policy: SafeToken
     is_automation: bool = False
+    conversation_source: ConversationSource = "other"
 
 
 class ConversationOutcomeProperties(_BaseProperties):
@@ -297,6 +300,7 @@ EXPECTED_PROPERTY_NAMES: Final[frozenset[str]] = frozenset(
         "workspace_kind",
         "confirmation_policy",
         "is_automation",
+        "conversation_source",
         "terminal_status",
         "duration_bucket",
         "event_count_bucket",

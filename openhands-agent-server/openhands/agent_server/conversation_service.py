@@ -2164,6 +2164,12 @@ def _build_telemetry_context(
         tags.get(key)
         for key in ("automationtrigger", "automationid", "automationrunid")
     )
+    if is_automation:
+        conversation_source = "automation"
+    elif isinstance(tags, dict) and tags.get("clientsource") == "agentcanvas":
+        conversation_source = "canvas"
+    else:
+        conversation_source = "other"
 
     agent = getattr(stored, "agent", None)
     llm = getattr(agent, "llm", None)
@@ -2190,6 +2196,7 @@ def _build_telemetry_context(
             type(getattr(stored, "confirmation_policy", None)).__name__.lower()
         ),
         is_automation=is_automation,
+        conversation_source=conversation_source,
     )
 
 

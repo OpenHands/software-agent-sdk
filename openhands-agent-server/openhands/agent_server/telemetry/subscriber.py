@@ -78,6 +78,7 @@ class ConversationTelemetryContext:
     workspace_kind: str
     confirmation_policy: str
     is_automation: bool = False
+    conversation_source: m.ConversationSource = "other"
 
 
 @dataclass(slots=True)
@@ -148,6 +149,7 @@ class TelemetrySubscriber(Subscriber[Event]):
                 workspace_kind=self.context.workspace_kind,
                 confirmation_policy=self.context.confirmation_policy,
                 is_automation=self.context.is_automation,
+                conversation_source=self.context.conversation_source,
             )
             self.sink.emit(
                 self.factory.build(

@@ -57,7 +57,12 @@ def factory() -> DiagnosticEventFactory:
 
 
 def make_subscriber(
-    sink, factory, user_id: str | None = "user-1", *, is_automation: bool = False
+    sink,
+    factory,
+    user_id: str | None = "user-1",
+    *,
+    is_automation: bool = False,
+    conversation_source: m.ConversationSource = "other",
 ):
     conversation_id = uuid.uuid4()
     return TelemetrySubscriber(
@@ -75,6 +80,7 @@ def make_subscriber(
             workspace_kind="localworkspace",
             confirmation_policy="neverconfirm",
             is_automation=is_automation,
+            conversation_source=conversation_source,
         ),
     )
 
@@ -97,6 +103,16 @@ async def test_started_event_identifies_automation_conversations(factory):
     sub.emit_started()
 
     assert sink.events[0].to_payload()["is_automation"] is True
+
+
+@pytest.mark.parametrize("source", ["canvas", "automation", "other"])
+async def test_started_event_includes_conversation_source(factory, source):
+    sink = CollectingSink()
+    sub = make_subscriber(sink, factory, conversation_source=source)
+
+    sub.emit_started()
+
+    assert sink.events[0].to_payload()["conversation_source"] == source
 
 
 def test_started_is_only_emitted_for_genuinely_new_conversations():
@@ -615,17 +631,25 @@ def test_confirmation_policy_is_read_from_the_field_that_exists():
 
 
 @pytest.mark.parametrize(
-    ("tags", "expected"),
+    ("tags", "is_automation", "source"),
     [
-        ({"automationtrigger": "cron"}, True),
-        ({"automationid": "auto-1"}, True),
-        ({"automationrunid": "run-1"}, True),
-        ({"automationtrigger": ""}, False),
-        ({"source": "automation"}, False),
-        (None, False),
+        ({"automationtrigger": "cron"}, True, "automation"),
+        ({"automationid": "auto-1"}, True, "automation"),
+        ({"automationrunid": "run-1"}, True, "automation"),
+        (
+            {"automationtrigger": "cron", "clientsource": "agentcanvas"},
+            True,
+            "automation",
+        ),
+        ({"clientsource": "agentcanvas"}, False, "canvas"),
+        ({"automationtrigger": ""}, False, "other"),
+        ({"source": "automation"}, False, "other"),
+        (None, False, "other"),
     ],
 )
-def test_automation_is_derived_from_allowlisted_conversation_tags(tags, expected):
+def test_source_is_derived_from_allowlisted_conversation_tags(
+    tags, is_automation, source
+):
     from openhands.agent_server.conversation_service import _build_telemetry_context
     from openhands.agent_server.models import StoredConversation
     from openhands.agent_server.telemetry.factory import (
@@ -651,4 +675,5 @@ def test_automation_is_derived_from_allowlisted_conversation_tags(tags, expected
         ),
     )
 
-    assert context.is_automation is expected
+    assert context.is_automation is is_automation
+    assert context.conversation_source == source
