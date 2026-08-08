@@ -116,8 +116,14 @@ class SubAgentInfo(BaseModel):
         # `info.context` is None in pydantic's default serialization; `or {}`
         # keeps it non-None so dump_mcp_config's `None` fallback (which would
         # expose MCP secrets in plaintext) is never hit and secrets are redacted
-        # on the default /api/sub-agents response path.
-        return dump_mcp_config(value, context=info.context or {})
+        # on the default /api/sub-agents response path. `enabled` is reported
+        # for every server even when it defaults to True (the sub-agents API
+        # contract), so exclude_defaults is left off here.
+        return dump_mcp_config(
+            value,
+            context=info.context or {},
+            exclude_defaults=False,
+        )
 
 
 class SubAgentsResponse(BaseModel):

@@ -707,6 +707,7 @@ def dump_mcp_config(
     mcp_config: Mapping[str, MCPServer],
     *,
     context: dict[str, object] | None = None,
+    exclude_defaults: bool = True,
 ) -> dict[str, dict[str, Any]]:
     dump_context = {"expose_secrets": "plaintext"} if context is None else context
     return {
@@ -716,7 +717,7 @@ def dump_mcp_config(
                 mode="json",
                 context=dump_context,
                 exclude_none=True,
-                exclude_defaults=True,
+                exclude_defaults=exclude_defaults,
             ),
         )
         for name, server in mcp_config.items()
