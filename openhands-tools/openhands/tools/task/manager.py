@@ -155,11 +155,28 @@ class TaskManager:
         return task_id, uuid_
 
     def _evict_task(self, task: Task) -> None:
-        if task.conversation:
-            task.conversation.pause()
-            task.conversation.close()
         with self._tasks_lock:
+            conversation = task.conversation
+            # Drop the registry ref before pause/close so interrupt cannot race
+            # against teardown. Leave the caller-held Task instance intact.
             self._tasks[task.id] = task.model_copy(update={"conversation": None})
+        if conversation is not None:
+            try:
+                conversation.pause()
+            except Exception:
+                logger.debug(
+                    "Failed to pause subagent task %s during eviction",
+                    task.id,
+                    exc_info=True,
+                )
+            try:
+                conversation.close()
+            except Exception:
+                logger.debug(
+                    "Failed to close subagent task %s during eviction",
+                    task.id,
+                    exc_info=True,
+                )
 
     def start_task(
         self,
@@ -379,35 +396,33 @@ class TaskManager:
         )
         return sub_agent
 
-    def _pulse_parent_activity(self, _event: object = None) -> None:
-        """Refresh the parent conversation's host idle timer during delegation.
-
-        Subagent events stay on the child conversation, so the parent event
-        log (and EventService idle subscriber) would otherwise go silent for
-        the entire blocking TaskExecutor call — the gap that lets runtime
-        idle killers restart the process mid ``code-explorer`` / task tool.
-        """
+    def _pulse_parent_activity(self, _event: object) -> None:
         parent = self._parent_conversation
         if parent is not None:
             parent.notify_activity()
 
     def interrupt_running_tasks(self) -> None:
-        """Interrupt any in-flight subagent conversations (thread-safe)."""
         with self._tasks_lock:
             running = [
-                task
+                (task.id, conversation)
                 for task in self._tasks.values()
-                if task.status == TaskStatus.RUNNING and task.conversation is not None
+                if task.status == TaskStatus.RUNNING
+                and (conversation := task.conversation) is not None
             ]
-        for task in running:
-            conversation = task.conversation
-            if conversation is None:
-                continue
+        for task_id, conversation in running:
+            with self._tasks_lock:
+                task = self._tasks.get(task_id)
+                if (
+                    task is None
+                    or task.status != TaskStatus.RUNNING
+                    or task.conversation is not conversation
+                ):
+                    continue
             try:
                 conversation.interrupt()
             except Exception:
                 logger.debug(
-                    "Failed to interrupt subagent task %s", task.id, exc_info=True
+                    "Failed to interrupt subagent task %s", task_id, exc_info=True
                 )
 
     def _run_task(self, task: Task, prompt: str) -> Task:
@@ -421,24 +436,26 @@ class TaskManager:
             parent_name = getattr(parent._visualizer, "_name", None)
 
         try:
-            # Force an immediate pulse before the child goes quiet so idle
-            # trackers know the parent is still doing work.
             parent.notify_activity(force=True)
             task.conversation.send_message(prompt, sender=parent_name)
             self._run_until_finished(task.id, task.conversation)
             status = task.conversation.state.execution_status
             if status == ConversationExecutionStatus.FINISHED:
                 result = get_agent_final_response(task.conversation.state.events)
-                task.set_result(result)
+                with self._tasks_lock:
+                    task.set_result(result)
                 logger.info(f"Task '{task.id}' completed.")
             else:
                 # Any non-FINISHED terminal status (run-limit, stuck, paused, ...)
                 # is surfaced as an error, not an empty "completed"; the detail
                 # keeps partial output so the parent can use/retry it.
-                task.set_error(self._run_stop_detail(task.conversation, status))
+                detail = self._run_stop_detail(task.conversation, status)
+                with self._tasks_lock:
+                    task.set_error(detail)
                 logger.warning(f"Task '{task.id}' stopped: status '{status.value}'.")
         except Exception as e:
-            task.set_error(str(e))
+            with self._tasks_lock:
+                task.set_error(str(e))
             logger.warning(f"Task {task.id} failed with error: {e}")
         finally:
             self._update_parent_metrics(parent, task)

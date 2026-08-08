@@ -869,25 +869,7 @@ class EventService:
             llm.telemetry.set_log_completions_callback(log_callback)
 
     def _setup_activity_heartbeat(self, conversation: LocalConversation) -> None:
-        """Wire activity heartbeats to the idle timer for all agent kinds.
-
-        Parent conversations can go quiet while still doing real work:
-
-        - ACP agents: tool calls run inside an external subprocess and never
-          hit agent-server HTTP endpoints during ``conn.prompt()``.
-        - OpenHands agents: ``TaskToolSet`` blocks the parent while a
-          subagent (e.g. ``code-explorer``) runs in a child conversation that
-          does not publish parent events.
-
-        Without a heartbeat the runtime-api sees growing ``idle_time`` and
-        kills the pod (~20 min), which resurfaces as the crash-recovery
-        ``AgentErrorEvent`` ("A restart occurred while this tool was in
-        progress...") for the unmatched in-flight tool call.
-
-        The conversation callback is throttled by
-        :meth:`LocalConversation.notify_activity`. ACP agents also get the
-        same callback on ``_on_activity`` so the ACP bridge can pulse it.
-        """
+        """Wire activity heartbeats to idle timers (OpenHands + ACP)."""
         from openhands.agent_server.server_details_router import (
             update_last_execution_time,
         )

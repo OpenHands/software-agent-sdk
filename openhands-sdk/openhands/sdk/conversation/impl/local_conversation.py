@@ -15,6 +15,7 @@ from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondenser
 from openhands.sdk.context.memory import load_memory
 from openhands.sdk.context.prompts.prompt import render_template
+from openhands.sdk.conversation.activity import ACTIVITY_SIGNAL_INTERVAL_SECONDS
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.cancellation import CancellationToken
 from openhands.sdk.conversation.event_store import EventLog
@@ -164,11 +165,6 @@ def _copy_event_for_fork(event: Event) -> Event:
     return Event.model_validate_json(event.model_dump_json(exclude_none=True))
 
 
-# Minimum interval between activity heartbeat signals (seconds). Matches the
-# ACP bridge throttle so idle trackers stay warm without flooding callbacks.
-_ACTIVITY_SIGNAL_INTERVAL_SECONDS: Final[float] = 30.0
-
-
 class LocalConversation(BaseConversation):
     agent: AgentBase
     workspace: LocalWorkspace
@@ -297,6 +293,7 @@ class LocalConversation(BaseConversation):
         self._cleanup_complete = False
         self._arun_task = None
         self._cancel_token = None
+        self._blocked_start = False
         self._prompt_cache_key = prompt_cache_key
         self._step_holds_state_lock = False
 
@@ -416,8 +413,6 @@ class LocalConversation(BaseConversation):
             else None
         )
 
-        # Optional activity heartbeat for host idle trackers (agent-server).
-        # TaskToolSet subagents pulse this while the parent event log is stalled.
         self._on_activity: Callable[[], None] | None = None
         self._activity_lock = threading.Lock()
         self._last_activity_signal = 0.0
@@ -1869,6 +1864,8 @@ class LocalConversation(BaseConversation):
         """
         # Ensure agent is fully initialized (loads plugins and initializes agent)
         self._ensure_agent_ready()
+        if self._consume_blocked_start():
+            return
         self._cancel_token = CancellationToken()
 
         with self._state:
@@ -2040,7 +2037,6 @@ class LocalConversation(BaseConversation):
         the LLM conversation history stays consistent.
         """
         self._arun_task = asyncio.current_task()
-        self._cancel_token = CancellationToken()
         # Off-load lazy init to a worker thread: init_state may block the loop
         # (an ACP agent resolves credentials via a synchronous LookupSecret
         # httpx.get). When the agent-server runs arun() on its event loop and
@@ -2049,6 +2045,10 @@ class LocalConversation(BaseConversation):
         # self-deadlock that ReadTimeouts after 30s (agent-canvas#1072).
         # _ensure_agent_ready is thread-safe and already runs off-loop in run().
         await asyncio.to_thread(self._ensure_agent_ready)
+        if self._consume_blocked_start():
+            self._arun_task = None
+            return
+        self._cancel_token = CancellationToken()
 
         with self._state:
             if isinstance(self.agent, ACPAgent) and self._state.execution_status in (
@@ -2576,22 +2576,10 @@ class LocalConversation(BaseConversation):
                 logger.info("Agent execution pause requested")
 
     def set_on_activity(self, callback: Callable[[], None] | None) -> None:
-        """Register a host-side activity heartbeat callback.
-
-        The agent-server uses this to refresh idle timers while work continues
-        without parent conversation events (e.g. blocking TaskToolSet
-        delegation). Callbacks should be cheap and thread-safe.
-        """
         with self._activity_lock:
             self._on_activity = callback
 
     def notify_activity(self, *, force: bool = False) -> None:
-        """Pulse the activity heartbeat (throttled unless ``force``).
-
-        Safe to call from worker threads during tool execution. Failures in the
-        host callback are swallowed so tool execution is never interrupted by
-        idle-tracker errors.
-        """
         with self._activity_lock:
             callback = self._on_activity
             if callback is None:
@@ -2599,7 +2587,8 @@ class LocalConversation(BaseConversation):
             now = time.monotonic()
             if (
                 not force
-                and now - self._last_activity_signal < _ACTIVITY_SIGNAL_INTERVAL_SECONDS
+                and now - self._last_activity_signal
+                < ACTIVITY_SIGNAL_INTERVAL_SECONDS
             ):
                 return
             self._last_activity_signal = now
@@ -2607,6 +2596,38 @@ class LocalConversation(BaseConversation):
             callback()
         except Exception:
             logger.debug("on_activity callback failed", exc_info=True)
+
+    def _consume_blocked_start(self) -> bool:
+        if not self._blocked_start:
+            return False
+        self._blocked_start = False
+        with self._state:
+            if self._state.execution_status in (
+                ConversationExecutionStatus.IDLE,
+                ConversationExecutionStatus.RUNNING,
+            ):
+                self._state.execution_status = ConversationExecutionStatus.PAUSED
+        self._cancel_token = None
+        return True
+
+    def _request_pause_nonblocking(self) -> None:
+        if self._state.execution_status == ConversationExecutionStatus.PAUSED:
+            return
+        if self._state.acquire(blocking=False):
+            try:
+                if self._state.execution_status in (
+                    ConversationExecutionStatus.IDLE,
+                    ConversationExecutionStatus.RUNNING,
+                ):
+                    self._state.execution_status = ConversationExecutionStatus.PAUSED
+                    self._on_event(PauseEvent())
+                    logger.info("Agent execution pause requested")
+            finally:
+                self._state.release()
+            return
+        threading.Thread(
+            target=self.pause, name="conversation-pause", daemon=True
+        ).start()
 
     def interrupt(self) -> None:
         """Immediately cancel an in-flight ``arun()``, including mid-LLM-call.
@@ -2621,27 +2642,30 @@ class LocalConversation(BaseConversation):
         and individual tools can check for early exit.
 
         If no async task is tracked (e.g. the synchronous ``run()`` is active)
-        the call falls back to :meth:`pause`.
+        the call falls back to a non-blocking pause request so callers on the
+        event loop are not stuck behind ``run()``'s state lock.
 
         This method is safe to call from signal handlers and from other
         threads (the cancellation is scheduled on the task's event loop).
         """
-        # Set the cancellation token first so thread-pool workers see it
-        # before the asyncio task is cancelled.
         token = self._cancel_token
-        if token is not None:
-            token.cancel()
+        if token is None:
+            token = CancellationToken()
+            self._cancel_token = token
+        token.cancel()
 
         task = self._arun_task
         if task is not None and not task.done():
-            # Marshal cancellation onto the task's event loop so this is
-            # safe to call from any thread (e.g. signal handlers, the
-            # agent-server's HTTP thread).
             loop = task.get_loop()
             loop.call_soon_threadsafe(task.cancel)
             logger.info("interrupt(): cancelled in-flight arun() task")
         else:
-            self.pause()
+            if (
+                self._state.execution_status
+                == ConversationExecutionStatus.IDLE
+            ):
+                self._blocked_start = True
+            self._request_pause_nonblocking()
 
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None:
         """Add secrets to the conversation's secret registry.

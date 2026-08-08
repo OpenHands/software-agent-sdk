@@ -66,7 +66,6 @@ class TaskExecutor(ToolExecutor):
             )
 
     def interrupt(self) -> None:
-        """Propagate parent interruption to active subagent conversations."""
         self._manager.interrupt_running_tasks()
 
     def close(self) -> None:
