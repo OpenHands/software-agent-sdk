@@ -160,5 +160,5 @@ jobs:
                   echo "" >> $GITHUB_STEP_SUMMARY
                   echo "### Next Steps:" >> $GITHUB_STEP_SUMMARY
                   echo "1. Review the PR and address any deprecation deadlines" >> $GITHUB_STEP_SUMMARY
-                  echo "2. Wait for integration, behavior, example tests, and security scan to pass" >> $GITHUB_STEP_SUMMARY
+                  echo "2. Wait for integration, behavior, and example tests to pass" >> $GITHUB_STEP_SUMMARY
                   echo "3. Merge the PR — a GitHub release and PyPI publish will happen automatically" >> $GITHUB_STEP_SUMMARY
