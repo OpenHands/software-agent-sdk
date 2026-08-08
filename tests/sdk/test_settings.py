@@ -1015,6 +1015,21 @@ def test_llm_summarizing_condenser_max_tokens_none_when_llm_has_no_limit() -> No
     assert agent.condenser.max_tokens is None
 
 
+def test_llm_summarizing_condenser_explicit_none_max_tokens_not_overridden() -> None:
+    """An explicit ``max_tokens=None`` must disable token-based condensation
+    even if the agent LLM has a configured ``max_input_tokens``.
+    """
+    llm = LLM(model="test-model", usage_id="agent", max_input_tokens=65536)
+    settings = OpenHandsAgentSettings(
+        llm=llm,
+        condenser=LLMSummarizingCondenserSettings(enabled=True, max_tokens=None),
+    )
+    agent = settings.create_agent()
+
+    assert isinstance(agent.condenser, LLMSummarizingCondenser)
+    assert agent.condenser.max_tokens is None
+
+
 def test_llm_summarizing_condenser_settings_match_condenser_fields() -> None:
     condenser_fields = set(LLMSummarizingCondenser.model_fields) - {"llm"}
     settings_fields = set(LLMSummarizingCondenserSettings.model_fields) - {
