@@ -564,7 +564,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         if self.filter_tools_regex:
             pattern = re.compile(self.filter_tools_regex)
             tools = [tool for tool in tools if pattern.match(tool.name)]
-            tool_names = [tool.name for tool in tools]
             logger.info("Filtered to %d tools after applying regex filter", len(tools))
 
         # Include default tools from include_default_tools; not subject to regex
@@ -872,13 +871,35 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             }
             raise ValueError(f"Duplicate runtime tool names found: {duplicates}")
         with self._tools_lock:
-            existing = set(self._tools) & set(tool_names)
-            if existing:
-                raise ValueError(f"Duplicate tool names found: {existing}")
-
-            # AgentBase is frozen, so update its mutable tool map in place.
+            # A tools/list_changed notification can race the caller: if it
+            # arrives while the provider's initial create_tools() call is
+            # still in flight, _on_mcp_tools_changed/_on_mcp_tools_reconciled
+            # may already have installed the same tool via this same client
+            # before the caller's own add_runtime_tools() call (using the
+            # client's returned snapshot) gets here. Treat that as a refresh,
+            # not a conflict, matching the same-client exemption already used
+            # by _on_mcp_tools_changed/_on_mcp_tools_reconciled.
+            conflicts: set[str] = set()
             for tool in tools:
-                self._tools[tool.name] = tool
+                existing_tool = self._tools.get(tool.name)
+                if existing_tool is None:
+                    continue
+                existing_executor = existing_tool.executor
+                replacement_executor = tool.executor
+                if (
+                    isinstance(existing_executor, MCPToolExecutor)
+                    and isinstance(replacement_executor, MCPToolExecutor)
+                    and existing_executor.client is replacement_executor.client
+                ):
+                    continue
+                conflicts.add(tool.name)
+            if conflicts:
+                raise ValueError(f"Duplicate tool names found: {conflicts}")
+
+            # AgentBase is frozen; replace the tool map rather than mutating
+            # it in place, so Agent.model_copy() snapshots don't share state.
+            updated = {**self._tools, **{tool.name: tool for tool in tools}}
+            object.__setattr__(self, "_tools", updated)
 
     def _on_mcp_tools_changed(self, tools: Sequence[ToolDefinition]) -> None:
         """Handle dynamically advertised MCP tools.
@@ -930,8 +951,12 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 )
 
             self.add_runtime_tools(additions)
-            for tool in replacements:
-                self._tools[tool.name] = tool
+            if replacements:
+                updated = {
+                    **self._tools,
+                    **{tool.name: tool for tool in replacements},
+                }
+                object.__setattr__(self, "_tools", updated)
 
         if additions:
             logger.info(

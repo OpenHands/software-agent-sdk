@@ -3,8 +3,10 @@
 import copy
 import json
 import re
+import threading
+from collections import OrderedDict
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 
 if TYPE_CHECKING:
@@ -196,7 +198,12 @@ class MCPToolExecutor(ToolExecutor):
         self.client.sync_close()
 
 
-_mcp_dynamic_action_type: dict[tuple[str, str], type[Schema]] = {}
+_MCP_ACTION_TYPE_CACHE_MAX: Final[int] = 512
+# LRU-bounded: keyed by (name, schema), so a tool whose schema keeps changing
+# no longer grows this cache without limit. Guarded by a lock since MCP tool
+# calls can validate concurrently through the parallel tool executor.
+_mcp_dynamic_action_type: OrderedDict[tuple[str, str], type[Schema]] = OrderedDict()
+_mcp_dynamic_action_type_lock = threading.Lock()
 
 
 def _create_mcp_action_type(action_type: mcp.types.Tool) -> type[Schema]:
@@ -218,14 +225,18 @@ def _create_mcp_action_type(action_type: mcp.types.Tool) -> type[Schema]:
         action_type.name,
         json.dumps(action_type.inputSchema, sort_keys=True, separators=(",", ":")),
     )
-    mcp_action_type = _mcp_dynamic_action_type.get(cache_key)
-    if mcp_action_type:
-        return mcp_action_type
+    with _mcp_dynamic_action_type_lock:
+        mcp_action_type = _mcp_dynamic_action_type.get(cache_key)
+        if mcp_action_type:
+            _mcp_dynamic_action_type.move_to_end(cache_key)
+            return mcp_action_type
 
-    model_name = f"MCP{to_camel_case(action_type.name)}Action"
-    mcp_action_type = Schema.from_mcp_schema(model_name, action_type.inputSchema)
-    _mcp_dynamic_action_type[cache_key] = mcp_action_type
-    return mcp_action_type
+        model_name = f"MCP{to_camel_case(action_type.name)}Action"
+        mcp_action_type = Schema.from_mcp_schema(model_name, action_type.inputSchema)
+        _mcp_dynamic_action_type[cache_key] = mcp_action_type
+        if len(_mcp_dynamic_action_type) > _MCP_ACTION_TYPE_CACHE_MAX:
+            _mcp_dynamic_action_type.popitem(last=False)
+        return mcp_action_type
 
 
 class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
