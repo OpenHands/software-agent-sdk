@@ -73,7 +73,7 @@ This file is mostly about principles. For the mechanics, please see:
 For a non-trivial PR — a new or changed public API (Python or the agent-server REST/WebSocket
 surface), a new subsystem, a behavior change in the agent loop, or a migration — a reviewer
 often has to reconstruct the design from the diff alone. That is slow, and it is where the
-compatibility risks we care about hide. You are encouraged (not required) to add a short design
+compatibility risks we care about hide. You are encouraged (though not required) to add a short design
 doc so reviewers grasp the proposal at a glance.
 
 The convention:
