@@ -57,8 +57,9 @@ before/after of your change, then link it here via htmlpreview so reviewers see 
 
   https://htmlpreview.github.io/?https://github.com/<your-fork>/<repo>/blob/<your-branch>/.pr/design.html
 
-The `.pr/` directory is temporary — it is removed automatically when the PR is approved.
-See CONTRIBUTING.md ("Design doc for non-trivial PRs") for details.
+The `.pr/` directory is temporary — it is removed automatically (on approval for
+same-repository PRs, right after merge for fork PRs). See CONTRIBUTING.md ("Design doc for
+non-trivial PRs") for details.
 -->
 
 ## Type
