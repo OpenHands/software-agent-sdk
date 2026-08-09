@@ -9,11 +9,11 @@ Contains:
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from openhands.sdk.agent.stream_context import StreamContext
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.event import MessageEvent
+from openhands.sdk.event import ActionEvent, Event, MessageEvent
 from openhands.sdk.llm import LLMResponse, Message, TextContent
 from openhands.sdk.logger import get_logger
 
@@ -25,7 +25,6 @@ if TYPE_CHECKING:
         LocalConversation,
     )
     from openhands.sdk.critic.base import CriticBase, CriticResult
-    from openhands.sdk.event import ActionEvent
     from openhands.sdk.llm import (
         MessageToolCall,
         ReasoningItemModel,
@@ -35,6 +34,122 @@ if TYPE_CHECKING:
     from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 
 logger = get_logger(__name__)
+
+
+# Corrective feedback for a content-without-tool-call turn under the "nudge"
+# policy. Unlike the empty-response nudge, the model DID produce a message
+# (preserved in history), so the feedback points at the missing tool call and at
+# the explicit way to signal completion.
+_CONTENT_NUDGE_TEXT = (
+    "Your last message did not include a function call. If the task is "
+    "complete, call the `finish` tool; otherwise continue with the next "
+    "tool call."
+)
+
+# How far back to scan the active branch when deciding whether to nudge. The
+# decision only needs the tail since the last human turn (or the last action),
+# so this is a cap on work, not a semantic window.
+_NUDGE_SCAN_WINDOW = 64
+
+# A human message that is one of these is a hold, not a task — a content-only
+# reply to it must not be nudged into "continuing".
+_HOLD_PHRASES = frozenset(
+    {"stop", "wait", "hold on", "pause", "cancel", "never mind", "nevermind"}
+)
+# Openers of an explicit refusal/inability. A model that says it cannot proceed
+# is answering, not narrating; nudging it only produces the same refusal again.
+_REFUSAL_OPENERS = (
+    "i can't",
+    "i cannot",
+    "i can not",
+    "i won't",
+    "i will not",
+    "i'm unable",
+    "i am unable",
+    "i'm not able",
+    "i am not able",
+)
+
+
+def _message_text_of(message: Message) -> str:
+    return " ".join(
+        part.text for part in message.content if isinstance(part, TextContent)
+    ).strip()
+
+
+def _message_text(event: MessageEvent) -> str:
+    return _message_text_of(event.llm_message)
+
+
+def _is_content_nudge(event: Event) -> bool:
+    """Is ``event`` a synthetic nudge emitted under ``content_response_policy``?
+
+    The fixed nudge text is the marker: it is emitted by the framework
+    (``source="environment"``), never by the human or the model.
+    """
+    return (
+        isinstance(event, MessageEvent)
+        and event.source == "environment"
+        and _message_text(event) == _CONTENT_NUDGE_TEXT
+    )
+
+
+def _last_user_message_reads_like_task(events: list[Event]) -> bool:
+    """False when the human's last message is a question, a hold, or chit-chat.
+
+    A model replying in prose to any of those is *answering*, and nudging it to
+    "continue with the next tool call" would be wrong. With no human message in
+    the window we assume a task (the agent was clearly told to do something).
+    """
+    for event in reversed(events):
+        if isinstance(event, MessageEvent) and event.source == "user":
+            text = _message_text(event).lower().rstrip(".! ")
+            if not text or text.endswith("?"):
+                return False
+            if text in _HOLD_PHRASES:
+                return False
+            if len(text.split()) < 2:  # "hi", "thanks", "ok" — not a task
+                return False
+            return True
+    return True
+
+
+def _looks_like_answer_or_refusal(text: str) -> bool:
+    """The model's own message is a question back to the user, or a refusal."""
+    stripped = text.strip()
+    if stripped.endswith("?"):
+        return True
+    return stripped.lower().startswith(_REFUSAL_OPENERS)
+
+
+def should_send_content_nudge(message: Message, events: list[Event]) -> bool:
+    """Decide whether a content-without-tool-call turn gets ONE synthetic nudge.
+
+    Pure function of the model's message and the tail of the active branch, so
+    the bound is structural rather than a property of conversation-level stuck
+    detection. All of these must hold:
+
+    - the human's last message reads like a task (not a question / hold /
+      chit-chat) — see :func:`_last_user_message_reads_like_task`;
+    - the model's message is not itself a question or an explicit refusal;
+    - the model has not *already* been nudged since it last acted: if a content
+      nudge sits after the last ``ActionEvent`` (and after the last human turn),
+      the model answered a nudge with more prose, and we give up. That bounds a
+      runaway prose turn at +1 step, while a model that narrates, is nudged,
+      acts, and later narrates again is still nudged each time.
+    """
+    if not _last_user_message_reads_like_task(events):
+        return False
+    if _looks_like_answer_or_refusal(_message_text_of(message)):
+        return False
+    for event in reversed(events):
+        if isinstance(event, ActionEvent):
+            return True  # acted since the last nudge — a fresh streak
+        if isinstance(event, MessageEvent) and event.source == "user":
+            return True  # a new human turn resets the bound
+        if _is_content_nudge(event):
+            return False  # already nudged once this streak
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +208,7 @@ class ResponseDispatchMixin:
     # Declared for pyright — the actual implementations live on Agent.
     if TYPE_CHECKING:
         critic: CriticBase | None
+        content_response_policy: Literal["finish", "nudge"]
 
         def _get_action_event(
             self,
@@ -254,10 +370,45 @@ class ResponseDispatchMixin:
         on_event: ConversationCallbackType,
         stream: StreamContext | None = None,
     ) -> None:
-        """Handle LLM response with text content — finishes conversation."""
+        """Handle LLM response with text content.
+
+        Under the default ``content_response_policy="finish"`` the message is
+        treated as the final answer and the conversation is marked FINISHED.
+        Under ``"nudge"`` the message is emitted (preserved in history), then —
+        if :func:`should_send_content_nudge` allows it — corrective feedback is
+        sent and the loop continues, reserving completion for an explicit
+        signal such as the ``finish`` tool. This keeps weaker/local models that
+        narrate a step in prose before its tool call from being silently
+        treated as done mid-task (#3992). The nudge is bounded: at most one per
+        prose streak (a second consecutive content-only turn finishes), and
+        never when the human asked a question, said to hold, or the model is
+        itself asking or refusing.
+
+        Relation to the ``Stop`` hook: the hook fires at FINISHED and can deny
+        the stop (shell-level control, injected feedback); ``"nudge"`` acts
+        in-loop *before* FINISHED is reached, so a nudged turn never triggers
+        the hook. Reach for the hook when you want an external policy on
+        stopping; reach for ``"nudge"`` for the narrate-then-act model failure.
+        Don't stack them expecting both to fire on the same turn.
+        """
         self._emit_message_event(message, llm_response, conversation, on_event, stream)
         self._maybe_emit_vllm_tokens(llm_response, on_event)
-        logger.debug("LLM produced a message response - awaits user input")
+        if self.content_response_policy == "nudge":
+            recent = state.active_branch(limit=_NUDGE_SCAN_WINDOW)
+            if should_send_content_nudge(message, recent):
+                logger.debug(
+                    "LLM produced a message response without a tool call - "
+                    "content_response_policy='nudge', continuing agent loop"
+                )
+                self._send_corrective_nudge(on_event, text=_CONTENT_NUDGE_TEXT)
+                return
+            logger.debug(
+                "LLM produced a message response without a tool call - "
+                "content_response_policy='nudge' but the nudge is not warranted "
+                "(already nudged, or the turn is an answer/refusal/hold) - finishing"
+            )
+        else:
+            logger.debug("LLM produced a message response - awaits user input")
         state.execution_status = ConversationExecutionStatus.FINISHED
 
     def _handle_no_content_response(
@@ -340,15 +491,22 @@ class ResponseDispatchMixin:
             }
         )
 
-    def _send_corrective_nudge(self, on_event: ConversationCallbackType) -> None:
+    def _send_corrective_nudge(
+        self,
+        on_event: ConversationCallbackType,
+        *,
+        text: str | None = None,
+    ) -> None:
         """Inject corrective feedback when no tool call and no content.
 
         The model still receives this as a user-role message, but the event
-        source marks that it came from the framework rather than the human.
+        source marks that it came from the framework rather than the human, so
+        repeated synthetic nudges do not reset the human-turn boundary the
+        stuck detector uses. ``text`` overrides the default for the
+        content-without-tool-call case under ``content_response_policy="nudge"``.
         """
         logger.warning(
-            "LLM response contained no tool call and no content"
-            " - sending corrective feedback"
+            "LLM response contained no tool call - sending corrective feedback"
         )
         nudge = MessageEvent(
             source="environment",
@@ -356,7 +514,8 @@ class ResponseDispatchMixin:
                 role="user",
                 content=[
                     TextContent(
-                        text=(
+                        text=text
+                        or (
                             "Your last response did not include a "
                             "function call or a message. Please "
                             "use a tool to proceed with the task."
