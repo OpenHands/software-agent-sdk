@@ -93,7 +93,7 @@ The convention:
    ```
 
 Skip this for trivial PRs (a typo, a one-line guard, a dependency bump, a small bug fix) — there, a design doc is
-just noise. htmlpreview only works for public repos and self-contained pages.
+just noise.
 
 The `pr-design-doc` skill in the [OpenHands extensions](https://github.com/OpenHands/extensions)
 repo can generate the page for you.
