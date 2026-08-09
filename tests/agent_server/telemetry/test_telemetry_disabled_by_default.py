@@ -156,6 +156,7 @@ async def test_conversation_service_reads_the_live_sink_not_a_captured_one(
     class _FakeEventService:
         def __init__(self):
             self.subscribers: list[object] = []
+            self._conversation = None
 
         async def subscribe_to_events(self, subscriber):
             self.subscribers.append(subscriber)

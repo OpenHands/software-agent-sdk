@@ -2187,7 +2187,7 @@ class ConversationService:
             if factory is None:
                 return
 
-            live_conversation = getattr(event_service, "_conversation", None)
+            live_conversation = event_service._conversation
             live_agent = (
                 live_conversation.agent if live_conversation is not None else None
             )
