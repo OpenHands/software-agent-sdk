@@ -367,7 +367,9 @@ class LocalConversation(BaseConversation):
         # base_state.json is the source of truth for the agent. On resume with
         # ``agent=None`` the state holds the persisted agent; adopt it here so
         # ``self.agent`` and ``self._state.agent`` are the same object.
-        self.agent = self._state.agent
+        if agent is None:
+            agent = self._state.agent
+        self.agent = agent
 
         self._bind_conversation_context(self.agent.llm)
 
