@@ -1086,7 +1086,7 @@ class EventService:
                 "enabled" if streaming_enabled else "disabled (no LLM has stream=True)",
             )
             if not streaming_enabled:
-                conversation._on_token = None
+                conversation.set_token_callbacks(None)
         self._conversation = conversation
         if isinstance(conversation.agent, ACPAgent):
             for secret_name, binding in self.credential_bindings.items():

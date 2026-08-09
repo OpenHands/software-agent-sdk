@@ -1234,8 +1234,11 @@ class ConversationService:
                         and CODEX_AUTH_SECRET_NAME
                         not in existing_event_service.credential_bindings
                     ):
+                        # Reuse the live agent we already resolved above instead
+                        # of letting _resolve_credential_bindings fall back to a
+                        # synchronous base_state.json read.
                         late_bindings = await self._resolve_credential_bindings(
-                            existing_event_service.stored
+                            existing_event_service.stored, agent=existing_agent
                         )
                         try:
                             for secret_name, binding in late_bindings.items():
@@ -1473,8 +1476,15 @@ class ConversationService:
             exclude={"agent_profile_id", "agent_launch_additions"},
         )
 
-        # The agent is persisted to base_state.json (not meta.json), so it is
-        # passed to _start_event_service separately. Default to request.agent.
+        # The agent is persisted to base_state.json (not meta.json), so it must
+        # not be splatted into StoredConversation (which no longer carries the
+        # agent). Pull it out explicitly rather than relying on Pydantic's
+        # ``extra="ignore"`` to drop it silently. The serialized payload is kept
+        # for the secrets_encrypted path, which re-validates it with the cipher.
+        agent_payload = request_data.pop("agent", None)
+
+        # The agent is passed to _start_event_service separately. Default to
+        # request.agent.
         new_agent: AgentBase = request.agent
 
         # If secrets_encrypted=True, the agent's secrets (e.g., LLM api_key) are
@@ -1503,7 +1513,7 @@ class ConversationService:
             # validate_secret() decrypts LLM api_key, MCP env, etc.
             agent_cls = type(request.agent)
             new_agent = agent_cls.model_validate(
-                request_data["agent"], context={"cipher": self.cipher}
+                agent_payload, context={"cipher": self.cipher}
             )
         else:
             stored = StoredConversation(
@@ -2215,11 +2225,9 @@ def _build_telemetry_context(
     to ``unknown``, never raise into conversation startup.
 
     The agent is no longer stored on meta.json; callers pass the live/persisted
-    agent explicitly. ``getattr(stored, "agent", None)`` remains as a defensive
-    fallback for older callers.
+    agent explicitly. When ``agent`` is ``None`` (no live conversation), the
+    agent-derived fields simply degrade to ``unknown``.
     """
-    if agent is None:
-        agent = getattr(stored, "agent", None)
     llm = getattr(agent, "llm", None)
 
     workspace = getattr(stored, "workspace", None)

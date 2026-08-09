@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import json
 import shutil
 import threading
 import time
@@ -1853,6 +1854,14 @@ class TestEventServiceSaveMeta:
         conv_dir = tmp_path / stored.id.hex
         conv_dir.mkdir(parents=True, exist_ok=True)
 
+        # Write a meta.json up front so the assertion below proves the switch
+        # does not overwrite an *existing* meta.json with an agent mirror, rather
+        # than trivially passing because meta.json was never created.
+        await service.save_meta()
+        meta_file = conv_dir / "meta.json"
+        assert meta_file.exists()
+        assert "agent" not in json.loads(meta_file.read_text())
+
         # Stand in for a live conversation; the protocol-level switch and the
         # base_state persistence are covered by the SDK's own tests — here we
         # only assert delegation and that meta.json is not written with an agent.
@@ -1863,9 +1872,11 @@ class TestEventServiceSaveMeta:
         # Live switch is delegated to the SDK conversation (which persists to
         # base_state.json).
         service._conversation.switch_acp_model.assert_called_once_with("new-model")
-        # The event service does not write a meta.json agent mirror anymore.
+        # StoredConversation no longer carries the agent at all.
         assert not hasattr(service.stored, "agent")
-        assert not (conv_dir / "meta.json").exists()
+        # meta.json still exists and was never given an agent mirror.
+        assert meta_file.exists()
+        assert "agent" not in json.loads(meta_file.read_text())
 
     @pytest.mark.asyncio
     async def test_switch_acp_model_inactive_service_raises_value_error(self, tmp_path):
