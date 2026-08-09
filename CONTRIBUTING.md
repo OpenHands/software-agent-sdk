@@ -92,7 +92,7 @@ The convention:
    https://htmlpreview.github.io/?https://github.com/<your-fork>/<repo>/blob/<your-branch>/.pr/design.html
    ```
 
-Skip this for trivial PRs (a typo, a one-line guard, a dependency bump) — there, a design doc is
+Skip this for trivial PRs (a typo, a one-line guard, a dependency bump, a small bug fix) — there, a design doc is
 just noise. htmlpreview only works for public repos and self-contained pages.
 
 The `pr-design-doc` skill in the [OpenHands extensions](https://github.com/OpenHands/extensions)
