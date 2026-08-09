@@ -198,7 +198,7 @@ class LocalConversation(BaseConversation):
 
     def __init__(
         self,
-        agent: AgentBase,
+        agent: AgentBase | None,
         workspace: str | Path | LocalWorkspace,
         plugins: list[PluginSource] | None = None,
         persistence_dir: str | Path | None = None,
@@ -318,12 +318,20 @@ class LocalConversation(BaseConversation):
         # or, when resuming a persisted conversation without re-supplying them,
         # from the persisted agent's tool specs — mirroring the server resume
         # path so a fresh process can re-register the dynamic tools.
+        # Client tools are injected into the caller-supplied agent. When
+        # ``agent`` is None the agent is resumed from base_state.json (which
+        # already carries its persisted tool specs), so there is nothing to
+        # inject here.
         resolved_client_tools = list(client_tools or [])
-        if not resolved_client_tools and persistence_dir is not None:
+        if (
+            agent is not None
+            and not resolved_client_tools
+            and persistence_dir is not None
+        ):
             resolved_client_tools = self._recover_persisted_client_tools(
                 persistence_dir, desired_id
             )
-        if resolved_client_tools:
+        if agent is not None and resolved_client_tools:
             from openhands.sdk.tool.client_tool import register_client_tools
 
             client_tool_specs = register_client_tools(resolved_client_tools)
@@ -333,8 +341,6 @@ class LocalConversation(BaseConversation):
             ]
             if new_tools:
                 agent = agent.model_copy(update={"tools": [*agent.tools, *new_tools]})
-
-        self.agent = agent
         if isinstance(workspace, (str, Path)):
             # LocalWorkspace accepts both str and Path via BeforeValidator
             workspace = LocalWorkspace(working_dir=workspace)
@@ -358,6 +364,10 @@ class LocalConversation(BaseConversation):
             cipher=cipher,
             tags=tags,
         )
+        # base_state.json is the source of truth for the agent. On resume with
+        # ``agent=None`` the state holds the persisted agent; adopt it here so
+        # ``self.agent`` and ``self._state.agent`` are the same object.
+        self.agent = self._state.agent
 
         self._bind_conversation_context(self.agent.llm)
 

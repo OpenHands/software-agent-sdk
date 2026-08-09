@@ -576,9 +576,9 @@ def test_confirmation_policy_is_read_from_the_field_that_exists():
     assert "confirmation_mode" not in StoredConversation.model_fields
     assert "confirmation_policy" in StoredConversation.model_fields
 
+    agent = Agent(llm=LLM(model="anthropic/claude-sonnet-5", usage_id="t"), tools=[])
     stored = StoredConversation(
         id=_uuid.uuid4(),
-        agent=Agent(llm=LLM(model="anthropic/claude-sonnet-5", usage_id="t"), tools=[]),
         workspace=LocalWorkspace(working_dir="/Users/alice/secret-project"),
         confirmation_policy=AlwaysConfirm(),
         user_id="canvas-user-42",
@@ -589,6 +589,7 @@ def test_confirmation_policy_is_read_from_the_field_that_exists():
             runtime=build_runtime_properties(deferred_init=False),
             salt="s",
         ),
+        agent=agent,
     )
 
     from dataclasses import asdict

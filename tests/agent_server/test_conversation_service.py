@@ -6,6 +6,7 @@ import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
@@ -33,7 +34,7 @@ from openhands.agent_server.models import (
     UpdateConversationRequest,
 )
 from openhands.agent_server.utils import safe_rmtree as _safe_rmtree
-from openhands.sdk import LLM, Agent, Message
+from openhands.sdk import LLM, Agent, AgentBase, Message
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
@@ -62,12 +63,18 @@ def mock_event_service():
     return service
 
 
+# The agent is no longer stored on meta.json (StoredConversation); it lives in
+# base_state.json (ConversationState). Tests that need an agent to build a state
+# use this helper instead of reading it back off StoredConversation.
+def _sample_agent() -> Agent:
+    return Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[])
+
+
 @pytest.fixture
 def sample_stored_conversation():
     """Create a sample StoredConversation for testing."""
     return StoredConversation(
         id=uuid4(),
-        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
         workspace=LocalWorkspace(working_dir="workspace/project"),
         confirmation_policy=NeverConfirm(),
         initial_message=None,
@@ -75,6 +82,40 @@ def sample_stored_conversation():
         created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
         updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
     )
+
+
+@pytest.mark.asyncio
+async def test_meta_json_has_no_agent_and_reload_uses_base_state(tmp_path):
+    """End-to-end single-source-of-truth guarantee.
+
+    A newly started conversation must persist its agent to base_state.json and
+    NOT to meta.json. A fresh ConversationService (simulating a server restart)
+    must reload the agent from base_state.json.
+    """
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        info, _ = await service.start_conversation(request)
+        conv_id = info.id
+
+    conv_dir = conversations_dir / conv_id.hex
+    meta = json.loads((conv_dir / "meta.json").read_text())
+    base_state = json.loads((conv_dir / "base_state.json").read_text())
+    # meta.json is agent-free; base_state.json owns the agent.
+    assert "agent" not in meta
+    assert base_state["agent"]["llm"]["model"] == "gpt-4o"
+
+    # A fresh service (restart) reloads the agent from base_state.json.
+    async with ConversationService(conversations_dir=conversations_dir) as service2:
+        reloaded = await service2.get_conversation(conv_id)
+        assert reloaded is not None
+        assert reloaded.agent.llm.model == "gpt-4o"
 
 
 def _create_running_terminal_action(tool_call_id: str = "call_1") -> ActionEvent:
@@ -186,15 +227,17 @@ async def test_start_conversation_registers_and_injects_client_tools(
         ],
     )
 
-    captured: dict[str, StoredConversation] = {}
+    captured: dict[str, Any] = {}
 
-    async def fake_start_event_service(stored: StoredConversation, **_kwargs):
+    async def fake_start_event_service(stored: StoredConversation, **kwargs):
+        agent = cast(AgentBase, kwargs.get("agent"))
         captured["stored"] = stored
+        captured["agent"] = agent
         service = AsyncMock(spec=EventService)
         service.stored = stored
         service.get_state.return_value = ConversationState(
             id=stored.id,
-            agent=stored.agent,
+            agent=agent,
             workspace=stored.workspace,
             execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=stored.confirmation_policy,
@@ -209,8 +252,9 @@ async def test_start_conversation_registers_and_injects_client_tools(
         await conversation_service.start_conversation(request)
 
     stored = captured["stored"]
+    agent = captured["agent"]
     # Injected into the agent's tool specs so _initialize() can resolve it
-    assert "srv_show_dialog" in {t.name for t in stored.agent.tools}
+    assert "srv_show_dialog" in {t.name for t in agent.tools}
     # Persisted so forks / restarts can re-register the dynamic action type
     assert [s.name for s in stored.client_tools] == ["srv_show_dialog"]
     # The class is registered in the global tool registry
@@ -262,15 +306,17 @@ async def test_start_conversation_decrypts_encrypted_agent_settings_mcp_env(
         == encrypted_mcp_token
     )
 
-    captured: dict[str, StoredConversation] = {}
+    captured: dict[str, Any] = {}
 
-    async def fake_start_event_service(stored: StoredConversation, **_kwargs):
+    async def fake_start_event_service(stored: StoredConversation, **kwargs):
+        agent = cast(AgentBase, kwargs.get("agent"))
         captured["stored"] = stored
+        captured["agent"] = agent
         service = AsyncMock(spec=EventService)
         service.stored = stored
         service.get_state.return_value = ConversationState(
             id=stored.id,
-            agent=stored.agent,
+            agent=agent,
             workspace=stored.workspace,
             execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=stored.confirmation_policy,
@@ -284,11 +330,11 @@ async def test_start_conversation_decrypts_encrypted_agent_settings_mcp_env(
     ):
         await conversation_service.start_conversation(request)
 
-    stored = captured["stored"]
-    assert isinstance(stored.agent.llm.api_key, SecretStr)
-    assert stored.agent.llm.api_key.get_secret_value() == "sk-plaintext"
+    agent = captured["agent"]
+    assert isinstance(agent.llm.api_key, SecretStr)
+    assert agent.llm.api_key.get_secret_value() == "sk-plaintext"
     assert (
-        dump_mcp_config(stored.agent.mcp_config)["github"]["env"][
+        dump_mcp_config(agent.mcp_config)["github"]["env"][
             "GITHUB_PERSONAL_ACCESS_TOKEN"
         ]
         == "ghp-plaintext"
@@ -782,7 +828,7 @@ async def test_waiting_hydration_cannot_restore_deleted_conversation(
         record = service._conversation_records[conversation_id]
         state = ConversationState(
             id=conversation_id,
-            agent=record.stored.agent,
+            agent=_sample_agent(),
             workspace=record.stored.workspace,
             execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=record.stored.confirmation_policy,
@@ -845,7 +891,7 @@ async def test_shutdown_closes_runtime_from_in_flight_hydration(
     record = service._conversation_records[conversation_id]
     state = ConversationState(
         id=conversation_id,
-        agent=record.stored.agent,
+        agent=_sample_agent(),
         workspace=record.stored.workspace,
         execution_status=ConversationExecutionStatus.IDLE,
         confirmation_policy=record.stored.confirmation_policy,
@@ -947,7 +993,7 @@ class TestConversationServiceSearchConversations:
         mock_service.stored = sample_stored_conversation
         mock_state = ConversationState(
             id=sample_stored_conversation.id,
-            agent=sample_stored_conversation.agent,
+            agent=_sample_agent(),
             workspace=sample_stored_conversation.workspace,
             execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=sample_stored_conversation.confirmation_policy,
@@ -980,7 +1026,6 @@ class TestConversationServiceSearchConversations:
         )
         stored_conv = StoredConversation(
             id=uuid4(),
-            agent=agent,
             workspace=LocalWorkspace(working_dir="workspace/project"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -993,7 +1038,7 @@ class TestConversationServiceSearchConversations:
         mock_service.stored = stored_conv
         mock_service.get_state.return_value = ConversationState(
             id=stored_conv.id,
-            agent=stored_conv.agent,
+            agent=agent,
             workspace=stored_conv.workspace,
             execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=stored_conv.confirmation_policy,
@@ -1027,7 +1072,6 @@ class TestConversationServiceSearchConversations:
         ):
             stored_conv = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir="workspace/project"),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -1040,7 +1084,7 @@ class TestConversationServiceSearchConversations:
             mock_service.stored = stored_conv
             mock_state = ConversationState(
                 id=stored_conv.id,
-                agent=stored_conv.agent,
+                agent=_sample_agent(),
                 workspace=stored_conv.workspace,
                 execution_status=status,
                 confirmation_policy=stored_conv.confirmation_policy,
@@ -1079,7 +1123,6 @@ class TestConversationServiceSearchConversations:
         for i in range(3):
             stored_conv = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir="workspace/project"),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -1094,7 +1137,7 @@ class TestConversationServiceSearchConversations:
             mock_service.stored = stored_conv
             mock_state = ConversationState(
                 id=stored_conv.id,
-                agent=stored_conv.agent,
+                agent=_sample_agent(),
                 workspace=stored_conv.workspace,
                 execution_status=ConversationExecutionStatus.IDLE,
                 confirmation_policy=stored_conv.confirmation_policy,
@@ -1156,7 +1199,6 @@ class TestConversationServiceSearchConversations:
         for i in range(5):
             stored_conv = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir="workspace/project"),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -1169,7 +1211,7 @@ class TestConversationServiceSearchConversations:
             mock_service.stored = stored_conv
             mock_state = ConversationState(
                 id=stored_conv.id,
-                agent=stored_conv.agent,
+                agent=_sample_agent(),
                 workspace=stored_conv.workspace,
                 execution_status=ConversationExecutionStatus.IDLE,
                 confirmation_policy=stored_conv.confirmation_policy,
@@ -1226,7 +1268,6 @@ class TestConversationServiceSearchConversations:
         for status, created_at in conversations_data:
             stored_conv = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir="workspace/project"),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -1239,7 +1280,7 @@ class TestConversationServiceSearchConversations:
             mock_service.stored = stored_conv
             mock_state = ConversationState(
                 id=stored_conv.id,
-                agent=stored_conv.agent,
+                agent=_sample_agent(),
                 workspace=stored_conv.workspace,
                 execution_status=status,
                 confirmation_policy=stored_conv.confirmation_policy,
@@ -1267,7 +1308,7 @@ class TestConversationServiceSearchConversations:
         mock_service.stored = sample_stored_conversation
         mock_state = ConversationState(
             id=sample_stored_conversation.id,
-            agent=sample_stored_conversation.agent,
+            agent=_sample_agent(),
             workspace=sample_stored_conversation.workspace,
             execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=sample_stored_conversation.confirmation_policy,
@@ -1316,7 +1357,7 @@ class TestConversationServiceCountConversations:
         mock_service.stored = sample_stored_conversation
         mock_state = ConversationState(
             id=sample_stored_conversation.id,
-            agent=sample_stored_conversation.agent,
+            agent=_sample_agent(),
             workspace=sample_stored_conversation.workspace,
             execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=sample_stored_conversation.confirmation_policy,
@@ -1343,7 +1384,6 @@ class TestConversationServiceCountConversations:
         for i, status in enumerate(statuses):
             stored_conv = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir="workspace/project"),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -1356,7 +1396,7 @@ class TestConversationServiceCountConversations:
             mock_service.stored = stored_conv
             mock_state = ConversationState(
                 id=stored_conv.id,
-                agent=stored_conv.agent,
+                agent=_sample_agent(),
                 workspace=stored_conv.workspace,
                 execution_status=status,
                 confirmation_policy=stored_conv.confirmation_policy,
@@ -1393,7 +1433,6 @@ class TestConversationServiceCountConversations:
     ):
         legacy_conversation = StoredConversation(
             id=uuid4(),
-            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=LocalWorkspace(working_dir="workspace/project"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -1403,7 +1442,6 @@ class TestConversationServiceCountConversations:
         )
         acp_conversation = StoredConversation(
             id=uuid4(),
-            agent=ACPAgent(acp_command=["echo", "test"]),
             workspace=LocalWorkspace(working_dir="workspace/project"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -1417,7 +1455,7 @@ class TestConversationServiceCountConversations:
             mock_service.stored = stored_conv
             mock_service.get_state.return_value = ConversationState(
                 id=stored_conv.id,
-                agent=stored_conv.agent,
+                agent=_sample_agent(),
                 workspace=stored_conv.workspace,
                 execution_status=ConversationExecutionStatus.IDLE,
                 confirmation_policy=stored_conv.confirmation_policy,
@@ -1569,16 +1607,18 @@ class TestConversationServiceStartConversation:
             worktree=True,
         )
 
-        captured: dict[str, StoredConversation] = {}
+        captured: dict[str, Any] = {}
 
         def _event_service_factory(**kwargs):
             stored = kwargs["stored"]
+            agent = cast(AgentBase, kwargs.get("agent"))
             captured["stored"] = stored
+            captured["agent"] = agent
             mock_event_service = AsyncMock(spec=EventService)
             mock_event_service.stored = stored
             mock_event_service.get_state.return_value = ConversationState(
                 id=stored.id,
-                agent=stored.agent,
+                agent=agent or _sample_agent(),
                 workspace=stored.workspace,
                 execution_status=ConversationExecutionStatus.IDLE,
                 confirmation_policy=stored.confirmation_policy,
@@ -1607,8 +1647,9 @@ class TestConversationServiceStartConversation:
             )
             == expected_branch
         )
-        assert stored.agent.agent_context is not None
-        suffix = stored.agent.agent_context.system_message_suffix
+        agent = captured["agent"]
+        assert agent.agent_context is not None
+        suffix = agent.agent_context.system_message_suffix
         assert suffix is not None
         assert str(repo_dir.resolve()) in suffix
         assert str(expected_worktree) in suffix
@@ -1633,16 +1674,18 @@ class TestConversationServiceStartConversation:
             worktree=True,
         )
 
-        captured: dict[str, StoredConversation] = {}
+        captured: dict[str, Any] = {}
 
         def _event_service_factory(**kwargs):
             stored = kwargs["stored"]
+            agent = cast(AgentBase, kwargs.get("agent"))
             captured["stored"] = stored
+            captured["agent"] = agent
             mock_event_service = AsyncMock(spec=EventService)
             mock_event_service.stored = stored
             mock_event_service.get_state.return_value = ConversationState(
                 id=stored.id,
-                agent=stored.agent,
+                agent=agent or _sample_agent(),
                 workspace=stored.workspace,
                 execution_status=ConversationExecutionStatus.IDLE,
                 confirmation_policy=stored.confirmation_policy,
@@ -1682,16 +1725,18 @@ class TestConversationServiceStartConversation:
             worktree=True,
         )
 
-        captured: dict[str, StoredConversation] = {}
+        captured: dict[str, Any] = {}
 
         def _event_service_factory(**kwargs):
             stored = kwargs["stored"]
+            agent = cast(AgentBase, kwargs.get("agent"))
             captured["stored"] = stored
+            captured["agent"] = agent
             mock_event_service = AsyncMock(spec=EventService)
             mock_event_service.stored = stored
             mock_event_service.get_state.return_value = ConversationState(
                 id=stored.id,
-                agent=stored.agent,
+                agent=agent or _sample_agent(),
                 workspace=stored.workspace,
                 execution_status=ConversationExecutionStatus.IDLE,
                 confirmation_policy=stored.confirmation_policy,
@@ -1706,10 +1751,11 @@ class TestConversationServiceStartConversation:
 
         stored = captured["stored"]
 
+        agent = captured["agent"]
         assert stored.worktree is True
         assert stored.workspace.working_dir == str(workspace_dir)
         assert result.workspace.working_dir == str(workspace_dir)
-        assert stored.agent.agent_context is None
+        assert agent.agent_context is None
         assert not (worktree_root / str(conversation_id)).exists()
 
     def test_get_worktree_start_point_prefers_origin_default_branch(self, tmp_path):
@@ -1881,7 +1927,6 @@ class TestConversationServiceStartConversation:
         mock_event_service.is_open.return_value = False
         mock_event_service.stored = StoredConversation(
             id=custom_id,
-            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=LocalWorkspace(working_dir="workspace/project"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -1906,7 +1951,6 @@ class TestConversationServiceStartConversation:
                 mock_new_service = AsyncMock(spec=EventService)
                 mock_new_service.stored = StoredConversation(
                     id=custom_id,
-                    agent=request.agent,
                     workspace=request.workspace,
                     confirmation_policy=request.confirmation_policy,
                     initial_message=request.initial_message,
@@ -1941,7 +1985,6 @@ class TestConversationServiceStartConversation:
         mock_event_service.is_open.return_value = True
         mock_event_service.stored = StoredConversation(
             id=custom_id,
-            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=LocalWorkspace(working_dir="workspace/project"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -1951,7 +1994,7 @@ class TestConversationServiceStartConversation:
         )
         mock_state = ConversationState(
             id=custom_id,
-            agent=mock_event_service.stored.agent,
+            agent=_sample_agent(),
             workspace=mock_event_service.stored.workspace,
             execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=mock_event_service.stored.confirmation_policy,
@@ -1983,9 +2026,9 @@ class TestConversationServiceStartConversation:
         self, conversation_service
     ):
         custom_id = uuid4()
+        acp_agent = ACPAgent(acp_command=["echo", "test"])
         stored = StoredConversation(
             id=custom_id,
-            agent=ACPAgent(acp_command=["echo", "test"]),
             workspace=LocalWorkspace(working_dir="workspace/project"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -1996,9 +2039,12 @@ class TestConversationServiceStartConversation:
         mock_event_service = AsyncMock(spec=EventService)
         mock_event_service.is_open.return_value = True
         mock_event_service.stored = stored
+        # The agent lives on base_state.json / the live conversation now.
+        mock_event_service._conversation = MagicMock()
+        mock_event_service._conversation.agent = acp_agent
         mock_event_service.get_state.return_value = ConversationState(
             id=stored.id,
-            agent=stored.agent,
+            agent=acp_agent,
             workspace=stored.workspace,
             execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=stored.confirmation_policy,
@@ -2035,7 +2081,6 @@ class TestConversationServiceStartConversation:
         with tempfile.TemporaryDirectory() as temp_dir:
             stored = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -2071,7 +2116,6 @@ class TestConversationServiceStartConversation:
         with tempfile.TemporaryDirectory() as temp_dir:
             stored = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -2119,7 +2163,7 @@ class TestConversationServiceUpdateConversation:
         mock_service.stored = sample_stored_conversation
         mock_state = ConversationState(
             id=sample_stored_conversation.id,
-            agent=sample_stored_conversation.agent,
+            agent=_sample_agent(),
             workspace=sample_stored_conversation.workspace,
             execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=sample_stored_conversation.confirmation_policy,
@@ -2150,7 +2194,7 @@ class TestConversationServiceUpdateConversation:
         mock_service.stored = sample_stored_conversation
         mock_state = ConversationState(
             id=sample_stored_conversation.id,
-            agent=sample_stored_conversation.agent,
+            agent=_sample_agent(),
             workspace=sample_stored_conversation.workspace,
             execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=sample_stored_conversation.confirmation_policy,
@@ -2181,7 +2225,7 @@ class TestConversationServiceUpdateConversation:
         mock_service.stored = sample_stored_conversation
         mock_state = ConversationState(
             id=sample_stored_conversation.id,
-            agent=sample_stored_conversation.agent,
+            agent=_sample_agent(),
             workspace=sample_stored_conversation.workspace,
             execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=sample_stored_conversation.confirmation_policy,
@@ -2215,7 +2259,7 @@ class TestConversationServiceUpdateConversation:
         mock_service.stored = sample_stored_conversation
         state = ConversationState(
             id=sample_stored_conversation.id,
-            agent=sample_stored_conversation.agent,
+            agent=_sample_agent(),
             workspace=sample_stored_conversation.workspace,
             execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=sample_stored_conversation.confirmation_policy,
@@ -2302,7 +2346,7 @@ class TestConversationServiceUpdateConversation:
         mock_service.stored = sample_stored_conversation
         mock_state = ConversationState(
             id=sample_stored_conversation.id,
-            agent=sample_stored_conversation.agent,
+            agent=_sample_agent(),
             workspace=sample_stored_conversation.workspace,
             execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=sample_stored_conversation.confirmation_policy,
@@ -2335,9 +2379,9 @@ class TestConversationServiceUpdateConversation:
     async def test_update_acp_conversation_notifies_webhooks_with_acp_shape(
         self, conversation_service
     ):
+        acp_agent = ACPAgent(acp_command=["echo", "test"])
         stored_conversation = StoredConversation(
             id=uuid4(),
-            agent=ACPAgent(acp_command=["echo", "test"]),
             workspace=LocalWorkspace(working_dir="workspace/project"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -2349,7 +2393,7 @@ class TestConversationServiceUpdateConversation:
         mock_service.stored = stored_conversation
         mock_state = ConversationState(
             id=stored_conversation.id,
-            agent=stored_conversation.agent,
+            agent=acp_agent,
             workspace=stored_conversation.workspace,
             execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=stored_conversation.confirmation_policy,
@@ -2381,7 +2425,7 @@ class TestConversationServiceUpdateConversation:
         mock_service.stored = sample_stored_conversation
         mock_state = ConversationState(
             id=sample_stored_conversation.id,
-            agent=sample_stored_conversation.agent,
+            agent=_sample_agent(),
             workspace=sample_stored_conversation.workspace,
             execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=sample_stored_conversation.confirmation_policy,
@@ -2413,7 +2457,7 @@ class TestConversationServiceUpdateConversation:
         mock_service.stored = sample_stored_conversation
         mock_state = ConversationState(
             id=sample_stored_conversation.id,
-            agent=sample_stored_conversation.agent,
+            agent=_sample_agent(),
             workspace=sample_stored_conversation.workspace,
             execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=sample_stored_conversation.confirmation_policy,
@@ -2464,7 +2508,7 @@ class TestConversationServiceUpdateConversation:
         mock_service.stored = sample_stored_conversation
         mock_state = ConversationState(
             id=sample_stored_conversation.id,
-            agent=sample_stored_conversation.agent,
+            agent=_sample_agent(),
             workspace=sample_stored_conversation.workspace,
             execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=sample_stored_conversation.confirmation_policy,
@@ -2509,7 +2553,6 @@ class TestConversationServiceDeleteConversation:
         mock_service.conversation_dir = "/tmp/test_conversation"
         mock_service.stored = StoredConversation(
             id=conversation_id,
-            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=LocalWorkspace(working_dir="/tmp/test_workspace"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -2519,7 +2562,7 @@ class TestConversationServiceDeleteConversation:
         )
         mock_state = ConversationState(
             id=conversation_id,
-            agent=mock_service.stored.agent,
+            agent=_sample_agent(),
             workspace=mock_service.stored.workspace,
             execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=mock_service.stored.confirmation_policy,
@@ -2565,7 +2608,7 @@ class TestConversationServiceDeleteConversation:
         mock_service.stored = sample_stored_conversation
         mock_state = ConversationState(
             id=sample_stored_conversation.id,
-            agent=sample_stored_conversation.agent,
+            agent=_sample_agent(),
             workspace=sample_stored_conversation.workspace,
             execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=sample_stored_conversation.confirmation_policy,
@@ -2619,7 +2662,6 @@ class TestConversationServiceDeleteConversation:
         mock_service.conversation_dir = "/tmp/test_conversation"
         mock_service.stored = StoredConversation(
             id=conversation_id,
-            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=LocalWorkspace(working_dir="/tmp/test_workspace"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -2662,7 +2704,6 @@ class TestConversationServiceDeleteConversation:
         mock_service.conversation_dir = "/tmp/test_conversation"
         mock_service.stored = StoredConversation(
             id=conversation_id,
-            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=LocalWorkspace(working_dir="/tmp/test_workspace"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -2672,7 +2713,7 @@ class TestConversationServiceDeleteConversation:
         )
         mock_state = ConversationState(
             id=conversation_id,
-            agent=mock_service.stored.agent,
+            agent=_sample_agent(),
             workspace=mock_service.stored.workspace,
             execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=mock_service.stored.confirmation_policy,
@@ -2711,13 +2752,12 @@ class TestConversationServiceDeleteConversation:
         mock_service.conversation_dir = conversation_dir
         mock_service.stored = StoredConversation(
             id=conversation_id,
-            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=LocalWorkspace(working_dir=tmp_path / "workspace"),
             confirmation_policy=NeverConfirm(),
         )
         mock_service.get_state.return_value = ConversationState(
             id=conversation_id,
-            agent=mock_service.stored.agent,
+            agent=_sample_agent(),
             workspace=mock_service.stored.workspace,
             execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=mock_service.stored.confirmation_policy,
@@ -2758,7 +2798,6 @@ class TestConversationServiceDeleteConversation:
         mock_service.conversation_dir = "/tmp/test_conversation"
         mock_service.stored = StoredConversation(
             id=conversation_id,
-            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=LocalWorkspace(working_dir="/tmp/test_workspace"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -2768,7 +2807,7 @@ class TestConversationServiceDeleteConversation:
         )
         mock_state = ConversationState(
             id=conversation_id,
-            agent=mock_service.stored.agent,
+            agent=_sample_agent(),
             workspace=mock_service.stored.workspace,
             execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=mock_service.stored.confirmation_policy,
@@ -2884,9 +2923,9 @@ class TestAutoTitle:
         llm_model: str = "gpt-4o",
         llm_usage_id: str = "test-llm",
     ) -> AsyncMock:
+        agent = Agent(llm=LLM(model=llm_model, usage_id=llm_usage_id), tools=[])
         stored = StoredConversation(
             id=uuid4(),
-            agent=Agent(llm=LLM(model=llm_model, usage_id=llm_usage_id), tools=[]),
             workspace=LocalWorkspace(working_dir="workspace/project"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -2898,7 +2937,7 @@ class TestAutoTitle:
         service.stored = stored
 
         mock_conversation = MagicMock()
-        mock_conversation.agent.llm = stored.agent.llm
+        mock_conversation.agent.llm = agent.llm
         service._conversation = mock_conversation
         return service
 
@@ -3565,7 +3604,6 @@ class TestConversationSearchScaling:
             target.mkdir()
             stored = StoredConversation(
                 id=conversation_id,
-                agent=Agent(llm=LLM(model="gpt-4o", usage_id=f"llm-{i}"), tools=[]),
                 workspace=LocalWorkspace(working_dir=str(workspace_dir)),
                 confirmation_policy=NeverConfirm(),
             )
@@ -3574,7 +3612,7 @@ class TestConversationSearchScaling:
             (target / "meta.json").write_text(stored.model_dump_json())
             state = ConversationState(
                 id=conversation_id,
-                agent=stored.agent,
+                agent=_sample_agent(),
                 workspace=stored.workspace,
                 persistence_dir=str(target),
             )

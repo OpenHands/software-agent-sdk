@@ -75,13 +75,11 @@ def event_service(tmp_path):
         service = EventService(
             stored=StoredConversation(
                 id=uuid4(),
-                agent=Agent(
-                    llm=LLM(
-                        usage_id="agent", model="test-model", api_key=SecretStr("x")
-                    ),
-                    tools=[],
-                ),
                 workspace=LocalWorkspace(working_dir=str(tmp_path / "workspace")),
+            ),
+            agent=Agent(
+                llm=LLM(usage_id="agent", model="test-model", api_key=SecretStr("x")),
+                tools=[],
             ),
             conversations_dir=tmp_path / "conversations",
         )
