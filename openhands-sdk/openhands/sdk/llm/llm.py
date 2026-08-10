@@ -123,6 +123,72 @@ from openhands.sdk.logger import ENV_LOG_DIR, get_logger
 
 
 logger = get_logger(__name__)
+
+
+# ── Secret-reference resolution for provider connections ─────────────────
+#
+# An LLM profile spawned from a "provider connection" (OpenHands/OpenHands#15492)
+# stores ``api_key = "secret:<secret_name>"`` instead of the raw key, so rotating
+# the key is one SecretsStore write and every referencing profile picks it up.
+# At call time, ``_get_api_key_value`` resolves the ``secret:`` prefix via this
+# hook. The SDK stays decoupled from any concrete secret store: the agent-server
+# installs a resolver (``register_llm_secret_resolver``); without one, a
+# ``secret:`` reference resolves to ``None`` (the same behavior as a missing key),
+# so a standalone SDK use that never set a resolver is unaffected.
+LLM_SECRET_REF_PREFIX = "secret:"
+
+
+def parse_llm_secret_ref(api_key: str | None) -> str | None:
+    """Return the secret name referenced by a ``secret:<name>`` api_key, else None."""
+    if not isinstance(api_key, str):
+        return None
+    if not api_key.startswith(LLM_SECRET_REF_PREFIX):
+        return None
+    name = api_key[len(LLM_SECRET_REF_PREFIX) :].strip()
+    return name or None
+
+
+def llm_secret_ref(secret_name: str) -> str:
+    """Build the ``secret:<name>`` reference string stored in a profile's api_key."""
+    return f"{LLM_SECRET_REF_PREFIX}{secret_name}"
+
+
+_LLMSecretResolver = Callable[[str], str | None]
+_llm_secret_resolver: _LLMSecretResolver | None = None
+_llm_secret_resolver_lock = threading.Lock()
+
+
+def register_llm_secret_resolver(resolver: _LLMSecretResolver | None) -> None:
+    """Install (or clear) the resolver used for ``secret:<name>`` api_key values.
+
+    The agent-server registers a resolver that reads its SecretsStore so a
+    profile's ``secret:<name>`` api_key resolves to the real key at call time.
+    Passing ``None`` clears the resolver (e.g. between tests).
+    """
+    global _llm_secret_resolver
+    with _llm_secret_resolver_lock:
+        _llm_secret_resolver = resolver
+
+
+def _resolve_api_key(api_key: str | None) -> str | None:
+    """Resolve a possibly-``secret:``-prefixed api_key to its raw value."""
+    ref = parse_llm_secret_ref(api_key)
+    if ref is None:
+        # Not a reference: ``api_key`` is either a raw key (str) or None.
+        return api_key if isinstance(api_key, str) else None
+    with _llm_secret_resolver_lock:
+        resolver = _llm_secret_resolver
+    if resolver is None:
+        return None
+    try:
+        return resolver(ref)
+    except Exception:  # noqa: BLE001 - never leak resolver internals to the LLM call
+        logger.warning(
+            f"Failed to resolve LLM secret reference '{ref}' - treating as missing"
+        )
+        return None
+
+
 _serialized_is_subscription = ContextVar(
     "serialized_is_subscription",
     default=False,
@@ -2037,7 +2103,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if self.api_key is None:
             return None
         assert isinstance(self.api_key, SecretStr)
-        return self.api_key.get_secret_value()
+        raw = self.api_key.get_secret_value()
+        # ``secret:<name>`` references a named secret managed by a provider
+        # connection (see ``register_llm_secret_resolver``); resolve it at call
+        # time so rotation is one store write picked up by every profile. A raw
+        # key (no prefix) passes through unchanged.
+        return _resolve_api_key(raw)
 
     def _subscription_headers_from_credentials(
         self, auth: Any, credentials: Any

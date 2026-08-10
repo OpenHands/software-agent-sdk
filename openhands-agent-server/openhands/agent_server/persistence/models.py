@@ -537,6 +537,86 @@ class PersistedWorkspaces(BaseModel):
         return cls.model_validate(payload)
 
 
+# ── Provider Connections ─────────────────────────────────────────────────
+#
+# A "Provider Connection" is the persisted record for "connect a vendor once
+# with one key" (OpenHands/OpenHands#15492). The connection stores a *reference*
+# to a named secret (the API key lives in the SecretsStore), plus the list of
+# models the user selected from the provider's catalog. The raw key is never
+# stored in the connection record — only ``secret_name`` — so rotating the key
+# is one SecretsStore write and every spawned LLM profile that references the
+# same secret picks it up. The key is stored per-connection (not per-provider),
+# so a second key for the same provider is an additive connection later.
+
+CONNECTIONS_SCHEMA_VERSION = 1
+
+# Marker prefix an LLM profile's ``api_key`` uses to point at a named secret
+# managed by a Provider Connection, instead of holding the raw key inline.
+# Resolution happens at call time in ``LLM._get_api_key_value``.
+LLM_SECRET_REF_PREFIX = "secret:"
+
+
+def parse_llm_secret_ref(api_key: str | None) -> str | None:
+    """Return the secret name referenced by a ``secret:<name>`` api_key, else None."""
+    if not isinstance(api_key, str):
+        return None
+    if not api_key.startswith(LLM_SECRET_REF_PREFIX):
+        return None
+    name = api_key[len(LLM_SECRET_REF_PREFIX) :].strip()
+    return name or None
+
+
+def llm_secret_ref(secret_name: str) -> str:
+    """Build the ``secret:<name>`` reference string stored in a profile's api_key."""
+    return f"{LLM_SECRET_REF_PREFIX}{secret_name}"
+
+
+class ProviderConnection(BaseModel):
+    """A saved provider connection (one key, many models).
+
+    ``secret_name`` references the key stored in the SecretsStore; the value is
+    never held here. Responses to clients must mask the key (``api_key_set``)
+    and never return ``secret_name``'s value.
+    """
+
+    id: str = Field(..., min_length=1, max_length=128)
+    provider: str = Field(..., min_length=1, max_length=128)
+    label: str | None = Field(default=None, max_length=128)
+    secret_name: str = Field(..., min_length=1, max_length=128)
+    models: list[str] = Field(default_factory=list)
+    created_at: int = Field(..., description="Unix epoch seconds.")
+    last_validated_at: int | None = Field(
+        default=None, description="Unix epoch seconds of last successful validate."
+    )
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class PersistedConnections(BaseModel):
+    """Container for all provider connections (single JSON document)."""
+
+    schema_version: int = Field(default=CONNECTIONS_SCHEMA_VERSION)
+    connections: list[ProviderConnection] = Field(default_factory=list)
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @classmethod
+    def from_persisted(cls, data: Any) -> PersistedConnections:
+        if not isinstance(data, dict):
+            return cls.model_validate(data)
+        payload = dict(data)
+        version = payload.get("schema_version", CONNECTIONS_SCHEMA_VERSION)
+        if not isinstance(version, int):
+            raise ValueError("PersistedConnections schema_version must be an integer")
+        if version > CONNECTIONS_SCHEMA_VERSION:
+            raise ValueError(
+                f"PersistedConnections schema_version {version} is newer than "
+                f"supported {CONNECTIONS_SCHEMA_VERSION}"
+            )
+        payload["schema_version"] = CONNECTIONS_SCHEMA_VERSION
+        return cls.model_validate(payload)
+
+
 # ── Helper Functions ─────────────────────────────────────────────────────
 #
 # Note: API request/response models have been moved to the SDK to enable

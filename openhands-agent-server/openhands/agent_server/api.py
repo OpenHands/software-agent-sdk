@@ -48,6 +48,7 @@ from openhands.agent_server.init_router import (
     init_router,
     require_initialized,
 )
+from openhands.agent_server.llm_connections import connections_router
 from openhands.agent_server.llm_router import llm_router
 from openhands.agent_server.mcp_router import mcp_router
 from openhands.agent_server.middleware import CORSDispatcher
@@ -440,6 +441,7 @@ def _add_api_routes(app: FastAPI) -> None:
     api_router.include_router(plugins_router)
     api_router.include_router(hooks_router)
     api_router.include_router(llm_router)
+    api_router.include_router(connections_router)
     api_router.include_router(mcp_router)
     api_router.include_router(settings_router)
     api_router.include_router(workspaces_router)
@@ -694,6 +696,15 @@ def create_app(config: Config | None = None) -> FastAPI:
 
     _add_api_routes(app)
     _setup_static_files(app, config)
+
+    # Register the LLM ``secret:<name>`` resolver so profiles spawned from a
+    # provider connection resolve their api_key against the agent-server's
+    # SecretsStore at call time (see LLM._get_api_key_value).
+    from openhands.agent_server.persistence import get_secrets_store
+    from openhands.sdk.llm.llm import register_llm_secret_resolver
+
+    secrets_store = get_secrets_store(config)
+    register_llm_secret_resolver(lambda name: secrets_store.get_secret(name))
     app.add_middleware(
         CORSDispatcher,
         allow_origins=config.allow_cors_origins,
