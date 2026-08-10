@@ -115,7 +115,7 @@ def _run_mcp_deployment(port: int, deployment: str, stateless_http: bool) -> Non
 
 
 @pytest.fixture
-def deploy_mcp_server() -> Iterator[Callable[[str, bool], str]]:
+def deploy_mcp_server() -> Iterator[Callable[[str | None, bool], str]]:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
@@ -131,9 +131,12 @@ def deploy_mcp_server() -> Iterator[Callable[[str, bool], str]]:
         assert not process.is_alive()
         process = None
 
-    def deploy(version: str, stateless_http: bool) -> str:
+    def deploy(version: str | None, stateless_http: bool) -> str:
         nonlocal process
         stop()
+        url = f"http://127.0.0.1:{port}/mcp"
+        if version is None:
+            return url
         new_process = multiprocessing.get_context("spawn").Process(
             target=_run_mcp_deployment,
             args=(port, version, stateless_http),
@@ -144,7 +147,7 @@ def deploy_mcp_server() -> Iterator[Callable[[str, bool], str]]:
         while time.monotonic() < deadline:
             with socket.socket() as probe:
                 if probe.connect_ex(("127.0.0.1", port)) == 0:
-                    return f"http://127.0.0.1:{port}/mcp"
+                    return url
             if new_process.exitcode is not None:
                 raise RuntimeError(
                     f"MCP {version} deployment exited with {new_process.exitcode}"
@@ -379,7 +382,7 @@ def test_initialization_failure_closes_an_empty_mcp_client(
 @pytest.mark.parametrize("stateless_http", [False, True], ids=["stateful", "stateless"])
 def test_refreshes_tools_after_mcp_deployment(
     tmp_path: Path,
-    deploy_mcp_server: Callable[[str, bool], str],
+    deploy_mcp_server: Callable[[str | None, bool], str],
     stateless_http: bool,
 ) -> None:
     url = deploy_mcp_server("old", stateless_http)
@@ -426,5 +429,37 @@ def test_refreshes_tools_after_mcp_deployment(
         conversation.run()
 
         assert llm._tool_snapshots == [["changing", "new_tool"]]
+    finally:
+        conversation.close()
+
+
+def test_refresh_recovers_after_server_was_temporarily_unavailable(
+    tmp_path: Path,
+    deploy_mcp_server: Callable[[str | None, bool], str],
+) -> None:
+    url = deploy_mcp_server("old", True)
+    conversation = LocalConversation(
+        agent=Agent(
+            llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+            mcp_config=coerce_mcp_config(
+                {"analysis": {"transport": "http", "url": url}}
+            ),
+        ),
+        workspace=tmp_path,
+        visualizer=None,
+    )
+
+    try:
+        conversation._ensure_agent_ready()
+        deploy_mcp_server(None, True)
+        with pytest.raises(httpx.ConnectError):
+            conversation.refresh_mcp_tools()
+
+        deploy_mcp_server("new", True)
+        conversation.refresh_mcp_tools()
+
+        assert set(conversation.agent.tools_map) == {"changing", "new_tool"}
     finally:
         conversation.close()

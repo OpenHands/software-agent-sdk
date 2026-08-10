@@ -216,11 +216,15 @@ async def _refresh_or_reconnect_tools(
     async with client._tools_refresh_lock:
         if client._closed:
             raise MCPError("Cannot refresh tools on a closed MCP client")
-        try:
-            await _refresh_tools(client)
-        except McpError:
+        if not client.is_connected():
             await client._reconnect()
             await _refresh_tools(client)
+        else:
+            try:
+                await _refresh_tools(client)
+            except McpError:
+                await client._reconnect()
+                await _refresh_tools(client)
         if on_tools_reconciled is not None:
             on_tools_reconciled(client, client.tools)
 

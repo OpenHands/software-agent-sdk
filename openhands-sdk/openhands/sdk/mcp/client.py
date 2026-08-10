@@ -5,6 +5,7 @@ import inspect
 from collections.abc import Callable, Iterator, Sequence
 from typing import TYPE_CHECKING, Any
 
+import httpx
 from fastmcp import Client as AsyncMCPClient
 
 from openhands.sdk.mcp.exceptions import MCPError
@@ -68,7 +69,10 @@ class MCPClient(AsyncMCPClient):
         """Replace the current MCP session while preserving client configuration."""
         if self._closed:
             raise MCPError("Cannot reconnect a closed MCP client")
-        await self.__aexit__(None, None, None)
+        try:
+            await self.__aexit__(None, None, None)
+        except httpx.TransportError:
+            self._reset_session_state(full=True)
         await self.connect()
 
     def call_async_from_sync(
