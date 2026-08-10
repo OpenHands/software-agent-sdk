@@ -1345,12 +1345,18 @@ class LocalConversation(BaseConversation):
         if not self._agent_ready:
             self._ensure_agent_ready()
             return
+        errors: list[Exception] = []
         for client in tuple(self._mcp_clients):
-            _refresh_mcp_client_tools(
-                client,
-                _RUNTIME_MCP_TIMEOUT_SECS,
-                on_tools_reconciled=self._on_mcp_tools_reconciled,
-            )
+            try:
+                _refresh_mcp_client_tools(
+                    client,
+                    _RUNTIME_MCP_TIMEOUT_SECS,
+                    on_tools_reconciled=self._on_mcp_tools_reconciled,
+                )
+            except Exception as exc:
+                errors.append(exc)
+        if errors:
+            raise ExceptionGroup("Failed to refresh MCP tools", errors)
 
     def _close_mcp_client(self, client: MCPClient | None) -> None:
         if client is None:

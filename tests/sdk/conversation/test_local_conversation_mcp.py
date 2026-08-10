@@ -351,6 +351,44 @@ def test_refresh_discovers_tools_from_an_initially_empty_client(
     conversation.close()
 
 
+def test_refresh_attempts_every_client_before_raising(
+    tmp_path: Path, monkeypatch
+) -> None:
+    conversation = LocalConversation(
+        agent=Agent(
+            llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+        ),
+        workspace=tmp_path,
+        visualizer=None,
+    )
+    conversation._ensure_agent_ready()
+    clients = [cast(MCPClient, EmptyMCPClient()) for _ in range(3)]
+    conversation._mcp_clients.extend(clients)
+    attempted: list[MCPClient] = []
+
+    def refresh(client, timeout, *, on_tools_reconciled):
+        attempted.append(client)
+        if client is not clients[1]:
+            raise RuntimeError(f"offline-{clients.index(client)}")
+
+    monkeypatch.setattr(
+        "openhands.sdk.conversation.impl.local_conversation._refresh_mcp_client_tools",
+        refresh,
+    )
+
+    with pytest.raises(ExceptionGroup) as exc_info:
+        conversation.refresh_mcp_tools()
+
+    assert attempted == clients
+    assert [str(error) for error in exc_info.value.exceptions] == [
+        "offline-0",
+        "offline-2",
+    ]
+    conversation.close()
+
+
 def test_initialization_failure_closes_an_empty_mcp_client(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -454,8 +492,10 @@ def test_refresh_recovers_after_server_was_temporarily_unavailable(
     try:
         conversation._ensure_agent_ready()
         deploy_mcp_server(None, True)
-        with pytest.raises(httpx.ConnectError):
+        with pytest.raises(ExceptionGroup) as exc_info:
             conversation.refresh_mcp_tools()
+        assert len(exc_info.value.exceptions) == 1
+        assert isinstance(exc_info.value.exceptions[0], httpx.ConnectError)
 
         deploy_mcp_server("new", True)
         conversation.refresh_mcp_tools()
