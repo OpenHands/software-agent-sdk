@@ -561,3 +561,18 @@ def test_send_reasoning_content_support(model, expected_send_reasoning):
     """Test that models like kimi-k2-thinking require send_reasoning_content."""
     features = get_features(model)
     assert features.send_reasoning_content is expected_send_reasoning
+
+
+@pytest.mark.parametrize(
+    "model, override, expected",
+    [
+        # Enable for a model that is not in the fallback list.
+        ("gpt-4o", True, True),
+        # Disable for a model that is in the fallback list.
+        ("kimi-k2-thinking", False, False),
+    ],
+)
+def test_send_reasoning_content_override(model, override, expected):
+    """capability_overrides can flip send_reasoning_content either direction."""
+    features = get_features(model, overrides={"send_reasoning_content": override})
+    assert features.send_reasoning_content is expected

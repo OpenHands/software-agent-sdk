@@ -410,9 +410,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "Explicit model capability overrides. Supported keys include "
             "supports_reasoning_effort, thinking_mode (adaptive, manual, none, "
             "or unknown), supports_sampling_params, supports_prompt_cache, "
-            "supports_stop_words, supports_responses_api, supports_vision, and "
-            "supports_prompt_cache_retention. Overrides take precedence over "
-            "LiteLLM metadata and SDK fallbacks."
+            "supports_stop_words, supports_responses_api, supports_vision, "
+            "send_reasoning_content, and supports_prompt_cache_retention. "
+            "Overrides take precedence over LiteLLM metadata and SDK fallbacks."
         ),
         json_schema_extra=field_meta(),
     )
