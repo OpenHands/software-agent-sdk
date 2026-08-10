@@ -6208,6 +6208,27 @@ class TestRecordUsageDerivedCost:
 
         assert agent.llm.metrics.accumulated_cost == pytest.approx(10.0)
 
+    def test_provider_reporting_zero_cost_blocks_the_derived_estimate(self):
+        """A first report of 0.0 still means the provider is reporting cost."""
+        agent = self._make_agent_with_pricing()
+        mock_cost_map = {
+            "priced-model": {
+                "input_cost_per_token": 5e-07,
+                "output_cost_per_token": 3e-06,
+            }
+        }
+        mock_litellm = MagicMock()
+        mock_litellm.model_cost = mock_cost_map
+
+        with patch.dict("sys.modules", {"litellm": mock_litellm}):
+            agent._record_usage(
+                self._make_response(),
+                "sess-zero",
+                usage_update=self._make_usage_update(0.0),
+            )
+
+        assert agent.llm.metrics.accumulated_cost == pytest.approx(0.0)
+
     def test_derived_estimate_still_applies_without_provider_cost(self):
         """gemini-cli style sessions keep deriving cost from tokens."""
         agent = self._make_agent_with_pricing()
