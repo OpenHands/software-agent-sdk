@@ -119,6 +119,13 @@ class StartConversationRequest(BaseModel):
             "generated."
         ),
     )
+    parent_conversation_id: UUID | None = Field(
+        default=None,
+        description=(
+            "Optional ID of an existing conversation that owns this one. The "
+            "parent must already exist and share this conversation's workspace."
+        ),
+    )
     confirmation_policy: ConfirmationPolicyBase = Field(
         default=NeverConfirm(),
         description="Controls when the conversation will prompt the user before "
@@ -335,11 +342,3 @@ class StartConversationRequest(BaseModel):
         if value is None:
             return None
         return handler(value)
-
-
-class StartACPConversationRequest(StartConversationRequest):
-    """Deprecated compatibility alias for ACP-capable start requests.
-
-    Use :class:`StartConversationRequest` instead. It now supports both regular
-    OpenHands agents and ACP agents through the same request contract.
-    """

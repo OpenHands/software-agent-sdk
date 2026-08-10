@@ -14,7 +14,6 @@ from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
-    ACPConversationInfo,
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
@@ -676,7 +675,7 @@ def test_start_conversation_agent_settings_uses_sdk_default_tools(
 
 def test_start_conversation_accepts_acp_agent(client, mock_conversation_service):
     now = utc_now()
-    acp_info = ACPConversationInfo(
+    acp_info = ConversationInfo(
         id=uuid4(),
         agent=ACPAgent(acp_command=["echo", "test"]),
         workspace=LocalWorkspace(working_dir="/tmp/test"),
@@ -713,7 +712,7 @@ def test_start_conversation_accepts_acp_agent_settings(
     client, mock_conversation_service
 ):
     now = utc_now()
-    acp_info = ACPConversationInfo(
+    acp_info = ConversationInfo(
         id=uuid4(),
         agent=ACPAgent(acp_command=["echo", "settings"]),
         workspace=LocalWorkspace(working_dir="/tmp/test"),

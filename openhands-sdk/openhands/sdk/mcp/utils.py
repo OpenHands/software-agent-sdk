@@ -1,21 +1,25 @@
 """Utility functions for MCP integration."""
 
+import asyncio
+import inspect
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Protocol
 
 import mcp.types
 from fastmcp.client.auth import OAuth
 from fastmcp.client.logging import LogMessage
+from fastmcp.client.messages import MessageHandler
 from fastmcp.mcp_config import MCPConfig as FastMCPConfig, RemoteMCPServer
 from key_value.aio.protocols import AsyncKeyValue
 
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp.client import MCPClient
+from openhands.sdk.mcp.client import MCPClient, ToolsReconciledCallback
 from openhands.sdk.mcp.config import (
     MCPOAuthAuthCredential,
     MCPOAuthAuthentication,
     MCPServer,
+    enabled_mcp_servers,
     to_fastmcp_mcp_config,
 )
 from openhands.sdk.mcp.exceptions import MCPTimeoutError
@@ -30,12 +34,20 @@ MCPOAuthFactory = Callable[
     OAuth | None,
 ]
 
+# Backward-compatible callback that reports only newly added tools.
+ToolsChangedCallback = Callable[[Sequence[MCPToolDefinition]], None]
+
 
 class MCPToolProvider(Protocol):
     """Runtime-only MCP tool materializer."""
 
     def create_tools(
-        self, mcp_config: dict[str, MCPServer], timeout: float = 30.0
+        self,
+        mcp_config: dict[str, MCPServer],
+        timeout: float = 30.0,
+        *,
+        on_tools_changed: ToolsChangedCallback | None = None,
+        on_tools_reconciled: ToolsReconciledCallback | None = None,
     ) -> MCPClient: ...
 
 
@@ -43,9 +55,36 @@ class DefaultMCPToolProvider:
     """Runtime MCP tool materializer without extra persistence hooks."""
 
     def create_tools(
-        self, mcp_config: dict[str, MCPServer], timeout: float = 30.0
+        self,
+        mcp_config: dict[str, MCPServer],
+        timeout: float = 30.0,
+        *,
+        on_tools_changed: ToolsChangedCallback | None = None,
+        on_tools_reconciled: ToolsReconciledCallback | None = None,
     ) -> MCPClient:
-        return create_mcp_tools(mcp_config, timeout)
+        return create_mcp_tools(
+            mcp_config,
+            timeout,
+            on_tools_changed=on_tools_changed,
+            on_tools_reconciled=on_tools_reconciled,
+        )
+
+
+def provider_supports_on_tools_reconciled(provider: MCPToolProvider) -> bool:
+    """Whether ``provider.create_tools`` accepts ``on_tools_reconciled``.
+
+    Custom ``MCPToolProvider`` implementations written before this parameter
+    existed only accept ``on_tools_changed``; passing the new keyword to
+    them would raise ``TypeError``. Callers should check this first and omit
+    the keyword for providers that don't support it.
+    """
+    try:
+        params = inspect.signature(provider.create_tools).parameters
+    except (TypeError, ValueError):
+        return False
+    return "on_tools_reconciled" in params or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
 
 
 def _oauth_auth_from_authentication_config(
@@ -152,16 +191,133 @@ async def log_handler(message: LogMessage):
 async def _connect_and_list_tools(client: MCPClient) -> None:
     """Connect to MCP server and populate client._tools."""
     await client.connect()
+    await _refresh_tools(client)
+
+
+async def _refresh_tools(
+    client: MCPClient,
+    on_tools_changed: ToolsChangedCallback | None = None,
+    on_tools_reconciled: ToolsReconciledCallback | None = None,
+) -> None:
+    """Re-list tools from the server and reconcile ``client._tools``.
+
+    Called after the initial connection and whenever the server sends a
+    ``notifications/tools/list_changed`` notification. When an
+    ``on_tools_changed`` preserves the original additions-only callback contract.
+    ``on_tools_reconciled`` receives the complete current snapshot so a running
+    agent can add, replace, and remove tools owned by this client.
+    """
     mcp_type_tools: list[mcp.types.Tool] = await client.list_tools()
+    existing_by_name = {tool.name: tool for tool in client._tools}
+    server_names = {mcp_tool.name for mcp_tool in mcp_type_tools}
+
+    reconciled: list[MCPToolDefinition] = []
+    added: list[MCPToolDefinition] = []
+    updated: list[MCPToolDefinition] = []
     for mcp_tool in mcp_type_tools:
+        prior = existing_by_name.get(mcp_tool.name)
+        if prior is not None and prior.mcp_tool == mcp_tool:
+            reconciled.append(prior)
+            continue
         tool_sequence = MCPToolDefinition.create(mcp_tool=mcp_tool, mcp_client=client)
-        client._tools.extend(tool_sequence)
+        reconciled.extend(tool_sequence)
+        if prior is None:
+            added.extend(tool_sequence)
+        else:
+            updated.extend(tool_sequence)
+
+    # Drop tools the server no longer advertises. Reassign atomically so
+    # concurrent readers iterating client.tools never observe mid-update state.
+    removed = [
+        tool.name for name, tool in existing_by_name.items() if name not in server_names
+    ]
+    if removed:
+        logger.info("MCP server removed tools: %s", ", ".join(sorted(removed)))
+    if updated:
+        logger.info(
+            "MCP server updated tools: %s",
+            ", ".join(sorted(tool.name for tool in updated)),
+        )
+    client._tools = reconciled
+
+    if added and on_tools_changed is not None:
+        try:
+            on_tools_changed(added)
+        except Exception:
+            logger.warning(
+                "on_tools_changed callback failed for %d new MCP tools",
+                len(added),
+                exc_info=True,
+            )
+
+    if (added or updated or removed) and on_tools_reconciled is not None:
+        try:
+            on_tools_reconciled(client, reconciled)
+        except Exception:
+            logger.warning(
+                "on_tools_reconciled callback failed for MCP tool refresh",
+                exc_info=True,
+            )
+
+
+class _ToolListChangedHandler(MessageHandler):
+    """Message handler that refreshes tools on ``tools/list_changed``.
+
+    Some MCP servers (e.g. Datadog's hosted server) use progressive
+    disclosure: they expose a small gateway toolset at connect time and
+    register additional tools only after a skill-loading tool is invoked,
+    signalling the change with ``notifications/tools/list_changed``. Without
+    subscribing, the client never re-lists and the new tools stay invisible.
+    """
+
+    def __init__(
+        self,
+        client: MCPClient,
+        on_tools_changed: ToolsChangedCallback | None = None,
+    ):
+        super().__init__()
+        self._client = client
+        self._on_tools_changed = on_tools_changed
+        self._refresh_lock = asyncio.Lock()
+        self._refresh_tasks: set[asyncio.Task[None]] = set()
+
+    async def on_tool_list_changed(
+        self,
+        message: mcp.types.ToolListChangedNotification,  # noqa: ARG002
+    ) -> None:
+        client = self._client
+        if client._closed:
+            return
+        logger.debug("MCP tools/list_changed received; refreshing tools")
+        # Keep the receive loop free to process the list_tools response.
+        task = asyncio.create_task(self._refresh_tools())
+        self._refresh_tasks.add(task)
+        task.add_done_callback(self._refresh_tasks.discard)
+
+    async def _refresh_tools(self) -> None:
+        client = self._client
+        try:
+            async with self._refresh_lock:
+                if client._closed:
+                    return
+                await _refresh_tools(
+                    client,
+                    self._on_tools_changed,
+                    client._tools_reconciled_callback,
+                )
+        except Exception:
+            logger.warning(
+                "Failed to refresh MCP tools after list_changed notification",
+                exc_info=True,
+            )
 
 
 def create_mcp_tools(
     mcp_config: dict[str, MCPServer],
     timeout: float = 30.0,
     *,
+    on_tools_changed: ToolsChangedCallback | None = None,
+    on_tools_reconciled: ToolsReconciledCallback | None = None,
     mcp_oauth_token_storage: AsyncKeyValue | None = None,
     mcp_oauth_factory: MCPOAuthFactory | None = None,
 ) -> MCPClient:
@@ -173,14 +329,36 @@ def create_mcp_tools(
             for tool in client.tools:
                 # use tool
         # Connection automatically closed
+
+    The client subscribes to ``notifications/tools/list_changed`` and
+    reconciles its tool list whenever the server signals a change. When
+    ``on_tools_changed`` is provided, the client invokes it with newly added
+    tool definitions, preserving the original callback contract. When
+    ``on_tools_reconciled`` is provided, it receives the client and complete
+    current tool snapshot after additions, updates, or removals. Callbacks run
+    on the client's background event-loop thread and must be thread-safe.
     """
     mcp_config = _require_native_mcp_config(mcp_config)
+    requested = mcp_config
+    mcp_config = enabled_mcp_servers(mcp_config)
+    if requested and not mcp_config:
+        raise ValueError(
+            "All configured MCP servers are disabled: "
+            f"{', '.join(sorted(requested))}. Enable at least one, or skip "
+            "the call entirely."
+        )
     config = _prepare_mcp_config(
         mcp_config,
         mcp_oauth_token_storage=mcp_oauth_token_storage,
         mcp_oauth_factory=mcp_oauth_factory,
     )
-    client = MCPClient(config, log_handler=log_handler)
+    handler = _ToolListChangedHandler(
+        client=None,  # type: ignore[arg-type]
+        on_tools_changed=on_tools_changed,
+    )
+    client = MCPClient(config, log_handler=log_handler, message_handler=handler)
+    handler._client = client
+    client._tools_reconciled_callback = on_tools_reconciled
 
     try:
         client.call_async_from_sync(

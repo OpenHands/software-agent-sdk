@@ -17,6 +17,8 @@ See https://agentclientprotocol.com/protocol/overview
 from __future__ import annotations
 
 import asyncio
+import atexit
+import contextlib
 import inspect
 import json
 import os
@@ -24,7 +26,8 @@ import re
 import threading
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Generator, Iterable
+import weakref
+from collections.abc import Awaitable, Callable, Collection, Generator, Iterable
 from concurrent.futures import Future
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
@@ -59,10 +62,25 @@ from pydantic import (
     field_validator,
 )
 
+from openhands.sdk.agent.acp_file_credentials import (
+    ACPFileCredentialLifecycle,
+    ACPFileCredentialNeedsReauthError,
+    ACPFileCredentialSyncError,
+    codex_auth_file,
+    codex_auth_file_is_chatgpt,
+    create_file_credential_lifecycle,
+    write_secret_file,
+)
 from openhands.sdk.agent.acp_models import ACPModelInfo
+from openhands.sdk.agent.acp_tracing import ACPTurnTrace
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context import AgentContext
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.credential import (
+    CredentialBindingError,
+    CredentialSyncError,
+    VersionedCredentialBinding,
+)
 from openhands.sdk.event import (
     ACPToolCallEvent,
     ActionEvent,
@@ -93,6 +111,10 @@ from openhands.sdk.utils.redact import redact_text_secrets
 
 
 logger = get_logger(__name__)
+
+_codex_auth_file = codex_auth_file
+_codex_auth_file_is_chatgpt = codex_auth_file_is_chatgpt
+_write_secret_file = write_secret_file
 maybe_init_laminar()
 
 
@@ -104,8 +126,6 @@ if TYPE_CHECKING:
         LocalConversation,
     )
     from openhands.sdk.conversation.secret_registry import SecretRegistry
-
-
 # Maximum seconds to wait for a UsageUpdate notification after prompt()
 # returns. The ACP server writes UsageUpdate to the wire before the
 # PromptResponse, so under normal conditions the notification handler
@@ -123,6 +143,8 @@ _ACP_PROMPT_MAX_RETRIES: int = int(os.environ.get("ACP_PROMPT_MAX_RETRIES", "3")
 _ACP_CANCEL_DRAIN_TIMEOUT: float = float(
     os.environ.get("ACP_CANCEL_DRAIN_TIMEOUT", "2.0")
 )
+
+_ACP_AUTH_TIMEOUT: float = float(os.environ.get("ACP_AUTH_TIMEOUT", "30.0"))
 
 _ACP_PROMPT_RETRY_DELAYS: tuple[float, ...] = (5.0, 15.0, 30.0)  # seconds
 
@@ -146,6 +168,7 @@ _RETRIABLE_SERVER_ERROR_CODES: frozenset[int] = frozenset({-32603})
 # Maximum characters for ACP tool call content — matches MAX_CMD_OUTPUT_SIZE
 # used by the terminal tool and the default max_message_chars in LLM config.
 MAX_ACP_CONTENT_CHARS: int = 30_000
+_ACP_SUBPROCESS_LOG_LINE_CHARS = 4_000
 
 # Env vars that must be removed from the subprocess environment when a
 # particular "dominant" env var is present.
@@ -262,47 +285,10 @@ def _make_dummy_llm() -> LLM:
 _AUTH_METHOD_ENV_MAP: dict[str, str] = {
     "gemini-api-key": "GEMINI_API_KEY",
 }
-_CHATGPT_AUTH_PATH = Path(".codex") / "auth.json"
 # Gemini CLI personal (Google OAuth) login, cached by ``gemini login`` /
 # ``gemini --acp``. Its presence lets us select the server's ``oauth-personal``
 # auth method without an API key (mirrors the ChatGPT subscription path).
 _GEMINI_OAUTH_PATH = Path(".gemini") / "oauth_creds.json"
-
-
-def _codex_auth_file(env: dict[str, str]) -> Path:
-    """Path to Codex's ChatGPT-subscription ``auth.json``, honoring ``CODEX_HOME``.
-
-    Codex reads ``$CODEX_HOME/auth.json`` when ``CODEX_HOME`` is set — which the
-    SDK does after materialising a relocated, per-conversation ``auth.json``
-    (see :meth:`ACPAgent._materialise_file_secrets`) — and ``~/.codex/auth.json``
-    otherwise. Detection must follow the same relocation or a materialised
-    subscription token is never recognised (issue #1020).
-    """
-    codex_home = env.get("CODEX_HOME")
-    if codex_home:
-        return Path(codex_home) / "auth.json"
-    return Path.home() / _CHATGPT_AUTH_PATH
-
-
-def _codex_auth_file_is_chatgpt(env: dict[str, str]) -> bool:
-    """Return True only if ``auth.json`` is in ChatGPT-subscription format.
-
-    Codex itself rewrites ``$CODEX_HOME/auth.json`` during apikey-mode sessions
-    with ``{"auth_mode": "apikey", "OPENAI_API_KEY": "..."}``. That file's mere
-    presence used to make :func:`_select_auth_method` prefer ``chat-gpt`` on a
-    restart, after which ``conn.authenticate("chat-gpt")`` hung indefinitely
-    waiting for browser-based OAuth (issue #3627). The ChatGPT token blob is
-    keyed by ``tokens``; require that key before claiming the file is usable
-    for the ``chat-gpt`` auth method.
-    """
-    path = _codex_auth_file(env)
-    if not path.is_file():
-        return False
-    try:
-        data = json.loads(path.read_text())
-    except (OSError, ValueError):
-        return False
-    return isinstance(data, dict) and "tokens" in data
 
 
 def _select_auth_method(
@@ -330,7 +316,7 @@ def _select_auth_method(
     method_ids = {m.id for m in auth_methods}
     # Prefer file-backed subscription / service-account logins when their
     # credential file is present.
-    if "chat-gpt" in method_ids and _codex_auth_file_is_chatgpt(env):
+    if "chat-gpt" in method_ids and codex_auth_file_is_chatgpt(env):
         return "chat-gpt"
     gac = env.get("GOOGLE_APPLICATION_CREDENTIALS")
     if "vertex-ai" in method_ids and gac and Path(gac).is_file():
@@ -348,6 +334,31 @@ def _select_auth_method(
         if method_id in method_ids and env_var in env:
             return method_id
     return None
+
+
+def _auth_selection_failure_reason(auth_methods: list[Any], env: dict[str, str]) -> str:
+    method_ids = {m.id for m in auth_methods}
+    reasons: list[str] = []
+    if "chat-gpt" in method_ids:
+        auth_path = codex_auth_file(env)
+        if auth_path.is_file():
+            reasons.append(f"Codex auth file {auth_path} is not valid ChatGPT auth")
+        else:
+            reasons.append(f"Codex auth file {auth_path} is missing")
+    if "api-key" in method_ids and not any(
+        env.get(name) for name in ("CODEX_API_KEY", "OPENAI_API_KEY")
+    ):
+        reasons.append("CODEX_API_KEY and OPENAI_API_KEY are unset")
+    return "; ".join(reasons) or "no supported credential source is available"
+
+
+def _warn_auth_selection_failure(auth_methods: list[Any], env: dict[str, str]) -> None:
+    logger.warning(
+        "ACP server offers auth methods %s but no matching credential is available "
+        "(%s) — session creation may fail",
+        [m.id for m in auth_methods],
+        _auth_selection_failure_reason(auth_methods, env),
+    )
 
 
 def _with_codex_base_url(
@@ -397,21 +408,6 @@ def _with_codex_base_url(
     config["openai_base_url"] = base_url
     configured_env["CODEX_CONFIG"] = json.dumps(config, separators=(",", ":"))
     return configured_env
-
-
-def _write_secret_file(path: Path, value: str) -> None:
-    """Write ``value`` to ``path`` as a ``0600`` file.
-
-    ``os.open`` creates a *new* file at ``0600``, but ``O_CREAT`` does not
-    narrow an existing file's mode. So ``fchmod`` the raw fd to ``0600`` before
-    any bytes land — clamping the mode while we still hold the fd guarantees the
-    secret content never exists with wider permissions even when the file
-    pre-existed (e.g. a ``0644`` empty file from another tool).
-    """
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    os.fchmod(fd, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(value)
 
 
 # Session config-option id that selects the model on ACP servers that drive
@@ -595,6 +591,10 @@ def _mcp_config_to_acp_servers(
     these are *not* turned into in-process SDK MCP tools — the ACP server owns
     the MCP connection and exposes the tools through its own turn.
 
+    Servers with ``enabled=False`` are skipped entirely -- the ACP subprocess
+    owns the connection, so withholding the entry is the only way to keep a
+    disabled server out of its reach.
+
     Each entry maps by transport:
 
     - ``command`` present → :class:`McpServerStdio` (always forwarded; the
@@ -615,6 +615,8 @@ def _mcp_config_to_acp_servers(
     sse_ok = bool(getattr(mcp_capabilities, "sse", False))
     result: list[_ACPMcpServer] = []
     for name, server in mcp_config.items():
+        if not server.enabled:
+            continue
         if server.command:
             env = [
                 EnvVariable(name=name, value=value.get_secret_value())
@@ -905,13 +907,30 @@ async def _filter_jsonrpc_lines(source: Any, dest: Any) -> None:
             if stripped.startswith(b"{") and b'"jsonrpc"' in line:
                 dest.feed_data(line)
             else:
-                logger.debug(
+                logger.info(
                     "ACP stdout (non-JSON): %s",
-                    line.decode(errors="replace").rstrip(),
+                    maybe_truncate(
+                        redact_text_secrets(line.decode(errors="replace").rstrip()),
+                        truncate_after=_ACP_SUBPROCESS_LOG_LINE_CHARS,
+                    ),
                 )
     except Exception:
         logger.debug("_filter_jsonrpc_lines stopped", exc_info=True)
         dest.feed_eof()
+
+
+async def _log_acp_subprocess_stderr(source: Any) -> None:
+    try:
+        while line := await source.readline():
+            logger.info(
+                "ACP stderr: %s",
+                maybe_truncate(
+                    redact_text_secrets(line.decode(errors="replace").rstrip()),
+                    truncate_after=_ACP_SUBPROCESS_LOG_LINE_CHARS,
+                ),
+            )
+    except Exception:
+        logger.debug("_log_acp_subprocess_stderr stopped", exc_info=True)
 
 
 # Substrings that mark a generic ``-32603 Internal error`` as really a credential
@@ -1032,6 +1051,10 @@ def _classify_acp_init_error(exc: BaseException) -> str:
       creation (transport drops, unexpected protocol errors, cwd mismatch
       surfaced by the server).
     """
+    if isinstance(exc, ACPFileCredentialSyncError):
+        return "ACPInitError"
+    if isinstance(exc, ACPFileCredentialNeedsReauthError):
+        return "ACPAuthRequired"
     if _acp_error_indicates_auth(exc):
         return "ACPAuthRequired"
     if isinstance(exc, TimeoutError):
@@ -1048,6 +1071,10 @@ def _classify_acp_turn_error(exc: BaseException) -> str:
     policy refusals get their own code, credential failures map to ``ACPAuthRequired``
     (so the client can offer re-auth), everything else is a generic ``ACPPromptError``.
     """
+    if isinstance(exc, ACPFileCredentialSyncError):
+        return "ACPPromptError"
+    if isinstance(exc, ACPFileCredentialNeedsReauthError):
+        return "ACPAuthRequired"
     text = _acp_error_text(exc)
     if "usage policy" in text or "content policy" in text:
         return "UsagePolicyRefusal"
@@ -1106,6 +1133,8 @@ class _OpenHandsACPBridge:
         self.accumulated_text: list[str] = []
         self.accumulated_thoughts: list[str] = []
         self.accumulated_tool_calls: list[dict[str, Any]] = []
+        # Emits the LLM/TOOL spans an ACP turn would otherwise never produce.
+        self.trace = ACPTurnTrace(acp_server=None, model_id=None)
         self.on_token: Any = None  # ConversationTokenCallbackType | None
         # Live event sink — fired from session_update as ACP tool-call
         # updates arrive, so the event stream reflects real subprocess
@@ -1123,6 +1152,8 @@ class _OpenHandsACPBridge:
         # injected credential never lands in the (persisted, network-relayed)
         # event stream in cleartext. ``None`` ⇒ no-op (bridge used standalone).
         self.mask: Callable[[str], str] | None = None
+        self.before_mask: Callable[[], None] | None = None
+        self._masking_error: CredentialBindingError | None = None
         self._last_activity_signal: float = float("-inf")
         # Monotonic timestamp of the most recent ``session_update``. Unlike the
         # throttled ``_last_activity_signal``, updated on *every* update so the
@@ -1152,6 +1183,7 @@ class _OpenHandsACPBridge:
         self.on_activity = None
         self._turn_usage_updates.clear()
         self._usage_received.clear()
+        self._masking_error = None
         # Note: telemetry state (_last_cost, _context_window, _last_activity_signal,
         # etc.) is intentionally NOT cleared — it accumulates across turns.
 
@@ -1203,7 +1235,13 @@ class _OpenHandsACPBridge:
         if self.mask is None:
             return value
         try:
+            if self.before_mask is not None:
+                self.before_mask()
             return _mask_json_value(value, self.mask)
+        except CredentialBindingError as exc:
+            if self._masking_error is None:
+                self._masking_error = exc
+            raise
         except Exception:
             logger.debug("secret masking failed", exc_info=True)
             return value
@@ -1222,6 +1260,10 @@ class _OpenHandsACPBridge:
         for key in ("title", "raw_input", "raw_output", "content"):
             if entry.get(key) is not None:
                 entry[key] = self._mask_value(entry[key])
+
+    def _raise_masking_error(self) -> None:
+        if self._masking_error is not None:
+            raise self._masking_error
 
     # -- Client protocol methods ------------------------------------------
 
@@ -1289,6 +1331,11 @@ class _OpenHandsACPBridge:
             }
             self._mask_tool_call_entry(entry)
             self.accumulated_tool_calls.append(entry)
+            self.trace.tool_started(entry)
+            if entry.get("status") in _TERMINAL_TOOL_CALL_STATUSES:
+                # No later transition will arrive for this call, so close its
+                # span now; leaving it open would bill the rest of the turn to it.
+                self.trace.tool_finished(entry)
             logger.debug("ACP tool call start: %s", update.tool_call_id)
             # Emit one early "started" event — the action half of the
             # action->observation pair. (If the server reports a terminal
@@ -1303,30 +1350,27 @@ class _OpenHandsACPBridge:
             # transition into a terminal state.
             target: dict[str, Any] | None = None
             prev_status: str | None = None
-            for tc in self.accumulated_tool_calls:
+            for index, tc in enumerate(self.accumulated_tool_calls):
                 if tc["tool_call_id"] == update.tool_call_id:
                     prev_status = tc.get("status")
+                    updated = dict(tc)
                     if update.title is not None:
-                        tc["title"] = update.title
+                        updated["title"] = update.title
                     if update.kind is not None:
-                        tc["tool_kind"] = update.kind
+                        updated["tool_kind"] = update.kind
                     if update.status is not None:
-                        tc["status"] = update.status
+                        updated["status"] = update.status
                     if update.raw_input is not None:
-                        tc["raw_input"] = update.raw_input
+                        updated["raw_input"] = update.raw_input
                     if update.raw_output is not None:
-                        tc["raw_output"] = update.raw_output
+                        updated["raw_output"] = update.raw_output
                     if update.content is not None:
-                        tc["content"] = _serialize_tool_content(update.content)
-                    target = tc
+                        updated["content"] = _serialize_tool_content(update.content)
+                    self._mask_tool_call_entry(updated)
+                    self.accumulated_tool_calls[index] = updated
+                    target = updated
                     break
             logger.debug("ACP tool call progress: %s", update.tool_call_id)
-            # Mask the merged entry on every frame so the accumulator (and thus
-            # the terminal event and any _cancel_inflight_tool_calls supersede)
-            # never carries plaintext secrets. ``status`` is left untouched, so
-            # the terminal-transition check below is unaffected.
-            if target is not None:
-                self._mask_tool_call_entry(target)
             # Persist exactly one terminal event per tool call. Intermediate
             # progress frames each carry the *full cumulative* output; emitting
             # one per frame is O(n^2) storage + WebSocket relay (the bug this
@@ -1340,6 +1384,7 @@ class _OpenHandsACPBridge:
                 and prev_status not in _TERMINAL_TOOL_CALL_STATUSES
             )
             if target is not None and became_terminal:
+                self.trace.tool_finished(target)
                 self._emit_tool_call_event(target)
             self._maybe_signal_activity()
         else:
@@ -1674,6 +1719,8 @@ class ACPAgent(AgentBase):
     _process: Any = PrivateAttr(default=None)  # asyncio subprocess
     _client: Any = PrivateAttr(default=None)  # _OpenHandsACPBridge
     _filtered_reader: Any = PrivateAttr(default=None)  # StreamReader
+    _stdout_filter_task: Any = PrivateAttr(default=None)  # asyncio.Task
+    _stderr_log_task: Any = PrivateAttr(default=None)  # asyncio.Task
     _closed: bool = PrivateAttr(default=False)
     _working_dir: str = PrivateAttr(default="")
     _agent_name: str = PrivateAttr(
@@ -1730,8 +1777,72 @@ class ACPAgent(AgentBase):
     _installed_suffix: str | None = PrivateAttr(default=None)
     _restart_session_on_next_turn: bool = PrivateAttr(default=False)
     _resumed_existing_session: bool = PrivateAttr(default=False)
+    _file_credential_lifecycles: dict[str, ACPFileCredentialLifecycle] = PrivateAttr(
+        default_factory=dict
+    )
+    _file_credential_bindings: dict[str, VersionedCredentialBinding] = PrivateAttr(
+        default_factory=dict
+    )
+    _file_credential_lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
+    _file_credential_close_lock: threading.Lock = PrivateAttr(
+        default_factory=threading.Lock
+    )
+    _replace_file_credentials_on_next_materialisation: set[str] = PrivateAttr(
+        default_factory=set
+    )
+    _atexit_callback: Callable[[], None] | None = PrivateAttr(default=None)
 
     # -- Helpers -----------------------------------------------------------
+
+    def activate_file_credential_binding(
+        self,
+        secret_name: str,
+        binding: VersionedCredentialBinding,
+    ) -> None:
+        with self._file_credential_lock:
+            if self._initialized or self._closed:
+                raise RuntimeError(
+                    "ACP credential bindings must be activated before use"
+                )
+            self._file_credential_bindings[secret_name] = binding
+
+    def restart_for_updated_credentials(self, secret_names: Collection[str]) -> None:
+        configured = {spec.secret_name for spec in self.acp_file_secrets}
+        with self._file_credential_lock:
+            self._replace_file_credentials_on_next_materialisation.update(
+                configured.intersection(secret_names)
+            )
+        if self._initialized:
+            self._restart_session_on_next_turn = True
+
+    def _has_runtime_resources(self) -> bool:
+        return (
+            self._executor is not None
+            or self._process is not None
+            or self._conn is not None
+            or bool(self._file_credential_lifecycles)
+        )
+
+    def _register_atexit_cleanup(self, *, replace: bool = False) -> None:
+        if self._atexit_callback is not None:
+            if not replace:
+                return
+            atexit.unregister(self._atexit_callback)
+        agent_ref = weakref.ref(self)
+
+        def cleanup() -> None:
+            agent = agent_ref()
+            if agent is not None:
+                agent._finalize()
+
+        self._atexit_callback = cleanup
+        atexit.register(cleanup)
+
+    def _unregister_atexit_cleanup(self) -> None:
+        callback = self._atexit_callback
+        if callback is not None:
+            atexit.unregister(callback)
+            self._atexit_callback = None
 
     def _record_usage(
         self,
@@ -1965,6 +2076,8 @@ class ACPAgent(AgentBase):
 
         from openhands.sdk.utils.async_executor import AsyncExecutor
 
+        if self._executor is not None:
+            self._cleanup()
         self._executor = AsyncExecutor()
 
         # Render the suffix once, pulling secrets from the conversation's
@@ -2001,7 +2114,12 @@ class ACPAgent(AgentBase):
             self._start_acp_server(state)
         except Exception as e:
             logger.error("Failed to start ACP server: %s", e)
-            self._cleanup()
+            try:
+                self._cleanup()
+            except Exception:
+                logger.warning("Failed to clean up ACP resources", exc_info=True)
+            if self._has_runtime_resources():
+                self._register_atexit_cleanup(replace=True)
             # init_state runs *outside* run()/arun()'s try-block (it is reached
             # via _ensure_agent_ready() before the loop starts), so a cold-start
             # failure — bad/expired auth, missing CLI binary, cwd mismatch — would
@@ -2025,6 +2143,8 @@ class ACPAgent(AgentBase):
             except Exception:
                 logger.exception("Failed to surface ACP init error to client")
             raise
+
+        self._register_atexit_cleanup(replace=True)
 
         # A successful resume keeps the prior id; cwd mismatch and load_session
         # failure both fall back to ``new_session``, which mints a fresh one.
@@ -2255,75 +2375,207 @@ class ACPAgent(AgentBase):
     def _materialise_file_secrets(
         self, state: ConversationState, env: dict[str, str]
     ) -> None:
-        """Seed reserved file-content credentials onto disk and point the CLI at them.
-
-        For each spec in :attr:`acp_file_secrets` whose secret is registered in
-        ``state.secret_registry``, write its value to the spec's durable
-        per-conversation directory (:meth:`_acp_file_secret_dir`) and set the
-        controlling env var (``CODEX_HOME`` / ``GOOGLE_APPLICATION_CREDENTIALS``).
-
-        Seed-if-absent: a non-empty existing file is preserved, never clobbered
-        — so a token the CLI rewrites on refresh (Codex) survives a recycle, and
-        a stale pasted blob can't overwrite the live one. Files are ``0600`` in
-        ``0700`` directories. The blob secret itself is not exported as an env
-        var (callers exclude it via :meth:`_present_file_secret_names`); only
-        the path env var is set.
-        """
         for spec in self.acp_file_secrets:
             name = spec.secret_name
+            with self._file_credential_lock:
+                replace_existing = (
+                    name in self._replace_file_credentials_on_next_materialisation
+                )
+            binding = self._file_credential_bindings.get(name)
+            assert self._executor is not None
+            lifecycle = create_file_credential_lifecycle(
+                name,
+                binding,
+                self._executor.run_async,
+            )
+            if lifecycle is not None:
+                with self._file_credential_lock:
+                    if self._closed:
+                        raise CredentialSyncError("Credential binding is closed.")
+                try:
+                    lifecycle.materialize(state.secret_registry, env)
+                    durable_path = (
+                        self._acp_file_secret_dir(state, spec.subdir) / spec.filename
+                    )
+                    try:
+                        durable_path.unlink(missing_ok=True)
+                    except OSError as exc:
+                        raise CredentialSyncError(
+                            "Durable credential copy could not be removed."
+                        ) from exc
+                except BaseException:
+                    env.pop("CODEX_HOME", None)
+                    lifecycle.discard()
+                    raise
+                with self._file_credential_lock:
+                    closed = self._closed
+                    if not closed:
+                        self._file_credential_lifecycles[name] = lifecycle
+                        self._replace_file_credentials_on_next_materialisation.discard(
+                            name
+                        )
+                if closed:
+                    env.pop("CODEX_HOME", None)
+                    lifecycle.discard()
+                    raise CredentialSyncError("Credential binding is closed.")
+                continue
+
             value = state.secret_registry.get_secret_value(name)
             if not value:
                 continue
             directory = self._acp_file_secret_dir(state, spec.subdir)
             target = directory / spec.filename
-            try:
-                directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-                # Tighten the SDK-owned per-conversation dir in case it
-                # pre-existed or umask widened mkdir's mode.
-                directory.chmod(0o700)
-                # Also clamp the shared SDK-owned `acp/` parent, which
-                # parents=True may have created under the process umask
-                # (e.g. 0o755); the leaf chmod above only covers <subdir>.
-                # Stop at `acp/` — its parent is the persistence layer's.
-                directory.parent.chmod(0o700)
-                if target.is_file() and target.stat().st_size > 0:
-                    # Seed-if-absent: keep the (possibly CLI-refreshed) contents,
-                    # but still clamp perms — a pre-existing credential file may
-                    # be world-readable (e.g. 0644 from another tool/restore).
-                    target.chmod(0o600)
-                    logger.info(
-                        "ACP file-secret %r already present at %s; preserving "
-                        "(seed-if-absent)",
-                        name,
-                        target,
-                    )
-                else:
-                    _write_secret_file(target, value)
-                    logger.info("Materialised ACP file-secret %r -> %s", name, target)
-            except OSError:
-                # Fail fast rather than swallowing: if the credential the caller
-                # supplied can't be written (read-only/full workspace mount, etc.)
-                # its data-dir env var would never be set and the subprocess would
-                # fail at auth time with a cryptic CLI error and no SDK breadcrumb.
-                # Re-raising lets init_state surface a typed ConversationErrorEvent
-                # (ACPInitError) that names the materialisation failure.
-                logger.exception(
-                    "Failed to materialise ACP file-secret %r under %s",
-                    name,
-                    directory,
-                )
-                raise
-            env[spec.env_var] = str(
-                directory if spec.env_points_to == "dir" else target
+            self._materialise_file_secret(
+                spec,
+                env,
+                directory,
+                target,
+                value,
+                replace_existing=replace_existing,
             )
-            for companion in spec.warn_if_unset:
-                if not env.get(companion):
-                    logger.warning(
-                        "ACP file-secret %r materialised but %s is unset; the "
-                        "provider may fail to authenticate until it is configured",
-                        name,
-                        companion,
-                    )
+            with self._file_credential_lock:
+                self._replace_file_credentials_on_next_materialisation.discard(name)
+
+    def _materialise_file_secret(
+        self,
+        spec: ACPFileSecretSpec,
+        env: dict[str, str],
+        directory: Path,
+        target: Path,
+        value: str,
+        *,
+        replace_existing: bool = False,
+    ) -> None:
+        name = spec.secret_name
+        try:
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            directory.chmod(0o700)
+            directory.parent.chmod(0o700)
+            preserve_existing = (
+                not replace_existing and target.is_file() and target.stat().st_size > 0
+            )
+            if preserve_existing:
+                target.chmod(0o600)
+                logger.info(
+                    "ACP file-secret %r already present at %s; preserving "
+                    "(seed-if-absent)",
+                    name,
+                    target,
+                )
+            else:
+                write_secret_file(target, value)
+                logger.info("Materialised ACP file-secret %r -> %s", name, target)
+        except (OSError, UnicodeError):
+            logger.exception(
+                "Failed to materialise ACP file-secret %r under %s",
+                name,
+                directory,
+            )
+            raise
+        env[spec.env_var] = str(directory if spec.env_points_to == "dir" else target)
+        for companion in spec.warn_if_unset:
+            if not env.get(companion):
+                logger.warning(
+                    "ACP file-secret %r materialised but %s is unset; the "
+                    "provider may fail to authenticate until it is configured",
+                    name,
+                    companion,
+                )
+
+    @staticmethod
+    def _log_file_credential_failures(
+        operation: str, failures: dict[str, Exception]
+    ) -> None:
+        for name, error in failures.items():
+            logger.warning(
+                "Failed to %s ACP file credential %r",
+                operation,
+                name,
+                exc_info=(type(error), error, error.__traceback__),
+            )
+
+    @staticmethod
+    def _raise_first_file_credential_failure(
+        operation: str, failures: dict[str, Exception]
+    ) -> None:
+        if not failures:
+            return
+        first_name = next(iter(failures))
+        remaining = dict(failures)
+        first_error = remaining.pop(first_name)
+        ACPAgent._log_file_credential_failures(operation, remaining)
+        raise first_error
+
+    def _sync_file_credentials_collect(self) -> dict[str, Exception]:
+        failures: dict[str, Exception] = {}
+        with self._file_credential_lock:
+            lifecycles = tuple(self._file_credential_lifecycles.items())
+        for name, lifecycle in lifecycles:
+            try:
+                lifecycle.flush()
+            except Exception as error:
+                failures[name] = error
+        return failures
+
+    def _sync_file_credentials(self) -> None:
+        """Flush ACP file credentials."""
+        failures = self._sync_file_credentials_collect()
+        self._raise_first_file_credential_failure("sync", failures)
+
+    def _track_file_credentials_for_masking(self) -> None:
+        with self._file_credential_lock:
+            lifecycles = tuple(self._file_credential_lifecycles.items())
+        for name, lifecycle in lifecycles:
+            try:
+                lifecycle.track_current()
+            except CredentialBindingError:
+                raise
+            except Exception as error:
+                raise CredentialSyncError(
+                    f"ACP file credential {name!r} could not be synchronized."
+                ) from error
+
+    def _bind_file_credential_masking(self) -> None:
+        client = self._client
+        if client is None:
+            return
+        agent_ref = weakref.ref(self)
+
+        def track_file_credentials() -> None:
+            agent = agent_ref()
+            if agent is not None:
+                agent._track_file_credentials_for_masking()
+
+        client.before_mask = track_file_credentials
+
+    async def _flush_file_credentials(self) -> None:
+        with self._file_credential_lock:
+            if not self._file_credential_lifecycles:
+                return
+        await asyncio.to_thread(self._sync_file_credentials)
+
+    def _flush_file_credentials_blocking(self) -> None:
+        self._sync_file_credentials()
+
+    def _release_file_credentials_collect(self) -> dict[str, Exception]:
+        failures: dict[str, Exception] = {}
+        with self._file_credential_lock:
+            lifecycles = tuple(self._file_credential_lifecycles.items())
+        for name, lifecycle in lifecycles:
+            try:
+                lifecycle.close()
+            except Exception as error:
+                failures[name] = error
+            else:
+                with self._file_credential_lock:
+                    if self._file_credential_lifecycles.get(name) is lifecycle:
+                        self._file_credential_lifecycles.pop(name)
+        return failures
+
+    def _release_file_credentials(self) -> None:
+        """Release scoped ACP file credential sources."""
+        failures = self._release_file_credentials_collect()
+        self._raise_first_file_credential_failure("release", failures)
 
     def _startup_timeout_message(self) -> str:
         return (
@@ -2344,6 +2596,7 @@ class ACPAgent(AgentBase):
         # session updates AND for ask_agent() forks, which run on the shared
         # client and may fire while no step()/astep() turn is active.
         client.mask = state.secret_registry.mask_secrets_in_output
+        self._bind_file_credential_masking()
 
         # Build the subprocess environment. Precedence, highest first:
         #   state.secret_registry > os.environ > default_environment
@@ -2371,20 +2624,15 @@ class ACPAgent(AgentBase):
         env.update(
             state.secret_registry.get_all_secrets_as_env_vars(exclude=file_secret_names)
         )
+        if self.acp_isolate_data_dir:
+            self._isolate_acp_data_dir(state, env)
+
         # Materialise reserved file-content secrets to disk and point their
         # data-dir env vars (CODEX_HOME / GOOGLE_APPLICATION_CREDENTIALS) at the
         # written files.
         self._materialise_file_secrets(state, env)
         # Strip CLAUDECODE so nested Claude Code instances don't refuse to start
         env.pop("CLAUDECODE", None)
-
-        # Relocate the CLI's data/config root to a per-conversation directory so
-        # sandbox-sharing conversations don't race on a shared HOME (#1019).
-        # Runs after the registry injection above. Independent of the strip below
-        # (keyed on the OAuth token, not the data-dir var), so ordering relative
-        # to it no longer matters for correctness.
-        if self.acp_isolate_data_dir:
-            self._isolate_acp_data_dir(state, env)
 
         # Strip env vars that conflict with an active auth mechanism: an active
         # CLAUDE_CODE_OAUTH_TOKEN must not coexist with ANTHROPIC_API_KEY (which
@@ -2472,12 +2720,16 @@ class ACPAgent(AgentBase):
             )
             assert process.stdin is not None
             assert process.stdout is not None
+            assert process.stderr is not None
 
             # Wrap the subprocess stdout in a filtering reader that
             # only passes lines starting with '{' (JSON-RPC messages).
             filtered_reader = asyncio.StreamReader(limit=_STREAM_READER_LIMIT)
-            asyncio.get_event_loop().create_task(
+            stdout_filter_task = asyncio.get_event_loop().create_task(
                 _filter_jsonrpc_lines(process.stdout, filtered_reader)
+            )
+            stderr_log_task = asyncio.get_event_loop().create_task(
+                _log_acp_subprocess_stderr(process.stderr)
             )
 
             conn = ClientSideConnection(
@@ -2496,6 +2748,8 @@ class ACPAgent(AgentBase):
             self._process = process
             self._conn = conn
             self._filtered_reader = filtered_reader
+            self._stdout_filter_task = stdout_filter_task
+            self._stderr_log_task = stderr_log_task
 
             # Initialize the protocol and discover server identity
             init_response = await conn.initialize(protocol_version=1)
@@ -2551,13 +2805,32 @@ class ACPAgent(AgentBase):
                             base_url = env.get(base_url_var)
                             if base_url:
                                 auth_kwargs["gateway"] = {"baseUrl": base_url}
-                    await conn.authenticate(method_id=method_id, **auth_kwargs)
+                    try:
+                        await asyncio.wait_for(
+                            conn.authenticate(method_id=method_id, **auth_kwargs),
+                            timeout=_ACP_AUTH_TIMEOUT,
+                        )
+                    except TimeoutError as exc:
+                        if method_id == "chat-gpt":
+                            raise ACPFileCredentialNeedsReauthError(
+                                "ChatGPT authentication did not complete in time. "
+                                "Please sign in again."
+                            ) from exc
+                        raise TimeoutError(
+                            f"ACP authentication with {method_id!r} timed out after "
+                            f"{_ACP_AUTH_TIMEOUT:g}s."
+                        ) from exc
+                    except ACPRequestError as exc:
+                        if method_id != "chat-gpt" or not _acp_error_indicates_auth(
+                            exc
+                        ):
+                            raise
+                        raise ACPFileCredentialNeedsReauthError(
+                            "ChatGPT authentication needs to be refreshed."
+                        ) from exc
+                    await self._flush_file_credentials()
                 else:
-                    logger.warning(
-                        "ACP server offers auth methods %s but no matching "
-                        "env var is set — session creation may fail",
-                        [m.id for m in auth_methods],
-                    )
+                    _warn_auth_selection_failure(auth_methods, env)
 
             # Resume the prior ACP session if we have its id.  If the server
             # has forgotten it (state wiped, new host, etc.) fall through to
@@ -2711,11 +2984,14 @@ class ACPAgent(AgentBase):
             # raise a descriptive one so _acp_error_detail (str(exc)) isn't blank.
             raise TimeoutError(self._startup_timeout_message()) from None
         self._working_dir = working_dir
+        self._flush_file_credentials_blocking()
 
     def _reset_client_for_turn(
         self,
         on_token: ConversationTokenCallbackType | None,
         on_event: ConversationCallbackType,
+        prompt: Any = None,
+        mask: Callable[[str], str] | None = None,
     ) -> None:
         """Reset per-turn client state and (re)wire live callbacks.
 
@@ -2728,7 +3004,14 @@ class ACPAgent(AgentBase):
         a single end-of-turn burst.  The secret masker is bound once in
         ``_start_acp_server`` (conversation-stable), not here.
         """
+        self._client.trace.abandon()
         self._client.reset()
+        self._client.trace = ACPTurnTrace(
+            acp_server=self.acp_server,
+            model_id=self._current_model_id,
+            mask=mask,
+        )
+        self._client.trace.start_turn(prompt)
         self._client.on_token = on_token
         self._client.on_event = on_event
         self._client.on_activity = self._on_activity
@@ -3000,7 +3283,6 @@ class ACPAgent(AgentBase):
             raise RuntimeError(msg)
         conn = self._conn
         session_id = self._session_id
-
         usage_sync = self._client.prepare_usage_sync(session_id)
         response = await conn.prompt(session_id=session_id, prompt=prompt_blocks)
         if self._client.get_turn_usage_update(session_id) is None:
@@ -3092,6 +3374,7 @@ class ACPAgent(AgentBase):
         on_event: ConversationCallbackType,
     ) -> None:
         """Post-prompt bookkeeping + FinishAction/Observation emission."""
+        self._client._raise_masking_error()
         # ACP server has acknowledged the prompt; commit any pending
         # first-turn suffix install so a subsequent turn doesn't try to
         # re-send it (and so a future cancellation can't unmark it).
@@ -3117,11 +3400,16 @@ class ACPAgent(AgentBase):
         # already masked individually as they streamed, but a secret split
         # across two chunks only reassembles in the join, so this is where it
         # gets caught before landing in the persisted event stream.
+        self._track_file_credentials_for_masking()
         mask = state.secret_registry.mask_secrets_in_output
         response_text = mask("".join(self._client.accumulated_text))
         thought_text = mask("".join(self._client.accumulated_thoughts))
         if not response_text:
             response_text = "(No response from ACP server)"
+
+        self._client.trace.finish_turn(
+            response_text, thought_text, self._client.accumulated_tool_calls
+        )
 
         # ACP step() boundaries are full remote assistant turns, not
         # partial planning steps. Emit FinishAction to delimit that
@@ -3195,12 +3483,20 @@ class ACPAgent(AgentBase):
         on_event: ConversationCallbackType,
     ) -> None:
         """Error path for non-timeout exceptions raised out of the prompt."""
-        logger.error("ACP prompt failed: %s", exc, exc_info=True)
-        # Rich, secret-free detail: for an ACPRequestError this keeps the JSON-RPC
-        # code + data (the real cause) instead of the bare "Internal error" that
-        # str(exc) yields — see _acp_error_detail.
-        error_detail = _acp_error_detail(exc, state.secret_registry)
-        # Close any tool cards left in flight before surfacing the error.
+        effective_exc = exc
+        try:
+            self._track_file_credentials_for_masking()
+        except CredentialBindingError as tracking_error:
+            effective_exc = tracking_error
+            logger.warning(
+                "Failed to track ACP credentials during error handling",
+            )
+        error_detail = _acp_error_detail(effective_exc, state.secret_registry)
+        logger.error(
+            "ACP prompt failed (%s): %s",
+            type(effective_exc).__name__,
+            error_detail,
+        )
         self._cancel_inflight_tool_calls()
         # Emit error as an agent message (preserved for consumers that
         # inspect MessageEvents).
@@ -3219,11 +3515,25 @@ class ACPAgent(AgentBase):
         on_event(
             ConversationErrorEvent(
                 source="agent",
-                code=_classify_acp_turn_error(exc),
+                code=_classify_acp_turn_error(effective_exc),
                 detail=error_detail,
             )
         )
         state.execution_status = ConversationExecutionStatus.ERROR
+
+    def _finalize_successful_turn_guarded(
+        self,
+        response: PromptResponse | None,
+        elapsed: float,
+        state: ConversationState,
+        on_event: ConversationCallbackType,
+    ) -> None:
+        try:
+            self._finalize_successful_turn(response, elapsed, state, on_event)
+        except CredentialBindingError as exc:
+            self._emit_turn_error(exc, state, on_event)
+            self._restart_session_on_next_turn = True
+            raise
 
     def _handle_cancelled_cleanup_interruption(
         self,
@@ -3244,7 +3554,12 @@ class ACPAgent(AgentBase):
                     self._cancel_inflight_tool_calls()
                     self._restart_session_on_next_turn = True
                 else:
-                    self._finalize_successful_turn(response, elapsed, state, on_event)
+                    self._finalize_successful_turn_guarded(
+                        response,
+                        elapsed,
+                        state,
+                        on_event,
+                    )
             return
 
         self._cancel_inflight_tool_calls()
@@ -3259,6 +3574,7 @@ class ACPAgent(AgentBase):
         """
         if self._client is None:
             return
+        self._client.trace.abandon()
         self._client.on_event = None
         self._client.on_token = None
         self._client.on_activity = None
@@ -3298,7 +3614,12 @@ class ACPAgent(AgentBase):
             state.execution_status = ConversationExecutionStatus.FINISHED
             return
 
-        self._reset_client_for_turn(on_token, on_event)
+        self._reset_client_for_turn(
+            on_token,
+            on_event,
+            prompt_blocks,
+            state.secret_registry.mask_secrets_in_output,
+        )
 
         t0 = time.monotonic()
         try:
@@ -3340,7 +3661,12 @@ class ACPAgent(AgentBase):
                         )
                         time.sleep(delay)
                         self._cancel_inflight_tool_calls()
-                        self._reset_client_for_turn(on_token, on_event)
+                        self._reset_client_for_turn(
+                            on_token,
+                            on_event,
+                            prompt_blocks,
+                            state.secret_registry.mask_secrets_in_output,
+                        )
                     else:
                         raise
                 except ACPRequestError as e:
@@ -3365,7 +3691,12 @@ class ACPAgent(AgentBase):
                         )
                         time.sleep(delay)
                         self._cancel_inflight_tool_calls()
-                        self._reset_client_for_turn(on_token, on_event)
+                        self._reset_client_for_turn(
+                            on_token,
+                            on_event,
+                            prompt_blocks,
+                            state.secret_registry.mask_secrets_in_output,
+                        )
                     else:
                         raise
 
@@ -3383,6 +3714,7 @@ class ACPAgent(AgentBase):
             raise
         finally:
             self._clear_turn_callbacks()
+            self._flush_file_credentials_blocking()
 
     @observe(name="acp_agent.astep", ignore_inputs=["conversation", "on_event"])
     async def astep(
@@ -3440,7 +3772,12 @@ class ACPAgent(AgentBase):
             state.execution_status = ConversationExecutionStatus.FINISHED
             return
 
-        self._reset_client_for_turn(on_token, on_event)
+        self._reset_client_for_turn(
+            on_token,
+            on_event,
+            prompt_blocks,
+            state.secret_registry.mask_secrets_in_output,
+        )
 
         t0 = time.monotonic()
         prompt_future: Future[PromptResponse | None] | None = None
@@ -3490,7 +3827,12 @@ class ACPAgent(AgentBase):
                         )
                         await asyncio.sleep(delay)
                         self._cancel_inflight_tool_calls()
-                        self._reset_client_for_turn(on_token, on_event)
+                        self._reset_client_for_turn(
+                            on_token,
+                            on_event,
+                            prompt_blocks,
+                            state.secret_registry.mask_secrets_in_output,
+                        )
                     else:
                         raise
                 except ACPRequestError as e:
@@ -3512,7 +3854,12 @@ class ACPAgent(AgentBase):
                         )
                         await asyncio.sleep(delay)
                         self._cancel_inflight_tool_calls()
-                        self._reset_client_for_turn(on_token, on_event)
+                        self._reset_client_for_turn(
+                            on_token,
+                            on_event,
+                            prompt_blocks,
+                            state.secret_registry.mask_secrets_in_output,
+                        )
                     else:
                         raise
 
@@ -3553,7 +3900,7 @@ class ACPAgent(AgentBase):
                         self._cancel_inflight_tool_calls()
                         self._restart_session_on_next_turn = True
                     else:
-                        self._finalize_successful_turn(
+                        self._finalize_successful_turn_guarded(
                             drain_result.response, elapsed, state, on_event
                         )
                     raise
@@ -3583,7 +3930,7 @@ class ACPAgent(AgentBase):
                         self._emit_turn_timeout(elapsed, state, on_event)
                         self._restart_session_on_next_turn = True
                     else:
-                        self._finalize_successful_turn(
+                        self._finalize_successful_turn_guarded(
                             drain_result.response, elapsed, state, on_event
                         )
                 elif drain_result.completed and drain_result.error is not None:
@@ -3598,6 +3945,7 @@ class ACPAgent(AgentBase):
             raise
         finally:
             self._clear_turn_callbacks()
+            await self._flush_file_credentials()
 
     def ask_agent(self, question: str) -> str | None:
         """Fork the ACP session, prompt the fork, and return the response."""
@@ -3654,8 +4002,11 @@ class ACPAgent(AgentBase):
                 )
                 return result
             finally:
-                client._fork_session_id = None
-                client._fork_accumulated_text.clear()
+                try:
+                    await self._flush_file_credentials()
+                finally:
+                    client._fork_session_id = None
+                    client._fork_accumulated_text.clear()
 
         with client._fork_lock:
             return self._executor.run_async(_fork_and_prompt)
@@ -3793,40 +4144,93 @@ class ACPAgent(AgentBase):
 
     def close(self) -> None:
         """Terminate the ACP subprocess and clean up resources."""
-        if self._closed:
-            return
-        self._closed = True
-        self._cleanup()
+        with self._file_credential_close_lock:
+            with self._file_credential_lock:
+                if self._closed and not self._file_credential_lifecycles:
+                    return
+                self._closed = True
+            failures = self._shutdown_runtime(discard_bindings=True)
+            if not self._has_runtime_resources():
+                self._unregister_atexit_cleanup()
+            self._raise_first_file_credential_failure("close", failures)
 
     def _cleanup(self) -> None:
-        """Internal cleanup of ACP resources."""
-        # Close the connection first
+        failures = self._shutdown_runtime(discard_bindings=False)
+        self._raise_first_file_credential_failure("restart", failures)
+
+    def _shutdown_runtime(self, *, discard_bindings: bool) -> dict[str, Exception]:
+        failures: dict[str, Exception] = {}
         if self._conn is not None and self._executor is not None:
             conn = self._conn
             try:
-                self._executor.run_async(conn.close())
+                self._executor.run_async(conn.close, timeout=5.0)
             except Exception as e:
                 logger.debug("Error closing ACP connection: %s", e)
             self._conn = None
 
-        # Terminate the subprocess
-        if self._process is not None:
+        process = self._process
+        if process is not None:
             try:
-                self._process.terminate()
+                if process.returncode is None or not isinstance(
+                    process.returncode, int
+                ):
+                    process.terminate()
+                if self._executor is not None:
+                    self._executor.run_async(
+                        self._wait_for_process,
+                        process,
+                        timeout=5.0,
+                    )
             except Exception as e:
                 logger.debug("Error terminating ACP process: %s", e)
-            try:
-                self._process.kill()
-            except Exception as e:
-                logger.debug("Error killing ACP process: %s", e)
+                try:
+                    process.kill()
+                    if self._executor is not None:
+                        self._executor.run_async(
+                            self._wait_for_process,
+                            process,
+                            timeout=5.0,
+                        )
+                except Exception as kill_error:
+                    logger.debug("Error killing ACP process: %s", kill_error)
             self._process = None
 
-        if self._executor is not None:
+        for task_attr in ("_stdout_filter_task", "_stderr_log_task"):
+            task = getattr(self, task_attr)
+            if task is not None:
+                task.cancel()
+                if self._executor is not None:
+                    try:
+                        self._executor.run_async(
+                            self._await_cancelled_task, task, timeout=5.0
+                        )
+                    except Exception as e:
+                        logger.debug("Error stopping %s: %s", task_attr, e)
+                setattr(self, task_attr, None)
+
+        credential_failures = self._release_file_credentials_collect()
+        failures.update(credential_failures)
+        if discard_bindings:
+            with self._file_credential_lock:
+                if not credential_failures:
+                    self._file_credential_bindings = {}
+
+        if self._executor is not None and not credential_failures:
             try:
                 self._executor.close()
             except Exception as e:
-                logger.debug("Error closing executor: %s", e)
+                failures["ACP executor"] = e
             self._executor = None
+        return failures
+
+    @staticmethod
+    async def _wait_for_process(process: asyncio.subprocess.Process) -> None:
+        await process.wait()
+
+    @staticmethod
+    async def _await_cancelled_task(task: asyncio.Task[Any]) -> None:
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
     def release_runtime(self) -> None:
         """Disarm this agent's finalizer after handing its live ACP runtime to a
@@ -3845,10 +4249,31 @@ class ACPAgent(AgentBase):
 
         See :meth:`LocalConversation.switch_acp_model`.
         """
-        self._closed = True
+        with self._file_credential_close_lock:
+            self._unregister_atexit_cleanup()
+            with self._file_credential_lock:
+                self._file_credential_lifecycles = {}
+                self._file_credential_bindings = {}
+                self._closed = True
 
     def __del__(self) -> None:
         try:
+            has_resources = self._has_runtime_resources()
+        except Exception:
+            return
+        if not has_resources:
+            return
+        try:
+            threading.Thread(
+                target=self._finalize,
+                name="acp-agent-finalizer",
+                daemon=True,
+            ).start()
+        except Exception:
+            self._finalize()
+
+    def _finalize(self) -> None:
+        try:
             self.close()
         except Exception:
-            pass
+            logger.warning("Failed to finalize ACPAgent resources", exc_info=True)

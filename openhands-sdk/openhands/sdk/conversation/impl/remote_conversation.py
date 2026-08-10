@@ -7,8 +7,8 @@ import time
 import uuid
 from collections.abc import Callable, Mapping
 from queue import Empty, Queue
-from typing import TYPE_CHECKING, SupportsIndex, overload
-from urllib.parse import quote, urlparse
+from typing import TYPE_CHECKING, Final, SupportsIndex, overload
+from urllib.parse import urlparse
 
 import httpx
 import websockets
@@ -51,7 +51,7 @@ from openhands.sdk.event.types import EventID
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.logger import DEBUG, get_logger
-from openhands.sdk.observability.laminar import observe
+from openhands.sdk.observability.laminar import OPERATION_METADATA_KEY, observe
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
@@ -65,6 +65,8 @@ logger = get_logger(__name__)
 
 LEGACY_CONVERSATIONS_PATH = "/api/conversations"
 FATAL_WS_CLOSE_CODES = frozenset({4001, 4004})
+_WEBSOCKET_AUTH_TYPE: Final = "auth"
+_WEBSOCKET_SESSION_API_KEY_FIELD: Final = "session_api_key"
 
 
 def _agent_kind_mismatch_message(conversation_id: ConversationID) -> str:
@@ -214,15 +216,20 @@ class WebSocketCallbackClient:
         base = f"{ws_scheme}://{parsed.netloc}{parsed.path.rstrip('/')}"
         ws_url = f"{base}/sockets/events/{self.conversation_id}"
 
-        # Add API key as query parameter if provided
-        if self.api_key:
-            ws_url += f"?session_api_key={quote(self.api_key, safe='')}"
-
         delay = 1.0
         has_connected = False
         while not self._stop.is_set():
             try:
                 async with websockets.connect(ws_url) as ws:
+                    if self.api_key:
+                        await ws.send(
+                            json.dumps(
+                                {
+                                    "type": _WEBSOCKET_AUTH_TYPE,
+                                    _WEBSOCKET_SESSION_API_KEY_FIELD: self.api_key,
+                                }
+                            )
+                        )
                     delay = 1.0
                     connection_ready = False
                     async for message in ws:
@@ -1500,7 +1507,11 @@ class RemoteConversation(BaseConversation):
         data = resp.json()
         return data["response"]
 
-    @observe(name="conversation.generate_title", ignore_inputs=["llm"])
+    @observe(
+        name="conversation.generate_title",
+        ignore_inputs=["llm"],
+        metadata={OPERATION_METADATA_KEY: "title_generation"},
+    )
     def generate_title(self, llm: LLM | None = None, max_length: int = 50) -> str:
         """Generate a title for the conversation based on the first user message.
 
@@ -1676,6 +1687,27 @@ class RemoteConversation(BaseConversation):
         if self._cleanup_initiated:
             return
         self._cleanup_initiated = True
+
+        # Best-effort: hand the accumulated LLM cost to the workspace so it can
+        # be included in the automation completion callback. Only read cached
+        # state — close() also runs on the failure path, where a live fetch
+        # could block until timeout against an agent server that is already gone.
+        # The cache tracks this run: the agent server streams a "stats" update
+        # after every LLM response (EventService._setup_stats_streaming), so it
+        # holds the run's spend even on the failure path, which wakes run() from
+        # a per-field ERROR/STUCK update before the post-run full-state snapshot.
+        try:
+            cached = self._state._cached_state
+            # Require an actual "stats" entry: a cache built only from partial
+            # field updates — e.g. the subscribe-time push for a service with no
+            # live conversation — would otherwise yield 0.0 and record a run as
+            # free when its cost is really just unknown.
+            if cached is not None and "stats" in cached:
+                cost = self._state.stats.get_combined_metrics().accumulated_cost
+                self.workspace.register_cost(cost)
+        except Exception as e:
+            logger.debug(f"Could not register accumulated cost: {e}")
+
         # SessionEnd hooks are executed server-side (via hook_config in payload).
         try:
             # Stop WebSocket client if it exists

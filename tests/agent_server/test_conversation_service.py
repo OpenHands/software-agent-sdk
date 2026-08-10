@@ -20,11 +20,12 @@ from openhands.agent_server.conversation_lease import (
 from openhands.agent_server.conversation_service import (
     AutoTitleSubscriber,
     ConversationService,
+    _compose_conversation_info,
+    _ConversationRecord,
     _get_worktree_start_point,
 )
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
-    ACPConversationInfo,
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
@@ -39,6 +40,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.credential import CredentialSyncError
 from openhands.sdk.critic.impl.api import APIBasedCritic
 from openhands.sdk.event import ActionEvent, AgentErrorEvent, ObservationEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
@@ -127,15 +129,16 @@ def _init_git_repo(repo_dir: Path) -> None:
 
 
 @pytest.fixture
-def conversation_service():
+def conversation_service(tmp_path):
     """Create a ConversationService instance for testing."""
-    with tempfile.TemporaryDirectory() as temp_dir:
-        service = ConversationService(
-            conversations_dir=Path(temp_dir) / "conversations",
-        )
-        # Initialize the _event_services dict to simulate an active service
-        service._event_services = {}
-        yield service
+    worktree_root = tmp_path / "conversation-worktrees"
+    service = ConversationService(
+        conversations_dir=tmp_path / "conversations",
+        conversation_worktree_root=worktree_root,
+    )
+    # Initialize the _event_services dict to simulate an active service
+    service._event_services = {}
+    yield service
 
 
 @pytest.fixture
@@ -508,6 +511,130 @@ async def test_event_services_share_dedicated_run_executor(tmp_path):
 
     # After __aexit__, executor should be shut down
     assert svc._run_executor is None
+
+
+@pytest.mark.asyncio
+async def test_prepare_for_sandbox_pause_drains_active_services(tmp_path):
+    service = ConversationService(conversations_dir=tmp_path / "conversations")
+    await service.__aenter__()
+    first_id = uuid4()
+    second_id = uuid4()
+    first = AsyncMock(spec=EventService)
+    second = AsyncMock(spec=EventService)
+    second.__aexit__.side_effect = [
+        CredentialSyncError("broker unavailable"),
+        None,
+    ]
+    assert service._event_services is not None
+    service._event_services = {first_id: first, second_id: second}
+    service._credential_bindings = {first_id: {"CODEX_AUTH_JSON": MagicMock()}}
+
+    with pytest.raises(CredentialSyncError, match="broker unavailable"):
+        await service.prepare_for_sandbox_pause()
+
+    assert service._event_services == {second_id: second}
+    assert service._credential_bindings
+
+    await service.prepare_for_sandbox_pause()
+
+    assert service._event_services == {}
+    assert service._credential_bindings == {}
+    first.__aexit__.assert_awaited_once_with(None, None, None)
+    assert second.__aexit__.await_count == 2
+    await service.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_prepare_for_sandbox_pause_closes_services_concurrently(tmp_path):
+    service = ConversationService(conversations_dir=tmp_path / "conversations")
+    await service.__aenter__()
+    first = AsyncMock(spec=EventService)
+    second = AsyncMock(spec=EventService)
+    all_started = asyncio.Event()
+    started = 0
+
+    async def close(*_args):
+        nonlocal started
+        started += 1
+        if started == 2:
+            all_started.set()
+        await asyncio.wait_for(all_started.wait(), timeout=1)
+
+    first.__aexit__.side_effect = close
+    second.__aexit__.side_effect = close
+    assert service._event_services is not None
+    service._event_services = {uuid4(): first, uuid4(): second}
+
+    await service.prepare_for_sandbox_pause()
+
+    assert service._event_services == {}
+    first.__aexit__.assert_awaited_once_with(None, None, None)
+    second.__aexit__.assert_awaited_once_with(None, None, None)
+    await service.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_retains_credential_close_failure_for_retry(tmp_path):
+    service = ConversationService(conversations_dir=tmp_path / "conversations")
+    await service.__aenter__()
+    conversation_id = uuid4()
+    runtime = AsyncMock(spec=EventService)
+    runtime.__aexit__.side_effect = [
+        CredentialSyncError("broker unavailable"),
+        None,
+    ]
+    record = MagicMock()
+    binding = MagicMock()
+    assert service._event_services is not None
+    service._event_services[conversation_id] = runtime
+    service._conversation_records[conversation_id] = record
+    service._credential_bindings[conversation_id] = {"CODEX_AUTH_JSON": binding}
+
+    with pytest.raises(CredentialSyncError, match="broker unavailable"):
+        await service.__aexit__(None, None, None)
+
+    assert service._event_services == {conversation_id: runtime}
+    assert service._conversation_records == {conversation_id: record}
+    assert service._credential_bindings == {
+        conversation_id: {"CODEX_AUTH_JSON": binding}
+    }
+    assert service._run_executor is None
+    assert service._lease_renewal_task is not None
+    assert not service._lease_renewal_task.done()
+
+    await service.__aexit__(None, None, None)
+
+    assert runtime.__aexit__.await_count == 2
+    assert service._event_services is None
+    assert service._conversation_records == {}
+    assert service._credential_bindings == {}
+
+
+@pytest.mark.asyncio
+async def test_shutdown_prioritizes_credential_failure_across_runtimes(tmp_path):
+    service = ConversationService(conversations_dir=tmp_path / "conversations")
+    await service.__aenter__()
+    first_id = uuid4()
+    second_id = uuid4()
+    first = AsyncMock(spec=EventService)
+    second = AsyncMock(spec=EventService)
+    first.__aexit__.side_effect = OSError("save failed")
+    second.__aexit__.side_effect = CredentialSyncError("broker unavailable")
+    assert service._event_services is not None
+    service._event_services = {first_id: first, second_id: second}
+    service._conversation_records = {
+        first_id: MagicMock(),
+        second_id: MagicMock(),
+    }
+
+    with pytest.raises(CredentialSyncError, match="broker unavailable"):
+        await service.__aexit__(None, None, None)
+
+    assert service._event_services == {first_id: first, second_id: second}
+
+    first.__aexit__.side_effect = None
+    second.__aexit__.side_effect = None
+    await service.__aexit__(None, None, None)
 
 
 @pytest.mark.asyncio
@@ -1434,7 +1561,6 @@ class TestConversationServiceStartConversation:
         repo_dir = tmp_path / "repo"
         _init_git_repo(repo_dir)
         conversation_id = uuid4()
-        worktree_root = tmp_path / "conversation-worktrees"
 
         request = StartConversationRequest(
             conversation_id=conversation_id,
@@ -1460,15 +1586,10 @@ class TestConversationServiceStartConversation:
             )
             return mock_event_service
 
-        with (
-            patch(
-                "openhands.agent_server.conversation_service.CONVERSATION_WORKTREE_ROOT",
-                worktree_root,
-            ),
-            patch(
-                "openhands.agent_server.conversation_service.EventService",
-                side_effect=_event_service_factory,
-            ),
+        worktree_root = conversation_service.conversation_worktree_root
+        with patch(
+            "openhands.agent_server.conversation_service.EventService",
+            side_effect=_event_service_factory,
         ):
             result, _ = await conversation_service.start_conversation(request)
 
@@ -1504,7 +1625,6 @@ class TestConversationServiceStartConversation:
         workspace_dir = repo_dir / "src" / "pkg"
         workspace_dir.mkdir(parents=True)
         conversation_id = uuid4()
-        worktree_root = tmp_path / "conversation-worktrees"
 
         request = StartConversationRequest(
             conversation_id=conversation_id,
@@ -1530,15 +1650,10 @@ class TestConversationServiceStartConversation:
             )
             return mock_event_service
 
-        with (
-            patch(
-                "openhands.agent_server.conversation_service.CONVERSATION_WORKTREE_ROOT",
-                worktree_root,
-            ),
-            patch(
-                "openhands.agent_server.conversation_service.EventService",
-                side_effect=_event_service_factory,
-            ),
+        worktree_root = conversation_service.conversation_worktree_root
+        with patch(
+            "openhands.agent_server.conversation_service.EventService",
+            side_effect=_event_service_factory,
         ):
             result, _ = await conversation_service.start_conversation(request)
 
@@ -1558,7 +1673,7 @@ class TestConversationServiceStartConversation:
         workspace_dir = tmp_path / "workspace"
         workspace_dir.mkdir()
         conversation_id = uuid4()
-        worktree_root = tmp_path / "conversation-worktrees"
+        worktree_root = conversation_service.conversation_worktree_root
 
         request = StartConversationRequest(
             conversation_id=conversation_id,
@@ -1584,15 +1699,9 @@ class TestConversationServiceStartConversation:
             )
             return mock_event_service
 
-        with (
-            patch(
-                "openhands.agent_server.conversation_service.CONVERSATION_WORKTREE_ROOT",
-                worktree_root,
-            ),
-            patch(
-                "openhands.agent_server.conversation_service.EventService",
-                side_effect=_event_service_factory,
-            ),
+        with patch(
+            "openhands.agent_server.conversation_service.EventService",
+            side_effect=_event_service_factory,
         ):
             result, _ = await conversation_service.start_conversation(request)
 
@@ -1917,7 +2026,7 @@ class TestConversationServiceStartConversation:
                 ) = await conversation_service.start_conversation(request)
 
                 assert is_new is False
-                assert isinstance(conversation_info, ACPConversationInfo)
+                assert isinstance(conversation_info, ConversationInfo)
                 assert conversation_info.agent.kind == "ACPAgent"
                 mock_start.assert_not_called()
 
@@ -1978,6 +2087,9 @@ class TestConversationServiceStartConversation:
             ) as mock_event_service_class:
                 mock_event_service = AsyncMock()
                 mock_event_service.start = AsyncMock()  # Successful startup
+                # Sync methods must not be AsyncMock (would return unawaited
+                # coroutines); mark_subscription_baseline is called sync.
+                mock_event_service.mark_subscription_baseline = MagicMock()
                 mock_event_service_class.return_value = mock_event_service
 
                 # Start event service should succeed
@@ -2258,7 +2370,7 @@ class TestConversationServiceUpdateConversation:
             assert result is True
             mock_notify.assert_called_once()
             conversation_info = mock_notify.call_args[0][0]
-            assert isinstance(conversation_info, ACPConversationInfo)
+            assert isinstance(conversation_info, ConversationInfo)
             assert conversation_info.agent.kind == "ACPAgent"
 
     @pytest.mark.asyncio
@@ -2588,6 +2700,52 @@ class TestConversationServiceDeleteConversation:
 
             # Verify directories were still removed
             assert mock_rmtree.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_delete_conversation_retains_retryable_credential_close(
+        self, conversation_service, tmp_path
+    ):
+        conversation_id = uuid4()
+        conversation_dir = tmp_path / conversation_id.hex
+        conversation_dir.mkdir()
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.conversation_dir = conversation_dir
+        mock_service.stored = StoredConversation(
+            id=conversation_id,
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir=tmp_path / "workspace"),
+            confirmation_policy=NeverConfirm(),
+        )
+        mock_service.get_state.return_value = ConversationState(
+            id=conversation_id,
+            agent=mock_service.stored.agent,
+            workspace=mock_service.stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=mock_service.stored.confirmation_policy,
+        )
+        mock_service.close.side_effect = CredentialSyncError("broker unavailable")
+        binding = MagicMock()
+        conversation_service._event_services[conversation_id] = mock_service
+        conversation_service._conversation_records[conversation_id] = MagicMock()
+        conversation_service._credential_bindings[conversation_id] = {
+            "CODEX_AUTH_JSON": binding
+        }
+
+        with (
+            patch(
+                "openhands.agent_server.conversation_service.safe_rmtree"
+            ) as mock_rmtree,
+            pytest.raises(CredentialSyncError, match="broker unavailable"),
+        ):
+            await conversation_service.delete_conversation(conversation_id)
+
+        assert conversation_service._event_services[conversation_id] is mock_service
+        assert conversation_id in conversation_service._conversation_records
+        assert conversation_service._credential_bindings[conversation_id] == {
+            "CODEX_AUTH_JSON": binding
+        }
+        assert conversation_dir.exists()
+        mock_rmtree.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_delete_conversation_directory_removal_failure(
@@ -3388,3 +3546,295 @@ class TestConversationTreeForkAndNavigate:
             assert reloaded_fork is not None
             assert reloaded_fork.forked_from_conversation_id == src_id
             assert reloaded_fork.forked_from_event_id == branch_point
+
+
+class TestConversationSearchScaling:
+    """Status-filtered search/count must not full-scan conversation state.
+
+    Regression coverage for #3142, where both called ``get_state()`` on every
+    catalog entry to read one enum field per conversation.
+    """
+
+    @staticmethod
+    def _seed(conversations_dir: Path, count: int, workspace_dir: Path) -> list[UUID]:
+        """Write ``count`` idle conversations straight to disk."""
+        conversations_dir.mkdir(parents=True, exist_ok=True)
+        ids = []
+        for i in range(count):
+            conversation_id = uuid4()
+            target = conversations_dir / conversation_id.hex
+            target.mkdir()
+            stored = StoredConversation(
+                id=conversation_id,
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id=f"llm-{i}"), tools=[]),
+                workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+                confirmation_policy=NeverConfirm(),
+            )
+            stored.created_at = datetime(2026, 1, 1, tzinfo=UTC).replace(microsecond=i)
+            stored.updated_at = stored.created_at
+            (target / "meta.json").write_text(stored.model_dump_json())
+            state = ConversationState(
+                id=conversation_id,
+                agent=stored.agent,
+                workspace=stored.workspace,
+                persistence_dir=str(target),
+            )
+            (target / "base_state.json").write_text(state.model_dump_json())
+            ids.append(conversation_id)
+        return ids
+
+    @pytest.mark.asyncio
+    async def test_filtered_search_loads_state_only_for_the_page(self, tmp_path):
+        """A filtered page loads full state for page items, not the whole catalog."""
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        conversations_dir = tmp_path / "conversations"
+        self._seed(conversations_dir, 40, workspace_dir)
+
+        async with ConversationService(conversations_dir=conversations_dir) as svc:
+            assert len(svc._conversation_records) == 40
+            real_load = svc._load_persisted_state_sync
+            loaded: list[UUID] = []
+
+            def _tracking_load(conversation_id: UUID):
+                loaded.append(conversation_id)
+                return real_load(conversation_id)
+
+            with patch.object(
+                svc, "_load_persisted_state_sync", side_effect=_tracking_load
+            ):
+                page = await svc.search_conversations(
+                    limit=5, execution_status=ConversationExecutionStatus.IDLE
+                )
+
+            assert len(page.items) == 5
+            assert page.next_page_id is not None
+            # Before the fix: 40, one full state load per conversation.
+            assert len(loaded) == 5, (
+                f"expected 5 full state loads (the page), got {len(loaded)}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_filtered_count_loads_no_state(self, tmp_path):
+        """Counting by status must not load any full conversation state."""
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        conversations_dir = tmp_path / "conversations"
+        self._seed(conversations_dir, 25, workspace_dir)
+
+        async with ConversationService(conversations_dir=conversations_dir) as svc:
+            with patch.object(
+                svc, "_load_persisted_state_sync", side_effect=AssertionError
+            ):
+                idle = await svc.count_conversations(
+                    execution_status=ConversationExecutionStatus.IDLE
+                )
+                running = await svc.count_conversations(
+                    execution_status=ConversationExecutionStatus.RUNNING
+                )
+                total = await svc.count_conversations()
+
+            assert idle == 25
+            assert running == 0
+            assert total == 25
+
+    @pytest.mark.asyncio
+    async def test_status_index_picks_up_on_disk_changes(self, tmp_path):
+        """The cached status is invalidated when base_state.json changes."""
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        conversations_dir = tmp_path / "conversations"
+        ids = self._seed(conversations_dir, 3, workspace_dir)
+
+        async with ConversationService(conversations_dir=conversations_dir) as svc:
+            assert (
+                await svc.count_conversations(
+                    execution_status=ConversationExecutionStatus.FINISHED
+                )
+                == 0
+            )
+
+            # Simulate another process finishing one conversation.
+            base_state = conversations_dir / ids[0].hex / "base_state.json"
+            payload = json.loads(base_state.read_text())
+            payload["execution_status"] = ConversationExecutionStatus.FINISHED.value
+            # Change the size too, so the test does not rely on mtime
+            # granularity.
+            payload["max_iterations"] = 1234567
+            base_state.write_text(json.dumps(payload))
+
+            assert (
+                await svc.count_conversations(
+                    execution_status=ConversationExecutionStatus.FINISHED
+                )
+                == 1
+            )
+            page = await svc.search_conversations(
+                execution_status=ConversationExecutionStatus.FINISHED
+            )
+            assert [item.id for item in page.items] == [ids[0]]
+            assert (
+                await svc.count_conversations(
+                    execution_status=ConversationExecutionStatus.IDLE
+                )
+                == 2
+            )
+
+    @pytest.mark.asyncio
+    async def test_live_conversation_status_is_read_from_memory(self, tmp_path):
+        """A live conversation answers the filter from its in-memory state."""
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        conversations_dir = tmp_path / "conversations"
+        self._seed(conversations_dir, 5, workspace_dir)
+
+        request = StartConversationRequest(
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="live-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+            confirmation_policy=NeverConfirm(),
+        )
+        async with ConversationService(conversations_dir=conversations_dir) as svc:
+            live, _ = await svc.start_conversation(request)
+            assert svc._event_services is not None
+            event_service = svc._event_services[live.id]
+
+            # Flip the live state without touching disk.
+            state = await event_service.get_state()
+            with state:
+                state.execution_status = ConversationExecutionStatus.RUNNING
+
+            assert (
+                await svc.count_conversations(
+                    execution_status=ConversationExecutionStatus.RUNNING
+                )
+                == 1
+            )
+            page = await svc.search_conversations(
+                execution_status=ConversationExecutionStatus.RUNNING
+            )
+            assert [item.id for item in page.items] == [live.id]
+            assert (
+                await svc.count_conversations(
+                    execution_status=ConversationExecutionStatus.IDLE
+                )
+                == 5
+            )
+
+    @pytest.mark.asyncio
+    async def test_filtered_search_sees_records_replaced_during_refresh(self, tmp_path):
+        """Filtered search must refresh before it snapshots the catalog.
+
+        A conversation going live during the refresh replaces its record with
+        authoritative in-memory state. Snapshotting first would filter on the
+        superseded object and drop the conversation from the page.
+        """
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        conversations_dir = tmp_path / "conversations"
+        self._seed(conversations_dir, 3, workspace_dir)
+
+        async with ConversationService(conversations_dir=conversations_dir) as svc:
+            target = next(iter(svc._conversation_records))
+            real_refresh = svc._refresh_execution_statuses
+
+            async def refresh_then_replace():
+                await real_refresh()
+                # Stands in for _start_event_service swapping in a fresh record
+                # while the refresh awaited.
+                old = svc._conversation_records[target]
+                svc._conversation_records[target] = _ConversationRecord(
+                    stored=old.stored,
+                    execution_status=ConversationExecutionStatus.RUNNING,
+                )
+
+            with patch.object(svc, "_refresh_execution_statuses", refresh_then_replace):
+                page = await svc.search_conversations(
+                    execution_status=ConversationExecutionStatus.RUNNING
+                )
+
+            assert [item.id for item in page.items] == [target]
+
+
+@pytest.mark.asyncio
+async def test_search_composes_conversation_info_off_event_loop(persisted_conversation):
+    """Regression: composing ConversationInfo during a list/search must not run
+    on the event-loop thread.
+
+    The heavy Pydantic construction in ``_compose_conversation_info`` (with its
+    large nested object graphs) used to execute synchronously on the single
+    asyncio event-loop thread. Under load this caused long blocking GC pauses,
+    stalling every request (async and executor-backed alike) — the wedge seen in
+    production. Offloading it to a worker thread keeps GC/allocation off the loop.
+
+    This test loads a persisted (idle) conversation through ``search_conversations``
+    and asserts the composition ran on a thread other than the event loop.
+    """
+    import threading
+    from unittest.mock import patch as _patch
+
+    conversations_dir, conversation_id = persisted_conversation
+    original_compose = _compose_conversation_info
+
+    loop_ident = threading.get_ident()
+    found = {}
+
+    def spy(stored, state, children):
+        found["thread_ident"] = threading.get_ident()
+        return original_compose(stored, state, children)
+
+    async with ConversationService(conversations_dir=conversations_dir) as restarted:
+        assert restarted._event_services == {}
+        with _patch(
+            "openhands.agent_server.conversation_service._compose_conversation_info",
+            side_effect=spy,
+        ) as comp:
+            page = await restarted.search_conversations()
+            assert [item.id for item in page.items] == [conversation_id]
+            assert comp.call_count >= 1
+
+    # Prove the composition executed off the event loop.
+    assert found.get("thread_ident") is not None
+    assert found["thread_ident"] != loop_ident
+
+
+@pytest.mark.asyncio
+async def test_search_composes_live_conversation_info_with_state_lock(tmp_path):
+    """Live list/search composition must lock state in the worker thread."""
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    original_compose = _compose_conversation_info
+    loop_ident = threading.get_ident()
+    found = {}
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        conversation_info, _ = await service.start_conversation(request)
+        event_services = service._event_services
+        assert event_services is not None
+        event_service = event_services[conversation_info.id]
+        live_state = await event_service.get_state()
+
+        def spy(stored, state, children):
+            found["thread_ident"] = threading.get_ident()
+            found["state_owned"] = state.owned()
+            found["state_is_live"] = state is live_state
+            return original_compose(stored, state, children)
+
+        with patch(
+            "openhands.agent_server.conversation_service._compose_conversation_info",
+            side_effect=spy,
+        ) as comp:
+            page = await service.search_conversations()
+            assert [item.id for item in page.items] == [conversation_info.id]
+            assert comp.call_count >= 1
+
+    assert found.get("thread_ident") is not None
+    assert found["thread_ident"] != loop_ident
+    assert found["state_is_live"] is True
+    assert found["state_owned"] is True

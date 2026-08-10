@@ -132,8 +132,11 @@ class DelegationVisualizer(DefaultConversationVisualizer):
         Returns:
             A Rich Group with agent-specific title, or None if visualization fails
         """
-        # For message events, use our specialized handler
+        # For message events, use our specialized handler while preserving
+        # the parent visualizer's source-based user-message filtering.
         if isinstance(event, MessageEvent):
+            if self._skip_user_messages and event.source == "user":
+                return None
             return self._create_message_event_block(event)
 
         # For system prompts, actions, and observations, add agent name to the title
@@ -165,7 +168,11 @@ class DelegationVisualizer(DefaultConversationVisualizer):
                     content=content,
                     title=title,
                     title_color=_ACTION_COLOR,
-                    subtitle=self._format_metrics_subtitle(event),
+                    # Siblings of a parallel tool-call batch fall back to
+                    # totals-only so the shared per-request usage isn't repeated.
+                    subtitle=self._format_metrics_subtitle(
+                        event, force_totals=not self._claim_batch_primary(event)
+                    ),
                 )
             else:  # ObservationEvent
                 title = f"{agent_name} Agent Observation"
@@ -183,11 +190,14 @@ class DelegationVisualizer(DefaultConversationVisualizer):
         Create a block for a message event with delegation-specific
         sender/receiver info.
 
-        For user messages:
+        For human or delegated messages (source="user"):
         - If sender is set: "[Sender] Agent Message to [Agent] Agent"
         - Otherwise: "User Message to [Agent] Agent"
 
-        For agent messages:
+        For framework messages (source="environment" or source="hook"):
+        - "Message from [Source] to [Agent] Agent"
+
+        For agent messages (source="agent"):
         - Derives recipient from event history (last user message sender)
         - If recipient found: "[Agent] Agent Message to [Recipient] Agent"
         - Otherwise: "Message from [Agent] Agent to User"
@@ -204,18 +214,19 @@ class DelegationVisualizer(DefaultConversationVisualizer):
 
         assert event.llm_message is not None
 
-        # Determine role color based on message role
-        if event.llm_message.role == "user":
+        # Event source represents authorship; LLM role only controls the wire
+        # protocol and may intentionally differ for framework feedback.
+        if event.source == "user":
             role_color = "gold3"
-        elif event.llm_message.role == "assistant":
+        elif event.source == "agent":
             role_color = "blue"
         else:
-            role_color = "white"
+            role_color = _SYSTEM_COLOR
 
         # Build title with sender/recipient information for delegation
         agent_name = self._format_agent_name(self._name) if self._name else "Agent"
 
-        if event.llm_message.role == "user":
+        if event.source == "user":
             if event.sender:
                 # Message from another agent (via delegation)
                 sender_display = self._format_agent_name(event.sender)
@@ -223,12 +234,15 @@ class DelegationVisualizer(DefaultConversationVisualizer):
             else:
                 # Regular user message
                 title = f"User Message to {agent_name} Agent"
+        elif event.source in ("environment", "hook"):
+            source_display = event.source.title()
+            title = f"Message from {source_display} to {agent_name} Agent"
         else:
             # For agent messages, derive recipient from last user message
             recipient = None
             if self._state:
                 for evt in reversed(self._state.events):
-                    if isinstance(evt, MessageEvent) and evt.llm_message.role == "user":
+                    if isinstance(evt, MessageEvent) and evt.source == "user":
                         recipient = evt.sender
                         break
 
