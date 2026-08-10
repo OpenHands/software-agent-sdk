@@ -1,59 +1,46 @@
 """Plugin format strategies.
 
-A *plugin format* owns everything that is specific to how a plugin is laid out
-on disk: where its manifest lives and how it is validated, which file its MCP
-config is read from and how variables in it are expanded, and how its client
-extensions (commands / agents / hooks) are located. Each format's job is to read
-a plugin directory and produce a normalized :class:`~openhands.sdk.plugin.Plugin`.
-
-Everything *downstream* of a loaded plugin (merging skills into an agent context,
-merging MCP servers, concatenating hooks) is format-agnostic and lives on
-``Plugin`` itself, so adding a new format never touches the merge/apply path.
+A *plugin format* owns everything specific to how a plugin is laid out on disk
+(manifest location and validation, MCP config file and variable expansion, and
+where client extensions — commands / agents / hooks — live) and turns a plugin
+directory into a normalized :class:`~openhands.sdk.plugin.Plugin`. Everything
+downstream of a loaded plugin is format-agnostic and lives on ``Plugin`` itself,
+so adding a new format never touches the merge/apply path.
 
 Module layout:
 
-- ``base`` — the abstract :class:`PluginFormat` contract plus the discovery
-  logic shared by every format (skills discovery, final assembly).
+- ``base`` — the abstract :class:`PluginFormat` contract plus the shared
+  discovery logic (skills discovery, final assembly).
 - ``claude_code`` — the concrete :class:`ClaudeCodePluginFormat` strategy.
 - this package ``__init__`` — the format registry (``_FORMATS``) and the
   :func:`detect_format` dispatcher.
 
-Detection precedence (:func:`detect_format`): the first format in ``_FORMATS``
-whose :meth:`PluginFormat.detect` returns True wins. Only the Claude Code format
-is implemented today, and its ``detect`` accepts any directory, so it is the
-universal fallback (including when no manifest is present at all). The Agent
-Plugins format (agent-plugins.org) is a planned follow-up and is why this seam
-exists; when added it will sit ahead of Claude Code and claim directories with a
-root-level ``plugin.json``.
+:func:`detect_format` returns the first format in ``_FORMATS`` whose
+:meth:`PluginFormat.detect` returns True. Claude Code is the only format today
+and its ``detect`` accepts any directory, so it is the universal fallback. The
+Agent Plugins format (agent-plugins.org) is the planned follow-up this seam
+exists for; when added it will sit ahead of Claude Code and claim directories
+with a root-level ``plugin.json``.
 
 How to add a new plugin format
 ------------------------------
-The strategy is deliberately fill-in-the-blank. To add a format:
-
-1. Create a new module in this package and subclass :class:`PluginFormat`, giving
-   it a unique ``name`` (used in logs).
-2. Implement :meth:`PluginFormat.detect` — return True only for directories this
-   format should claim. Keep it cheap (a filesystem probe), and make it specific
-   so it does not shadow other formats.
-3. Implement the format-specific loaders: :meth:`~PluginFormat.load_manifest`,
+1. Create a module in this package and subclass :class:`PluginFormat`, giving it
+   a unique class-level ``name`` (used in logs).
+2. Implement :meth:`PluginFormat.detect` — cheap, specific, and True only for
+   directories this format should claim.
+3. Implement the format-specific loaders (:meth:`~PluginFormat.load_manifest`,
    :meth:`~PluginFormat.load_mcp_config`, :meth:`~PluginFormat.load_hooks`,
-   :meth:`~PluginFormat.load_agents`, and :meth:`~PluginFormat.load_commands`.
-   Each is responsible for exactly one component type and should isolate failures
-   to that component (skip/disable it, never abort the whole plugin).
-4. Reuse the base as-is where behavior is shared. In particular
-   :meth:`~PluginFormat.load_skills` implements the ``skills/<name>/SKILL.md``
-   discovery rule, which is identical across formats — do not re-implement it
-   unless your format genuinely differs. The shared :meth:`~PluginFormat.load`
-   orchestrates all of the above into a normalized ``Plugin``; you should not
-   need to override it.
-5. Register the class in ``_FORMATS`` below, in the position that reflects its
-   detection precedence (earlier = higher priority). Fallback formats go last.
-6. Add a test asserting :func:`detect_format` selects your format for a directory
-   it should claim and does not for one it should not (see
+   :meth:`~PluginFormat.load_agents`, :meth:`~PluginFormat.load_commands`). Each
+   owns one component type and should isolate its own failures rather than abort
+   the whole plugin.
+4. Reuse the base where behavior is shared — notably
+   :meth:`~PluginFormat.load_skills` (the ``skills/<name>/SKILL.md`` rule) and
+   :meth:`~PluginFormat.load` (final assembly); you should not need to override
+   either.
+5. Register the class in ``_FORMATS`` below in detection-precedence order
+   (earlier = higher priority; fallbacks last).
+6. Add a :func:`detect_format` selection test (see
    ``tests/sdk/plugin/test_plugin_loading.py::TestDetectFormat``).
-
-Because every format produces the same normalized ``Plugin``, none of this
-touches the merge/apply path or any existing call site.
 """
 
 from __future__ import annotations

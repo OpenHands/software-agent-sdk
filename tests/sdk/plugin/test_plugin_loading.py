@@ -1214,3 +1214,36 @@ class TestDetectFormat:
         assert via_strategy.name == via_load.name == "roundtrip"
         assert via_strategy.version == via_load.version == "3.1.4"
         assert via_strategy.path == via_load.path
+
+    def test_strategy_load_raises_for_missing_dir(self, tmp_path: Path):
+        """The direct strategy API guards a missing dir, like Plugin.load()."""
+        missing = tmp_path / "does-not-exist"
+
+        with pytest.raises(FileNotFoundError):
+            detect_format(missing).load(missing)
+
+    def test_subclass_without_name_is_rejected(self):
+        """A PluginFormat subclass must declare a class-level ``name``."""
+        from openhands.sdk.plugin.format.base import PluginFormat
+
+        with pytest.raises(TypeError, match="name"):
+
+            class _NamelessFormat(PluginFormat):  # pyright: ignore[reportUnusedClass]
+                @classmethod
+                def detect(cls, plugin_dir: Path) -> bool:
+                    return False
+
+                def load_manifest(self, plugin_dir: Path) -> PluginManifest:
+                    raise NotImplementedError
+
+                def load_mcp_config(self, plugin_dir: Path):
+                    raise NotImplementedError
+
+                def load_hooks(self, plugin_dir: Path):
+                    raise NotImplementedError
+
+                def load_agents(self, plugin_dir: Path):
+                    raise NotImplementedError
+
+                def load_commands(self, plugin_dir: Path):
+                    raise NotImplementedError

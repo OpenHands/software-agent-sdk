@@ -4,13 +4,16 @@ This is the concrete :class:`~openhands.sdk.plugin.format.base.PluginFormat`
 strategy for the Claude-Code-style plugin directory. It is the universal
 fallback: its :meth:`ClaudeCodePluginFormat.detect` accepts any directory,
 inferring a manifest from the directory name when none is present.
+
+See the ``openhands.sdk.plugin.format`` package docstring for the design
+overview and the recipe to add a new format.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Final
 
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
@@ -28,8 +31,8 @@ from openhands.sdk.subagent.schema import AgentDefinition
 logger = get_logger(__name__)
 
 # Directories the Claude Code layout checks for a (nested) manifest, in order.
-PLUGIN_MANIFEST_DIRS = [".plugin", ".claude-plugin"]
-PLUGIN_MANIFEST_FILE = "plugin.json"
+PLUGIN_MANIFEST_DIRS: Final[list[str]] = [".plugin", ".claude-plugin"]
+PLUGIN_MANIFEST_FILE: Final[str] = "plugin.json"
 
 
 class ClaudeCodePluginFormat(PluginFormat):

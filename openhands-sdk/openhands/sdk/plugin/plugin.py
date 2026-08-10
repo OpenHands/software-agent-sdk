@@ -18,6 +18,7 @@ from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.plugin.fetch import fetch_plugin
+from openhands.sdk.plugin.format import detect_format
 from openhands.sdk.plugin.types import (
     CommandDefinition,
     PluginManifest,
@@ -269,10 +270,6 @@ class Plugin(BaseModel):
             FileNotFoundError: If the plugin directory doesn't exist.
             ValueError: If the plugin manifest is invalid.
         """
-        # Imported here (not at module scope) because format.py imports Plugin
-        # for its return type; a top-level import would create a cycle.
-        from openhands.sdk.plugin.format import detect_format
-
         plugin_dir = Path(plugin_path).resolve()
         if not plugin_dir.is_dir():
             raise FileNotFoundError(f"Plugin directory not found: {plugin_dir}")

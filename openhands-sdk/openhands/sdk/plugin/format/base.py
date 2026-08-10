@@ -1,19 +1,11 @@
 """``PluginFormat`` strategy base class and shared component helpers.
 
-A *plugin format* owns everything that is specific to how a plugin is laid out
-on disk: where its manifest lives and how it is validated, which file its MCP
-config is read from and how variables in it are expanded, and how its client
-extensions (commands / agents / hooks) are located. Each format's job is to read
-a plugin directory and produce a normalized :class:`~openhands.sdk.plugin.Plugin`.
+Holds the abstract :class:`PluginFormat` contract plus the discovery logic
+shared by every format (skills discovery and final assembly). Concrete
+strategies live in their own modules (e.g. ``claude_code.py``).
 
-Everything *downstream* of a loaded plugin (merging skills into an agent context,
-merging MCP servers, concatenating hooks) is format-agnostic and lives on
-``Plugin`` itself, so adding a new format never touches the merge/apply path.
-
-Concrete strategies live in their own modules (e.g. ``claude_code.py``); this
-module holds only the abstract contract and the discovery logic shared by all
-formats. See the ``openhands.sdk.plugin.format`` package docstring for the
-recipe to add a new format.
+See the ``openhands.sdk.plugin.format`` package docstring for the design
+overview and the recipe to add a new format.
 """
 
 from __future__ import annotations
@@ -49,6 +41,17 @@ class PluginFormat(ABC):
 
     #: Stable identifier used in logs and by ``detect_format``.
     name: ClassVar[str]
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        # Enforce the ``name`` contract at class-definition time. Without this a
+        # subclass that omits ``name`` instantiates cleanly and only fails later
+        # with AttributeError the first time ``.name`` is read (e.g. in
+        # ``detect_format``'s debug log).
+        super().__init_subclass__(**kwargs)
+        if "name" not in cls.__dict__:
+            raise TypeError(
+                f"{cls.__name__} must define a class-level 'name' attribute"
+            )
 
     @classmethod
     @abstractmethod
@@ -112,10 +115,16 @@ class PluginFormat(ABC):
         before dispatching here, so direct callers of
         ``detect_format(path).load(path)`` should pass an already-resolved path
         if they want ``Plugin.path`` fully resolved.
+
+        Raises:
+            FileNotFoundError: If ``plugin_dir`` is not an existing directory.
         """
         # Imported lazily to avoid a module-level import cycle with plugin.py,
         # which imports the format package for detect_format().
         from openhands.sdk.plugin.plugin import Plugin
+
+        if not plugin_dir.is_dir():
+            raise FileNotFoundError(f"Plugin directory not found: {plugin_dir}")
 
         manifest = self.load_manifest(plugin_dir)
         skills = self.load_skills(plugin_dir)
