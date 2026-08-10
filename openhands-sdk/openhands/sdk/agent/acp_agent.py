@@ -29,6 +29,7 @@ import uuid
 import weakref
 from collections.abc import Awaitable, Callable, Collection, Generator, Iterable
 from concurrent.futures import Future
+from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
 
@@ -802,10 +803,32 @@ def _extract_token_usage(
     return (0, 0, 0, 0, 0)
 
 
+@cache
+def _warn_unknown_acp_pricing(model: str) -> None:
+    """Warn once per model that ACP cost cannot be derived for it."""
+    logger.warning(
+        "No LiteLLM pricing for ACP model %r - cost stays 0 for this session",
+        model,
+    )
+
+
 def _estimate_cost_from_tokens(
-    model: str, input_tokens: int, output_tokens: int
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
+    reasoning_tokens: int = 0,
 ) -> float:
     """Estimate cost from token counts using LiteLLM's pricing database.
+
+    ACP reports every bucket separately (``Usage.total_tokens`` is documented as
+    the sum of all token types), unlike litellm/OpenAI where cached reads are
+    counted inside ``prompt_tokens``. So each bucket is priced and added rather
+    than discounted out of the input total.
+
+    Cache buckets fall back to the plain input rate when the model has no
+    cache-specific rate; thought tokens are billed as output.
 
     Returns 0.0 if pricing is unavailable for the model.
     """
@@ -816,7 +839,19 @@ def _estimate_cost_from_tokens(
         info = cost_map.get(model, {})
         input_cost = info.get("input_cost_per_token", 0) or 0
         output_cost = info.get("output_cost_per_token", 0) or 0
-        return input_tokens * input_cost + output_tokens * output_cost
+        if not input_cost and not output_cost:
+            if input_tokens or output_tokens or cache_read_tokens or cache_write_tokens:
+                _warn_unknown_acp_pricing(model)
+            return 0.0
+        cache_read_cost = info.get("cache_read_input_token_cost") or input_cost
+        cache_write_cost = info.get("cache_creation_input_token_cost") or input_cost
+        return (
+            input_tokens * input_cost
+            + output_tokens * output_cost
+            + cache_read_tokens * cache_read_cost
+            + cache_write_tokens * cache_write_cost
+            + reasoning_tokens * output_cost
+        )
     except Exception:
         return 0.0
 
@@ -1892,10 +1927,23 @@ class ACPAgent(AgentBase):
         # -- Cost derivation from tokens --------------------------------------
         # gemini-cli: no UsageUpdate cost, so derive from token counts using
         # LiteLLM's model pricing database (same source the proxy uses).
-        # claude-agent-acp, codex-acp: skipped since cost_recorded is True.
-        if not cost_recorded and (input_tokens or output_tokens) and self.acp_model:
+        # claude-agent-acp, codex-acp: skipped once the provider has reported a
+        # cost for this session. Keying on "has the provider ever reported"
+        # rather than on this call's delta keeps a repeated cumulative amount
+        # (delta == 0) from being mistaken for "no provider cost".
+        provider_cost_seen = session_id in self._client._last_cost_by_session
+        if (
+            not provider_cost_seen
+            and (input_tokens or output_tokens)
+            and self.acp_model
+        ):
             cost = _estimate_cost_from_tokens(
-                self.acp_model, input_tokens, output_tokens
+                self.acp_model,
+                input_tokens,
+                output_tokens,
+                cache_read_tokens=cache_read,
+                cache_write_tokens=cache_write,
+                reasoning_tokens=reasoning,
             )
             if cost > 0:
                 self.llm.metrics.add_cost(cost)

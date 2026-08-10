@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import json
+import logging
 import threading
 import time
 import uuid
@@ -48,6 +49,7 @@ from openhands.sdk.agent.acp_agent import (
     _stringify_acp_error_data,
     _strip_inherited_npm_env,
     _warn_auth_selection_failure,
+    _warn_unknown_acp_pricing,
     _with_codex_base_url,
 )
 from openhands.sdk.agent.acp_file_credentials import (
@@ -6034,6 +6036,193 @@ class TestEstimateCostFromTokens:
             assert (
                 _estimate_cost_from_tokens("gemini-3-flash-preview", 1000, 500) == 0.0
             )
+
+    def test_cache_and_reasoning_tokens_are_priced(self):
+        """Cache and thought buckets are additive in ACP, so they add cost.
+
+        ``Usage.total_tokens`` is documented as the sum of all token types, so
+        ``cached_read_tokens`` is not contained in ``input_tokens`` the way
+        litellm/OpenAI report it.
+        """
+        mock_cost_map = {
+            "gemini-3-flash-preview": {
+                "input_cost_per_token": 5e-07,
+                "output_cost_per_token": 3e-06,
+                "cache_read_input_token_cost": 1e-07,
+                "cache_creation_input_token_cost": 6e-07,
+            }
+        }
+        mock_litellm = MagicMock()
+        mock_litellm.model_cost = mock_cost_map
+        with patch.dict("sys.modules", {"litellm": mock_litellm}):
+            cost = _estimate_cost_from_tokens(
+                "gemini-3-flash-preview",
+                1000,
+                500,
+                cache_read_tokens=900,
+                cache_write_tokens=50,
+                reasoning_tokens=30,
+            )
+
+        assert cost == pytest.approx(
+            1000 * 5e-07 + 500 * 3e-06 + 900 * 1e-07 + 50 * 6e-07 + 30 * 3e-06
+        )
+
+    def test_cache_tokens_fall_back_to_input_rate(self):
+        """Models without cache-specific rates price cache tokens as input."""
+        mock_cost_map = {
+            "some-model": {
+                "input_cost_per_token": 5e-07,
+                "output_cost_per_token": 3e-06,
+            }
+        }
+        mock_litellm = MagicMock()
+        mock_litellm.model_cost = mock_cost_map
+        with patch.dict("sys.modules", {"litellm": mock_litellm}):
+            cost = _estimate_cost_from_tokens(
+                "some-model", 0, 0, cache_read_tokens=100, cache_write_tokens=100
+            )
+
+        assert cost == pytest.approx(200 * 5e-07)
+
+    def test_unknown_model_warns(self, caplog):
+        """An unpriced model is surfaced instead of silently recording $0."""
+        _warn_unknown_acp_pricing.cache_clear()
+        with caplog.at_level(logging.WARNING):
+            assert _estimate_cost_from_tokens("unpriced-model-abc", 100, 50) == 0.0
+
+        assert any(
+            "unpriced-model-abc" in record.message for record in caplog.records
+        ), caplog.text
+
+    def test_unknown_model_warns_only_once_per_model(self, caplog):
+        """The warning does not repeat on every turn for the same model."""
+        _warn_unknown_acp_pricing.cache_clear()
+        with caplog.at_level(logging.WARNING):
+            _estimate_cost_from_tokens("unpriced-model-def", 100, 50)
+            _estimate_cost_from_tokens("unpriced-model-def", 100, 50)
+            _estimate_cost_from_tokens("unpriced-model-def", 100, 50)
+
+        matching = [r for r in caplog.records if "unpriced-model-def" in r.message]
+        assert len(matching) == 1, caplog.text
+
+    def test_zero_tokens_does_not_warn_for_unknown_model(self, caplog):
+        """A turn with no tokens is not an unpriced-model problem."""
+        _warn_unknown_acp_pricing.cache_clear()
+        with caplog.at_level(logging.WARNING):
+            assert _estimate_cost_from_tokens("unpriced-model-ghi", 0, 0) == 0.0
+
+        assert not [r for r in caplog.records if "unpriced-model-ghi" in r.message]
+
+
+# ---------------------------------------------------------------------------
+# _record_usage cost derivation
+# ---------------------------------------------------------------------------
+
+
+class TestRecordUsageDerivedCost:
+    """The token-derived estimate must not stack on top of provider cost."""
+
+    @staticmethod
+    def _make_response(input_tokens=1000, output_tokens=500):
+        response = MagicMock()
+        usage = MagicMock()
+        usage.input_tokens = input_tokens
+        usage.output_tokens = output_tokens
+        usage.cached_read_tokens = 0
+        usage.cached_write_tokens = 0
+        usage.thought_tokens = 0
+        response.usage = usage
+        return response
+
+    @staticmethod
+    def _make_usage_update(amount):
+        update = MagicMock()
+        update.cost = MagicMock()
+        update.cost.amount = amount
+        return update
+
+    def _make_agent_with_pricing(self):
+        agent = _make_agent(acp_model="priced-model")
+        agent._client = _OpenHandsACPBridge()
+        return agent
+
+    def test_derived_estimate_not_stacked_on_provider_cost(self):
+        """A repeated cumulative cost must not trigger a token-derived top-up.
+
+        The provider reports cumulative cost, so a second UsageUpdate carrying
+        the same amount yields ``delta == 0``. That must not be read as "the
+        provider never reported cost".
+        """
+        agent = self._make_agent_with_pricing()
+        mock_cost_map = {
+            "priced-model": {
+                "input_cost_per_token": 5e-07,
+                "output_cost_per_token": 3e-06,
+            }
+        }
+        mock_litellm = MagicMock()
+        mock_litellm.model_cost = mock_cost_map
+
+        with patch.dict("sys.modules", {"litellm": mock_litellm}):
+            agent._record_usage(
+                self._make_response(),
+                "sess-1",
+                usage_update=self._make_usage_update(10.0),
+            )
+            assert agent.llm.metrics.accumulated_cost == pytest.approx(10.0)
+
+            agent._record_usage(
+                self._make_response(),
+                "sess-1",
+                usage_update=self._make_usage_update(10.0),
+            )
+
+        assert agent.llm.metrics.accumulated_cost == pytest.approx(10.0)
+
+    def test_derived_estimate_still_applies_without_provider_cost(self):
+        """gemini-cli style sessions keep deriving cost from tokens."""
+        agent = self._make_agent_with_pricing()
+        mock_cost_map = {
+            "priced-model": {
+                "input_cost_per_token": 5e-07,
+                "output_cost_per_token": 3e-06,
+            }
+        }
+        mock_litellm = MagicMock()
+        mock_litellm.model_cost = mock_cost_map
+
+        with patch.dict("sys.modules", {"litellm": mock_litellm}):
+            agent._record_usage(self._make_response(), "sess-2", usage_update=None)
+
+        assert agent.llm.metrics.accumulated_cost == pytest.approx(
+            1000 * 5e-07 + 500 * 3e-06
+        )
+
+    def test_derived_estimate_prices_cache_buckets(self):
+        """The derived path forwards the cache/thought buckets it extracted."""
+        agent = self._make_agent_with_pricing()
+        response = self._make_response()
+        response.usage.cached_read_tokens = 900
+        response.usage.cached_write_tokens = 50
+        response.usage.thought_tokens = 30
+        mock_cost_map = {
+            "priced-model": {
+                "input_cost_per_token": 5e-07,
+                "output_cost_per_token": 3e-06,
+                "cache_read_input_token_cost": 1e-07,
+                "cache_creation_input_token_cost": 6e-07,
+            }
+        }
+        mock_litellm = MagicMock()
+        mock_litellm.model_cost = mock_cost_map
+
+        with patch.dict("sys.modules", {"litellm": mock_litellm}):
+            agent._record_usage(response, "sess-3", usage_update=None)
+
+        assert agent.llm.metrics.accumulated_cost == pytest.approx(
+            1000 * 5e-07 + 500 * 3e-06 + 900 * 1e-07 + 50 * 6e-07 + 30 * 3e-06
+        )
 
 
 # ---------------------------------------------------------------------------
