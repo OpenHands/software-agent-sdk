@@ -3813,3 +3813,46 @@ async def test_search_composes_conversation_info_off_event_loop(persisted_conver
     # Prove the composition executed off the event loop.
     assert found.get("thread_ident") is not None
     assert found["thread_ident"] != loop_ident
+
+
+@pytest.mark.asyncio
+async def test_search_composes_live_conversation_info_with_state_lock(tmp_path):
+    """Live list/search composition must lock state in the worker thread."""
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    original_compose = _compose_conversation_info
+    loop_ident = threading.get_ident()
+    found = {}
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        conversation_info, _ = await service.start_conversation(request)
+        event_services = service._event_services
+        assert event_services is not None
+        event_service = event_services[conversation_info.id]
+        live_state = await event_service.get_state()
+
+        def spy(stored, state, children):
+            found["thread_ident"] = threading.get_ident()
+            found["state_owned"] = state.owned()
+            found["state_is_live"] = state is live_state
+            return original_compose(stored, state, children)
+
+        with patch(
+            "openhands.agent_server.conversation_service._compose_conversation_info",
+            side_effect=spy,
+        ) as comp:
+            page = await service.search_conversations()
+            assert [item.id for item in page.items] == [conversation_info.id]
+            assert comp.call_count >= 1
+
+    assert found.get("thread_ident") is not None
+    assert found["thread_ident"] != loop_ident
+    assert found["state_is_live"] is True
+    assert found["state_owned"] is True
