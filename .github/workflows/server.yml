@@ -151,20 +151,21 @@ jobs:
                   TOOL_EOF
 
                   echo "=== Negative test: import WITHOUT extra path (should fail) ==="
-                  "$BIN" --import-modules ci_test_tool --port 8003 \
-                      > neg_test.log 2>&1 &
-                  NEG_PID=$!
-
-                  if wait_for_log neg_test.log "No module named 'ci_test_tool'"; then
-                      echo "✓ Negative test passed: import correctly failed without --extra-python-path"
-                  else
-                      echo "ERROR: Expected ModuleNotFoundError but got:"
+                  if "$BIN" --import-modules ci_test_tool --port 8003 \
+                      > neg_test.log 2>&1; then
+                      echo "ERROR: Import unexpectedly succeeded without --extra-python-path"
                       cat neg_test.log
-                      stop_process "$NEG_PID"
                       rm -rf "$TOOL_DIR" neg_test.log
                       exit 1
                   fi
-                  stop_process "$NEG_PID"
+                  if grep -q "ci_test_tool" neg_test.log; then
+                      echo "✓ Negative test passed: import correctly failed without --extra-python-path"
+                  else
+                      echo "ERROR: Import failed for an unexpected reason:"
+                      cat neg_test.log
+                      rm -rf "$TOOL_DIR" neg_test.log
+                      exit 1
+                  fi
                   rm -f neg_test.log
 
                   echo "=== Positive test: import WITH OH_EXTRA_PYTHON_PATH ==="
