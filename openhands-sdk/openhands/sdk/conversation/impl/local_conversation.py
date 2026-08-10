@@ -325,6 +325,15 @@ class LocalConversation(BaseConversation):
         # inject here — but the ``ClientTool`` classes still need re-registering
         # from those persisted specs (done below, after the agent is loaded).
         resolved_client_tools = list(client_tools or [])
+        if agent is None and resolved_client_tools:
+            # On resume the client tools are recovered from the persisted agent
+            # (see below), so caller-supplied ``client_tools`` cannot be injected
+            # into a caller-supplied agent — warn rather than drop them silently.
+            logger.warning(
+                "client_tools were passed with agent=None (resume); they are "
+                "ignored — client tools are recovered from the persisted agent "
+                "in base_state.json instead."
+            )
         if (
             agent is not None
             and not resolved_client_tools

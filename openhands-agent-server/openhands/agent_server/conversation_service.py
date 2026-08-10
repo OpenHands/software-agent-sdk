@@ -771,8 +771,10 @@ class ConversationService:
         # The agent no longer lives on ``stored`` (meta.json). Callers pass the
         # agent explicitly (the new-conversation request agent, or the live
         # agent); otherwise fall back to the persisted base_state.json agent.
+        # Read it off the event loop — it does blocking file I/O, mirroring the
+        # ``_load_persisted_state_sync`` usage elsewhere.
         if agent is None:
-            agent = self._agent_from_base_state(stored.id)
+            agent = await asyncio.to_thread(self._agent_from_base_state, stored.id)
         bindings = self._credential_bindings.pop(stored.id, {})
         if (
             CODEX_AUTH_SECRET_NAME not in bindings
