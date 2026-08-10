@@ -827,8 +827,9 @@ def _estimate_cost_from_tokens(
     counted inside ``prompt_tokens``. So each bucket is priced and added rather
     than discounted out of the input total.
 
-    Cache buckets fall back to the plain input rate when the model has no
-    cache-specific rate; thought tokens are billed as output.
+    Cache buckets fall back to the plain input rate only when the model has no
+    cache-specific rate at all; an explicit rate of 0 means free. Thought tokens
+    are billed as output.
 
     Returns 0.0 if pricing is unavailable for the model.
     """
@@ -843,8 +844,8 @@ def _estimate_cost_from_tokens(
             if input_tokens or output_tokens or cache_read_tokens or cache_write_tokens:
                 _warn_unknown_acp_pricing(model)
             return 0.0
-        cache_read_cost = info.get("cache_read_input_token_cost") or input_cost
-        cache_write_cost = info.get("cache_creation_input_token_cost") or input_cost
+        cache_read_cost = info.get("cache_read_input_token_cost", input_cost)
+        cache_write_cost = info.get("cache_creation_input_token_cost", input_cost)
         return (
             input_tokens * input_cost
             + output_tokens * output_cost

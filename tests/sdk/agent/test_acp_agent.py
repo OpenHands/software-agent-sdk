@@ -6085,6 +6085,34 @@ class TestEstimateCostFromTokens:
 
         assert cost == pytest.approx(200 * 5e-07)
 
+    def test_explicit_zero_cache_rate_is_free(self):
+        """A rate of 0 means free, not missing.
+
+        ``deepseek/deepseek-chat`` and 30 other entries in litellm's cost map
+        set ``cache_creation_input_token_cost`` to 0, and 17 do the same for
+        ``cache_read_input_token_cost``.
+        """
+        mock_cost_map = {
+            "free-cache-model": {
+                "input_cost_per_token": 5e-07,
+                "output_cost_per_token": 3e-06,
+                "cache_read_input_token_cost": 0.0,
+                "cache_creation_input_token_cost": 0.0,
+            }
+        }
+        mock_litellm = MagicMock()
+        mock_litellm.model_cost = mock_cost_map
+        with patch.dict("sys.modules", {"litellm": mock_litellm}):
+            cost = _estimate_cost_from_tokens(
+                "free-cache-model",
+                100,
+                0,
+                cache_read_tokens=1000,
+                cache_write_tokens=1000,
+            )
+
+        assert cost == pytest.approx(100 * 5e-07)
+
     def test_unknown_model_warns(self, caplog):
         """An unpriced model is surfaced instead of silently recording $0."""
         _warn_unknown_acp_pricing.cache_clear()
