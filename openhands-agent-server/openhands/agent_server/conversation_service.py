@@ -1286,9 +1286,13 @@ class ConversationService:
                     raise ValueError(
                         f"Persisted conversation {conversation_id} has no record"
                     )
-                managed_codex_credential = self._is_codex_agent(
-                    self._agent_from_base_state(conversation_id)
-                ) and (
+                # Read base_state.json off the event loop, matching the
+                # asyncio.to_thread pattern used for the same read elsewhere
+                # (_resolve_credential_bindings, _conversation_info).
+                reattach_agent = await asyncio.to_thread(
+                    self._agent_from_base_state, conversation_id
+                )
+                managed_codex_credential = self._is_codex_agent(reattach_agent) and (
                     CODEX_AUTH_SECRET_NAME
                     in self._credential_bindings.get(conversation_id, {})
                     or await self._has_local_codex_credential()
