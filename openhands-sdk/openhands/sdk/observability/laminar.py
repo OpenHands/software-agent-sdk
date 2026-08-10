@@ -103,11 +103,16 @@ def maybe_init_laminar():
     base_url = get_env("LMNR_BASE_URL") or None
     force_http = _get_bool_env("LMNR_FORCE_HTTP")
     instruments_env = get_env("LMNR_INSTRUMENTS")
-    instruments = (
-        {Instruments(value.strip()) for value in instruments_env.split(",")}
-        if instruments_env
-        else None
-    )
+    instruments = None
+    if instruments_env is not None:
+        instruments = set()
+        for value in map(str.strip, instruments_env.split(",")):
+            if not value:
+                continue
+            try:
+                instruments.add(Instruments(value))
+            except ValueError:
+                logger.warning("Ignoring invalid LMNR_INSTRUMENTS value %r", value)
 
     if _is_otel_backend_laminar():
         Laminar.initialize(

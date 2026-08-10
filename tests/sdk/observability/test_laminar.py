@@ -275,7 +275,16 @@ def test_lmnr_force_http_passed_to_laminar(force_http_value, expected_force_http
 
 
 @pytest.mark.parametrize("is_laminar_backend", [True, False])
-def test_lmnr_instruments_passed_to_laminar(is_laminar_backend):
+@pytest.mark.parametrize(
+    ("instruments_env", "expected", "invalid"),
+    [
+        ("litellm,mcp", {"litellm", "mcp"}, None),
+        ("litellm,,unsupported,", {"litellm"}, "unsupported"),
+    ],
+)
+def test_lmnr_instruments_passed_to_laminar(
+    is_laminar_backend, instruments_env, expected, invalid, caplog
+):
     """LMNR_INSTRUMENTS limits Laminar to the selected integrations."""
     from lmnr import Instruments
 
@@ -283,7 +292,7 @@ def test_lmnr_instruments_passed_to_laminar(is_laminar_backend):
         os.environ,
         {
             "LMNR_PROJECT_API_KEY": "test-key",
-            "LMNR_INSTRUMENTS": "litellm,mcp",
+            "LMNR_INSTRUMENTS": instruments_env,
         },
     ):
         with (
@@ -299,9 +308,10 @@ def test_lmnr_instruments_passed_to_laminar(is_laminar_backend):
             maybe_init_laminar()
 
     assert mock_laminar.initialize.call_args.kwargs["instruments"] == {
-        Instruments.LITELLM,
-        Instruments.MCP,
+        Instruments(value) for value in expected
     }
+    if invalid:
+        assert f"Ignoring invalid LMNR_INSTRUMENTS value '{invalid}'" in caplog.text
 
 
 # ---------------------------------------------------------------------------
