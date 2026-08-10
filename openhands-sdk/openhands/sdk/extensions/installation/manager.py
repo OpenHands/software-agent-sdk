@@ -291,12 +291,17 @@ class InstallationManager[T: ExtensionProtocol]:
         return info
 
     def update(self, name: str) -> InstallationInfo | None:
-        """Update an installed extension to the latest version.
+        """Reconcile an installed extension with its tracked source.
 
-        Re-fetches the extension from its original source with ``ref=None``
-        (i.e. the latest available) and force-reinstalls it.  The previous
-        ``enabled`` state is preserved because ``install(force=True)``
-        carries it over.
+        Re-fetches the extension from its original source at the same
+        ``requested_ref`` recorded at install time and force-reinstalls it.
+        A pinned install (tag or commit) is re-resolved to that ref, so
+        ``update()`` catches drift (e.g. a moved tag) without un-pinning it.
+        A floating install (``requested_ref`` is ``None``) resolves to the
+        source's current default-branch HEAD, same as before.  Re-pinning to
+        a different ref is a separate, explicit ``install(source, ref=new_ref,
+        force=True)`` call.  The previous ``enabled`` state is preserved
+        because ``install(force=True)`` carries it over.
 
         Args:
             name: Name of the extension to update.
@@ -320,7 +325,7 @@ class InstallationManager[T: ExtensionProtocol]:
         logger.info(f"Updating extension {name} from {redacted}")
         return self.install(
             source=current_info.source,
-            ref=None,
+            ref=current_info.requested_ref,
             repo_path=current_info.repo_path,
             force=True,
         )
