@@ -9,6 +9,7 @@ lock across the step and never had the gap, and is used here as a control.
 import asyncio
 import threading
 import time
+from typing import ClassVar
 from unittest.mock import MagicMock
 
 import pytest
@@ -19,8 +20,13 @@ from openhands.sdk.agent import Agent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import MessageEvent
-from openhands.sdk.llm import LLM, LLMResponse, Message, TextContent
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
+from openhands.sdk.event.llm_convertible import UserRejectObservation
+from openhands.sdk.llm import LLM, LLMResponse, Message, MessageToolCall, TextContent
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot, TokenUsage
+from openhands.sdk.security.confirmation_policy import AlwaysConfirm
+from openhands.sdk.tool import Tool, ToolDefinition, ToolExecutor, register_tool
+from openhands.sdk.tool.schema import Action, Observation
 
 
 MODEL = "test-model"
@@ -173,3 +179,189 @@ def test_sync_run_absorbs_message_sent_during_step(tmp_path):
     )
     assert _saw(llm._calls, "second message") == [1]
     assert convo.state.execution_status == ConversationExecutionStatus.FINISHED
+
+
+class _ConfirmAction(Action):
+    command: str
+
+
+class _ConfirmObservation(Observation):
+    result: str
+
+    @property
+    def to_llm_content(self):
+        return [TextContent(text=self.result)]
+
+
+class _ConfirmExecutor(ToolExecutor[_ConfirmAction, _ConfirmObservation]):
+    def __call__(self, action: _ConfirmAction, conversation=None):
+        return _ConfirmObservation(result=f"ran {action.command}")
+
+
+class _ConfirmTool(ToolDefinition[_ConfirmAction, _ConfirmObservation]):
+    name: ClassVar[str] = "async_confirm_tool"
+
+    @classmethod
+    def create(cls, conv_state=None, **params):
+        return [
+            cls(
+                description="Tool requiring confirmation",
+                action_type=_ConfirmAction,
+                observation_type=_ConfirmObservation,
+                executor=_ConfirmExecutor(),
+            )
+        ]
+
+
+register_tool("async_confirm_tool", _ConfirmTool)
+
+
+def _tool_call_response(command: str = "run-once") -> LLMResponse:
+    """A tool-call response -> agent goes WAITING_FOR_CONFIRMATION."""
+    return LLMResponse(
+        message=Message(
+            role="assistant",
+            content=[TextContent(text=f"I'll {command}")],
+            tool_calls=[
+                MessageToolCall(
+                    id="call_1",
+                    name="async_confirm_tool",
+                    arguments=f'{{"command": "{command}"}}',
+                    origin="completion",
+                )
+            ],
+        ),
+        metrics=MetricsSnapshot(
+            model_name=MODEL,
+            accumulated_cost=0.0,
+            max_budget_per_task=0.0,
+            accumulated_token_usage=TokenUsage(model=MODEL),
+        ),
+        raw_response=MagicMock(spec=ModelResponse, id="resp-confirm"),
+    )
+
+
+class _InjectingAsyncConfirmLLM(LLM):
+    """First call proposes an action needing confirmation while a message
+    lands mid-call; second call (after the pending action is superseded)
+    finishes normally."""
+
+    _convo_box: list = PrivateAttr(default_factory=list)
+    _calls: list = PrivateAttr(default_factory=list)
+
+    def __init__(self):
+        super().__init__(model=MODEL, usage_id="test-llm-confirm")
+
+    def uses_responses_api(self) -> bool:
+        return False
+
+    async def acompletion(self, *, messages, tools=None, **kwargs):  # type: ignore[override]
+        self._calls.append(" ".join(str(m) for m in messages))
+        convo: LocalConversation = self._convo_box[0]
+
+        if len(self._calls) == 1:
+
+            def _send():
+                convo.send_message("second message")
+
+            t = threading.Thread(target=_send)
+            t.start()
+            await asyncio.to_thread(t.join)
+            return _tool_call_response()
+
+        return _finishing_response()
+
+
+@pytest.mark.asyncio
+async def test_message_during_confirmation_wait_supersedes_pending_action(tmp_path):
+    """A message landing while astep() ends WAITING_FOR_CONFIRMATION must reject
+    the stale pending action instead of letting the run loop silently execute it
+    as an implicit confirmation on the next iteration."""
+    llm = _InjectingAsyncConfirmLLM()
+    convo = LocalConversation(
+        agent=Agent(llm=llm, tools=[Tool(name="async_confirm_tool")]),
+        workspace=str(tmp_path),
+        visualizer=None,
+    )
+    llm._convo_box.append(convo)
+    convo.set_confirmation_policy(AlwaysConfirm())
+    convo.send_message("first message")
+
+    await convo.arun()
+
+    assert len(llm._calls) == 2, (
+        f"expected the new message to be picked up (2 LLM calls), got {len(llm._calls)}"
+    )
+    assert _saw(llm._calls, "second message") == [1]
+    assert convo.state.execution_status == ConversationExecutionStatus.FINISHED
+
+    reject_events = [
+        e for e in convo.state.events if isinstance(e, UserRejectObservation)
+    ]
+    assert len(reject_events) == 1, "the stale pending action must be rejected"
+
+
+class _InjectingAsyncBudgetLLM(LLM):
+    """Finishing response with a message landing mid-call, while the run's
+    accumulated cost is already over budget."""
+
+    _convo_box: list = PrivateAttr(default_factory=list)
+    _calls: list = PrivateAttr(default_factory=list)
+
+    def __init__(self):
+        super().__init__(model=MODEL, usage_id="test-llm-budget")
+
+    def uses_responses_api(self) -> bool:
+        return False
+
+    async def acompletion(self, *, messages, tools=None, **kwargs):  # type: ignore[override]
+        self._calls.append(" ".join(str(m) for m in messages))
+        convo: LocalConversation = self._convo_box[0]
+
+        if len(self._calls) == 1:
+
+            def _send():
+                convo.send_message("second message")
+
+            t = threading.Thread(target=_send)
+            t.start()
+            await asyncio.to_thread(t.join)
+
+        return _finishing_response()
+
+
+@pytest.mark.asyncio
+async def test_message_during_final_step_does_not_trigger_spurious_budget_error(
+    tmp_path,
+):
+    """A message arriving during a step that finishes within its own budget must
+    not turn into a MaxBudgetReached error just because the mid-step rescan
+    flips status back to RUNNING in order to pick up the message."""
+    llm = _InjectingAsyncBudgetLLM()
+    convo = LocalConversation(
+        agent=Agent(llm=llm, tools=[]),
+        workspace=str(tmp_path),
+        visualizer=None,
+        max_budget_per_run=0.01,
+    )
+    llm._convo_box.append(convo)
+    # Test-double LLMs are subclasses, and get_all_llms() only ever yields
+    # objects whose type is exactly LLM, so this one is never registered by
+    # the normal _ensure_agent_ready() path; wire it in directly so the
+    # budget check has metrics to read.
+    convo.conversation_stats.usage_to_metrics[llm.usage_id] = llm.metrics
+    # Simulate accumulated spend already over budget by the time this
+    # (otherwise graceful) finishing step lands.
+    llm.metrics.add_cost(1.0)
+    convo.send_message("first message")
+
+    await convo.arun()
+
+    assert len(llm._calls) == 2, (
+        f"expected the new message to be picked up (2 LLM calls), got {len(llm._calls)}"
+    )
+    assert convo.state.execution_status == ConversationExecutionStatus.FINISHED
+    assert not any(
+        isinstance(e, ConversationErrorEvent) and e.code == "MaxBudgetReached"
+        for e in convo.state.events
+    ), "a graceful finish must not be overridden by the budget check"
