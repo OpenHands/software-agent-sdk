@@ -12,6 +12,7 @@ from fastmcp.client.logging import LogMessage
 from fastmcp.client.messages import MessageHandler
 from fastmcp.mcp_config import MCPConfig as FastMCPConfig, RemoteMCPServer
 from key_value.aio.protocols import AsyncKeyValue
+from mcp.shared.exceptions import McpError
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient, ToolsReconciledCallback
@@ -207,14 +208,19 @@ async def _refresh_connected_tools(
         await _refresh_tools(client, on_tools_changed, on_tools_reconciled)
 
 
-async def _reconnect_and_refresh_tools(
+async def _refresh_or_reconnect_tools(
     client: MCPClient,
     on_tools_reconciled: ToolsReconciledCallback | None = None,
 ) -> None:
-    """Replace an MCP session before re-listing its tools."""
+    """Refresh tools, replacing a terminated session only when required."""
     async with client._tools_refresh_lock:
-        await client._reconnect()
-        await _refresh_tools(client)
+        if client._closed:
+            raise MCPError("Cannot refresh tools on a closed MCP client")
+        try:
+            await _refresh_tools(client)
+        except McpError:
+            await client._reconnect()
+            await _refresh_tools(client)
         if on_tools_reconciled is not None:
             on_tools_reconciled(client, client.tools)
 
@@ -225,9 +231,9 @@ def _refresh_mcp_client_tools(
     *,
     on_tools_reconciled: ToolsReconciledCallback | None = None,
 ) -> None:
-    """Start a fresh MCP session and refresh its advertised tools."""
+    """Refresh advertised tools and recover a terminated session if needed."""
     client.call_async_from_sync(
-        _reconnect_and_refresh_tools,
+        _refresh_or_reconnect_tools,
         timeout=timeout,
         client=client,
         on_tools_reconciled=on_tools_reconciled,

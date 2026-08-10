@@ -11,10 +11,14 @@ from multiprocessing.process import BaseProcess
 from pathlib import Path
 from typing import Any, cast
 
+import httpx
 import mcp.types as mcp_types
 import pytest
 from fastmcp import FastMCP
+from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from pydantic import PrivateAttr, SecretStr
+from starlette.requests import Request
+from starlette.responses import PlainTextResponse, Response
 
 from openhands.sdk import LLM, Agent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
@@ -52,8 +56,27 @@ class ToolRecordingLLM(TestLLM):
         )
 
 
+class InitializeCounter(Middleware):
+    def __init__(self) -> None:
+        self.count = 0
+
+    async def on_initialize(
+        self,
+        context: MiddlewareContext[Any],
+        call_next: CallNext[Any, Any],
+    ) -> Any:
+        self.count += 1
+        return await call_next(context)
+
+
 def _run_mcp_deployment(port: int, deployment: str, stateless_http: bool) -> None:
     server = FastMCP("refresh-test")
+    initialize_counter = InitializeCounter()
+    server.add_middleware(initialize_counter)
+
+    @server.custom_route("/initialize-count", methods=["GET"])
+    async def initialize_count(_request: Request) -> Response:
+        return PlainTextResponse(str(initialize_counter.count))
 
     if deployment == "old":
 
@@ -354,7 +377,7 @@ def test_initialization_failure_closes_an_empty_mcp_client(
 
 
 @pytest.mark.parametrize("stateless_http", [False, True], ids=["stateful", "stateless"])
-def test_refresh_reconnects_after_mcp_deployment(
+def test_refreshes_tools_after_mcp_deployment(
     tmp_path: Path,
     deploy_mcp_server: Callable[[str, bool], str],
     stateless_http: bool,
@@ -386,7 +409,7 @@ def test_refresh_reconnects_after_mcp_deployment(
         events = list(conversation.state.events)
         workspace = conversation.workspace
 
-        deploy_mcp_server("new", stateless_http)
+        new_url = deploy_mcp_server("new", stateless_http)
         conversation.refresh_mcp_tools()
 
         assert conversation.id == conversation_id
@@ -396,6 +419,9 @@ def test_refresh_reconnects_after_mcp_deployment(
         changing = conversation.agent.tools_map["changing"]
         assert changing.description == "New schema."
         changing.action_from_arguments({"new": 7})
+        initialize_count_url = new_url.removesuffix("/mcp") + "/initialize-count"
+        expected_initializations = 0 if stateless_http else 1
+        assert int(httpx.get(initialize_count_url).text) == expected_initializations
 
         conversation.run()
 
