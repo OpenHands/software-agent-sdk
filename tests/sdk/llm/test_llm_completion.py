@@ -2,6 +2,7 @@
 
 import asyncio
 import threading
+import time
 from collections.abc import Sequence
 from typing import Any, ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -79,14 +80,25 @@ def default_config():
     )
 
 
-def test_litellm_modify_params_context_serializes_threads():
+def test_litellm_modify_params_ctx_allows_concurrent_threads(monkeypatch):
+    """Two threads entering ``_litellm_modify_params_ctx`` concurrently must
+    NOT serialize — the lock is held only for the brief counter update, not
+    across the body of the ``with`` block.
+
+    This was the root cause of GH #16459: a ``ClassVar[threading.Lock]`` held
+    for the full LLM call serialized all concurrent sync conversations, so N
+    parallel local-model calls took N×(30-120s) instead of 30-120s.
+    """
+    # Isolate class-level ref-count state so this test cannot pollute or be
+    # polluted by other tests.
+    monkeypatch.setattr(LLM, "_modify_params_refs", {True: 0, False: 0})
+    monkeypatch.setattr(LLM, "_modify_params_original", None)
     first_llm = LLM.model_construct(modify_params=True)
     second_llm = LLM.model_construct(modify_params=False)
     original = getattr(llm_module.litellm, "modify_params", None)
 
     entered_first = threading.Event()
     release_first = threading.Event()
-    started_second = threading.Event()
     entered_second = threading.Event()
     observed: list[tuple[str, bool]] = []
     errors: list[BaseException] = []
@@ -101,8 +113,6 @@ def test_litellm_modify_params_context_serializes_threads():
             errors.append(exc)
 
     def run_second():
-        entered_first.wait(timeout=2)
-        started_second.set()
         try:
             with second_llm._litellm_modify_params_ctx(False):
                 observed.append(("second", llm_module.litellm.modify_params))
@@ -116,9 +126,11 @@ def test_litellm_modify_params_context_serializes_threads():
         first_thread.start()
         assert entered_first.wait(timeout=2)
 
+        # Second thread must enter *immediately* — no serialization.
         second_thread.start()
-        assert started_second.wait(timeout=2)
-        assert not entered_second.wait(timeout=0.2)
+        assert entered_second.wait(timeout=2), (
+            "second thread was serialized behind the first (regression)"
+        )
 
         release_first.set()
         first_thread.join(timeout=2)
@@ -130,38 +142,97 @@ def test_litellm_modify_params_context_serializes_threads():
     assert not first_thread.is_alive()
     assert not second_thread.is_alive()
     assert errors == []
-    assert observed == [("first", True), ("second", False)]
+    # Both threads observed their own flag value at entry time.
+    assert ("first", True) in observed
+    assert ("second", False) in observed
+    # Global restored when all in-flight calls finish.
     assert llm_module.litellm.modify_params == original
 
 
-class _CountingLock:
-    """threading.Lock wrapper that counts successful acquires/releases.
+def test_litellm_modify_params_ctx_restores_original_after_all_done(monkeypatch):
+    """When the last in-flight call exits, ``litellm.modify_params`` is
+    restored to the value it had before the first call entered."""
+    monkeypatch.setattr(LLM, "_modify_params_refs", {True: 0, False: 0})
+    monkeypatch.setattr(LLM, "_modify_params_original", None)
+    llm = LLM.model_construct(modify_params=True)
+    original = getattr(llm_module.litellm, "modify_params", None)
 
-    Lets a test deterministically wait for a release that happens on a
-    different thread than the one that acquired -- here, the release scheduled
-    by the async guard's cancellation done-callback.
+    with llm._litellm_modify_params_ctx(True):
+        assert llm_module.litellm.modify_params is True
+    assert llm_module.litellm.modify_params == original
+    assert LLM._modify_params_refs == {True: 0, False: 0}
+    assert LLM._modify_params_original is None
+
+
+def test_litellm_modify_params_ctx_ref_count_nested(monkeypatch):
+    """Nested / overlapping calls keep the global alive until the last one
+    exits, then restore the original."""
+    monkeypatch.setattr(LLM, "_modify_params_refs", {True: 0, False: 0})
+    monkeypatch.setattr(LLM, "_modify_params_original", None)
+    llm = LLM.model_construct(modify_params=True)
+    original = getattr(llm_module.litellm, "modify_params", None)
+
+    with llm._litellm_modify_params_ctx(True):
+        assert LLM._modify_params_refs[True] == 1
+        with llm._litellm_modify_params_ctx(True):
+            assert LLM._modify_params_refs[True] == 2
+            assert llm_module.litellm.modify_params is True
+        # Still one in-flight — global must NOT be restored yet.
+        assert LLM._modify_params_refs[True] == 1
+        assert llm_module.litellm.modify_params is True
+    # All done — global restored.
+    assert llm_module.litellm.modify_params == original
+    assert LLM._modify_params_refs == {True: 0, False: 0}
+
+
+def test_litellm_modify_params_ctx_concurrent_overlap(monkeypatch):
+    """Regression for GH #16459: two concurrent sync calls must overlap
+    rather than serialize.
+
+    Simulates two conversations making LLM calls at the same time. If the
+    lock is held for the full call duration (the old behavior), the second
+    call blocks until the first finishes — total wall time ≈ 2×sleep. With
+    the reference-counted fix, both calls overlap — total wall time ≈ 1×sleep.
     """
+    monkeypatch.setattr(LLM, "_modify_params_refs", {True: 0, False: 0})
+    monkeypatch.setattr(LLM, "_modify_params_original", None)
+    llm = LLM.model_construct(modify_params=True)
+    original = getattr(llm_module.litellm, "modify_params", None)
 
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._counter_lock = threading.Lock()
-        self.acquired = 0
-        self.released = 0
+    call_duration = 0.3
+    barrier = threading.Barrier(2)
+    errors: list[BaseException] = []
 
-    def acquire(self, *args, **kwargs) -> bool:
-        got = self._lock.acquire(*args, **kwargs)
-        if got:
-            with self._counter_lock:
-                self.acquired += 1
-        return got
+    def run_call():
+        try:
+            with llm._litellm_modify_params_ctx(True):
+                barrier.wait(timeout=2)  # both threads must reach here
+                time.sleep(call_duration)
+        except BaseException as exc:
+            errors.append(exc)
 
-    def release(self) -> None:
-        self._lock.release()
-        with self._counter_lock:
-            self.released += 1
+    start = time.monotonic()
+    t1 = threading.Thread(target=run_call)
+    t2 = threading.Thread(target=run_call)
+    t1.start()
+    t2.start()
+    t1.join(timeout=5)
+    t2.join(timeout=5)
+    elapsed = time.monotonic() - start
 
-    def locked(self) -> bool:
-        return self._lock.locked()
+    try:
+        assert not t1.is_alive()
+        assert not t2.is_alive()
+        assert errors == []
+        # If serialized: ≈2×call_duration. If overlapped: ≈1×call_duration.
+        # Allow generous slack for scheduling jitter.
+        assert elapsed < 2 * call_duration, (
+            f"calls were serialized: elapsed={elapsed:.2f}s, "
+            f"expected <{2 * call_duration}s"
+        )
+        assert llm_module.litellm.modify_params == original
+    finally:
+        llm_module.litellm.modify_params = original
 
 
 async def _await_condition(pred, timeout: float = 2.0) -> bool:
@@ -173,85 +244,69 @@ async def _await_condition(pred, timeout: float = 2.0) -> bool:
     return pred()
 
 
-async def test_alitellm_modify_params_ctx_releases_lock_on_cancel(monkeypatch):
-    """Regression: cancelling the async modify-params guard while it waits for
-    the lock must not leak the lock.
-
-    The acquire runs on an uninterruptible worker thread, so it still takes the
-    lock after the coroutine is cancelled. If that acquisition is not released,
-    every subsequent LLM call in the process wedges forever -- worse than the
-    freeze this guard was added to fix.
-    """
-    # Isolate from the process-wide class lock so a regression here cannot
-    # wedge the rest of the suite.
-    lock = _CountingLock()
-    monkeypatch.setattr(LLM, "_litellm_modify_params_lock", lock)
+async def test_alitellm_modify_params_ctx_cleans_up_refs_on_cancel(monkeypatch):
+    """Cancelling the async guard while inside the ``yield`` must still
+    decrement the reference count so the global is eventually restored."""
+    monkeypatch.setattr(LLM, "_modify_params_refs", {True: 0, False: 0})
+    monkeypatch.setattr(LLM, "_modify_params_original", None)
     llm = LLM.model_construct(modify_params=True)
-
-    # Simulate a concurrent *sync* holder (condenser / non-async agent step)
-    # that owns the lock for the whole round trip.
-    assert lock.acquire()
-
-    async def enter_guard():
-        async with llm._alitellm_modify_params_ctx(True):
-            pass  # never reached while the sync holder owns the lock
-
-    task = asyncio.ensure_future(enter_guard())
-    # Let the coroutine reach the blocking acquire() on the worker thread.
-    await asyncio.sleep(0.1)
-    assert not task.done()
-
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-
-    # Release the sync holder so the (uninterruptible) worker-thread acquire
-    # can now complete -- this is what would leak the lock without the fix.
-    lock.release()
-
-    # The worker acquire completes (acquired == 2); the done-callback must then
-    # release it (released == 2). Poll deterministically on the counters rather
-    # than racing the callback for the lock's state.
-    settled = await _await_condition(lambda: lock.acquired >= 2 and lock.released >= 2)
-    assert settled, "cancelled acquire never released the lock (leak)"
-    assert not lock.locked(), "modify_params lock left held after cancellation"
-
-
-async def test_alitellm_modify_params_ctx_waits_off_event_loop(monkeypatch):
-    """The async guard must wait for the lock off the event-loop thread.
-
-    While a concurrent sync holder owns the lock, entering the guard must not
-    freeze the loop: a heartbeat coroutine keeps ticking, and the guard only
-    proceeds once the holder releases.
-    """
-    lock = threading.Lock()
-    monkeypatch.setattr(LLM, "_litellm_modify_params_lock", lock)
-    llm = LLM.model_construct(modify_params=True)
-
-    assert lock.acquire()  # sync holder
+    original = getattr(llm_module.litellm, "modify_params", None)
 
     entered = asyncio.Event()
 
     async def enter_guard():
         async with llm._alitellm_modify_params_ctx(True):
             entered.set()
+            await asyncio.Event().wait()  # block forever until cancelled
 
     task = asyncio.ensure_future(enter_guard())
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    assert LLM._modify_params_refs[True] == 1
 
-    # The loop stays responsive while the guard blocks on the held lock.
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # The finally block must have decremented the ref count and restored
+    # the global even though the coroutine was cancelled.
+    assert LLM._modify_params_refs[True] == 0
+    assert LLM._modify_params_original is None
+    assert llm_module.litellm.modify_params == original
+
+
+async def test_alitellm_modify_params_ctx_does_not_block_event_loop(monkeypatch):
+    """The async guard must not block the event loop.
+
+    The lock is held only for microseconds (counter update + set/restore),
+    so a heartbeat coroutine keeps ticking even while the guard is active.
+    """
+    monkeypatch.setattr(LLM, "_modify_params_refs", {True: 0, False: 0})
+    monkeypatch.setattr(LLM, "_modify_params_original", None)
+    llm = LLM.model_construct(modify_params=True)
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def enter_guard():
+        async with llm._alitellm_modify_params_ctx(True):
+            entered.set()
+            await release.wait()
+
+    task = asyncio.ensure_future(enter_guard())
+    await asyncio.wait_for(entered.wait(), timeout=2)
+
+    # The loop stays responsive while the guard body is running.
     ticks = 0
     for _ in range(10):
         await asyncio.sleep(0.01)
         ticks += 1
     assert ticks == 10
-    assert not entered.is_set()
-    assert not task.done()
 
-    # Release -> guard acquires, runs its body, and releases cleanly.
-    lock.release()
+    release.set()
     await asyncio.wait_for(task, timeout=2)
-    assert entered.is_set()
-    assert not lock.locked()
+    assert llm_module.litellm.modify_params == getattr(
+        llm_module.litellm, "modify_params", None
+    )
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
