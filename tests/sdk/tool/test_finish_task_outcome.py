@@ -127,7 +127,7 @@ def test_finish_action_event_records_latest_task_outcome(tmp_path):
     assert conv.state.task_outcome is not None
     assert conv.state.task_outcome.status == "blocked"
     assert conv.state.task_outcome.summary == "Waiting for credentials."
-    assert conv.state.task_outcome.source == "agent_report"
+    assert conv.state.task_outcome.source == "agent"
     assert conv.state.task_outcome.reported_at is not None
     assert conv.state.task_outcome.terminal_reason == "finish_action"
     assert conv.state.task_outcome.needs_user_action is True

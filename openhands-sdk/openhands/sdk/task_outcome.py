@@ -18,13 +18,7 @@ TaskOutcomeStatus = Literal[
     "failed",
     "unknown",
 ]
-TaskOutcomeSource = Literal[
-    "agent_report",
-    "system",
-    "critic",
-    "judge",
-    "manual",
-]
+TaskOutcomeSource = Literal["agent", "system"]
 
 
 class TaskOutcomeBlocker(BaseModel):
@@ -65,7 +59,7 @@ class TaskOutcome(BaseModel):
         description="Whether the user needs to act before the task can proceed.",
     )
     source: TaskOutcomeSource = Field(
-        default="agent_report",
+        default="agent",
         description="Where this outcome came from.",
     )
     reported_at: datetime | None = Field(
@@ -96,7 +90,7 @@ def task_outcome_from_finish(outcome: TaskOutcome) -> TaskOutcome:
     """Normalize an agent-authored outcome reported via FinishTool."""
     return outcome.model_copy(
         update={
-            "source": "agent_report",
+            "source": "agent",
             "reported_at": utc_now(),
             "terminal_reason": "finish_action",
         }
