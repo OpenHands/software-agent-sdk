@@ -8,8 +8,8 @@ from the working tree and passes either way. The gap only appears once the
 wheel is built, which is how it reached a release (issue #4443).
 """
 
+import sys
 import tomllib
-from fnmatch import fnmatch
 from pathlib import Path
 
 
@@ -34,7 +34,9 @@ def _is_declared(path: Path) -> bool:
     A dotted key names a directory relative to the project root, which need not
     be an importable package: ``openhands.tools.preset.subagents`` has no
     ``__init__.py`` and still ships. ``*`` applies to every directory on the way
-    down, so its patterns are matched against each one.
+    down, so its patterns are matched against each one. Patterns are expanded
+    with ``Path.glob`` because that is what setuptools itself does, so ``*``
+    stops at a directory boundary and only ``**`` descends.
     """
     for key, patterns in _package_data_patterns().items():
         if key == "*":
@@ -50,8 +52,7 @@ def _is_declared(path: Path) -> bool:
             bases = [base]
 
         for base in bases:
-            relative_path = path.relative_to(base).as_posix()
-            if any(fnmatch(relative_path, pattern) for pattern in patterns):
+            if any(path in base.glob(pattern) for pattern in patterns):
                 return True
     return False
 
@@ -87,3 +88,20 @@ def test_browser_recording_js_helpers_are_declared():
     assert helpers, "expected browser_use/js to hold the recording helpers"
     for helper in helpers:
         assert _is_declared(helper), helper.name
+
+
+def test_a_nested_file_is_not_declared_by_a_single_star_pattern(tmp_path, monkeypatch):
+    """``js/*.js`` covers the directory it names, not the ones below it."""
+    project = tmp_path / "openhands-tools"
+    js_dir = project / "openhands" / "tools" / "browser_use" / "js"
+    (js_dir / "nested").mkdir(parents=True)
+    (js_dir / "recording.js").touch()
+    (js_dir / "nested" / "recording.js").touch()
+    (project / "pyproject.toml").write_text(
+        '[tool.setuptools.package-data]\n"openhands.tools.browser_use" = ["js/*.js"]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys.modules[__name__], "TOOLS_PROJECT", project)
+
+    assert _is_declared(js_dir / "recording.js")
+    assert not _is_declared(js_dir / "nested" / "recording.js")
