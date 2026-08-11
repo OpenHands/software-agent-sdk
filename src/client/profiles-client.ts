@@ -6,6 +6,7 @@ import {
   ProfileListResponse,
   ProfileMutationResponse,
   SaveProfileRequest,
+  ValidateProfileResponse,
 } from '../models/api';
 
 export interface ProfilesClientOptions {
@@ -83,6 +84,29 @@ export class ProfilesClient {
     const response = await this.client.post<ActivateProfileResponse>(
       `/api/profiles/${encodeURIComponent(name)}/activate`,
       {}
+    );
+    return response.data;
+  }
+
+  /**
+   * Pre-flight check: fire a minimal LLM completion (``ping``,
+   * ``max_tokens=1``) with the submitted config to catch misconfigurations
+   * (invalid model names, missing provider prefixes, bad base URLs, invalid
+   * API keys) before a profile is saved.
+   *
+   * A structured ``{ valid: false, error: { type, message } }`` response is
+   * returned on blocking errors. Transient errors (rate limits, timeouts) are
+   * non-blocking (``valid: true``). Older agent-server versions that do not
+   * implement the endpoint respond 404, which surfaces as an ``HttpError`` so
+   * callers can treat it as "no verdict" and proceed.
+   */
+  async validateProfile(
+    name: string,
+    request: SaveProfileRequest
+  ): Promise<ValidateProfileResponse> {
+    const response = await this.client.post<ValidateProfileResponse>(
+      `/api/profiles/${encodeURIComponent(name)}/validate`,
+      request
     );
     return response.data;
   }

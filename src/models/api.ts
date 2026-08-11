@@ -327,6 +327,28 @@ export interface SaveProfileRequest {
   include_secrets?: boolean;
 }
 
+/**
+ * Structured error from the LLM pre-flight validation endpoint
+ * (``POST /api/profiles/{name}/validate``). ``type`` carries the SDK's typed
+ * LLM exception class name (e.g. ``LLMAuthenticationError``,
+ * ``LLMBadRequestError``) and ``message`` the human-readable detail.
+ */
+export interface ValidateProfileError {
+  type: string;
+  message: string;
+}
+
+/**
+ * Result of an LLM pre-flight check. ``valid`` is ``false`` with an ``error``
+ * detail when the submitted LLM configuration is rejected (invalid model,
+ * missing provider prefix, bad base URL, invalid API key); transient
+ * rate-limit/timeout responses are reported as ``valid: true`` with no error.
+ */
+export interface ValidateProfileResponse {
+  valid: boolean;
+  error?: ValidateProfileError | null;
+}
+
 export interface RenameProfileRequest {
   new_name: string;
 }

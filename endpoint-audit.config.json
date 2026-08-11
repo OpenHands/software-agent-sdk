@@ -29,6 +29,12 @@
       "reason": "Client-ahead API stacked on the pending Agent Server meta-profiles implementation.",
       "owner": "OpenHands SDK maintainers",
       "tracking": "https://github.com/OpenHands/software-agent-sdk/pull/3744"
+    },
+    {
+      "endpoints": ["POST /api/profiles/{}/validate"],
+      "reason": "Client-ahead API stacked on the pending Agent Server pre-flight LLM validation endpoint.",
+      "owner": "OpenHands TypeScript client maintainers",
+      "tracking": "https://github.com/OpenHands/software-agent-sdk/pull/4422"
     }
   ],
 

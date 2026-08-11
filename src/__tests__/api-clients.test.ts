@@ -1301,6 +1301,85 @@ describe('Auxiliary API clients', () => {
     expect(body).not.toHaveProperty('include_secrets');
   });
 
+  it('ProfilesClient.validateProfile POSTs to the validate endpoint', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify({ valid: true, error: null }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const client = new ProfilesClient({ host: 'http://example.com' });
+    const request = { llm: { model: 'gpt-4o', api_key: 'sk-secret' }, include_secrets: true };
+    const result = await client.validateProfile('default', request);
+
+    expect(result.valid).toBe(true);
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/profiles/default/validate',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify(request),
+      })
+    );
+  });
+
+  it('ProfilesClient.validateProfile returns a valid=false verdict with the error', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          valid: false,
+          error: {
+            type: 'LLMAuthenticationError',
+            message: 'Invalid or expired API key',
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      )
+    ) as typeof fetch;
+
+    const client = new ProfilesClient({ host: 'http://example.com' });
+    const result = await client.validateProfile('default', { llm: { model: 'gpt-4o' } });
+
+    expect(result.valid).toBe(false);
+    expect(result.error?.type).toBe('LLMAuthenticationError');
+    expect(result.error?.message).toContain('Invalid or expired');
+  });
+
+  it('ProfilesClient.validateProfile percent-encodes the profile name', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify({ valid: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const client = new ProfilesClient({ host: 'http://example.com' });
+    await client.validateProfile('my profile', { llm: { model: 'gpt-4o' } });
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/profiles/my%20profile/validate',
+      expect.objectContaining({ method: 'POST' })
+    );
+  });
+
+  it('ProfilesClient.validateProfile surfaces HttpError on 404', async () => {
+    global.fetch = jest.fn(
+      async () =>
+        new Response(JSON.stringify({ detail: 'Not Found' }), {
+          status: 404,
+          statusText: 'Not Found',
+          headers: { 'content-type': 'application/json' },
+        })
+    ) as typeof fetch;
+
+    const client = new ProfilesClient({ host: 'http://example.com' });
+    const error = await client
+      .validateProfile('default', { llm: { model: 'gpt-4o' } })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(HttpError);
+    expect((error as HttpError).status).toBe(404);
+  });
+
   it('ProfilesClient.renameProfile percent-encodes the source name', async () => {
     global.fetch = jest.fn().mockResolvedValue(
       new Response(JSON.stringify({ name: 'fresh', message: 'renamed' }), {
