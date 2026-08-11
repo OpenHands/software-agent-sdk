@@ -72,8 +72,14 @@ from openhands.sdk.mcp.utils import (
     MCPToolProvider,
     ToolsChangedCallback,
     ToolsReconciledCallback,
+    provider_supports_on_tools_reconciled,
 )
-from openhands.sdk.observability.laminar import OPERATION_METADATA_KEY, observe
+from openhands.sdk.observability.laminar import (
+    OPERATION_METADATA_KEY,
+    observe,
+    record_tool_result,
+)
+from openhands.sdk.observability.utils import extract_action_name
 from openhands.sdk.plugin import (
     Plugin,
     PluginSource,
@@ -1288,12 +1294,18 @@ class LocalConversation(BaseConversation):
         mcp_config = enabled_mcp_servers(mcp_config)
         if not mcp_config:
             return []
+        create_kwargs: dict[str, Any] = {"on_tools_changed": on_tools_changed}
+        if provider_supports_on_tools_reconciled(self._mcp_tool_provider):
+            create_kwargs["on_tools_reconciled"] = on_tools_reconciled
+        elif on_tools_reconciled is not None:
+            logger.debug(
+                "%s does not accept on_tools_reconciled; dynamic MCP tool "
+                "removals/updates won't reach the agent for this provider",
+                type(self._mcp_tool_provider).__name__,
+            )
         client = self._mcp_tool_provider.create_tools(
-            mcp_config,
-            _RUNTIME_MCP_TIMEOUT_SECS,
-            on_tools_changed=on_tools_changed,
+            mcp_config, _RUNTIME_MCP_TIMEOUT_SECS, **create_kwargs
         )
-        client._tools_reconciled_callback = on_tools_reconciled
         return list(client.tools)
 
     def _on_mcp_tools_reconciled(
@@ -2503,6 +2515,13 @@ class LocalConversation(BaseConversation):
                     tool_name=action_event.tool_name,
                     tool_call_id=action_event.tool_call_id,
                     rejection_reason=reason,
+                )
+                record_tool_result(
+                    self,
+                    name=extract_action_name(action_event),
+                    tool_call_id=action_event.tool_call_id,
+                    tool_input=action_event.action,
+                    tool_output=rejection_event.to_llm_message(),
                 )
                 self._on_event(rejection_event)
                 logger.info(f"Rejected pending action: {action_event} - {reason}")

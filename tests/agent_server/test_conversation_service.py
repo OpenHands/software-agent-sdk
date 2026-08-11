@@ -20,6 +20,7 @@ from openhands.agent_server.conversation_lease import (
 from openhands.agent_server.conversation_service import (
     AutoTitleSubscriber,
     ConversationService,
+    _compose_conversation_info,
     _ConversationRecord,
     _get_worktree_start_point,
 )
@@ -128,15 +129,16 @@ def _init_git_repo(repo_dir: Path) -> None:
 
 
 @pytest.fixture
-def conversation_service():
+def conversation_service(tmp_path):
     """Create a ConversationService instance for testing."""
-    with tempfile.TemporaryDirectory() as temp_dir:
-        service = ConversationService(
-            conversations_dir=Path(temp_dir) / "conversations",
-        )
-        # Initialize the _event_services dict to simulate an active service
-        service._event_services = {}
-        yield service
+    worktree_root = tmp_path / "conversation-worktrees"
+    service = ConversationService(
+        conversations_dir=tmp_path / "conversations",
+        conversation_worktree_root=worktree_root,
+    )
+    # Initialize the _event_services dict to simulate an active service
+    service._event_services = {}
+    yield service
 
 
 @pytest.fixture
@@ -1559,7 +1561,6 @@ class TestConversationServiceStartConversation:
         repo_dir = tmp_path / "repo"
         _init_git_repo(repo_dir)
         conversation_id = uuid4()
-        worktree_root = tmp_path / "conversation-worktrees"
 
         request = StartConversationRequest(
             conversation_id=conversation_id,
@@ -1585,15 +1586,10 @@ class TestConversationServiceStartConversation:
             )
             return mock_event_service
 
-        with (
-            patch(
-                "openhands.agent_server.conversation_service.CONVERSATION_WORKTREE_ROOT",
-                worktree_root,
-            ),
-            patch(
-                "openhands.agent_server.conversation_service.EventService",
-                side_effect=_event_service_factory,
-            ),
+        worktree_root = conversation_service.conversation_worktree_root
+        with patch(
+            "openhands.agent_server.conversation_service.EventService",
+            side_effect=_event_service_factory,
         ):
             result, _ = await conversation_service.start_conversation(request)
 
@@ -1629,7 +1625,6 @@ class TestConversationServiceStartConversation:
         workspace_dir = repo_dir / "src" / "pkg"
         workspace_dir.mkdir(parents=True)
         conversation_id = uuid4()
-        worktree_root = tmp_path / "conversation-worktrees"
 
         request = StartConversationRequest(
             conversation_id=conversation_id,
@@ -1655,15 +1650,10 @@ class TestConversationServiceStartConversation:
             )
             return mock_event_service
 
-        with (
-            patch(
-                "openhands.agent_server.conversation_service.CONVERSATION_WORKTREE_ROOT",
-                worktree_root,
-            ),
-            patch(
-                "openhands.agent_server.conversation_service.EventService",
-                side_effect=_event_service_factory,
-            ),
+        worktree_root = conversation_service.conversation_worktree_root
+        with patch(
+            "openhands.agent_server.conversation_service.EventService",
+            side_effect=_event_service_factory,
         ):
             result, _ = await conversation_service.start_conversation(request)
 
@@ -1683,7 +1673,7 @@ class TestConversationServiceStartConversation:
         workspace_dir = tmp_path / "workspace"
         workspace_dir.mkdir()
         conversation_id = uuid4()
-        worktree_root = tmp_path / "conversation-worktrees"
+        worktree_root = conversation_service.conversation_worktree_root
 
         request = StartConversationRequest(
             conversation_id=conversation_id,
@@ -1709,15 +1699,9 @@ class TestConversationServiceStartConversation:
             )
             return mock_event_service
 
-        with (
-            patch(
-                "openhands.agent_server.conversation_service.CONVERSATION_WORKTREE_ROOT",
-                worktree_root,
-            ),
-            patch(
-                "openhands.agent_server.conversation_service.EventService",
-                side_effect=_event_service_factory,
-            ),
+        with patch(
+            "openhands.agent_server.conversation_service.EventService",
+            side_effect=_event_service_factory,
         ):
             result, _ = await conversation_service.start_conversation(request)
 
@@ -3769,3 +3753,88 @@ class TestConversationSearchScaling:
                 )
 
             assert [item.id for item in page.items] == [target]
+
+
+@pytest.mark.asyncio
+async def test_search_composes_conversation_info_off_event_loop(persisted_conversation):
+    """Regression: composing ConversationInfo during a list/search must not run
+    on the event-loop thread.
+
+    The heavy Pydantic construction in ``_compose_conversation_info`` (with its
+    large nested object graphs) used to execute synchronously on the single
+    asyncio event-loop thread. Under load this caused long blocking GC pauses,
+    stalling every request (async and executor-backed alike) — the wedge seen in
+    production. Offloading it to a worker thread keeps GC/allocation off the loop.
+
+    This test loads a persisted (idle) conversation through ``search_conversations``
+    and asserts the composition ran on a thread other than the event loop.
+    """
+    import threading
+    from unittest.mock import patch as _patch
+
+    conversations_dir, conversation_id = persisted_conversation
+    original_compose = _compose_conversation_info
+
+    loop_ident = threading.get_ident()
+    found = {}
+
+    def spy(stored, state, children):
+        found["thread_ident"] = threading.get_ident()
+        return original_compose(stored, state, children)
+
+    async with ConversationService(conversations_dir=conversations_dir) as restarted:
+        assert restarted._event_services == {}
+        with _patch(
+            "openhands.agent_server.conversation_service._compose_conversation_info",
+            side_effect=spy,
+        ) as comp:
+            page = await restarted.search_conversations()
+            assert [item.id for item in page.items] == [conversation_id]
+            assert comp.call_count >= 1
+
+    # Prove the composition executed off the event loop.
+    assert found.get("thread_ident") is not None
+    assert found["thread_ident"] != loop_ident
+
+
+@pytest.mark.asyncio
+async def test_search_composes_live_conversation_info_with_state_lock(tmp_path):
+    """Live list/search composition must lock state in the worker thread."""
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    original_compose = _compose_conversation_info
+    loop_ident = threading.get_ident()
+    found = {}
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        conversation_info, _ = await service.start_conversation(request)
+        event_services = service._event_services
+        assert event_services is not None
+        event_service = event_services[conversation_info.id]
+        live_state = await event_service.get_state()
+
+        def spy(stored, state, children):
+            found["thread_ident"] = threading.get_ident()
+            found["state_owned"] = state.owned()
+            found["state_is_live"] = state is live_state
+            return original_compose(stored, state, children)
+
+        with patch(
+            "openhands.agent_server.conversation_service._compose_conversation_info",
+            side_effect=spy,
+        ) as comp:
+            page = await service.search_conversations()
+            assert [item.id for item in page.items] == [conversation_info.id]
+            assert comp.call_count >= 1
+
+    assert found.get("thread_ident") is not None
+    assert found["thread_ident"] != loop_ident
+    assert found["state_is_live"] is True
+    assert found["state_owned"] is True

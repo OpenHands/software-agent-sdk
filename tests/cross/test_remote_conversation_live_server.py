@@ -445,11 +445,24 @@ def test_websocket_attach_wait_does_not_block_ready_endpoint(server_env):
     lock_acquired = threading.Event()
     release_state_lock = threading.Event()
     snapshot_started = threading.Event()
+    conversation_info_started = threading.Event()
     original_snapshot = event_service._create_state_update_event_sync
+
+    from openhands.agent_server import (
+        conversation_service as conversation_service_module,
+    )
+
+    original_compose_info_sync = (
+        conversation_service_module._compose_conversation_info_sync
+    )
 
     def traced_snapshot() -> ConversationStateUpdateEvent:
         snapshot_started.set()
         return original_snapshot()
+
+    def traced_compose_info_sync(*args, **kwargs):
+        conversation_info_started.set()
+        return original_compose_info_sync(*args, **kwargs)
 
     def hold_state_lock() -> None:
         assert event_service._conversation is not None
@@ -471,6 +484,9 @@ def test_websocket_attach_wait_does_not_block_ready_endpoint(server_env):
             attach_error.append(exc)
 
     event_service._create_state_update_event_sync = traced_snapshot
+    conversation_service_module._compose_conversation_info_sync = (
+        traced_compose_info_sync
+    )
 
     try:
         lock_thread = threading.Thread(target=hold_state_lock, daemon=True)
@@ -482,11 +498,16 @@ def test_websocket_attach_wait_does_not_block_ready_endpoint(server_env):
 
         attach_thread = threading.Thread(target=attach_conversation, daemon=True)
         attach_thread.start()
-        assert snapshot_started.wait(timeout=5.0), (
-            "The websocket attach never reached the initial state snapshot"
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not (
+            conversation_info_started.is_set() or snapshot_started.is_set()
+        ):
+            time.sleep(0.01)
+        assert conversation_info_started.is_set() or snapshot_started.is_set(), (
+            "The conversation attach never reached a state snapshot"
         )
         assert attach_thread.is_alive(), (
-            "Expected websocket attach to still be waiting on the state lock"
+            "Expected conversation attach to still be waiting on the state lock"
         )
 
         ready_started = time.monotonic()
@@ -497,11 +518,14 @@ def test_websocket_attach_wait_does_not_block_ready_endpoint(server_env):
         assert ready_response.status_code == 200
         assert ready_response.json() == {"status": "ready"}
         assert ready_elapsed < 0.5, (
-            f"/ready took {ready_elapsed:.3f}s while websocket attach was waiting "
+            f"/ready took {ready_elapsed:.3f}s while conversation attach was waiting "
             "for the conversation state lock"
         )
     finally:
         event_service._create_state_update_event_sync = original_snapshot
+        conversation_service_module._compose_conversation_info_sync = (
+            original_compose_info_sync
+        )
         release_state_lock.set()
         if lock_thread is not None:
             lock_thread.join(timeout=2.0)

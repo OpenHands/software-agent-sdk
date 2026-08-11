@@ -77,8 +77,6 @@ if TYPE_CHECKING:
     from openhands.sdk.mcp.config import MCPServer
     from openhands.sdk.subagent.schema import AgentDefinition
 
-CONVERSATION_WORKTREE_ROOT = Path("/tmp/conversation-worktrees")
-
 
 class CredentialBindingActivationRequired(RuntimeError):
     pass
@@ -193,6 +191,7 @@ def _get_worktree_start_point(repo_root: Path) -> str:
 def _create_conversation_worktree(
     workspace: LocalWorkspace,
     conversation_id: UUID,
+    conversation_worktree_root: Path,
 ) -> tuple[LocalWorkspace, Path, Path, str] | None:
     source_workspace = Path(workspace.working_dir).resolve()
     try:
@@ -207,9 +206,9 @@ def _create_conversation_worktree(
         return None
 
     relative_workspace = source_workspace.relative_to(repo_root)
-    conversation_worktree_root = CONVERSATION_WORKTREE_ROOT / str(conversation_id)
-    worktree_root = conversation_worktree_root / repo_root.name
-    conversation_worktree_root.mkdir(parents=True, exist_ok=True)
+    conversation_worktree_dir = conversation_worktree_root / str(conversation_id)
+    worktree_root = conversation_worktree_dir / repo_root.name
+    conversation_worktree_dir.mkdir(parents=True, exist_ok=True)
     branch = f"openhands/{conversation_id}"
 
     if worktree_root.exists():
@@ -252,11 +251,14 @@ def _create_conversation_worktree(
 def _prepare_request_workspace(
     request: StartConversationRequest,
     conversation_id: UUID,
+    conversation_worktree_root: Path,
 ) -> StartConversationRequest:
     if not request.worktree:
         return request
 
-    worktree = _create_conversation_worktree(request.workspace, conversation_id)
+    worktree = _create_conversation_worktree(
+        request.workspace, conversation_id, conversation_worktree_root
+    )
     if worktree is None:
         return request
 
@@ -475,6 +477,15 @@ def _compose_conversation_info(
     )
 
 
+def _compose_conversation_info_sync(
+    stored: StoredConversation,
+    state: ConversationState,
+    sub_conversation_ids: list[UUID] | None = None,
+) -> ConversationInfo:
+    with state:
+        return _compose_conversation_info(stored, state, sub_conversation_ids)
+
+
 def _compose_webhook_conversation_info(
     stored: StoredConversation, state: ConversationState
 ) -> ConversationInfo:
@@ -492,8 +503,7 @@ def _update_state_tags_sync(
 def _compose_webhook_conversation_info_sync(
     stored: StoredConversation, state: ConversationState
 ) -> ConversationInfo:
-    with state:
-        return _compose_webhook_conversation_info(stored, state)
+    return _compose_conversation_info_sync(stored, state)
 
 
 def _register_agent_definitions(
@@ -588,6 +598,9 @@ class ConversationService:
     max_concurrent_runs: int = 10
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
     conversation_idle_ttl_seconds: float | None = None
+    conversation_worktree_root: Path = field(
+        default=Path("/tmp/conversation-worktrees")
+    )
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_records: dict[UUID, _ConversationRecord] = field(
         default_factory=dict, init=False
@@ -788,9 +801,12 @@ class ConversationService:
         event_service = event_services.get(conversation_id)
         if event_service is not None and event_service.is_open():
             state = await event_service.get_state()
-            record.execution_status = state.execution_status
             record.state_signature = None
-            return _compose_conversation_info(event_service.stored, state, children)
+            conversation_info = await asyncio.to_thread(
+                _compose_conversation_info_sync, event_service.stored, state, children
+            )
+            record.execution_status = conversation_info.execution_status
+            return conversation_info
 
         signature = _state_signature(self._base_state_path(conversation_id, record))
         state = await asyncio.to_thread(
@@ -798,9 +814,12 @@ class ConversationService:
         )
         if state is None:
             return None
-        record.execution_status = state.execution_status
         record.state_signature = signature
-        return _compose_conversation_info(record.stored, state, children)
+        conversation_info = await asyncio.to_thread(
+            _compose_conversation_info, record.stored, state, children
+        )
+        record.execution_status = conversation_info.execution_status
+        return conversation_info
 
     @staticmethod
     def _refresh_persisted_statuses_sync(
@@ -1359,7 +1378,9 @@ class ConversationService:
                 update={"agent": _append_system_message_suffix(request.agent, suffix)}
             )
 
-        request = _prepare_request_workspace(request, conversation_id)
+        request = _prepare_request_workspace(
+            request, conversation_id, self.conversation_worktree_root
+        )
 
         managed_codex_credential = self._is_codex_agent(request.agent) and (
             CODEX_AUTH_SECRET_NAME in self._credential_bindings.get(conversation_id, {})
@@ -2012,6 +2033,7 @@ class ConversationService:
             max_concurrent_runs=config.max_concurrent_runs,
             lease_ttl_seconds=config.lease_ttl_seconds,
             conversation_idle_ttl_seconds=config.conversation_idle_ttl_seconds,
+            conversation_worktree_root=config.conversation_worktree_root,
         )
 
     async def _start_event_service(
