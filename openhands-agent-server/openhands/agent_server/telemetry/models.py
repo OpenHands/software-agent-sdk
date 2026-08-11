@@ -67,7 +67,7 @@ class EventName(StrEnum):
     SERVER_STARTED = "agent_server.server_started"
     SERVER_STOPPED = "agent_server.server_stopped"
     CONVERSATION_STARTED = "agent_server.conversation_started"
-    CONVERSATION_CREATED = "conversation_created"
+    CONVERSATION_CREATED = "agent_server.conversation_created"
     CONVERSATION_FINISHED = "agent_server.conversation_finished"
     CONVERSATION_FAILED = "agent_server.conversation_failed"
     CONVERSATION_ERROR = "agent_server.conversation_error"
