@@ -387,6 +387,21 @@ def test_token_limit_inherits_agent_effective_input_limit(
     assert Reason.TOKENS in reasons
 
 
+def test_token_reduction_uses_agent_effective_input_limit(mock_llm: LLM) -> None:
+    condenser = LLMSummarizingCondenser(
+        llm=mock_llm, max_size=1000, max_tokens=500, keep_first=2
+    )
+    agent_llm = MagicMock(spec=LLM)
+    agent_llm.effective_max_input_tokens = 100
+    agent_llm.get_token_count.return_value = 200
+
+    view = View.from_events([message_event("event") for _ in range(10)])
+
+    forgotten_events, _ = condenser._get_forgotten_events(view, agent_llm=agent_llm)
+
+    assert forgotten_events
+
+
 def test_condense_with_request_and_events_reasons(mock_llm: LLM) -> None:
     """Test condensation when both REQUEST and EVENTS reasons are true simultaneously.
 
