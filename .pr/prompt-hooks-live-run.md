@@ -1,7 +1,7 @@
 # Prompt hook live-provider run
 
 Run on 2026-07-22 from PR #4160 with Python 3.13.5 and the example at
-`examples/01_standalone_sdk/56_prompt_hooks/main.py`.
+`examples/01_standalone_sdk/57_prompt_hooks/main.py`.
 
 Provider configuration:
 
@@ -15,7 +15,7 @@ Command:
 LLM_MODEL=openai/openai/gpt-4.1-mini \
 LLM_BASE_URL=https://models.github.ai/inference \
 LLM_API_KEY=<redacted> \
-uv run --python 3.13 python examples/01_standalone_sdk/56_prompt_hooks/main.py
+uv run --python 3.13 python examples/01_standalone_sdk/57_prompt_hooks/main.py
 ```
 
 Output:
