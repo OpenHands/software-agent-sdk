@@ -112,15 +112,23 @@ class LLMSummarizingCondenser(RollingCondenser):
         if view.unhandled_condensation_request:
             reasons.add(Reason.REQUEST)
 
-        # Reason 2: Token limit is provided and exceeded.
-        if self.max_tokens and agent_llm:
+        # Reason 2: Token limit is provided and exceeded. The agent's effective
+        # input limit is authoritative when it is lower than the configured limit.
+        max_tokens = self.max_tokens
+        if agent_llm is not None and agent_llm.effective_max_input_tokens is not None:
+            if max_tokens is None:
+                max_tokens = agent_llm.effective_max_input_tokens
+            else:
+                max_tokens = min(max_tokens, agent_llm.effective_max_input_tokens)
+
+        if max_tokens is not None and agent_llm is not None:
             total_tokens = get_total_token_count(view.events, agent_llm)
-            if total_tokens > self.max_tokens:
+            if total_tokens > max_tokens:
                 logger.info(
                     "Condenser token limit exceeded: total_tokens=%d max_tokens=%d "
                     "events=%d",
                     total_tokens,
-                    self.max_tokens,
+                    max_tokens,
                     len(view),
                 )
                 reasons.add(Reason.TOKENS)
