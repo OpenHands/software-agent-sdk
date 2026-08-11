@@ -50,14 +50,9 @@ Use this tool when:
 - You have successfully completed the user's requested task
 - You cannot proceed further due to technical limitations or missing information
 
-When calling this tool, also populate the structured task_outcome fields so
-the platform can store success/blocker metadata without an extra model call.
-
-The message should include:
-- A clear summary of actions taken and their results
-- Any next steps for the user
-- Explanation if you're unable to complete the task
-- Any follow-up questions if more information is needed
+Use `message` for a concise user-facing summary of the result. Put
+structured status, blockers, user-action requirements, and confidence in the
+`task_outcome` fields.
 """
 
 
