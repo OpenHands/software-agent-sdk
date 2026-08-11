@@ -54,7 +54,7 @@ def test_context_exit_sends_registered_task_outcome_with_support_flag(
     monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
     monkeypatch.setenv("AUTOMATION_CALLBACK_SUPPORTS_AGENT_OUTCOME", "true")
     workspace = LocalWorkspace(working_dir=str(tmp_path))
-    outcome = {"status": "success", "summary": "Done.", "final": True}
+    outcome = {"status": "success", "summary": "Done."}
     workspace.register_task_outcome(outcome)
 
     with patch("httpx.Client") as MockClient:

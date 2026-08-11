@@ -55,10 +55,8 @@ def test_report_task_outcome_records_latest_outcome(tmp_path):
             status="partial_success",
             summary="Implemented code, tests still pending.",
             blockers=[{"type": "verification", "message": "Tests not run yet."}],
-            artifacts=[{"type": "file", "path": "src/example.py"}],
             confidence=0.7,
             needs_user_action=False,
-            final=False,
         ),
         conv,
     )
@@ -67,7 +65,6 @@ def test_report_task_outcome_records_latest_outcome(tmp_path):
     assert state.task_outcome is not None
     assert state.task_outcome.status == "partial_success"
     assert state.task_outcome.blockers[0].type == "verification"
-    assert state.task_outcome.artifacts[0].path == "src/example.py"
     assert state.task_outcome.reported_at is not None
 
     restored = ConversationState.create(
@@ -89,7 +86,6 @@ def test_latest_report_wins(tmp_path):
         ReportTaskOutcomeAction(
             status="success",
             summary="Completed after retry.",
-            final=True,
             confidence=0.95,
         ),
         conv,
@@ -97,7 +93,6 @@ def test_latest_report_wins(tmp_path):
 
     assert state.task_outcome is not None
     assert state.task_outcome.status == "success"
-    assert state.task_outcome.final is True
     assert state.task_outcome.summary == "Completed after retry."
 
 

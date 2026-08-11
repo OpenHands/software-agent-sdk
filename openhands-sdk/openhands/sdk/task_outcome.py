@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 
 TaskOutcomeStatus = Literal[
@@ -40,31 +40,6 @@ class TaskOutcomeBlocker(BaseModel):
     )
 
 
-class TaskOutcomeArtifact(BaseModel):
-    """An artifact produced or updated while working on a task."""
-
-    type: str = Field(
-        description=(
-            "Short artifact category, e.g. pull_request, file, commit, issue, "
-            "document, message, or url."
-        )
-    )
-    title: str | None = Field(default=None, description="Human-readable label.")
-    url: str | None = Field(default=None, description="External artifact URL.")
-    path: str | None = Field(default=None, description="Workspace-relative path.")
-    metadata: dict[str, Any] | None = Field(
-        default=None, description="Optional artifact-specific structured metadata."
-    )
-
-    @model_validator(mode="after")
-    def _has_locator(self) -> TaskOutcomeArtifact:
-        if not (self.url or self.path or self.title):
-            raise ValueError(
-                "Artifact must include at least one of title, url, or path"
-            )
-        return self
-
-
 class TaskOutcome(BaseModel):
     """Latest semantic outcome reported for a conversation task."""
 
@@ -76,10 +51,6 @@ class TaskOutcome(BaseModel):
         default_factory=list,
         description="Blockers encountered while trying to complete the task.",
     )
-    artifacts: list[TaskOutcomeArtifact] = Field(
-        default_factory=list,
-        description="Artifacts created, updated, or discovered during the task.",
-    )
     confidence: float | None = Field(
         default=None,
         ge=0.0,
@@ -89,10 +60,6 @@ class TaskOutcome(BaseModel):
     needs_user_action: bool = Field(
         default=False,
         description="Whether the user needs to act before the task can proceed.",
-    )
-    final: bool = Field(
-        default=False,
-        description="Whether this report is intended as the final outcome.",
     )
     source: TaskOutcomeSource = Field(
         default="agent_report",

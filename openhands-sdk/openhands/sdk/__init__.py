@@ -19,7 +19,6 @@ from openhands.sdk.conversation import (
     LocalConversation,
     RemoteConversation,
     TaskOutcome,
-    TaskOutcomeArtifact,
     TaskOutcomeBlocker,
 )
 from openhands.sdk.conversation.conversation_stats import ConversationStats
@@ -155,7 +154,6 @@ __all__ = [
     "LocalConversation",
     "RemoteConversation",
     "TaskOutcome",
-    "TaskOutcomeArtifact",
     "TaskOutcomeBlocker",
     "ConversationExecutionStatus",
     "ConversationCallbackType",

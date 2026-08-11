@@ -8,7 +8,6 @@ from rich.text import Text
 
 from openhands.sdk.task_outcome import (
     TaskOutcome,
-    TaskOutcomeArtifact,
     TaskOutcomeBlocker,
     TaskOutcomeStatus,
 )
@@ -41,10 +40,6 @@ class ReportTaskOutcomeAction(Action):
         default_factory=list,
         description="Any blockers that prevented or limited task completion.",
     )
-    artifacts: list[TaskOutcomeArtifact] = Field(
-        default_factory=list,
-        description="Artifacts created, updated, or discovered during the task.",
-    )
     confidence: float | None = Field(
         default=None,
         ge=0.0,
@@ -55,18 +50,12 @@ class ReportTaskOutcomeAction(Action):
         default=False,
         description="Whether the user needs to act before the task can proceed.",
     )
-    final: bool = Field(
-        default=False,
-        description="Set true when this report is the final task outcome.",
-    )
 
     @property
     def visualize(self) -> Text:
         content = Text()
         content.append("Task outcome: ", style="bold blue")
         content.append(self.status)
-        if self.final:
-            content.append(" (final)", style="bold green")
         content.append("\n")
         content.append(self.summary)
         return content
@@ -82,8 +71,6 @@ class ReportTaskOutcomeObservation(Observation):
         content = Text()
         content.append("Recorded task outcome: ", style="bold green")
         content.append(self.outcome.status)
-        if self.outcome.final:
-            content.append(" (final)", style="bold green")
         content.append("\n")
         content.append(self.outcome.summary)
         return content
@@ -98,7 +85,7 @@ it only records metadata. You may call it multiple times as the task progresses.
 The latest report is stored on conversation metadata, while every call remains in
 the conversation event history as a tool call.
 
-Before you finish the task, call this with final=true and an accurate status:
+Before you finish the task, call this with an accurate status:
 - success: the requested task was completed
 - partial_success: useful progress was made, but some work remains
 - blocked: external input, credentials, permissions, or unclear requirements
@@ -106,9 +93,7 @@ Before you finish the task, call this with final=true and an accurate status:
 - failed: the task could not be completed due to an unrecoverable error
 - unknown: you cannot confidently determine the task outcome
 
-Include blockers when status is blocked, failed, or partial_success. Include
-artifacts such as pull requests, files, commits, issues, documents, or messages
-when relevant.
+Include blockers when status is blocked, failed, or partial_success.
 """
 
 
@@ -128,7 +113,6 @@ class ReportTaskOutcomeExecutor(ToolExecutor):
                         message="The report_task_outcome tool had no conversation.",
                     )
                 ],
-                final=action.final,
                 reported_at=utc_now(),
             )
             return ReportTaskOutcomeObservation.from_text(
@@ -141,10 +125,8 @@ class ReportTaskOutcomeExecutor(ToolExecutor):
             status=action.status,
             summary=action.summary,
             blockers=action.blockers,
-            artifacts=action.artifacts,
             confidence=action.confidence,
             needs_user_action=action.needs_user_action,
-            final=action.final,
             reported_at=utc_now(),
         )
         with conversation.state:
