@@ -2799,7 +2799,7 @@ requires-dist = [
     { name = "boto3", marker = "extra == 'boto3'", specifier = ">=1.35.0" },
     { name = "deprecation", specifier = ">=2.1.0" },
     { name = "fakeredis", extras = ["lua"], specifier = ">=2.32.1" },
-    { name = "fastmcp", specifier = ">=3.0.0" },
+    { name = "fastmcp", specifier = ">=3.2.0" },
     { name = "filelock", specifier = ">=3.20.1" },
     { name = "google-cloud-aiplatform", marker = "extra == 'vertex'", specifier = ">=1.38" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },

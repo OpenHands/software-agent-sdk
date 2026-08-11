@@ -66,6 +66,7 @@ from openhands.sdk.mcp.config import (
     dump_mcp_config,
     enabled_mcp_servers,
 )
+from openhands.sdk.mcp.exceptions import MCPError
 from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.mcp.utils import (
     DefaultMCPToolProvider,
@@ -1303,9 +1304,17 @@ class LocalConversation(BaseConversation):
                 "removals/updates won't reach the agent for this provider",
                 type(self._mcp_tool_provider).__name__,
             )
-        client = self._mcp_tool_provider.create_tools(
-            mcp_config, _RUNTIME_MCP_TIMEOUT_SECS, **create_kwargs
-        )
+        try:
+            client = self._mcp_tool_provider.create_tools(
+                mcp_config, _RUNTIME_MCP_TIMEOUT_SECS, **create_kwargs
+            )
+        except (MCPError, OSError) as exc:
+            logger.warning(
+                "MCP server startup failed for %s; continuing without its tools: %s",
+                ", ".join(sorted(mcp_config)),
+                exc,
+            )
+            return []
         return list(client.tools)
 
     def _on_mcp_tools_reconciled(
