@@ -1824,6 +1824,29 @@ class TestRemoteConversation:
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
+    def test_close_registers_existing_error_classification(self, mock_ws_client):
+        """Closing registers the latest classified conversation failure."""
+        from openhands.sdk.event.conversation_error import ConversationErrorEvent
+        from openhands.sdk.event.error_classification import FailureKind
+
+        self.setup_mock_client()
+        mock_ws_client.return_value = Mock()
+        conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+        conversation.state.events._cached_events.append(
+            ConversationErrorEvent(
+                source="environment",
+                code="LLMAuthenticationError",
+                detail="invalid api key",
+            )
+        )
+
+        conversation.close()
+
+        assert self.workspace._failure_kind is FailureKind.AUTH
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
     def test_close_does_not_fetch_state_to_read_cost(self, mock_ws_client):
         """Closing never fetches state over HTTP — the server may already be gone."""
         mock_client_instance = self.setup_mock_client()

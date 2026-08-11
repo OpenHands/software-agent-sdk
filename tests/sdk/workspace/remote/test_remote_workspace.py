@@ -1235,38 +1235,24 @@ def test_send_completion_callback_omits_cost_when_not_registered(monkeypatch):
         assert "cost" not in payload
 
 
-# --- blocking factor tests ---
-
-
-def test_register_blocking_factor_stores_kind_and_reason():
-    """register_blocking_factor stores the kind and reason."""
+def test_register_failure_kind_stores_kind():
+    """register_failure_kind stores an existing conversation classification."""
     from openhands.sdk.event.error_classification import FailureKind
 
     workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
 
-    workspace.register_blocking_factor(
-        FailureKind.CONFIG, "calendar integration not configured"
-    )
+    workspace.register_failure_kind(FailureKind.AUTH)
 
-    assert workspace._blocking_kind is FailureKind.CONFIG
-    assert workspace.blocking_reason == "calendar integration not configured"
+    assert workspace._failure_kind is FailureKind.AUTH
 
 
-def test_blocking_reason_returns_none_initially():
-    """blocking_reason returns None when nothing was registered."""
-    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
-
-    assert workspace.blocking_reason is None
-
-
-def test_send_completion_callback_classifies_failure(monkeypatch):
-    """A failing exit reports a typed failure_kind derived from the exception."""
-    from openhands.sdk.llm.exceptions import LLMAuthenticationError
+def test_send_completion_callback_includes_registered_failure_kind(monkeypatch):
+    """The completion callback includes a registered conversation failure kind."""
+    from openhands.sdk.event.error_classification import FailureKind
 
     monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
-    monkeypatch.setenv("AUTOMATION_RUN_ID", "run-77")
-
     workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
+    workspace.register_failure_kind(FailureKind.CONFIG)
 
     mock_resp = MagicMock()
     mock_resp.status_code = 200
@@ -1278,63 +1264,7 @@ def test_send_completion_callback_classifies_failure(monkeypatch):
         mock_client.__exit__ = MagicMock(return_value=False)
         MockClient.return_value = mock_client
 
-        exc = LLMAuthenticationError("invalid api key")
-        workspace._send_completion_callback(type(exc), exc)
+        workspace._send_completion_callback(RuntimeError, RuntimeError("failed"))
 
         payload = mock_client.post.call_args.kwargs["json"]
-        assert payload["status"] == "FAILED"
-        assert payload["failure_kind"] == "auth"
-
-
-def test_send_completion_callback_reports_blocked_completion(monkeypatch):
-    """A completed-but-blocked run reports the registered blocking factor."""
-    from openhands.sdk.event.error_classification import FailureKind
-
-    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
-    monkeypatch.setenv("AUTOMATION_RUN_ID", "run-88")
-
-    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
-    workspace.register_blocking_factor(
-        FailureKind.CONFIG, "calendar integration not configured"
-    )
-
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-
-    with patch("httpx.Client") as MockClient:
-        mock_client = MagicMock()
-        mock_client.post.return_value = mock_resp
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        MockClient.return_value = mock_client
-
-        workspace._send_completion_callback(None, None)
-
-        payload = mock_client.post.call_args.kwargs["json"]
-        assert payload["status"] == "COMPLETED"
         assert payload["failure_kind"] == "config"
-        assert payload["blocking_reason"] == "calendar integration not configured"
-
-
-def test_send_completion_callback_omits_metadata_when_unset(monkeypatch):
-    """No failure_kind/blocking_reason when there is no failure or block."""
-    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
-
-    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
-
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-
-    with patch("httpx.Client") as MockClient:
-        mock_client = MagicMock()
-        mock_client.post.return_value = mock_resp
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        MockClient.return_value = mock_client
-
-        workspace._send_completion_callback(None, None)
-
-        payload = mock_client.post.call_args.kwargs["json"]
-        assert payload["status"] == "COMPLETED"
-        assert "failure_kind" not in payload
-        assert "blocking_reason" not in payload

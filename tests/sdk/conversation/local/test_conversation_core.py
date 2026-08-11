@@ -266,6 +266,26 @@ def test_close_reports_accumulated_cost_to_workspace(tmp_path):
     assert conv.workspace.accumulated_cost == 0.75
 
 
+def test_close_registers_existing_error_classification(tmp_path):
+    """close() registers the latest classified conversation failure."""
+    from openhands.sdk.event.conversation_error import ConversationErrorEvent
+    from openhands.sdk.event.error_classification import FailureKind
+
+    agent = create_test_agent()
+    conv = Conversation(agent=agent, persistence_dir=tmp_path, workspace=tmp_path)
+    conv.state.append_event(
+        ConversationErrorEvent(
+            source="environment",
+            code="LLMAuthenticationError",
+            detail="invalid api key",
+        )
+    )
+
+    conv.close()
+
+    assert conv.workspace._failure_kind is FailureKind.AUTH
+
+
 def test_close_reports_zero_cost_when_no_llm_calls(tmp_path):
     """A run that ends before any LLM call — e.g. it errors during setup —
     reports a genuine 0.0, not an omitted cost. Local state is in-process and

@@ -1688,6 +1688,17 @@ class RemoteConversation(BaseConversation):
             return
         self._cleanup_initiated = True
 
+        # Hand the existing typed conversation failure to the workspace for the
+        # automation completion callback. Do not reclassify the wrapper exception.
+        try:
+            for event in reversed(self._state.events):
+                if isinstance(event, ConversationErrorEvent):
+                    if event.classification is not None:
+                        self.workspace.register_failure_kind(event.classification.kind)
+                    break
+        except Exception as e:
+            logger.debug(f"Could not register conversation failure: {e}")
+
         # Best-effort: hand the accumulated LLM cost to the workspace so it can
         # be included in the automation completion callback. Only read cached
         # state — close() also runs on the failure path, where a live fetch
