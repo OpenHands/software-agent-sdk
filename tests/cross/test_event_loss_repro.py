@@ -28,6 +28,20 @@ from openhands.sdk.workspace import RemoteWorkspace
 from openhands.workspace.docker.workspace import find_available_tcp_port
 
 
+FINISH_TASK_COMPLETE_ARGS = json.dumps(
+    {
+        "message": "Task complete",
+        "task_outcome": {
+            "status": "success",
+            "summary": "Task complete",
+            "blockers": [],
+            "confidence": 1.0,
+            "needs_user_action": False,
+        },
+    }
+)
+
+
 @pytest.fixture
 def server_env_for_repro(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Launch a real FastAPI server for the reproduction test."""
@@ -125,7 +139,7 @@ def test_event_loss_race_condition_with_ws_delay(
                         "type": "function",
                         "function": {
                             "name": "finish",
-                            "arguments": '{"message": "Task complete"}',
+                            "arguments": FINISH_TASK_COMPLETE_ARGS,
                         },
                     }
                 ],
