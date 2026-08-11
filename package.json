@@ -91,7 +91,7 @@
   "devDependencies": {
     "@babel/preset-env": "^7.29.5",
     "@eslint/js": "^10.0.1",
-    "@hey-api/openapi-ts": "0.95.0",
+    "@hey-api/openapi-ts": "0.99.0",
     "@types/jest": "^30.0.0",
     "@types/node": "^26.1.0",
     "@types/ws": "^8.5.8",
