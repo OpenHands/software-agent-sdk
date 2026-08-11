@@ -477,6 +477,15 @@ def _compose_conversation_info(
     )
 
 
+def _compose_conversation_info_sync(
+    stored: StoredConversation,
+    state: ConversationState,
+    sub_conversation_ids: list[UUID] | None = None,
+) -> ConversationInfo:
+    with state:
+        return _compose_conversation_info(stored, state, sub_conversation_ids)
+
+
 def _compose_webhook_conversation_info(
     stored: StoredConversation, state: ConversationState
 ) -> ConversationInfo:
@@ -494,8 +503,7 @@ def _update_state_tags_sync(
 def _compose_webhook_conversation_info_sync(
     stored: StoredConversation, state: ConversationState
 ) -> ConversationInfo:
-    with state:
-        return _compose_webhook_conversation_info(stored, state)
+    return _compose_conversation_info_sync(stored, state)
 
 
 def _register_agent_definitions(
@@ -793,9 +801,12 @@ class ConversationService:
         event_service = event_services.get(conversation_id)
         if event_service is not None and event_service.is_open():
             state = await event_service.get_state()
-            record.execution_status = state.execution_status
             record.state_signature = None
-            return _compose_conversation_info(event_service.stored, state, children)
+            conversation_info = await asyncio.to_thread(
+                _compose_conversation_info_sync, event_service.stored, state, children
+            )
+            record.execution_status = conversation_info.execution_status
+            return conversation_info
 
         signature = _state_signature(self._base_state_path(conversation_id, record))
         state = await asyncio.to_thread(
@@ -803,9 +814,12 @@ class ConversationService:
         )
         if state is None:
             return None
-        record.execution_status = state.execution_status
         record.state_signature = signature
-        return _compose_conversation_info(record.stored, state, children)
+        conversation_info = await asyncio.to_thread(
+            _compose_conversation_info, record.stored, state, children
+        )
+        record.execution_status = conversation_info.execution_status
+        return conversation_info
 
     @staticmethod
     def _refresh_persisted_statuses_sync(
@@ -2113,10 +2127,10 @@ class ConversationService:
 
         The subscriber is attached on *every* path, including rehydration, so
         errors and terminal outcomes are always captured. But
-        ``conversation_started`` is emitted only for a genuinely new
+        ``conversation_created`` is emitted only for a genuinely new
         conversation: ``_start_event_service`` also runs when an idle
         conversation is lazily reloaded and when RUNNING conversations are
-        recovered after a restart, and counting those as starts would inflate
+        recovered after a restart, and counting those as creations would inflate
         the metric on every server bounce.
 
         Deliberately total: telemetry must never be able to fail conversation
