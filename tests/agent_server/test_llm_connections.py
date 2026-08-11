@@ -136,7 +136,11 @@ def test_delete_removes_connection_and_secret(client):
         "/api/llm/connections", json={"provider": "openai", "key": "sk-1"}
     ).json()["id"]
     r = client.delete(f"/api/llm/connections/{cid}")
-    assert r.status_code == 204
+    assert r.status_code == 200
+    body = r.json()
+    assert body["id"] == cid
+    # No profiles reference this connection, so nothing is affected.
+    assert body["affected_profiles"] == []
     assert client.get(f"/api/llm/connections/{cid}").status_code == 404
     # Listing is empty again.
     assert client.get("/api/llm/connections").json() == []
@@ -157,10 +161,13 @@ def test_validate_success_stamps_timestamp(client):
     assert body["ok"] is True
     assert body["error"] is None
     assert len(body["models"]) > 0
+    # Catalog-only validation must not claim the key was network-verified.
+    assert body["verified"] is False
 
-    # last_validated_at got stamped.
+    # last_validated_at got stamped and the catalog was persisted onto models.
     conn = client.get(f"/api/llm/connections/{cid}").json()
     assert conn["last_validated_at"] is not None
+    assert len(conn["models"]) > 0
 
 
 def test_validate_missing_connection_404(client):
@@ -172,8 +179,13 @@ def test_validate_missing_connection_404(client):
 def test_validate_uses_injected_validator(client, monkeypatch):
     """validate_provider_key is module-level so tests can monkeypatch it."""
 
-    def fake(provider, key):
-        return True, ["fake-model-a", "fake-model-b"], None
+    def fake(provider, key, *, live=False):
+        return conn_module.ValidationResult(
+            ok=True,
+            models=["fake-model-a", "fake-model-b"],
+            error=None,
+            verified=True,
+        )
 
     monkeypatch.setattr(conn_module, "validate_provider_key", fake)
     cid = client.post(
@@ -181,7 +193,66 @@ def test_validate_uses_injected_validator(client, monkeypatch):
     ).json()["id"]
     body = client.post(f"/api/llm/connections/{cid}/validate").json()
     assert body["ok"] is True
+    assert body["verified"] is True
     assert body["models"] == ["fake-model-a", "fake-model-b"]
+
+
+def test_validate_live_flag_marks_verified(client, monkeypatch):
+    """The ``live`` query flag drives a real probe and sets ``verified``."""
+    calls: list[bool] = []
+
+    def fake(provider, key, *, live=False):
+        calls.append(live)
+        return conn_module.ValidationResult(
+            ok=live, models=["m1"] if live else [], error=None, verified=live
+        )
+
+    monkeypatch.setattr(conn_module, "validate_provider_key", fake)
+    cid = client.post(
+        "/api/llm/connections", json={"provider": "openai", "key": "sk"}
+    ).json()["id"]
+    body = client.post(f"/api/llm/connections/{cid}/validate?live=true").json()
+    assert calls == [True]
+    assert body["verified"] is True
+
+
+def test_create_profile_from_connection(client):
+    """A connection can spawn an LLM profile that references its key by name."""
+    cid = client.post(
+        "/api/llm/connections",
+        json={"provider": "openai", "key": "sk-test", "models": ["gpt-4o"]},
+    ).json()["id"]
+
+    r = client.post(
+        f"/api/llm/connections/{cid}/profiles",
+        json={"profile_name": "work-gpt4o", "model": "gpt-4o"},
+    )
+    assert r.status_code == 201
+    body = r.json()
+    assert body["profile_name"] == "work-gpt4o"
+    assert body["model"] == "gpt-4o"
+    assert body["connection_id"] == cid
+
+    # The profile is saved and references the connection secret by name, so its
+    # api_key resolves through the connection rather than duplicating the key.
+    detail = client.get("/api/profiles/work-gpt4o").json()
+    assert detail["api_key_set"] is True
+
+    # Deleting the connection now reports the referencing profile.
+    deleted = client.delete(f"/api/llm/connections/{cid}").json()
+    assert "work-gpt4o" in deleted["affected_profiles"]
+
+
+def test_create_profile_rejects_model_not_in_catalog(client):
+    cid = client.post(
+        "/api/llm/connections",
+        json={"provider": "openai", "key": "sk-test", "models": ["gpt-4o"]},
+    ).json()["id"]
+    r = client.post(
+        f"/api/llm/connections/{cid}/profiles",
+        json={"profile_name": "nope", "model": "not-a-model"},
+    )
+    assert r.status_code == 422
 
 
 def test_create_limit_enforced(client, monkeypatch):

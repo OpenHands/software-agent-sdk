@@ -17,9 +17,16 @@ Endpoints (mounted under ``/api/llm``):
   - POST   /connections                 create {provider, key, label?, models?}
   - GET    /connections/{id}            connection + its selected models
   - PATCH  /connections/{id}            rotate key / rename label / set models
-  - DELETE /connections/{id}            disconnect (+ delete the named secret)
-  - POST   /connections/{id}/validate   test the key, return the provider's
-                                        model catalog; updates last_validated_at
+  - DELETE /connections/{id}            disconnect (+ delete the named secret);
+                                        returns the profiles that referenced it
+  - POST   /connections/{id}/validate   test the key (catalog-only by default,
+                                        live probe with ``?live=true`` or
+                                        OH_CONNECTIONS_LIVE_VALIDATE) and return
+                                        the model catalog; the response carries
+                                        ``verified`` so clients never claim an
+                                        unchecked key was authenticated
+  - POST   /connections/{id}/profiles   create an LLM profile bound to this
+                                        connection's key (api_key by reference)
 
 LLM profiles spawned from a connection store ``api_key = "secret:<secret_name>"``
 (see :func:`openhands.agent_server.persistence.llm_secret_ref`) instead of the
@@ -29,6 +36,7 @@ profile picks it up at call time (see ``LLM._get_api_key_value``).
 
 from __future__ import annotations
 
+import os
 import time
 import uuid
 from collections.abc import Callable
@@ -38,9 +46,12 @@ from pydantic import BaseModel, Field, SecretStr
 
 from openhands.agent_server._secrets_exposure import get_config
 from openhands.agent_server.persistence import (
+    PersistedConnections,
     ProviderConnection,
     get_connections_store,
+    get_llm_profile_store,
     get_secrets_store,
+    llm_secret_ref,
 )
 from openhands.sdk.llm.utils.unverified_models import (
     _extract_model_and_provider,
@@ -116,14 +127,48 @@ class ConnectionResponse(BaseModel):
 
 
 class ValidateResponse(BaseModel):
-    """Result of testing a connection's key against the provider's catalog."""
+    """Result of testing a connection's key against the provider's catalog.
+
+    ``verified`` distinguishes a real, network-checked key from a catalog-only
+    response: it is True only when a live probe confirmed the provider accepted
+    the key. Clients must not present the key as authenticated when ``verified``
+    is False (the models are the provider's advertised catalog, not proven grants).
+    """
 
     id: str
     provider: str
     ok: bool
+    verified: bool = False
     models: list[str] = Field(default_factory=list)
     error: str | None = None
     validated_at: int
+
+
+class DisconnectResponse(BaseModel):
+    """Result of a disconnect: which profiles now reference a missing key."""
+
+    id: str
+    affected_profiles: list[str] = Field(default_factory=list)
+
+
+class CreateProfileFromConnectionRequest(BaseModel):
+    """Create an LLM profile that authenticates via this connection's key.
+
+    The profile stores ``api_key = "secret:<connection secret>"`` rather than the
+    raw key, so rotating the connection updates every profile at once. ``model``
+    must be one of the connection's selected/validated models.
+    """
+
+    profile_name: str = Field(..., min_length=1, max_length=64)
+    model: str = Field(..., min_length=1)
+    base_url: str | None = None
+
+
+class ProfileFromConnectionResponse(BaseModel):
+    profile_name: str
+    model: str
+    provider: str
+    connection_id: str
 
 
 def _to_response(conn: ProviderConnection, *, api_key_set: bool) -> ConnectionResponse:
@@ -145,6 +190,30 @@ def _api_key_set(secret_name: str) -> bool:
     return bool(value and value.strip())
 
 
+def _profiles_referencing(secret_name: str) -> list[str]:
+    """Names of LLM profiles whose ``api_key`` points at this connection's secret.
+
+    Used to warn the user before disconnect: these profiles would stop
+    authenticating once the named secret is deleted.
+    """
+    ref = llm_secret_ref(secret_name)
+    store = get_llm_profile_store()
+    referrers: list[str] = []
+    for summary in store.list_summaries():
+        name = summary.get("name")
+        if not isinstance(name, str):
+            continue
+        try:
+            llm = store.load(name)
+        except Exception:  # noqa: BLE001 - skip unreadable profiles
+            continue
+        api_key = llm.api_key
+        raw = api_key.get_secret_value() if isinstance(api_key, SecretStr) else None
+        if raw == ref:
+            referrers.append(name)
+    return sorted(referrers)
+
+
 def _get_connection_or_404(connections, connection_id: str) -> ProviderConnection:
     for conn in connections.connections:
         if conn.id == connection_id:
@@ -157,32 +226,34 @@ def _get_connection_or_404(connections, connection_id: str) -> ProviderConnectio
 
 # ── Provider key validation (injectable for tests) ───────────────────────
 #
-# ``validate_provider_key`` attempts to confirm a key works for a provider and
-# returns that provider's model catalog. The default implementation is
-# conservative: it never makes a live network call (which would be slow and
-# non-deterministic in tests); it returns the static LiteLLM catalog for the
-# provider when the key is non-empty, so the wizard can populate the picker.
-# A production implementation can override this (or a future flag) to issue a
-# real cheap probe and surface a 401/403 cause. The function is module-level so
-# tests monkeypatch it.
+# ``validate_provider_key`` confirms a key looks usable for a provider and
+# returns that provider's model catalog. It reports two distinct things via the
+# ``ValidationResult`` fields:
+#
+#   - ``ok``       the request could proceed (non-empty key, known provider, and
+#                  — when a live probe runs — the provider did not reject the key)
+#   - ``verified`` whether the key was actually checked against the provider over
+#                  the network. When no live probe runs, ``verified`` is False and
+#                  the catalog is the provider's *advertised* models, not the ones
+#                  the key is proven to grant. Callers/UI must not claim the key
+#                  was authenticated when ``verified`` is False.
+#
+# A live probe is opt-in (``OH_CONNECTIONS_LIVE_VALIDATE=1`` or ``live=True`` on
+# the endpoint) because it costs a network round-trip and is not always reachable
+# from every deployment. The function is module-level so tests monkeypatch it.
 
-ValidateFn = Callable[[str, str], tuple[bool, list[str], str | None]]
+ValidateFn = Callable[..., "ValidationResult"]
 
 
-def validate_provider_key(
-    provider: str, key: str
-) -> tuple[bool, list[str], str | None]:
-    """Default validator: non-empty key => provider's static model catalog.
+class ValidationResult(BaseModel):
+    ok: bool
+    models: list[str] = Field(default_factory=list)
+    error: str | None = None
+    verified: bool = False
 
-    Returns ``(ok, models, error)``. ``ok`` is True for a non-empty key against a
-    known provider; ``models`` is the provider-filtered LiteLLM catalog; ``error``
-    is None on success or a short cause string on failure.
-    """
-    if not key or not key.strip():
-        return False, [], "API key is empty"
-    if provider not in _provider_names():
-        return False, [], f"Unknown provider '{provider}'"
 
+def _provider_catalog(provider: str) -> list[str]:
+    """Return the provider's advertised model catalog (no network call)."""
     all_models = get_supported_llm_models()
     verified_provider_models = set(VERIFIED_MODELS.get(provider, ()))
     filtered: list[str] = []
@@ -190,7 +261,60 @@ def validate_provider_key(
         model_provider, _, _ = _extract_model_and_provider(model)
         if model_provider == provider or model in verified_provider_models:
             filtered.append(model)
-    return True, sorted(set(filtered)), None
+    return sorted(set(filtered))
+
+
+def _live_probe(provider: str, key: str) -> tuple[bool, str | None]:
+    """Cheaply check a key against a provider over the network.
+
+    Returns ``(ok, error)``. Uses LiteLLM's provider-endpoint check, which lists
+    the provider's models using the supplied key without spending tokens. An
+    authentication/permission rejection maps to ``ok=False`` with a short cause;
+    connectivity problems are surfaced as an error but do not assert the key is
+    invalid.
+    """
+    import litellm
+    from litellm.exceptions import AuthenticationError, PermissionDeniedError
+
+    try:
+        litellm.get_valid_models(
+            check_provider_endpoint=True,
+            custom_llm_provider=provider,
+            api_key=key,
+        )
+        return True, None
+    except (AuthenticationError, PermissionDeniedError) as e:
+        return False, f"Provider rejected the key: {str(e)[:200]}"
+    except Exception as e:  # noqa: BLE001 - connectivity/other; don't assert invalid
+        logger.warning(f"Live validation probe failed for {provider}: {e}")
+        return False, f"Could not reach {provider} to verify the key: {str(e)[:200]}"
+
+
+def validate_provider_key(
+    provider: str, key: str, *, live: bool = False
+) -> ValidationResult:
+    """Validate a provider key and return the models it can select.
+
+    With ``live=False`` (default) this performs input checks only and returns the
+    provider's advertised catalog with ``verified=False`` — it does *not* prove
+    the key authenticates. With ``live=True`` it additionally issues a cheap
+    network probe; on success ``verified`` is True.
+    """
+    if not key or not key.strip():
+        return ValidationResult(ok=False, models=[], error="API key is empty")
+    if provider not in _provider_names():
+        return ValidationResult(
+            ok=False, models=[], error=f"Unknown provider '{provider}'"
+        )
+
+    catalog = _provider_catalog(provider)
+    if not live:
+        return ValidationResult(ok=True, models=catalog, error=None, verified=False)
+
+    ok, error = _live_probe(provider, key)
+    return ValidationResult(
+        ok=ok, models=catalog if ok else [], error=error, verified=ok
+    )
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────
@@ -311,28 +435,31 @@ async def update_connection(
     store = get_connections_store(config)
     secrets_store = get_secrets_store(config)
 
-    if body.key is not None:
-        # Rotate the named secret first; the connection record only references it.
-        persisted = store.load() or _empty()
-        conn_to_rotate = _get_connection_or_404(persisted, connection_id)
-        try:
-            secrets_store.set_secret(
-                name=conn_to_rotate.secret_name,
-                value=body.key.get_secret_value(),
-                description=(
-                    f"LLM provider connection key for {conn_to_rotate.provider}"
-                ),
-            )
-        except RuntimeError as e:
-            logger.error(f"Connection rotate blocked (secrets): {e}")
-            raise HTTPException(
-                status_code=500,
-                detail="Secrets file is corrupted or encrypted with a different key",
-            )
-
     def patch(conn_list):
+        # The whole update runs under the connections lock. We only rotate the
+        # secret *after* confirming the connection still exists, so a concurrent
+        # delete can't leave an orphaned rotated key (the earlier version wrote
+        # the secret before the record check).
         for c in conn_list.connections:
             if c.id == connection_id:
+                if body.key is not None:
+                    try:
+                        secrets_store.set_secret(
+                            name=c.secret_name,
+                            value=body.key.get_secret_value(),
+                            description=(
+                                f"LLM provider connection key for {c.provider}"
+                            ),
+                        )
+                    except RuntimeError as e:
+                        logger.error(f"Connection rotate blocked (secrets): {e}")
+                        raise HTTPException(
+                            status_code=500,
+                            detail=(
+                                "Secrets file is corrupted or encrypted with a "
+                                "different key"
+                            ),
+                        )
                 if body.label is not None:
                     c = c.model_copy(update={"label": body.label})
                 if body.models is not None:
@@ -351,9 +478,17 @@ async def update_connection(
     return _to_response(conn, api_key_set=_api_key_set(conn.secret_name))
 
 
-@connections_router.delete("/{connection_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_connection(request: Request, connection_id: str):
-    """Disconnect: delete the connection record and its named secret."""
+@connections_router.delete("/{connection_id}", response_model=DisconnectResponse)
+async def delete_connection(
+    request: Request, connection_id: str
+) -> DisconnectResponse:
+    """Disconnect: delete the connection record and its named secret.
+
+    Returns the names of LLM profiles that referenced the connection's key so the
+    client can warn that they will stop authenticating until pointed at a new key.
+    The profiles are left intact (deleting them silently would be more surprising
+    than a clear "these now need a key" message).
+    """
     config = get_config(request)
     store = get_connections_store(config)
     secrets_store = get_secrets_store(config)
@@ -372,22 +507,53 @@ async def delete_connection(request: Request, connection_id: str):
             detail=f"Connection '{connection_id}' not found",
         )
 
+    affected: list[str] = []
+    if deleted_secret_name is None:
+        # Peek before mutating so we can report referrers in the response.
+        persisted = store.load()
+        if persisted is not None:
+            for c in persisted.connections:
+                if c.id == connection_id:
+                    affected = _profiles_referencing(c.secret_name)
+                    break
+
     store.update(remove)
     if deleted_secret_name is not None:
         try:
             secrets_store.delete_secret(deleted_secret_name)
         except Exception:  # noqa: BLE001 - record already gone; best-effort
             logger.warning(f"Failed to delete secret {deleted_secret_name}")
-    logger.info("Deleted provider connection", extra={"connection_id": connection_id})
+    logger.info(
+        "Deleted provider connection",
+        extra={"connection_id": connection_id, "affected_profiles": len(affected)},
+    )
+    return DisconnectResponse(id=connection_id, affected_profiles=affected)
+
+
+def _live_validation_default() -> bool:
+    """Whether validate should probe the provider live unless told otherwise."""
+    return os.getenv("OH_CONNECTIONS_LIVE_VALIDATE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
 
 
 @connections_router.post(
     "/{connection_id}/validate", response_model=ValidateResponse
 )
 async def validate_connection(
-    request: Request, connection_id: str
+    request: Request, connection_id: str, live: bool | None = None
 ) -> ValidateResponse:
-    """Test the connection's key against the provider and return its catalog."""
+    """Test the connection's key against the provider and return its catalog.
+
+    When ``live`` is true (or ``OH_CONNECTIONS_LIVE_VALIDATE`` is set) the key is
+    probed against the provider over the network and ``verified`` reflects the
+    real result. Otherwise the response is catalog-only with ``verified=false``.
+    On a successful validation the connection's ``last_validated_at`` is stamped
+    and its ``models`` are set to the returned catalog so a profile can be spawned
+    from them without a second call.
+    """
     config = get_config(request)
     store = get_connections_store(config)
     secrets_store = get_secrets_store(config)
@@ -396,14 +562,20 @@ async def validate_connection(
     conn = _get_connection_or_404(persisted, connection_id)
     key = secrets_store.get_secret(conn.secret_name) or ""
 
-    ok, models, error = validate_provider_key(conn.provider, key)
+    do_live = _live_validation_default() if live is None else live
+    result = validate_provider_key(conn.provider, key, live=do_live)
     validated_at = _now()
-    if ok:
-        # Stamp last_validated_at on success.
+    if result.ok:
+        # Persist the catalog + timestamp so profile creation can reuse them.
         def stamp(conn_list):
             for c in conn_list.connections:
                 if c.id == connection_id:
-                    c = c.model_copy(update={"last_validated_at": validated_at})
+                    c = c.model_copy(
+                        update={
+                            "last_validated_at": validated_at,
+                            "models": list(result.models),
+                        }
+                    )
                     conn_list.connections = [
                         c if x.id == connection_id else x
                         for x in conn_list.connections
@@ -416,15 +588,100 @@ async def validate_connection(
     return ValidateResponse(
         id=connection_id,
         provider=conn.provider,
-        ok=ok,
-        models=models,
-        error=error,
+        ok=result.ok,
+        verified=result.verified,
+        models=result.models,
+        error=result.error,
         validated_at=validated_at,
     )
 
 
-def _empty():
-    """Return a fresh empty PersistedConnections (avoids ``load() or None`` chains)."""
-    from openhands.agent_server.persistence import PersistedConnections
+@connections_router.post(
+    "/{connection_id}/profiles",
+    response_model=ProfileFromConnectionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_profile_from_connection(
+    request: Request,
+    connection_id: str,
+    body: CreateProfileFromConnectionRequest,
+) -> ProfileFromConnectionResponse:
+    """Create an LLM profile backed by this connection's key.
 
+    This is the "pick from every model the connection offers" step: it saves a
+    named LLM profile whose ``api_key`` is a ``secret:<name>`` reference to the
+    connection's stored key, so the profile authenticates without duplicating the
+    key and follows the key when it is rotated. ``model`` must be one of the
+    connection's selected/validated models.
+    """
+    from openhands.sdk.llm import LLM
+    from openhands.sdk.llm.llm_profile_store import (
+        PROFILE_NAME_REGEX,
+        ProfileLimitExceeded,
+    )
+
+    config = get_config(request)
+    store = get_connections_store(config)
+
+    persisted = store.load() or _empty()
+    conn = _get_connection_or_404(persisted, connection_id)
+
+    if not PROFILE_NAME_REGEX.match(body.profile_name):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid profile name '{body.profile_name}'",
+        )
+    if conn.models and body.model not in conn.models:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Model '{body.model}' is not one of the connection's selected "
+                "models. Validate the connection or choose a listed model."
+            ),
+        )
+
+    llm = LLM(
+        model=body.model,
+        base_url=body.base_url,
+        api_key=SecretStr(llm_secret_ref(conn.secret_name)),
+        usage_id=body.profile_name,
+    )
+
+    profile_store = get_llm_profile_store()
+    from openhands.agent_server.profiles_router import MAX_PROFILES
+
+    try:
+        profile_store.save(
+            body.profile_name,
+            llm,
+            include_secrets=True,
+            max_profiles=MAX_PROFILES,
+        )
+    except ProfileLimitExceeded:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Profile limit reached ({MAX_PROFILES}). "
+                "Delete a profile before creating a new one."
+            ),
+        )
+
+    logger.info(
+        "Created profile from connection",
+        extra={
+            "connection_id": connection_id,
+            "profile_name": body.profile_name,
+            "model": body.model,
+        },
+    )
+    return ProfileFromConnectionResponse(
+        profile_name=body.profile_name,
+        model=body.model,
+        provider=conn.provider,
+        connection_id=connection_id,
+    )
+
+
+def _empty() -> PersistedConnections:
+    """Return a fresh empty PersistedConnections (avoids ``load() or None`` chains)."""
     return PersistedConnections()

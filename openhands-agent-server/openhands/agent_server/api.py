@@ -700,6 +700,14 @@ def create_app(config: Config | None = None) -> FastAPI:
     # Register the LLM ``secret:<name>`` resolver so profiles spawned from a
     # provider connection resolve their api_key against the agent-server's
     # SecretsStore at call time (see LLM._get_api_key_value).
+    #
+    # NOTE: the resolver is a *process-global* installed on the SDK. In the
+    # normal one-app-per-process deployment this is exactly right. If multiple
+    # apps are created in one process (e.g. some test setups) the last
+    # ``create_app`` wins; the resolver reads the config-scoped secrets_store
+    # captured in the closure, so a stale registration would point at a
+    # previous app's store. Tests that need isolation should call
+    # ``register_llm_secret_resolver(None)`` in teardown.
     from openhands.agent_server.persistence import get_secrets_store
     from openhands.sdk.llm.llm import register_llm_secret_resolver
 
