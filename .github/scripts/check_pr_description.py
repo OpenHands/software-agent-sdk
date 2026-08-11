@@ -87,7 +87,10 @@ def fetch_issue_labels(repo: str, issue_number: int, token: str) -> list[str]:
 
     request = urllib.request.Request(
         f"https://api.github.com/repos/{repo}/issues/{issue_number}/labels",
-        headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+        },
     )
     with urllib.request.urlopen(request) as response:  # noqa: S310 - trusted HTTPS API
         labels = json.loads(response.read().decode())
@@ -126,7 +129,8 @@ def validate_linked_issue_ready(
             f"None of the linked issues ({refs}) carry the `ready-for-dev` label. "
             "The issue must meet the readiness criteria before a PR can be opened."
         ]
-    return [f"Referenced issue(s) {', '.join(f'#{n}' for n in numbers)} could not be found in this repository."]
+    refs = ", ".join(f"#{number}" for number in numbers)
+    return [f"Referenced issue(s) {refs} could not be found in this repository."]
 
 
 def validate_pr_body(body: str) -> list[str]:

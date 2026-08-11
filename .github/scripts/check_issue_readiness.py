@@ -33,6 +33,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+
 BUG_LABEL = "bug"
 ENHANCEMENT_LABEL = "enhancement"
 
@@ -101,22 +102,6 @@ def find_section(sections: dict[str, str], *labels: str) -> str:
     return ""
 
 
-def has_screenshot_or_video(text: str) -> bool:
-    if MARKDOWN_IMAGE_RE.search(text):
-        return True
-    if HTML_IMG_RE.search(text):
-        return True
-    if HTML_VIDEO_RE.search(text):
-        return True
-    if GITHUB_ATTACHMENT_RE.search(text):
-        return True
-    if VIDEO_FILE_RE.search(text):
-        return True
-    if VIDEO_HOST_RE.search(text):
-        return True
-    return False
-
-
 def references_run_method(text: str) -> bool:
     return any(pattern.search(text) for pattern in RUN_METHOD_PATTERNS)
 
@@ -140,9 +125,13 @@ def check_bug(sections: dict[str, str]) -> ReadinessResult:
             "such as `python`, `pytest`, `uv`, or `pip`."
         )
 
-    acceptance = visible_text(find_section(sections, "acceptance criteria", "acceptance"))
+    acceptance = visible_text(
+        find_section(sections, "acceptance criteria", "acceptance")
+    )
     if not acceptance:
-        result.add("Add an `### Acceptance Criteria` section with testable checklist items.")
+        result.add(
+            "Add an `### Acceptance Criteria` section with testable checklist items."
+        )
     elif not has_checklist_item(acceptance):
         result.add(
             "The Acceptance Criteria section must contain at least one checklist item "
@@ -161,9 +150,13 @@ def check_enhancement(sections: dict[str, str]) -> ReadinessResult:
             "Add a `### Desired Behavior` section describing the behavior you want."
         )
 
-    acceptance = visible_text(find_section(sections, "acceptance criteria", "acceptance"))
+    acceptance = visible_text(
+        find_section(sections, "acceptance criteria", "acceptance")
+    )
     if not acceptance:
-        result.add("Add an `### Acceptance Criteria` section with testable checklist items.")
+        result.add(
+            "Add an `### Acceptance Criteria` section with testable checklist items."
+        )
     elif not has_checklist_item(acceptance):
         result.add(
             "The Acceptance Criteria section must contain at least one checklist item "
@@ -204,7 +197,9 @@ def body_and_labels_from_event(event_path: Path) -> tuple[str, list[str]]:
         raise ValueError("GitHub event payload does not contain an issue object")
     body = issue.get("body")
     body = body if isinstance(body, str) else ""
-    labels = [label["name"] for label in issue.get("labels", []) if isinstance(label, dict)]
+    labels = [
+        label["name"] for label in issue.get("labels", []) if isinstance(label, dict)
+    ]
     return body, labels
 
 
@@ -212,7 +207,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Evaluate whether an issue meets the ready-for-dev criteria."
     )
-    parser.add_argument("--body-file", type=Path, help="Read the issue body from a file.")
+    parser.add_argument(
+        "--body-file", type=Path, help="Read the issue body from a file."
+    )
     parser.add_argument(
         "--labels",
         help="Comma-separated issue labels (e.g. 'bug,frontend').",
