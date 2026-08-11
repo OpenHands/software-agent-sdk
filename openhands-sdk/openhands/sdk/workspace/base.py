@@ -6,6 +6,7 @@ from typing import Annotated, Any
 import httpx
 from pydantic import BeforeValidator, Field, PrivateAttr
 
+from openhands.sdk.event.error_classification import FailureKind, classify_error
 from openhands.sdk.git.models import GitChange, GitDiff
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
@@ -51,6 +52,8 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
 
     _conversation_id: str | None = PrivateAttr(default=None)
     _accumulated_cost: float | None = PrivateAttr(default=None)
+    _blocking_kind: FailureKind | None = PrivateAttr(default=None)
+    _blocking_reason: str | None = PrivateAttr(default=None)
 
     def __enter__(self) -> "BaseWorkspace":
         """Enter the workspace context.
@@ -82,6 +85,34 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
         """
         return self._accumulated_cost
 
+    def register_blocking_factor(self, kind: FailureKind, reason: str) -> None:
+        """Attach a blocking factor to this workspace's run.
+
+        Call this when the automation finished but was blocked from fully
+        succeeding — for example, the agent could not reach a configured MCP
+        integration and had to stop early. The blocking factor is included in
+        the completion callback sent to the automation service, which persists
+        it on the run so a "succeeded but blocked" outcome can be surfaced and
+        counted toward auto-disablement.
+
+        Args:
+            kind: FailureKind describing the blocking factor (e.g. ``CONFIG``
+                for an unreachable integration).
+            reason: Human-readable explanation of what blocked the run.
+        """
+        self._blocking_kind = kind
+        self._blocking_reason = reason
+        logger.debug(f"Registered blocking factor {kind.value}: {reason}")
+
+    @property
+    def blocking_reason(self) -> str | None:
+        """Get the blocking reason if one was registered.
+
+        Returns:
+            The blocking reason, or None if none was registered.
+        """
+        return self._blocking_reason
+
     def _send_completion_callback(
         self, exc_type: type | None, exc_val: BaseException | None
     ) -> None:
@@ -95,8 +126,11 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
           - ``AUTOMATION_CALLBACK_API_KEY`` — Bearer token for callback auth (optional)
           - ``AUTOMATION_RUN_ID`` — Run ID to include in callback payload (optional)
 
-        Includes ``conversation_id`` in the payload if one was registered, and
-        ``cost`` if one was registered via ``register_cost()``.
+        Includes ``conversation_id``, ``cost``, and any registered ``failure_kind`` /
+        ``blocking_reason`` in the payload. On failure, ``failure_kind`` is
+        derived by classifying the exception into the shared SDK failure
+        vocabulary; on a successful-but-blocked exit it is taken from the
+        blocking factor registered via ``register_blocking_factor``.
 
         Args:
             exc_type: Exception type if an exception was raised, None otherwise
@@ -115,6 +149,9 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
             payload["run_id"] = run_id
         if exc_val is not None:
             payload["error"] = str(exc_val)
+            failure_kind = classify_error(type(exc_val).__name__, str(exc_val)).kind
+        else:
+            failure_kind = self._blocking_kind
 
         # Include conversation_id if one was registered
         if self._conversation_id is not None:
@@ -123,6 +160,13 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
         # Include accumulated LLM cost if one was registered
         if self._accumulated_cost is not None:
             payload["cost"] = self._accumulated_cost
+
+        # Include failure metadata so the automation service can attribute the
+        # outcome and count it toward auto-disablement.
+        if failure_kind is not None:
+            payload["failure_kind"] = failure_kind.value
+        if self._blocking_reason is not None:
+            payload["blocking_reason"] = self._blocking_reason
 
         try:
             headers: dict[str, str] = {}
