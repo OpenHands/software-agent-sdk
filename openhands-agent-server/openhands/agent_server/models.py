@@ -35,6 +35,7 @@ from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
 )
+from openhands.sdk.task_outcome import TaskOutcome
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.utils import OpenHandsUUID, utc_now
 from openhands.sdk.utils.models import (
@@ -201,6 +202,10 @@ class _ConversationInfoBase(BaseModel):
         default_factory=dict,
         description="Dictionary for agent-specific runtime state that persists across "
         "iterations.",
+    )
+    task_outcome: TaskOutcome | None = Field(
+        default=None,
+        description="Latest structured semantic task outcome reported by the agent.",
     )
     hook_config: HookConfig | None = Field(
         default=None,

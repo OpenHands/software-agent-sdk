@@ -2,6 +2,7 @@ from openhands.sdk.tool.builtins import (
     BUILT_IN_TOOL_CLASSES,
     BUILT_IN_TOOLS,
     FinishTool,
+    ReportTaskOutcomeTool,
     ThinkTool,
 )
 from openhands.sdk.tool.client_tool import (
@@ -57,6 +58,7 @@ __all__ = [
     "Action",
     "Observation",
     "FinishTool",
+    "ReportTaskOutcomeTool",
     "ThinkTool",
     "BUILT_IN_TOOLS",
     "BUILT_IN_TOOL_CLASSES",

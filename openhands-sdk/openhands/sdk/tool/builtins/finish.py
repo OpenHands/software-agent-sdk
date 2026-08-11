@@ -49,6 +49,9 @@ Use this tool when:
 - You have successfully completed the user's requested task
 - You cannot proceed further due to technical limitations or missing information
 
+Before calling this tool, use report_task_outcome with final=true when that
+tool is available so the platform can store structured success/blocker metadata.
+
 The message should include:
 - A clear summary of actions taken and their results
 - Any next steps for the user

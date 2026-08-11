@@ -37,6 +37,7 @@ from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
 )
+from openhands.sdk.task_outcome import TaskOutcome
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.models import OpenHandsModel
 from openhands.sdk.workspace.base import BaseWorkspace
@@ -216,6 +217,15 @@ class ConversationState(OpenHandsModel):
         "To trigger autosave, always reassign: "
         "state.agent_state = {**state.agent_state, key: value}. "
         "See https://docs.openhands.dev/sdk/guides/convo-persistence#how-state-persistence-works",
+    )
+
+    task_outcome: TaskOutcome | None = Field(
+        default=None,
+        description=(
+            "Latest structured semantic task outcome reported by the agent. "
+            "All reports remain available in the event history as "
+            "report_task_outcome tool calls."
+        ),
     )
 
     # Hook configuration for the conversation

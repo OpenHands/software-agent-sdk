@@ -2658,6 +2658,14 @@ class LocalConversation(BaseConversation):
             except Exception as e:
                 logger.debug(f"Could not register accumulated cost: {e}")
 
+            try:
+                if self._state.task_outcome is not None:
+                    self.workspace.register_task_outcome(
+                        self._state.task_outcome.model_dump(mode="json")
+                    )
+            except Exception as e:
+                logger.debug(f"Could not register task outcome: {e}")
+
             logger.debug("Closing conversation and cleaning up tool executors")
             hook_processor = getattr(self, "_hook_processor", None)
             if hook_processor is not None:

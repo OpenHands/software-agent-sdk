@@ -432,9 +432,13 @@ def test_include_default_tools_serialization_default() -> None:
     agent_json = agent.model_dump_json()
     agent_dict = json.loads(agent_json)
 
-    # Default should include both FinishTool and ThinkTool as strings
+    # Default should include the core built-in tools as strings
     assert "include_default_tools" in agent_dict
-    assert set(agent_dict["include_default_tools"]) == {"FinishTool", "ThinkTool"}
+    assert set(agent_dict["include_default_tools"]) == {
+        "FinishTool",
+        "ThinkTool",
+        "ReportTaskOutcomeTool",
+    }
 
 
 def test_include_default_tools_serialization_empty() -> None:

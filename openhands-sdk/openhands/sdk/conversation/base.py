@@ -28,6 +28,7 @@ from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
 )
+from openhands.sdk.task_outcome import TaskOutcome
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.workspace.base import BaseWorkspace
 
@@ -117,6 +118,11 @@ class ConversationStateProtocol(Protocol):
     @property
     def hook_config(self) -> "HookConfig | None":
         """The hook configuration for this conversation."""
+        ...
+
+    @property
+    def task_outcome(self) -> TaskOutcome | None:
+        """Latest structured semantic task outcome, if reported."""
         ...
 
 

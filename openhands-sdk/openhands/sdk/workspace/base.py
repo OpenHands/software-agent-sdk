@@ -51,6 +51,7 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
 
     _conversation_id: str | None = PrivateAttr(default=None)
     _accumulated_cost: float | None = PrivateAttr(default=None)
+    _task_outcome: dict[str, Any] | None = PrivateAttr(default=None)
 
     def __enter__(self) -> "BaseWorkspace":
         """Enter the workspace context.
@@ -81,6 +82,26 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
             The cost in USD if one has been registered, None otherwise.
         """
         return self._accumulated_cost
+
+    def register_task_outcome(self, task_outcome: dict[str, Any]) -> None:
+        """Register the latest task outcome for automation callbacks.
+
+        The callback payload includes this as ``agent_outcome`` only when the
+        automation service advertises support via
+        ``AUTOMATION_CALLBACK_SUPPORTS_AGENT_OUTCOME``. Older automation
+        services reject unknown callback fields, so this is opt-in.
+        """
+        self._task_outcome = task_outcome
+        logger.debug("Registered task outcome: %s", task_outcome.get("status"))
+
+    @property
+    def task_outcome(self) -> dict[str, Any] | None:
+        """Get the most recently registered task outcome."""
+        return self._task_outcome
+
+    def _callback_supports_agent_outcome(self) -> bool:
+        value = os.environ.get("AUTOMATION_CALLBACK_SUPPORTS_AGENT_OUTCOME", "")
+        return value.lower() in {"1", "true", "yes", "on"}
 
     def _send_completion_callback(
         self, exc_type: type | None, exc_val: BaseException | None
@@ -123,6 +144,9 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
         # Include accumulated LLM cost if one was registered
         if self._accumulated_cost is not None:
             payload["cost"] = self._accumulated_cost
+
+        if self._task_outcome is not None and self._callback_supports_agent_outcome():
+            payload["agent_outcome"] = self._task_outcome
 
         try:
             headers: dict[str, str] = {}

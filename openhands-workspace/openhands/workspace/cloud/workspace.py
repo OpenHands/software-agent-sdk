@@ -840,6 +840,9 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         if self._accumulated_cost is not None:
             payload["cost"] = self._accumulated_cost
 
+        if self._task_outcome is not None and self._callback_supports_agent_outcome():
+            payload["agent_outcome"] = self._task_outcome
+
         try:
             headers = {"Authorization": f"Bearer {self.cloud_api_key}"}
             with httpx.Client(timeout=10.0) as cb_client:

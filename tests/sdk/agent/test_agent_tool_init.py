@@ -71,6 +71,7 @@ def test_agent_initializes_tools_from_toolspec_locally(monkeypatch):
         assert "upper" in runtime_tools
         assert "finish" in runtime_tools
         assert "think" in runtime_tools
+        assert "report_task_outcome" in runtime_tools
 
 
 def test_agent_include_only_finish_tool():

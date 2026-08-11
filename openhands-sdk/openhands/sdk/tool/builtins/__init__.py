@@ -17,6 +17,12 @@ from openhands.sdk.tool.builtins.invoke_skill import (
     InvokeSkillObservation,
     InvokeSkillTool,
 )
+from openhands.sdk.tool.builtins.report_task_outcome import (
+    ReportTaskOutcomeAction,
+    ReportTaskOutcomeExecutor,
+    ReportTaskOutcomeObservation,
+    ReportTaskOutcomeTool,
+)
 from openhands.sdk.tool.builtins.switch_llm import (
     SwitchLLMAction,
     SwitchLLMExecutor,
@@ -40,7 +46,7 @@ from openhands.sdk.tool.builtins.vision_inspect import (
 # Tools attached to every agent by default. `InvokeSkillTool` is deliberately
 # *not* here: it's auto-attached by `Agent._initialize` only when an
 # AgentSkills-format skill is loaded (see BUILT_IN_TOOL_CLASSES below).
-BUILT_IN_TOOLS = [FinishTool, ThinkTool]
+BUILT_IN_TOOLS = [FinishTool, ThinkTool, ReportTaskOutcomeTool]
 
 # Map of built-in tool class names to their classes. Includes optional built-ins
 # so they can be resolved by name from `include_default_tools` and the
@@ -63,6 +69,10 @@ __all__ = [
     "InvokeSkillAction",
     "InvokeSkillObservation",
     "InvokeSkillExecutor",
+    "ReportTaskOutcomeTool",
+    "ReportTaskOutcomeAction",
+    "ReportTaskOutcomeObservation",
+    "ReportTaskOutcomeExecutor",
     "SwitchLLMTool",
     "SwitchLLMAction",
     "SwitchLLMObservation",

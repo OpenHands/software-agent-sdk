@@ -56,6 +56,7 @@ from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
+from openhands.sdk.task_outcome import TaskOutcome
 from openhands.sdk.tool.client_tool import ClientTool, ClientToolSpec
 from openhands.sdk.utils.redact import http_error_log_content
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
@@ -672,6 +673,15 @@ class RemoteState(ConversationStateProtocol):
         hook_config_data = info.get("hook_config")
         if hook_config_data is not None:
             return HookConfig.model_validate(hook_config_data)
+        return None
+
+    @property
+    def task_outcome(self) -> TaskOutcome | None:
+        """Get latest task outcome (fetched from remote)."""
+        info = self._get_conversation_info()
+        outcome_data = info.get("task_outcome")
+        if outcome_data is not None:
+            return TaskOutcome.model_validate(outcome_data)
         return None
 
     def model_dump(self, **_kwargs):
@@ -1707,6 +1717,13 @@ class RemoteConversation(BaseConversation):
                 self.workspace.register_cost(cost)
         except Exception as e:
             logger.debug(f"Could not register accumulated cost: {e}")
+
+        try:
+            cached = self._state._cached_state
+            if cached is not None and cached.get("task_outcome") is not None:
+                self.workspace.register_task_outcome(cached["task_outcome"])
+        except Exception as e:
+            logger.debug(f"Could not register task outcome: {e}")
 
         # SessionEnd hooks are executed server-side (via hook_config in payload).
         try:

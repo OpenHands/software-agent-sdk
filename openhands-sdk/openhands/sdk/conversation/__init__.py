@@ -26,6 +26,11 @@ from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
     DefaultConversationVisualizer,
 )
+from openhands.sdk.task_outcome import (
+    TaskOutcome,
+    TaskOutcomeArtifact,
+    TaskOutcomeBlocker,
+)
 
 
 __all__ = [
@@ -33,6 +38,9 @@ __all__ = [
     "Conversation",
     "BaseConversation",
     "ConversationState",
+    "TaskOutcome",
+    "TaskOutcomeArtifact",
+    "TaskOutcomeBlocker",
     "ConversationExecutionStatus",
     "ConversationCallbackType",
     "ConversationTags",

@@ -27,6 +27,49 @@ def test_context_exit_sends_registered_cost_in_completion_callback(
         assert payload["cost"] == 0.4213
 
 
+def test_context_exit_omits_registered_task_outcome_without_support_flag(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+    monkeypatch.delenv("AUTOMATION_CALLBACK_SUPPORTS_AGENT_OUTCOME", raising=False)
+    workspace = LocalWorkspace(working_dir=str(tmp_path))
+    workspace.register_task_outcome({"status": "success", "summary": "Done."})
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        with workspace:
+            pass
+
+        payload = mock_client.post.call_args.kwargs["json"]
+        assert "agent_outcome" not in payload
+
+
+def test_context_exit_sends_registered_task_outcome_with_support_flag(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+    monkeypatch.setenv("AUTOMATION_CALLBACK_SUPPORTS_AGENT_OUTCOME", "true")
+    workspace = LocalWorkspace(working_dir=str(tmp_path))
+    outcome = {"status": "success", "summary": "Done.", "final": True}
+    workspace.register_task_outcome(outcome)
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        with workspace:
+            pass
+
+        payload = mock_client.post.call_args.kwargs["json"]
+        assert payload["agent_outcome"] == outcome
+
+
 def test_context_exit_sends_nothing_without_callback_url(tmp_path, monkeypatch):
     """Ordinary local usage stays offline: no automation callback is configured,
     so leaving the context must not reach the network."""
