@@ -19,6 +19,7 @@ from openhands.sdk.conversation.impl.remote_conversation import RemoteConversati
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.visualizer import DefaultConversationVisualizer
 from openhands.sdk.event import MessageEvent
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import (
     FULL_STATE_KEY,
     ConversationStateUpdateEvent,
@@ -1231,7 +1232,12 @@ class TestRemoteConversation:
 
         mock_ws_client.return_value = Mock()
         conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
-        conversation._get_last_error_detail = Mock(return_value="boom")
+        error = ConversationErrorEvent(
+            source="environment",
+            code="LLMAuthenticationError",
+            detail="invalid api key",
+        )
+        conversation.state.events._cached_events.append(error)
         ws_callback = mock_ws_client.call_args.kwargs["callback"]
 
         original_side_effect = mock_client_instance.request.side_effect
@@ -1246,10 +1252,15 @@ class TestRemoteConversation:
 
         mock_client_instance.request.side_effect = post_run_seeds_error
 
-        with pytest.raises(Exception) as excinfo:
+        with pytest.raises(ConversationRunError) as excinfo:
             conversation.run(blocking=True, poll_interval=10.0)
 
-        assert "boom" in str(excinfo.value) or "error" in str(excinfo.value).lower()
+        attached = excinfo.value.conversation_error
+        assert attached is error
+        assert attached is not None
+        classification = attached.classification
+        assert classification is not None
+        assert classification.kind == "auth"
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
@@ -1820,29 +1831,6 @@ class TestRemoteConversation:
         conversation.close()
 
         assert self.workspace.accumulated_cost == 0.75
-
-    @patch(
-        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
-    )
-    def test_close_registers_existing_error_classification(self, mock_ws_client):
-        """Closing registers the latest classified conversation failure."""
-        from openhands.sdk.event.conversation_error import ConversationErrorEvent
-        from openhands.sdk.event.error_classification import FailureKind
-
-        self.setup_mock_client()
-        mock_ws_client.return_value = Mock()
-        conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
-        conversation.state.events._cached_events.append(
-            ConversationErrorEvent(
-                source="environment",
-                code="LLMAuthenticationError",
-                detail="invalid api key",
-            )
-        )
-
-        conversation.close()
-
-        assert self.workspace._failure_kind is FailureKind.AUTH
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"

@@ -1345,10 +1345,13 @@ class RemoteConversation(BaseConversation):
         if status == ConversationExecutionStatus.RUNNING.value:
             return False
         if status == ConversationExecutionStatus.ERROR.value:
-            detail = self._get_last_error_detail()
+            error = self._get_last_conversation_error()
             raise ConversationRunError(
                 self._id,
-                RuntimeError(detail or "Remote conversation ended with error"),
+                RuntimeError(
+                    error.detail if error else "Remote conversation ended with error"
+                ),
+                conversation_error=error,
             )
         if status == ConversationExecutionStatus.STUCK.value:
             raise ConversationRunError(
@@ -1386,17 +1389,14 @@ class RemoteConversation(BaseConversation):
             return
         raise ConversationRunError(self._id, exc) from exc
 
-    def _get_last_error_detail(self) -> str | None:
-        """Return the most recent ConversationErrorEvent detail, if available."""
+    def _get_last_conversation_error(self) -> ConversationErrorEvent | None:
+        """Return the most recent structured conversation error, if available."""
         events = self._state.events
         for idx in range(len(events) - 1, -1, -1):
             event = events[idx]
             if isinstance(event, ConversationErrorEvent):
-                detail = event.detail.strip()
-                code = event.code.strip()
-                if detail and code:
-                    return f"{code}: {detail}"
-                return detail or code or None
+                return event
+        return None
 
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
         payload = {"policy": policy.model_dump()}
@@ -1687,17 +1687,6 @@ class RemoteConversation(BaseConversation):
         if self._cleanup_initiated:
             return
         self._cleanup_initiated = True
-
-        # Hand the existing typed conversation failure to the workspace for the
-        # automation completion callback. Do not reclassify the wrapper exception.
-        try:
-            for event in reversed(self._state.events):
-                if isinstance(event, ConversationErrorEvent):
-                    if event.classification is not None:
-                        self.workspace.register_failure_kind(event.classification.kind)
-                    break
-        except Exception as e:
-            logger.debug(f"Could not register conversation failure: {e}")
 
         # Best-effort: hand the accumulated LLM cost to the workspace so it can
         # be included in the automation completion callback. Only read cached

@@ -6,7 +6,8 @@ from typing import Annotated, Any
 import httpx
 from pydantic import BeforeValidator, Field, PrivateAttr
 
-from openhands.sdk.event.error_classification import FailureKind
+from openhands.sdk.conversation.exceptions import ConversationRunError
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.git.models import GitChange, GitDiff
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
@@ -52,7 +53,6 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
 
     _conversation_id: str | None = PrivateAttr(default=None)
     _accumulated_cost: float | None = PrivateAttr(default=None)
-    _failure_kind: FailureKind | None = PrivateAttr(default=None)
 
     def __enter__(self) -> "BaseWorkspace":
         """Enter the workspace context.
@@ -84,19 +84,6 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
         """
         return self._accumulated_cost
 
-    def register_failure_kind(self, kind: FailureKind) -> None:
-        """Register the classified failure for this workspace's run.
-
-        Called by the conversation on close after it has emitted a classified
-        ``ConversationErrorEvent``. The kind is included in the automation
-        completion callback.
-
-        Args:
-            kind: The existing conversation error classification.
-        """
-        self._failure_kind = kind
-        logger.debug(f"Registered failure kind: {kind.value}")
-
     def _send_completion_callback(
         self, exc_type: type | None, exc_val: BaseException | None
     ) -> None:
@@ -110,9 +97,10 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
           - ``AUTOMATION_CALLBACK_API_KEY`` — Bearer token for callback auth (optional)
           - ``AUTOMATION_RUN_ID`` — Run ID to include in callback payload (optional)
 
-        Includes ``conversation_id``, ``cost``, and a registered
-        ``failure_kind`` in the payload. The conversation registers the kind
-        from its existing classified ``ConversationErrorEvent`` on close.
+        Includes ``conversation_id`` and ``cost`` when registered. On failure,
+        ``error`` is the existing structured ``ConversationErrorEvent`` carried
+        by ``ConversationRunError``, or a classified fallback event for errors
+        outside a conversation.
 
         Args:
             exc_type: Exception type if an exception was raised, None otherwise
@@ -130,7 +118,18 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
         if run_id:
             payload["run_id"] = run_id
         if exc_val is not None:
-            payload["error"] = str(exc_val)
+            error = (
+                exc_val.conversation_error
+                if isinstance(exc_val, ConversationRunError)
+                else None
+            )
+            if error is None:
+                error = ConversationErrorEvent(
+                    source="environment",
+                    code=type(exc_val).__name__,
+                    detail=str(exc_val),
+                )
+            payload["error"] = error.model_dump(mode="json")
 
         # Include conversation_id if one was registered
         if self._conversation_id is not None:
@@ -139,9 +138,6 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
         # Include accumulated LLM cost if one was registered
         if self._accumulated_cost is not None:
             payload["cost"] = self._accumulated_cost
-
-        if self._failure_kind is not None:
-            payload["failure_kind"] = self._failure_kind.value
 
         try:
             headers: dict[str, str] = {}
