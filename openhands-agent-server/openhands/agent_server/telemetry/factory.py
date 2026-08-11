@@ -137,11 +137,13 @@ class DiagnosticEventFactory:
         *,
         user_id: str | None = None,
         occurred_at: datetime | None = None,
+        insert_id: str | None = None,
     ) -> DiagnosticEvent:
         return DiagnosticEvent(
             event_name=event_name,
             schema_version=TELEMETRY_SCHEMA_VERSION,
             occurred_at=occurred_at or utc_now(),
+            insert_id=insert_id,
             distinct_id=self.distinct_id(user_id),
             runtime=self._runtime,
             properties=properties,

@@ -1179,3 +1179,57 @@ def test_send_completion_callback_omits_conversation_id_when_not_registered(
 
         payload = mock_client.post.call_args.kwargs["json"]
         assert "conversation_id" not in payload
+
+
+def test_register_cost_stores_cost():
+    """Test register_cost stores the accumulated LLM cost."""
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
+
+    workspace.register_cost(0.4213)
+
+    assert workspace.accumulated_cost == 0.4213
+
+
+def test_send_completion_callback_includes_registered_cost(monkeypatch):
+    """Test _send_completion_callback reports a registered cost."""
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
+    workspace.register_cost(0.4213)
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        workspace._send_completion_callback(None, None)
+
+        payload = mock_client.post.call_args.kwargs["json"]
+        assert payload["cost"] == 0.4213
+
+
+def test_send_completion_callback_omits_cost_when_not_registered(monkeypatch):
+    """Test _send_completion_callback omits cost when none was registered."""
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        workspace._send_completion_callback(None, None)
+
+        payload = mock_client.post.call_args.kwargs["json"]
+        assert "cost" not in payload

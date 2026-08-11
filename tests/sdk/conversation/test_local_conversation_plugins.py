@@ -31,6 +31,7 @@ from openhands.sdk.tool.builtins import ThinkTool
 class EmptyMCPClient:
     def __init__(self):
         self.tools = []
+        self._tools_reconciled_callback: Any = None
 
 
 class RecordingMCPToolProvider:
@@ -41,7 +42,7 @@ class RecordingMCPToolProvider:
         state_locked: Callable[[], bool] | None = None,
     ):
         self.created = created
-        self.client = client or EmptyMCPClient()
+        self.client: Any = client or EmptyMCPClient()
         self.state_locked = state_locked
 
     def create_tools(
@@ -50,11 +51,13 @@ class RecordingMCPToolProvider:
         timeout: float = 30.0,
         *,
         on_tools_changed: Any = None,
+        on_tools_reconciled: Any = None,
     ) -> MCPClient:
         if self.state_locked is None:
             self.created.append(mcp_config)
         else:
             self.created.append((mcp_config, self.state_locked()))
+        self.client._tools_reconciled_callback = on_tools_reconciled
         return cast(MCPClient, self.client)
 
 
@@ -794,6 +797,7 @@ class TestLocalConversationPlugins:
         class RuntimeMCPClient:
             def __init__(self):
                 self.tools = [runtime_tool]
+                self._tools_reconciled_callback: Any = None
 
         marketplace_dir = create_test_marketplace(
             tmp_path / "marketplace",
@@ -817,13 +821,14 @@ class TestLocalConversationPlugins:
                 ]
             ),
         )
+        runtime_client = RuntimeMCPClient()
         conversation = LocalConversation(
             agent=agent,
             workspace=workspace,
             visualizer=None,
             mcp_tool_provider=RecordingMCPToolProvider(
                 mcp_tools_created,
-                RuntimeMCPClient(),
+                runtime_client,
                 state_locked=lambda: conversation.state.locked(),
             ),
         )
@@ -835,6 +840,7 @@ class TestLocalConversationPlugins:
         for name, tool in existing_tools.items():
             assert conversation.agent.tools_map[name] is tool
         assert conversation.agent.tools_map[runtime_tool.name] is runtime_tool
+        assert callable(runtime_client._tools_reconciled_callback)
         assert "runtime-server" in conversation.agent.mcp_config
         assert len(mcp_tools_created) == 1
         created_config, state_locked = mcp_tools_created[0]

@@ -342,11 +342,3 @@ class StartConversationRequest(BaseModel):
         if value is None:
             return None
         return handler(value)
-
-
-class StartACPConversationRequest(StartConversationRequest):
-    """Deprecated compatibility alias for ACP-capable start requests.
-
-    Use :class:`StartConversationRequest` instead. It now supports both regular
-    OpenHands agents and ACP agents through the same request contract.
-    """

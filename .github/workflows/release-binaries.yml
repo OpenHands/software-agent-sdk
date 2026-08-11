@@ -372,8 +372,8 @@ jobs:
                   echo "Starting container ..."
                   docker run --platform="linux/${ARCH}" -d --rm \
                       --name "$CONTAINER" \
-                      -p 8000:8000 \
-                      "$TAG_FQN"
+                      -p 127.0.0.1:8000:8000 \
+                      "$TAG_FQN" --host 0.0.0.0
 
                   cleanup() {
                       docker logs "$CONTAINER" 2>&1 | tail -100 || true

@@ -896,7 +896,7 @@ def test_llm_agent_settings_validates_mcp_config_as_typed_model() -> None:
 
     assert isinstance(settings.mcp_config["fetch"], MCPServer)
     assert settings.model_dump()["mcp_config"] == {
-        "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}
+        "fetch": {"command": "uvx", "args": ["mcp-server-fetch"], "enabled": True}
     }
 
 
@@ -911,6 +911,26 @@ def test_llm_create_agent_serializes_typed_mcp_config_compactly() -> None:
     assert dump_mcp_config(agent.mcp_config) == {
         "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}
     }
+
+
+def test_disabled_mcp_server_survives_settings_round_trip() -> None:
+    """A switched-off server stays off, and keeps its config, across reloads."""
+    settings = OpenHandsAgentSettings.model_validate(
+        {
+            "mcp_config": {
+                "fetch": {
+                    "command": "uvx",
+                    "args": ["mcp-server-fetch"],
+                    "enabled": False,
+                }
+            }
+        }
+    )
+
+    reloaded = OpenHandsAgentSettings.model_validate(settings.model_dump(mode="json"))
+
+    assert reloaded.mcp_config["fetch"].enabled is False
+    assert reloaded.mcp_config["fetch"].command == "uvx"
 
 
 def test_llm_create_agent_builds_condenser_when_enabled() -> None:
@@ -942,6 +962,72 @@ def test_llm_create_agent_builds_condenser_when_enabled() -> None:
     assert agent.condenser.llm.model == llm.model
     assert agent.condenser.llm.usage_id == "condenser"
     assert agent.condenser.llm.metrics is not agent_metrics
+
+
+def test_llm_summarizing_condenser_inherits_max_tokens_from_llm() -> None:
+    """When the condenser's ``max_tokens`` is left unset, it should inherit
+    the agent LLM's ``effective_max_input_tokens`` so that condensation can
+    be triggered by token count, not just event count. See #3746: a
+    configured ``max_input_tokens`` on the LLM had no effect on the
+    condenser, so long tool outputs could blow past the context window
+    without ever triggering summarization.
+    """
+    llm = LLM(model="test-model", usage_id="agent", max_input_tokens=65536)
+    settings = OpenHandsAgentSettings(
+        llm=llm,
+        condenser=LLMSummarizingCondenserSettings(enabled=True),
+    )
+    agent = settings.create_agent()
+
+    assert isinstance(agent.condenser, LLMSummarizingCondenser)
+    assert agent.condenser.max_tokens == 65536
+
+
+def test_llm_summarizing_condenser_respects_explicit_max_tokens_over_llm() -> None:
+    """An explicitly configured condenser ``max_tokens`` must not be
+    overridden by the LLM's ``effective_max_input_tokens``.
+    """
+    llm = LLM(model="test-model", usage_id="agent", max_input_tokens=65536)
+    settings = OpenHandsAgentSettings(
+        llm=llm,
+        condenser=LLMSummarizingCondenserSettings(enabled=True, max_tokens=5000),
+    )
+    agent = settings.create_agent()
+
+    assert isinstance(agent.condenser, LLMSummarizingCondenser)
+    assert agent.condenser.max_tokens == 5000
+
+
+def test_llm_summarizing_condenser_max_tokens_none_when_llm_has_no_limit() -> None:
+    """When neither the condenser nor the LLM has a token limit configured,
+    the condenser's ``max_tokens`` should remain ``None`` (event-count-only
+    condensation), matching pre-fix behavior for users who never set
+    ``max_input_tokens``.
+    """
+    llm = LLM(model="test-model", usage_id="agent")
+    settings = OpenHandsAgentSettings(
+        llm=llm,
+        condenser=LLMSummarizingCondenserSettings(enabled=True),
+    )
+    agent = settings.create_agent()
+
+    assert isinstance(agent.condenser, LLMSummarizingCondenser)
+    assert agent.condenser.max_tokens is None
+
+
+def test_llm_summarizing_condenser_explicit_none_max_tokens_not_overridden() -> None:
+    """An explicit ``max_tokens=None`` must disable token-based condensation
+    even if the agent LLM has a configured ``max_input_tokens``.
+    """
+    llm = LLM(model="test-model", usage_id="agent", max_input_tokens=65536)
+    settings = OpenHandsAgentSettings(
+        llm=llm,
+        condenser=LLMSummarizingCondenserSettings(enabled=True, max_tokens=None),
+    )
+    agent = settings.create_agent()
+
+    assert isinstance(agent.condenser, LLMSummarizingCondenser)
+    assert agent.condenser.max_tokens is None
 
 
 def test_llm_summarizing_condenser_settings_match_condenser_fields() -> None:
@@ -1159,7 +1245,7 @@ def test_acp_create_agent_uses_server_default_command(
     assert agent.acp_command == [
         "npx",
         "-y",
-        "@agentclientprotocol/claude-agent-acp@0.44.0",
+        "@agentclientprotocol/claude-agent-acp@0.63.0",
     ]
     assert agent.acp_model == "claude-opus-4-6"
     # The authoritative provider key is carried onto the agent.
@@ -1315,7 +1401,7 @@ def test_acp_resolve_command_rewrites_versioned_npx_to_pinned_binary(
     monkeypatch.setattr(shutil, "which", _which_returning("codex-acp"))
     for pkg in (
         "@agentclientprotocol/codex-acp",
-        "@agentclientprotocol/codex-acp@1.1.2",
+        "@agentclientprotocol/codex-acp@1.1.7",
     ):
         settings = ACPAgentSettings(
             acp_server="codex",
@@ -1337,7 +1423,7 @@ def test_acp_resolve_command_keeps_npx_when_binary_absent(
     assert settings.resolve_acp_command() == [
         "npx",
         "-y",
-        "@agentclientprotocol/codex-acp@1.1.2",
+        "@agentclientprotocol/codex-acp@1.1.7",
     ]
 
 
@@ -2028,7 +2114,7 @@ def test_llm_create_agent_resolves_subscription_llm(monkeypatch) -> None:
         subscription_vendor="openai",
     )
     runtime_llm = LLM(model="openai/gpt-5.6")
-    runtime_llm._is_subscription = True
+    runtime_llm.is_subscription = True
 
     def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
         assert llm is original_llm
@@ -2050,7 +2136,7 @@ def test_llm_from_persisted_rehydrates_subscription_runtime(monkeypatch) -> None
     from openhands.sdk.llm.auth import openai
 
     runtime_llm = LLM(model="openai/gpt-5.6", auth_type="subscription")
-    runtime_llm._is_subscription = True
+    runtime_llm.is_subscription = True
 
     def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
         assert llm.auth_type == "subscription"
@@ -2080,7 +2166,7 @@ def test_llm_load_from_env_rehydrates_subscription_runtime(monkeypatch) -> None:
     from openhands.sdk.llm.auth import openai
 
     runtime_llm = LLM(model="openai/gpt-5.6", auth_type="subscription")
-    runtime_llm._is_subscription = True
+    runtime_llm.is_subscription = True
 
     def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
         assert llm.auth_type == "subscription"
@@ -2117,7 +2203,7 @@ def test_create_subscription_llm_from_config_preserves_runtime_llm(monkeypatch) 
         auth_type="subscription",
         subscription_vendor="openai",
     )
-    runtime_llm._is_subscription = True
+    runtime_llm.is_subscription = True
     runtime_llm._subscription_credentials = OAuthCredentials(
         vendor="openai",
         access_token="access-token",
@@ -2202,7 +2288,7 @@ async def test_async_subscription_api_key_uses_async_refresh(monkeypatch) -> Non
         auth_type="subscription",
         subscription_vendor="openai",
     )
-    llm._is_subscription = True
+    llm.is_subscription = True
 
     api_key, extra_headers = await llm._aget_litellm_auth_values()
     assert api_key == "access-token"
@@ -2240,7 +2326,7 @@ def test_sync_subscription_api_key_uses_valid_runtime_credentials(
         auth_type="subscription",
         subscription_vendor="openai",
     )
-    llm._is_subscription = True
+    llm.is_subscription = True
     llm._subscription_credentials = credentials
 
     api_key, extra_headers = llm._get_litellm_auth_values()
