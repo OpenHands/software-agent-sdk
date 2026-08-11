@@ -52,6 +52,20 @@ from openhands.sdk.workspace import RemoteWorkspace
 from openhands.workspace.docker.workspace import find_available_tcp_port
 
 
+FINISH_TASK_COMPLETE_ARGS = json.dumps(
+    {
+        "message": "Task complete",
+        "task_outcome": {
+            "status": "success",
+            "summary": "Task complete",
+            "blockers": [],
+            "confidence": 1.0,
+            "needs_user_action": False,
+        },
+    }
+)
+
+
 @contextmanager
 def live_server_env(
     tmp_path: Path,
@@ -1195,7 +1209,7 @@ def test_events_not_lost_during_client_disconnection(
                         "type": "function",
                         "function": {
                             "name": "finish",
-                            "arguments": '{"message": "Task complete"}',
+                            "arguments": FINISH_TASK_COMPLETE_ARGS,
                         },
                     }
                 ],
@@ -1360,7 +1374,7 @@ def test_post_run_reconcile_needed_under_ws_callback_lag(
                         "type": "function",
                         "function": {
                             "name": "finish",
-                            "arguments": '{"message": "Task complete"}',
+                            "arguments": FINISH_TASK_COMPLETE_ARGS,
                         },
                     }
                 ],
@@ -1515,7 +1529,7 @@ def test_security_risk_field_with_live_server(
                             "type": "function",
                             "function": {
                                 "name": "finish",
-                                "arguments": '{"message": "Task complete"}',
+                                "arguments": FINISH_TASK_COMPLETE_ARGS,
                             },
                         }
                     ],
@@ -1698,7 +1712,7 @@ def test_hook_config_sent_to_server(
                             "type": "function",
                             "function": {
                                 "name": "finish",
-                                "arguments": '{"message": "Task complete"}',
+                                "arguments": FINISH_TASK_COMPLETE_ARGS,
                             },
                         }
                     ],
@@ -1915,7 +1929,7 @@ def test_agent_final_response_endpoint(server_env, monkeypatch: pytest.MonkeyPat
                             "type": "function",
                             "function": {
                                 "name": "finish",
-                                "arguments": ('{"message": "Task complete"}'),
+                                "arguments": FINISH_TASK_COMPLETE_ARGS,
                             },
                         }
                     ],
