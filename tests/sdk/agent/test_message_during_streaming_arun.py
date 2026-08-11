@@ -301,6 +301,42 @@ async def test_message_during_confirmation_wait_supersedes_pending_action(tmp_pa
     assert len(reject_events) == 1, "the stale pending action must be rejected"
 
 
+@pytest.mark.asyncio
+async def test_message_during_confirmation_wait_on_final_iteration_still_rejects(
+    tmp_path,
+):
+    """Same race as above, but the step that lands in WAITING_FOR_CONFIRMATION
+    is also the run's final iteration. The loop must still reject the pending
+    action before going IDLE -- otherwise astep() executes it as an implicit
+    confirmation on the very next run() call, the same bug the FINISHED/
+    WAITING_FOR_CONFIRMATION rescan exists to prevent."""
+    llm = _InjectingAsyncConfirmLLM()
+    convo = LocalConversation(
+        agent=Agent(llm=llm, tools=[Tool(name="async_confirm_tool")]),
+        workspace=str(tmp_path),
+        visualizer=None,
+        max_iteration_per_run=1,
+    )
+    llm._convo_box.append(convo)
+    convo.set_confirmation_policy(AlwaysConfirm())
+    convo.send_message("first message")
+
+    await convo.arun()
+
+    assert len(llm._calls) == 1, (
+        f"final iteration must not auto-continue, got {len(llm._calls)} calls"
+    )
+    assert convo.state.execution_status == ConversationExecutionStatus.IDLE
+
+    reject_events = [
+        e for e in convo.state.events if isinstance(e, UserRejectObservation)
+    ]
+    assert len(reject_events) == 1, (
+        "the pending action must be rejected even when going IDLE on the "
+        "final iteration, or the next run() call will silently execute it"
+    )
+
+
 class _InjectingAsyncBudgetLLM(LLM):
     """Finishing response with a message landing mid-call, while the run's
     accumulated cost is already over budget."""
@@ -365,3 +401,66 @@ async def test_message_during_final_step_does_not_trigger_spurious_budget_error(
         isinstance(e, ConversationErrorEvent) and e.code == "MaxBudgetReached"
         for e in convo.state.events
     ), "a graceful finish must not be overridden by the budget check"
+
+
+class _NavigateAwayDuringStepLLM(LLM):
+    """Rebases the active branch mid-call, via navigate_to(), without sending
+    any new message -- proves the rescan isn't fooled by the rebase alone."""
+
+    _convo_box: list = PrivateAttr(default_factory=list)
+    _calls: list = PrivateAttr(default_factory=list)
+    _rebase_to: list = PrivateAttr(default_factory=list)
+
+    def __init__(self):
+        super().__init__(model=MODEL, usage_id="test-llm-navigate")
+
+    def uses_responses_api(self) -> bool:
+        return False
+
+    async def acompletion(self, *, messages, tools=None, **kwargs):  # type: ignore[override]
+        self._calls.append(" ".join(str(m) for m in messages))
+        convo: LocalConversation = self._convo_box[0]
+
+        if len(self._calls) == 1:
+            rebase_to = self._rebase_to[0]
+
+            def _navigate():
+                convo.navigate_to(rebase_to)
+
+            t = threading.Thread(target=_navigate)
+            t.start()
+            await asyncio.to_thread(t.join)
+
+        return _finishing_response()
+
+
+@pytest.mark.asyncio
+async def test_navigate_to_during_step_does_not_spuriously_continue(tmp_path):
+    """A concurrent navigate_to() rebase mid-step must not be mistaken for a
+    new user message. Rebasing the active branch changes which user message
+    is "latest" on that branch even though nothing new was ever sent, which
+    is exactly what the old active_branch()-scanning check couldn't tell
+    apart from a real new message."""
+    llm = _NavigateAwayDuringStepLLM()
+    convo = _make_conversation(llm, tmp_path)
+    llm._convo_box.append(convo)
+
+    convo.send_message("first message")
+    first_message_id = next(
+        e.id
+        for e in convo.state.events
+        if isinstance(e, MessageEvent) and e.source == "user"
+    )
+    convo.send_message("second message")
+
+    # Mid-step, rebase HEAD back to the first message. This drops the second
+    # message from the active branch without sending anything new.
+    llm._rebase_to.append(first_message_id)
+
+    await convo.arun()
+
+    assert len(llm._calls) == 1, (
+        f"a navigate_to() rebase alone must not trigger the mid-step rescan, "
+        f"got {len(llm._calls)} calls"
+    )
+    assert convo.state.execution_status == ConversationExecutionStatus.FINISHED

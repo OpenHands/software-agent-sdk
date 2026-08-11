@@ -2234,6 +2234,20 @@ class LocalConversation(BaseConversation):
                         if new_message_arrived and (
                             step_finished or step_awaiting_confirmation
                         ):
+                            if step_awaiting_confirmation:
+                                # Reject up front, regardless of whether we
+                                # continue running or go IDLE below: astep()
+                                # executes any pending action it finds as an
+                                # implicit confirmation, so leaving it
+                                # unmatched would let it run on the very next
+                                # call, silently overriding the new message.
+                                logger.info(
+                                    "User message arrived while awaiting "
+                                    "confirmation; rejecting the pending action"
+                                )
+                                self.reject_pending_actions(
+                                    "Superseded by a new user message"
+                                )
                             if iteration >= self.max_iteration_per_run:
                                 logger.info(
                                     "User message arrived during final iteration; "
@@ -2243,16 +2257,7 @@ class LocalConversation(BaseConversation):
                                     ConversationExecutionStatus.IDLE
                                 )
                                 break
-                            if step_awaiting_confirmation:
-                                logger.info(
-                                    "User message arrived while awaiting "
-                                    "confirmation; rejecting the pending action "
-                                    "and continuing run"
-                                )
-                                self.reject_pending_actions(
-                                    "Superseded by a new user message"
-                                )
-                            else:
+                            if not step_awaiting_confirmation:
                                 logger.info(
                                     "User message arrived during step; continuing run"
                                 )
