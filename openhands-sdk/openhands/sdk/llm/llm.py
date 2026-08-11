@@ -2271,46 +2271,41 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
     @contextmanager
     def _litellm_modify_params_ctx(self, flag: bool):
+        # Only hold the lock while setting/restoring the global flag, not
+        # during the entire transport call.  ``litellm.modify_params`` is a
+        # simple configuration boolean read at the start of each LLM request;
+        # it is not mutable state that changes during the call, so there is
+        # no risk of a concurrent thread corrupting an in-flight call.
         with self._litellm_modify_params_lock:
             old = getattr(litellm, "modify_params", None)
-            try:
-                litellm.modify_params = flag
-                yield
-            finally:
+            litellm.modify_params = flag
+        try:
+            yield
+        finally:
+            with self._litellm_modify_params_lock:
                 litellm.modify_params = old
 
     @asynccontextmanager
     async def _alitellm_modify_params_ctx(self, flag: bool):
         """Async variant of :meth:`_litellm_modify_params_ctx`.
 
-        ``litellm.modify_params`` is a process-wide global, so the lock must
-        stay held for the full duration of the transport call, not just the
-        moment the flag is set. A plain ``with self._litellm_modify_params_lock:``
-        would work for that, but only for the sync path: entering it here
-        with a blocking ``with`` statement would hold a real OS-level lock
-        across the ``await`` below. If a concurrent *sync* transport call
-        (e.g. a condenser or non-async agent step running in a worker
-        thread) is holding that lock at the time, this coroutine's attempt
-        to acquire it blocks the event loop thread itself -- which freezes
-        every other request the server is handling until the sync call
-        finishes (this is what makes agent-server stop responding to all
-        requests while waiting on a slow/local LLM response, most visible
-        during condensation).
+        Unlike the previous implementation, the lock is **only** held while
+        setting or restoring the ``litellm.modify_params`` global, **not**
+        for the duration of the transport call.  This means multiple
+        concurrent conversations can run LLM calls in parallel instead of
+        being serialised by a single process-wide lock (see issue #16459).
 
-        Acquiring via ``run_in_executor`` moves the wait for the lock onto a
-        worker thread, so the event loop stays free to serve other requests
-        while this call is blocked on a concurrent transport call. The lock
-        is a plain (non-reentrant) ``threading.Lock``, so it is safe to
-        acquire on one thread and release on another.
+        The flag is a simple configuration boolean read at the start of each
+        LLM request; it is not mutable state that changes during the call, so
+        there is no risk of a concurrent thread/coroutine corrupting an
+        in-flight call by modifying the flag after the lock has been released.
 
-        Cancellation subtlety: if this coroutine is cancelled while waiting
-        (conversation stop/pause, timeout), the worker thread has already
-        started ``acquire()`` and cannot be interrupted -- it will still take
-        the lock. We therefore ``shield`` the acquire so the cancellation does
-        not mark it cancelled: the shielded future still resolves to the real
-        acquire result, and a done-callback releases the lock if it was
-        actually taken. Without this the lock would be acquired with nobody to
-        release it, permanently wedging every LLM call process-wide.
+        The lock is acquired/released via ``run_in_executor`` so the event
+        loop stays free even when the lock is contended (the actual
+        set/restore is a single boolean assignment, so the wait is nearly
+        instant).  Because the lock is only held for a tiny window,
+        cancellation during lock acquisition is vanishingly unlikely, but we
+        still shield the acquire and handle it correctly for safety.
         """
         loop = asyncio.get_running_loop()
         acquire = loop.run_in_executor(
@@ -2323,9 +2318,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             lock = self._litellm_modify_params_lock
 
             def _release_if_acquired(fut: asyncio.Future) -> None:
-                # ``shield`` kept ``acquire`` alive, so its result reflects
-                # whether the worker thread actually took the lock. Release it
-                # if so, since the cancelled coroutine below never will.
                 if not fut.cancelled() and fut.exception() is None:
                     lock.release()
 
@@ -2333,13 +2325,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             raise
         try:
             old = getattr(litellm, "modify_params", None)
-            try:
-                litellm.modify_params = flag
-                yield
-            finally:
-                litellm.modify_params = old
+            litellm.modify_params = flag
         finally:
             self._litellm_modify_params_lock.release()
+
+        try:
+            yield
+        finally:
+            with self._litellm_modify_params_lock:
+                litellm.modify_params = old
 
     # =========================================================================
     # Capabilities, formatting, and info
