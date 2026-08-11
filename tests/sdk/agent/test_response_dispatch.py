@@ -25,6 +25,13 @@ from openhands.sdk.llm.utils.metrics import MetricsSnapshot, TokenUsage
 from openhands.sdk.tool import Action, Observation
 
 
+FINISH_WITH_OUTCOME = (
+    '{"message": "All done", "task_outcome": {'
+    '"status": "success", "summary": "All done", "blockers": [], '
+    '"needs_user_action": false}}'
+)
+
+
 class _LoopAction(Action):
     command: str
 
@@ -341,7 +348,7 @@ def test_tool_calls_response_executes_actions():
     tool_call = MessageToolCall(
         id="tc-finish",
         name="finish",
-        arguments='{"message": "All done"}',
+        arguments=FINISH_WITH_OUTCOME,
         origin="completion",
     )
     msg = Message(

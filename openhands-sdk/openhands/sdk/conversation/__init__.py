@@ -27,6 +27,7 @@ from openhands.sdk.conversation.visualizer import (
     DefaultConversationVisualizer,
 )
 from openhands.sdk.task_outcome import (
+    FinishTaskOutcomeResponse,
     TaskOutcome,
     TaskOutcomeBlocker,
 )
@@ -37,6 +38,7 @@ __all__ = [
     "Conversation",
     "BaseConversation",
     "ConversationState",
+    "FinishTaskOutcomeResponse",
     "TaskOutcome",
     "TaskOutcomeBlocker",
     "ConversationExecutionStatus",

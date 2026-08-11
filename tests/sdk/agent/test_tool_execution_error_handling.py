@@ -206,8 +206,13 @@ def test_conversation_continues_after_tool_execution_error():
                                     function=Function(
                                         name="finish",
                                         arguments=(
-                                            '{"message": "I see there '
-                                            'was an error. Task completed."}'
+                                            '{"message": "I see there was an error. '
+                                            'Task completed.", "task_outcome": {'
+                                            '"status": "partial_success", '
+                                            '"summary": "Recovered after a tool '
+                                            'error.", '
+                                            '"blockers": [], '
+                                            '"needs_user_action": false}}'
                                         ),
                                     ),
                                 )

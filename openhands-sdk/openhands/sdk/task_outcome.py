@@ -81,6 +81,28 @@ class TaskOutcome(BaseModel):
     )
 
 
+class FinishTaskOutcomeResponse(BaseModel):
+    """Structured response fields returned alongside FinishTool arguments."""
+
+    task_outcome: TaskOutcome = Field(
+        description=(
+            "Structured assessment of whether the task was completed, including "
+            "any blockers or user action needed."
+        )
+    )
+
+
+def task_outcome_from_finish(outcome: TaskOutcome) -> TaskOutcome:
+    """Normalize an agent-authored outcome reported via FinishTool."""
+    return outcome.model_copy(
+        update={
+            "source": "agent_report",
+            "reported_at": utc_now(),
+            "terminal_reason": "finish_action",
+        }
+    )
+
+
 def task_outcome_from_error(
     *,
     code: str,

@@ -4,6 +4,7 @@ Unit tests for confirmation mode functionality.
 Tests the core behavior: pause action execution for user confirmation.
 """
 
+import json
 from collections.abc import Sequence
 from typing import ClassVar
 from unittest.mock import MagicMock, Mock, patch
@@ -60,6 +61,20 @@ class MockConfirmationModeObservation(Observation):
     @property
     def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
         return [TextContent(text=self.result)]
+
+
+def _finish_arguments(message: str) -> str:
+    return json.dumps(
+        {
+            "message": message,
+            "task_outcome": {
+                "status": "success",
+                "summary": message,
+                "blockers": [],
+                "needs_user_action": False,
+            },
+        }
+    )
 
 
 class TestExecutor(
@@ -204,7 +219,7 @@ class TestConfirmationMode:
             type="function",
             function=Function(
                 name="finish",
-                arguments=f'{{"message": "{message}"}}',
+                arguments=_finish_arguments(message),
             ),
         )
 
@@ -271,7 +286,7 @@ class TestConfirmationMode:
             type="function",
             function=Function(
                 name="finish",
-                arguments='{"message": "Task completed!"}',
+                arguments=_finish_arguments("Task completed!"),
             ),
         )
 

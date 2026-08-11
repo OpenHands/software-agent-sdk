@@ -282,7 +282,13 @@ def test_finish_tool_truncates_subsequent_tools():
                     _tool_call(
                         "call_0", "slow_tool", '{"delay": 0.01, "label": "before"}'
                     ),
-                    _tool_call("call_finish", "finish", '{"message": "All done"}'),
+                    _tool_call(
+                        "call_finish",
+                        "finish",
+                        '{"message": "All done", "task_outcome": {'
+                        '"status": "success", "summary": "All done", '
+                        '"blockers": [], "needs_user_action": false}}',
+                    ),
                     _tool_call(
                         "call_2", "slow_tool", '{"delay": 0.01, "label": "after"}'
                     ),

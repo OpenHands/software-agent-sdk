@@ -13,6 +13,13 @@ from openhands.sdk.llm import LLM, LLMResponse, Message, MessageToolCall, TextCo
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot, TokenUsage
 
 
+FINISH_WITH_OUTCOME = (
+    '{"message": "Task completed", "task_outcome": {'
+    '"status": "success", "summary": "Task completed", "blockers": [], '
+    '"needs_user_action": false}}'
+)
+
+
 class ReasoningOnlyLLM(LLM):
     """Test LLM that returns reasoning-only response first, then finish."""
 
@@ -47,7 +54,7 @@ class ReasoningOnlyLLM(LLM):
                 MessageToolCall(
                     id="finish-call-1",
                     name="finish",
-                    arguments='{"message": "Task completed"}',
+                    arguments=FINISH_WITH_OUTCOME,
                     origin="completion",
                 )
             ]
@@ -170,7 +177,7 @@ class EmptyResponseLLM(LLM):
                 MessageToolCall(
                     id="finish-call-3",
                     name="finish",
-                    arguments='{"message": "Done"}',
+                    arguments=FINISH_WITH_OUTCOME,
                     origin="completion",
                 )
             ]

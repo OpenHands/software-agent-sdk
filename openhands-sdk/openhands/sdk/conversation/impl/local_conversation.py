@@ -107,9 +107,13 @@ from openhands.sdk.subagent import (
     register_file_agents,
     register_plugin_agents,
 )
-from openhands.sdk.task_outcome import task_outcome_from_error
+from openhands.sdk.task_outcome import (
+    FinishTaskOutcomeResponse,
+    task_outcome_from_error,
+    task_outcome_from_finish,
+)
 from openhands.sdk.tool import ToolDefinition
-from openhands.sdk.tool.builtins import InvokeSkillTool
+from openhands.sdk.tool.builtins import FinishAction, FinishTool, InvokeSkillTool
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
@@ -1839,14 +1843,33 @@ class LocalConversation(BaseConversation):
             terminal_reason=event.code,
         )
 
+    def _record_task_outcome_for_finish(self, event: ActionEvent) -> None:
+        """Record task outcome carried by FinishTool structured output."""
+        if event.tool_name != FinishTool.name or not isinstance(
+            event.action, FinishAction
+        ):
+            return
+        if event.action.structured_output is None:
+            return
+        try:
+            response = FinishTaskOutcomeResponse.model_validate(
+                event.action.structured_output, by_name=True
+            )
+        except Exception as e:
+            logger.debug(f"Could not parse FinishTool task outcome: {e}")
+            return
+        self._state.task_outcome = task_outcome_from_finish(response.task_outcome)
+
     def _task_outcome_recording(
         self, callback: ConversationCallbackType
     ) -> ConversationCallbackType:
-        """Wrap event callbacks to capture harness errors as task outcomes."""
+        """Wrap event callbacks to capture task outcomes."""
 
         def wrapped(event: Event) -> None:
             if isinstance(event, ConversationErrorEvent):
                 self._record_task_outcome_for_error(event)
+            elif isinstance(event, ActionEvent):
+                self._record_task_outcome_for_finish(event)
             callback(event)
 
         return wrapped

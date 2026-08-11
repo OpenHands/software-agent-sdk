@@ -222,9 +222,9 @@ class ConversationState(OpenHandsModel):
     task_outcome: TaskOutcome | None = Field(
         default=None,
         description=(
-            "Latest structured semantic task outcome reported by the agent. "
-            "All reports remain available in the event history as "
-            "report_task_outcome tool calls."
+            "Latest structured semantic task outcome for this conversation. "
+            "Typically parsed from FinishTool structured output or synthesized "
+            "by the runtime for harness errors."
         ),
     )
 

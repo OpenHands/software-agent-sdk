@@ -12,6 +12,7 @@ from openhands.sdk.event import ActionEvent, Event
 from openhands.sdk.llm import MessageToolCall
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.tool import MCPToolDefinition
+from openhands.sdk.task_outcome import FinishTaskOutcomeResponse
 from openhands.sdk.tool.builtins.finish import (
     FinishAction,
     FinishObservation,
@@ -69,8 +70,16 @@ def _make_finish_event(tool: ToolDefinition, tool_name: str, **fields) -> Action
     )
 
 
-def test_finish_tool_without_schema_is_unchanged():
+def test_finish_tool_has_default_task_outcome_schema():
     [tool] = FinishTool.create()
+    assert tool.response_schema is FinishTaskOutcomeResponse
+    schema = tool._get_tool_schema()
+    assert {"message", "task_outcome", "summary"} <= set(schema["properties"])
+
+
+def test_finish_tool_response_schema_can_be_removed():
+    [tool] = FinishTool.create()
+    tool = tool.set_response_schema(None)
     assert tool.response_schema is None
     schema = tool._get_tool_schema()
     assert set(schema["properties"]) == {"message", "summary"}

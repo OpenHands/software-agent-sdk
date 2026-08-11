@@ -437,7 +437,6 @@ def test_include_default_tools_serialization_default() -> None:
     assert set(agent_dict["include_default_tools"]) == {
         "FinishTool",
         "ThinkTool",
-        "ReportTaskOutcomeTool",
     }
 
 

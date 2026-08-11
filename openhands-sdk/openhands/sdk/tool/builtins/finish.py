@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Self
 from pydantic import Field
 from rich.text import Text
 
+from openhands.sdk.task_outcome import FinishTaskOutcomeResponse
 from openhands.sdk.tool.tool import (
     Action,
     Observation,
@@ -49,8 +50,8 @@ Use this tool when:
 - You have successfully completed the user's requested task
 - You cannot proceed further due to technical limitations or missing information
 
-Before calling this tool, use report_task_outcome when that tool is available
-so the platform can store structured success/blocker metadata.
+When calling this tool, also populate the structured task_outcome fields so
+the platform can store success/blocker metadata without an extra model call.
 
 The message should include:
 - A clear summary of actions taken and their results
@@ -92,18 +93,17 @@ class FinishTool(ToolDefinition[FinishAction, FinishObservation]):
         """
         if params:
             raise ValueError("FinishTool doesn't accept parameters")
-        return [
-            cls(
-                action_type=FinishAction,
-                observation_type=FinishObservation,
-                description=TOOL_DESCRIPTION,
-                executor=FinishExecutor(),
-                annotations=ToolAnnotations(
-                    title="finish",
-                    readOnlyHint=True,
-                    destructiveHint=False,
-                    idempotentHint=True,
-                    openWorldHint=False,
-                ),
-            )
-        ]
+        tool = cls(
+            action_type=FinishAction,
+            observation_type=FinishObservation,
+            description=TOOL_DESCRIPTION,
+            executor=FinishExecutor(),
+            annotations=ToolAnnotations(
+                title="finish",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        )
+        return [tool.set_response_schema(FinishTaskOutcomeResponse)]

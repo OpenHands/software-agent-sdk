@@ -668,7 +668,11 @@ def test_switch_llm_tool_during_arun_does_not_deadlock(profile_store, tmp_path):
                     MessageToolCall(
                         id="finish_1",
                         name="finish",
-                        arguments='{"message": "done"}',
+                        arguments=(
+                            '{"message": "done", "task_outcome": {'
+                            '"status": "success", "summary": "done", '
+                            '"blockers": [], "needs_user_action": false}}'
+                        ),
                         origin="completion",
                     ),
                 ],
