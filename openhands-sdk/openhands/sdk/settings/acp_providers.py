@@ -36,7 +36,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import Any, Literal, Final
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -394,10 +394,10 @@ _GEMINI_FILE_SECRETS: tuple[ACPFileSecretSpec, ...] = (
 # claude-agent-acp 0.44+ / codex-acp select the model via a ``model``
 # ``configOptions`` entry (and retain the legacy ``session/set_model``
 # extension); the SDK detects which mechanism each session advertises.
-CLAUDE_AGENT_ACP_VERSION = "0.63.0"
-CODEX_ACP_VERSION = "1.1.7"
-GEMINI_CLI_VERSION = "0.46.0"
-PI_ACP_VERSION = "0.0.33"
+CLAUDE_AGENT_ACP_VERSION: Final[str] = "0.63.0"
+CODEX_ACP_VERSION: Final[str] = "1.1.7"
+GEMINI_CLI_VERSION: Final[str] = "0.46.0"
+PI_ACP_VERSION: Final[str] = "0.0.33"
 
 
 ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
@@ -495,8 +495,8 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             ),
             api_key_env_var=None,
             base_url_env_var=None,
-            default_session_mode="default",
-            agent_name_patterns=("pi-acp", "pi"),
+            default_session_mode="medium",
+            agent_name_patterns=("pi-acp",),
             supports_set_session_model=True,
             supports_runtime_model_switch=True,
             session_meta_key=None,

@@ -100,7 +100,7 @@ class TestACPProviderInfo:
         assert "pi-acp" in info.default_command[-1]
         assert info.api_key_env_var is None
         assert info.base_url_env_var is None
-        assert info.default_session_mode == "default"
+        assert info.default_session_mode == "medium"
         assert "pi-acp" in info.agent_name_patterns
         assert info.supports_set_session_model is True
         assert info.supports_runtime_model_switch is True
