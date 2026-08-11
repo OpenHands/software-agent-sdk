@@ -135,7 +135,7 @@ class TelemetrySubscriber(Subscriber[Event]):
             self._emit_terminal(status)
 
     def emit_started(self) -> None:
-        """Emit ``conversation_started``. Called once, at registration."""
+        """Emit canonical ``conversation_created`` once at registration."""
         try:
             properties = m.ConversationStartedProperties(
                 conversation_ref=self.context.conversation_ref,
@@ -149,13 +149,14 @@ class TelemetrySubscriber(Subscriber[Event]):
             )
             self.sink.emit(
                 self.factory.build(
-                    m.EventName.CONVERSATION_STARTED,
+                    m.EventName.CONVERSATION_CREATED,
                     properties,
                     user_id=self.context.user_id,
+                    insert_id=(f"conversation_created:{self.context.conversation_ref}"),
                 )
             )
         except Exception:
-            logger.debug("Telemetry failed to emit conversation_started", exc_info=True)
+            logger.debug("Telemetry failed to emit conversation_created", exc_info=True)
 
     def _emit_terminal(self, status: str) -> None:
         if self._terminal_emitted:
@@ -287,7 +288,7 @@ class TelemetrySubscriber(Subscriber[Event]):
         conversation. Emitting unconditionally here produced a
         ``conversation_finished`` — carrying a non-terminal
         ``terminal_status`` like ``paused`` — for a conversation that did
-        nothing this session, with no matching ``conversation_started``, and
+        nothing this session, with no matching ``conversation_created``, and
         again on every view-then-restart cycle for the same
         ``conversation_ref``.
 

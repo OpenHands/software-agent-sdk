@@ -2127,10 +2127,10 @@ class ConversationService:
 
         The subscriber is attached on *every* path, including rehydration, so
         errors and terminal outcomes are always captured. But
-        ``conversation_started`` is emitted only for a genuinely new
+        ``conversation_created`` is emitted only for a genuinely new
         conversation: ``_start_event_service`` also runs when an idle
         conversation is lazily reloaded and when RUNNING conversations are
-        recovered after a restart, and counting those as starts would inflate
+        recovered after a restart, and counting those as creations would inflate
         the metric on every server bounce.
 
         Deliberately total: telemetry must never be able to fail conversation
