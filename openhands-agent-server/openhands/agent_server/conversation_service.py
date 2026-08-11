@@ -961,6 +961,7 @@ class ConversationService:
         conversation_id: UUID,
         *,
         require_runtime_bindings: bool = True,
+        agent: AgentBase | None = None,
     ) -> EventService | None:
         event_services = self._event_services
         if event_services is None:
@@ -987,7 +988,7 @@ class ConversationService:
 
         await asyncio.to_thread(self._prepare_persisted_runtime, record.stored)
         try:
-            return await self._start_event_service(record.stored)
+            return await self._start_event_service(record.stored, agent=agent)
         except ConversationLeaseHeldError as exc:
             logger.debug(
                 "Skipping active conversation %s owned by %s until %s",
@@ -1226,11 +1227,9 @@ class ConversationService:
                     existing_event_service is not None
                     and existing_event_service.is_open()
                 ):
-                    existing_agent = (
-                        existing_event_service._conversation.agent
-                        if existing_event_service._conversation is not None
-                        else None
-                    )
+                    # ``is_open()`` above guarantees a live conversation, so the
+                    # public getter never raises here.
+                    existing_agent = existing_event_service.get_conversation().agent
                     if (
                         self._is_codex_agent(existing_agent)
                         and CODEX_AUTH_SECRET_NAME
@@ -1313,8 +1312,10 @@ class ConversationService:
                             }
                         )
                     try:
+                        # Reuse the agent we already parsed from base_state.json
+                        # above so the load path doesn't read and parse it again.
                         event_service = await self._get_or_load_event_service_locked(
-                            conversation_id
+                            conversation_id, agent=reattach_agent
                         )
                     finally:
                         if injected_fallback:
