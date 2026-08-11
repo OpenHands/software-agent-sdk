@@ -107,6 +107,7 @@ from openhands.sdk.subagent import (
     register_file_agents,
     register_plugin_agents,
 )
+from openhands.sdk.task_outcome import task_outcome_from_error
 from openhands.sdk.tool import ToolDefinition
 from openhands.sdk.tool.builtins import InvokeSkillTool
 from openhands.sdk.tool.client_tool import ClientToolSpec
@@ -408,7 +409,9 @@ class LocalConversation(BaseConversation):
         # This runs on first run()/send_message() call and handles both
         # explicit hooks and plugin hooks in one place
         self._hook_processor = None
-        self._on_event = self._tree_stamping(self._rules_injecting(base_callback))
+        self._on_event = self._task_outcome_recording(
+            self._tree_stamping(self._rules_injecting(base_callback))
+        )
         self._on_token = (
             BaseConversation.compose_callbacks(token_callbacks)
             if token_callbacks
@@ -1204,7 +1207,9 @@ class LocalConversation(BaseConversation):
                 visualizer=self._visualizer,
                 conversation_stats=self._state.stats,
             )
-            self._on_event = self._tree_stamping(self._rules_injecting(raw_on_event))
+            self._on_event = self._task_outcome_recording(
+                self._tree_stamping(self._rules_injecting(raw_on_event))
+            )
             self._hook_processor.set_conversation_state(self._state)
             self._hook_processor.run_session_start()
 
@@ -1277,7 +1282,9 @@ class LocalConversation(BaseConversation):
             visualizer=self._visualizer,
             conversation_stats=self._state.stats,
         )
-        self._on_event = self._tree_stamping(self._rules_injecting(raw_on_event))
+        self._on_event = self._task_outcome_recording(
+            self._tree_stamping(self._rules_injecting(raw_on_event))
+        )
         self._hook_processor.set_conversation_state(self._state)
         self._hook_processor.run_session_start()
 
@@ -1822,6 +1829,27 @@ class LocalConversation(BaseConversation):
                 sender=sender,
             )
             self._on_event(user_msg_event)
+
+    def _record_task_outcome_for_error(self, event: ConversationErrorEvent) -> None:
+        """Record a system task outcome for runtime failures."""
+        self._state.task_outcome = task_outcome_from_error(
+            code=event.code,
+            detail=event.detail,
+            classification=event.classification,
+            terminal_reason=event.code,
+        )
+
+    def _task_outcome_recording(
+        self, callback: ConversationCallbackType
+    ) -> ConversationCallbackType:
+        """Wrap event callbacks to capture harness errors as task outcomes."""
+
+        def wrapped(event: Event) -> None:
+            if isinstance(event, ConversationErrorEvent):
+                self._record_task_outcome_for_error(event)
+            callback(event)
+
+        return wrapped
 
     def _on_event_with_state_lock(self, event: Event) -> None:
         """Emit an event while holding the conversation state lock."""

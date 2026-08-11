@@ -7,7 +7,9 @@ from typing import Any
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent
+from openhands.sdk.conversation import LocalConversation
 from openhands.sdk.conversation.state import ConversationState
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.task_outcome import TaskOutcome
 from openhands.sdk.tool.builtins import (
     BUILT_IN_TOOL_CLASSES,
@@ -106,3 +108,60 @@ def test_error_without_conversation_does_not_persist():
     assert isinstance(obs.outcome, TaskOutcome)
     assert obs.outcome.status == "failed"
     assert obs.outcome.blockers[0].type == "runtime_error"
+
+
+def test_conversation_error_event_records_system_task_outcome(tmp_path):
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test")
+    conv = LocalConversation(
+        agent=Agent(llm=llm, tools=[]),
+        workspace=str(tmp_path),
+        persistence_dir=str(tmp_path / "conversation"),
+        visualizer=None,
+    )
+
+    with conv.state:
+        conv._on_event(
+            ConversationErrorEvent(
+                source="environment",
+                code="LLMAuthenticationError",
+                detail="Invalid API key.",
+            )
+        )
+
+    assert conv.state.task_outcome is not None
+    assert conv.state.task_outcome.status == "blocked"
+    assert conv.state.task_outcome.summary == "Invalid API key."
+    assert conv.state.task_outcome.source == "system"
+    assert conv.state.task_outcome.needs_user_action is True
+    assert conv.state.task_outcome.terminal_reason == "LLMAuthenticationError"
+    assert conv.state.task_outcome.blockers[0].type == "auth"
+    assert conv.state.task_outcome.blockers[0].recoverable is True
+
+    conv.close()
+
+
+def test_unknown_conversation_error_records_failed_task_outcome(tmp_path):
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test")
+    conv = LocalConversation(
+        agent=Agent(llm=llm, tools=[]),
+        workspace=str(tmp_path),
+        persistence_dir=str(tmp_path / "conversation"),
+        visualizer=None,
+    )
+
+    with conv.state:
+        conv._on_event(
+            ConversationErrorEvent(
+                source="environment",
+                code="RuntimeExploded",
+                detail="Unexpected harness failure.",
+            )
+        )
+
+    assert conv.state.task_outcome is not None
+    assert conv.state.task_outcome.status == "failed"
+    assert conv.state.task_outcome.source == "system"
+    assert conv.state.task_outcome.needs_user_action is False
+    assert conv.state.task_outcome.blockers[0].type == "unknown"
+
+    conv.close()
