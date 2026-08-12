@@ -196,6 +196,35 @@ async def test_get_bash_event_runs_blocking_scan_off_event_loop(tmp_path: Path):
     assert to_thread.call_args.args[0] == service._get_bash_event_sync
 
 
+async def test_concurrent_searches_serialize_filesystem_scans(tmp_path: Path):
+    service = BashEventService(bash_events_dir=tmp_path / "bash_events")
+    service._save_event_to_file(BashCommand(command="echo ok"))
+
+    active = 0
+    max_active = 0
+    original_search = service._search_bash_events_sync
+
+    def tracked_search(*args):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        try:
+            # Keep the worker occupied long enough for all concurrent callers
+            # to queue on the async semaphore.
+            time.sleep(0.02)
+            return original_search(*args)
+        finally:
+            active -= 1
+
+    with patch.object(service, "_search_bash_events_sync", tracked_search):
+        pages = await asyncio.gather(
+            *(service.search_bash_events(limit=10) for _ in range(8))
+        )
+
+    assert all(len(page.items) == 1 for page in pages)
+    assert max_active == 1
+
+
 # ---------------------------------------------------------------------------
 # delete_events_older_than
 # ---------------------------------------------------------------------------

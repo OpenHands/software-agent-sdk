@@ -35,6 +35,17 @@ class BashEventService:
         default_factory=lambda: PubSub[BashEventBase](max_subscribers=50),
         init=False,
     )
+    # Multiple open terminal tabs poll bash events concurrently. Moving each
+    # directory scan to the default thread pool keeps it off the event loop, but
+    # unbounded concurrent scans can still occupy every worker and starve other
+    # endpoints that use asyncio.to_thread (notably conversations/search).
+    # Serialize only the expensive bash-event filesystem work: queued callers
+    # remain asynchronous while one worker performs the shared-directory scan.
+    _filesystem_search_semaphore: asyncio.Semaphore = field(
+        default_factory=lambda: asyncio.Semaphore(1),
+        init=False,
+        repr=False,
+    )
 
     def _ensure_bash_events_dir(self) -> None:
         """Ensure the bash events directory exists."""
@@ -84,7 +95,10 @@ class BashEventService:
     async def get_bash_event(self, event_id: str) -> BashEventBase | None:
         """Get the event with the id given, or None if there was no such event."""
         # The directory scan is blocking I/O; run it off the asyncio event loop.
-        return await asyncio.to_thread(self._get_bash_event_sync, event_id)
+        # Serialize scans so concurrent get/search polls cannot exhaust the
+        # process-wide default thread pool.
+        async with self._filesystem_search_semaphore:
+            return await asyncio.to_thread(self._get_bash_event_sync, event_id)
 
     def _get_bash_event_sync(self, event_id: str) -> BashEventBase | None:
         """Sync: find the event file whose name ends with ``_<event_id>``.
@@ -129,17 +143,21 @@ class BashEventService:
         so the whole search runs off the asyncio event loop in a worker thread
         (``asyncio.to_thread``) to avoid stalling concurrent requests.
         """
-        return await asyncio.to_thread(
-            self._search_bash_events_sync,
-            kind__eq,
-            command_id__eq,
-            timestamp__gte,
-            timestamp__lt,
-            order__gt,
-            sort_order,
-            page_id,
-            limit,
-        )
+        # Keep at most one full shared-directory scan in the default thread
+        # pool. Without this bound, many open terminal tabs can move the same
+        # original event-loop starvation into thread-pool starvation.
+        async with self._filesystem_search_semaphore:
+            return await asyncio.to_thread(
+                self._search_bash_events_sync,
+                kind__eq,
+                command_id__eq,
+                timestamp__gte,
+                timestamp__lt,
+                order__gt,
+                sort_order,
+                page_id,
+                limit,
+            )
 
     def _search_bash_events_sync(
         self,
