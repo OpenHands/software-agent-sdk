@@ -135,7 +135,9 @@ def test_extract_linked_issue_numbers_no_bare_ref_outside_issue_section():
 
 
 def test_validate_linked_issue_ready_requires_a_number():
-    errors = validate_linked_issue_ready("## Issue Number\n\nN/A\n", "org/repo", "token")
+    errors = validate_linked_issue_ready(
+        "## Issue Number\n\nN/A\n", "org/repo", "token"
+    )
     assert errors and "Link an issue" in errors[0]
 
 
@@ -155,19 +157,18 @@ def test_validate_linked_issue_ready_passes_with_ready_label(monkeypatch):
 
 
 def test_validate_linked_issue_ready_fails_when_not_ready(monkeypatch):
-    monkeypatch.setattr(
-        _prod, "fetch_issue_labels", lambda repo, num, token: ["bug"]
-    )
+    monkeypatch.setattr(_prod, "fetch_issue_labels", lambda repo, num, token: ["bug"])
     errors = validate_linked_issue_ready("Fixes #12\n", "org/repo", "token")
     assert errors and "ready-for-dev" in errors[0]
 
 
 def test_validate_linked_issue_ready_skips_missing_issue(monkeypatch):
     import urllib.error
+    from http.client import HTTPMessage
 
     def _missing(repo, num, token):
         raise urllib.error.HTTPError(
-            "https://api.github.com", 404, "Not Found", None, None
+            "https://api.github.com", 404, "Not Found", HTTPMessage(), None
         )
 
     monkeypatch.setattr(_prod, "fetch_issue_labels", _missing)

@@ -68,7 +68,8 @@ def test_enhancement_missing_acceptance_criteria_fails():
 
 def test_enhancement_missing_desired_behavior_fails():
     body = ENHANCEMENT_READY.replace(
-        "### Desired Behavior\n\n`agent.save_state()` writes session state to a configured backend.\n\n",
+        "### Desired Behavior\n\n"
+        "`agent.save_state()` writes session state to a configured backend.\n\n",
         "",
     )
     result = evaluate_readiness(body, ["enhancement"])
