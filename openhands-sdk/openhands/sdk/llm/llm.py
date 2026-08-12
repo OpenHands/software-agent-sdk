@@ -5,10 +5,8 @@ import copy
 import importlib
 import json
 import os
-import threading
 import warnings
 from collections.abc import AsyncIterable, Callable, Iterable, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -123,6 +121,9 @@ from openhands.sdk.logger import ENV_LOG_DIR, get_logger
 
 
 logger = get_logger(__name__)
+
+litellm.modify_params = True
+
 _serialized_is_subscription = ContextVar(
     "serialized_is_subscription",
     default=False,
@@ -450,8 +451,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     drop_params: bool = Field(default=True, json_schema_extra=field_meta())
     modify_params: bool = Field(
         default=True,
-        description="Modify params allows litellm to do transformations like adding"
-        " a default message, when a message is empty.",
+        description=(
+            "Compatibility field. LiteLLM parameter modification is enabled "
+            "process-wide so concurrent LLM calls do not mutate shared global state."
+        ),
         json_schema_extra=field_meta(),
     )
     disable_vision: bool | None = Field(
@@ -625,22 +628,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _call_context: LLMCallContext = PrivateAttr(default_factory=LLMCallContext)
     _effective_max_input_tokens: int | None = PrivateAttr(default=None)
     _effective_max_output_tokens: int | None = PrivateAttr(default=None)
-    # Plain (non-reentrant) Lock: the async transport path acquires this off
-    # the event loop thread (see `_alitellm_modify_params_ctx`) and releases
-    # it back on the event loop thread, which an RLock would reject since it
-    # tracks a single owning thread.
-    _litellm_modify_params_lock: ClassVar[threading.Lock] = threading.Lock()
-    # Waiting on the lock from the async path is offloaded to this dedicated
-    # executor rather than the event loop's default one. The coroutine that
-    # *holds* the lock may itself need a default-executor thread to make
-    # progress before it can release (e.g. draining a synchronous stream via
-    # ``run_in_executor``); if lock-waiters shared that pool they could occupy
-    # every worker and starve the holder, deadlocking instead of just
-    # serialising. Keeping the wait on its own pool prevents that.
-    _litellm_modify_params_lock_executor: ClassVar[ThreadPoolExecutor] = (
-        ThreadPoolExecutor(thread_name_prefix="llm-modify-params-lock")
-    )
-
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="ignore", arbitrary_types_allowed=True
     )
@@ -2270,76 +2257,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             return ret
 
     @contextmanager
-    def _litellm_modify_params_ctx(self, flag: bool):
-        with self._litellm_modify_params_lock:
-            old = getattr(litellm, "modify_params", None)
-            try:
-                litellm.modify_params = flag
-                yield
-            finally:
-                litellm.modify_params = old
+    def _litellm_modify_params_ctx(self, _flag: bool):
+        yield
 
     @asynccontextmanager
-    async def _alitellm_modify_params_ctx(self, flag: bool):
-        """Async variant of :meth:`_litellm_modify_params_ctx`.
-
-        ``litellm.modify_params`` is a process-wide global, so the lock must
-        stay held for the full duration of the transport call, not just the
-        moment the flag is set. A plain ``with self._litellm_modify_params_lock:``
-        would work for that, but only for the sync path: entering it here
-        with a blocking ``with`` statement would hold a real OS-level lock
-        across the ``await`` below. If a concurrent *sync* transport call
-        (e.g. a condenser or non-async agent step running in a worker
-        thread) is holding that lock at the time, this coroutine's attempt
-        to acquire it blocks the event loop thread itself -- which freezes
-        every other request the server is handling until the sync call
-        finishes (this is what makes agent-server stop responding to all
-        requests while waiting on a slow/local LLM response, most visible
-        during condensation).
-
-        Acquiring via ``run_in_executor`` moves the wait for the lock onto a
-        worker thread, so the event loop stays free to serve other requests
-        while this call is blocked on a concurrent transport call. The lock
-        is a plain (non-reentrant) ``threading.Lock``, so it is safe to
-        acquire on one thread and release on another.
-
-        Cancellation subtlety: if this coroutine is cancelled while waiting
-        (conversation stop/pause, timeout), the worker thread has already
-        started ``acquire()`` and cannot be interrupted -- it will still take
-        the lock. We therefore ``shield`` the acquire so the cancellation does
-        not mark it cancelled: the shielded future still resolves to the real
-        acquire result, and a done-callback releases the lock if it was
-        actually taken. Without this the lock would be acquired with nobody to
-        release it, permanently wedging every LLM call process-wide.
-        """
-        loop = asyncio.get_running_loop()
-        acquire = loop.run_in_executor(
-            self._litellm_modify_params_lock_executor,
-            self._litellm_modify_params_lock.acquire,
-        )
-        try:
-            await asyncio.shield(acquire)
-        except asyncio.CancelledError:
-            lock = self._litellm_modify_params_lock
-
-            def _release_if_acquired(fut: asyncio.Future) -> None:
-                # ``shield`` kept ``acquire`` alive, so its result reflects
-                # whether the worker thread actually took the lock. Release it
-                # if so, since the cancelled coroutine below never will.
-                if not fut.cancelled() and fut.exception() is None:
-                    lock.release()
-
-            acquire.add_done_callback(_release_if_acquired)
-            raise
-        try:
-            old = getattr(litellm, "modify_params", None)
-            try:
-                litellm.modify_params = flag
-                yield
-            finally:
-                litellm.modify_params = old
-        finally:
-            self._litellm_modify_params_lock.release()
+    async def _alitellm_modify_params_ctx(self, _flag: bool):
+        yield
 
     # =========================================================================
     # Capabilities, formatting, and info
