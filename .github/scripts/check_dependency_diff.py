@@ -143,12 +143,8 @@ def main() -> int:
     def _is_openhands(name: str) -> bool:
         return name.lower().startswith("openhands-")
 
-    bumped_external = {
-        n: v for n, v in bumped.items() if not _is_openhands(n)
-    }
-    bumped_openhands = {
-        n: v for n, v in bumped.items() if _is_openhands(n)
-    }
+    bumped_external = {n: v for n, v in bumped.items() if not _is_openhands(n)}
+    bumped_openhands = {n: v for n, v in bumped.items() if _is_openhands(n)}
 
     report.add(f"Baseline: `{baseline}`")
     report.add(
@@ -156,9 +152,7 @@ def main() -> int:
         f"removed: **{len(removed)}**."
     )
     if bumped_openhands:
-        report.add(
-            f"_(plus {len(bumped_openhands)} internal `openhands-*` bump(s))_"
-        )
+        report.add(f"_(plus {len(bumped_openhands)} internal `openhands-*` bump(s))_")
     report.add("")
 
     # --- non-registry sources on new/changed packages (supply-chain surface) --

@@ -142,9 +142,7 @@ def _short(sha: object) -> str:
     return str(sha)[:9] if sha else "?"
 
 
-def _compare_link(
-    repo: str, base: object, head: object, label: str
-) -> str:
+def _compare_link(repo: str, base: object, head: object, label: str) -> str:
     """Markdown link to the GitHub compare page between *base* and *head*.
 
     Falls back to plain text if either SHA is missing so the report never
