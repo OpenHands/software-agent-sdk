@@ -81,7 +81,6 @@ class MCPServerPatch(BaseModel):
     sse_read_timeout: float | None = None
     keep_alive: bool | None = None
     headers: dict[str, SecretStr | None] | None = None
-    enabled: bool | None = None
     auth: MCPAuthCredential | None = None
     enabled: bool | None = Field(
         default=None,
