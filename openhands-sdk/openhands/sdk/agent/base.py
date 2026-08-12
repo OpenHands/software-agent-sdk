@@ -45,6 +45,7 @@ from openhands.sdk.tool.builtins.vision_inspect import (
 )
 from openhands.sdk.utils.deprecation import deprecated
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
+from openhands.sdk.utils.path import get_user_persistence_dir
 
 
 if TYPE_CHECKING:
@@ -61,7 +62,7 @@ logger = get_logger(__name__)
 # SOUL.md is the agent's identity file (~/.openhands/SOUL.md).  When present
 # it replaces the default identity in the system prompt.
 
-_SOUL_PATH = os.path.join(os.path.expanduser("~"), ".openhands", "SOUL.md")
+_SOUL_PATH = os.path.join(get_user_persistence_dir(), "SOUL.md")
 _DEFAULT_SOUL = (
     "You are OpenHands agent, a helpful AI assistant that can interact"
     " with a computer to solve tasks."

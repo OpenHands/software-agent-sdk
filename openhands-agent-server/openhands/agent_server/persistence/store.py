@@ -32,6 +32,7 @@ from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles.agent_profile_store import AgentProfileStore
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.path import get_user_persistence_dir
 
 
 # fcntl is Unix-only; on Windows, use msvcrt for file locking
@@ -818,10 +819,7 @@ def _get_profile_persistence_dir() -> Path:
     rather than the workspace-relative agent-server default, keeping bare
     local profile secrets in the expected user config directory.
     """
-    env_dir = os.environ.get("OH_PERSISTENCE_DIR")
-    if env_dir:
-        return Path(env_dir)
-    return Path.home() / ".openhands"
+    return get_user_persistence_dir()
 
 
 def _get_cipher(config: Config | None = None) -> Cipher | None:

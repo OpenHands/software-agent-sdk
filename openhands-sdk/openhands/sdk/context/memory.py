@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Final
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.path import get_user_persistence_dir
 
 
 logger = get_logger(__name__)
@@ -66,7 +67,8 @@ def load_memory(
     the headers plus one notice per tier (~150 chars for both tiers).
     """
     tiers: list[tuple[str, str]] = []
-    user_index = _read_index(Path.home() / MEMORY_INDEX_RELPATH)
+    user_memory_path = get_user_persistence_dir() / "memory" / "MEMORY.md"
+    user_index = _read_index(user_memory_path)
     if user_index is not None:
         tiers.append((f"# User memory (~/{MEMORY_INDEX_RELPATH})", user_index))
     project_index = _read_index(Path(working_dir) / MEMORY_INDEX_RELPATH)

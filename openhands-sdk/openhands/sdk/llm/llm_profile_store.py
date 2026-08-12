@@ -16,6 +16,7 @@ from openhands.sdk.llm.utils.openhands_provider import (
     canonicalize_openhands_llm_payload,
 )
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.path import get_user_persistence_dir
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
 
@@ -23,7 +24,7 @@ if TYPE_CHECKING:
     from openhands.sdk.llm.llm import LLM
     from openhands.sdk.utils.cipher import Cipher
 
-_DEFAULT_PROFILE_DIR: Final[Path] = Path.home() / ".openhands" / "profiles"
+_DEFAULT_PROFILE_DIR: Final[Path] = get_user_persistence_dir() / "profiles"
 _LOCK_TIMEOUT_SECONDS: Final[float] = 30.0
 
 # Profile names: 1-64 chars, must start with alphanumeric, then alphanumerics
