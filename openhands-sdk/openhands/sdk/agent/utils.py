@@ -484,6 +484,19 @@ def _maybe_rewrite_as_terminal_command(
     return tool_name
 
 
+def _starts_with_executable(command: Any, executable: str) -> bool:
+    """Whether ``command``'s first whitespace-delimited token is ``executable``.
+
+    Comparing whole tokens keeps ``github status`` from looking like it already
+    carries a ``git`` prefix.
+    """
+    if not isinstance(command, str):
+        return False
+
+    tokens = command.split(maxsplit=1)
+    return bool(tokens) and tokens[0] == executable
+
+
 def normalize_tool_call(
     tool_name: str,
     arguments: dict[str, Any],
@@ -522,10 +535,12 @@ def normalize_tool_call(
                     for key, value in arguments.items()
                     if key in {"security_risk", "summary"}
                 }
-                if original_command:
-                    normalized_arguments["command"] = f"{base_name} {original_command}"
-                else:
+                if not original_command:
                     normalized_arguments["command"] = base_name
+                elif _starts_with_executable(original_command, base_name):
+                    normalized_arguments["command"] = original_command
+                else:
+                    normalized_arguments["command"] = f"{base_name} {original_command}"
         elif "terminal" in available_tools:
             terminal_command = _maybe_rewrite_as_terminal_command(
                 tool_name,

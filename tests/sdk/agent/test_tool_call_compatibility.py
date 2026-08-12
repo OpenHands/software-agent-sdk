@@ -704,6 +704,48 @@ def test_reset_alias_executes_terminal_tool(tmp_path):
     assert getattr(action_event.action, "command") == "reset clear"
 
 
+def test_git_alias_keeps_an_already_complete_command(tmp_path):
+    """Regression: a command that already names the executable is left alone."""
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="git",
+        arguments={"command": "git status"},
+        tool_names=(TERMINAL_TOOL_SPEC,),
+    )
+
+    action_event = next(e for e in events if isinstance(e, ActionEvent))
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert not errors
+    assert action_event.tool_name == TERMINAL_TOOL_NAME
+    assert action_event.action is not None
+    assert getattr(action_event.action, "command") == "git status"
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "command", "expected"),
+    [
+        ("git", "status", "git status"),
+        ("git", "git status", "git status"),
+        ("git", "git", "git"),
+        ("git", "\tgit\tstatus", "\tgit\tstatus"),
+        ("git", "github status", "git github status"),
+        ("git", "gitk", "git gitk"),
+        ("reset", "clear", "reset clear"),
+        ("reset", "reset clear", "reset clear"),
+    ],
+)
+def test_terminal_prefix_alias_only_adds_a_missing_executable(
+    tool_name, command, expected
+):
+    normalized_tool_name, arguments = agent_utils.normalize_tool_call(
+        tool_name, {"command": command}, {TERMINAL_TOOL_NAME}
+    )
+
+    assert normalized_tool_name == TERMINAL_TOOL_NAME
+    assert arguments["command"] == expected
+
+
 def test_shell_tool_name_git_falls_back_to_terminal(tmp_path):
     """Test that 'git' without arguments falls back to terminal."""
     events = _run_tool_call(
