@@ -166,13 +166,16 @@ def parse_openrouter_payload(
         )
 
     # Multiple eligible routes with differing limits: routing may pick any of
-    # them, so report a conservative lower bound for preflight safety.
+    # them (e.g. when fallbacks are allowed), so the router provider is not
+    # known ahead of time. Report a conservative lower bound for preflight
+    # safety and leave ``selected_provider`` unset rather than guessing the
+    # first route in the (optional) ordering.
     return ModelRuntimeMetadata(
         max_input_tokens=min(contexts),
         max_output_tokens=min(completion_limits) if completion_limits else None,
         source="openrouter_endpoints_api",
         candidate_providers=provider_names,
-        selected_provider=reordered[0].get("provider_name"),
+        selected_provider=None,
         confidence="safe_lower_bound",
     )
 

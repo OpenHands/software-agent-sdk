@@ -639,6 +639,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _runtime_metadata: ModelRuntimeMetadata | None = PrivateAttr(default=None)
     _runtime_metadata_fetched_at: float | None = PrivateAttr(default=None)
     _runtime_metadata_negative_until: float | None = PrivateAttr(default=None)
+    # Guards the runtime-metadata cache fields above. The synchronous resolver
+    # may be driven from a worker thread, and the async resolver can also store
+    # a result, so the read/check and store are kept atomic. ClassVar (shared)
+    # matches the `_litellm_modify_params_lock` pattern; critical sections are
+    # tiny and never cover network I/O.
+    _runtime_metadata_lock: ClassVar[threading.Lock] = threading.Lock()
     # Plain (non-reentrant) Lock: the async transport path acquires this off
     # the event loop thread (see `_alitellm_modify_params_ctx`) and releases
     # it back on the event loop thread, which an RLock would reject since it
@@ -1605,6 +1611,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Uses ``litellm.acompletion`` under the hood, freeing the event loop
         while waiting for the LLM provider response.
         """
+        # Resolve provider-aware runtime metadata (e.g. OpenRouter route limits)
+        # before the first completion on the agent-server async path so
+        # ``effective_max_input_tokens`` reflects the actual runtime route.
+        # The result is cached (1h TTL) and negative-cached on failure, and the
+        # probe is a no-op for providers without runtime metadata, so repeated
+        # calls are cheap.
+        await self.aresolve_runtime_metadata()
+
         _caller_kwargs = kwargs.copy()
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if enable_streaming and on_token is None:
@@ -2670,17 +2684,22 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Prefer :meth:`aresolve_runtime_metadata` on the agent-server event loop,
         which performs no blocking network I/O in-process.
         """
-        if not force:
-            cached = cached_metadata(
-                self._runtime_metadata, self._runtime_metadata_fetched_at
-            )
-            if cached is not None:
-                return cached
-            if in_negative_cache(self._runtime_metadata_negative_until):
-                return None
+        # The LLM may be shared across threads via the sync path, so the cache
+        # read/check and the store must be atomic. The network probe itself runs
+        # outside the lock so a slow endpoint cannot block other threads from
+        # reading the cache.
+        with self._runtime_metadata_lock:
+            if not force:
+                cached = cached_metadata(
+                    self._runtime_metadata, self._runtime_metadata_fetched_at
+                )
+                if cached is not None:
+                    return cached
+                if in_negative_cache(self._runtime_metadata_negative_until):
+                    return None
 
         metadata = resolve_provider_metadata_sync(self)
-        self._store_runtime_metadata(metadata)
+        self._store_runtime_metadata(metadata)  # locks internally
         return metadata
 
     async def aresolve_runtime_metadata(
@@ -2707,10 +2726,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
     def _store_runtime_metadata(self, metadata: ModelRuntimeMetadata | None) -> None:
         fetched_at, negative_until, resolved = store_result(metadata)
-        self._runtime_metadata_fetched_at = fetched_at
-        self._runtime_metadata_negative_until = negative_until
-        if resolved is not None:
-            self._runtime_metadata = resolved
+        # Locked so a concurrent synchronous resolver (its probe runs outside the
+        # lock) cannot observe a torn / interleaved cache state.
+        with self._runtime_metadata_lock:
+            self._runtime_metadata_fetched_at = fetched_at
+            self._runtime_metadata_negative_until = negative_until
+            if resolved is not None:
+                self._runtime_metadata = resolved
 
     @property
     def resolved_runtime_metadata(self) -> ModelRuntimeMetadata | None:

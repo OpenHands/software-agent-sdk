@@ -14,7 +14,7 @@ import asyncio
 import httpx
 import pytest
 
-from openhands.sdk.llm import LLM, ModelRuntimeMetadata
+from openhands.sdk.llm import LLM, Message, ModelRuntimeMetadata, TextContent
 from openhands.sdk.llm.utils import runtime_metadata as rm
 from openhands.sdk.llm.utils.providers import openrouter as orm
 
@@ -109,6 +109,9 @@ def test_parse_allow_fallbacks_returns_safe_lower_bound():
     assert md is not None
     assert md.confidence == "safe_lower_bound"
     assert md.max_input_tokens == 262144
+    # With fallbacks enabled the runtime provider is not known ahead of time, so
+    # the safe lower bound must not claim a specific provider.
+    assert md.selected_provider is None
 
 
 def test_parse_no_routing_uses_all_endpoints():
@@ -116,6 +119,7 @@ def test_parse_no_routing_uses_all_endpoints():
     assert md is not None
     assert md.confidence == "safe_lower_bound"
     assert md.max_input_tokens == 262144
+    assert md.selected_provider is None
     assert set(md.candidate_providers) == {"CoreWeave", "Baseten", "DeepInfra"}
 
 
@@ -237,6 +241,56 @@ def test_async_resolution_updates_effective():
     assert md is not None
     assert md.confidence == "exact"
     assert llm.effective_max_input_tokens == 262144
+
+
+def test_acompletion_resolves_runtime_metadata(monkeypatch):
+    """The async completion path must wire in runtime-metadata resolution.
+
+    Without a production caller of ``aresolve_runtime_metadata`` the cache is
+    never populated and ``effective_max_input_tokens`` never reflects the
+    runtime route (issue #4421).
+    """
+    from litellm.types.utils import (
+        Choices,
+        Message as LiteLLMMessage,
+        ModelResponse,
+        Usage,
+    )
+
+    llm = LLM(model="gpt-4o", api_key="test", usage_id="test-llm")
+    resolved = {"calls": 0}
+    orig_resolve = llm.aresolve_runtime_metadata
+
+    async def recording(self, *, force: bool = False):
+        resolved["calls"] += 1
+        return await orig_resolve(force=force)
+
+    monkeypatch.setattr(LLM, "aresolve_runtime_metadata", recording)
+
+    async def fake_acompletion(*args, **kwargs):
+        return ModelResponse(
+            id="test",
+            choices=[
+                Choices(
+                    finish_reason="stop",
+                    message=LiteLLMMessage(content="ok", role="assistant"),
+                )
+            ],
+            created=0,
+            model="gpt-4o",
+            object="chat.completion",
+            usage=Usage(prompt_tokens=3, completion_tokens=2, total_tokens=5),
+        )
+
+    monkeypatch.setattr("openhands.sdk.llm.llm.litellm_acompletion", fake_acompletion)
+
+    async def go():
+        return await llm.acompletion(
+            messages=[Message(role="user", content=[TextContent(text="hi")])]
+        )
+
+    assert asyncio.run(go()) is not None
+    assert resolved["calls"] >= 1
 
 
 def test_sync_and_async_agree():
