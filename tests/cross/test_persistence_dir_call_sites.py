@@ -41,7 +41,7 @@ def _import_roots() -> list[str]:
     ``.pth``-injected finders and hides third-party dependencies. Resolved in
     the parent (real ``HOME``), these roots pin both to ``PYTHONPATH``.
     """
-    repo_root = Path(__file__).resolve().parents[3]
+    repo_root = Path(__file__).resolve().parents[2]
     roots = [
         str(repo_root / pkg)
         for pkg in ("openhands-sdk", "openhands-tools", "openhands-agent-server")
@@ -337,14 +337,26 @@ def test_prompt_jinja_cache_lives_in_persistence_dir(persistence_dir: Path) -> N
 
 def test_tom_consult_file_store_root(persistence_dir: Path) -> None:
     pytest.importorskip("tom_swe")
+    from typing import cast
+
+    from openhands.sdk.conversation.state import ConversationState
+    from openhands.sdk.io import LocalFileStore
     from openhands.tools.tom_consult.definition import (
         SleeptimeComputeTool,
         TomConsultTool,
     )
+    from openhands.tools.tom_consult.executor import TomConsultExecutor
 
+    # ``create`` ignores ``conv_state`` (state is passed at execution time), so a
+    # typed ``None`` keeps pyright happy without building a full state object.
+    conv_state = cast(ConversationState, None)
     for tool_cls in (TomConsultTool, SleeptimeComputeTool):
-        tools = tool_cls.create(conv_state=None)
-        assert tools[0].executor.file_store.root == str(persistence_dir)
+        tools = tool_cls.create(conv_state=conv_state)
+        executor = tools[0].executor
+        assert isinstance(executor, TomConsultExecutor)
+        file_store = executor.file_store
+        assert isinstance(file_store, LocalFileStore)
+        assert file_store.root == str(persistence_dir)
 
 
 def test_canvas_extensions_dir_uses_persistence_dir(persistence_dir: Path) -> None:
@@ -375,8 +387,10 @@ def test_default_llm_profile_store_survives_resume() -> None:
     """
     import shutil
 
-    with tempfile.TemporaryDirectory() as persist, tempfile.TemporaryDirectory(
-    ) as home_root:
+    with (
+        tempfile.TemporaryDirectory() as persist,
+        tempfile.TemporaryDirectory() as home_root,
+    ):
         home1 = Path(home_root) / "home1"
         home1.mkdir()
 
@@ -388,7 +402,9 @@ def test_default_llm_profile_store_survives_resume() -> None:
         r1 = subprocess.run(
             [sys.executable, "-c", write],
             env=_subprocess_env(OH_PERSISTENCE_DIR=persist, HOME=str(home1)),
-            capture_output=True, text=True, timeout=180,
+            capture_output=True,
+            text=True,
+            timeout=180,
         )
         assert r1.returncode == 0, r1.stderr
         assert (Path(persist) / "profiles" / "prod.json").is_file()
@@ -406,7 +422,9 @@ def test_default_llm_profile_store_survives_resume() -> None:
         r2 = subprocess.run(
             [sys.executable, "-c", read],
             env=_subprocess_env(OH_PERSISTENCE_DIR=persist, HOME=str(home2)),
-            capture_output=True, text=True, timeout=180,
+            capture_output=True,
+            text=True,
+            timeout=180,
         )
         assert r2.returncode == 0, r2.stderr
         assert r2.stdout.strip().splitlines()[-1] == "gpt-4o"
