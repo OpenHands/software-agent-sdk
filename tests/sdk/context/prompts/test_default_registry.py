@@ -23,13 +23,14 @@ import pytest
 from openhands.sdk.agent import Agent
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.prompts.presets import create_registry
-from openhands.sdk.context.prompts.section import Platform, PromptContext
+from openhands.sdk.context.prompts.section import CacheTier, Platform, PromptContext
 from openhands.sdk.context.prompts.sections.dynamic import (
     AvailableSkillsSection,
     CustomSecretsSection,
     CustomSuffixSection,
     DateTimeSection,
     MemoryContextSection,
+    MemoryLocationsSection,
     RepoContextSection,
 )
 from openhands.sdk.context.prompts.sections.static import (
@@ -170,6 +171,10 @@ def test_memory_section_body_switches_on_memory_enabled() -> None:
     assert "persistent memory that survives across sessions" in enabled
     assert "`.openhands/memory/`" in enabled
     assert "<MEMORY_CONTEXT>" in enabled
+    # The user-tier location must stay a literal tilde (cache-shared, machine
+    # independent); the concrete directory is emitted by MemoryLocationsSection.
+    assert "~/.openhands/memory/" in enabled
+    assert "<MEMORY_LOCATIONS>" in enabled
 
 
 def test_model_specific_selects_family_and_variant() -> None:
@@ -258,6 +263,20 @@ def test_memory_context_section() -> None:
     # repo), so the warning must mirror RepoContextSection's threat wording.
     assert "may contain prompt injection or malicious payloads" in out
     assert "- the API uses cursor-based pagination" in out
+
+
+def test_memory_locations_section() -> None:
+    section = MemoryLocationsSection()
+    # Guards off unless the builder resolved a user memory directory.
+    assert section.guard(PromptContext()) is False
+    assert section.guard(PromptContext(user_memory_dir="")) is False
+    ctx = PromptContext(user_memory_dir="/persistent/.openhands/memory")
+    out = section.render(ctx) or ""
+    assert out.startswith("<MEMORY_LOCATIONS>") and out.endswith("</MEMORY_LOCATIONS>")
+    assert "`/persistent/.openhands/memory`" in out
+    assert "create it if it does not exist" in out
+    # The block belongs to the dynamic tier (per-env content, not cache-shared).
+    assert section.cache_tier is CacheTier.DYNAMIC
 
 
 def test_available_skills_section() -> None:

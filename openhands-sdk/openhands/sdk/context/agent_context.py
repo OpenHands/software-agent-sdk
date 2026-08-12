@@ -32,6 +32,7 @@ from openhands.sdk.skills import (
     to_prompt,
 )
 from openhands.sdk.skills.skill import DEFAULT_MARKETPLACE_PATH
+from openhands.sdk.utils.path import get_user_persistence_dir
 from openhands.sdk.utils.pydantic_secrets import (
     serialize_secret,
     validate_secret_dict,
@@ -387,6 +388,12 @@ class AgentContext(BaseModel):
             available_skills_prompt=data.available_skills_prompt or None,
             custom_suffix=self.system_message_suffix or None,
             memory_context=self.memory_context or None,
+            # Advertise the resolved user-tier memory directory (honoring
+            # OH_PERSISTENCE_DIR) whenever persistent memory is enabled, so the
+            # write guidance and load_memory()'s read path stay aligned.
+            user_memory_dir=(
+                str(get_user_persistence_dir() / "memory") if self.load_memory else None
+            ),
             secret_infos=tuple(
                 (info["name"] or "", info["description"]) for info in data.secret_infos
             ),

@@ -75,6 +75,12 @@ class PromptContext(BaseModel):
     available_skills_prompt: str | None = None
     custom_suffix: str | None = None
     memory_context: str | None = None
+    # Absolute path to the user-tier memory directory, resolved by the builder
+    # (honoring ``OH_PERSISTENCE_DIR``) whenever persistent memory is enabled.
+    # Set here rather than in the section so the sections stay pure (no env/I/O);
+    # ``MemoryLocationsSection`` renders it into the dynamic block so the agent
+    # writes memory to the same directory the loader reads from.
+    user_memory_dir: str | None = None
     secret_infos: tuple[tuple[str, str | None], ...] = Field(default_factory=tuple)
 
     @field_validator("template_kwargs", mode="after")

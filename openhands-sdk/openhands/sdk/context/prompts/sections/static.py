@@ -111,12 +111,16 @@ class MemorySection(_StaticTextSection):
 * This repository skill is automatically loaded for every conversation and helps maintain context across sessions.
 * For more information about skills, see: https://docs.openhands.dev/overview/skills"""
 
-    # Uses a literal ``~`` -- the static block must never contain the expanded
-    # home path (see test_static_block_has_no_dynamic_content).
+    # The user-tier location is deliberately NOT written as an absolute path here:
+    # this static block is the cache-shared, machine-independent prefix, so the
+    # concrete directory (which honors OH_PERSISTENCE_DIR) is emitted per-session
+    # by the dynamic ``MemoryLocationsSection``. The literal ``~`` fallback below
+    # is a plain tilde, never the expanded home path
+    # (see test_static_block_has_no_dynamic_content).
     _TWO_TIER_GUIDANCE = """\
 You have persistent memory that survives across sessions, in two tiers:
 * Project memory: `.openhands/memory/` under the workspace root — knowledge specific to this repository.
-* User memory: `~/.openhands/memory/` — knowledge and preferences that apply across all projects.
+* User memory: knowledge and preferences that apply across all projects. Its exact directory for this session is given in the <MEMORY_LOCATIONS> block below (falling back to `~/.openhands/memory/` when that block is absent).
 
 Each tier contains:
 * `MEMORY.md` — a curated index of durable facts. Its content is injected into your prompt at session start (the <MEMORY_CONTEXT> block), so keep it small and high-value.

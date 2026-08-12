@@ -446,6 +446,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         available_skills_prompt: str | None = None
         custom_suffix: str | None = None
         memory_context: str | None = None
+        user_memory_dir: str | None = None
         secret_infos: tuple[tuple[str, str | None], ...] = ()
 
         if agent_context is not None:
@@ -464,6 +465,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             available_skills_prompt = data.available_skills_prompt or None
             custom_suffix = agent_context.system_message_suffix or None
             memory_context = agent_context.memory_context or None
+            # Resolve the user-tier memory directory at build time so the write
+            # guidance honors OH_PERSISTENCE_DIR and matches load_memory()'s read
+            # path. Only advertised when persistent memory is enabled.
+            if agent_context.load_memory:
+                user_memory_dir = str(get_user_persistence_dir() / "memory")
             secret_infos = tuple(
                 (info["name"] or "", info["description"]) for info in data.secret_infos
             )
@@ -493,6 +499,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             available_skills_prompt=available_skills_prompt,
             custom_suffix=custom_suffix,
             memory_context=memory_context,
+            user_memory_dir=user_memory_dir,
             secret_infos=secret_infos,
         )
 
