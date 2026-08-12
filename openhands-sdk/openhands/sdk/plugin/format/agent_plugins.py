@@ -62,9 +62,12 @@ class AgentPluginsFormat(PluginFormat):
     extension are follow-ups under #4405, so their loaders return empty --
     spec-correct, since a client must ignore extensions it does not implement.
 
-    Hooks, commands, agents and ``entry_command`` are not portable core: they
-    can only travel inside a client extension, whose namespace and layout are
-    still open in #4405.
+    Hooks, commands, agents and ``entry_command`` are not portable core. The
+    standard's place for them is a client extension: a reverse-domain namespace
+    carrying manifest data under ``extensions.<ns>``, a top-level ``<ns>/``
+    directory, or both, whose contents the namespace owner defines. Which
+    namespace we claim and what goes where are still open in #4405, and nothing
+    here reads one yet.
 
     Not registered in ``_FORMATS`` yet; see the package docstring.
     """
@@ -147,13 +150,13 @@ class AgentPluginsFormat(PluginFormat):
         return {}
 
     def load_hooks(self, plugin_dir: Path) -> HookConfig | None:  # noqa: ARG002
-        """Not portable core: hooks arrive via a client extension."""
+        """Always None: hooks are not part of the Agent Plugins portable core."""
         return None
 
     def load_agents(self, plugin_dir: Path) -> list[AgentDefinition]:  # noqa: ARG002
-        """Not portable core: agents arrive via a client extension."""
+        """Always empty: agents are not part of the Agent Plugins portable core."""
         return []
 
     def load_commands(self, plugin_dir: Path) -> list[CommandDefinition]:  # noqa: ARG002
-        """Not portable core: commands arrive via a client extension."""
+        """Always empty: commands are not part of the Agent Plugins portable core."""
         return []
