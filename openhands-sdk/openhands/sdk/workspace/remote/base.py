@@ -1,3 +1,5 @@
+import json
+import os
 from collections.abc import Generator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -242,13 +244,43 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
     def default_conversation_tags(self) -> dict[str, str] | None:
         """Default tags to apply to conversations created with this workspace.
 
-        Subclasses (e.g., OpenHandsCloudWorkspace) can override this to provide
-        context-specific tags like automation metadata.
+        Derives automation metadata from environment variables injected by the
+        automation dispatcher, so any remote workspace (local agent servers
+        included) stamps automation context onto the conversations it creates.
+
+        The tags include (keys are lowercase alphanumeric per API requirements):
+          - automationtrigger: The trigger type (e.g., 'cron', 'webhook', 'manual')
+          - automationid: The automation's unique identifier
+          - automationname: Human-readable automation name
+          - automationrunid: The specific run identifier
 
         Returns:
-            Dictionary of tag key-value pairs, or None if no default tags.
+            Dictionary of tag key-value pairs (empty when no automation env
+            vars are present). Subclasses (e.g., OpenHandsCloudWorkspace) can
+            extend this with additional context.
         """
-        return None
+        tags: dict[str, str] = {}
+
+        # Parse AUTOMATION_EVENT_PAYLOAD (injected by dispatcher)
+        payload_str = os.environ.get("AUTOMATION_EVENT_PAYLOAD")
+        if payload_str:
+            try:
+                payload = json.loads(payload_str)
+                if isinstance(payload, dict):
+                    if payload.get("trigger"):
+                        tags["automationtrigger"] = str(payload["trigger"])
+                    if payload.get("automation_id"):
+                        tags["automationid"] = str(payload["automation_id"])
+                    if payload.get("automation_name"):
+                        tags["automationname"] = str(payload["automation_name"])
+            except (json.JSONDecodeError, TypeError):
+                logger.error("Failed to parse AUTOMATION_EVENT_PAYLOAD")
+
+        run_id = os.environ.get("AUTOMATION_RUN_ID")
+        if run_id:
+            tags["automationrunid"] = run_id
+
+        return tags
 
     def register_conversation(self, conversation_id: str) -> None:
         """Register a conversation ID with this workspace.

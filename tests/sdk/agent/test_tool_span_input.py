@@ -23,8 +23,12 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
+from openhands.sdk.agent.parallel_executor import ParallelToolExecutor
 from openhands.sdk.conversation import Conversation
-from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.conversation.cancellation import CancellationToken
+from openhands.sdk.event import ActionEvent
+from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
+from openhands.sdk.security.confirmation_policy import AlwaysConfirm
 from openhands.sdk.tool import Action, Observation, Tool, ToolExecutor, register_tool
 from openhands.sdk.tool.tool import ToolDefinition
 
@@ -158,6 +162,51 @@ def _responses() -> Any:
     return fake
 
 
+def _mixed_result_response(**kwargs: Any) -> ModelResponse:
+    message = LiteLLMMessage(
+        role="assistant",
+        content="checking",
+        tool_calls=[
+            ChatCompletionMessageToolCall(
+                id="call_valid",
+                type="function",
+                function=Function(
+                    name="span_input_echo_tool",
+                    arguments=json.dumps({"value": "hi"}),
+                ),
+            ),
+            ChatCompletionMessageToolCall(
+                id="call_invalid",
+                type="function",
+                function=Function(
+                    name="span_input_echo_tool",
+                    arguments=json.dumps({"bogus": True}),
+                ),
+            ),
+            ChatCompletionMessageToolCall(
+                id="call_missing",
+                type="function",
+                function=Function(name="missing_tool", arguments="{}"),
+            ),
+            ChatCompletionMessageToolCall(
+                id="call_blocked",
+                type="function",
+                function=Function(
+                    name="span_input_echo_tool",
+                    arguments=json.dumps({"value": "blocked"}),
+                ),
+            ),
+        ],
+    )
+    return ModelResponse(
+        id="mixed-results",
+        created=0,
+        model="gpt-4o",
+        object="chat.completion",
+        choices=[Choices(index=0, message=message, finish_reason="tool_calls")],
+    )
+
+
 def test_tool_span_input_is_the_action_only(exported):
     llm = LLM(usage_id="probe", model="gpt-4o", api_key=SecretStr("k"))
     conversation = Conversation(
@@ -179,3 +228,135 @@ def test_tool_span_input_is_the_action_only(exported):
 
     assert "conversation" not in payload
     assert payload["action"]["value"] == "hi"
+
+
+def test_every_declared_tool_call_emits_one_result_span(exported):
+    llm = LLM(usage_id="probe", model="gpt-4o", api_key=SecretStr("k"))
+    agent = Agent(
+        llm=llm,
+        tools=[Tool(name="SpanInputEchoTool")],
+        tool_concurrency_limit=2,
+    )
+    conversation = Conversation(agent=agent, callbacks=[])
+
+    def on_event(event: Any) -> None:
+        if isinstance(event, ActionEvent) and event.tool_call_id == "call_blocked":
+            conversation.state.block_action(event.id, "blocked by policy")
+
+    with patch(
+        "openhands.sdk.llm.llm.litellm_completion",
+        side_effect=_mixed_result_response,
+    ):
+        conversation.send_message(
+            Message(role="user", content=[TextContent(text="hi")])
+        )
+        agent.step(conversation, on_event=on_event)
+    conversation.close()
+
+    tool_spans = [
+        span
+        for span in exported()
+        if (span.attributes or {}).get("lmnr.span.type") == "TOOL"
+    ]
+    spans_by_call = {
+        (span.attributes or {})[
+            "lmnr.association.properties.metadata.tool_call_id"
+        ]: span
+        for span in tool_spans
+    }
+
+    assert set(spans_by_call) == {
+        "call_valid",
+        "call_invalid",
+        "call_missing",
+        "call_blocked",
+    }
+    assert len(tool_spans) == len(spans_by_call)
+
+    invalid_output = (spans_by_call["call_invalid"].attributes or {})[
+        "lmnr.span.output"
+    ]
+    missing_output = (spans_by_call["call_missing"].attributes or {})[
+        "lmnr.span.output"
+    ]
+    blocked_output = (spans_by_call["call_blocked"].attributes or {})[
+        "lmnr.span.output"
+    ]
+    assert "Error validating tool" in invalid_output
+    assert "Tool 'missing_tool' not found" in missing_output
+    assert "Action rejected: blocked by policy" in blocked_output
+
+
+def test_rejected_pending_tool_call_emits_one_result_span(exported):
+    llm = LLM(usage_id="probe", model="gpt-4o", api_key=SecretStr("k"))
+    agent = Agent(llm=llm, tools=[Tool(name="SpanInputEchoTool")])
+    conversation = Conversation(agent=agent, callbacks=[])
+    conversation.set_confirmation_policy(AlwaysConfirm())
+
+    with patch("openhands.sdk.llm.llm.litellm_completion", side_effect=_responses()):
+        conversation.send_message(
+            Message(role="user", content=[TextContent(text="hi")])
+        )
+        agent.step(conversation, on_event=conversation._on_event)
+    conversation.reject_pending_actions("not approved")
+    conversation.close()
+
+    tool_spans = [
+        span
+        for span in exported()
+        if (span.attributes or {}).get("lmnr.span.type") == "TOOL"
+    ]
+    root_spans = [span for span in exported() if span.name == "conversation"]
+    assert len(tool_spans) == 1
+    assert len(root_spans) == 1
+    attributes = tool_spans[0].attributes or {}
+    assert attributes["lmnr.association.properties.metadata.tool_call_id"] == "call_x"
+    assert "Action rejected: not approved" in attributes["lmnr.span.output"]
+    assert tool_spans[0].context is not None
+    assert root_spans[0].context is not None
+    assert tool_spans[0].context.trace_id == root_spans[0].context.trace_id
+
+
+def test_cancelled_tool_call_span_shares_conversation_trace(exported):
+    llm = LLM(usage_id="probe", model="gpt-4o", api_key=SecretStr("k"))
+    conversation = Conversation(agent=Agent(llm=llm), callbacks=[])
+    action = ActionEvent(
+        thought=[TextContent(text="test")],
+        tool_call=MessageToolCall(
+            id="call_cancelled",
+            name="span_input_echo_tool",
+            arguments=json.dumps({"value": "hi"}),
+            origin="completion",
+        ),
+        tool_name="span_input_echo_tool",
+        tool_call_id="call_cancelled",
+        llm_response_id="response",
+    )
+    token = CancellationToken()
+    token.cancel()
+
+    ParallelToolExecutor().execute_batch(
+        [action],
+        lambda _: pytest.fail("cancelled tool executed"),
+        cancel_token=token,
+        span_owner=conversation,
+    )
+    conversation.close()
+
+    tool_spans = [
+        span
+        for span in exported()
+        if (span.attributes or {}).get("lmnr.span.type") == "TOOL"
+    ]
+    root_spans = [span for span in exported() if span.name == "conversation"]
+    assert len(tool_spans) == 1
+    assert len(root_spans) == 1
+    attributes = tool_spans[0].attributes or {}
+    assert (
+        attributes["lmnr.association.properties.metadata.tool_call_id"]
+        == "call_cancelled"
+    )
+    assert "cancelled by interrupt" in attributes["lmnr.span.output"]
+    assert tool_spans[0].context is not None
+    assert root_spans[0].context is not None
+    assert tool_spans[0].context.trace_id == root_spans[0].context.trace_id
