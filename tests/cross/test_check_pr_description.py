@@ -23,7 +23,7 @@ validate_pr_body = _prod.validate_pr_body
 body_from_event = _prod.body_from_event
 extract_linked_issue_numbers = _prod.extract_linked_issue_numbers
 validate_linked_issue_ready = _prod.validate_linked_issue_ready
-fetch_issue_labels = _prod.fetch_issue_labels
+fetch_issue_details = _prod.fetch_issue_details
 
 
 VALID_BODY = """<!-- Keep this PR as draft until it is ready for review. -->
@@ -107,9 +107,18 @@ def test_optional_template_sections_may_be_removed():
 
 def test_body_from_event_reads_pull_request_body(tmp_path: Path):
     event_path = tmp_path / "event.json"
-    event_path.write_text(json.dumps({"pull_request": {"body": VALID_BODY}}))
+    event_path.write_text(
+        json.dumps(
+            {
+                "pull_request": {"body": VALID_BODY},
+                "repository": {"full_name": "org/repo"},
+            }
+        )
+    )
 
-    assert body_from_event(event_path) == VALID_BODY
+    body, repo = body_from_event(event_path)
+    assert body == VALID_BODY
+    assert repo == "org/repo"
 
 
 def test_extract_linked_issue_numbers_keyword_and_bare_ref():
@@ -155,21 +164,52 @@ def test_validate_linked_issue_ready_no_token_skips_network(monkeypatch):
     def _fail(*args, **kwargs):
         raise AssertionError("should not call the network without a token")
 
-    monkeypatch.setattr(_prod, "fetch_issue_labels", _fail)
+    monkeypatch.setattr(_prod, "fetch_issue_details", _fail)
     assert validate_linked_issue_ready("Fixes #12\n", None, None) == []
 
 
 def test_validate_linked_issue_ready_passes_with_ready_label(monkeypatch):
     monkeypatch.setattr(
-        _prod, "fetch_issue_labels", lambda repo, num, token: ["ready-for-dev"]
+        _prod,
+        "fetch_issue_details",
+        lambda repo, num, token: (["ready-for-dev"], "2026-08-13T00:00:00Z"),
     )
     assert validate_linked_issue_ready("Fixes #12\n", "org/repo", "token") == []
 
 
-def test_validate_linked_issue_ready_fails_when_not_ready(monkeypatch):
-    monkeypatch.setattr(_prod, "fetch_issue_labels", lambda repo, num, token: ["bug"])
+def test_validate_linked_issue_ready_grandfathers_pre_rollout_issue(monkeypatch):
+    monkeypatch.setattr(
+        _prod,
+        "fetch_issue_details",
+        lambda repo, num, token: (["bug"], "2026-01-15T00:00:00Z"),
+    )
+    assert validate_linked_issue_ready("Fixes #12\n", "org/repo", "token") == []
+
+
+def test_validate_linked_issue_ready_fails_for_new_not_ready_issue(monkeypatch):
+    monkeypatch.setattr(
+        _prod,
+        "fetch_issue_details",
+        lambda repo, num, token: (["bug"], "2026-08-13T00:00:00Z"),
+    )
     errors = validate_linked_issue_ready("Fixes #12\n", "org/repo", "token")
     assert errors and "ready-for-dev" in errors[0]
+
+
+def test_validate_linked_issue_ready_new_unready_not_masked_by_ready_sibling(
+    monkeypatch,
+):
+    def _issues(repo, num, token):
+        # #12 carries ready-for-dev; #34 is new and not ready.
+        if num == 34:
+            return ["bug"], "2026-08-13T00:00:00Z"
+        return ["ready-for-dev"], "2026-08-13T00:00:00Z"
+
+    monkeypatch.setattr(_prod, "fetch_issue_details", _issues)
+    body = "Fixes #12 and Closes #34"
+    errors = validate_linked_issue_ready(body, "org/repo", "token")
+    assert "#34" in errors[0]
+    assert "ready-for-dev" in errors[0]
 
 
 def test_validate_linked_issue_ready_skips_missing_issue(monkeypatch):
@@ -181,6 +221,6 @@ def test_validate_linked_issue_ready_skips_missing_issue(monkeypatch):
             "https://api.github.com", 404, "Not Found", HTTPMessage(), None
         )
 
-    monkeypatch.setattr(_prod, "fetch_issue_labels", _missing)
+    monkeypatch.setattr(_prod, "fetch_issue_details", _missing)
     errors = validate_linked_issue_ready("Fixes #12\n", "org/repo", "token")
     assert errors and "could not be found" in errors[0]

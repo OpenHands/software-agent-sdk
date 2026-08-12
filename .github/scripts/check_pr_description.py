@@ -22,6 +22,11 @@ AGENT_HEADING_RE = re.compile(r"(?im)^\s*AGENT:\s*$")
 ISSUE_REF_RE = re.compile(r"(?i)\b(?:fix|clos|resolv)(?:e?(?:s|d)?|ing)?\s+#(\d+)")
 BARE_ISSUE_REF_RE = re.compile(r"(?<!\w)#(\d+)")
 READY_FOR_DEV_LABEL = "ready-for-dev"
+# Issues created before the `ready-for-dev` rollout are grandfathered: the
+# issue-readiness workflow only labels issues on `issues` events, so long-open
+# issues were never evaluated. Requiring the label retroactively would block
+# existing PRs linked to those issues. Newly created issues must carry it.
+READY_FOR_DEV_ROLLOUT_ISO = "2026-08-12"
 
 
 def visible_text(text: str) -> str:
@@ -84,17 +89,24 @@ def extract_linked_issue_numbers(body: str) -> list[int]:
     return numbers
 
 
-def fetch_issue_labels(repo: str, issue_number: int, token: str) -> list[str]:
+def fetch_issue_details(
+    repo: str, issue_number: int, token: str
+) -> tuple[list[str], str]:
+    """Return an issue's (labels, created_at) from the GitHub API."""
     request = urllib.request.Request(
-        f"https://api.github.com/repos/{repo}/issues/{issue_number}/labels",
+        f"https://api.github.com/repos/{repo}/issues/{issue_number}",
         headers={
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
         },
     )
-    with urllib.request.urlopen(request) as response:  # noqa: S310 - trusted HTTPS API
-        labels = json.loads(response.read().decode())
-    return [label["name"] for label in labels if isinstance(label, dict)]
+    with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310 - trusted HTTPS API
+        issue = json.loads(response.read().decode())
+    labels = [
+        label["name"] for label in issue.get("labels", []) if isinstance(label, dict)
+    ]
+    created_at = issue.get("created_at", "")
+    return labels, created_at
 
 
 def validate_linked_issue_ready(
@@ -104,31 +116,39 @@ def validate_linked_issue_ready(
     if not numbers:
         return [
             "Link an issue in the `## Issue Number` section (e.g. `Fixes #123`). "
-            "The issue must carry the `ready-for-dev` label."
+            "Newly opened issues must carry the `ready-for-dev` label."
         ]
     if not repo or not token:
         return []
 
     checked: list[int] = []
+    not_ready_new: list[int] = []
     for number in numbers:
         try:
-            labels = fetch_issue_labels(repo, number, token)
+            labels, created_at = fetch_issue_details(repo, number, token)
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 continue
             raise
         checked.append(number)
-        if READY_FOR_DEV_LABEL in [label.lower() for label in labels]:
-            return []
+        if READY_FOR_DEV_LABEL in (label.lower() for label in labels):
+            continue
+        if created_at[:10] < READY_FOR_DEV_ROLLOUT_ISO:
+            # Predates the rollout; grandfathered to avoid retroactive blocking.
+            continue
+        not_ready_new.append(number)
 
-    if checked:
-        refs = ", ".join(f"#{number}" for number in checked)
+    if not checked:
+        refs = ", ".join(f"#{number}" for number in numbers)
+        return [f"Referenced issue(s) {refs} could not be found in this repository."]
+    if not_ready_new:
+        refs = ", ".join(f"#{number}" for number in not_ready_new)
         return [
-            f"None of the linked issues ({refs}) carry the `ready-for-dev` label. "
-            "The issue must meet the readiness criteria before a PR can be opened."
+            f"Linked issue(s) ({refs}) carry neither `ready-for-dev` nor a "
+            "pre-rollout creation date. Newly referenced issues must meet the "
+            "readiness criteria before a PR can be opened."
         ]
-    refs = ", ".join(f"#{number}" for number in numbers)
-    return [f"Referenced issue(s) {refs} could not be found in this repository."]
+    return []
 
 
 def validate_pr_body(body: str) -> list[str]:
@@ -154,13 +174,16 @@ def validate_pr_body(body: str) -> list[str]:
     return errors
 
 
-def body_from_event(event_path: Path) -> str:
+def body_from_event(event_path: Path) -> tuple[str, str | None]:
+    """Return the (pull request body, repository full name) from an event payload."""
     payload = json.loads(event_path.read_text())
     pull_request = payload.get("pull_request")
     if not isinstance(pull_request, dict):
         raise ValueError("GitHub event payload does not contain a pull_request object")
     body = pull_request.get("body")
-    return body if isinstance(body, str) else ""
+    body = body if isinstance(body, str) else ""
+    repo = payload.get("repository", {}).get("full_name")
+    return body, repo if isinstance(repo, str) else None
 
 
 def parse_args() -> argparse.Namespace:
@@ -188,18 +211,15 @@ def main() -> int:
     args = parse_args()
     if args.body_file is not None:
         body = args.body_file.read_text()
+        repo = None
     elif args.event_path is not None:
-        body = body_from_event(args.event_path)
+        body, repo = body_from_event(args.event_path)
     else:
         raise SystemExit("Pass --body-file or set GITHUB_EVENT_PATH.")
 
     errors = validate_pr_body(body)
 
-    repo = None
     token = os.environ.get("GITHUB_TOKEN")
-    if args.event_path is not None and args.body_file is None:
-        payload = json.loads(args.event_path.read_text())
-        repo = payload.get("repository", {}).get("full_name")
     errors.extend(validate_linked_issue_ready(body, repo, token))
 
     for error in errors:
