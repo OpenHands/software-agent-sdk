@@ -47,7 +47,7 @@ NO_RESPONSE = "_No response_"
 
 # A reproducible SDK command must appear in the Actual Behavior section.
 RUN_METHOD_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"\bpython(?:\s|\d|$)", re.IGNORECASE),
+    re.compile(r"\bpython\b", re.IGNORECASE),
     re.compile(r"\bpytest\b", re.IGNORECASE),
     re.compile(r"\buv\b", re.IGNORECASE),
     re.compile(r"\bpip\b", re.IGNORECASE),

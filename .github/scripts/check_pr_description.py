@@ -17,7 +17,7 @@ HTML_COMMENT_RE = re.compile(r"<!--[\s\S]*?-->")
 HEADING_RE = re.compile(r"(?m)^##\s+(.+?)\s*$")
 HUMAN_HEADING_RE = re.compile(r"(?im)^\s*HUMAN:\s*$")
 AGENT_HEADING_RE = re.compile(r"(?im)^\s*AGENT:\s*$")
-ISSUE_REF_RE = re.compile(r"(?i)(?:fix|clos|resolv)(?:e?(?:s|d)?|ing)?\s+#(\d+)")
+ISSUE_REF_RE = re.compile(r"(?i)\b(?:fix|clos|resolv)(?:e?(?:s|d)?|ing)?\s+#(\d+)")
 BARE_ISSUE_REF_RE = re.compile(r"(?<!\w)#(\d+)")
 READY_FOR_DEV_LABEL = "ready-for-dev"
 

@@ -134,6 +134,16 @@ def test_extract_linked_issue_numbers_no_bare_ref_outside_issue_section():
     assert extract_linked_issue_numbers(body) == []
 
 
+def test_extract_linked_issue_numbers_keyword_inside_word_is_ignored():
+    # "fix"/"clos"/"resolv" must not match inside larger words (e.g. "crucifixes").
+    body = (
+        "## Summary\n\n"
+        "crucifixes #12, encloses #34, transfixes #56.\n\n"
+        "## Issue Number\n\nN/A\n"
+    )
+    assert extract_linked_issue_numbers(body) == []
+
+
 def test_validate_linked_issue_ready_requires_a_number():
     errors = validate_linked_issue_ready(
         "## Issue Number\n\nN/A\n", "org/repo", "token"

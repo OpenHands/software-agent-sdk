@@ -93,6 +93,16 @@ def test_bug_missing_run_method_fails():
     assert any("reproducible SDK command" in r for r in result.reasons)
 
 
+def test_bug_backticked_python_is_a_valid_run_method():
+    body = BUG_READY.replace(
+        "Running `pip install openhands-sdk` and then `pytest` fails with a TypeError",
+        "Running `python` from a venv fails to start",
+    )
+    result = evaluate_readiness(body, ["bug"])
+    assert result.ready is True
+    assert result.reasons == []
+
+
 def test_bug_acceptance_needs_checklist_item():
     body = BUG_READY.replace("- [ ] No `TypeError`", "Fix the TypeError")
     result = evaluate_readiness(body, ["bug"])
