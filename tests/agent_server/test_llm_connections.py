@@ -53,11 +53,23 @@ def test_list_empty(client):
 def test_create_then_list(client):
     r = client.post(
         "/api/llm/connections",
-        json={"provider": "openai", "key": "sk-test", "models": ["gpt-4o"]},
+        json={
+            "provider": "openai",
+            "key": "sk-test",
+            "label": "work",
+            "base_url": "https://proxy.example/v1",
+            "api_mode": "chat",
+            "custom_headers": {"X-Org": "eng"},
+            "models": ["gpt-4o"],
+        },
     )
     assert r.status_code == 201
     body = r.json()
     assert body["provider"] == "openai"
+    assert body["label"] == "work"
+    assert body["base_url"] == "https://proxy.example/v1"
+    assert body["api_mode"] == "chat"
+    assert body["custom_headers"] == {"X-Org": "eng"}
     assert body["models"] == ["gpt-4o"]
     assert body["api_key_set"] is True
     # Key never echoed.
@@ -70,6 +82,9 @@ def test_create_then_list(client):
     listed = r.json()
     assert len(listed) == 1
     assert listed[0]["id"] == cid
+    assert listed[0]["base_url"] == "https://proxy.example/v1"
+    assert listed[0]["api_mode"] == "chat"
+    assert listed[0]["custom_headers"] == {"X-Org": "eng"}
 
 
 def test_create_unknown_provider_422(client):
@@ -102,11 +117,20 @@ def test_patch_rotate_label_models(client):
 
     r = client.patch(
         f"/api/llm/connections/{cid}",
-        json={"label": "work", "models": ["gpt-4o", "gpt-4o-mini"]},
+        json={
+            "label": "work",
+            "base_url": "https://proxy.example/v1",
+            "api_mode": "responses",
+            "custom_headers": {"X-Team": "platform"},
+            "models": ["gpt-4o", "gpt-4o-mini"],
+        },
     )
     assert r.status_code == 200
     body = r.json()
     assert body["label"] == "work"
+    assert body["base_url"] == "https://proxy.example/v1"
+    assert body["api_mode"] == "responses"
+    assert body["custom_headers"] == {"X-Team": "platform"}
     assert body["models"] == ["gpt-4o", "gpt-4o-mini"]
 
     # Rotate key: api_key_set stays true.
@@ -124,9 +148,7 @@ def test_patch_requires_a_field(client):
 
 
 def test_patch_missing_connection_404(client):
-    r = client.patch(
-        "/api/llm/connections/none", json={"label": "x"}
-    )
+    r = client.patch("/api/llm/connections/none", json={"label": "x"})
     # When only label/models are set (no key), the 404 comes from patch().
     assert r.status_code == 404
 
@@ -171,15 +193,13 @@ def test_validate_success_stamps_timestamp(client):
 
 
 def test_validate_missing_connection_404(client):
-    assert (
-        client.post("/api/llm/connections/none/validate").status_code == 404
-    )
+    assert client.post("/api/llm/connections/none/validate").status_code == 404
 
 
 def test_validate_uses_injected_validator(client, monkeypatch):
     """validate_provider_key is module-level so tests can monkeypatch it."""
 
-    def fake(provider, key, *, live=False):
+    def fake(provider, key, *, live=False, base_url=None, custom_headers=None):
         return conn_module.ValidationResult(
             ok=True,
             models=["fake-model-a", "fake-model-b"],
@@ -201,7 +221,7 @@ def test_validate_live_flag_marks_verified(client, monkeypatch):
     """The ``live`` query flag drives a real probe and sets ``verified``."""
     calls: list[bool] = []
 
-    def fake(provider, key, *, live=False):
+    def fake(provider, key, *, live=False, base_url=None, custom_headers=None):
         calls.append(live)
         return conn_module.ValidationResult(
             ok=live, models=["m1"] if live else [], error=None, verified=live
@@ -214,6 +234,46 @@ def test_validate_live_flag_marks_verified(client, monkeypatch):
     body = client.post(f"/api/llm/connections/{cid}/validate?live=true").json()
     assert calls == [True]
     assert body["verified"] is True
+
+
+def test_validate_passes_endpoint_settings(client, monkeypatch):
+    calls: list[dict[str, object]] = []
+
+    def fake(provider, key, *, live=False, base_url=None, custom_headers=None):
+        calls.append(
+            {
+                "provider": provider,
+                "live": live,
+                "base_url": base_url,
+                "custom_headers": custom_headers,
+            }
+        )
+        return conn_module.ValidationResult(
+            ok=True, models=["gpt-4o"], error=None, verified=live
+        )
+
+    monkeypatch.setattr(conn_module, "validate_provider_key", fake)
+    cid = client.post(
+        "/api/llm/connections",
+        json={
+            "provider": "openai",
+            "key": "sk",
+            "base_url": "https://proxy.example/v1",
+            "custom_headers": {"X-Org": "eng"},
+        },
+    ).json()["id"]
+
+    body = client.post(f"/api/llm/connections/{cid}/validate?live=true").json()
+
+    assert body["ok"] is True
+    assert calls == [
+        {
+            "provider": "openai",
+            "live": True,
+            "base_url": "https://proxy.example/v1",
+            "custom_headers": {"X-Org": "eng"},
+        }
+    ]
 
 
 def test_create_profile_from_connection(client):
@@ -237,6 +297,7 @@ def test_create_profile_from_connection(client):
     # api_key resolves through the connection rather than duplicating the key.
     detail = client.get("/api/profiles/work-gpt4o").json()
     assert detail["api_key_set"] is True
+    assert detail["config"]["api_mode"] == "auto"
 
     # Deleting the connection now reports the referencing profile.
     deleted = client.delete(f"/api/llm/connections/{cid}").json()
@@ -255,6 +316,31 @@ def test_create_profile_rejects_model_not_in_catalog(client):
     assert r.status_code == 422
 
 
+def test_create_profile_inherits_connection_endpoint_settings(client):
+    cid = client.post(
+        "/api/llm/connections",
+        json={
+            "provider": "openai",
+            "key": "sk-test",
+            "base_url": "https://proxy.example/v1",
+            "api_mode": "responses",
+            "custom_headers": {"X-Org": "eng"},
+            "models": ["gpt-4o"],
+        },
+    ).json()["id"]
+
+    r = client.post(
+        f"/api/llm/connections/{cid}/profiles",
+        json={"profile_name": "gateway-gpt4o", "model": "gpt-4o"},
+    )
+    assert r.status_code == 201
+
+    detail = client.get("/api/profiles/gateway-gpt4o").json()
+    assert detail["config"]["base_url"] == "https://proxy.example/v1"
+    assert detail["config"]["api_mode"] == "responses"
+    assert detail["config"]["extra_headers"] == {"X-Org": "eng"}
+
+
 def test_create_limit_enforced(client, monkeypatch):
     monkeypatch.setattr(conn_module, "MAX_CONNECTIONS", 2)
     for i in range(2):
@@ -265,9 +351,7 @@ def test_create_limit_enforced(client, monkeypatch):
             ).status_code
             == 201
         )
-    r = client.post(
-        "/api/llm/connections", json={"provider": "openai", "key": "sk-3"}
-    )
+    r = client.post("/api/llm/connections", json={"provider": "openai", "key": "sk-3"})
     assert r.status_code == 409
 
 
@@ -330,6 +414,9 @@ def test_connections_store_roundtrip(temp_dirs):
         id="abc",
         provider="openai",
         label="work",
+        base_url="https://proxy.example/v1",
+        api_mode="chat",
+        custom_headers={"X-Org": "eng"},
         secret_name="llm_connection_abc",
         models=["gpt-4o"],
         created_at=1700000000,
@@ -340,6 +427,9 @@ def test_connections_store_roundtrip(temp_dirs):
     reloaded = store.load()
     assert reloaded is not None
     assert reloaded.connections[0].secret_name == "llm_connection_abc"
+    assert reloaded.connections[0].base_url == "https://proxy.example/v1"
+    assert reloaded.connections[0].api_mode == "chat"
+    assert reloaded.connections[0].custom_headers == {"X-Org": "eng"}
     assert reloaded.schema_version == 1
 
 

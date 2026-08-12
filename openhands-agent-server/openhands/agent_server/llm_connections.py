@@ -40,6 +40,7 @@ import os
 import time
 import uuid
 from collections.abc import Callable
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field, SecretStr
@@ -98,19 +99,25 @@ class ConnectionCreateRequest(BaseModel):
     provider: str = Field(..., min_length=1, max_length=128)
     key: SecretStr = Field(..., min_length=1)
     label: str | None = Field(default=None, max_length=128)
+    base_url: str | None = Field(default=None, max_length=2048)
+    api_mode: Literal["auto", "chat", "responses"] = "auto"
+    custom_headers: dict[str, str] = Field(default_factory=dict)
     models: list[str] = Field(default_factory=list)
 
 
 class ConnectionUpdateRequest(BaseModel):
     """Partial update a connection.
 
-    ``key`` rotates the named secret (rewrites the SecretsStore entry). ``label``
-    and ``models`` are straightforward field updates. At least one field is
-    required.
+    ``key`` rotates the named secret (rewrites the SecretsStore entry).
+    ``label``, endpoint settings, and ``models`` are straightforward field
+    updates. At least one field is required.
     """
 
     key: SecretStr | None = None
     label: str | None = None
+    base_url: str | None = Field(default=None, max_length=2048)
+    api_mode: Literal["auto", "chat", "responses"] | None = None
+    custom_headers: dict[str, str] | None = None
     models: list[str] | None = None
 
 
@@ -120,6 +127,9 @@ class ConnectionResponse(BaseModel):
     id: str
     provider: str
     label: str | None = None
+    base_url: str | None = None
+    api_mode: Literal["auto", "chat", "responses"] = "auto"
+    custom_headers: dict[str, str] = Field(default_factory=dict)
     models: list[str] = Field(default_factory=list)
     created_at: int
     last_validated_at: int | None = None
@@ -161,6 +171,8 @@ class CreateProfileFromConnectionRequest(BaseModel):
 
     profile_name: str = Field(..., min_length=1, max_length=64)
     model: str = Field(..., min_length=1)
+    # Optional per-profile override. If omitted, the connection endpoint
+    # settings are used.
     base_url: str | None = None
 
 
@@ -172,10 +184,16 @@ class ProfileFromConnectionResponse(BaseModel):
 
 
 def _to_response(conn: ProviderConnection, *, api_key_set: bool) -> ConnectionResponse:
+    api_mode = (
+        conn.api_mode if conn.api_mode in {"auto", "chat", "responses"} else "auto"
+    )
     return ConnectionResponse(
         id=conn.id,
         provider=conn.provider,
         label=conn.label,
+        base_url=conn.base_url,
+        api_mode=api_mode,
+        custom_headers=dict(conn.custom_headers),
         models=list(conn.models),
         created_at=conn.created_at,
         last_validated_at=conn.last_validated_at,
@@ -264,7 +282,13 @@ def _provider_catalog(provider: str) -> list[str]:
     return sorted(set(filtered))
 
 
-def _live_probe(provider: str, key: str) -> tuple[bool, str | None]:
+def _live_probe(
+    provider: str,
+    key: str,
+    *,
+    base_url: str | None = None,
+    custom_headers: dict[str, str] | None = None,
+) -> tuple[bool, str | None]:
     """Cheaply check a key against a provider over the network.
 
     Returns ``(ok, error)``. Uses LiteLLM's provider-endpoint check, which lists
@@ -281,6 +305,8 @@ def _live_probe(provider: str, key: str) -> tuple[bool, str | None]:
             check_provider_endpoint=True,
             custom_llm_provider=provider,
             api_key=key,
+            api_base=base_url,
+            extra_headers=custom_headers or None,
         )
         return True, None
     except (AuthenticationError, PermissionDeniedError) as e:
@@ -291,7 +317,12 @@ def _live_probe(provider: str, key: str) -> tuple[bool, str | None]:
 
 
 def validate_provider_key(
-    provider: str, key: str, *, live: bool = False
+    provider: str,
+    key: str,
+    *,
+    live: bool = False,
+    base_url: str | None = None,
+    custom_headers: dict[str, str] | None = None,
 ) -> ValidationResult:
     """Validate a provider key and return the models it can select.
 
@@ -311,7 +342,12 @@ def validate_provider_key(
     if not live:
         return ValidationResult(ok=True, models=catalog, error=None, verified=False)
 
-    ok, error = _live_probe(provider, key)
+    ok, error = _live_probe(
+        provider,
+        key,
+        base_url=base_url,
+        custom_headers=custom_headers,
+    )
     return ValidationResult(
         ok=ok, models=catalog if ok else [], error=error, verified=ok
     )
@@ -327,9 +363,7 @@ async def list_connections(request: Request) -> list[ConnectionResponse]:
     store = get_connections_store(config)
     persisted = store.load()
     conns = persisted.connections if persisted is not None else []
-    return [
-        _to_response(c, api_key_set=_api_key_set(c.secret_name)) for c in conns
-    ]
+    return [_to_response(c, api_key_set=_api_key_set(c.secret_name)) for c in conns]
 
 
 @connections_router.post(
@@ -367,6 +401,9 @@ async def create_connection(
             id=connection_id,
             provider=body.provider,
             label=body.label,
+            base_url=body.base_url,
+            api_mode=body.api_mode,
+            custom_headers=dict(body.custom_headers),
             secret_name=secret_name,
             models=list(body.models),
             created_at=_now(),
@@ -425,10 +462,20 @@ async def update_connection(
     request: Request, connection_id: str, body: ConnectionUpdateRequest
 ) -> ConnectionResponse:
     """Update a connection: rotate key, rename label, or set selected models."""
-    if body.key is None and body.label is None and body.models is None:
+    if (
+        body.key is None
+        and body.label is None
+        and body.base_url is None
+        and body.api_mode is None
+        and body.custom_headers is None
+        and body.models is None
+    ):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Provide at least one of: key, label, models",
+            detail=(
+                "Provide at least one of: key, label, base_url, api_mode, "
+                "custom_headers, models"
+            ),
         )
 
     config = get_config(request)
@@ -462,6 +509,14 @@ async def update_connection(
                         )
                 if body.label is not None:
                     c = c.model_copy(update={"label": body.label})
+                if body.base_url is not None:
+                    c = c.model_copy(update={"base_url": body.base_url})
+                if body.api_mode is not None:
+                    c = c.model_copy(update={"api_mode": body.api_mode})
+                if body.custom_headers is not None:
+                    c = c.model_copy(
+                        update={"custom_headers": dict(body.custom_headers)}
+                    )
                 if body.models is not None:
                     c = c.model_copy(update={"models": list(body.models)})
                 conn_list.connections = [
@@ -479,9 +534,7 @@ async def update_connection(
 
 
 @connections_router.delete("/{connection_id}", response_model=DisconnectResponse)
-async def delete_connection(
-    request: Request, connection_id: str
-) -> DisconnectResponse:
+async def delete_connection(request: Request, connection_id: str) -> DisconnectResponse:
     """Disconnect: delete the connection record and its named secret.
 
     Returns the names of LLM profiles that referenced the connection's key so the
@@ -539,9 +592,7 @@ def _live_validation_default() -> bool:
     }
 
 
-@connections_router.post(
-    "/{connection_id}/validate", response_model=ValidateResponse
-)
+@connections_router.post("/{connection_id}/validate", response_model=ValidateResponse)
 async def validate_connection(
     request: Request, connection_id: str, live: bool | None = None
 ) -> ValidateResponse:
@@ -563,7 +614,13 @@ async def validate_connection(
     key = secrets_store.get_secret(conn.secret_name) or ""
 
     do_live = _live_validation_default() if live is None else live
-    result = validate_provider_key(conn.provider, key, live=do_live)
+    result = validate_provider_key(
+        conn.provider,
+        key,
+        live=do_live,
+        base_url=conn.base_url,
+        custom_headers=conn.custom_headers,
+    )
     validated_at = _now()
     if result.ok:
         # Persist the catalog + timestamp so profile creation can reuse them.
@@ -577,8 +634,7 @@ async def validate_connection(
                         }
                     )
                     conn_list.connections = [
-                        c if x.id == connection_id else x
-                        for x in conn_list.connections
+                        c if x.id == connection_id else x for x in conn_list.connections
                     ]
                     return conn_list
             return conn_list
@@ -640,9 +696,14 @@ async def create_profile_from_connection(
             ),
         )
 
+    api_mode = (
+        conn.api_mode if conn.api_mode in {"auto", "chat", "responses"} else "auto"
+    )
     llm = LLM(
         model=body.model,
-        base_url=body.base_url,
+        base_url=body.base_url or conn.base_url,
+        api_mode=api_mode,
+        extra_headers=dict(conn.custom_headers) or None,
         api_key=SecretStr(llm_secret_ref(conn.secret_name)),
         usage_id=body.profile_name,
     )
