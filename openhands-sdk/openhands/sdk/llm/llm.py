@@ -7,7 +7,6 @@ import json
 import os
 import warnings
 from collections.abc import AsyncIterable, Callable, Iterable, Mapping, Sequence
-from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, get_args, get_origin
@@ -455,6 +454,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         description=(
             "Compatibility field. LiteLLM parameter modification is enabled "
             "process-wide so concurrent LLM calls do not mutate shared global state."
+        ),
+        deprecated=(
+            "Deprecated since v1.42.0 and scheduled for removal in v1.47.0. "
+            "LiteLLM parameter modification is enabled process-wide; remove this "
+            "argument."
         ),
         json_schema_extra=field_meta(),
     )
@@ -1740,65 +1744,60 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             assert self._telemetry is not None
             self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
             final_kwargs = {**call_kwargs, **retry_kwargs}
-            with self._litellm_modify_params_ctx(self.modify_params):
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=DeprecationWarning)
-                    litellm_kwargs = self._build_responses_call_kwargs(
-                        input_items, instructions, resp_tools, final_kwargs
+            litellm_kwargs = self._build_responses_call_kwargs(
+                input_items, instructions, resp_tools, final_kwargs
+            )
+            ret = litellm_responses(**litellm_kwargs)
+
+            if isinstance(ret, ResponsesAPIResponse):
+                if user_enable_streaming:
+                    logger.warning(
+                        "Responses streaming was requested, but the "
+                        "provider returned a non-streaming response; "
+                        "no on_token deltas will be emitted."
                     )
-                    ret = litellm_responses(**litellm_kwargs)
+                self._telemetry.on_response(
+                    ret,
+                    provider_info=self._provider_info,
+                )
+                return ret
 
-                    if isinstance(ret, ResponsesAPIResponse):
-                        if user_enable_streaming:
-                            logger.warning(
-                                "Responses streaming was requested, but the "
-                                "provider returned a non-streaming response; "
-                                "no on_token deltas will be emitted."
-                            )
-                        self._telemetry.on_response(
-                            ret,
-                            provider_info=self._provider_info,
-                        )
-                        return ret
-
-                    # When stream=True, LiteLLM returns a streaming
-                    # iterator rather than a single ResponsesAPIResponse.
-                    # Third-party wrappers may replace LiteLLM's concrete
-                    # iterator with another iterable, so drain by protocol.
-                    if final_kwargs.get("stream", False):
-                        stream_callback = on_token if user_enable_streaming else None
-                        # Collect output items from streaming events.
-                        # Some endpoints (e.g., Codex subscription) send
-                        # output items as separate events but the final
-                        # response.completed event has output=[].  We
-                        # accumulate them here and patch the completed
-                        # response if needed.
-                        collected_output_items: list[Any] = []
-                        completed_response = getattr(ret, "completed_response", None)
-                        stream = cast(Iterable[Any], ret)
-                        for event in stream:
-                            if event is None:
-                                continue
-                            if isinstance(event, ResponseCompletedEvent):
-                                completed_response = event
-                            output_item, delta_chunk = self._process_stream_event(
-                                event, emit_deltas=stream_callback is not None
-                            )
-                            if output_item is not None:
-                                collected_output_items.append(output_item)
-                            if stream_callback is not None and delta_chunk is not None:
-                                stream_callback(delta_chunk)
-
-                        completed_response = getattr(
-                            ret, "completed_response", completed_response
-                        )
-                        return self._finalize_stream_response(
-                            completed_response, collected_output_items
-                        )
-
-                    raise AssertionError(
-                        f"Expected ResponsesAPIResponse, got {type(ret)}"
+            # When stream=True, LiteLLM returns a streaming
+            # iterator rather than a single ResponsesAPIResponse.
+            # Third-party wrappers may replace LiteLLM's concrete
+            # iterator with another iterable, so drain by protocol.
+            if final_kwargs.get("stream", False):
+                stream_callback = on_token if user_enable_streaming else None
+                # Collect output items from streaming events.
+                # Some endpoints (e.g., Codex subscription) send
+                # output items as separate events but the final
+                # response.completed event has output=[].  We
+                # accumulate them here and patch the completed
+                # response if needed.
+                collected_output_items: list[Any] = []
+                completed_response = getattr(ret, "completed_response", None)
+                stream = cast(Iterable[Any], ret)
+                for event in stream:
+                    if event is None:
+                        continue
+                    if isinstance(event, ResponseCompletedEvent):
+                        completed_response = event
+                    output_item, delta_chunk = self._process_stream_event(
+                        event, emit_deltas=stream_callback is not None
                     )
+                    if output_item is not None:
+                        collected_output_items.append(output_item)
+                    if stream_callback is not None and delta_chunk is not None:
+                        stream_callback(delta_chunk)
+
+                completed_response = getattr(
+                    ret, "completed_response", completed_response
+                )
+                return self._finalize_stream_response(
+                    completed_response, collected_output_items
+                )
+
+            raise AssertionError(f"Expected ResponsesAPIResponse, got {type(ret)}")
 
         try:
             return self._build_responses_result(_one_attempt())
@@ -1892,89 +1891,84 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             assert self._telemetry is not None
             self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
             final_kwargs = {**call_kwargs, **retry_kwargs}
-            async with self._alitellm_modify_params_ctx(self.modify_params):
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=DeprecationWarning)
-                    auth_values = await self._aget_litellm_auth_values()
-                    litellm_kwargs = self._build_responses_call_kwargs(
-                        input_items,
-                        instructions,
-                        resp_tools,
-                        final_kwargs,
-                        auth_values=auth_values,
+            auth_values = await self._aget_litellm_auth_values()
+            litellm_kwargs = self._build_responses_call_kwargs(
+                input_items,
+                instructions,
+                resp_tools,
+                final_kwargs,
+                auth_values=auth_values,
+            )
+            ret = await litellm_aresponses(**litellm_kwargs)
+
+            if isinstance(ret, ResponsesAPIResponse):
+                if user_enable_streaming:
+                    logger.warning(
+                        "Responses streaming was requested, but the "
+                        "provider returned a non-streaming response; "
+                        "no on_token deltas will be emitted."
                     )
-                    ret = await litellm_aresponses(**litellm_kwargs)
+                self._telemetry.on_response(
+                    ret,
+                    provider_info=self._provider_info,
+                )
+                return ret
 
-                    if isinstance(ret, ResponsesAPIResponse):
-                        if user_enable_streaming:
-                            logger.warning(
-                                "Responses streaming was requested, but the "
-                                "provider returned a non-streaming response; "
-                                "no on_token deltas will be emitted."
-                            )
-                        self._telemetry.on_response(
-                            ret,
-                            provider_info=self._provider_info,
+            # When stream=True, LiteLLM returns a streaming
+            # iterator rather than a single ResponsesAPIResponse.
+            # Third-party wrappers may replace LiteLLM's concrete
+            # iterator with another sync or async iterable, so drain
+            # by protocol.
+            if final_kwargs.get("stream", False):
+                stream_cb = on_token if user_enable_streaming else None
+                # Collect output items from streaming events.
+                # Some endpoints (e.g., Codex subscription) send
+                # output items as separate events but the final
+                # response.completed event has output=[].  We
+                # accumulate them here and patch the completed
+                # response if needed.
+                collected_output_items: list[Any] = []
+                completed_response = getattr(ret, "completed_response", None)
+                if hasattr(ret, "__aiter__"):
+                    stream = cast(AsyncIterable[Any], ret)
+                    async for event in stream:
+                        if event is None:
+                            continue
+                        if isinstance(event, ResponseCompletedEvent):
+                            completed_response = event
+                        output_item, delta_chunk = self._process_stream_event(
+                            event, emit_deltas=stream_cb is not None
                         )
-                        return ret
-
-                    # When stream=True, LiteLLM returns a streaming
-                    # iterator rather than a single ResponsesAPIResponse.
-                    # Third-party wrappers may replace LiteLLM's concrete
-                    # iterator with another sync or async iterable, so drain
-                    # by protocol.
-                    if final_kwargs.get("stream", False):
-                        stream_cb = on_token if user_enable_streaming else None
-                        # Collect output items from streaming events.
-                        # Some endpoints (e.g., Codex subscription) send
-                        # output items as separate events but the final
-                        # response.completed event has output=[].  We
-                        # accumulate them here and patch the completed
-                        # response if needed.
-                        collected_output_items: list[Any] = []
-                        completed_response = getattr(ret, "completed_response", None)
-                        if hasattr(ret, "__aiter__"):
-                            stream = cast(AsyncIterable[Any], ret)
-                            async for event in stream:
-                                if event is None:
-                                    continue
-                                if isinstance(event, ResponseCompletedEvent):
-                                    completed_response = event
-                                output_item, delta_chunk = self._process_stream_event(
-                                    event, emit_deltas=stream_cb is not None
-                                )
-                                if output_item is not None:
-                                    collected_output_items.append(output_item)
-                                if stream_cb is not None and delta_chunk is not None:
-                                    await _invoke_token_callback(stream_cb, delta_chunk)
-                        else:
-                            loop = asyncio.get_running_loop()
-                            events: list[Any] = await loop.run_in_executor(
-                                None, list, cast(Iterable[Any], ret)
-                            )
-                            for event in events:
-                                if event is None:
-                                    continue
-                                if isinstance(event, ResponseCompletedEvent):
-                                    completed_response = event
-                                output_item, delta_chunk = self._process_stream_event(
-                                    event, emit_deltas=stream_cb is not None
-                                )
-                                if output_item is not None:
-                                    collected_output_items.append(output_item)
-                                if stream_cb is not None and delta_chunk is not None:
-                                    await _invoke_token_callback(stream_cb, delta_chunk)
-
-                        completed_response = getattr(
-                            ret, "completed_response", completed_response
-                        )
-                        return self._finalize_stream_response(
-                            completed_response, collected_output_items
-                        )
-
-                    raise AssertionError(
-                        f"Expected ResponsesAPIResponse, got {type(ret)}"
+                        if output_item is not None:
+                            collected_output_items.append(output_item)
+                        if stream_cb is not None and delta_chunk is not None:
+                            await _invoke_token_callback(stream_cb, delta_chunk)
+                else:
+                    loop = asyncio.get_running_loop()
+                    events: list[Any] = await loop.run_in_executor(
+                        None, list, cast(Iterable[Any], ret)
                     )
+                    for event in events:
+                        if event is None:
+                            continue
+                        if isinstance(event, ResponseCompletedEvent):
+                            completed_response = event
+                        output_item, delta_chunk = self._process_stream_event(
+                            event, emit_deltas=stream_cb is not None
+                        )
+                        if output_item is not None:
+                            collected_output_items.append(output_item)
+                        if stream_cb is not None and delta_chunk is not None:
+                            await _invoke_token_callback(stream_cb, delta_chunk)
+
+                completed_response = getattr(
+                    ret, "completed_response", completed_response
+                )
+                return self._finalize_stream_response(
+                    completed_response, collected_output_items
+                )
+
+            raise AssertionError(f"Expected ResponsesAPIResponse, got {type(ret)}")
 
         try:
             return self._build_responses_result(await _one_attempt())
@@ -2110,55 +2104,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         api_key_value, _ = await self._aget_litellm_auth_values()
         return api_key_value
 
-    @staticmethod
-    @contextmanager
-    def _suppress_transport_warnings():
-        """Filter the noisy provider/litellm warnings emitted during a
-        transport call. Shared by the sync and async transport guards."""
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore", category=DeprecationWarning, module="httpx.*"
-            )
-            warnings.filterwarnings(
-                "ignore",
-                message=r".*content=.*upload.*",
-                category=DeprecationWarning,
-            )
-            warnings.filterwarnings(
-                "ignore",
-                message="There is no current event loop",
-                category=DeprecationWarning,
-            )
-            warnings.filterwarnings("ignore", category=UserWarning)
-            warnings.filterwarnings(
-                "ignore",
-                category=DeprecationWarning,
-                message="Accessing the 'model_fields' attribute.*",
-            )
-            yield
-
-    @contextmanager
-    def _transport_ctx(self):
-        """Guard a litellm transport call.
-
-        ``litellm.modify_params`` is GLOBAL, so it is guarded for thread-safety,
-        and the noisy provider/litellm warnings are filtered out for the call.
-        """
-        with self._litellm_modify_params_ctx(self.modify_params):
-            with self._suppress_transport_warnings():
-                yield
-
-    @asynccontextmanager
-    async def _atransport_ctx(self):
-        """Async variant of :meth:`_transport_ctx`.
-
-        See :meth:`_alitellm_modify_params_ctx` for why this must not use a
-        plain blocking ``with`` statement around the lock.
-        """
-        async with self._alitellm_modify_params_ctx(self.modify_params):
-            with self._suppress_transport_warnings():
-                yield
-
     def _prepare_transport_kwargs(
         self,
         *,
@@ -2205,24 +2150,23 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         on_token: TokenCallbackType | None = None,
         **kwargs,
     ) -> ModelResponse:
-        with self._transport_ctx():
-            ret = litellm_completion(
-                **self._prepare_transport_kwargs(
-                    messages=messages, enable_streaming=enable_streaming, **kwargs
-                )
+        ret = litellm_completion(
+            **self._prepare_transport_kwargs(
+                messages=messages, enable_streaming=enable_streaming, **kwargs
             )
-            if enable_streaming and on_token is not None:
-                chunks: list[ModelResponseStream] = []
-                stream = cast(Iterable[ModelResponseStream], ret)
-                for chunk in stream:
-                    on_token(chunk)
-                    chunks.append(chunk)
-                ret = litellm.stream_chunk_builder(chunks, messages=messages)
+        )
+        if enable_streaming and on_token is not None:
+            chunks: list[ModelResponseStream] = []
+            stream = cast(Iterable[ModelResponseStream], ret)
+            for chunk in stream:
+                on_token(chunk)
+                chunks.append(chunk)
+            ret = litellm.stream_chunk_builder(chunks, messages=messages)
 
-            assert isinstance(ret, ModelResponse), (
-                f"Expected ModelResponse, got {type(ret)}"
-            )
-            return ret
+        assert isinstance(ret, ModelResponse), (
+            f"Expected ModelResponse, got {type(ret)}"
+        )
+        return ret
 
     async def _atransport_call(
         self,
@@ -2234,48 +2178,37 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     ) -> ModelResponse:
         """Async variant of :meth:`_transport_call`."""
         auth_values = await self._aget_litellm_auth_values()
-        async with self._atransport_ctx():
-            ret = await litellm_acompletion(
-                **self._prepare_transport_kwargs(
-                    messages=messages,
-                    enable_streaming=enable_streaming,
-                    auth_values=auth_values,
-                    **kwargs,
+        ret = await litellm_acompletion(
+            **self._prepare_transport_kwargs(
+                messages=messages,
+                enable_streaming=enable_streaming,
+                auth_values=auth_values,
+                **kwargs,
+            )
+        )
+        if enable_streaming and on_token is not None:
+            chunks: list[ModelResponseStream] = []
+            # Some litellm wrappers (lmnr 0.7.47's instrumentor) hand
+            # back a plain sync generator from ``litellm_acompletion``
+            if hasattr(ret, "__aiter__"):
+                stream = cast(AsyncIterable[ModelResponseStream], ret)
+                async for chunk in stream:
+                    await _invoke_token_callback(on_token, chunk)
+                    chunks.append(chunk)
+            else:
+                loop = asyncio.get_running_loop()
+                synced_chunks: list[ModelResponseStream] = await loop.run_in_executor(
+                    None, list, cast(Iterable[ModelResponseStream], ret)
                 )
-            )
-            if enable_streaming and on_token is not None:
-                chunks: list[ModelResponseStream] = []
-                # Some litellm wrappers (lmnr 0.7.47's instrumentor) hand
-                # back a plain sync generator from ``litellm_acompletion``
-                if hasattr(ret, "__aiter__"):
-                    stream = cast(AsyncIterable[ModelResponseStream], ret)
-                    async for chunk in stream:
-                        await _invoke_token_callback(on_token, chunk)
-                        chunks.append(chunk)
-                else:
-                    loop = asyncio.get_running_loop()
-                    synced_chunks: list[
-                        ModelResponseStream
-                    ] = await loop.run_in_executor(
-                        None, list, cast(Iterable[ModelResponseStream], ret)
-                    )
-                    for chunk in synced_chunks:
-                        await _invoke_token_callback(on_token, chunk)
-                        chunks.append(chunk)
-                ret = litellm.stream_chunk_builder(chunks, messages=messages)
+                for chunk in synced_chunks:
+                    await _invoke_token_callback(on_token, chunk)
+                    chunks.append(chunk)
+            ret = litellm.stream_chunk_builder(chunks, messages=messages)
 
-            assert isinstance(ret, ModelResponse), (
-                f"Expected ModelResponse, got {type(ret)}"
-            )
-            return ret
-
-    @contextmanager
-    def _litellm_modify_params_ctx(self, _flag: bool):
-        yield
-
-    @asynccontextmanager
-    async def _alitellm_modify_params_ctx(self, _flag: bool):
-        yield
+        assert isinstance(ret, ModelResponse), (
+            f"Expected ModelResponse, got {type(ret)}"
+        )
+        return ret
 
     # =========================================================================
     # Capabilities, formatting, and info
