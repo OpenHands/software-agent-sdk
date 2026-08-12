@@ -28,6 +28,7 @@ from pydantic.json_schema import SkipJsonSchema
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.utils.model_info import get_litellm_model_info
 from openhands.sdk.settings.metadata import SettingProminence, field_meta
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
 
@@ -655,6 +656,18 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if not isinstance(data, dict):
             return data
         d = dict(data)
+
+        if "modify_params" in d:
+            warn_deprecated(
+                "LLM.modify_params",
+                deprecated_in="1.42.0",
+                removed_in="1.47.0",
+                details=(
+                    "LiteLLM parameter modification is enabled process-wide; "
+                    "remove this argument."
+                ),
+                stacklevel=3,
+            )
 
         model_val = d.get("model")
         if not model_val:
