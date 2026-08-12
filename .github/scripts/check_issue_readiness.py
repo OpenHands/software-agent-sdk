@@ -246,13 +246,17 @@ def main() -> int:
 
     if args.json:
         print(json.dumps({"ready": result.ready, "reasons": result.reasons}))
+        # In --json mode the exit code is not meaningful: the result is consumed
+        # via the printed JSON, and the workflow must run to completion for both
+        # ready and not-ready issues (label add/remove, feedback comment).
+        return 0
+
+    if result.ready:
+        print("Issue meets ready-for-dev criteria.")
     else:
-        if result.ready:
-            print("Issue meets ready-for-dev criteria.")
-        else:
-            print("Issue does not meet ready-for-dev criteria:")
-            for reason in result.reasons:
-                print(f"  - {reason}")
+        print("Issue does not meet ready-for-dev criteria:")
+        for reason in result.reasons:
+            print(f"  - {reason}")
 
     return 0 if result.ready else 1
 

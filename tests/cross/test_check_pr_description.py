@@ -21,6 +21,9 @@ def _load_prod_module():
 _prod = _load_prod_module()
 validate_pr_body = _prod.validate_pr_body
 body_from_event = _prod.body_from_event
+extract_linked_issue_numbers = _prod.extract_linked_issue_numbers
+validate_linked_issue_ready = _prod.validate_linked_issue_ready
+fetch_issue_labels = _prod.fetch_issue_labels
 
 
 VALID_BODY = """<!-- Keep this PR as draft until it is ready for review. -->
@@ -107,3 +110,66 @@ def test_body_from_event_reads_pull_request_body(tmp_path: Path):
     event_path.write_text(json.dumps({"pull_request": {"body": VALID_BODY}}))
 
     assert body_from_event(event_path) == VALID_BODY
+
+
+def test_extract_linked_issue_numbers_keyword_and_bare_ref():
+    body = (
+        "Fixes #12\n"
+        "Closes #12 again\n"
+        "resolves #34\n"
+        "## Issue Number\n"
+        "Issue: #56, see also #12\n"
+    )
+    assert extract_linked_issue_numbers(body) == [12, 34, 56]
+
+
+def test_extract_linked_issue_numbers_only_bare_ref_in_issue_section():
+    body = "## Summary\n\nSome work.\n\n## Issue Number\n\n#7\n"
+    assert extract_linked_issue_numbers(body) == [7]
+
+
+def test_extract_linked_issue_numbers_no_bare_ref_outside_issue_section():
+    # A bare `#42` in the Summary must not be treated as a linked issue.
+    body = "## Summary\n\nSee #42 for background.\n\n## Issue Number\n\nN/A\n"
+    assert extract_linked_issue_numbers(body) == []
+
+
+def test_validate_linked_issue_ready_requires_a_number():
+    errors = validate_linked_issue_ready("## Issue Number\n\nN/A\n", "org/repo", "token")
+    assert errors and "Link an issue" in errors[0]
+
+
+def test_validate_linked_issue_ready_no_token_skips_network(monkeypatch):
+    def _fail(*args, **kwargs):
+        raise AssertionError("should not call the network without a token")
+
+    monkeypatch.setattr(_prod, "fetch_issue_labels", _fail)
+    assert validate_linked_issue_ready("Fixes #12\n", None, None) == []
+
+
+def test_validate_linked_issue_ready_passes_with_ready_label(monkeypatch):
+    monkeypatch.setattr(
+        _prod, "fetch_issue_labels", lambda repo, num, token: ["ready-for-dev"]
+    )
+    assert validate_linked_issue_ready("Fixes #12\n", "org/repo", "token") == []
+
+
+def test_validate_linked_issue_ready_fails_when_not_ready(monkeypatch):
+    monkeypatch.setattr(
+        _prod, "fetch_issue_labels", lambda repo, num, token: ["bug"]
+    )
+    errors = validate_linked_issue_ready("Fixes #12\n", "org/repo", "token")
+    assert errors and "ready-for-dev" in errors[0]
+
+
+def test_validate_linked_issue_ready_skips_missing_issue(monkeypatch):
+    import urllib.error
+
+    def _missing(repo, num, token):
+        raise urllib.error.HTTPError(
+            "https://api.github.com", 404, "Not Found", None, None
+        )
+
+    monkeypatch.setattr(_prod, "fetch_issue_labels", _missing)
+    errors = validate_linked_issue_ready("Fixes #12\n", "org/repo", "token")
+    assert errors and "could not be found" in errors[0]
