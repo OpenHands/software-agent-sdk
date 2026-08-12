@@ -12,7 +12,8 @@ from openhands.sdk.plugin import (
     detect_format,
 )
 from openhands.sdk.plugin.format.agent_plugins import (
-    VENDORED_SCHEMAS,
+    _MANIFEST_SCHEMA_FILE,
+    MANIFEST_SCHEMA_URL,
     _load_schema,
 )
 
@@ -385,18 +386,19 @@ class TestComponentLoaders:
 
 
 class TestVendoredSchema:
-    """The vendored file must stay consistent with the URL it is keyed by."""
+    """The vendored file must stay consistent with the URL we accept."""
 
-    @pytest.mark.parametrize("url,filename", sorted(VENDORED_SCHEMAS.items()))
-    def test_schema_identity_matches_key(self, url: str, filename: str):
-        schema = _load_schema(filename)
+    def test_constant_matches_the_literal_url(self):
+        assert MANIFEST_SCHEMA_URL == SCHEMA_1_0_0
 
-        assert schema["$id"] == url
-        assert schema["properties"]["$schema"]["const"] == url
+    def test_schema_identity_matches_constant(self):
+        schema = _load_schema(_MANIFEST_SCHEMA_FILE)
 
-    @pytest.mark.parametrize("filename", sorted(VENDORED_SCHEMAS.values()))
-    def test_schema_is_closed(self, filename: str):
-        schema = _load_schema(filename)
+        assert schema["$id"] == MANIFEST_SCHEMA_URL
+        assert schema["properties"]["$schema"]["const"] == MANIFEST_SCHEMA_URL
+
+    def test_schema_is_closed(self):
+        schema = _load_schema(_MANIFEST_SCHEMA_FILE)
 
         assert schema["additionalProperties"] is False
         assert set(schema["required"]) == {"$schema", "name"}

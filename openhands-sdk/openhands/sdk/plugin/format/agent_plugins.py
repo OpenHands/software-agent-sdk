@@ -30,12 +30,14 @@ MANIFEST_FILE: Final[str] = "plugin.json"
 
 _SCHEMAS_DIR: Final[Path] = Path(__file__).parent / "schemas"
 
-#: Supported ``$schema`` values -> vendored schema file.
-VENDORED_SCHEMAS: Final[dict[str, str]] = {
-    "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json": (
-        "plugin-1.0.0.schema.json"
-    ),
-}
+#: The only manifest ``$schema`` we support, and its vendored file. Agent
+#: Plugins also publishes an ``mcp.schema.json``, but that one belongs to the
+#: ``mcp.json`` loader: keying both here would let a manifest declaring the MCP
+#: schema validate against it.
+MANIFEST_SCHEMA_URL: Final[str] = (
+    "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
+)
+_MANIFEST_SCHEMA_FILE: Final[str] = "plugin-1.0.0.schema.json"
 
 
 @cache
@@ -107,15 +109,12 @@ class AgentPluginsFormat(PluginFormat):
             )
 
         schema_url = data.get("$schema")
-        filename = (
-            VENDORED_SCHEMAS.get(schema_url) if isinstance(schema_url, str) else None
-        )
-        if filename is None:
+        if schema_url != MANIFEST_SCHEMA_URL:
             raise ValueError(
                 f"Unsupported or missing $schema in {manifest_path}: "
-                f"{schema_url!r}. Supported: {', '.join(sorted(VENDORED_SCHEMAS))}"
+                f"{schema_url!r}. Supported: {MANIFEST_SCHEMA_URL}"
             )
-        schema = _load_schema(filename)
+        schema = _load_schema(_MANIFEST_SCHEMA_FILE)
 
         # Non-fatal: report and ignore. Known fields come from the schema, so
         # there is no second field list to drift.
