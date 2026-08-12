@@ -5,6 +5,8 @@ import json
 import os
 import re
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 
@@ -83,8 +85,6 @@ def extract_linked_issue_numbers(body: str) -> list[int]:
 
 
 def fetch_issue_labels(repo: str, issue_number: int, token: str) -> list[str]:
-    import urllib.request
-
     request = urllib.request.Request(
         f"https://api.github.com/repos/{repo}/issues/{issue_number}/labels",
         headers={
@@ -108,8 +108,6 @@ def validate_linked_issue_ready(
         ]
     if not repo or not token:
         return []
-
-    import urllib.error
 
     checked: list[int] = []
     for number in numbers:
