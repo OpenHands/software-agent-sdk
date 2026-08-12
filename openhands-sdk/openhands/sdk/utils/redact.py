@@ -174,7 +174,7 @@ def redact_url_credentials(url: str, *, preserve_placeholders: bool = False) -> 
 # larger string. The userinfo portion excludes ``/``, ``@``, and whitespace so
 # the match stops at the first credential boundary and never spans a path
 # segment or another token.
-_EMBEDDED_URL_CREDENTIALS_RE = re.compile(r"(https?://)[^/@\s]+@", re.IGNORECASE)
+_EMBEDDED_URL_CREDENTIALS_RE = re.compile(r"(https?://)([^/@\s]+)@", re.IGNORECASE)
 
 
 def redact_url_credentials_in_text(text: str) -> str:
@@ -200,7 +200,14 @@ def redact_url_credentials_in_text(text: str) -> str:
         >>> redact_url_credentials_in_text("no credentials here")
         'no credentials here'
     """
-    return _EMBEDDED_URL_CREDENTIALS_RE.sub(r"\g<1>****@", text)
+    return _EMBEDDED_URL_CREDENTIALS_RE.sub(
+        lambda match: (
+            match.group(0)
+            if match.group(2) in {"<secret-hidden>", "<redacted>"}
+            else f"{match.group(1)}****@"
+        ),
+        text,
+    )
 
 
 def redact_url_params(url: str) -> str:
@@ -340,6 +347,10 @@ def redact_text_secrets(text: str) -> str:
     # Bare API key literals (common provider formats)
     text = redact_api_key_literals(text)
 
+    # https://user:token@host (and bare-token@host) embedded in arbitrary text —
+    # e.g. `git remote -v` / clone errors. Covers GitHub ghu_/ghp_ URL userinfo.
+    text = redact_url_credentials_in_text(text)
+
     return text
 
 
@@ -354,6 +365,8 @@ _API_KEY_LITERAL_RE = re.compile(
     r"|hf_[A-Za-z0-9]{20,}"  # HuggingFace
     r"|tgp_v1_[A-Za-z0-9_-]{20,}"  # Together AI
     r"|ghp_[A-Za-z0-9]{20,}"  # GitHub PAT (classic)
+    r"|ghu_[A-Za-z0-9]{20,}"  # GitHub user-to-server OAuth tokens
+    r"|gho_[A-Za-z0-9]{20,}"  # GitHub OAuth app tokens
     r"|github_pat_[A-Za-z0-9_]{20,}"  # GitHub PAT (fine-grained)
     r"|sk-oh-[A-Za-z0-9]{20,}"  # OpenHands session tokens
     r"|ctx7sk-[A-Za-z0-9_-]{10,}"  # Context7 MCP keys
