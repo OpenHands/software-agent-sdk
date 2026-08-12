@@ -327,6 +327,18 @@ def test_concurrent_resolution_deduplicates(monkeypatch):
     rm._inflight.clear()
 
 
+def test_sync_resolver_inside_running_loop_falls_back():
+    """The sync resolver must not raise asyncio.run() inside a running loop."""
+    llm = _openrouter_llm()
+
+    async def go():
+        # A running loop is present here, so the sync resolver must return None
+        # without attempting to enter a nested event loop or issuing a request.
+        return rm.resolve_provider_metadata_sync(llm)
+
+    assert asyncio.run(go()) is None
+
+
 def test_http_error_timeout_and_unsupported_fall_back(monkeypatch):
     # HTTP 500 -> None
     llm_err = _openrouter_llm()

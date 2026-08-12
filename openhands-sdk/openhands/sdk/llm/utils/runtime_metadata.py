@@ -181,10 +181,25 @@ def resolve_provider_metadata_sync(llm: LLM) -> ModelRuntimeMetadata | None:
     """Synchronous variant of :func:`aresolve_provider_metadata`.
 
     Runs the async adapter in a private event loop. Callers on a running event
-    loop (e.g. the agent-server async path) should use the async variant.
+    loop (e.g. the agent-server async path) should use the async variant; if one
+    is detected, this returns ``None`` so the caller falls back to model-level
+    metadata instead of raising ``RuntimeError``.
     """
     resolver = detect_provider(llm)
     if resolver is None:
+        return None
+
+    # asyncio.run() cannot be entered from a thread that already owns a running
+    # event loop. Prefer a graceful fallback over crashing the caller.
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        logger.warning(
+            "resolve_provider_metadata_sync() called from a running event loop; "
+            "use aresolve_runtime_metadata() instead. Falling back to model metadata."
+        )
         return None
 
     async def _run() -> ModelRuntimeMetadata | None:
