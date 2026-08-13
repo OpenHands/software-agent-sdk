@@ -41,6 +41,10 @@ class BashEventService:
     # endpoints that use asyncio.to_thread (notably conversations/search).
     # Serialize only the expensive bash-event filesystem work: queued callers
     # remain asynchronous while one worker performs the shared-directory scan.
+    # 1 (full serialization) is an intentional strict bound: a single scan is
+    # cheap (~0.2s on 100k files), so overlapping even a few scans saves little
+    # wall time but, at scale, risks monopolizing the shared worker pool for the
+    # sake of marginal poll latency; queued callers still proceed asynchronously.
     _filesystem_search_semaphore: asyncio.Semaphore = field(
         default_factory=lambda: asyncio.Semaphore(1),
         init=False,
