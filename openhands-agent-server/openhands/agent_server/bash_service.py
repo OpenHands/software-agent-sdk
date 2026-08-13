@@ -98,7 +98,6 @@ class BashEventService:
 
     async def get_bash_event(self, event_id: str) -> BashEventBase | None:
         """Get the event with the id given, or None if there was no such event."""
-        # Blocking I/O — dispatched off the event loop.
         async with self._filesystem_search_semaphore:
             return await asyncio.to_thread(self._get_bash_event_sync, event_id)
 
@@ -144,7 +143,6 @@ class BashEventService:
         so the whole search runs off the asyncio event loop in a worker thread
         (``asyncio.to_thread``) to avoid stalling concurrent requests.
         """
-        # Blocking I/O — dispatched off the event loop.
         async with self._filesystem_search_semaphore:
             return await asyncio.to_thread(
                 self._search_bash_events_sync,
