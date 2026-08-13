@@ -87,7 +87,30 @@ def _now() -> int:
 
 
 def _provider_names() -> set[str]:
+    return _get_litellm_provider_names() | set(VERIFIED_MODELS)
+
+
+def _litellm_provider_names() -> set[str]:
     return _get_litellm_provider_names()
+
+
+def _model_provider(model: str) -> str | None:
+    provider, _, _ = _extract_model_and_provider(model)
+    if provider:
+        return provider
+    if "/" in model:
+        prefix = model.split("/", 1)[0].strip()
+        return prefix or None
+    return None
+
+
+def _model_name_for_provider(provider: str, model: str) -> str:
+    prefix = f"{provider}/"
+    return model[len(prefix) :] if model.startswith(prefix) else model
+
+
+def _qualified_model(provider: str, model: str) -> str:
+    return model if "/" in model else f"{provider}/{model}"
 
 
 # ── Request / Response models ────────────────────────────────────────────
@@ -232,6 +255,105 @@ def _profiles_referencing(secret_name: str) -> list[str]:
     return sorted(referrers)
 
 
+def _backfill_connections_from_raw_profiles(
+    persisted: PersistedConnections,
+) -> PersistedConnections:
+    """Promote existing raw-key LLM profiles into provider connections.
+
+    Early versions of the onboarding flow saved only an LLM profile with a raw
+    ``api_key``. Once Provider Connections exist, those profiles should appear
+    in Model providers and should reference the shared named secret. This helper
+    performs that one-time local migration during connection listing:
+
+    - raw profile key -> named secret
+    - profile api_key -> ``secret:<name>``
+    - connection.models includes the profile's current model
+
+    Profiles already using ``secret:<name>`` are left unchanged, so repeated
+    calls are idempotent.
+    """
+    profile_store = get_llm_profile_store()
+    secrets_store = get_secrets_store()
+    existing_secret_names = {c.secret_name for c in persisted.connections}
+
+    try:
+        summaries = profile_store.list_summaries()
+    except Exception:  # noqa: BLE001 - listing should not fail provider page
+        return persisted
+
+    changed = False
+    for summary in summaries:
+        name = summary.get("name")
+        if not isinstance(name, str):
+            continue
+        try:
+            llm = profile_store.load(name)
+        except Exception:  # noqa: BLE001 - skip unreadable profiles
+            continue
+
+        raw_key = (
+            llm.api_key.get_secret_value()
+            if isinstance(llm.api_key, SecretStr)
+            else ""
+        )
+        if not raw_key or raw_key.startswith("secret:"):
+            continue
+
+        provider = _model_provider(llm.model)
+        if provider not in _provider_names():
+            continue
+        if len(persisted.connections) >= MAX_CONNECTIONS:
+            logger.warning("Skipping profile-to-connection backfill: limit reached")
+            break
+
+        connection_id = uuid.uuid4().hex
+        secret_name = _connection_secret_name(connection_id)
+        if secret_name in existing_secret_names:
+            continue
+        model_name = _model_name_for_provider(provider, llm.model)
+
+        try:
+            secrets_store.set_secret(
+                name=secret_name,
+                value=raw_key,
+                description=f"LLM provider connection key for {provider}",
+            )
+            migrated_llm = llm.model_copy(
+                update={"api_key": SecretStr(llm_secret_ref(secret_name))}
+            )
+            profile_store.save(name, migrated_llm, include_secrets=True)
+        except Exception as e:  # noqa: BLE001 - preserve the original profile
+            logger.warning(f"Failed to backfill provider connection for {name}: {e}")
+            try:
+                secrets_store.delete_secret(secret_name)
+            except Exception:  # noqa: BLE001 - best-effort cleanup
+                pass
+            continue
+
+        persisted.connections.append(
+            ProviderConnection(
+                id=connection_id,
+                provider=provider,
+                label=name,
+                base_url=llm.base_url,
+                api_mode=(
+                    llm.api_mode
+                    if llm.api_mode in {"auto", "chat", "responses"}
+                    else "auto"
+                ),
+                custom_headers=dict(llm.extra_headers or {}),
+                secret_name=secret_name,
+                models=[model_name],
+                created_at=_now(),
+                last_validated_at=None,
+            )
+        )
+        existing_secret_names.add(secret_name)
+        changed = True
+
+    return persisted if changed else persisted
+
+
 def _get_connection_or_404(connections, connection_id: str) -> ProviderConnection:
     for conn in connections.connections:
         if conn.id == connection_id:
@@ -278,7 +400,8 @@ def _provider_catalog(provider: str) -> list[str]:
     for model in all_models:
         model_provider, _, _ = _extract_model_and_provider(model)
         if model_provider == provider or model in verified_provider_models:
-            filtered.append(model)
+            filtered.append(_model_name_for_provider(provider, model))
+    filtered.extend(verified_provider_models)
     return sorted(set(filtered))
 
 
@@ -339,7 +462,7 @@ def validate_provider_key(
         )
 
     catalog = _provider_catalog(provider)
-    if not live:
+    if not live or provider not in _litellm_provider_names():
         return ValidationResult(ok=True, models=catalog, error=None, verified=False)
 
     ok, error = _live_probe(
@@ -361,7 +484,7 @@ async def list_connections(request: Request) -> list[ConnectionResponse]:
     """List all saved provider connections (keys never returned)."""
     config = get_config(request)
     store = get_connections_store(config)
-    persisted = store.load()
+    persisted = store.update(_backfill_connections_from_raw_profiles)
     conns = persisted.connections if persisted is not None else []
     return [_to_response(c, api_key_set=_api_key_set(c.secret_name)) for c in conns]
 
@@ -699,8 +822,9 @@ async def create_profile_from_connection(
     api_mode = (
         conn.api_mode if conn.api_mode in {"auto", "chat", "responses"} else "auto"
     )
+    saved_model = _qualified_model(conn.provider, body.model)
     llm = LLM(
-        model=body.model,
+        model=saved_model,
         base_url=body.base_url or conn.base_url,
         api_mode=api_mode,
         extra_headers=dict(conn.custom_headers) or None,
@@ -732,12 +856,12 @@ async def create_profile_from_connection(
         extra={
             "connection_id": connection_id,
             "profile_name": body.profile_name,
-            "model": body.model,
+            "model": saved_model,
         },
     )
     return ProfileFromConnectionResponse(
         profile_name=body.profile_name,
-        model=body.model,
+        model=saved_model,
         provider=conn.provider,
         connection_id=connection_id,
     )

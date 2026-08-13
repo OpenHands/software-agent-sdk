@@ -17,8 +17,10 @@ from openhands.agent_server.persistence import (
     FileConnectionsStore,
     PersistedConnections,
     ProviderConnection,
+    get_llm_profile_store,
     reset_stores,
 )
+from openhands.sdk.llm import LLM
 
 
 @pytest.fixture
@@ -93,6 +95,31 @@ def test_create_unknown_provider_422(client):
         json={"provider": "nope_provider", "key": "k"},
     )
     assert r.status_code == 422
+
+
+def test_create_accepts_verified_provider_namespace(client):
+    r = client.post(
+        "/api/llm/connections",
+        json={"provider": "openhands", "key": "oh-key"},
+    )
+    assert r.status_code == 201
+    assert r.json()["provider"] == "openhands"
+
+
+def test_validate_verified_provider_namespace_is_catalog_only(client):
+    cid = client.post(
+        "/api/llm/connections",
+        json={"provider": "openhands", "key": "oh-key"},
+    ).json()["id"]
+
+    r = client.post(f"/api/llm/connections/{cid}/validate?live=true")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["verified"] is False
+    assert len(body["models"]) > 0
+    assert all(not model.startswith("openhands/") for model in body["models"])
 
 
 def test_get_connection(client):
@@ -290,13 +317,14 @@ def test_create_profile_from_connection(client):
     assert r.status_code == 201
     body = r.json()
     assert body["profile_name"] == "work-gpt4o"
-    assert body["model"] == "gpt-4o"
+    assert body["model"] == "openai/gpt-4o"
     assert body["connection_id"] == cid
 
     # The profile is saved and references the connection secret by name, so its
     # api_key resolves through the connection rather than duplicating the key.
     detail = client.get("/api/profiles/work-gpt4o").json()
     assert detail["api_key_set"] is True
+    assert detail["config"]["model"] == "openai/gpt-4o"
     assert detail["config"]["api_mode"] == "auto"
 
     # Deleting the connection now reports the referencing profile.
@@ -314,6 +342,27 @@ def test_create_profile_rejects_model_not_in_catalog(client):
         json={"profile_name": "nope", "model": "not-a-model"},
     )
     assert r.status_code == 422
+
+
+def test_create_profile_from_openhands_connection_qualifies_model(client):
+    cid = client.post(
+        "/api/llm/connections",
+        json={
+            "provider": "openhands",
+            "key": "oh-key",
+            "models": ["gpt-5.6"],
+        },
+    ).json()["id"]
+
+    r = client.post(
+        f"/api/llm/connections/{cid}/profiles",
+        json={"profile_name": "openhands-gpt", "model": "gpt-5.6"},
+    )
+
+    assert r.status_code == 201
+    assert r.json()["model"] == "openhands/gpt-5.6"
+    detail = client.get("/api/profiles/openhands-gpt").json()
+    assert detail["config"]["model"] == "openhands/gpt-5.6"
 
 
 def test_create_profile_inherits_connection_endpoint_settings(client):
@@ -336,9 +385,35 @@ def test_create_profile_inherits_connection_endpoint_settings(client):
     assert r.status_code == 201
 
     detail = client.get("/api/profiles/gateway-gpt4o").json()
+    assert detail["config"]["model"] == "openai/gpt-4o"
     assert detail["config"]["base_url"] == "https://proxy.example/v1"
     assert detail["config"]["api_mode"] == "responses"
     assert detail["config"]["extra_headers"] == {"X-Org": "eng"}
+
+
+def test_list_backfills_raw_profile_as_provider_connection(client):
+    profile_store = get_llm_profile_store()
+    profile_store.save(
+        "openhands-gpt",
+        LLM(model="openhands/gpt-5.6", api_key=SecretStr("oh-key")),
+        include_secrets=True,
+    )
+
+    r = client.get("/api/llm/connections")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body) == 1
+    assert body[0]["provider"] == "openhands"
+    assert body[0]["label"] == "openhands-gpt"
+    assert body[0]["models"] == ["gpt-5.6"]
+    assert body[0]["api_key_set"] is True
+
+    # The migration is idempotent because the profile now points at the
+    # connection's named secret instead of keeping the raw key.
+    assert len(client.get("/api/llm/connections").json()) == 1
+    detail = client.get("/api/profiles/openhands-gpt").json()
+    assert detail["api_key_set"] is True
 
 
 def test_create_limit_enforced(client, monkeypatch):
