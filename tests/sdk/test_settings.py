@@ -1359,6 +1359,7 @@ def _which_returning(*available: str):
         ("codex", "codex-acp", ["codex-acp"]),
         # gemini's default carries a trailing ``--acp`` that must be preserved.
         ("gemini-cli", "gemini", ["gemini", "--acp"]),
+        ("pi", "pi-acp", ["pi-acp"]),
     ],
 )
 def test_acp_resolve_command_rewrites_default_to_pinned_binary(
@@ -2062,6 +2063,15 @@ def test_acp_resolve_command_uses_registry_defaults(
         settings = ACPAgentSettings(acp_server=server_key)
         expected = list(ACP_PROVIDERS[server_key].default_command)
         assert settings.resolve_acp_command() == expected
+    # Explicit check for Pi's multi-package npx command
+    pi_settings = ACPAgentSettings(acp_server="pi")
+    assert pi_settings.resolve_acp_command() == [
+        "npx",
+        "-y",
+        "--package=pi-acp@0.0.33",
+        "--package=@earendil-works/pi-coding-agent@0.83.0",
+        "pi-acp",
+    ]
 
 
 # ---------------------------------------------------------------------------

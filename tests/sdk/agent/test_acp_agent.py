@@ -5215,6 +5215,25 @@ class TestMaybeSetSessionModel:
         )
         assert conn.set_config_option.await_count == 2
         assert applied is True
+    
+    @pytest.mark.asyncio
+    async def test_pi_model_switch_mechanism(self):
+        """Pi-acp uses set_config_option(config_id='model') for model switches."""
+        conn = AsyncMock()
+        applied = await _maybe_set_session_model(
+            conn,
+            "pi-acp",
+            "session-1",
+            "anthropic/claude-sonnet-4-5",
+            via_config_option=True,
+        )
+        conn.set_config_option.assert_awaited_once_with(
+            config_id="model",
+            value="anthropic/claude-sonnet-4-5",
+            session_id="session-1",
+        )
+        assert applied is True
+
 
     @pytest.mark.asyncio
     async def test_missing_model_skips_protocol_override(self):
@@ -8759,6 +8778,68 @@ class TestACPFileSecretMaterialisation:
         assert gac.parent.stat().st_mode & 0o777 == 0o700
         assert "GOOGLE_APPLICATION_CREDENTIALS_JSON" not in env
 
+    def test_pi_settings_json_materialization(self, tmp_path):
+        from openhands.sdk.secret import StaticSecret
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
+        state.secret_registry.update_secrets(
+            {
+                "PI_SETTINGS_JSON": StaticSecret(
+                    value=SecretStr('{"model": "claude-3-5-sonnet"}')
+                )
+            }
+        )
+        env = self._run_start(
+            agent, state, conn=self._make_conn(agent_name="pi-acp", auth_method="pi_terminal_login")
+        )
+        settings_file = Path(persist) / "acp" / "pi" / "settings.json"
+        assert Path(env["PI_CODING_AGENT_DIR"]) == Path(persist) / "acp" / "pi"
+        assert settings_file.read_text(encoding="utf-8") == '{"model": "claude-3-5-sonnet"}'
+        assert settings_file.stat().st_mode & 0o777 == 0o600
+
+    def test_pi_terminal_login_with_materialized_settings(self, tmp_path):
+        """When settings.json is present, pi_terminal_login is accepted without calling authenticate()."""
+        from openhands.sdk.secret import StaticSecret
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"PI_SETTINGS_JSON": StaticSecret(value=SecretStr('{"key": "val"}'))}
+        )
+
+        conn = self._make_conn(
+            agent_name="pi-acp",
+            auth_method="pi_terminal_login",
+        )
+        with patch("openhands.sdk.agent.acp_agent._warn_auth_selection_failure") as mock_warn:
+            self._run_start(agent, state, conn=conn)
+            conn.authenticate.assert_not_called()
+            mock_warn.assert_not_called()
+            conn.new_session.assert_called_once()
+
+    def test_pi_terminal_login_without_settings(self, tmp_path):
+        """When settings.json is missing, interactive auth is skipped and a warning mentions PI_SETTINGS_JSON."""
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        conn = self._make_conn(
+            agent_name="pi-acp",
+            auth_method="pi_terminal_login",
+        )
+        with patch("openhands.sdk.agent.acp_agent._warn_auth_selection_failure") as mock_warn:
+            self._run_start(agent, state, conn=conn)
+            conn.authenticate.assert_not_called()
+            mock_warn.assert_called_once()
+
+    def test_pi_initialization_skips_set_session_mode(self, tmp_path):
+        """Pi has default_session_mode=None, so set_session_mode is not called."""
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        conn = self._make_conn(agent_name="pi-acp", auth_method="pi_terminal_login")
+        self._run_start(agent, state, conn=conn)
+        conn.set_session_mode.assert_not_called()
+
+
     def test_seed_if_absent_does_not_clobber_existing_file(self, tmp_path):
         """A non-empty existing credential file (e.g. a token the CLI refreshed)
         is preserved; the stale pasted blob does not overwrite it."""
@@ -9165,14 +9246,30 @@ class TestACPDataDirIsolation:
         assert Path(env["CLAUDE_CONFIG_DIR"]) == Path(persist) / "acp" / "claude-code"
 
     def test_pi_isolates_data_dir(self, tmp_path):
+        from openhands.sdk.secret import StaticSecret
+
         agent = self._agent(["npx", "-y", "pi-acp"])
         state = self._H._state(tmp_path)
         persist = state.persistence_dir
         assert persist is not None
+
+        # Base HOME isolation test (without secret, PI_CODING_AGENT_DIR is not set)
         with patch.dict("os.environ", {}, clear=True):
             env = self._H._run_start(
                 agent, state, conn=self._H._make_conn(agent_name="pi-acp")
             )
+        assert Path(env["HOME"]) == Path(persist) / "acp" / "pi"
+        assert "PI_CODING_AGENT_DIR" not in env
+
+        # Isolation when PI_SETTINGS_JSON secret is supplied
+        state.secret_registry.update_secrets(
+            {"PI_SETTINGS_JSON": StaticSecret(value=SecretStr("{}"))}
+        )
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(
+                agent, state, conn=self._H._make_conn(agent_name="pi-acp")
+            )
+        assert Path(env["HOME"]) == Path(persist) / "acp" / "pi"
         assert Path(env["PI_CODING_AGENT_DIR"]) == Path(persist) / "acp" / "pi"
 
 

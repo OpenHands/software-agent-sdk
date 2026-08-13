@@ -97,16 +97,24 @@ class TestACPProviderInfo:
         assert info.key == "pi"
         assert info.display_name == "Pi"
         assert info.default_command[0] == "npx"
-        assert "pi-acp" in info.default_command[-1]
+        assert any("pi-acp@" in token for token in info.default_command)
+        assert any(
+            "@earendil-works/pi-coding-agent@" in token
+            for token in info.default_command
+        )
+        assert info.default_command[-1] == "pi-acp"
         assert info.api_key_env_var is None
         assert info.base_url_env_var is None
-        assert info.default_session_mode == "medium"
+        assert info.default_session_mode is None
+        assert info.available_models == ()
+        assert info.default_model is None
+        assert info.file_secrets == ACP_PROVIDERS["pi"].file_secrets
         assert "pi-acp" in info.agent_name_patterns
         assert info.supports_set_session_model is True
         assert info.supports_runtime_model_switch is True
         assert info.session_meta_key is None
         assert info.binary_name == "pi-acp"
-        assert info.data_dir_env_var == "PI_CODING_AGENT_DIR"
+        assert info.data_dir_env_var == "HOME"
 
     def test_provider_info_is_frozen(self):
         info = ACP_PROVIDERS["claude-code"]
@@ -127,7 +135,7 @@ class TestACPProviderInfo:
 
 class TestGetACPProvider:
     def test_returns_info_for_known_keys(self):
-        for key in ("claude-code", "codex", "gemini-cli"):
+        for key in ACP_PROVIDERS.keys():
             result = get_acp_provider(key)
             assert result is not None
             assert result.key == key
@@ -221,18 +229,16 @@ class TestProviderRegistryConsistency:
 
     def test_every_provider_has_non_empty_session_mode(self):
         for key, info in ACP_PROVIDERS.items():
-            assert info.default_session_mode, (
-                f"{key}: default_session_mode must not be empty"
-            )
+            assert info.default_session_mode is None or info.default_session_mode.strip()
 
     def test_session_modes_are_distinct(self):
         modes = [
             info.default_session_mode
             for info in ACP_PROVIDERS.values()
-            if info.default_session_mode != "default"
+            if info.default_session_mode is not None
         ]
         assert len(modes) == len(set(modes)), (
-            "permission-bypassing modes should be unique"
+            "non-None default_session_mode values should be unique"
         )
 
     def test_detect_returns_matching_provider_for_all_registered_patterns(self):
@@ -250,10 +256,6 @@ class TestProviderRegistryConsistency:
 
 class TestProviderModelLists:
     """Verify the curated ``available_models`` / ``default_model`` fields."""
-
-    def test_every_builtin_provider_has_available_models(self):
-        for key, info in ACP_PROVIDERS.items():
-            assert info.available_models, f"{key}: available_models must not be empty"
 
     def test_available_models_entries_are_model_options(self):
         for info in ACP_PROVIDERS.values():
@@ -341,13 +343,15 @@ class TestACPFileSecrets:
         assert {s.secret_name for s in specs} == {
             "CODEX_AUTH_JSON",
             "GOOGLE_APPLICATION_CREDENTIALS_JSON",
+            "PI_SETTINGS_JSON"
         }
         # Deterministic concatenation in ACP_PROVIDERS registration order
-        # (codex before gemini-cli) — downstream callers can rely on a stable
+        # (codex before gemini-cli before pi) — downstream callers can rely on a stable
         # ordering of the built-in specs.
         assert specs == (
             ACP_PROVIDERS["codex"].file_secrets
             + ACP_PROVIDERS["gemini-cli"].file_secrets
+            + ACP_PROVIDERS["pi"].file_secrets
         )
 
     def test_file_secret_spec_is_frozen(self):
