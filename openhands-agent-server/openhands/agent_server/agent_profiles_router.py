@@ -54,7 +54,7 @@ logger = get_logger(__name__)
 
 agent_profiles_router = APIRouter(prefix="/agent-profiles", tags=["Agent Profiles"])
 
-MAX_AGENT_PROFILES = 50
+MAX_AGENT_PROFILES = 500
 
 ProfileName = Annotated[
     str,

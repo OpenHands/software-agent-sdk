@@ -37,7 +37,7 @@ logger = get_logger(__name__)
 
 profiles_router = APIRouter(prefix="/profiles", tags=["Profiles"])
 
-MAX_PROFILES = 50
+MAX_PROFILES = 500
 
 ProfileName = Annotated[
     str,

@@ -19,7 +19,6 @@ from openhands.agent_server import agent_profiles_router as router_module
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.persistence import reset_stores
-from openhands.agent_server.profiles_router import MAX_PROFILES
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.profiles import (
@@ -219,7 +218,9 @@ def test_seed_does_not_clobber_differently_cased_default_llm_profile(
     assert reloaded.model == "existing/model"
 
 
-def test_seed_llm_profile_limit_reached_does_not_500(client, default_llm_profile_store):
+def test_seed_llm_profile_limit_reached_does_not_500(
+    client, default_llm_profile_store, monkeypatch
+):
     """Hitting the LLM profile cap during backfill warns and continues
     instead of 500ing.
 
@@ -229,7 +230,9 @@ def test_seed_llm_profile_limit_reached_does_not_500(client, default_llm_profile
     (``openhands.sdk.profiles``) — catching the wrong class let the real one
     propagate as an unhandled 500.
     """
-    for i in range(MAX_PROFILES):
+    monkeypatch.setattr(router_module, "MAX_PROFILES", 2)
+
+    for i in range(2):
         default_llm_profile_store.save(f"other-{i}", LLM(model="x"))
 
     response = client.get("/api/agent-profiles")
