@@ -225,7 +225,7 @@ def test_validate_linked_issue_ready_new_unready_not_masked_by_ready_sibling(
     assert "ready-for-dev" in errors[0]
 
 
-def test_validate_linked_issue_ready_skips_missing_issue(monkeypatch):
+def test_validate_linked_issue_ready_returns_error_when_all_issues_not_found(monkeypatch):
     import urllib.error
     from http.client import HTTPMessage
 

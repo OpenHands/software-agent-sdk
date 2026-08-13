@@ -27,7 +27,6 @@ on:
 permissions:
     issues: write
     pull-requests: read
-    actions: write
     contents: read
 
 concurrency:
@@ -122,6 +121,10 @@ jobs:
             && github.event.label.name == 'ready-for-dev'
         runs-on: ubuntu-24.04
         timeout-minutes: 10
+        permissions:
+            contents: read
+            pull-requests: read
+            actions: write
         steps:
             - name: Checkout trusted workflow scripts
               uses: actions/checkout@v7
