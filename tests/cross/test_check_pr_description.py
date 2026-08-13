@@ -186,6 +186,19 @@ def test_validate_linked_issue_ready_grandfathers_pre_rollout_issue(monkeypatch)
     assert validate_linked_issue_ready("Fixes #12\n", "org/repo", "token") == []
 
 
+def test_validate_linked_issue_ready_grandfathers_rollout_day_before_deployment(
+    monkeypatch,
+):
+    # Same issue as #4468/#4469: opened on the rollout day (2026-08-12) before
+    # the workflow was deployed, so it was never labeled. It must be exempt.
+    monkeypatch.setattr(
+        _prod,
+        "fetch_issue_details",
+        lambda repo, num, token: (["bug"], "2026-08-12T06:46:00Z"),
+    )
+    assert validate_linked_issue_ready("Fixes #12\n", "org/repo", "token") == []
+
+
 def test_validate_linked_issue_ready_fails_for_new_not_ready_issue(monkeypatch):
     monkeypatch.setattr(
         _prod,

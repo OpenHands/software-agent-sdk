@@ -26,6 +26,8 @@ on:
 
 permissions:
     issues: write
+    pull-requests: read
+    actions: write
     contents: read
 
 concurrency:
@@ -105,3 +107,26 @@ jobs:
                         --repo "${{ github.repository }}" \
                         --reasons-file "${{ steps.readiness.outputs.reasons_file }}"
                   fi
+
+    # When the ready-for-dev label is added or removed, re-run the PR
+    # description check for every open PR that links this issue, so the
+    # `ready-for-dev` gate does not go stale between PR events. Runs after
+    # `check` so the label reflects the settled readiness state.
+    refresh-linked-pr-gates:
+        name: Refresh PR gates for linked issues
+        needs: check
+        if: >-
+            github.event.issue.state == 'open'
+            && github.event.issue.pull_request == null
+            && (github.event.action == 'labeled' || github.event.action == 'unlabeled')
+            && github.event.label.name == 'ready-for-dev'
+        runs-on: ubuntu-24.04
+        timeout-minutes: 10
+        steps:
+            - name: Checkout trusted workflow scripts
+              uses: actions/checkout@v7
+
+            - name: Re-run PR description checks for linked open PRs
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: python .github/scripts/refresh_linked_pr_checks.py

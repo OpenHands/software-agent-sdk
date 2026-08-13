@@ -25,8 +25,11 @@ READY_FOR_DEV_LABEL = "ready-for-dev"
 # Issues created before the `ready-for-dev` rollout are grandfathered: the
 # issue-readiness workflow only labels issues on `issues` events, so long-open
 # issues were never evaluated. Requiring the label retroactively would block
-# existing PRs linked to those issues. Newly created issues must carry it.
-READY_FOR_DEV_ROLLOUT_ISO = "2026-08-12"
+# existing PRs linked to those issues. The cutoff is the UTC day AFTER the
+# rollout/deployment day (2026-08-12), so every issue predating deployment —
+# including ones opened earlier that same day, before the workflow existed —
+# is exempt. Issues created on or after 2026-08-13 must carry the label.
+READY_FOR_DEV_ROLLOUT_ISO = "2026-08-13"
 
 
 def visible_text(text: str) -> str:
