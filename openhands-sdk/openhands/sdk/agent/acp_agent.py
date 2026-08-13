@@ -72,7 +72,7 @@ from openhands.sdk.agent.acp_file_credentials import (
     write_secret_file,
 )
 from openhands.sdk.agent.acp_models import ACPModelInfo
-from openhands.sdk.agent.acp_tracing import ACPTurnTrace
+from openhands.sdk.agent.acp_tracing import ACPTurnTrace, ACPTurnUsage
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context import AgentContext
 from openhands.sdk.conversation.state import ConversationExecutionStatus
@@ -1844,13 +1844,24 @@ class ACPAgent(AgentBase):
             atexit.unregister(callback)
             self._atexit_callback = None
 
+    def _observability_server_key(self) -> str | None:
+        """Which ACP CLI is running, for span labelling.
+
+        Prefers the provider detected from the live server's ``agent_name`` over
+        the configured :attr:`acp_server`, which is ``None`` whenever the agent
+        was built directly rather than through ``ACPAgentSettings`` — the case
+        the standalone SDK examples take.
+        """
+        provider = detect_acp_provider_by_agent_name(self._agent_name)
+        return provider.key if provider is not None else self.acp_server
+
     def _record_usage(
         self,
         response: PromptResponse | None,
         session_id: str,
         elapsed: float | None = None,
         usage_update: UsageUpdate | None = None,
-    ) -> None:
+    ) -> ACPTurnUsage:
         """Record cost, token usage, latency, and notify stats callback once.
 
         Args:
@@ -1858,16 +1869,23 @@ class ACPAgent(AgentBase):
             session_id: Session identifier used as the response_id for metrics.
             elapsed: Wall-clock seconds for this prompt round-trip (optional).
             usage_update: The synchronized ACP UsageUpdate for this turn, if any.
+
+        Returns:
+            What this turn consumed, so the caller can also put it on the
+            turn's observability span. Metrics remain the source of truth;
+            this only surfaces the numbers already derived here.
         """
         # -- Cost recording ---------------------------------------------------
         # claude-agent-acp, codex-acp: report cost via UsageUpdate notification
         # gemini-cli: does not send UsageUpdate (cost derived from tokens below)
         cost_recorded = False
+        turn_cost = 0.0
         if usage_update is not None and usage_update.cost is not None:
             last_cost = self._client._last_cost_by_session.get(session_id, 0.0)
             delta = usage_update.cost.amount - last_cost
             if delta > 0:
                 self.llm.metrics.add_cost(delta)
+                turn_cost = delta
                 cost_recorded = True
             self._client._last_cost_by_session[session_id] = usage_update.cost.amount
             self._client._last_cost = usage_update.cost.amount
@@ -1899,6 +1917,7 @@ class ACPAgent(AgentBase):
             )
             if cost > 0:
                 self.llm.metrics.add_cost(cost)
+                turn_cost = cost
 
         if not cost_recorded and not input_tokens and not output_tokens:
             # gemini-cli currently returns response.usage=None and
@@ -1917,6 +1936,15 @@ class ACPAgent(AgentBase):
                 self.llm.telemetry._stats_update_callback()
             except Exception:
                 logger.debug("Stats update callback failed", exc_info=True)
+
+        return ACPTurnUsage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read,
+            cache_write_tokens=cache_write,
+            reasoning_tokens=reasoning,
+            cost=turn_cost,
+        )
 
     # -- Capability helpers ------------------------------------------------
 
@@ -3007,7 +3035,7 @@ class ACPAgent(AgentBase):
         self._client.trace.abandon()
         self._client.reset()
         self._client.trace = ACPTurnTrace(
-            acp_server=self.acp_server,
+            acp_server=self._observability_server_key(),
             model_id=self._current_model_id,
             mask=mask,
         )
@@ -3382,7 +3410,7 @@ class ACPAgent(AgentBase):
 
         session_id = self._session_id or ""
         usage_update = self._client.pop_turn_usage_update(session_id)
-        self._record_usage(
+        turn_usage = self._record_usage(
             response,
             session_id,
             elapsed=elapsed,
@@ -3408,7 +3436,10 @@ class ACPAgent(AgentBase):
             response_text = "(No response from ACP server)"
 
         self._client.trace.finish_turn(
-            response_text, thought_text, self._client.accumulated_tool_calls
+            response_text,
+            thought_text,
+            self._client.accumulated_tool_calls,
+            usage=turn_usage,
         )
 
         # ACP step() boundaries are full remote assistant turns, not
