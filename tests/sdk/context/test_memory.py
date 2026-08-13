@@ -213,6 +213,41 @@ def test_instructed_write_path_matches_loader_read_path_home_fallback(
     assert "- home fallback fact" in loaded
 
 
+def test_load_memory_user_header_reflects_persistence_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """With OH_PERSISTENCE_DIR set, the loaded user-tier header names the real
+    read path -- not the stale ``~/.openhands/memory/`` -- so it matches the
+    write location advertised in the <MEMORY> guidance."""
+    persistence = tmp_path / "persistent"
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(persistence))
+    user_memory = persistence / "memory"
+    user_memory.mkdir(parents=True)
+    (user_memory / "MEMORY.md").write_text("- prefers ruff\n")
+
+    loaded = load_memory(tmp_path / "workspace")
+
+    assert loaded is not None
+    expected = user_memory / "MEMORY.md"
+    assert loaded.startswith(f"# User memory ({expected})")
+    assert "~/.openhands/memory/MEMORY.md" not in loaded
+
+
+def test_load_memory_user_header_uses_tilde_without_persistence_dir(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Without OH_PERSISTENCE_DIR the header keeps the plain-tilde form and never
+    leaks the expanded per-user home path."""
+    monkeypatch.delenv("OH_PERSISTENCE_DIR", raising=False)
+    _write_index(isolated_home, "- prefers uv over pip\n")
+
+    loaded = load_memory(tmp_path / "workspace")
+
+    assert loaded is not None
+    assert loaded.startswith("# User memory (~/.openhands/memory/MEMORY.md)")
+    assert str(isolated_home) not in loaded
+
+
 def test_user_memory_line_absent_when_memory_disabled(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
