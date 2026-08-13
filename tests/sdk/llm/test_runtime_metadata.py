@@ -10,6 +10,7 @@ See: https://github.com/OpenHands/software-agent-sdk/issues/4421
 from __future__ import annotations
 
 import asyncio
+import threading
 
 import httpx
 import pytest
@@ -437,3 +438,110 @@ def test_cache_key_depends_on_routing():
     llm_a = _openrouter_llm(litellm_extra_body={"provider": {"order": ["CoreWeave"]}})
     llm_b = _openrouter_llm(litellm_extra_body={"provider": {"order": ["Baseten"]}})
     assert rm.cache_key(llm_a) != rm.cache_key(llm_b)
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for reviewer findings
+# ---------------------------------------------------------------------------
+
+
+def test_parse_only_matches_returns_exact():
+    """A positive ``only`` match pins to that route and is exact."""
+    md = orm.parse_openrouter_payload(PAYLOAD, {"only": ["CoreWeave"]})
+    assert md is not None
+    assert md.confidence == "exact"
+    assert md.selected_provider == "CoreWeave"
+    assert md.max_input_tokens == 262144
+
+
+def test_detect_provider_prefix_requires_slash():
+    """openrouterx/foo must not be treated as an OpenRouter model."""
+    assert rm.detect_provider(LLM(model="openrouterx/deepseek")) is None
+    assert rm.detect_provider(LLM(model="not-openrouter")) is None
+    assert (
+        rm.detect_provider(LLM(model="openrouter/deepseek/deepseek-v4-flash-0731"))
+        is not None
+    )
+    assert (
+        rm.detect_provider(
+            LLM(model="my-provider", base_url="https://openrouter.ai/api/v1")
+        )
+        is not None
+    )
+
+
+def test_model_copy_resets_cache_on_route_change():
+    """Changing the route must drop any cached runtime metadata for the old key."""
+    llm = _openrouter_llm()
+    llm._runtime_metadata = ModelRuntimeMetadata(max_input_tokens=262144, source="test")
+    llm._runtime_metadata_fetched_at = rm.time.monotonic()
+    llm._runtime_metadata_key = rm.cache_key(llm)
+    assert llm.resolved_runtime_metadata is not None
+
+    changed = llm.model_copy(
+        update={"litellm_extra_body": {"provider": {"order": ["Baseten"]}}}
+    )
+    assert changed.resolved_runtime_metadata is None
+    assert changed._runtime_metadata_key is None
+
+
+def test_async_inflight_keyed_by_event_loop(monkeypatch):
+    """In-flight dedup is scoped per event loop, so two loops never cross-await."""
+    llm = _openrouter_llm()
+    calls = {"n": 0}
+
+    def counting_handler(request):
+        calls["n"] += 1
+        return httpx.Response(200, json=PAYLOAD)
+
+    monkeypatch.setattr(
+        orm.httpx, "AsyncClient", _patch_async_factory(counting_handler)
+    )
+    rm._inflight.clear()
+
+    def go():
+        return asyncio.run(rm.aresolve_provider_metadata(llm))
+
+    a = go()
+    b = go()
+    rm._inflight.clear()
+    assert a is not None and b is not None
+    # One upstream request per event loop: a task from loop A is never awaited
+    # by loop B (which would cross event-loop boundaries).
+    assert calls["n"] == 2
+
+
+def test_sync_resolution_generation_guards_stale_write(monkeypatch):
+    """A stale (earlier-started) sync probe must not overwrite a newer result."""
+    from openhands.sdk.llm import llm as llm_module
+
+    start = threading.Event()
+    release = threading.Event()
+    calls = {"n": 0}
+    llm = _openrouter_llm()
+
+    def fake_resolver(_llm):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            start.set()
+            release.wait(5)
+            return ModelRuntimeMetadata(max_input_tokens=1000, source="stale")
+        return ModelRuntimeMetadata(max_input_tokens=2000, source="newer")
+
+    monkeypatch.setattr(llm_module, "resolve_provider_metadata_sync", fake_resolver)
+
+    thread_result = {}
+
+    def slow_call():
+        thread_result["md"] = llm.resolve_runtime_metadata()
+
+    t = threading.Thread(target=slow_call)
+    t.start()
+    assert start.wait(5)
+    newer = llm.resolve_runtime_metadata()  # bumps generation, resolves to 2000
+    release.set()
+    t.join(5)
+
+    assert newer is not None and newer.max_input_tokens == 2000
+    cached = rm.cached_metadata(llm._runtime_metadata, llm._runtime_metadata_fetched_at)
+    assert cached is not None and cached.max_input_tokens == 2000

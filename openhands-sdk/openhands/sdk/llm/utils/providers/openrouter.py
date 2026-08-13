@@ -44,8 +44,10 @@ def _openrouter_model_id(llm: LLM) -> str | None:
     return None
 
 
-def _normalize(name: str | None) -> str:
-    return (name or "").strip().casefold()
+def _normalize(name: Any) -> str:
+    if not isinstance(name, str):
+        return ""
+    return name.strip().casefold()
 
 
 def _provider_routing(llm: LLM) -> dict[str, Any]:
@@ -57,53 +59,56 @@ def _provider_routing(llm: LLM) -> dict[str, Any]:
 def _eligible_endpoints(
     endpoints: list[dict[str, Any]], routing: dict[str, Any]
 ) -> list[dict[str, Any]]:
-    """Filter the endpoint list to the routes the routing config permits.
+    """Filter and rank the endpoint list to the routes the routing config permits.
 
-    Order of precedence matches OpenRouter's provider config semantics: an
-    explicit ``only`` restricts candidates, ``ignore`` removes them, then
-    ``order`` (when no ``only``) defines preference. When ``allow_fallbacks``
-    is false and an ``order`` is given, routing pins to the first ordered
-    provider that exists, so only that route is eligible.
+    Matches OpenRouter's provider-selection semantics: ``only`` and ``ignore``
+    are *eligibility* filters applied first, and ``order`` ranks the survivors.
+    ``only`` overrides ``order`` (order is ignored when ``only`` is present).
+    When ``allow_fallbacks`` is false and an ``order`` is given, routing pins
+    to the first surviving ordered provider; otherwise ordered providers come
+    first and the remaining survivors are appended as fallbacks.
     """
-    only = routing.get("only") or []
-    ignore = routing.get("ignore") or []
-    order = routing.get("order") or []
+    only = [p for p in (routing.get("only") or [])]
+    ignore = [p for p in (routing.get("ignore") or [])]
+    order = [p for p in (routing.get("order") or [])]
+    allow_fallbacks = routing.get("allow_fallbacks", True)
 
-    def by_name(name: str) -> dict[str, Any] | None:
-        key = _normalize(name)
-        for e in endpoints:
-            if _normalize(e.get("provider_name")) == key:
-                return e
-        return None
-
-    if only:
-        only_set = {_normalize(p) for p in only}
-        candidates = [
-            e for e in endpoints if _normalize(e.get("provider_name")) in only_set
-        ]
-    elif order:
-        preferred = [e for name in order if (e := by_name(name)) is not None]
-        if not preferred:
-            # An explicit order that matches none of the catalog's providers is
-            # not safely interpretable; leave it to fall back to model metadata.
-            candidates = []
-        elif not routing.get("allow_fallbacks", True):
-            # Router pins to the first ordered provider that is available.
-            candidates = preferred[:1]
-        else:
-            preferred_names = {_normalize(e["provider_name"]) for e in preferred}
-            candidates = preferred + [
-                e
-                for e in endpoints
-                if _normalize(e["provider_name"]) not in preferred_names
-            ]
-    else:
-        candidates = list(endpoints)
-
+    only_set = {_normalize(p) for p in only}
     ignore_set = {_normalize(p) for p in ignore}
-    return [
-        e for e in candidates if _normalize(e.get("provider_name")) not in ignore_set
+
+    # (1) Eligibility: keep routes allowed by `only` and not `ignore`. A route
+    # listed in both is excluded.
+    eligible = [
+        e
+        for e in endpoints
+        if (not only_set or _normalize(e.get("provider_name")) in only_set)
+        and _normalize(e.get("provider_name")) not in ignore_set
     ]
+    if not eligible:
+        return []
+
+    # (2) `only` overrides `order`: with `only` set, order never applies.
+    if only_set or not order:
+        return eligible
+
+    order_idx = {_normalize(name): i for i, name in enumerate(order)}
+    present_order = [
+        e for e in eligible if _normalize(e.get("provider_name")) in order_idx
+    ]
+    others = [
+        e for e in eligible if _normalize(e.get("provider_name")) not in order_idx
+    ]
+    if not present_order:
+        # An explicit order referencing none of the surviving providers is not
+        # safely interpretable; leave it to the caller to fall back to model
+        # metadata rather than guessing a pin.
+        return []
+    if allow_fallbacks:
+        present_order.sort(key=lambda e: order_idx[_normalize(e.get("provider_name"))])
+        return present_order + others
+    # Pins to the first surviving ordered provider.
+    present_order.sort(key=lambda e: order_idx[_normalize(e.get("provider_name"))])
+    return present_order[:1]
 
 
 def parse_openrouter_payload(
@@ -140,43 +145,28 @@ def parse_openrouter_payload(
 
     provider_names = [e.get("provider_name", "") for e in eligible]
     contexts = [e.get("context_length", 0) for e in eligible]
-    completion_limits = [
-        e["max_completion_tokens"]
-        for e in eligible
-        if isinstance(e.get("max_completion_tokens"), int)
-    ]
 
-    routing_providers = {_normalize(p) for p in (routing.get("order") or [])}
-    reordered = sorted(
-        eligible,
-        key=lambda e: list(routing_providers).index(_normalize(e.get("provider_name")))
-        if _normalize(e.get("provider_name")) in routing_providers
-        else len(routing_providers),
-    )
-
-    if len(eligible) == 1 or len(set(contexts)) == 1:
+    if len(eligible) == 1:
         target = eligible[0]
         return ModelRuntimeMetadata(
             max_input_tokens=target.get("context_length"),
-            max_output_tokens=target.get("max_completion_tokens"),
             source="openrouter_endpoints_api",
             candidate_providers=provider_names,
-            selected_provider=reordered[0].get("provider_name"),
+            selected_provider=target.get("provider_name"),
             confidence="exact",
         )
 
-    # Multiple eligible routes with differing limits: routing may pick any of
-    # them (e.g. when fallbacks are allowed), so the router provider is not
-    # known ahead of time. Report a conservative lower bound for preflight
-    # safety and leave ``selected_provider`` unset rather than guessing the
-    # first route in the (optional) ordering.
+    # Multiple eligible routes: routing may pick any of them, so the runtime
+    # provider is not known ahead of time and no single ``selected_provider``
+    # should be implied. The input context is the minimum unless every route
+    # agrees (in which case that value is exact).
+    contexts_equal = len(set(contexts)) == 1
     return ModelRuntimeMetadata(
-        max_input_tokens=min(contexts),
-        max_output_tokens=min(completion_limits) if completion_limits else None,
+        max_input_tokens=contexts[0] if contexts_equal else min(contexts),
         source="openrouter_endpoints_api",
         candidate_providers=provider_names,
         selected_provider=None,
-        confidence="safe_lower_bound",
+        confidence="exact" if contexts_equal else "safe_lower_bound",
     )
 
 

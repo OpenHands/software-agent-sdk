@@ -789,9 +789,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Pydantic copies private attrs without re-running validators, even for
         # deep copies, so routing-field updates must rebuild derived metadata.
         copied = super().model_copy(update=update, deep=deep)
-        route_changed = (
-            update is not None
-            and any(k in update for k in ("model", "base_url", "litellm_extra_body"))
+        route_changed = update is not None and any(
+            k in update for k in ("model", "base_url", "litellm_extra_body")
         )
         if route_changed:
             copied._refresh_litellm_metadata()
@@ -2556,18 +2555,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """Resolved output token limit used at runtime.
 
         ``max_output_tokens`` remains the user-configured value and always
-        wins. When it is unset, a previously resolved provider-aware runtime
-        limit is used (this property performs no network I/O), falling back to
-        the value discovered from model metadata.
+        wins. This property performs no network I/O and falls back to the value
+        discovered from model metadata. Runtime (provider) resolution only
+        refines the input/context limit, never the output limit, so no call
+        here is needed for output tokens (see issue #4421).
         """
-        if self.max_output_tokens:
-            return self.max_output_tokens
-        cached = cached_metadata(
-            self._runtime_metadata, self._runtime_metadata_fetched_at
-        )
-        if cached is not None and cached.max_output_tokens is not None:
-            return cached.max_output_tokens
-        return self._effective_max_output_tokens
+        return self.max_output_tokens or self._effective_max_output_tokens
 
     # =========================================================================
     # Runtime (provider-aware) metadata

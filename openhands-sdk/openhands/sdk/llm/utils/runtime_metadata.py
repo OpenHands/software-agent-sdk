@@ -50,7 +50,6 @@ class ModelRuntimeMetadata(BaseModel):
     """
 
     max_input_tokens: int | None = None
-    max_output_tokens: int | None = None
     source: str
     candidate_providers: list[str] = Field(default_factory=list)
     selected_provider: str | None = None
@@ -141,12 +140,40 @@ def _openrouter_resolver() -> ProviderResolver:
 def detect_provider(llm: LLM) -> ProviderResolver | None:
     model = llm.model or ""
     base_url = llm.base_url or ""
-    if model.startswith("openrouter") or "openrouter.ai" in base_url:
+    if model.startswith("openrouter/") or "openrouter.ai" in base_url:
         return _openrouter_resolver()
     return None
 
 
-_inflight: dict[tuple[str, str, str], asyncio.Task[ModelRuntimeMetadata | None]] = {}
+async def _safe_resolve(
+    resolver: ProviderResolver, llm: LLM
+) -> ModelRuntimeMetadata | None:
+    """Run a resolver, mapping any unexpected error to ``None``.
+
+    Transport/parsing failures must never abort the real LLM request; the
+    caller falls back to model-level metadata instead. Cancellation always
+    propagates so the caller can honour ``await`` cancellation.
+    """
+    try:
+        return await resolver(llm)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:  # noqa: BLE001 - any failure falls back upstream
+        logger.warning(
+            "runtime metadata resolution failed for %s (provider: %s); falling "
+            "back to model-level metadata: %s",
+            llm.model,
+            llm.base_url,
+            e,
+            exc_info=True,
+        )
+        return None
+
+
+_inflight: dict[
+    tuple[asyncio.AbstractEventLoop, tuple[str, str, str]],
+    asyncio.Task[ModelRuntimeMetadata | None],
+] = {}
 
 
 async def aresolve_provider_metadata(
@@ -156,25 +183,30 @@ async def aresolve_provider_metadata(
 
     Returns ``None`` for unsupported providers or an unresolvable route so the
     caller falls back to static model metadata.
+
+    In-flight tasks are keyed by *event loop* in addition to the route so that
+    two threads each running their own loop (a supported way to drive a shared
+    ``LLM``) never await a task attached to another loop.
     """
     resolver = detect_provider(llm)
     if resolver is None:
         return None
 
     key = cache_key(llm)
-    pending = _inflight.get(key)
+    inflight_key = (asyncio.get_running_loop(), key)
+    pending = _inflight.get(inflight_key)
     if pending is not None and not pending.done():
-        # A concurrent resolution for the same route is already in flight; await
-        # it rather than issuing a duplicate upstream request.
+        # A concurrent resolution for the same route & event loop is already in
+        # flight; await it rather than issuing a duplicate upstream request.
         return await pending
 
-    task = asyncio.create_task(resolver(llm))
-    _inflight[key] = task
+    task = asyncio.create_task(_safe_resolve(resolver, llm))
+    _inflight[inflight_key] = task
     try:
         return await task
     finally:
-        if _inflight.get(key) is task:
-            del _inflight[key]
+        if _inflight.get(inflight_key) is task:
+            del _inflight[inflight_key]
 
 
 def resolve_provider_metadata_sync(llm: LLM) -> ModelRuntimeMetadata | None:
@@ -203,7 +235,6 @@ def resolve_provider_metadata_sync(llm: LLM) -> ModelRuntimeMetadata | None:
         return None
 
     async def _run() -> ModelRuntimeMetadata | None:
-        result = await resolver(llm)
-        return result
+        return await _safe_resolve(resolver, llm)
 
     return asyncio.run(_run())
