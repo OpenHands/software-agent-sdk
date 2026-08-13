@@ -838,6 +838,7 @@ class ConversationService:
 
         event_service = event_services.get(conversation_id)
         if event_service is not None and event_service.is_open():
+            live = True
             # Do not acquire the live ConversationState's FIFOLock just to list
             # a sidebar row. Native OpenHands arun() intentionally holds that
             # lock across an entire LLM/tool step, which can last minutes; with
@@ -847,6 +848,8 @@ class ConversationService:
             # keyed cache as idle conversations. Live detail/event endpoints
             # remain authoritative for an individual open conversation.
             record.stored = event_service.stored
+        else:
+            live = False
 
         signature = _state_signature(self._base_state_path(conversation_id, record))
         if signature is None and event_service is not None and event_service.is_open():
@@ -861,15 +864,17 @@ class ConversationService:
             return conversation_info
 
         # ``record.stored`` is refreshed above for live conversations; idle rows
-        # keep the catalog copy. Fingerprint it so metadata-only updates (e.g.
-        # auto-title, which writes meta.json without touching base_state.json)
-        # invalidate the cached ConversationInfo rather than serving stale rows.
-        stored_signature = _stored_metadata_signature(record.stored)
+        # keep the catalog copy. Only live conversations can mutate that in-memory
+        # object via metadata-only updates (e.g. auto-title, which writes
+        # ``meta.json`` without touching ``base_state.json``), so fingerprint it
+        # only when the live refresh actually ran — keeps the hot persisted-row
+        # sidebar path free of a per-request dump+hash.
+        stored_signature = _stored_metadata_signature(record.stored) if live else None
         cached = record.cached_info
         if (
             cached is not None
             and signature == record.state_signature
-            and stored_signature == record.stored_signature
+            and (not live or stored_signature == record.stored_signature)
         ):
             # Parent/child relationships are catalog-derived and can change
             # without touching this conversation's base_state.json.
