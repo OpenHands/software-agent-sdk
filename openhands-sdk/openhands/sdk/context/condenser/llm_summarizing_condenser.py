@@ -94,13 +94,21 @@ class LLMSummarizingCondenser(RollingCondenser):
         return True
 
     def _effective_max_tokens(self, agent_llm: LLM | None) -> int | None:
+        """Return the effective token cap that triggers token-based condensation.
+
+        Takes the stricter (i.e. smaller) of the condenser's configured
+        ``max_tokens`` and the agent LLM's effective input limit. ``agent_llm``
+        is optional throughout the public API -- callers that only assess
+        request/event-count pressure may pass ``None`` -- in which case only the
+        condenser's own ``max_tokens`` applies.
+
+        Returns ``None`` when no limit is configured.
+        """
+        agent_limit = (
+            agent_llm.effective_max_input_tokens if agent_llm is not None else None
+        )
         limits = [
-            limit
-            for limit in (
-                self.max_tokens,
-                agent_llm.effective_max_input_tokens if agent_llm is not None else None,
-            )
-            if limit is not None
+            limit for limit in (self.max_tokens, agent_limit) if limit is not None
         ]
         return min(limits) if limits else None
 
