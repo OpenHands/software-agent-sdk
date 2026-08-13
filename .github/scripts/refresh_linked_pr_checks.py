@@ -79,6 +79,8 @@ def _rerun_pr_description_check(repo: str, head_sha: str) -> bool:
         [
             "gh",
             "api",
+            "-X",
+            "GET",
             f"repos/{repo}/actions/runs",
             "-f",
             f"head_sha={head_sha}",

@@ -46,6 +46,17 @@ class _FakeProc:
         self.stderr = ""
 
 
+def _recording_run(calls):
+    def _call(args):
+        calls.append(args)
+        # Listing runs returns one run; rerun is a no-op success.
+        if any("/actions/runs" in a for a in args):
+            return _FakeProc("8675309 2026-08-13T00:00:00Z\n")
+        return _FakeProc()
+
+    return _call
+
+
 def _fail_on_call(value):
     def _call(*args, **kwargs):
         raise AssertionError(value)
@@ -100,3 +111,20 @@ def test_skips_cross_referenced_pr_that_does_not_link_issue(monkeypatch, tmp_pat
     )
     assert _prod.main() == 0
     assert seen == []
+
+
+def test_rerun_pr_description_check_lists_runs_with_get(monkeypatch):
+    calls: list[list[str]] = []
+    monkeypatch.setattr(_prod, "_run", _recording_run(calls))
+    assert _prod._rerun_pr_description_check("org/repo", "abc123") is True
+    # Listing runs must be an explicit GET: `-f` args alone switch `gh api`
+    # to POST, which 404s on the runs collection endpoint (seen in the wild).
+    list_call = next(a for a in calls if "repos/org/repo/actions/runs" in a)
+    assert "-X" in list_call
+    assert list_call[list_call.index("-X") + 1] == "GET"
+    # The selected run is then re-run via an explicit POST.
+    rerun_call = next(a for a in calls if any("/rerun" in arg for arg in a))
+    assert rerun_call[rerun_call.index("api") + 1 : rerun_call.index("api") + 3] == [
+        "-X",
+        "POST",
+    ]
