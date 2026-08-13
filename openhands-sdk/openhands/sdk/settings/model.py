@@ -283,6 +283,13 @@ class LLMSummarizingCondenserSettings(CondenserSettings):
             exclude={"enabled", "condenser_kind"},
             exclude_none=True,
         )
+        # If the user didn't explicitly configure a condenser token limit, inherit
+        # the agent LLM's effective max input tokens so condensation can be
+        # triggered by token count, not just event count.
+        if "max_tokens" not in self.model_fields_set:
+            effective_max_input_tokens = llm.effective_max_input_tokens
+            if effective_max_input_tokens is not None:
+                condenser_kwargs["max_tokens"] = effective_max_input_tokens
         return LLMSummarizingCondenser(llm=condenser_llm, **condenser_kwargs)
 
 

@@ -16,6 +16,7 @@ from pydantic import PrivateAttr, SecretStr
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import StoredConversation
 from openhands.sdk.agent import Agent
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.testing import TestLLM
@@ -387,6 +388,49 @@ async def test_goal_loop_halts_on_run_error_as_interrupted(event_service, tmp_pa
         assert updates[-1]["status"] == "interrupted"
         assert updates[-1]["active"] is False
         assert event_service._goal_loop_outcome is None
+    finally:
+        await event_service.close()
+
+
+@pytest.mark.asyncio
+async def test_goal_loop_continues_past_stuck_run(event_service, tmp_path):
+    # A run that ends in STUCK (the stuck-detector heuristic firing during
+    # legitimate iteration) must NOT halt the goal loop as "interrupted". The
+    # judge is the authoritative completion signal; the loop should proceed to
+    # audit and re-prompt, keeping the "work until finished" contract. Contrast
+    # with ERROR/PAUSED above, which are real stop signals.
+    await _start(event_service, tmp_path, "turn 1", "turn 2")
+    conversation = event_service.get_conversation()
+
+    original_arun = conversation.arun
+
+    async def _arun_first_stuck():
+        # First run ends STUCK (simulates the stuck detector tripping mid-run).
+        if not getattr(conversation, "_test_stuck_fired", False):
+            conversation._test_stuck_fired = True
+            with conversation._state:
+                conversation._state.execution_status = ConversationExecutionStatus.STUCK
+            return
+        await original_arun()
+
+    conversation.arun = _arun_first_stuck
+
+    judge = _scripted(_NOT_DONE, _DONE, usage_id="judge")
+    try:
+        await event_service.start_goal_loop(
+            "build x", judge_llm=judge, max_iterations=5
+        )
+        await asyncio.wait_for(event_service._goal_loop_task, timeout=15)
+
+        updates = _goal_status_updates(event_service)
+        # The loop must NOT have recorded a terminal "interrupted"; the STUCK
+        # round was treated as a normal continue and the judge later completed.
+        assert updates[-1]["status"] == "complete"
+        assert updates[-1]["active"] is False
+        outcome = event_service._goal_loop_outcome
+        assert outcome is not None
+        assert outcome.status == "complete"
+        assert outcome.iterations == 2
     finally:
         await event_service.close()
 

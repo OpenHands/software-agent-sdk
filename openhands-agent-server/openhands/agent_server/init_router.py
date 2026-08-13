@@ -31,6 +31,7 @@ from openhands.agent_server.telemetry import (
     shutdown_telemetry_sink,
 )
 from openhands.sdk.logger import get_logger
+from openhands.sdk.observability import maybe_init_laminar
 
 
 logger = get_logger(__name__)
@@ -226,6 +227,7 @@ class InitService:
                 # tools pick up credentials.
                 for key, value in req.env.items():
                     os.environ[key] = value
+            maybe_init_laminar()
 
             # Must precede get_instance(), which captures the sink. The
             # matching emit_server_started() is deferred until the ``ready``
