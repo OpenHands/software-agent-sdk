@@ -899,8 +899,9 @@ class ConversationService:
                 # Authoritative: we own it, so disk can only be staler.
                 state = await event_service.get_state()
                 record.execution_status = state.execution_status
-                # Autosave will invalidate any signature we hold.
+                # Autosave will invalidate any signature and cached info we hold.
                 record.state_signature = None
+                record.cached_info = None
                 continue
             targets.append(
                 (
@@ -927,6 +928,9 @@ class ConversationService:
                 continue
             if status is not None:
                 record.execution_status = status
+            # A persisted change (or a move to an unreadable state) invalidates
+            # any cached ConversationInfo derived from the previous snapshot.
+            record.cached_info = None
             record.state_signature = signature
 
     async def _reconcile_active_records(self) -> None:

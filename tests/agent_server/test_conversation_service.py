@@ -774,6 +774,55 @@ async def test_status_filters_refresh_unloaded_shared_state(persisted_conversati
 
 
 @pytest.mark.asyncio
+async def test_finished_status_refresh_invalidates_cached_info(persisted_conversation):
+    """A persisted status change invalidates the observer's cached row.
+
+    The observer caches a ``ConversationInfo`` for an IDLE snapshot. After the
+    owner finishes the conversation, a filtered search must serve the refreshed
+    ``FINISHED`` status rather than the stale cached ``IDLE`` row.
+    """
+    conversations_dir, conversation_id = persisted_conversation
+
+    async with ConversationService(conversations_dir=conversations_dir) as primary:
+        primary_runtime = await primary.get_event_service(conversation_id)
+        assert primary_runtime is not None
+
+        async with ConversationService(conversations_dir=conversations_dir) as observer:
+            # Populate the observer's catalog entry + cached_info from the IDLE
+            # snapshot (unfiltered search does not refresh statuses).
+            initial = await observer.search_conversations()
+            assert [item.id for item in initial.items] == [conversation_id]
+            record = observer._conversation_records[conversation_id]
+            assert record.cached_info is not None
+            assert record.execution_status == ConversationExecutionStatus.IDLE
+
+            # Primary finishes the conversation behind the observer's back.
+            primary_state = await primary_runtime.get_state()
+            primary_state.execution_status = ConversationExecutionStatus.FINISHED
+
+            # The observer's filtered search refreshes statuses; it must not
+            # serve the stale cached IDLE ConversationInfo.
+            page = await observer.search_conversations(
+                execution_status=ConversationExecutionStatus.FINISHED
+            )
+            assert [item.id for item in page.items] == [conversation_id]
+            assert (
+                page.items[0].execution_status == ConversationExecutionStatus.FINISHED
+            )
+
+            # An unfiltered search must also surface the refreshed status rather
+            # than the stale cached IDLE row (which would otherwise persist
+            # forever for a finished conversation).
+            unfiltered = await observer.search_conversations()
+            assert [item.id for item in unfiltered.items] == [conversation_id]
+            assert (
+                unfiltered.items[0].execution_status
+                == ConversationExecutionStatus.FINISHED
+            )
+            assert observer._event_services == {}
+
+
+@pytest.mark.asyncio
 async def test_waiting_hydration_cannot_restore_deleted_conversation(
     persisted_conversation,
 ):
