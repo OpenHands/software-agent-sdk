@@ -10,9 +10,7 @@ from check_pr_description import extract_linked_issue_numbers
 
 
 def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        args, capture_output=True, text=True, check=False
-    )
+    return subprocess.run(args, capture_output=True, text=True, check=False)
 
 
 def _linked_open_prs(repo: str, issue_number: int) -> list[dict]:

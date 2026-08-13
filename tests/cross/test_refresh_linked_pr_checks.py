@@ -49,6 +49,7 @@ class _FakeProc:
 def _fail_on_call(value):
     def _call(*args, **kwargs):
         raise AssertionError(value)
+
     return _call
 
 
