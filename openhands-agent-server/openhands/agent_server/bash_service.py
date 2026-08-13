@@ -103,9 +103,8 @@ class BashEventService:
     def _get_bash_event_sync(self, event_id: str) -> BashEventBase | None:
         """Sync: find the event file whose name ends with ``_<event_id>``.
 
-        Uses a single ``os.scandir`` pass (one readdir, no per-entry stat or
-        fnmatch regex) instead of ``glob.glob("*_<event_id>")``, which compiles
-        a regex and matches every entry in an unbounded events directory.
+        Scans the events directory in a single ``os.scandir`` pass (one readdir,
+        no per-entry stat or regex) and returns the first matching file.
         """
         self._ensure_bash_events_dir()
         suffix = f"_{event_id}"
@@ -172,11 +171,9 @@ class BashEventService:
     ) -> BashEventPage:
         """Sync search: one ``os.scandir`` pass + cheap segment filter.
 
-        Replaces ``glob.glob`` (which compiles a fnmatch regex and matches every
-        entry in an unbounded events directory) with a single ``os.scandir`` pass
-        that splits each filename on ``_`` and compares the fixed segments
-        (kind, command_id) directly. Filenames are
-        ``<timestamp>_<kind>[_<command_id>]_<event_id>`` with a 20-digit
+        Splits each filename on ``_`` and compares the fixed segments
+        (kind, command_id) directly rather than matching with regexes. Filenames
+        are ``<timestamp>_<kind>[_<command_id>]_<event_id>`` with a 20-digit
         timestamp prefix, so a lexicographic name comparison is a timestamp
         comparison and is used both to pre-filter by the time window and to sort.
         """
