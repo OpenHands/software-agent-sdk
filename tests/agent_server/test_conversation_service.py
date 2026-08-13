@@ -3837,8 +3837,8 @@ async def test_search_invalidates_cached_info_when_state_file_changes(
 
 
 @pytest.mark.asyncio
-async def test_search_composes_live_conversation_info_with_state_lock(tmp_path):
-    """Live list/search composition must lock state in the worker thread."""
+async def test_search_live_conversation_does_not_wait_for_state_lock(tmp_path):
+    """Sidebar listing must not block behind a live agent's long step lock."""
     conversations_dir = tmp_path / "conversations"
     workspace_dir = tmp_path / "workspace"
     workspace_dir.mkdir()
@@ -3848,32 +3848,30 @@ async def test_search_composes_live_conversation_info_with_state_lock(tmp_path):
         confirmation_policy=NeverConfirm(),
     )
 
-    original_compose = _compose_conversation_info
-    loop_ident = threading.get_ident()
-    found = {}
-
     async with ConversationService(conversations_dir=conversations_dir) as service:
         conversation_info, _ = await service.start_conversation(request)
         event_services = service._event_services
         assert event_services is not None
-        event_service = event_services[conversation_info.id]
-        live_state = await event_service.get_state()
+        live_state = await event_services[conversation_info.id].get_state()
 
-        def spy(stored, state, children):
-            found["thread_ident"] = threading.get_ident()
-            found["state_owned"] = state.owned()
-            found["state_is_live"] = state is live_state
-            return original_compose(stored, state, children)
+        # Hold the same FIFOLock that LocalConversation.arun() holds across a
+        # native OpenHands agent step. The old listing path composed from the
+        # live state and blocked until this lock was released.
+        acquired = threading.Event()
+        release = threading.Event()
 
-        with patch(
-            "openhands.agent_server.conversation_service._compose_conversation_info",
-            side_effect=spy,
-        ) as comp:
-            page = await service.search_conversations()
-            assert [item.id for item in page.items] == [conversation_info.id]
-            assert comp.call_count >= 1
+        def hold_state_lock():
+            with live_state:
+                acquired.set()
+                assert release.wait(timeout=5)
 
-    assert found.get("thread_ident") is not None
-    assert found["thread_ident"] != loop_ident
-    assert found["state_is_live"] is True
-    assert found["state_owned"] is True
+        holder = threading.Thread(target=hold_state_lock)
+        holder.start()
+        assert acquired.wait(timeout=2)
+        try:
+            page = await asyncio.wait_for(service.search_conversations(), timeout=1)
+        finally:
+            release.set()
+            holder.join(timeout=2)
+
+    assert [item.id for item in page.items] == [conversation_info.id]

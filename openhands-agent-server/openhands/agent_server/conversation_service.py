@@ -807,15 +807,28 @@ class ConversationService:
 
         event_service = event_services.get(conversation_id)
         if event_service is not None and event_service.is_open():
+            # Do not acquire the live ConversationState's FIFOLock just to list
+            # a sidebar row. Native OpenHands arun() intentionally holds that
+            # lock across an entire LLM/tool step, which can last minutes; with
+            # several parallel runs, composing every live row waits behind each
+            # active step and serializes conversation search. The autosaved
+            # base_state.json is the listing snapshot and has the same signature-
+            # keyed cache as idle conversations. Live detail/event endpoints
+            # remain authoritative for an individual open conversation.
+            record.stored = event_service.stored
+
+        signature = _state_signature(self._base_state_path(conversation_id, record))
+        if signature is None and event_service is not None and event_service.is_open():
+            # Direct embedders/tests can inject a live EventService without a
+            # persisted state file. There is no disk snapshot to list in that
+            # case, so retain the live-state fallback.
             state = await event_service.get_state()
-            record.state_signature = None
             conversation_info = await asyncio.to_thread(
                 _compose_conversation_info_sync, event_service.stored, state, children
             )
             record.execution_status = conversation_info.execution_status
             return conversation_info
 
-        signature = _state_signature(self._base_state_path(conversation_id, record))
         cached = record.cached_info
         if cached is not None and signature == record.state_signature:
             # Parent/child relationships are catalog-derived and can change
