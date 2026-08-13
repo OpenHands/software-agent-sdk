@@ -62,7 +62,7 @@ logger = get_logger(__name__)
 # SOUL.md is the agent's identity file (~/.openhands/SOUL.md).  When present
 # it replaces the default identity in the system prompt.
 
-_SOUL_PATH = os.path.join(get_user_persistence_dir(), "SOUL.md")
+_SOUL_PATH = get_user_persistence_dir() / "SOUL.md"
 _DEFAULT_SOUL = (
     "You are OpenHands agent, a helpful AI assistant that can interact"
     " with a computer to solve tasks."
@@ -87,7 +87,7 @@ _PRESET_BY_FILENAME: dict[str, PromptPreset] = {
 def _load_soul_md() -> str:
     """Load ``~/.openhands/SOUL.md``, falling back to the built-in default."""
     try:
-        with open(_SOUL_PATH, encoding="utf-8") as f:
+        with _SOUL_PATH.open(encoding="utf-8") as f:
             content = f.read().strip()
         if content:
             return content
@@ -446,7 +446,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         available_skills_prompt: str | None = None
         custom_suffix: str | None = None
         memory_context: str | None = None
-        user_memory_dir: str | None = None
         secret_infos: tuple[tuple[str, str | None], ...] = ()
 
         if agent_context is not None:
@@ -465,11 +464,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             available_skills_prompt = data.available_skills_prompt or None
             custom_suffix = agent_context.system_message_suffix or None
             memory_context = agent_context.memory_context or None
-            # Resolve the user-tier memory directory at build time so the write
-            # guidance honors OH_PERSISTENCE_DIR and matches load_memory()'s read
-            # path. Only advertised when persistent memory is enabled.
-            if agent_context.load_memory:
-                user_memory_dir = str(get_user_persistence_dir() / "memory")
             secret_infos = tuple(
                 (info["name"] or "", info["description"]) for info in data.secret_infos
             )
@@ -499,7 +493,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             available_skills_prompt=available_skills_prompt,
             custom_suffix=custom_suffix,
             memory_context=memory_context,
-            user_memory_dir=user_memory_dir,
             secret_infos=secret_infos,
         )
 

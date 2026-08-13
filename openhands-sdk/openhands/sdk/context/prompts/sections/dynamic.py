@@ -21,7 +21,6 @@ __all__ = [
     "CustomSuffixSection",
     "DateTimeSection",
     "MemoryContextSection",
-    "MemoryLocationsSection",
     "RepoContextSection",
 ]
 
@@ -94,34 +93,6 @@ class MemoryContextSection:
             "\n"
             f"{ctx.memory_context}\n"
             "</MEMORY_CONTEXT>"
-        )
-
-
-class MemoryLocationsSection:
-    """``<MEMORY_LOCATIONS>`` -- the resolved, absolute user-tier memory directory.
-
-    Emitted only when persistent memory is enabled (``ctx.user_memory_dir`` set).
-    The static ``<MEMORY>`` guidance describes the two-tier scheme with a literal
-    ``~`` so it stays cache-stable and machine-independent; this dynamic block
-    pins the concrete directory (which honors ``OH_PERSISTENCE_DIR``) so the agent
-    writes user memory to the same place the loader reads it from -- otherwise, in
-    an ephemeral sandbox with ``OH_PERSISTENCE_DIR`` set, writes would land under
-    ``$HOME/.openhands`` and be lost on resume."""
-
-    name = "memory_locations"
-    cache_tier = CacheTier.DYNAMIC
-
-    def guard(self, ctx: PromptContext) -> bool:
-        return bool(ctx.user_memory_dir)
-
-    def render(self, ctx: PromptContext) -> str | None:
-        return (
-            "<MEMORY_LOCATIONS>\n"
-            "* Your user (cross-project) memory directory for this session is: "
-            f"`{ctx.user_memory_dir}`\n"
-            "* Read and write user-tier memory files (`MEMORY.md`, daily logs) "
-            "under that exact directory; create it if it does not exist.\n"
-            "</MEMORY_LOCATIONS>"
         )
 
 

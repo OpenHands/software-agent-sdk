@@ -10,6 +10,7 @@ for every block here (the dynamic tier is ported separately).
 # the rendered bytes, so line-length (E501) is disabled for this whole file.
 # ruff: noqa: E501
 
+import os
 import re
 from typing import ClassVar
 
@@ -18,6 +19,7 @@ from openhands.sdk.context.prompts.section import (
     Platform,
     PromptContext,
 )
+from openhands.sdk.utils.path import get_user_persistence_dir
 
 
 __all__ = [
@@ -111,16 +113,17 @@ class MemorySection(_StaticTextSection):
 * This repository skill is automatically loaded for every conversation and helps maintain context across sessions.
 * For more information about skills, see: https://docs.openhands.dev/overview/skills"""
 
-    # The user-tier location is deliberately NOT written as an absolute path here:
-    # this static block is the cache-shared, machine-independent prefix, so the
-    # concrete directory (which honors OH_PERSISTENCE_DIR) is emitted per-session
-    # by the dynamic ``MemoryLocationsSection``. The literal ``~`` fallback below
-    # is a plain tilde, never the expanded home path
+    # The user-tier bullet is filled in by ``_user_memory_line`` so the resolved
+    # location (honoring OH_PERSISTENCE_DIR, matching load_memory()'s read path)
+    # is what the agent is told to write to. When the env var is unset the line
+    # is the literal ``~/.openhands/memory/`` -- a plain tilde, never the expanded
+    # home path -- so the block stays cache-shared and machine-independent, and
+    # the OH_PERSISTENCE_DIR value that does appear is a deployment-constant mount
     # (see test_static_block_has_no_dynamic_content).
     _TWO_TIER_GUIDANCE = """\
 You have persistent memory that survives across sessions, in two tiers:
 * Project memory: `.openhands/memory/` under the workspace root — knowledge specific to this repository.
-* User memory: knowledge and preferences that apply across all projects. Its exact directory for this session is given in the <MEMORY_LOCATIONS> block below (falling back to `~/.openhands/memory/` when that block is absent).
+{user_memory_line}
 
 Each tier contains:
 * `MEMORY.md` — a curated index of durable facts. Its content is injected into your prompt at session start (the <MEMORY_CONTEXT> block), so keep it small and high-value.
@@ -132,9 +135,31 @@ Maintenance habits:
 * Do NOT record secrets or credentials. Do NOT record facts that are trivially re-discoverable (directory listings, obvious commands). Record what was expensive to learn: root causes, environment quirks, user preferences, decisions and their reasons.
 * `AGENTS.md` remains the place for instructions addressed to any agent working in this repository; memory is for what you learned yourself."""
 
+    @staticmethod
+    def _user_memory_line() -> str:
+        """The user-tier bullet, naming the directory the agent should write to.
+
+        Resolved via ``get_user_persistence_dir()`` so the instructed write path
+        matches what ``load_memory`` reads. When ``OH_PERSISTENCE_DIR`` is set the
+        line carries its concrete ``<base>/memory/`` directory (a deployment mount
+        that is constant within any warm-cache window); otherwise it is the literal
+        ``~/.openhands/memory/`` so the static block leaks no per-user home path.
+        """
+        if os.environ.get("OH_PERSISTENCE_DIR"):
+            user_memory_dir = get_user_persistence_dir() / "memory"
+            location = f"`{user_memory_dir}/`"
+        else:
+            location = "`~/.openhands/memory/`"
+        return (
+            f"* User memory: {location} — knowledge and preferences that apply "
+            "across all projects."
+        )
+
     def render(self, ctx: PromptContext) -> str | None:
         if ctx.template_kwargs.get("memory_enabled"):
-            guidance = self._TWO_TIER_GUIDANCE
+            guidance = self._TWO_TIER_GUIDANCE.format(
+                user_memory_line=self._user_memory_line()
+            )
         else:
             guidance = self._AGENTS_MD_GUIDANCE
         return f"<MEMORY>\n{guidance}\n</MEMORY>"

@@ -143,23 +143,23 @@ def test_load_memory_treats_unreadable_index_as_absent(
 
 # --- read/write alignment: the write guidance and the loader agree on a path ----
 
-_MEMORY_LOCATIONS_RE = re.compile(
-    r"<MEMORY_LOCATIONS>.*?directory for this session is: `([^`]+)`",
-    re.DOTALL,
-)
+# The user-tier bullet the static <MEMORY> block renders, e.g.
+# "* User memory: `/persist/memory/` — knowledge and preferences ...".
+_USER_MEMORY_RE = re.compile(r"\* User memory: `([^`]+)`")
 
 
 def _advertised_user_memory_dir(agent: Agent) -> Path:
-    """The absolute user-memory directory the agent is instructed to write to.
+    """The user-memory directory the agent is instructed to write to.
 
-    Parsed out of the rendered ``<MEMORY_LOCATIONS>`` dynamic block -- i.e. the
-    exact text the model sees, not an internal helper -- so the test proves the
-    instructed write path, per the review request.
+    Parsed out of the rendered static ``<MEMORY>`` block -- i.e. the exact text
+    the model sees, not an internal helper -- so the test proves the instructed
+    write path stays aligned with ``load_memory``'s read path. A leading ``~`` is
+    expanded so the returned path is comparable to the loader's resolved path.
     """
-    dynamic = agent.dynamic_context or ""
-    match = _MEMORY_LOCATIONS_RE.search(dynamic)
-    assert match, f"no <MEMORY_LOCATIONS> block in dynamic context:\n{dynamic}"
-    return Path(match.group(1))
+    static = agent.static_system_message
+    match = _USER_MEMORY_RE.search(static)
+    assert match, f"no user-memory bullet in static <MEMORY> block:\n{static}"
+    return Path(match.group(1)).expanduser()
 
 
 def _memory_agent() -> Agent:
@@ -213,23 +213,23 @@ def test_instructed_write_path_matches_loader_read_path_home_fallback(
     assert "- home fallback fact" in loaded
 
 
-def test_memory_locations_block_absent_when_memory_disabled(
+def test_user_memory_line_absent_when_memory_disabled(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """No persistence directory is advertised unless memory is enabled."""
+    """No user-memory directory is advertised unless memory is enabled."""
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistent"))
     agent = Agent(
         llm=LLM(model="claude-sonnet-4-5", usage_id="memory-off"),
         tools=[],
         agent_context=AgentContext(load_memory=False),
     )
-    assert "<MEMORY_LOCATIONS>" not in (agent.dynamic_context or "")
+    assert "* User memory:" not in agent.static_system_message
 
 
 def test_instructed_write_path_resolved_at_call_time(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The path is resolved per build, so setting OH_PERSISTENCE_DIR after the
+    """The path is resolved per render, so setting OH_PERSISTENCE_DIR after the
     agent is constructed is still honored (matches get_user_persistence_dir)."""
     agent = _memory_agent()
 
