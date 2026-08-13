@@ -245,7 +245,8 @@ def test_create_directory_existing_file_fails(client, tmp_path):
 
 
 @pytest.mark.skipif(
-    os.geteuid() == 0, reason="root bypasses directory write permissions"
+    getattr(os, "geteuid", lambda: -1)() == 0,
+    reason="root bypasses directory write permissions",
 )
 def test_create_directory_permission_denied(client, tmp_path):
     """Test that an unwritable parent returns 403."""
