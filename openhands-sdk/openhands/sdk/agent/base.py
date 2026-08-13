@@ -87,7 +87,7 @@ _PRESET_BY_FILENAME: dict[str, PromptPreset] = {
 def _load_soul_md() -> str:
     """Load ``~/.openhands/SOUL.md``, falling back to the built-in default."""
     try:
-        with _SOUL_PATH.open(encoding="utf-8") as f:
+        with open(_SOUL_PATH, encoding="utf-8") as f:
             content = f.read().strip()
         if content:
             return content
