@@ -283,7 +283,7 @@ gh run rerun <RUN_ID> --repo <OWNER>/<REPO> --failed
 - DON'T write TEST CLASSES unless absolutely necessary!
 - If you find yourself duplicating logics in preparing mocks, loading data etc, these logic should be fixtures in conftest.py!
 - Please test only the logic implemented in the current codebase. Do not test functionality (e.g., BaseModel.model_dumps()) that is not implemented in this repository.
-- Assert observable behavior rather than source text, static implementation lists, private helpers, or mock wiring. Tests should survive behavior-preserving refactors.
+- Assert observable behavior rather than source text, static implementation lists, private helpers or state, generic framework behavior, exhaustive default/export mirrors, or mock wiring. Tests should survive behavior-preserving refactors.
 - For changes to prompt templates, tool descriptions, or agent decision logic, add the `integration-test` label to trigger integration tests and verify no unexpected impact on benchmark performance.
 
 # Stress Tests

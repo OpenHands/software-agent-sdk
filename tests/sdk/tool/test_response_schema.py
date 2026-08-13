@@ -436,29 +436,6 @@ def test_mcp_tool_supports_response_schema():
     assert action.structured_output["success"] is True
 
 
-def test_response_schema_json_is_cached_per_class():
-    """The Pydantic model_json_schema() result is cached by the immutable class so
-    repeated _response_schema_json calls reuse the cached schema."""
-    from openhands.sdk.tool.tool import _response_schema_json_cache
-
-    # Prime the cache by resolving a tool with a schema.
-    _finish_with_schema(TaskResult)
-    assert TaskResult in _response_schema_json_cache
-
-    cached = _response_schema_json_cache[TaskResult]
-    # Subsequent calls return deep copies of the same cached schema.
-    again = _finish_with_schema(TaskResult)
-    assert _response_schema_json_cache[TaskResult] == cached
-    # Multiple action_from_arguments calls do not regenerate the cache.
-    again.action_from_arguments(
-        {"message": "m", "success": True, "summary_text": "s", "files_changed": []}
-    )
-    again.action_from_arguments(
-        {"message": "m2", "success": False, "summary_text": "s2", "files_changed": []}
-    )
-    assert _response_schema_json_cache[TaskResult] == cached
-
-
 def test_response_schema_cache_does_not_go_stale_on_model_copy():
     """A tool rebuilt via model_copy (bypassing set_response_schema) with a
     different schema must not reuse a stale cache."""
