@@ -823,6 +823,40 @@ async def test_finished_status_refresh_invalidates_cached_info(persisted_convers
 
 
 @pytest.mark.asyncio
+async def test_search_refreshes_cached_info_on_metadata_only_update(
+    persisted_conversation,
+):
+    """Metadata-only updates (meta.json) invalidate the cached row.
+
+    ``cached_info`` embeds ``StoredConversation`` metadata (title, metrics) but
+    is keyed by ``base_state.json`` alone. A live conversation changing only
+    ``stored`` metadata — e.g. auto-title — must not be served the stale row.
+    """
+    conversations_dir, conversation_id = persisted_conversation
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        runtime = await service.get_event_service(conversation_id)
+        assert runtime is not None
+
+        # Populate the cached ConversationInfo from the untitled snapshot.
+        initial = await service.search_conversations()
+        assert [item.id for item in initial.items] == [conversation_id]
+        assert initial.items[0].title is None
+        record = service._conversation_records[conversation_id]
+        assert record.cached_info is not None
+
+        # Change only stored metadata; base_state.json is untouched.
+        runtime.stored = runtime.stored.model_copy(update={"title": "Generated Title"})
+        await runtime.save_meta()
+
+        page = await service.search_conversations()
+        assert [item.id for item in page.items] == [conversation_id]
+        assert page.items[0].title == "Generated Title"
+        assert service._event_services is not None
+        assert set(service._event_services) == {conversation_id}
+
+
+@pytest.mark.asyncio
 async def test_waiting_hydration_cannot_restore_deleted_conversation(
     persisted_conversation,
 ):

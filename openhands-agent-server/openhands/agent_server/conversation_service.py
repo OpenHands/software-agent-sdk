@@ -553,6 +553,32 @@ def _state_signature(base_state_path: str) -> tuple[int, int] | None:
     return None
 
 
+def _stored_metadata_signature(stored: StoredConversation) -> int:
+    """Change-detection fingerprint for ``stored`` metadata on a cached row.
+
+    ``cached_info`` is keyed by ``base_state.json``, but also embeds
+    ``StoredConversation`` metadata that can change independently via
+    ``meta.json`` (notably auto-title). Fingerprint exactly the fields
+    ``_compose_conversation_info`` lifts from ``stored`` so a metadata-only
+    update invalidates the cache. Keep the set in sync with that function.
+    """
+    metadata = stored.model_dump(
+        mode="json",
+        include={
+            "title",
+            "metrics",
+            "created_at",
+            "updated_at",
+            "forked_from_conversation_id",
+            "forked_from_event_id",
+            "parent_conversation_id",
+            "client_tools",
+            "launched_agent_profile",
+        },
+    )
+    return hash(json.dumps(metadata, sort_keys=True, default=str))
+
+
 def _read_execution_status_sync(
     base_state_path: str,
 ) -> ConversationExecutionStatus | None:
@@ -583,6 +609,11 @@ class _ConversationRecord:
     # keep the validated object until base_state.json changes rather than
     # reparsing a large nested ConversationState on every request.
     cached_info: ConversationInfo | None = None
+    # Fingerprint of ``stored`` metadata (title, metrics, …) as of the last
+    # composition. ``cached_info`` is keyed by ``state_signature`` alone, so
+    # metadata-only updates (``meta.json``, e.g. auto-title) must also
+    # invalidate it.
+    stored_signature: int | None = None
 
 
 @dataclass
@@ -829,8 +860,17 @@ class ConversationService:
             record.execution_status = conversation_info.execution_status
             return conversation_info
 
+        # ``record.stored`` is refreshed above for live conversations; idle rows
+        # keep the catalog copy. Fingerprint it so metadata-only updates (e.g.
+        # auto-title, which writes meta.json without touching base_state.json)
+        # invalidate the cached ConversationInfo rather than serving stale rows.
+        stored_signature = _stored_metadata_signature(record.stored)
         cached = record.cached_info
-        if cached is not None and signature == record.state_signature:
+        if (
+            cached is not None
+            and signature == record.state_signature
+            and stored_signature == record.stored_signature
+        ):
             # Parent/child relationships are catalog-derived and can change
             # without touching this conversation's base_state.json.
             if cached.sub_conversation_ids != children:
@@ -847,6 +887,7 @@ class ConversationService:
             _compose_conversation_info, record.stored, state, children
         )
         record.state_signature = signature
+        record.stored_signature = stored_signature
         record.cached_info = conversation_info
         record.execution_status = conversation_info.execution_status
         return conversation_info
