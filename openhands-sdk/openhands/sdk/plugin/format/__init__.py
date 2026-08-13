@@ -12,15 +12,18 @@ Module layout:
 - ``base`` — the abstract :class:`PluginFormat` contract plus the shared
   discovery logic (skills discovery, final assembly).
 - ``claude_code`` — the concrete :class:`ClaudeCodePluginFormat` strategy.
+- ``agent_plugins`` — the :class:`AgentPluginsFormat` strategy, not registered.
 - this package ``__init__`` — the format registry (``_FORMATS``) and the
   :func:`detect_format` dispatcher.
 
 :func:`detect_format` returns the first format in ``_FORMATS`` whose
-:meth:`PluginFormat.detect` returns True. Claude Code is the only format today
-and its ``detect`` accepts any directory, so it is the universal fallback. The
-Agent Plugins format (agent-plugins.org) is the planned follow-up this seam
-exists for; when added it will sit ahead of Claude Code and claim directories
-with a root-level ``plugin.json``.
+:meth:`PluginFormat.detect` returns True. Claude Code is the only *registered*
+format today and its ``detect`` accepts any directory, so it is the universal
+fallback.
+
+:class:`AgentPluginsFormat` is held out of ``_FORMATS`` until its ``mcp.json``
+and client-extension loaders land (#4405): registering it earlier would claim
+any directory with a root ``plugin.json`` and load it with zero MCP servers.
 
 How to add a new plugin format
 ------------------------------
@@ -48,6 +51,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.plugin.format.agent_plugins import AgentPluginsFormat
 from openhands.sdk.plugin.format.base import PluginFormat
 from openhands.sdk.plugin.format.claude_code import ClaudeCodePluginFormat
 
@@ -57,8 +61,8 @@ logger = get_logger(__name__)
 
 # Registered formats, in detection-precedence order. Higher-precedence formats
 # come first; the Claude Code format is last because it accepts any directory.
-# The Agent Plugins format (root plugin.json, closed schema, mcp.json) will be
-# inserted ahead of Claude Code here in a follow-up.
+# AgentPluginsFormat is intentionally absent until its component loaders land
+# (see the module docstring); it belongs ahead of ClaudeCodePluginFormat.
 _FORMATS: list[type[PluginFormat]] = [ClaudeCodePluginFormat]
 
 
@@ -79,6 +83,7 @@ def detect_format(plugin_dir: Path) -> PluginFormat:
 
 __all__ = [
     "PluginFormat",
+    "AgentPluginsFormat",
     "ClaudeCodePluginFormat",
     "detect_format",
 ]
