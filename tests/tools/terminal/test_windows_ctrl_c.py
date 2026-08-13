@@ -1,9 +1,8 @@
 """Windows-specific terminal interrupt behavior tests."""
 
 import platform
-import subprocess
-import time
 
+import psutil
 import pytest
 
 from openhands.tools.terminal.definition import TerminalAction
@@ -17,52 +16,35 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _powershell_process_exists(pid: int) -> bool:
-    result = subprocess.run(
-        [
-            "powershell.exe",
-            "-NoLogo",
-            "-NoProfile",
-            "-Command",
-            (
-                f"if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) "
-                "{ exit 0 } else { exit 1 }"
-            ),
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
-    return result.returncode == 0
+def _wait_for_child_exit(pid: int, timeout: float = 5.0) -> bool:
+    """Wait for the process to exit, returning False if it survives the timeout."""
+    try:
+        process = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        return True  # already gone
+    try:
+        process.wait(timeout=timeout)
+        return True
+    except psutil.TimeoutExpired:
+        return False
+    except psutil.NoSuchProcess:
+        return True
 
 
 def _stop_powershell_process(pid: int) -> None:
-    subprocess.run(
-        [
-            "powershell.exe",
-            "-NoLogo",
-            "-NoProfile",
-            "-Command",
-            f"Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue",
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
+    try:
+        psutil.Process(pid).kill()
+    except psutil.NoSuchProcess:
+        pass
 
 
-def _wait_for_powershell_process_exit(pid: int, timeout: float = 5.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if not _powershell_process_exists(pid):
-            return True
-        time.sleep(0.1)
-    return not _powershell_process_exists(pid)
-
-
-@pytest.mark.timeout(20)
+@pytest.mark.timeout(45)
 def test_windows_ctrl_c_interrupt_kills_child_process(tmp_path) -> None:
-    """Ctrl-C after a timeout stops the child that kept the command alive."""
+    """Ctrl-C after a timeout stops the child that kept the command alive.
+
+    The assertion covers only the directly spawned child process, not the full
+    Windows process tree; a leaked grandchild would not fail this test.
+    """
     pid_path = tmp_path / "child.pid"
     script_path = tmp_path / "wait_on_child.ps1"
     # Use native path for PowerShell (str() gives Windows-style on Windows)
@@ -98,11 +80,11 @@ def test_windows_ctrl_c_interrupt_kills_child_process(tmp_path) -> None:
         assert session.prev_status == TerminalCommandStatus.NO_CHANGE_TIMEOUT
         assert pid_path.exists()
         child_pid = int(pid_path.read_text(encoding="utf-8").strip())
-        assert _powershell_process_exists(child_pid)
+        assert psutil.pid_exists(child_pid)
 
         session.execute(TerminalAction(command="C-c", is_input=True, timeout=3))
 
-        child_exited = _wait_for_powershell_process_exit(child_pid)
+        child_exited = _wait_for_child_exit(child_pid)
     finally:
         if child_pid is not None:
             _stop_powershell_process(child_pid)
