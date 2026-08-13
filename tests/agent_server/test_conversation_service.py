@@ -3798,6 +3798,45 @@ async def test_search_composes_conversation_info_off_event_loop(persisted_conver
 
 
 @pytest.mark.asyncio
+async def test_search_reuses_persisted_conversation_info_until_state_changes(
+    persisted_conversation,
+):
+    """Repeated sidebar polls should not reparse unchanged base_state.json."""
+    conversations_dir, conversation_id = persisted_conversation
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        real_load = service._load_persisted_state_sync
+        with patch.object(
+            service, "_load_persisted_state_sync", wraps=real_load
+        ) as load:
+            first = await service.search_conversations()
+            second = await service.search_conversations()
+
+        assert [item.id for item in first.items] == [conversation_id]
+        assert [item.id for item in second.items] == [conversation_id]
+        assert load.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_search_invalidates_cached_info_when_state_file_changes(
+    persisted_conversation,
+):
+    conversations_dir, conversation_id = persisted_conversation
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        first = await service.search_conversations()
+        base_state = conversations_dir / conversation_id.hex / "base_state.json"
+        payload = json.loads(base_state.read_text())
+        payload["execution_status"] = ConversationExecutionStatus.FINISHED.value
+        # Change size as well as mtime so the signature changes on every FS.
+        payload["max_iterations"] = 1234567
+        base_state.write_text(json.dumps(payload))
+
+        second = await service.search_conversations()
+
+    assert first.items[0].execution_status != ConversationExecutionStatus.FINISHED
+    assert second.items[0].execution_status == ConversationExecutionStatus.FINISHED
+
+
+@pytest.mark.asyncio
 async def test_search_composes_live_conversation_info_with_state_lock(tmp_path):
     """Live list/search composition must lock state in the worker thread."""
     conversations_dir = tmp_path / "conversations"

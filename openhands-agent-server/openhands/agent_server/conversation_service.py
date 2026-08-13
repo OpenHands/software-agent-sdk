@@ -578,6 +578,11 @@ class _ConversationRecord:
     state_signature: tuple[int, int] | None = None
     # Memoised by _base_state_path.
     base_state_path: str | None = None
+    # Full ConversationInfo composed from the persisted state at
+    # ``state_signature``. Sidebar polling repeatedly asks for the same rows;
+    # keep the validated object until base_state.json changes rather than
+    # reparsing a large nested ConversationState on every request.
+    cached_info: ConversationInfo | None = None
 
 
 @dataclass
@@ -714,6 +719,7 @@ class ConversationService:
                 record = self._conversation_records.get(conversation_id)
                 if record is not None:
                     record.stored = event_service.stored
+                    record.cached_info = None
                 return
             self._credential_bindings.setdefault(conversation_id, {})[secret_name] = (
                 binding
@@ -743,6 +749,7 @@ class ConversationService:
                 record = self._conversation_records.get(conversation_id)
                 if record is not None:
                     record.stored = event_service.stored
+                    record.cached_info = None
                 event_services.pop(conversation_id, None)
             if first_error is not None:
                 raise first_error
@@ -809,15 +816,25 @@ class ConversationService:
             return conversation_info
 
         signature = _state_signature(self._base_state_path(conversation_id, record))
+        cached = record.cached_info
+        if cached is not None and signature == record.state_signature:
+            # Parent/child relationships are catalog-derived and can change
+            # without touching this conversation's base_state.json.
+            if cached.sub_conversation_ids != children:
+                cached = cached.model_copy(update={"sub_conversation_ids": children})
+                record.cached_info = cached
+            return cached
+
         state = await asyncio.to_thread(
             self._load_persisted_state_sync, conversation_id
         )
         if state is None:
             return None
-        record.state_signature = signature
         conversation_info = await asyncio.to_thread(
             _compose_conversation_info, record.stored, state, children
         )
+        record.state_signature = signature
+        record.cached_info = conversation_info
         record.execution_status = conversation_info.execution_status
         return conversation_info
 
@@ -1628,6 +1645,10 @@ class ConversationService:
                 None, _update_state_tags_sync, state, request.tags
             )
         event_service.stored.updated_at = utc_now()
+        record = self._conversation_records.get(conversation_id)
+        if record is not None:
+            record.stored = event_service.stored
+            record.cached_info = None
         # Save the updated metadata to disk
         await event_service.save_meta()
 
@@ -1915,6 +1936,7 @@ class ConversationService:
                 record = self._conversation_records.get(conversation_id)
                 if record is not None:
                     record.stored = event_service.stored
+                    record.cached_info = None
                 bindings = dict(event_service.credential_bindings)
                 try:
                     await event_service.__aexit__(None, None, None)
