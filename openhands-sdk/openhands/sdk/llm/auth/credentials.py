@@ -21,7 +21,9 @@ logger = get_logger(__name__)
 def get_credentials_dir() -> Path:
     """Get the directory for storing credentials.
 
-    Uses XDG_DATA_HOME if set, otherwise defaults to ~/.local/share/openhands.
+    Returns the ``auth`` subdirectory of the user persistence directory:
+    ``OH_PERSISTENCE_DIR/auth`` when ``OH_PERSISTENCE_DIR`` is set, otherwise
+    ``~/.openhands/auth``.
     """
     return get_user_persistence_dir() / "auth"
 
@@ -52,7 +54,9 @@ class CredentialStore:
 
         Args:
             credentials_dir: Optional custom directory for storing credentials.
-                           Defaults to ~/.local/share/openhands/auth/
+                           Defaults to the ``auth`` subdirectory of the user
+                           persistence directory (``OH_PERSISTENCE_DIR/auth``
+                           when set, otherwise ``~/.openhands/auth``).
         """
         self._credentials_dir = credentials_dir or get_credentials_dir()
         logger.info(f"Using credentials directory: {self._credentials_dir}")
