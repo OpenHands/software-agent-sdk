@@ -197,6 +197,16 @@ class TestInitServiceTransitions:
         _reset_conversation_singleton()
         # Pre-clean so the env var truly comes from /api/init.
         monkeypatch.delenv("DEFERRED_INIT_TEST_VAR", raising=False)
+        observed_env = None
+
+        def capture_observability_env():
+            nonlocal observed_env
+            observed_env = os.environ.get("DEFERRED_INIT_TEST_VAR")
+
+        monkeypatch.setattr(
+            "openhands.agent_server.init_router.maybe_init_laminar",
+            capture_observability_env,
+        )
         base = Config(
             deferred_init=True,
             conversations_path=tmp_path / "convs",
@@ -214,6 +224,7 @@ class TestInitServiceTransitions:
         )
         try:
             assert os.environ.get("DEFERRED_INIT_TEST_VAR") == "hello"
+            assert observed_env == "hello"
         finally:
             await svc.teardown()
             monkeypatch.delenv("DEFERRED_INIT_TEST_VAR", raising=False)

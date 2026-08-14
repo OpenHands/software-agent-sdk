@@ -177,3 +177,22 @@ def suppress_logging(monkeypatch):
     """Suppress logging during tests to reduce noise."""
     mock_logger = MagicMock()
     monkeypatch.setattr("openhands.sdk.llm.llm.logger", mock_logger)
+
+
+@pytest.fixture(autouse=True)
+def restore_observability_latch():
+    """Keep one test's tracing setup from changing how every later test behaves.
+
+    ``should_enable_observability`` caches ``True`` in a module global that is
+    never re-checked, and ``Laminar.shutdown()`` does not clear it. A test that
+    brings lmnr up therefore leaves every later ``@observe`` building its real
+    wrapper on first call — which silently breaks tests that trigger that lazy
+    build themselves, and only when they share an xdist worker.
+    """
+    from openhands.sdk.observability import laminar
+
+    previous = laminar._observability_enabled
+    try:
+        yield
+    finally:
+        laminar._observability_enabled = previous

@@ -294,23 +294,26 @@ class ACPProviderInfo:
 # ---------------------------------------------------------------------------
 
 # Model IDs the Claude Code CLI accepts, mirroring the ``model`` configOptions
-# select claude-agent-acp 0.44.0 reports at ``session/new`` (the short aliases
-# the CLI's own ``/model`` menu offers, switched via ``set_config_option``).
+# select claude-agent-acp reports at ``session/new`` (the short aliases the CLI's
+# own ``/model`` menu offers, switched via ``set_config_option``).
 # ``opus[1m]`` is the SDK-documented version-agnostic 1M-context alias and the
-# CLI's own default (``currentValue``); ``default`` is the CLI's recommended
-# tier (Opus 4.8 · 1M). The ``/model`` menu is dynamic/account-dependent and the
-# CLI validates ``set_config_option(model)`` against the live select — it rejects
-# an absent id (e.g. ``sonnet`` on accounts without it), so these are pre-session
-# suggestions, not ground truth; a rejected id degrades to the server default.
+# CLI's own default (``currentValue``); ``default`` is the CLI's recommended tier
+# for the account. ``claude-opus-5`` is the explicit full model pin for users who
+# want Opus 5 rather than the provider-dependent alias. The ``/model`` menu is
+# dynamic/account-dependent and the CLI validates ``set_config_option(model)``
+# against the live select — it rejects an absent id (e.g. ``sonnet`` on accounts
+# without it), so these are pre-session suggestions, not ground truth; a rejected
+# id degrades to the server default.
 _CLAUDE_MODELS: tuple[ACPModelOption, ...] = (
     ACPModelOption(id="default", label="Default (recommended)"),
-    ACPModelOption(id="opus[1m]", label="Claude Opus 4.8 (1M)"),
-    ACPModelOption(id="sonnet", label="Claude Sonnet 4.6"),
-    ACPModelOption(id="haiku", label="Claude Haiku 4.5"),
+    ACPModelOption(id="opus[1m]", label="Claude Opus (1M)"),
+    ACPModelOption(id="claude-opus-5", label="Claude Opus 5"),
+    ACPModelOption(id="sonnet", label="Claude Sonnet"),
+    ACPModelOption(id="haiku", label="Claude Haiku"),
 )
 
 # Bare preset ids advertised by the Codex app server through
-# ``@agentclientprotocol/codex-acp`` 1.1.2. The reasoning-effort tier is a
+# ``@agentclientprotocol/codex-acp``. The reasoning-effort tier is a
 # separate ``reasoning_effort`` configOption, not part of the model id, so it is
 # not encoded here. GPT-5.6 variants are rollout/account-dependent suggestions;
 # the adapter's live model list remains authoritative.
@@ -387,8 +390,8 @@ _GEMINI_FILE_SECRETS: tuple[ACPFileSecretSpec, ...] = (
 # claude-agent-acp 0.44+ / codex-acp select the model via a ``model``
 # ``configOptions`` entry (and retain the legacy ``session/set_model``
 # extension); the SDK detects which mechanism each session advertises.
-CLAUDE_AGENT_ACP_VERSION = "0.44.0"
-CODEX_ACP_VERSION = "1.1.2"
+CLAUDE_AGENT_ACP_VERSION = "0.63.0"
+CODEX_ACP_VERSION = "1.1.7"
 GEMINI_CLI_VERSION = "0.46.0"
 
 
