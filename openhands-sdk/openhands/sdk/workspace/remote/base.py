@@ -371,16 +371,16 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         reraise=True,
     )
     def get_llm(self, profile_name: str | None = None, **llm_kwargs: Any) -> "LLM":
-        """Fetch LLM settings from persisted settings or a named profile.
+        """Fetch the active LLM profile or fall back to persisted settings.
 
         Args:
             profile_name: Optional LLM profile name. When provided, loads that
-                named profile instead of the active persisted LLM settings.
+                named profile instead of resolving the active profile.
             **llm_kwargs: Additional keyword arguments that override persisted
                 or profile values (e.g., ``model``, ``temperature``).
 
         Returns:
-            An LLM instance configured with the persisted settings or profile.
+            An LLM instance configured with the active profile or persisted settings.
 
         Raises:
             FileNotFoundError: If ``profile_name`` does not exist.
@@ -417,7 +417,8 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
                 "falling back to agent_settings.llm. Configure a named "
                 "profile and activate it to ensure credentials are preserved."
             )
-            settings = settings_response.get_agent_settings()  # type: ignore[union-attr]
+            assert settings_response is not None
+            settings = settings_response.get_agent_settings()
             if not llm_kwargs:
                 return settings.llm
             llm_data = settings.llm.model_dump(context={"expose_secrets": "plaintext"})
