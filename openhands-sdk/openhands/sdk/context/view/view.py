@@ -121,6 +121,15 @@ class View(BaseModel):
             case Condensation():
                 self.events = event.apply(self.events)
                 self.unhandled_condensation_request = False
+                # Condensation removes events by ID and can break
+                # action/observation pairs (e.g. forget an action but keep its
+                # observation, or vice versa). Enforce properties so orphaned
+                # tool_calls/results are dropped before the view reaches the
+                # LLM. Using ``self.events`` as the all_events reference is
+                # safe: the pair-matching properties only inspect the current
+                # view, and the all_events-dependent properties (batch/loop
+                # atomicity) become no-ops when all_events == current view.
+                self.enforce_properties(self.events)
 
             case CondensationRequest():
                 self.unhandled_condensation_request = True
