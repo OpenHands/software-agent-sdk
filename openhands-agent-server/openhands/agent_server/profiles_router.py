@@ -278,7 +278,12 @@ async def validate_profile(
     ]
 
     try:
-        llm.completion(messages=messages, max_tokens=1)
+        # Mirror the runtime dispatch (see ``amake_llm_completion``) and stay
+        # async so provider I/O doesn't pin the FastAPI event loop.
+        if llm.uses_responses_api():
+            await llm.aresponses(messages=messages, max_tokens=1)
+        else:
+            await llm.acompletion(messages=messages, max_tokens=1)
     except _TRANSIENT_ERROR_TYPES:
         # Transient — don't block the save
         logger.info(
