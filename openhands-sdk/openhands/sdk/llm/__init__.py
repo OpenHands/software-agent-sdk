@@ -31,6 +31,7 @@ from openhands.sdk.llm.streaming import (
     TokenCallbackType,
 )
 from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot, TokenUsage
+from openhands.sdk.llm.utils.runtime_metadata import ModelRuntimeMetadata
 from openhands.sdk.llm.utils.unverified_models import (
     UNVERIFIED_MODELS_EXCLUDING_BEDROCK,
     get_unverified_models,
@@ -73,6 +74,8 @@ __all__ = [
     "Metrics",
     "MetricsSnapshot",
     "TokenUsage",
+    # Runtime metadata
+    "ModelRuntimeMetadata",
     # Models
     "VERIFIED_MODELS",
     "UNVERIFIED_MODELS_EXCLUDING_BEDROCK",
