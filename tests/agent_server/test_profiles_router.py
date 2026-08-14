@@ -1300,7 +1300,13 @@ def test_validate_profile_responses_api(client):
     ):
         response = client.post(
             "/api/profiles/responses-profile/validate",
-            json={"llm": {"model": "gpt-4o", "api_mode": "responses", "api_key": "sk-test"}},
+            json={
+                "llm": {
+                    "model": "gpt-4o",
+                    "api_mode": "responses",
+                    "api_key": "sk-test",
+                }
+            },
         )
 
     assert response.status_code == 200
