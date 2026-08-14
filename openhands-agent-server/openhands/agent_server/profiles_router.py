@@ -284,15 +284,20 @@ async def validate_profile(
             await llm.aresponses(messages=messages, max_tokens=1)
         else:
             await llm.acompletion(messages=messages, max_tokens=1)
-    except _TRANSIENT_ERROR_TYPES:
+    except _TRANSIENT_ERROR_TYPES as exc:
         # Transient — don't block the save
         logger.info(
-            f"Profile '{name}' pre-flight hit a transient error; not blocking save."
+            f"Profile '{name}' pre-flight hit a transient error "
+            f"({type(exc).__name__}); not blocking save."
         )
         return ValidateProfileResponse(valid=True)
     except (
         LLMAuthenticationError,
         LLMBadRequestError,
+        # LLMServiceUnavailableError (provider 503) is intentionally treated as
+        # a blocking config error: at this layer a provider outage is
+        # indistinguishable from a wrong base URL, so we prefer a false
+        # negative over silently saving a misconfigured profile.
         LLMServiceUnavailableError,
         LLMError,
     ) as exc:
