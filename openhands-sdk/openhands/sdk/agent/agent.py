@@ -673,7 +673,6 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         # do not receive call_context explicitly.
         call_context: LLMCallContext = conversation.get_llm_call_context()
         with llm_call_context_scope(call_context):
-
             # Establish route-aware runtime metadata (cached, no I/O on a hit)
             # before the condenser decides a token threshold, so a routed model's
             # real endpoint limit drives condensation on the first step.
@@ -796,7 +795,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     and self.condenser.handles_condensation_requests()
                 ):
                     logger.warning(
-                        "LLM raised context window exceeded error, triggering condensation"
+                        "LLM raised context window exceeded error,"
+                        "triggering condensation"
                     )
                     on_event(CondensationRequest())
                     return
@@ -868,7 +868,6 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
 
         call_context: LLMCallContext = conversation.get_llm_call_context()
         with llm_call_context_scope(call_context):
-
             # Establish route-aware runtime metadata (cached, no I/O on a hit)
             # before the condenser decides a token threshold, so a routed model's
             # real endpoint limit drives condensation on the first step.
@@ -997,7 +996,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     and self.condenser.handles_condensation_requests()
                 ):
                     logger.warning(
-                        "LLM raised context window exceeded error, triggering condensation"
+                        "LLM raised context window exceeded error,"
+                        "triggering condensation"
                     )
                     on_event(CondensationRequest())
                     return
