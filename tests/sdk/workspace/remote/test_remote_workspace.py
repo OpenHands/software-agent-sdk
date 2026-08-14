@@ -431,6 +431,7 @@ def test_get_llm_returns_configured_llm(monkeypatch):
         },
         "conversation_settings": {},
         "llm_api_key_is_set": True,
+        "active_profile": None,
     }
     mock_response.raise_for_status = Mock()
     mock_client.get.return_value = mock_response
@@ -454,6 +455,85 @@ def test_get_llm_returns_configured_llm(monkeypatch):
     assert call_args[0][0] == "/api/settings"
     assert call_args[1]["headers"]["X-Expose-Secrets"] == "plaintext"
     assert call_args[1]["headers"]["X-Session-API-Key"] == "test-key"
+
+
+def test_get_llm_without_name_resolves_active_profile(monkeypatch):
+    """Default resolution honors active_profile, not stale agent settings."""
+    from pydantic import SecretStr
+
+    monkeypatch.setenv("ALLOW_SHORT_CONTEXT_WINDOWS", "true")
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    settings_response = Mock()
+    settings_response.json.return_value = {
+        "agent_settings": {
+            "llm": {"model": "gpt-5.5", "api_key": None},
+        },
+        "conversation_settings": {},
+        "llm_api_key_is_set": False,
+        "active_profile": "glm-default",
+    }
+    settings_response.raise_for_status = Mock()
+    profile_response = Mock()
+    profile_response.status_code = 200
+    profile_response.json.return_value = {
+        "name": "glm-default",
+        "config": {
+            "model": "openhands/glm-5.2",
+            "api_key": "sk-glm-key",
+            "usage_id": "default",
+        },
+        "api_key_set": True,
+    }
+    profile_response.raise_for_status = Mock()
+
+    client = MagicMock()
+    client.get.side_effect = [settings_response, profile_response]
+    workspace._client = client
+
+    llm = workspace.get_llm()
+
+    assert llm.model == "openhands/glm-5.2"
+    assert isinstance(llm.api_key, SecretStr)
+    assert llm.api_key.get_secret_value() == "sk-glm-key"
+    assert llm.usage_id == "profile:glm-default"
+    assert [call.args[0] for call in client.get.call_args_list] == [
+        "/api/settings",
+        "/api/profiles/glm-default",
+    ]
+
+
+def test_get_llm_without_active_profile_warns_and_falls_back(monkeypatch, caplog):
+    """When no active_profile is set, fall back to agent_settings.llm with a warning."""
+    import logging
+
+    monkeypatch.setenv("ALLOW_SHORT_CONTEXT_WINDOWS", "true")
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    settings_response = Mock()
+    settings_response.json.return_value = {
+        "agent_settings": {
+            "llm": {"model": "gpt-4", "api_key": "sk-legacy"},
+        },
+        "conversation_settings": {},
+        "llm_api_key_is_set": True,
+        "active_profile": None,
+    }
+    settings_response.raise_for_status = Mock()
+
+    client = MagicMock()
+    client.get.return_value = settings_response
+    workspace._client = client
+
+    with caplog.at_level(logging.WARNING, logger="openhands.sdk.workspace.remote.base"):
+        llm = workspace.get_llm()
+
+    assert llm.model == "gpt-4"
+    assert "No active LLM profile" in caplog.text
 
 
 def test_get_llm_with_kwargs_override(monkeypatch):

@@ -321,27 +321,30 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
     # settings endpoints. Subclasses like OpenHandsCloudWorkspace may override
     # to use alternative endpoints (e.g., Cloud API).
 
-    def _fetch_agent_settings(
-        self,
-    ) -> "OpenHandsAgentSettings | LLMAgentSettings | ACPAgentSettings":
-        """Call ``GET /api/settings`` and return a validated settings model.
+    def _fetch_settings_response(self) -> SettingsResponse:
+        """Call ``GET /api/settings`` with plaintext secret exposure.
 
-        Uses ``X-Expose-Secrets: plaintext`` so secret fields (e.g. LLM
-        api_key) are returned as plain strings.  The outer response is
-        validated via :class:`SettingsResponse`, then the ``agent_settings``
-        dict is validated through :meth:`SettingsResponse.get_agent_settings`,
-        which applies the persisted settings migration entry point before
-        picking the correct discriminated-union variant
-        (``OpenHandsAgentSettings`` or ``ACPAgentSettings``).
+        Keep the outer response available so default LLM resolution can honor
+        ``active_profile`` rather than discarding the pointer and silently using
+        a stale ``agent_settings.llm`` payload.
         """
         headers = dict(self._headers)
         headers["X-Expose-Secrets"] = "plaintext"
 
         response = self.client.get("/api/settings", headers=headers)
         response.raise_for_status()
+        return SettingsResponse.model_validate(response.json())
 
-        data = SettingsResponse.model_validate(response.json())
-        return data.get_agent_settings()
+    def _fetch_agent_settings(
+        self,
+    ) -> "OpenHandsAgentSettings | LLMAgentSettings | ACPAgentSettings":
+        """Return the validated agent settings from ``GET /api/settings``.
+
+        Uses ``X-Expose-Secrets: plaintext`` so secret fields (e.g. LLM
+        api_key) are returned as plain strings. The persisted settings migration
+        entry point selects the correct discriminated-union variant.
+        """
+        return self._fetch_settings_response().get_agent_settings()
 
     def _fetch_llm_profile_config(self, profile_name: str) -> dict[str, Any]:
         """Call ``GET /api/profiles/{name}`` and return plaintext LLM config."""
@@ -394,11 +397,27 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         if not self.host or self.host == "undefined":
             raise RuntimeError("Workspace host is not set")
 
-        if profile_name:
-            llm_data = self._fetch_llm_profile_config(profile_name)
-            llm_data["usage_id"] = f"profile:{profile_name}"
+        llm_data: dict[str, Any] = {}
+        resolved_profile_name = profile_name
+        settings_response: SettingsResponse | None = None
+        if resolved_profile_name is None:
+            settings_response = self._fetch_settings_response()
+            resolved_profile_name = settings_response.active_profile
+
+        if resolved_profile_name is not None:
+            llm_data = self._fetch_llm_profile_config(resolved_profile_name)
+            llm_data["usage_id"] = f"profile:{resolved_profile_name}"
         else:
-            settings = self._fetch_agent_settings()
+            # No active_profile is set on the server. Fall back to the legacy
+            # agent_settings.llm payload, but log a warning so the caller knows
+            # they are not using a named profile and may be using stale or
+            # keyless configuration.
+            logger.warning(
+                "No active LLM profile is set on the agent-server; "
+                "falling back to agent_settings.llm. Configure a named "
+                "profile and activate it to ensure credentials are preserved."
+            )
+            settings = settings_response.get_agent_settings()  # type: ignore[union-attr]
             if not llm_kwargs:
                 return settings.llm
             llm_data = settings.llm.model_dump(context={"expose_secrets": "plaintext"})
