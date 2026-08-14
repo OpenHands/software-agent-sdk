@@ -11,6 +11,7 @@ on:
 permissions:
     contents: read
     pull-requests: read
+    issues: read
 
 jobs:
     validate-pr-description:
@@ -30,5 +31,7 @@ jobs:
               with:
                   ref: ${{ github.event.pull_request.base.sha }}
 
-            - name: Validate HUMAN note and PR template
+            - name: Validate HUMAN note, PR template, and linked-issue readiness
+              env:
+                  GITHUB_TOKEN: ${{ github.token }}
               run: python .github/scripts/check_pr_description.py
