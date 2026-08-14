@@ -87,6 +87,52 @@ def agent_store(temp_agent_profiles_dir):
     return AgentProfileStore(base_dir=temp_agent_profiles_dir)
 
 
+@pytest.fixture
+def client_with_agent_profiles_router(
+    temp_profiles_dir, temp_agent_profiles_dir, temp_settings_dir, monkeypatch
+):
+    """Client wiring *both* the LLM-profile router (this module) and the
+    agent-profile router to the same temp stores.
+
+    The plain ``client`` fixture only patches ``profiles_router``'s store
+    getters, so an unpatched ``agent_profiles_router`` (used e.g. by
+    ``GET /api/agent-profiles/{name}``) would resolve the real singleton
+    store at the env-var-derived persistence dir instead -- a different
+    directory than ``agent_store``. The end-to-end seed-sync repro (#4338)
+    needs activation (this router) and the agent-profile read endpoints to
+    observe the same on-disk state, so both routers are patched here.
+    """
+    reset_stores()
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(temp_settings_dir))
+    config = Config(static_files_path=None, session_api_keys=[], secret_key=None)
+    app = create_app(config)
+
+    llm_store = LLMProfileStore(base_dir=temp_profiles_dir)
+    agent_store = AgentProfileStore(base_dir=temp_agent_profiles_dir)
+
+    with (
+        patch(
+            "openhands.agent_server.profiles_router.get_llm_profile_store",
+            lambda: llm_store,
+        ),
+        patch(
+            "openhands.agent_server.profiles_router.get_agent_profile_store",
+            lambda: agent_store,
+        ),
+        patch(
+            "openhands.agent_server.agent_profiles_router.get_llm_profile_store",
+            lambda: llm_store,
+        ),
+        patch(
+            "openhands.agent_server.agent_profiles_router.get_agent_profile_store",
+            lambda: agent_store,
+        ),
+    ):
+        yield TestClient(app)
+
+    reset_stores()
+
+
 # ── FK Guard: deleting/renaming a referenced LLM profile ────────────────────
 
 
@@ -1248,3 +1294,119 @@ def test_list_profiles_no_auto_create_after_deleting_active_profile(client, stor
     body = response.json()
     assert body["profiles"] == []
     assert body["active_profile"] is None
+
+
+# ── Seed Sync on Activation (#4338) ─────────────────────────────────────────
+
+
+def test_activate_profile_syncs_seed_default_llm_profile_ref(
+    client_with_agent_profiles_router, store
+):
+    """End-to-end repro of the issue's steps: save profile-a/profile-b,
+    activate profile-a, let GET /api/agent-profiles lazily seed the 'default'
+    AgentProfile the way a real client triggers it, then activate profile-b
+    -- the seeded default's llm_profile_ref must follow the new activation
+    instead of silently pointing at profile-a."""
+    llm = LLM(model="gpt-4o")
+    store.save("profile-a", llm)
+    store.save("profile-b", llm)
+
+    client_with_agent_profiles_router.post("/api/profiles/profile-a/activate")
+
+    # Trigger the real lazy seed (rather than hand-writing the 'default'
+    # AgentProfile via agent_store.save), so this test verifies the helper
+    # against a state the seeding logic itself produced. profile-a is active
+    # at seed time, so this lands in state A and the seed must already track
+    # it -- assert that precondition explicitly so the test fails loudly if
+    # seeding behavior ever changes, instead of silently testing nothing.
+    seeded = client_with_agent_profiles_router.get("/api/agent-profiles").json()
+    default_summary = next(p for p in seeded["profiles"] if p["name"] == "default")
+    assert default_summary["llm_profile_ref"] == "profile-a"
+
+    response = client_with_agent_profiles_router.post(
+        "/api/profiles/profile-b/activate"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["llm_profile_ref_synced"] is True
+
+    detail = client_with_agent_profiles_router.get("/api/agent-profiles/default").json()
+    assert detail["profile"]["llm_profile_ref"] == "profile-b"
+
+
+def test_activate_profile_does_not_clobber_pinned_seed_ref(
+    client_with_agent_profiles_router, store, agent_store
+):
+    """A deliberately pinned seed ref (llm_profile_ref='profile-c', not the
+    previously-active profile) survives activation of a different profile --
+    sync_seed_llm_ref's eligibility check refuses to overwrite a real pin."""
+    llm = LLM(model="gpt-4o")
+    store.save("profile-a", llm)
+    store.save("profile-b", llm)
+    store.save("profile-c", llm)
+
+    client_with_agent_profiles_router.post("/api/profiles/profile-a/activate")
+    agent_store.save(OpenHandsAgentProfile(name="default", llm_profile_ref="profile-c"))
+
+    response = client_with_agent_profiles_router.post(
+        "/api/profiles/profile-b/activate"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["llm_profile_ref_synced"] is False
+
+    detail = client_with_agent_profiles_router.get("/api/agent-profiles/default").json()
+    assert detail["profile"]["llm_profile_ref"] == "profile-c"
+
+
+def test_activate_profile_sync_timeout_is_best_effort(
+    client, store, agent_store, monkeypatch
+):
+    """A TimeoutError raised while syncing the seed ref must not turn a
+    successful activation into an error response -- the sync is best-effort
+    and activation has already succeeded by the time it runs."""
+    llm = LLM(model="gpt-4o")
+    store.save("profile-a", llm)
+    agent_store.save(OpenHandsAgentProfile(name="default", llm_profile_ref="profile-a"))
+
+    def boom(self, timeout=None):
+        raise TimeoutError("locked")
+
+    monkeypatch.setattr(AgentProfileStore, "lock", boom)
+
+    response = client.post("/api/profiles/profile-a/activate")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["llm_profile_ref_synced"] is False
+
+    settings = client.get("/api/settings").json()
+    assert settings["agent_settings"]["llm"]["model"] == "gpt-4o"
+
+
+def test_activate_profile_empty_agent_profile_store_no_sync(client, store):
+    """Activation against an empty, never-seeded agent-profile store is a
+    quiet no-op sync: 200, llm_profile_ref_synced=False, no exception."""
+    llm = LLM(model="gpt-4o")
+    store.save("profile-a", llm)
+
+    response = client.post("/api/profiles/profile-a/activate")
+
+    assert response.status_code == 200
+    assert response.json()["llm_profile_ref_synced"] is False
+
+
+def test_delete_referenced_llm_profile_returns_409_default_referrer(
+    client, store, agent_store
+):
+    """Regression pin for the FK guard: it already returns 409 naming
+    'default' as a referrer when the seeded AgentProfile still cites the LLM
+    profile being deleted. Not a bug fix -- pins the existing guard so it
+    cannot silently regress once activation starts writing to 'default'."""
+    store.save("profile-a", LLM(model="gpt-4o"))
+    agent_store.save(OpenHandsAgentProfile(name="default", llm_profile_ref="profile-a"))
+
+    response = client.delete("/api/profiles/profile-a")
+
+    assert response.status_code == 409
+    assert "default" in response.json()["detail"]

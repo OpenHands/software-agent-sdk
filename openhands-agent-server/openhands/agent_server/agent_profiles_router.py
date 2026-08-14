@@ -39,6 +39,7 @@ from openhands.sdk.profiles import (
     SEED_PROFILE_NAME,
     AgentProfileDiagnostics,
     AgentProfileStore,
+    OpenHandsAgentProfile,
     ProfileLimitExceeded,
     build_seed_profile,
     resolve_agent_profile_dry_run,
@@ -72,6 +73,7 @@ class AgentProfileInfo(BaseModel):
     revision: int | None = None
     llm_profile_ref: str | None = None
     mcp_server_refs: list[str] | None = None
+    llm_profile_ref_matches_active: bool | None = None
 
 
 class AgentProfileListResponse(BaseModel):
@@ -82,6 +84,7 @@ class AgentProfileListResponse(BaseModel):
 class AgentProfileDetailResponse(BaseModel):
     name: str
     profile: dict[str, Any]
+    llm_profile_ref_matches_active: bool | None = None
 
 
 class AgentProfileMutationResponse(BaseModel):
@@ -242,6 +245,36 @@ def _seed_default_profile(
         logger.info(f"Seeded default agent profile '{profile.name}' (id={profile_id})")
 
 
+def _llm_profile_ref_matches_active(
+    agent_kind: str,
+    llm_profile_ref: str | None,
+    active_profile: str | None,
+) -> bool | None:
+    """Detect drift between a profile's ``llm_profile_ref`` and the active LLM
+    profile (#4338).
+
+    Activating an LLM profile (``POST /api/profiles/{name}/activate``) only
+    ever updates ``settings.active_profile`` — it never touches any stored
+    ``AgentProfile.llm_profile_ref`` — so the two can silently point at
+    different LLM profiles with no error surfaced anywhere. This is a
+    read-only diagnostic: it never repairs the drift, only reports it.
+
+    Tri-state, not boolean: ``None`` means "not applicable / unknown" and
+    must never be read as "stale" —
+    - an ACP profile carries no ``llm_profile_ref`` at all, so comparison is
+      meaningless (``agent_kind != "openhands"``);
+    - no LLM profile is currently active (``active_profile is None``), so
+      there is nothing to compare against.
+    Only an explicit ``False`` means the ref has drifted from the active LLM
+    profile; only ``True`` means it is current.
+    """
+    if agent_kind != "openhands":
+        return None
+    if active_profile is None:
+        return None
+    return llm_profile_ref == active_profile
+
+
 def _summary_id_for_name(store: AgentProfileStore, name: str) -> str | None:
     """Return the stable id of the profile stored under ``name``, if present."""
     with store_errors():
@@ -275,14 +308,30 @@ async def list_agent_profiles(request: Request) -> AgentProfileListResponse:
     with store_errors():
         summaries = store.list_summaries()
 
+    # AgentProfileInfo(**s) can't pick up llm_profile_ref_matches_active on its
+    # own: `s` is a raw store summary dict (`{id, name, agent_kind, revision,
+    # llm_profile_ref, mcp_server_refs}`) with no such key, so the computed
+    # value must be injected explicitly rather than relying on the splat.
     return AgentProfileListResponse(
-        profiles=[AgentProfileInfo(**s) for s in summaries],
+        profiles=[
+            AgentProfileInfo(
+                **s,
+                llm_profile_ref_matches_active=_llm_profile_ref_matches_active(
+                    s.get("agent_kind", "openhands"),
+                    s.get("llm_profile_ref"),
+                    settings.active_profile,
+                ),
+            )
+            for s in summaries
+        ],
         active_agent_profile_id=settings.active_agent_profile_id,
     )
 
 
 @agent_profiles_router.get("/{name}", response_model=AgentProfileDetailResponse)
-async def get_agent_profile(name: ProfileName) -> AgentProfileDetailResponse:
+async def get_agent_profile(
+    request: Request, name: ProfileName
+) -> AgentProfileDetailResponse:
     """Get a stored profile.
 
     A profile is secret-free at rest (#4017), so there is nothing to mask or
@@ -299,8 +348,32 @@ async def get_agent_profile(name: ProfileName) -> AgentProfileDetailResponse:
             detail=f"Agent profile '{name}' not found",
         )
 
+    settings_store = get_settings_store(get_config(request))
+    # The staleness flag below is an optional diagnostic (#4338) riding along
+    # on the primary read — it must never turn a successful profile load into
+    # a 500. FileSettingsStore.load() deliberately re-raises PermissionError/
+    # OSError for a genuinely unreadable settings file; degrade to
+    # active_profile=None (the flag's own "unknown" state) instead of
+    # propagating.
+    try:
+        settings = settings_store.load() or PersistedSettings()
+        active_profile = settings.active_profile
+    except OSError:
+        active_profile = None
+
     payload = profile.model_dump(mode="json")
-    return AgentProfileDetailResponse(name=name, profile=payload)
+    llm_profile_ref = (
+        profile.llm_profile_ref if isinstance(profile, OpenHandsAgentProfile) else None
+    )
+    return AgentProfileDetailResponse(
+        name=name,
+        profile=payload,
+        llm_profile_ref_matches_active=_llm_profile_ref_matches_active(
+            profile.agent_kind,
+            llm_profile_ref,
+            active_profile,
+        ),
+    )
 
 
 @agent_profiles_router.post(

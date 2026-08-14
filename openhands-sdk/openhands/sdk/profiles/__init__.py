@@ -24,6 +24,7 @@ from openhands.sdk.profiles.profile_refs import (
     delete_llm_profile,
     find_referrers,
     rename_llm_profile,
+    sync_seed_llm_ref,
 )
 from openhands.sdk.profiles.resolver import (
     AgentProfileDiagnostics,
@@ -64,5 +65,6 @@ __all__ = [
     "resolve_agent_profile_dry_run",
     "safe_validation_error_detail",
     "save_profile_preserving_identity",
+    "sync_seed_llm_ref",
     "validate_agent_profile",
 ]

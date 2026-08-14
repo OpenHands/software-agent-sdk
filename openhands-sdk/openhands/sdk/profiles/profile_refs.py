@@ -2,7 +2,7 @@
 
 An ``OpenHandsAgentProfile.llm_profile_ref`` is a soft FK onto an LLM-profile
 store key. ``find_referrers`` / ``cascade_rename`` / ``delete_llm_profile`` /
-``rename_llm_profile`` keep that FK from dangling.
+``rename_llm_profile`` / ``sync_seed_llm_ref`` keep that FK from dangling.
 
 Store-agnostic: these touch the agent-profile store only through
 :class:`~openhands.sdk.profiles.agent_profile_store.AgentProfileStoreProtocol`,
@@ -20,9 +20,12 @@ from typing import TYPE_CHECKING
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles.agent_profile_store import PROFILE_NAME_REGEX
+from openhands.sdk.profiles.seed import SEED_PROFILE_NAME
 
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     from openhands.sdk.llm.llm_profile_store import LLMProfileMutator
     from openhands.sdk.profiles.agent_profile_store import AgentProfileStoreProtocol
 
@@ -147,3 +150,104 @@ def rename_llm_profile(
     with agent_store.lock():
         llm_store.rename(old_name, new_name)
         return _rewrite_refs(agent_store, old_name, new_name)
+
+
+def sync_seed_llm_ref(
+    store: AgentProfileStoreProtocol,
+    *,
+    old_ref: str | None,
+    new_ref: str,
+    known_llm_profiles: Collection[str] | None = None,
+    profile_name: str = SEED_PROFILE_NAME,
+) -> bool:
+    """Repoint the seed profile's ``llm_profile_ref``, but only while in sync.
+
+    Activating an LLM profile (``POST /profiles/{name}/activate``) is supposed
+    to keep the seeded default profile's ref pointed at the active LLM profile
+    — but a naive unconditional write would clobber a ref the user has since
+    pinned to something else on purpose, silently discarding their intent
+    (#4338). So this is deliberately narrower than ``cascade_rename``: it
+    considers exactly one profile (``profile_name``, normally
+    :data:`SEED_PROFILE_NAME`) and only rewrites it when the current ref is
+    still *explainable* as "not yet repointed" rather than "chosen":
+
+    * ``current == old_ref`` — the seed was tracking the previous activation,
+      so following the new one preserves that tracking behavior, or
+    * ``current == SEED_PROFILE_NAME`` and ``known_llm_profiles`` is given and
+      does not contain ``SEED_PROFILE_NAME`` — the dangling soft-ref a freshly
+      seeded profile is born with before any LLM profile named ``"default"``
+      necessarily exists (#3933), not a real pin.
+
+    Any other current ref is a deliberate pin and is left alone. Note that with
+    ``old_ref=None`` only the second branch can match — a stored ref is always
+    a string, never ``None``, so the first comparison can't accidentally
+    succeed.
+
+    Known gap — state C is never repaired: the seeded profile is born in one
+    of three states. (A) an LLM profile was already active, so the ref names
+    it — repaired by the first branch above. (B) no active profile and no
+    real LLM config, so the ref is ``SEED_PROFILE_NAME`` and dangles —
+    repaired by the soft-ref branch above. (C) no active profile but a
+    *real* LLM config, so ``_seed_default_llm_profile`` mints an actual LLM
+    profile named ``SEED_PROFILE_NAME`` mirroring it and the ref resolves.
+    State C is indistinguishable from a user having deliberately pinned a
+    profile they authored and named ``"default"`` themselves — there is no
+    sound discriminator between the two. In particular ``revision`` does not
+    work: ``save_profile_preserving_identity`` bumps it only on overwrite,
+    never on create, and it defaults to ``0``, so a user's own first save of
+    a ``"default"`` profile is ``revision == 0``, identical to the seed.
+    Treating state C as eligible would risk exactly the clobber this
+    function exists to prevent, so it stays unrepaired; the resulting drift
+    is not invisible — ``llm_profile_ref_matches_active`` in
+    ``agent_profiles_router.py`` reports it as ``False``, which is what that
+    flag is for.
+
+    Concurrency note: two overlapping activations can interleave their
+    read-check-write windows and settle with the seed ref naming one
+    activated profile while ``active_profile`` names another — e.g. the
+    later activation's sync runs first, finds itself ineligible, and
+    declines, then the earlier activation's sync runs after and writes. The
+    outcome is a stale ref, the same condition the staleness flag surfaces;
+    it is not corruption, since each write is still atomic under the store
+    lock.
+
+    ``known_llm_profiles`` is a plain collection of names rather than an LLM
+    store/mutator handle: ``LLMProfileMutator`` exposes only
+    ``delete``/``rename`` and cannot answer an existence query, so accepting a
+    store here would force every backend (including cloud adapters) to grow a
+    lookup it may not otherwise need. Callers pass whatever listing they
+    already have to hand.
+
+    Holds :meth:`~AgentProfileStoreProtocol.lock` for the whole
+    read-check-write, closing the same TOCTOU window as ``cascade_rename``.
+    Returns ``True`` iff a write happened; ``current == new_ref`` returns
+    ``False`` without writing, so an already-synced seed produces no revision
+    churn and no mtime change.
+    """
+    _validate_name(new_ref)
+    with store.lock():
+        summary = next(
+            (s for s in store.list_summaries() if s.get("name") == profile_name),
+            None,
+        )
+        if summary is None:
+            return False
+        if summary.get("agent_kind", "openhands") != "openhands":
+            return False
+
+        current = summary.get("llm_profile_ref")
+        eligible = current == old_ref or (
+            current == SEED_PROFILE_NAME
+            and known_llm_profiles is not None
+            and SEED_PROFILE_NAME not in known_llm_profiles
+        )
+        if not eligible or current == new_ref:
+            return False
+
+        store.set_llm_profile_ref(profile_name, new_ref)
+
+    logger.info(
+        f"[Profile FK] Synced seed profile `{profile_name}` llm_profile_ref "
+        f"`{current}` -> `{new_ref}`."
+    )
+    return True
