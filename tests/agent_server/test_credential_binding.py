@@ -943,7 +943,7 @@ async def test_failed_resume_does_not_retain_plaintext_fallback(
         event_service = service._event_services.pop(info.id)
         await event_service.close()
 
-        async def fail_load(conversation_id):
+        async def fail_load(conversation_id, **kwargs):
             assert conversation_id == info.id
             raise RuntimeError("resume failed")
 

@@ -978,7 +978,9 @@ class EventService:
         # persisted agent. On a new conversation the creating caller supplied the
         # agent via ``self.agent``; deep-copy it (expose_secrets) so the running
         # agent is independent of the caller's object.
-        base_state_exists = (self.conversation_dir / BASE_STATE).exists()
+        base_state_exists = await asyncio.to_thread(
+            (self.conversation_dir / BASE_STATE).exists
+        )
         if base_state_exists:
             agent: AgentBase | None = None
         else:

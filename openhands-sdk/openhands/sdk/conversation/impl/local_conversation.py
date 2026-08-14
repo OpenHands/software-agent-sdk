@@ -330,9 +330,10 @@ class LocalConversation(BaseConversation):
             # (see below), so caller-supplied ``client_tools`` cannot be injected
             # into a caller-supplied agent — warn rather than drop them silently.
             logger.warning(
-                "client_tools were passed with agent=None (resume); they are "
-                "ignored — client tools are recovered from the persisted agent "
-                "in base_state.json instead."
+                "client_tools were passed with agent=None (resume); the "
+                "caller-supplied specs are not re-injected — the conversation's "
+                "client tools are recovered from the persisted agent in "
+                "base_state.json instead, so they remain executable."
             )
         if (
             agent is not None
