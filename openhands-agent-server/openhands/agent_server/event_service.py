@@ -1109,7 +1109,14 @@ class EventService:
                     for e in state.events
                 )
                 if not already_observed:
+                    # The persisted HEAD can lag this action when the process
+                    # dies after writing the event file but before autosaving
+                    # leaf_event_id. Parent the recovery result to the action
+                    # explicitly; otherwise normal tree stamping attaches it to
+                    # the stale HEAD, making the action and result siblings and
+                    # leaving an orphan tool result on the active branch.
                     error_event = AgentErrorEvent(
+                        parent_id=first_action.id,
                         tool_name=first_action.tool_name,
                         tool_call_id=first_action.tool_call_id,
                         error=(
