@@ -50,6 +50,7 @@ from openhands.sdk import LLM, AgentContext, Event, Message
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.agent.acp_file_credentials import CODEX_AUTH_SECRET_NAME
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.persistence_const import BASE_STATE
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
@@ -65,6 +66,7 @@ from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.mcp.utils import MCPToolProvider
+from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
 from openhands.sdk.tool import BROWSER_TOOL_NAME, Tool, is_tool_usable
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.utils.cipher import Cipher
@@ -74,8 +76,6 @@ from openhands.sdk.workspace import LocalWorkspace
 if TYPE_CHECKING:
     from openhands.sdk.mcp.config import MCPServer
     from openhands.sdk.subagent.schema import AgentDefinition
-
-CONVERSATION_WORKTREE_ROOT = Path("/tmp/conversation-worktrees")
 
 
 class CredentialBindingActivationRequired(RuntimeError):
@@ -191,6 +191,7 @@ def _get_worktree_start_point(repo_root: Path) -> str:
 def _create_conversation_worktree(
     workspace: LocalWorkspace,
     conversation_id: UUID,
+    conversation_worktree_root: Path,
 ) -> tuple[LocalWorkspace, Path, Path, str] | None:
     source_workspace = Path(workspace.working_dir).resolve()
     try:
@@ -205,9 +206,9 @@ def _create_conversation_worktree(
         return None
 
     relative_workspace = source_workspace.relative_to(repo_root)
-    conversation_worktree_root = CONVERSATION_WORKTREE_ROOT / str(conversation_id)
-    worktree_root = conversation_worktree_root / repo_root.name
-    conversation_worktree_root.mkdir(parents=True, exist_ok=True)
+    conversation_worktree_dir = conversation_worktree_root / str(conversation_id)
+    worktree_root = conversation_worktree_dir / repo_root.name
+    conversation_worktree_dir.mkdir(parents=True, exist_ok=True)
     branch = f"openhands/{conversation_id}"
 
     if worktree_root.exists():
@@ -250,11 +251,14 @@ def _create_conversation_worktree(
 def _prepare_request_workspace(
     request: StartConversationRequest,
     conversation_id: UUID,
+    conversation_worktree_root: Path,
 ) -> StartConversationRequest:
     if not request.worktree:
         return request
 
-    worktree = _create_conversation_worktree(request.workspace, conversation_id)
+    worktree = _create_conversation_worktree(
+        request.workspace, conversation_id, conversation_worktree_root
+    )
     if worktree is None:
         return request
 
@@ -473,6 +477,15 @@ def _compose_conversation_info(
     )
 
 
+def _compose_conversation_info_sync(
+    stored: StoredConversation,
+    state: ConversationState,
+    sub_conversation_ids: list[UUID] | None = None,
+) -> ConversationInfo:
+    with state:
+        return _compose_conversation_info(stored, state, sub_conversation_ids)
+
+
 def _compose_webhook_conversation_info(
     stored: StoredConversation, state: ConversationState
 ) -> ConversationInfo:
@@ -490,8 +503,7 @@ def _update_state_tags_sync(
 def _compose_webhook_conversation_info_sync(
     stored: StoredConversation, state: ConversationState
 ) -> ConversationInfo:
-    with state:
-        return _compose_webhook_conversation_info(stored, state)
+    return _compose_conversation_info_sync(stored, state)
 
 
 def _register_agent_definitions(
@@ -541,6 +553,32 @@ def _state_signature(base_state_path: str) -> tuple[int, int] | None:
     return None
 
 
+def _stored_metadata_signature(stored: StoredConversation) -> int:
+    """Change-detection fingerprint for ``stored`` metadata on a cached row.
+
+    ``cached_info`` is keyed by ``base_state.json``, but also embeds
+    ``StoredConversation`` metadata that can change independently via
+    ``meta.json`` (notably auto-title). Fingerprint exactly the fields
+    ``_compose_conversation_info`` lifts from ``stored`` so a metadata-only
+    update invalidates the cache. Keep the set in sync with that function.
+    """
+    metadata = stored.model_dump(
+        mode="json",
+        include={
+            "title",
+            "metrics",
+            "created_at",
+            "updated_at",
+            "forked_from_conversation_id",
+            "forked_from_event_id",
+            "parent_conversation_id",
+            "client_tools",
+            "launched_agent_profile",
+        },
+    )
+    return hash(json.dumps(metadata, sort_keys=True, default=str))
+
+
 def _read_execution_status_sync(
     base_state_path: str,
 ) -> ConversationExecutionStatus | None:
@@ -566,6 +604,16 @@ class _ConversationRecord:
     state_signature: tuple[int, int] | None = None
     # Memoised by _base_state_path.
     base_state_path: str | None = None
+    # Full ConversationInfo composed from the persisted state at
+    # ``state_signature``. Sidebar polling repeatedly asks for the same rows;
+    # keep the validated object until base_state.json changes rather than
+    # reparsing a large nested ConversationState on every request.
+    cached_info: ConversationInfo | None = None
+    # Fingerprint of ``stored`` metadata (title, metrics, …) as of the last
+    # composition. ``cached_info`` is keyed by ``state_signature`` alone, so
+    # metadata-only updates (``meta.json``, e.g. auto-title) must also
+    # invalidate it.
+    stored_signature: int | None = None
 
 
 @dataclass
@@ -586,6 +634,9 @@ class ConversationService:
     max_concurrent_runs: int = 10
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
     conversation_idle_ttl_seconds: float | None = None
+    conversation_worktree_root: Path = field(
+        default=Path("/tmp/conversation-worktrees")
+    )
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_records: dict[UUID, _ConversationRecord] = field(
         default_factory=dict, init=False
@@ -699,6 +750,7 @@ class ConversationService:
                 record = self._conversation_records.get(conversation_id)
                 if record is not None:
                     record.stored = event_service.stored
+                    record.cached_info = None
                 return
             self._credential_bindings.setdefault(conversation_id, {})[secret_name] = (
                 binding
@@ -728,6 +780,7 @@ class ConversationService:
                 record = self._conversation_records.get(conversation_id)
                 if record is not None:
                     record.stored = event_service.stored
+                    record.cached_info = None
                 event_services.pop(conversation_id, None)
             if first_error is not None:
                 raise first_error
@@ -785,20 +838,64 @@ class ConversationService:
 
         event_service = event_services.get(conversation_id)
         if event_service is not None and event_service.is_open():
-            state = await event_service.get_state()
-            record.execution_status = state.execution_status
-            record.state_signature = None
-            return _compose_conversation_info(event_service.stored, state, children)
+            live = True
+            # Do not acquire the live ConversationState's FIFOLock just to list
+            # a sidebar row. Native OpenHands arun() intentionally holds that
+            # lock across an entire LLM/tool step, which can last minutes; with
+            # several parallel runs, composing every live row waits behind each
+            # active step and serializes conversation search. The autosaved
+            # base_state.json is the listing snapshot and has the same signature-
+            # keyed cache as idle conversations. Live detail/event endpoints
+            # remain authoritative for an individual open conversation.
+            record.stored = event_service.stored
+        else:
+            live = False
 
         signature = _state_signature(self._base_state_path(conversation_id, record))
+        if signature is None and event_service is not None and event_service.is_open():
+            # Direct embedders/tests can inject a live EventService without a
+            # persisted state file. There is no disk snapshot to list in that
+            # case, so retain the live-state fallback.
+            state = await event_service.get_state()
+            conversation_info = await asyncio.to_thread(
+                _compose_conversation_info_sync, event_service.stored, state, children
+            )
+            record.execution_status = conversation_info.execution_status
+            return conversation_info
+
+        # ``record.stored`` is refreshed above for live conversations; idle rows
+        # keep the catalog copy. Only live conversations can mutate that in-memory
+        # object via metadata-only updates (e.g. auto-title, which writes
+        # ``meta.json`` without touching ``base_state.json``), so fingerprint it
+        # only when the live refresh actually ran — keeps the hot persisted-row
+        # sidebar path free of a per-request dump+hash.
+        stored_signature = _stored_metadata_signature(record.stored) if live else None
+        cached = record.cached_info
+        if (
+            cached is not None
+            and signature == record.state_signature
+            and (not live or stored_signature == record.stored_signature)
+        ):
+            # Parent/child relationships are catalog-derived and can change
+            # without touching this conversation's base_state.json.
+            if cached.sub_conversation_ids != children:
+                cached = cached.model_copy(update={"sub_conversation_ids": children})
+                record.cached_info = cached
+            return cached
+
         state = await asyncio.to_thread(
             self._load_persisted_state_sync, conversation_id
         )
         if state is None:
             return None
-        record.execution_status = state.execution_status
+        conversation_info = await asyncio.to_thread(
+            _compose_conversation_info, record.stored, state, children
+        )
         record.state_signature = signature
-        return _compose_conversation_info(record.stored, state, children)
+        record.stored_signature = stored_signature
+        record.cached_info = conversation_info
+        record.execution_status = conversation_info.execution_status
+        return conversation_info
 
     @staticmethod
     def _refresh_persisted_statuses_sync(
@@ -848,8 +945,9 @@ class ConversationService:
                 # Authoritative: we own it, so disk can only be staler.
                 state = await event_service.get_state()
                 record.execution_status = state.execution_status
-                # Autosave will invalidate any signature we hold.
+                # Autosave will invalidate any signature and cached info we hold.
                 record.state_signature = None
+                record.cached_info = None
                 continue
             targets.append(
                 (
@@ -876,6 +974,9 @@ class ConversationService:
                 continue
             if status is not None:
                 record.execution_status = status
+            # A persisted change (or a move to an unreadable state) invalidates
+            # any cached ConversationInfo derived from the previous snapshot.
+            record.cached_info = None
             record.state_signature = signature
 
     async def _reconcile_active_records(self) -> None:
@@ -1357,7 +1458,9 @@ class ConversationService:
                 update={"agent": _append_system_message_suffix(request.agent, suffix)}
             )
 
-        request = _prepare_request_workspace(request, conversation_id)
+        request = _prepare_request_workspace(
+            request, conversation_id, self.conversation_worktree_root
+        )
 
         managed_codex_credential = self._is_codex_agent(request.agent) and (
             CODEX_AUTH_SECRET_NAME in self._credential_bindings.get(conversation_id, {})
@@ -1605,6 +1708,10 @@ class ConversationService:
                 None, _update_state_tags_sync, state, request.tags
             )
         event_service.stored.updated_at = utc_now()
+        record = self._conversation_records.get(conversation_id)
+        if record is not None:
+            record.stored = event_service.stored
+            record.cached_info = None
         # Save the updated metadata to disk
         await event_service.save_meta()
 
@@ -1892,6 +1999,7 @@ class ConversationService:
                 record = self._conversation_records.get(conversation_id)
                 if record is not None:
                     record.stored = event_service.stored
+                    record.cached_info = None
                 bindings = dict(event_service.credential_bindings)
                 try:
                     await event_service.__aexit__(None, None, None)
@@ -2010,6 +2118,7 @@ class ConversationService:
             max_concurrent_runs=config.max_concurrent_runs,
             lease_ttl_seconds=config.lease_ttl_seconds,
             conversation_idle_ttl_seconds=config.conversation_idle_ttl_seconds,
+            conversation_worktree_root=config.conversation_worktree_root,
         )
 
     async def _start_event_service(
@@ -2103,10 +2212,10 @@ class ConversationService:
 
         The subscriber is attached on *every* path, including rehydration, so
         errors and terminal outcomes are always captured. But
-        ``conversation_started`` is emitted only for a genuinely new
+        ``conversation_created`` is emitted only for a genuinely new
         conversation: ``_start_event_service`` also runs when an idle
         conversation is lazily reloaded and when RUNNING conversations are
-        recovered after a restart, and counting those as starts would inflate
+        recovered after a restart, and counting those as creations would inflate
         the metric on every server bounce.
 
         Deliberately total: telemetry must never be able to fail conversation
@@ -2193,6 +2302,22 @@ class _EventSubscriber(Subscriber):
         update_last_execution_time()
 
 
+@observe(
+    name="conversation.generate_title",
+    ignore_inputs=["conversation", "llm"],
+    metadata={OPERATION_METADATA_KEY: "title_generation"},
+)
+def _generate_title_traced(
+    # Unused, but must stay first and positional: ``observe`` re-attaches the
+    # root span it carries, and this runs on a context-less executor thread.
+    conversation: LocalConversation | None,  # noqa: ARG001
+    message: str,
+    llm: LLM | None,
+    max_length: int,
+) -> str:
+    return generate_title_from_message(message, llm, max_length)
+
+
 @dataclass
 class AutoTitleSubscriber(Subscriber):
     service: EventService
@@ -2215,9 +2340,9 @@ class AutoTitleSubscriber(Subscriber):
         # Precedence: title_llm_profile (if configured and loads) → agent.llm →
         # truncation. This keeps auto-titling non-breaking for consumers who
         # don't configure title_llm_profile.
+        conversation = self.service._conversation
         title_llm = self._load_title_llm()
         if title_llm is None:
-            conversation = self.service._conversation
             title_llm = conversation.agent.llm if conversation else None
 
         async def _generate_and_save() -> None:
@@ -2225,7 +2350,8 @@ class AutoTitleSubscriber(Subscriber):
                 loop = asyncio.get_running_loop()
                 title = await loop.run_in_executor(
                     None,
-                    generate_title_from_message,
+                    _generate_title_traced,
+                    conversation,
                     message_text,
                     title_llm,
                     50,

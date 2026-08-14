@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import contextlib
 import inspect
 import json
 import os
@@ -71,6 +72,7 @@ from openhands.sdk.agent.acp_file_credentials import (
     write_secret_file,
 )
 from openhands.sdk.agent.acp_models import ACPModelInfo
+from openhands.sdk.agent.acp_tracing import ACPTurnTrace
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context import AgentContext
 from openhands.sdk.conversation.state import ConversationExecutionStatus
@@ -166,6 +168,7 @@ _RETRIABLE_SERVER_ERROR_CODES: frozenset[int] = frozenset({-32603})
 # Maximum characters for ACP tool call content — matches MAX_CMD_OUTPUT_SIZE
 # used by the terminal tool and the default max_message_chars in LLM config.
 MAX_ACP_CONTENT_CHARS: int = 30_000
+_ACP_SUBPROCESS_LOG_LINE_CHARS = 4_000
 
 # Env vars that must be removed from the subprocess environment when a
 # particular "dominant" env var is present.
@@ -331,6 +334,31 @@ def _select_auth_method(
         if method_id in method_ids and env_var in env:
             return method_id
     return None
+
+
+def _auth_selection_failure_reason(auth_methods: list[Any], env: dict[str, str]) -> str:
+    method_ids = {m.id for m in auth_methods}
+    reasons: list[str] = []
+    if "chat-gpt" in method_ids:
+        auth_path = codex_auth_file(env)
+        if auth_path.is_file():
+            reasons.append(f"Codex auth file {auth_path} is not valid ChatGPT auth")
+        else:
+            reasons.append(f"Codex auth file {auth_path} is missing")
+    if "api-key" in method_ids and not any(
+        env.get(name) for name in ("CODEX_API_KEY", "OPENAI_API_KEY")
+    ):
+        reasons.append("CODEX_API_KEY and OPENAI_API_KEY are unset")
+    return "; ".join(reasons) or "no supported credential source is available"
+
+
+def _warn_auth_selection_failure(auth_methods: list[Any], env: dict[str, str]) -> None:
+    logger.warning(
+        "ACP server offers auth methods %s but no matching credential is available "
+        "(%s) — session creation may fail",
+        [m.id for m in auth_methods],
+        _auth_selection_failure_reason(auth_methods, env),
+    )
 
 
 def _with_codex_base_url(
@@ -879,13 +907,30 @@ async def _filter_jsonrpc_lines(source: Any, dest: Any) -> None:
             if stripped.startswith(b"{") and b'"jsonrpc"' in line:
                 dest.feed_data(line)
             else:
-                logger.debug(
+                logger.info(
                     "ACP stdout (non-JSON): %s",
-                    line.decode(errors="replace").rstrip(),
+                    maybe_truncate(
+                        redact_text_secrets(line.decode(errors="replace").rstrip()),
+                        truncate_after=_ACP_SUBPROCESS_LOG_LINE_CHARS,
+                    ),
                 )
     except Exception:
         logger.debug("_filter_jsonrpc_lines stopped", exc_info=True)
         dest.feed_eof()
+
+
+async def _log_acp_subprocess_stderr(source: Any) -> None:
+    try:
+        while line := await source.readline():
+            logger.info(
+                "ACP stderr: %s",
+                maybe_truncate(
+                    redact_text_secrets(line.decode(errors="replace").rstrip()),
+                    truncate_after=_ACP_SUBPROCESS_LOG_LINE_CHARS,
+                ),
+            )
+    except Exception:
+        logger.debug("_log_acp_subprocess_stderr stopped", exc_info=True)
 
 
 # Substrings that mark a generic ``-32603 Internal error`` as really a credential
@@ -1088,6 +1133,8 @@ class _OpenHandsACPBridge:
         self.accumulated_text: list[str] = []
         self.accumulated_thoughts: list[str] = []
         self.accumulated_tool_calls: list[dict[str, Any]] = []
+        # Emits the LLM/TOOL spans an ACP turn would otherwise never produce.
+        self.trace = ACPTurnTrace(acp_server=None, model_id=None)
         self.on_token: Any = None  # ConversationTokenCallbackType | None
         # Live event sink — fired from session_update as ACP tool-call
         # updates arrive, so the event stream reflects real subprocess
@@ -1284,6 +1331,11 @@ class _OpenHandsACPBridge:
             }
             self._mask_tool_call_entry(entry)
             self.accumulated_tool_calls.append(entry)
+            self.trace.tool_started(entry)
+            if entry.get("status") in _TERMINAL_TOOL_CALL_STATUSES:
+                # No later transition will arrive for this call, so close its
+                # span now; leaving it open would bill the rest of the turn to it.
+                self.trace.tool_finished(entry)
             logger.debug("ACP tool call start: %s", update.tool_call_id)
             # Emit one early "started" event — the action half of the
             # action->observation pair. (If the server reports a terminal
@@ -1332,6 +1384,7 @@ class _OpenHandsACPBridge:
                 and prev_status not in _TERMINAL_TOOL_CALL_STATUSES
             )
             if target is not None and became_terminal:
+                self.trace.tool_finished(target)
                 self._emit_tool_call_event(target)
             self._maybe_signal_activity()
         else:
@@ -1666,6 +1719,8 @@ class ACPAgent(AgentBase):
     _process: Any = PrivateAttr(default=None)  # asyncio subprocess
     _client: Any = PrivateAttr(default=None)  # _OpenHandsACPBridge
     _filtered_reader: Any = PrivateAttr(default=None)  # StreamReader
+    _stdout_filter_task: Any = PrivateAttr(default=None)  # asyncio.Task
+    _stderr_log_task: Any = PrivateAttr(default=None)  # asyncio.Task
     _closed: bool = PrivateAttr(default=False)
     _working_dir: str = PrivateAttr(default="")
     _agent_name: str = PrivateAttr(
@@ -2665,12 +2720,16 @@ class ACPAgent(AgentBase):
             )
             assert process.stdin is not None
             assert process.stdout is not None
+            assert process.stderr is not None
 
             # Wrap the subprocess stdout in a filtering reader that
             # only passes lines starting with '{' (JSON-RPC messages).
             filtered_reader = asyncio.StreamReader(limit=_STREAM_READER_LIMIT)
-            asyncio.get_event_loop().create_task(
+            stdout_filter_task = asyncio.get_event_loop().create_task(
                 _filter_jsonrpc_lines(process.stdout, filtered_reader)
+            )
+            stderr_log_task = asyncio.get_event_loop().create_task(
+                _log_acp_subprocess_stderr(process.stderr)
             )
 
             conn = ClientSideConnection(
@@ -2689,6 +2748,8 @@ class ACPAgent(AgentBase):
             self._process = process
             self._conn = conn
             self._filtered_reader = filtered_reader
+            self._stdout_filter_task = stdout_filter_task
+            self._stderr_log_task = stderr_log_task
 
             # Initialize the protocol and discover server identity
             init_response = await conn.initialize(protocol_version=1)
@@ -2769,11 +2830,7 @@ class ACPAgent(AgentBase):
                         ) from exc
                     await self._flush_file_credentials()
                 else:
-                    logger.warning(
-                        "ACP server offers auth methods %s but no matching "
-                        "env var is set — session creation may fail",
-                        [m.id for m in auth_methods],
-                    )
+                    _warn_auth_selection_failure(auth_methods, env)
 
             # Resume the prior ACP session if we have its id.  If the server
             # has forgotten it (state wiped, new host, etc.) fall through to
@@ -2933,6 +2990,8 @@ class ACPAgent(AgentBase):
         self,
         on_token: ConversationTokenCallbackType | None,
         on_event: ConversationCallbackType,
+        prompt: Any = None,
+        mask: Callable[[str], str] | None = None,
     ) -> None:
         """Reset per-turn client state and (re)wire live callbacks.
 
@@ -2945,7 +3004,14 @@ class ACPAgent(AgentBase):
         a single end-of-turn burst.  The secret masker is bound once in
         ``_start_acp_server`` (conversation-stable), not here.
         """
+        self._client.trace.abandon()
         self._client.reset()
+        self._client.trace = ACPTurnTrace(
+            acp_server=self.acp_server,
+            model_id=self._current_model_id,
+            mask=mask,
+        )
+        self._client.trace.start_turn(prompt)
         self._client.on_token = on_token
         self._client.on_event = on_event
         self._client.on_activity = self._on_activity
@@ -3341,6 +3407,10 @@ class ACPAgent(AgentBase):
         if not response_text:
             response_text = "(No response from ACP server)"
 
+        self._client.trace.finish_turn(
+            response_text, thought_text, self._client.accumulated_tool_calls
+        )
+
         # ACP step() boundaries are full remote assistant turns, not
         # partial planning steps. Emit FinishAction to delimit that
         # completed turn for eval/remote consumers, matching #2190.
@@ -3504,6 +3574,7 @@ class ACPAgent(AgentBase):
         """
         if self._client is None:
             return
+        self._client.trace.abandon()
         self._client.on_event = None
         self._client.on_token = None
         self._client.on_activity = None
@@ -3543,7 +3614,12 @@ class ACPAgent(AgentBase):
             state.execution_status = ConversationExecutionStatus.FINISHED
             return
 
-        self._reset_client_for_turn(on_token, on_event)
+        self._reset_client_for_turn(
+            on_token,
+            on_event,
+            prompt_blocks,
+            state.secret_registry.mask_secrets_in_output,
+        )
 
         t0 = time.monotonic()
         try:
@@ -3585,7 +3661,12 @@ class ACPAgent(AgentBase):
                         )
                         time.sleep(delay)
                         self._cancel_inflight_tool_calls()
-                        self._reset_client_for_turn(on_token, on_event)
+                        self._reset_client_for_turn(
+                            on_token,
+                            on_event,
+                            prompt_blocks,
+                            state.secret_registry.mask_secrets_in_output,
+                        )
                     else:
                         raise
                 except ACPRequestError as e:
@@ -3610,7 +3691,12 @@ class ACPAgent(AgentBase):
                         )
                         time.sleep(delay)
                         self._cancel_inflight_tool_calls()
-                        self._reset_client_for_turn(on_token, on_event)
+                        self._reset_client_for_turn(
+                            on_token,
+                            on_event,
+                            prompt_blocks,
+                            state.secret_registry.mask_secrets_in_output,
+                        )
                     else:
                         raise
 
@@ -3686,7 +3772,12 @@ class ACPAgent(AgentBase):
             state.execution_status = ConversationExecutionStatus.FINISHED
             return
 
-        self._reset_client_for_turn(on_token, on_event)
+        self._reset_client_for_turn(
+            on_token,
+            on_event,
+            prompt_blocks,
+            state.secret_registry.mask_secrets_in_output,
+        )
 
         t0 = time.monotonic()
         prompt_future: Future[PromptResponse | None] | None = None
@@ -3736,7 +3827,12 @@ class ACPAgent(AgentBase):
                         )
                         await asyncio.sleep(delay)
                         self._cancel_inflight_tool_calls()
-                        self._reset_client_for_turn(on_token, on_event)
+                        self._reset_client_for_turn(
+                            on_token,
+                            on_event,
+                            prompt_blocks,
+                            state.secret_registry.mask_secrets_in_output,
+                        )
                     else:
                         raise
                 except ACPRequestError as e:
@@ -3758,7 +3854,12 @@ class ACPAgent(AgentBase):
                         )
                         await asyncio.sleep(delay)
                         self._cancel_inflight_tool_calls()
-                        self._reset_client_for_turn(on_token, on_event)
+                        self._reset_client_for_turn(
+                            on_token,
+                            on_event,
+                            prompt_blocks,
+                            state.secret_registry.mask_secrets_in_output,
+                        )
                     else:
                         raise
 
@@ -4094,6 +4195,19 @@ class ACPAgent(AgentBase):
                     logger.debug("Error killing ACP process: %s", kill_error)
             self._process = None
 
+        for task_attr in ("_stdout_filter_task", "_stderr_log_task"):
+            task = getattr(self, task_attr)
+            if task is not None:
+                task.cancel()
+                if self._executor is not None:
+                    try:
+                        self._executor.run_async(
+                            self._await_cancelled_task, task, timeout=5.0
+                        )
+                    except Exception as e:
+                        logger.debug("Error stopping %s: %s", task_attr, e)
+                setattr(self, task_attr, None)
+
         credential_failures = self._release_file_credentials_collect()
         failures.update(credential_failures)
         if discard_bindings:
@@ -4112,6 +4226,11 @@ class ACPAgent(AgentBase):
     @staticmethod
     async def _wait_for_process(process: asyncio.subprocess.Process) -> None:
         await process.wait()
+
+    @staticmethod
+    async def _await_cancelled_task(task: asyncio.Task[Any]) -> None:
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
     def release_runtime(self) -> None:
         """Disarm this agent's finalizer after handing its live ACP runtime to a

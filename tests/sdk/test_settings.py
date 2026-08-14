@@ -964,6 +964,73 @@ def test_llm_create_agent_builds_condenser_when_enabled() -> None:
     assert agent.condenser.llm.metrics is not agent_metrics
 
 
+def test_llm_summarizing_condenser_inherits_max_tokens_from_llm() -> None:
+    """When the condenser's ``max_tokens`` is left unset, it should inherit
+    the agent LLM's ``effective_max_input_tokens`` so that condensation can
+    be triggered by token count, not just event count. See #3746: a
+    configured ``max_input_tokens`` on the LLM had no effect on the
+    condenser, so long tool outputs could blow past the context window
+    without ever triggering summarization.
+    """
+    llm = LLM(model="test-model", usage_id="agent", max_input_tokens=65536)
+    settings = OpenHandsAgentSettings(
+        llm=llm,
+        condenser=LLMSummarizingCondenserSettings(enabled=True),
+    )
+    agent = settings.create_agent()
+
+    assert isinstance(agent.condenser, LLMSummarizingCondenser)
+    assert agent.condenser.max_tokens == 65536
+
+
+def test_llm_summarizing_condenser_respects_explicit_max_tokens_over_llm() -> None:
+    """An explicitly configured condenser ``max_tokens`` must not be
+    overridden by the LLM's ``effective_max_input_tokens``.
+    """
+    llm = LLM(model="test-model", usage_id="agent", max_input_tokens=65536)
+    settings = OpenHandsAgentSettings(
+        llm=llm,
+        condenser=LLMSummarizingCondenserSettings(enabled=True, max_tokens=5000),
+    )
+    agent = settings.create_agent()
+
+    assert isinstance(agent.condenser, LLMSummarizingCondenser)
+    assert agent.condenser.max_tokens == 5000
+
+
+def test_llm_summarizing_condenser_max_tokens_none_when_llm_has_no_limit() -> None:
+    """When neither the condenser nor the LLM has a token limit configured,
+    the condenser's ``max_tokens`` should remain ``None`` (event-count-only
+    condensation), matching pre-fix behavior for users who never set
+    ``max_input_tokens``.
+    """
+    llm = LLM(model="test-model", usage_id="agent")
+    settings = OpenHandsAgentSettings(
+        llm=llm,
+        condenser=LLMSummarizingCondenserSettings(enabled=True),
+    )
+    agent = settings.create_agent()
+
+    assert isinstance(agent.condenser, LLMSummarizingCondenser)
+    assert agent.condenser.max_tokens is None
+
+
+def test_llm_summarizing_condenser_explicit_none_max_tokens_remains_unset() -> None:
+    """An explicit ``max_tokens=None`` remains unset on the condenser configuration.
+
+    The active agent LLM's effective input limit still governs condensation at runtime.
+    """
+    llm = LLM(model="test-model", usage_id="agent", max_input_tokens=65536)
+    settings = OpenHandsAgentSettings(
+        llm=llm,
+        condenser=LLMSummarizingCondenserSettings(enabled=True, max_tokens=None),
+    )
+    agent = settings.create_agent()
+
+    assert isinstance(agent.condenser, LLMSummarizingCondenser)
+    assert agent.condenser.max_tokens is None
+
+
 def test_llm_summarizing_condenser_settings_match_condenser_fields() -> None:
     condenser_fields = set(LLMSummarizingCondenser.model_fields) - {"llm"}
     settings_fields = set(LLMSummarizingCondenserSettings.model_fields) - {
@@ -1179,7 +1246,7 @@ def test_acp_create_agent_uses_server_default_command(
     assert agent.acp_command == [
         "npx",
         "-y",
-        "@agentclientprotocol/claude-agent-acp@0.44.0",
+        "@agentclientprotocol/claude-agent-acp@0.63.0",
     ]
     assert agent.acp_model == "claude-opus-4-6"
     # The authoritative provider key is carried onto the agent.
@@ -1335,7 +1402,7 @@ def test_acp_resolve_command_rewrites_versioned_npx_to_pinned_binary(
     monkeypatch.setattr(shutil, "which", _which_returning("codex-acp"))
     for pkg in (
         "@agentclientprotocol/codex-acp",
-        "@agentclientprotocol/codex-acp@1.1.2",
+        "@agentclientprotocol/codex-acp@1.1.7",
     ):
         settings = ACPAgentSettings(
             acp_server="codex",
@@ -1357,7 +1424,7 @@ def test_acp_resolve_command_keeps_npx_when_binary_absent(
     assert settings.resolve_acp_command() == [
         "npx",
         "-y",
-        "@agentclientprotocol/codex-acp@1.1.2",
+        "@agentclientprotocol/codex-acp@1.1.7",
     ]
 
 
