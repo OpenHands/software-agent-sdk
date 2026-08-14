@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 
 from pydantic import (
     BaseModel,
@@ -537,86 +537,80 @@ class PersistedWorkspaces(BaseModel):
         return cls.model_validate(payload)
 
 
-# ── Provider Connections ─────────────────────────────────────────────────
+# ── Model Providers ──────────────────────────────────────────────────────
 #
-# A "Provider Connection" is the persisted record for "connect a vendor once
-# with one key" (OpenHands/OpenHands#15492). The connection stores a *reference*
-# to a named secret (the API key lives in the SecretsStore), plus the list of
-# models the user selected from the provider's catalog. The raw key is never
-# stored in the connection record — only ``secret_name`` — so rotating the key
-# is one SecretsStore write and every spawned LLM profile that references the
-# same secret picks it up. The key is stored per-connection (not per-provider),
-# so a second key for the same provider is an additive connection later.
+# A "Provider" is the persisted record for "connect a provider once, then manage
+# its models under it" (OpenHands/OpenHands#15492). One key is held on the
+# provider and shared by every model nested under it. The key lives in the
+# SecretsStore; the provider record stores only ``secret_name`` (never the value),
+# so rotating the key is a single SecretsStore write. Models are a nested list
+# the user manages (add / edit / remove) — not a fan-out of standalone records.
 
-CONNECTIONS_SCHEMA_VERSION = 1
+PROVIDERS_SCHEMA_VERSION = 1
 
-# Marker prefix an LLM profile's ``api_key`` uses to point at a named secret
-# managed by a Provider Connection, instead of holding the raw key inline.
-# Resolution happens at call time in ``LLM._get_api_key_value``.
-LLM_SECRET_REF_PREFIX = "secret:"
+WireApi = Literal["auto", "chat", "responses"]
 
 
-def parse_llm_secret_ref(api_key: str | None) -> str | None:
-    """Return the secret name referenced by a ``secret:<name>`` api_key, else None."""
-    if not isinstance(api_key, str):
-        return None
-    if not api_key.startswith(LLM_SECRET_REF_PREFIX):
-        return None
-    name = api_key[len(LLM_SECRET_REF_PREFIX) :].strip()
-    return name or None
+class ProviderModel(BaseModel):
+    """A model offered by a provider. Inherits the provider's key and endpoint.
 
-
-def llm_secret_ref(secret_name: str) -> str:
-    """Build the ``secret:<name>`` reference string stored in a profile's api_key."""
-    return f"{LLM_SECRET_REF_PREFIX}{secret_name}"
-
-
-class ProviderConnection(BaseModel):
-    """A saved provider connection (one key, many models).
-
-    ``secret_name`` references the key stored in the SecretsStore; the value is
-    never held here. Responses to clients must mask the key (``api_key_set``)
-    and never return ``secret_name``'s value.
+    ``wire_api`` optionally overrides the provider default for this one model.
     """
 
-    id: str = Field(..., min_length=1, max_length=128)
-    provider: str = Field(..., min_length=1, max_length=128)
-    label: str | None = Field(default=None, max_length=128)
-    base_url: str | None = Field(default=None, max_length=2048)
-    api_mode: str = Field(default="auto")
-    custom_headers: dict[str, str] = Field(default_factory=dict)
-    secret_name: str = Field(..., min_length=1, max_length=128)
-    models: list[str] = Field(default_factory=list)
-    created_at: int = Field(..., description="Unix epoch seconds.")
-    last_validated_at: int | None = Field(
-        default=None, description="Unix epoch seconds of last successful validate."
-    )
+    name: str = Field(..., min_length=1, max_length=256)
+    wire_api: WireApi | None = Field(default=None)
 
     model_config = ConfigDict(populate_by_name=True)
 
 
-class PersistedConnections(BaseModel):
-    """Container for all provider connections (single JSON document)."""
+class ModelProvider(BaseModel):
+    """A saved model provider (one key, many nested models).
 
-    schema_version: int = Field(default=CONNECTIONS_SCHEMA_VERSION)
-    connections: list[ProviderConnection] = Field(default_factory=list)
+    ``secret_name`` references the key stored in the SecretsStore; the value is
+    never held here. Responses to clients must mask the key (``api_key_set``)
+    and never return ``secret_name``.
+    """
+
+    id: str = Field(..., min_length=1, max_length=128)
+    display_name: str = Field(..., min_length=1, max_length=128)
+    kind: str = Field(
+        default="custom",
+        max_length=128,
+        description="Preset id or litellm provider key (e.g. 'openai', 'custom').",
+    )
+    base_url: str | None = Field(default=None, max_length=2048)
+    wire_api: WireApi = Field(default="auto")
+    custom_headers: dict[str, str] = Field(default_factory=dict)
+    secret_name: str = Field(..., min_length=1, max_length=128)
+    models: list[ProviderModel] = Field(default_factory=list)
+    created_at: int = Field(..., description="Unix epoch seconds.")
+    updated_at: int = Field(..., description="Unix epoch seconds.")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class PersistedProviders(BaseModel):
+    """Container for all model providers (single JSON document)."""
+
+    schema_version: int = Field(default=PROVIDERS_SCHEMA_VERSION)
+    providers: list[ModelProvider] = Field(default_factory=list)
 
     model_config = ConfigDict(populate_by_name=True)
 
     @classmethod
-    def from_persisted(cls, data: Any) -> PersistedConnections:
+    def from_persisted(cls, data: Any) -> PersistedProviders:
         if not isinstance(data, dict):
             return cls.model_validate(data)
         payload = dict(data)
-        version = payload.get("schema_version", CONNECTIONS_SCHEMA_VERSION)
+        version = payload.get("schema_version", PROVIDERS_SCHEMA_VERSION)
         if not isinstance(version, int):
-            raise ValueError("PersistedConnections schema_version must be an integer")
-        if version > CONNECTIONS_SCHEMA_VERSION:
+            raise ValueError("PersistedProviders schema_version must be an integer")
+        if version > PROVIDERS_SCHEMA_VERSION:
             raise ValueError(
-                f"PersistedConnections schema_version {version} is newer than "
-                f"supported {CONNECTIONS_SCHEMA_VERSION}"
+                f"PersistedProviders schema_version {version} is newer than "
+                f"supported {PROVIDERS_SCHEMA_VERSION}"
             )
-        payload["schema_version"] = CONNECTIONS_SCHEMA_VERSION
+        payload["schema_version"] = PROVIDERS_SCHEMA_VERSION
         return cls.model_validate(payload)
 
 

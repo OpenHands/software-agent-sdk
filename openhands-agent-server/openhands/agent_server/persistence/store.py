@@ -24,7 +24,7 @@ from pydantic import SecretStr
 
 from openhands.agent_server.persistence.models import (
     CustomSecret,
-    PersistedConnections,
+    PersistedProviders,
     PersistedSettings,
     PersistedWorkspaces,
     Secrets,
@@ -787,84 +787,84 @@ class FileWorkspacesStore(WorkspacesStore):
             return updated
 
 
-class ConnectionsStore(ABC):
-    """Abstract base class for provider-connection storage."""
+class ProvidersStore(ABC):
+    """Abstract base class for model-provider storage."""
 
     @abstractmethod
-    def load(self) -> PersistedConnections | None:
-        """Load connections from storage."""
+    def load(self) -> PersistedProviders | None:
+        """Load providers from storage."""
 
     @abstractmethod
-    def save(self, connections: PersistedConnections) -> None:
-        """Save connections to storage."""
+    def save(self, providers: PersistedProviders) -> None:
+        """Save providers to storage."""
 
     @abstractmethod
     def update(
         self,
-        update_fn: Callable[[PersistedConnections], PersistedConnections],
-    ) -> PersistedConnections:
-        """Atomically update connections with file locking."""
+        update_fn: Callable[[PersistedProviders], PersistedProviders],
+    ) -> PersistedProviders:
+        """Atomically update providers with file locking."""
 
 
-class FileConnectionsStore(ConnectionsStore):
-    """File-based storage for provider connections.
+class FileProvidersStore(ProvidersStore):
+    """File-based storage for model providers.
 
-    Persists a single JSON document at ``<persistence_dir>/connections.json``
+    Persists a single JSON document at ``<persistence_dir>/providers.json``
     using the same atomic-write + file-lock primitives as ``FileWorkspacesStore``.
-    Connection records hold a ``secret_name`` reference to the key (stored in the
+    Provider records hold a ``secret_name`` reference to the key (stored in the
     SecretsStore), never the key value itself, so no cipher is needed here.
     """
 
     def __init__(
         self,
         persistence_dir: Path | str,
-        filename: str = "connections.json",
+        filename: str = "providers.json",
     ):
         _validate_filename(filename)
         self.persistence_dir = Path(persistence_dir)
         self.filename = filename
         self._path = self.persistence_dir / filename
-        self._lock_path = self.persistence_dir / ".connections.lock"
+        self._lock_path = self.persistence_dir / ".providers.lock"
 
-    def load(self) -> PersistedConnections | None:
+    def load(self) -> PersistedProviders | None:
         if not self._path.exists():
             return None
 
         try:
             with self._path.open("r", encoding="utf-8") as f:
                 data = json.load(f)
-            return PersistedConnections.from_persisted(data)
+            return PersistedProviders.from_persisted(data)
         except (PermissionError, OSError) as e:
-            logger.error(f"Cannot access connections file: {e}")
+            logger.error(f"Cannot access providers file: {e}")
             raise
         except json.JSONDecodeError as e:
-            logger.error(f"Connections file is corrupted: {e}")
+            logger.error(f"Providers file is corrupted: {e}")
             return None
         except Exception:
-            logger.error("Failed to load connections", exc_info=True)
+            logger.error("Failed to load providers", exc_info=True)
             return None
 
-    def save(self, connections: PersistedConnections) -> None:
+    def save(self, providers: PersistedProviders) -> None:
         _ensure_secure_directory(self.persistence_dir)
-        data = connections.model_dump(mode="json", exclude_none=True)
+        data = providers.model_dump(mode="json", exclude_none=True)
         _atomic_write_json(self._path, data)
-        logger.debug(f"Connections saved to {self._path}")
+        logger.debug(f"Providers saved to {self._path}")
 
     def update(
         self,
-        update_fn: Callable[[PersistedConnections], PersistedConnections],
-    ) -> PersistedConnections:
+        update_fn: Callable[[PersistedProviders], PersistedProviders],
+    ) -> PersistedProviders:
         with _file_lock(self._lock_path):
-            connections = self.load()
-            if connections is None:
+            providers = self.load()
+            if providers is None:
                 if self._path.exists():
                     raise RuntimeError(
-                        f"Cannot load connections from {self._path}. "
+                        f"Cannot load providers from {self._path}. "
                         "File may be corrupted. "
                         "Refusing to overwrite with defaults to prevent data loss."
                     )
-                connections = PersistedConnections()
-            updated = update_fn(connections)
+                providers = PersistedProviders()
+            updated = update_fn(providers)
             self.save(updated)
             return updated
 
@@ -874,7 +874,7 @@ class FileConnectionsStore(ConnectionsStore):
 _settings_store: FileSettingsStore | None = None
 _secrets_store: FileSecretsStore | None = None
 _workspaces_store: FileWorkspacesStore | None = None
-_connections_store: FileConnectionsStore | None = None
+_providers_store: FileProvidersStore | None = None
 _llm_profile_store: LLMProfileStore | None = None
 _agent_profile_store: AgentProfileStore | None = None
 _store_lock = threading.Lock()
@@ -998,26 +998,26 @@ def get_workspaces_store(config: Config | None = None) -> FileWorkspacesStore:
         return _workspaces_store
 
 
-def get_connections_store(config: Config | None = None) -> FileConnectionsStore:  # noqa: ARG001
-    """Get the global provider-connections store instance (thread-safe).
+def get_providers_store(config: Config | None = None) -> FileProvidersStore:  # noqa: ARG001
+    """Get the global model-providers store instance (thread-safe).
 
-    Connection records hold only a ``secret_name`` reference to the key (the key
+    Provider records hold only a ``secret_name`` reference to the key (the key
     lives in the SecretsStore), so no cipher is used here. Stored in the profile
     persistence dir (same as secrets/profiles) so credentials stay in the user's
     config directory, never workspace-relative. ``config`` is accepted for parity
-    with the other store factories; the connections dir is resolved from
+    with the other store factories; the providers dir is resolved from
     ``OH_PERSISTENCE_DIR`` / ``~/.openhands`` (see ``_get_profile_persistence_dir``).
     """
-    global _connections_store
-    if _connections_store is not None:
-        return _connections_store
+    global _providers_store
+    if _providers_store is not None:
+        return _providers_store
 
     with _store_lock:
-        if _connections_store is None:
-            _connections_store = FileConnectionsStore(
+        if _providers_store is None:
+            _providers_store = FileProvidersStore(
                 persistence_dir=_get_profile_persistence_dir(),
             )
-        return _connections_store
+        return _providers_store
 
 
 def get_llm_profile_store() -> LLMProfileStore:
@@ -1063,12 +1063,12 @@ def get_agent_profile_store() -> AgentProfileStore:
 def reset_stores() -> None:
     """Reset global store instances (for testing)."""
     global _settings_store, _secrets_store, _workspaces_store
-    global _connections_store
+    global _providers_store
     global _llm_profile_store, _agent_profile_store
     with _store_lock:
         _settings_store = None
         _secrets_store = None
         _workspaces_store = None
-        _connections_store = None
+        _providers_store = None
         _llm_profile_store = None
         _agent_profile_store = None
