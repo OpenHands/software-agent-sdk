@@ -363,7 +363,9 @@ class HookExecutor:
         ]
 
         try:
-            response = make_llm_completion(hook_llm, messages)
+            response = make_llm_completion(
+                hook_llm, messages, call_context=self.llm_call_context
+            )
             raw = "\n".join(content_to_str(response.message.content))
         except Exception as e:
             logger.warning(

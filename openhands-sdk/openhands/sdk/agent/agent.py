@@ -62,6 +62,7 @@ from openhands.sdk.llm import (
     TextContent,
     ThinkingBlock,
 )
+from openhands.sdk.llm.call_context import llm_call_context_scope
 from openhands.sdk.llm.exceptions import (
     FunctionCallValidationError,
     LLMContentPolicyViolationError,
@@ -668,160 +669,163 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
 
         # Build per-conversation context once and thread it through all
         # LLM calls in this step (avoids shared mutable state on the LLM).
+        # The ambient scope covers condenser LLM calls and prompt hooks that
+        # do not receive call_context explicitly.
         call_context: LLMCallContext = conversation.get_llm_call_context()
+        with llm_call_context_scope(call_context):
 
-        # Establish route-aware runtime metadata (cached, no I/O on a hit)
-        # before the condenser decides a token threshold, so a routed model's
-        # real endpoint limit drives condensation on the first step.
-        self.llm.resolve_runtime_metadata()
+            # Establish route-aware runtime metadata (cached, no I/O on a hit)
+            # before the condenser decides a token threshold, so a routed model's
+            # real endpoint limit drives condensation on the first step.
+            self.llm.resolve_runtime_metadata()
 
-        # Prepare LLM messages from the cached, incrementally-maintained view.
-        # See https://github.com/OpenHands/software-agent-sdk/issues/3053.
-        _messages_or_condensation = prepare_llm_messages(
-            state.view, condenser=self.condenser, llm=self.llm
-        )
+            # Prepare LLM messages from the cached, incrementally-maintained view.
+            # See https://github.com/OpenHands/software-agent-sdk/issues/3053.
+            _messages_or_condensation = prepare_llm_messages(
+                state.view, condenser=self.condenser, llm=self.llm
+            )
 
-        # Process condensation event before agent sampels another action
-        if isinstance(_messages_or_condensation, Condensation):
-            on_event(_messages_or_condensation)
-            return
-
-        _messages = _messages_or_condensation
-
-        if _should_handle_non_multimodal_image_input(self.llm, _messages):
-            if VISION_INSPECT_TOOL_NAME in self.tools_map:
-                logger.info(
-                    "Image input received by non-vision model %s; exposing "
-                    "image references and vision inspection tool",
-                    self.llm.model,
-                )
-                _messages = _replace_latest_user_images_with_references(_messages)
-            else:
-                logger.info(
-                    "Image input received while selected model does not support "
-                    "vision: %s",
-                    self.llm.model,
-                )
-                on_event(
-                    MessageEvent(
-                        source="agent",
-                        llm_message=_non_multimodal_image_message(self.llm.model),
-                    )
-                )
-                state.execution_status = ConversationExecutionStatus.FINISHED
+            # Process condensation event before agent sampels another action
+            if isinstance(_messages_or_condensation, Condensation):
+                on_event(_messages_or_condensation)
                 return
 
-        logger.debug(
-            "Sending messages to LLM: "
-            f"{json.dumps([m.model_dump() for m in _messages[1:]], indent=2)}"
-        )
+            _messages = _messages_or_condensation
 
-        try:
-            llm_response = make_llm_completion(
-                self.llm,
-                _messages,
-                tools=list(self.tools_map.values()),
-                on_token=on_token,
-                call_context=call_context,
+            if _should_handle_non_multimodal_image_input(self.llm, _messages):
+                if VISION_INSPECT_TOOL_NAME in self.tools_map:
+                    logger.info(
+                        "Image input received by non-vision model %s; exposing "
+                        "image references and vision inspection tool",
+                        self.llm.model,
+                    )
+                    _messages = _replace_latest_user_images_with_references(_messages)
+                else:
+                    logger.info(
+                        "Image input received while selected model does not support "
+                        "vision: %s",
+                        self.llm.model,
+                    )
+                    on_event(
+                        MessageEvent(
+                            source="agent",
+                            llm_message=_non_multimodal_image_message(self.llm.model),
+                        )
+                    )
+                    state.execution_status = ConversationExecutionStatus.FINISHED
+                    return
+
+            logger.debug(
+                "Sending messages to LLM: "
+                f"{json.dumps([m.model_dump() for m in _messages[1:]], indent=2)}"
             )
-        except FunctionCallValidationError as e:
-            logger.warning(f"LLM generated malformed function call: {e}")
-            error_message = MessageEvent(
-                source="user",
-                llm_message=Message(
-                    role="user",
-                    content=[TextContent(text=str(e))],
-                ),
-            )
-            on_event(error_message)
-            return
-        except LLMContentPolicyViolationError as e:
-            # Content-policy blocks are deterministic; nudge the model and let the
-            # run loop continue instead of emitting a fatal error.
-            logger.warning(f"LLM output blocked by content filter: {e}")
-            on_event(
-                MessageEvent(
+
+            try:
+                llm_response = make_llm_completion(
+                    self.llm,
+                    _messages,
+                    tools=list(self.tools_map.values()),
+                    on_token=on_token,
+                    call_context=call_context,
+                )
+            except FunctionCallValidationError as e:
+                logger.warning(f"LLM generated malformed function call: {e}")
+                error_message = MessageEvent(
                     source="user",
                     llm_message=Message(
                         role="user",
-                        content=[
-                            TextContent(
-                                text=(
-                                    "Your previous response was blocked by the "
-                                    "model's content filter. Please continue, "
-                                    "rephrasing to avoid the flagged content."
-                                )
-                            )
-                        ],
+                        content=[TextContent(text=str(e))],
                     ),
                 )
-            )
-            return
-        except LLMMalformedConversationHistoryError as e:
-            # The provider rejected the current message history as structurally
-            # invalid (for example, broken tool_use/tool_result pairing). Route
-            # this into condensation recovery, but keep the logs distinct from
-            # true context-window exhaustion so upstream event-stream bugs remain
-            # visible.
-            if (
-                self.condenser is not None
-                and self.condenser.handles_condensation_requests()
-            ):
+                on_event(error_message)
+                return
+            except LLMContentPolicyViolationError as e:
+                # Content-policy blocks are deterministic; nudge the model and let the
+                # run loop continue instead of emitting a fatal error.
+                logger.warning(f"LLM output blocked by content filter: {e}")
+                on_event(
+                    MessageEvent(
+                        source="user",
+                        llm_message=Message(
+                            role="user",
+                            content=[
+                                TextContent(
+                                    text=(
+                                        "Your previous response was blocked by the "
+                                        "model's content filter. Please continue, "
+                                        "rephrasing to avoid the flagged content."
+                                    )
+                                )
+                            ],
+                        ),
+                    )
+                )
+                return
+            except LLMMalformedConversationHistoryError as e:
+                # The provider rejected the current message history as structurally
+                # invalid (for example, broken tool_use/tool_result pairing). Route
+                # this into condensation recovery, but keep the logs distinct from
+                # true context-window exhaustion so upstream event-stream bugs remain
+                # visible.
+                if (
+                    self.condenser is not None
+                    and self.condenser.handles_condensation_requests()
+                ):
+                    logger.warning(
+                        "LLM raised malformed conversation history error, "
+                        "triggering condensation retry with condensed history: "
+                        f"{e}"
+                    )
+                    # The incremental view may itself be the source of the
+                    # malformed history.  Re-derive with full enforcement so
+                    # the condenser operates on a clean view.
+                    state.rebuild_view()
+                    on_event(CondensationRequest())
+                    return
                 logger.warning(
-                    "LLM raised malformed conversation history error, "
-                    "triggering condensation retry with condensed history: "
+                    "LLM raised malformed conversation history error but no "
+                    "condenser can handle condensation requests. This usually "
+                    "indicates an upstream event-stream or resume bug: "
                     f"{e}"
                 )
-                # The incremental view may itself be the source of the
-                # malformed history.  Re-derive with full enforcement so
-                # the condenser operates on a clean view.
-                state.rebuild_view()
-                on_event(CondensationRequest())
-                return
-            logger.warning(
-                "LLM raised malformed conversation history error but no "
-                "condenser can handle condensation requests. This usually "
-                "indicates an upstream event-stream or resume bug: "
-                f"{e}"
-            )
-            raise e
-        except LLMContextWindowExceedError as e:
-            # If condenser is available and handles requests, trigger condensation
-            if (
-                self.condenser is not None
-                and self.condenser.handles_condensation_requests()
-            ):
-                logger.warning(
-                    "LLM raised context window exceeded error, triggering condensation"
-                )
-                on_event(CondensationRequest())
-                return
-            # No condenser available or doesn't handle requests; log helpful warning
-            self._log_context_window_exceeded_warning()
-            raise e
+                raise e
+            except LLMContextWindowExceedError as e:
+                # If condenser is available and handles requests, trigger condensation
+                if (
+                    self.condenser is not None
+                    and self.condenser.handles_condensation_requests()
+                ):
+                    logger.warning(
+                        "LLM raised context window exceeded error, triggering condensation"
+                    )
+                    on_event(CondensationRequest())
+                    return
+                # No condenser available or doesn't handle requests; log helpful warning
+                self._log_context_window_exceeded_warning()
+                raise e
 
-        # LLMResponse already contains the converted message and metrics snapshot
-        message: Message = llm_response.message
-        response_type = classify_response(message)
+            # LLMResponse already contains the converted message and metrics snapshot
+            message: Message = llm_response.message
+            response_type = classify_response(message)
 
-        match response_type:
-            case LLMResponseType.TOOL_CALLS:
-                self._handle_tool_calls(
-                    message, llm_response, conversation, state, on_event
-                )
-            case LLMResponseType.CONTENT:
-                self._handle_content_response(
-                    message, llm_response, conversation, state, on_event
-                )
-            case LLMResponseType.REASONING_ONLY | LLMResponseType.EMPTY:
-                self._handle_no_content_response(
-                    message,
-                    llm_response,
-                    conversation,
-                    state,
-                    on_event,
-                    response_type=response_type,
-                )
+            match response_type:
+                case LLMResponseType.TOOL_CALLS:
+                    self._handle_tool_calls(
+                        message, llm_response, conversation, state, on_event
+                    )
+                case LLMResponseType.CONTENT:
+                    self._handle_content_response(
+                        message, llm_response, conversation, state, on_event
+                    )
+                case LLMResponseType.REASONING_ONLY | LLMResponseType.EMPTY:
+                    self._handle_no_content_response(
+                        message,
+                        llm_response,
+                        conversation,
+                        state,
+                        on_event,
+                        response_type=response_type,
+                    )
 
     @observe(name="agent.astep", ignore_inputs=["state", "on_event"])
     async def astep(
@@ -863,164 +867,165 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             )
 
         call_context: LLMCallContext = conversation.get_llm_call_context()
+        with llm_call_context_scope(call_context):
 
-        # Establish route-aware runtime metadata (cached, no I/O on a hit)
-        # before the condenser decides a token threshold, so a routed model's
-        # real endpoint limit drives condensation on the first step.
-        await self.llm.aresolve_runtime_metadata()
+            # Establish route-aware runtime metadata (cached, no I/O on a hit)
+            # before the condenser decides a token threshold, so a routed model's
+            # real endpoint limit drives condensation on the first step.
+            await self.llm.aresolve_runtime_metadata()
 
-        # Prepare LLM messages from the cached, incrementally-maintained view.
-        # See https://github.com/OpenHands/software-agent-sdk/issues/3053.
-        _messages_or_condensation = await aprepare_llm_messages(
-            state.view, condenser=self.condenser, llm=self.llm
-        )
+            # Prepare LLM messages from the cached, incrementally-maintained view.
+            # See https://github.com/OpenHands/software-agent-sdk/issues/3053.
+            _messages_or_condensation = await aprepare_llm_messages(
+                state.view, condenser=self.condenser, llm=self.llm
+            )
 
-        if isinstance(_messages_or_condensation, Condensation):
-            on_event(_messages_or_condensation)
-            return
-
-        _messages = _messages_or_condensation
-
-        if _should_handle_non_multimodal_image_input(self.llm, _messages):
-            if VISION_INSPECT_TOOL_NAME in self.tools_map:
-                logger.info(
-                    "Image input received by non-vision model %s; exposing "
-                    "image references and vision inspection tool",
-                    self.llm.model,
-                )
-                _messages = _replace_latest_user_images_with_references(_messages)
-            else:
-                logger.info(
-                    "Image input received while selected model does not support "
-                    "vision: %s",
-                    self.llm.model,
-                )
-                on_event(
-                    MessageEvent(
-                        source="agent",
-                        llm_message=_non_multimodal_image_message(self.llm.model),
-                    )
-                )
-                state.execution_status = ConversationExecutionStatus.FINISHED
+            if isinstance(_messages_or_condensation, Condensation):
+                on_event(_messages_or_condensation)
                 return
 
-        logger.debug(
-            "Sending messages to LLM: "
-            f"{json.dumps([m.model_dump() for m in _messages[1:]], indent=2)}"
-        )
+            _messages = _messages_or_condensation
 
-        try:
-            # Release the state lock for just the network wait so send_message()
-            # and state snapshots aren't blocked for the whole response. No-op
-            # unless the run loop holds the lock (e.g. direct astep() in tests).
-            async with conversation._released_state_lock_during_io():
-                llm_response = await amake_llm_completion(
-                    self.llm,
-                    _messages,
-                    tools=list(self.tools_map.values()),
-                    on_token=on_token,
-                    call_context=call_context,
-                )
-        except FunctionCallValidationError as e:
-            logger.warning(f"LLM generated malformed function call: {e}")
-            error_message = MessageEvent(
-                source="user",
-                llm_message=Message(
-                    role="user",
-                    content=[TextContent(text=str(e))],
-                ),
+            if _should_handle_non_multimodal_image_input(self.llm, _messages):
+                if VISION_INSPECT_TOOL_NAME in self.tools_map:
+                    logger.info(
+                        "Image input received by non-vision model %s; exposing "
+                        "image references and vision inspection tool",
+                        self.llm.model,
+                    )
+                    _messages = _replace_latest_user_images_with_references(_messages)
+                else:
+                    logger.info(
+                        "Image input received while selected model does not support "
+                        "vision: %s",
+                        self.llm.model,
+                    )
+                    on_event(
+                        MessageEvent(
+                            source="agent",
+                            llm_message=_non_multimodal_image_message(self.llm.model),
+                        )
+                    )
+                    state.execution_status = ConversationExecutionStatus.FINISHED
+                    return
+
+            logger.debug(
+                "Sending messages to LLM: "
+                f"{json.dumps([m.model_dump() for m in _messages[1:]], indent=2)}"
             )
-            on_event(error_message)
-            return
-        except LLMContentPolicyViolationError as e:
-            # Content-policy blocks are deterministic; nudge the model and let the
-            # run loop continue instead of emitting a fatal error.
-            logger.warning(f"LLM output blocked by content filter: {e}")
-            on_event(
-                MessageEvent(
+
+            try:
+                # Release the state lock for just the network wait so send_message()
+                # and state snapshots aren't blocked for the whole response. No-op
+                # unless the run loop holds the lock (e.g. direct astep() in tests).
+                async with conversation._released_state_lock_during_io():
+                    llm_response = await amake_llm_completion(
+                        self.llm,
+                        _messages,
+                        tools=list(self.tools_map.values()),
+                        on_token=on_token,
+                        call_context=call_context,
+                    )
+            except FunctionCallValidationError as e:
+                logger.warning(f"LLM generated malformed function call: {e}")
+                error_message = MessageEvent(
                     source="user",
                     llm_message=Message(
                         role="user",
-                        content=[
-                            TextContent(
-                                text=(
-                                    "Your previous response was blocked by the "
-                                    "model's content filter. Please continue, "
-                                    "rephrasing to avoid the flagged content."
-                                )
-                            )
-                        ],
+                        content=[TextContent(text=str(e))],
                     ),
                 )
-            )
-            return
-        except LLMMalformedConversationHistoryError as e:
-            # The provider rejected the current message history as
-            # structurally invalid (for example, broken
-            # tool_use/tool_result pairing).  Route this into
-            # condensation recovery, but keep the logs distinct from
-            # true context-window exhaustion so upstream event-stream
-            # bugs remain visible.
-            if (
-                self.condenser is not None
-                and self.condenser.handles_condensation_requests()
-            ):
+                on_event(error_message)
+                return
+            except LLMContentPolicyViolationError as e:
+                # Content-policy blocks are deterministic; nudge the model and let the
+                # run loop continue instead of emitting a fatal error.
+                logger.warning(f"LLM output blocked by content filter: {e}")
+                on_event(
+                    MessageEvent(
+                        source="user",
+                        llm_message=Message(
+                            role="user",
+                            content=[
+                                TextContent(
+                                    text=(
+                                        "Your previous response was blocked by the "
+                                        "model's content filter. Please continue, "
+                                        "rephrasing to avoid the flagged content."
+                                    )
+                                )
+                            ],
+                        ),
+                    )
+                )
+                return
+            except LLMMalformedConversationHistoryError as e:
+                # The provider rejected the current message history as
+                # structurally invalid (for example, broken
+                # tool_use/tool_result pairing).  Route this into
+                # condensation recovery, but keep the logs distinct from
+                # true context-window exhaustion so upstream event-stream
+                # bugs remain visible.
+                if (
+                    self.condenser is not None
+                    and self.condenser.handles_condensation_requests()
+                ):
+                    logger.warning(
+                        "LLM raised malformed conversation history error, "
+                        "triggering condensation retry with condensed "
+                        "history: %s",
+                        e,
+                    )
+                    # Mirror step(): re-derive the cached view with full
+                    # enforcement before the condensation retry.
+                    state.rebuild_view()
+                    on_event(CondensationRequest())
+                    return
                 logger.warning(
-                    "LLM raised malformed conversation history error, "
-                    "triggering condensation retry with condensed "
-                    "history: %s",
+                    "LLM raised malformed conversation history error but "
+                    "no condenser can handle condensation requests. This "
+                    "usually indicates an upstream event-stream or resume "
+                    "bug: %s",
                     e,
                 )
-                # Mirror step(): re-derive the cached view with full
-                # enforcement before the condensation retry.
-                state.rebuild_view()
-                on_event(CondensationRequest())
-                return
-            logger.warning(
-                "LLM raised malformed conversation history error but "
-                "no condenser can handle condensation requests. This "
-                "usually indicates an upstream event-stream or resume "
-                "bug: %s",
-                e,
-            )
-            raise e
-        except LLMContextWindowExceedError as e:
-            # If condenser is available and handles requests, trigger
-            # condensation
-            if (
-                self.condenser is not None
-                and self.condenser.handles_condensation_requests()
-            ):
-                logger.warning(
-                    "LLM raised context window exceeded error, triggering condensation"
-                )
-                on_event(CondensationRequest())
-                return
-            # No condenser available; log helpful warning
-            self._log_context_window_exceeded_warning()
-            raise e
+                raise e
+            except LLMContextWindowExceedError as e:
+                # If condenser is available and handles requests, trigger
+                # condensation
+                if (
+                    self.condenser is not None
+                    and self.condenser.handles_condensation_requests()
+                ):
+                    logger.warning(
+                        "LLM raised context window exceeded error, triggering condensation"
+                    )
+                    on_event(CondensationRequest())
+                    return
+                # No condenser available; log helpful warning
+                self._log_context_window_exceeded_warning()
+                raise e
 
-        message: Message = llm_response.message
-        response_type = classify_response(message)
+            message: Message = llm_response.message
+            response_type = classify_response(message)
 
-        match response_type:
-            case LLMResponseType.TOOL_CALLS:
-                await self._ahandle_tool_calls(
-                    message, llm_response, conversation, state, on_event
-                )
-            case LLMResponseType.CONTENT:
-                self._handle_content_response(
-                    message, llm_response, conversation, state, on_event
-                )
-            case LLMResponseType.REASONING_ONLY | LLMResponseType.EMPTY:
-                self._handle_no_content_response(
-                    message,
-                    llm_response,
-                    conversation,
-                    state,
-                    on_event,
-                    response_type=response_type,
-                )
+            match response_type:
+                case LLMResponseType.TOOL_CALLS:
+                    await self._ahandle_tool_calls(
+                        message, llm_response, conversation, state, on_event
+                    )
+                case LLMResponseType.CONTENT:
+                    self._handle_content_response(
+                        message, llm_response, conversation, state, on_event
+                    )
+                case LLMResponseType.REASONING_ONLY | LLMResponseType.EMPTY:
+                    self._handle_no_content_response(
+                        message,
+                        llm_response,
+                        conversation,
+                        state,
+                        on_event,
+                        response_type=response_type,
+                    )
 
     def _requires_user_confirmation(
         self, state: ConversationState, action_events: list[ActionEvent]
