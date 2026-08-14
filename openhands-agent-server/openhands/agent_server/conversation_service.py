@@ -65,6 +65,7 @@ from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
+from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
 from openhands.sdk.tool import BROWSER_TOOL_NAME, Tool, is_tool_usable
@@ -2308,14 +2309,19 @@ class _EventSubscriber(Subscriber):
     metadata={OPERATION_METADATA_KEY: "title_generation"},
 )
 def _generate_title_traced(
-    # Unused, but must stay first and positional: ``observe`` re-attaches the
+    # Must stay first and positional: ``observe`` re-attaches the
     # root span it carries, and this runs on a context-less executor thread.
-    conversation: LocalConversation | None,  # noqa: ARG001
+    conversation: LocalConversation | None,
     message: str,
     llm: LLM | None,
     max_length: int,
 ) -> str:
-    return generate_title_from_message(message, llm, max_length)
+    call_context = (
+        conversation.get_llm_call_context() if conversation else LLMCallContext()
+    )
+    return generate_title_from_message(
+        message, llm, max_length, call_context=call_context
+    )
 
 
 @dataclass

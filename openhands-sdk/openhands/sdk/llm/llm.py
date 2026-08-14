@@ -201,7 +201,7 @@ def __getattr__(name: str) -> Any:
     if name == "LLMCallContext":
         warn_deprecated(
             "openhands.sdk.llm.llm.LLMCallContext",
-            deprecated_in="1.36.0",
+            deprecated_in="1.42.1",
             removed_in="2.0.0",
             details="Import LLMCallContext from openhands.sdk.llm instead.",
             stacklevel=2,
