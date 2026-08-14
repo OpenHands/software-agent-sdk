@@ -1424,11 +1424,20 @@ class EventService:
                 if status in (
                     ConversationExecutionStatus.PAUSED,
                     ConversationExecutionStatus.ERROR,
-                    ConversationExecutionStatus.STUCK,
                 ):
                     logger.info("Goal loop halted early: status=%s", status)
                     await _emit_status(active=False, status="interrupted")
                     return
+                if status == ConversationExecutionStatus.STUCK:
+                    # The stuck detector is a heuristic that often fires during
+                    # legitimate iteration (re-running a test, retrying an edit).
+                    # The goal loop already has an authoritative judge that
+                    # audits completion each round, so a STUCK run is not a
+                    # reason to halt the whole goal -- proceed to the judge and
+                    # let it decide continue-vs-stop (sending a followup nudge
+                    # that breaks the agent out of any genuine loop). Only
+                    # PAUSED/ERROR (real stop signals) terminate the goal.
+                    logger.info("Goal loop continuing past stuck run")
                 step = await loop.run_in_executor(None, _snapshot_and_judge)
                 if isinstance(step, GoalDone):
                     self._goal_loop_outcome = step.outcome

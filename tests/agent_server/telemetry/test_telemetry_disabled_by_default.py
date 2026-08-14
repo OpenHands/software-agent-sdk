@@ -106,7 +106,7 @@ async def test_conversation_service_reads_the_live_sink_not_a_captured_one(
     captured at construction, every conversation would see the pre-init NoOp and
     emit nothing regardless of consent. Build the service while the sink is still a
     NoOp, enable telemetry afterwards, and assert a new conversation still attaches
-    the subscriber and emits ``conversation_started``.
+    the subscriber and emits ``conversation_created``.
     """
     from uuid import uuid4
 
@@ -177,7 +177,7 @@ async def test_conversation_service_reads_the_live_sink_not_a_captured_one(
     )
 
     assert len(event_service.subscribers) == 1
-    assert m.EventName.CONVERSATION_STARTED in sink.events
+    assert m.EventName.CONVERSATION_CREATED in sink.events
 
 
 def test_app_exposes_a_sink_on_state_after_startup(temp_persistence_dir):

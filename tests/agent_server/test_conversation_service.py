@@ -21,6 +21,7 @@ from openhands.agent_server.conversation_lease import (
 from openhands.agent_server.conversation_service import (
     AutoTitleSubscriber,
     ConversationService,
+    _compose_conversation_info,
     _ConversationRecord,
     _get_worktree_start_point,
 )
@@ -816,6 +817,89 @@ async def test_status_filters_refresh_unloaded_shared_state(persisted_conversati
             )
             assert [item.id for item in page.items] == [conversation_id]
             assert observer._event_services == {}
+
+
+@pytest.mark.asyncio
+async def test_finished_status_refresh_invalidates_cached_info(persisted_conversation):
+    """A persisted status change invalidates the observer's cached row.
+
+    The observer caches a ``ConversationInfo`` for an IDLE snapshot. After the
+    owner finishes the conversation, a filtered search must serve the refreshed
+    ``FINISHED`` status rather than the stale cached ``IDLE`` row.
+    """
+    conversations_dir, conversation_id = persisted_conversation
+
+    async with ConversationService(conversations_dir=conversations_dir) as primary:
+        primary_runtime = await primary.get_event_service(conversation_id)
+        assert primary_runtime is not None
+
+        async with ConversationService(conversations_dir=conversations_dir) as observer:
+            # Populate the observer's catalog entry + cached_info from the IDLE
+            # snapshot (unfiltered search does not refresh statuses).
+            initial = await observer.search_conversations()
+            assert [item.id for item in initial.items] == [conversation_id]
+            record = observer._conversation_records[conversation_id]
+            assert record.cached_info is not None
+            assert record.execution_status == ConversationExecutionStatus.IDLE
+
+            # Primary finishes the conversation behind the observer's back.
+            primary_state = await primary_runtime.get_state()
+            primary_state.execution_status = ConversationExecutionStatus.FINISHED
+
+            # The observer's filtered search refreshes statuses; it must not
+            # serve the stale cached IDLE ConversationInfo.
+            page = await observer.search_conversations(
+                execution_status=ConversationExecutionStatus.FINISHED
+            )
+            assert [item.id for item in page.items] == [conversation_id]
+            assert (
+                page.items[0].execution_status == ConversationExecutionStatus.FINISHED
+            )
+
+            # An unfiltered search must also surface the refreshed status rather
+            # than the stale cached IDLE row (which would otherwise persist
+            # forever for a finished conversation).
+            unfiltered = await observer.search_conversations()
+            assert [item.id for item in unfiltered.items] == [conversation_id]
+            assert (
+                unfiltered.items[0].execution_status
+                == ConversationExecutionStatus.FINISHED
+            )
+            assert observer._event_services == {}
+
+
+@pytest.mark.asyncio
+async def test_search_refreshes_cached_info_on_metadata_only_update(
+    persisted_conversation,
+):
+    """Metadata-only updates (meta.json) invalidate the cached row.
+
+    ``cached_info`` embeds ``StoredConversation`` metadata (title, metrics) but
+    is keyed by ``base_state.json`` alone. A live conversation changing only
+    ``stored`` metadata — e.g. auto-title — must not be served the stale row.
+    """
+    conversations_dir, conversation_id = persisted_conversation
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        runtime = await service.get_event_service(conversation_id)
+        assert runtime is not None
+
+        # Populate the cached ConversationInfo from the untitled snapshot.
+        initial = await service.search_conversations()
+        assert [item.id for item in initial.items] == [conversation_id]
+        assert initial.items[0].title is None
+        record = service._conversation_records[conversation_id]
+        assert record.cached_info is not None
+
+        # Change only stored metadata; base_state.json is untouched.
+        runtime.stored = runtime.stored.model_copy(update={"title": "Generated Title"})
+        await runtime.save_meta()
+
+        page = await service.search_conversations()
+        assert [item.id for item in page.items] == [conversation_id]
+        assert page.items[0].title == "Generated Title"
+        assert service._event_services is not None
+        assert set(service._event_services) == {conversation_id}
 
 
 @pytest.mark.asyncio
@@ -3790,3 +3874,125 @@ class TestConversationSearchScaling:
                 )
 
             assert [item.id for item in page.items] == [target]
+
+
+@pytest.mark.asyncio
+async def test_search_composes_conversation_info_off_event_loop(persisted_conversation):
+    """Regression: composing ConversationInfo during a list/search must not run
+    on the event-loop thread.
+
+    The heavy Pydantic construction in ``_compose_conversation_info`` (with its
+    large nested object graphs) used to execute synchronously on the single
+    asyncio event-loop thread. Under load this caused long blocking GC pauses,
+    stalling every request (async and executor-backed alike) — the wedge seen in
+    production. Offloading it to a worker thread keeps GC/allocation off the loop.
+
+    This test loads a persisted (idle) conversation through ``search_conversations``
+    and asserts the composition ran on a thread other than the event loop.
+    """
+    import threading
+    from unittest.mock import patch as _patch
+
+    conversations_dir, conversation_id = persisted_conversation
+    original_compose = _compose_conversation_info
+
+    loop_ident = threading.get_ident()
+    found = {}
+
+    def spy(stored, state, children):
+        found["thread_ident"] = threading.get_ident()
+        return original_compose(stored, state, children)
+
+    async with ConversationService(conversations_dir=conversations_dir) as restarted:
+        assert restarted._event_services == {}
+        with _patch(
+            "openhands.agent_server.conversation_service._compose_conversation_info",
+            side_effect=spy,
+        ) as comp:
+            page = await restarted.search_conversations()
+            assert [item.id for item in page.items] == [conversation_id]
+            assert comp.call_count >= 1
+
+    # Prove the composition executed off the event loop.
+    assert found.get("thread_ident") is not None
+    assert found["thread_ident"] != loop_ident
+
+
+@pytest.mark.asyncio
+async def test_search_reuses_persisted_conversation_info_until_state_changes(
+    persisted_conversation,
+):
+    """Repeated sidebar polls should not reparse unchanged base_state.json."""
+    conversations_dir, conversation_id = persisted_conversation
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        real_load = service._load_persisted_state_sync
+        with patch.object(
+            service, "_load_persisted_state_sync", wraps=real_load
+        ) as load:
+            first = await service.search_conversations()
+            second = await service.search_conversations()
+
+        assert [item.id for item in first.items] == [conversation_id]
+        assert [item.id for item in second.items] == [conversation_id]
+        assert load.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_search_invalidates_cached_info_when_state_file_changes(
+    persisted_conversation,
+):
+    conversations_dir, conversation_id = persisted_conversation
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        first = await service.search_conversations()
+        base_state = conversations_dir / conversation_id.hex / "base_state.json"
+        payload = json.loads(base_state.read_text())
+        payload["execution_status"] = ConversationExecutionStatus.FINISHED.value
+        # Change size as well as mtime so the signature changes on every FS.
+        payload["max_iterations"] = 1234567
+        base_state.write_text(json.dumps(payload))
+
+        second = await service.search_conversations()
+
+    assert first.items[0].execution_status != ConversationExecutionStatus.FINISHED
+    assert second.items[0].execution_status == ConversationExecutionStatus.FINISHED
+
+
+@pytest.mark.asyncio
+async def test_search_live_conversation_does_not_wait_for_state_lock(tmp_path):
+    """Sidebar listing must not block behind a live agent's long step lock."""
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        conversation_info, _ = await service.start_conversation(request)
+        event_services = service._event_services
+        assert event_services is not None
+        live_state = await event_services[conversation_info.id].get_state()
+
+        # Hold the same FIFOLock that LocalConversation.arun() holds across a
+        # native OpenHands agent step. The old listing path composed from the
+        # live state and blocked until this lock was released.
+        acquired = threading.Event()
+        release = threading.Event()
+
+        def hold_state_lock():
+            with live_state:
+                acquired.set()
+                assert release.wait(timeout=5)
+
+        holder = threading.Thread(target=hold_state_lock)
+        holder.start()
+        assert acquired.wait(timeout=2)
+        try:
+            page = await asyncio.wait_for(service.search_conversations(), timeout=1)
+        finally:
+            release.set()
+            holder.join(timeout=2)
+
+    assert [item.id for item in page.items] == [conversation_info.id]
