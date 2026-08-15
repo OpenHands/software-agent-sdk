@@ -93,6 +93,27 @@ class LLMSummarizingCondenser(RollingCondenser):
     def handles_condensation_requests(self) -> bool:
         return True
 
+    def _effective_max_tokens(self, agent_llm: LLM | None) -> int | None:
+        """Return the effective token cap that triggers token-based condensation.
+
+        Takes the stricter (i.e. smaller) of the condenser's configured
+        ``max_tokens`` and the agent LLM's effective input limit. ``agent_llm``
+        is optional throughout the public API -- callers that only assess
+        request/event-count pressure may pass ``None`` -- in which case only the
+        condenser's own ``max_tokens`` applies.
+
+        Returns ``None`` when no limit is configured.
+        """
+        limits = [
+            limit
+            for limit in (
+                self.max_tokens,
+                agent_llm.effective_max_input_tokens if agent_llm is not None else None,
+            )
+            if limit is not None
+        ]
+        return min(limits) if limits else None
+
     def get_condensation_reasons(
         self, view: View, agent_llm: LLM | None = None
     ) -> set[Reason]:
@@ -113,14 +134,15 @@ class LLMSummarizingCondenser(RollingCondenser):
             reasons.add(Reason.REQUEST)
 
         # Reason 2: Token limit is provided and exceeded.
-        if self.max_tokens and agent_llm:
+        max_tokens = self._effective_max_tokens(agent_llm)
+        if max_tokens is not None and agent_llm is not None:
             total_tokens = get_total_token_count(view.events, agent_llm)
-            if total_tokens > self.max_tokens:
+            if total_tokens > max_tokens:
                 logger.info(
                     "Condenser token limit exceeded: total_tokens=%d max_tokens=%d "
                     "events=%d",
                     total_tokens,
-                    self.max_tokens,
+                    max_tokens,
                     len(view),
                 )
                 reasons.add(Reason.TOKENS)
@@ -254,13 +276,14 @@ class LLMSummarizingCondenser(RollingCondenser):
 
         if Reason.TOKENS in reasons:
             # Compute the number of tokens we need to eliminate to be under half the
-            # max_tokens value. We know max_tokens and the agent LLM are not None here
-            # because we can't have Reason.TOKENS without them.
-            assert self.max_tokens is not None
+            # effective max_tokens value. We know both are not None here because we
+            # cannot have Reason.TOKENS without them.
+            max_tokens = self._effective_max_tokens(agent_llm)
+            assert max_tokens is not None
             assert agent_llm is not None
 
             total_tokens = get_total_token_count(view.events, agent_llm)
-            tokens_to_reduce = total_tokens - (self.max_tokens // 2)
+            tokens_to_reduce = total_tokens - (max_tokens // 2)
 
             suffix_events_to_keep.add(
                 get_suffix_length_for_token_reduction(
