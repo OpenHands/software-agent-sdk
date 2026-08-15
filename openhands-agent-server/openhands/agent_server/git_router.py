@@ -1,6 +1,7 @@
 """Git router for OpenHands SDK."""
 
 import asyncio
+import base64
 import functools
 import logging
 import re
@@ -152,6 +153,14 @@ def _provider_auth_headers(
         return {}
     if provider == "gitlab":
         return {"PRIVATE-TOKEN": token}
+    if provider == "bitbucket":
+        # The SDK's clone path uses ``x-token-auth`` for a bare Bitbucket
+        # token, while the UI also accepts an explicit ``username:token``.
+        # Preserve either spelling as HTTP Basic credentials so the probe
+        # exercises the same authorization that cloning will use.
+        credentials = token if ":" in token else f"x-token-auth:{token}"
+        encoded = base64.b64encode(credentials.encode()).decode("ascii")
+        return {"Authorization": f"Basic {encoded}"}
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -180,8 +189,10 @@ async def validate_repository(
     if repository_request.credential_names:
         try:
             store = get_secrets_store(get_config(request))
-            token = _resolve_provider_credential(
-                store, repository_request.credential_names
+            token = await asyncio.to_thread(
+                _resolve_provider_credential,
+                store,
+                repository_request.credential_names,
             )
         except (HTTPException, OSError, RuntimeError, ValueError):
             return ValidateRepositoryResponse(status="unavailable")

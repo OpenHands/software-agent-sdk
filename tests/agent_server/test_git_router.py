@@ -1,7 +1,10 @@
 """Tests for git_router.py endpoints."""
 
+import asyncio
+import base64
 import logging
 import subprocess
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -11,6 +14,10 @@ from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
+from openhands.agent_server.git_router import (
+    ValidateRepositoryRequest,
+    validate_repository,
+)
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.models import (
     GitChange,
@@ -276,6 +283,117 @@ def test_validate_repository_never_leaks_secret_or_provider_body(client, caplog)
     assert provider_body not in response.text
     assert secret not in caplog.text
     assert provider_body not in caplog.text
+
+
+def test_validate_repository_uses_basic_auth_for_bitbucket_user_token(client):
+    """Bitbucket's stored ``username:token`` form is sent as HTTP Basic auth."""
+    secret = "workspace-user:app-password"
+    store = MagicMock()
+    store.get_secret.return_value = secret
+    provider_client = _ProviderClient(httpx.Response(200))
+    client_factory = MagicMock(return_value=provider_client)
+
+    with (
+        patch(
+            "openhands.agent_server.git_router.get_secrets_store",
+            return_value=store,
+        ),
+        patch("openhands.agent_server.git_router.httpx.AsyncClient", client_factory),
+    ):
+        response = client.post(
+            "/api/git/validate-repository",
+            json={
+                "provider": "bitbucket",
+                "repository": "openhands/software-agent-sdk",
+                "credential_names": ["bitbucket_token"],
+            },
+        )
+
+    encoded = base64.b64encode(secret.encode()).decode()
+    assert response.status_code == 200
+    assert response.json() == {"status": "accessible"}
+    assert provider_client.requests == [
+        (
+            "https://api.bitbucket.org/2.0/repositories/openhands/software-agent-sdk",
+            {"Authorization": f"Basic {encoded}"},
+        )
+    ]
+
+
+def test_validate_repository_uses_x_token_auth_for_bare_bitbucket_token(client):
+    """A bare Bitbucket token follows the SDK clone credential convention."""
+    store = MagicMock()
+    store.get_secret.return_value = "bare-access-token"
+    provider_client = _ProviderClient(httpx.Response(200))
+    client_factory = MagicMock(return_value=provider_client)
+
+    with (
+        patch(
+            "openhands.agent_server.git_router.get_secrets_store",
+            return_value=store,
+        ),
+        patch("openhands.agent_server.git_router.httpx.AsyncClient", client_factory),
+    ):
+        response = client.post(
+            "/api/git/validate-repository",
+            json={
+                "provider": "bitbucket",
+                "repository": "openhands/software-agent-sdk",
+                "credential_names": ["bitbucket_token"],
+            },
+        )
+
+    encoded = base64.b64encode(b"x-token-auth:bare-access-token").decode()
+    assert response.status_code == 200
+    assert response.json() == {"status": "accessible"}
+    assert provider_client.requests[0][1] == {"Authorization": f"Basic {encoded}"}
+
+
+@pytest.mark.asyncio
+async def test_validate_repository_does_not_block_event_loop_on_secret_lock():
+    """A slow file-secret lock is acquired outside the async request loop."""
+    release = threading.Event()
+    timer = threading.Timer(0.2, release.set)
+    store = MagicMock()
+
+    def slow_secret(_name: str) -> str:
+        release.wait(timeout=1)
+        return "github-token"
+
+    store.get_secret.side_effect = slow_secret
+    provider_client = _ProviderClient(httpx.Response(200))
+    client_factory = MagicMock(return_value=provider_client)
+    request = ValidateRepositoryRequest(
+        provider="github",
+        repository="openhands/software-agent-sdk",
+        credential_names=["github_token"],
+    )
+
+    timer.start()
+    try:
+        with (
+            patch("openhands.agent_server.git_router.get_config"),
+            patch(
+                "openhands.agent_server.git_router.get_secrets_store",
+                return_value=store,
+            ),
+            patch(
+                "openhands.agent_server.git_router.httpx.AsyncClient",
+                client_factory,
+            ),
+        ):
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            validation = asyncio.create_task(validate_repository(MagicMock(), request))
+            await asyncio.sleep(0.02)
+            heartbeat_elapsed = loop.time() - started
+            response = await validation
+    finally:
+        release.set()
+        timer.cancel()
+
+    assert heartbeat_elapsed < 0.15
+    assert response.status == "accessible"
 
 
 # =============================================================================
