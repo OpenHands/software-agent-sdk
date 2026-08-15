@@ -277,11 +277,13 @@ async def validate_profile(
 
     try:
         # Mirror the runtime dispatch (see ``amake_llm_completion``) and stay
-        # async so provider I/O doesn't pin the FastAPI event loop.
-        if llm.uses_responses_api():
-            await llm.aresponses(messages=messages, max_tokens=1)
+        # async so provider I/O doesn't pin the FastAPI event loop. A pre-flight
+        # probe should fail fast instead of consuming the normal retry budget.
+        probe = llm.model_copy(update={"num_retries": 0, "timeout": 30})
+        if probe.uses_responses_api():
+            await probe.aresponses(messages=messages, max_output_tokens=1)
         else:
-            await llm.acompletion(messages=messages, max_tokens=1)
+            await probe.acompletion(messages=messages, max_completion_tokens=1)
     except _TRANSIENT_ERROR_TYPES as exc:
         # Transient — don't block the save
         logger.info(

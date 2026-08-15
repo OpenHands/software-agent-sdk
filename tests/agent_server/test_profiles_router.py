@@ -1262,7 +1262,7 @@ def test_validate_profile_success(client):
         patch(
             "openhands.sdk.llm.llm.LLM.acompletion",
             return_value=MagicMock(),
-        ),
+        ) as mock_completion,
     ):
         response = client.post(
             "/api/profiles/test-profile/validate",
@@ -1273,6 +1273,8 @@ def test_validate_profile_success(client):
     body = response.json()
     assert body["valid"] is True
     assert body["error"] is None
+    assert mock_completion.call_args.kwargs["max_completion_tokens"] == 1
+    assert "max_tokens" not in mock_completion.call_args.kwargs
 
 
 def test_validate_profile_responses_api(client):
@@ -1296,7 +1298,9 @@ def test_validate_profile_responses_api(client):
             "openhands.sdk.llm.llm.LLM.uses_responses_api",
             return_value=True,
         ),
-        patch("openhands.sdk.llm.llm.LLM.aresponses", side_effect=fake_append),
+        patch(
+            "openhands.sdk.llm.llm.LLM.aresponses", side_effect=fake_append
+        ) as mock_responses,
     ):
         response = client.post(
             "/api/profiles/responses-profile/validate",
@@ -1314,6 +1318,8 @@ def test_validate_profile_responses_api(client):
     assert body["valid"] is True
     assert body["error"] is None
     assert traced["called"], "expected aresponses to be used for responses-api profiles"
+    assert mock_responses.call_args.kwargs["max_output_tokens"] == 1
+    assert "max_tokens" not in mock_responses.call_args.kwargs
 
 
 def test_validate_profile_invalid_model_returns_error(client):
