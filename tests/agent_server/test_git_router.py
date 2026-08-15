@@ -1,9 +1,11 @@
 """Tests for git_router.py endpoints."""
 
+import logging
 import subprocess
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -24,6 +26,256 @@ def client():
     """Create a test client for the FastAPI app without authentication."""
     config = Config(session_api_keys=[])  # Disable authentication
     return TestClient(create_app(config), raise_server_exceptions=False)
+
+
+class _ProviderClient:
+    """Deterministic stand-in for the provider HTTP client."""
+
+    def __init__(self, result: httpx.Response | Exception) -> None:
+        self.result = result
+        self.requests: list[tuple[str, dict[str, str]]] = []
+
+    async def __aenter__(self) -> "_ProviderClient":
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+    async def get(self, url: str, *, headers: dict[str, str]) -> httpx.Response:
+        self.requests.append((url, headers))
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+# =============================================================================
+# Repository Validation Tests
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    ("provider", "repository", "expected_url"),
+    [
+        (
+            "github",
+            "openhands/software-agent-sdk",
+            "https://api.github.com/repos/openhands/software-agent-sdk",
+        ),
+        (
+            "gitlab",
+            "openhands/software-agent-sdk",
+            "https://gitlab.com/api/v4/projects/openhands%2Fsoftware-agent-sdk",
+        ),
+        (
+            "bitbucket",
+            "openhands/software-agent-sdk",
+            "https://api.bitbucket.org/2.0/repositories/openhands/software-agent-sdk",
+        ),
+    ],
+)
+def test_validate_repository_public_success_uses_allowlisted_host(
+    client, provider, repository, expected_url
+):
+    """Public repositories are checked anonymously against fixed API hosts."""
+    provider_client = _ProviderClient(httpx.Response(200))
+    client_factory = MagicMock(return_value=provider_client)
+
+    with patch("openhands.agent_server.git_router.httpx.AsyncClient", client_factory):
+        response = client.post(
+            "/api/git/validate-repository",
+            json={"provider": provider, "repository": repository},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "accessible"}
+    assert provider_client.requests == [(expected_url, {})]
+    assert client_factory.call_args.kwargs == {
+        "timeout": 5.0,
+        "follow_redirects": False,
+        "trust_env": False,
+    }
+
+
+def test_validate_repository_checks_optional_ref(client):
+    """A ref is checked through the provider's ref-aware endpoint."""
+    provider_client = _ProviderClient(httpx.Response(200))
+    client_factory = MagicMock(return_value=provider_client)
+
+    with patch("openhands.agent_server.git_router.httpx.AsyncClient", client_factory):
+        response = client.post(
+            "/api/git/validate-repository",
+            json={
+                "provider": "gitlab",
+                "repository": "group/project",
+                "ref": "release/1.0",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "accessible"}
+    assert provider_client.requests == [
+        (
+            "https://gitlab.com/api/v4/projects/group%2Fproject/"
+            "repository/commits/release%2F1.0",
+            {},
+        )
+    ]
+
+
+def test_validate_repository_reports_missing_named_credentials(client):
+    """Named credentials that cannot be resolved do not trigger an upstream call."""
+    store = MagicMock()
+    store.get_secret.return_value = None
+    client_factory = MagicMock()
+
+    with (
+        patch(
+            "openhands.agent_server.git_router.get_secrets_store",
+            return_value=store,
+        ),
+        patch("openhands.agent_server.git_router.httpx.AsyncClient", client_factory),
+    ):
+        response = client.post(
+            "/api/git/validate-repository",
+            json={
+                "provider": "github",
+                "repository": "openhands/software-agent-sdk",
+                "credential_names": ["GITHUB_TOKEN", "FALLBACK_TOKEN"],
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "missing_credentials"}
+    assert store.get_secret.call_count == 2
+    client_factory.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("upstream_status", "expected_status"),
+    [
+        (401, "denied"),
+        (403, "denied"),
+        (404, "not_found"),
+        (503, "unavailable"),
+    ],
+)
+def test_validate_repository_sanitizes_provider_statuses(
+    client, upstream_status, expected_status
+):
+    """Provider access failures map to typed verdicts without provider details."""
+    provider_client = _ProviderClient(httpx.Response(upstream_status, text="details"))
+    client_factory = MagicMock(return_value=provider_client)
+
+    with patch("openhands.agent_server.git_router.httpx.AsyncClient", client_factory):
+        response = client.post(
+            "/api/git/validate-repository",
+            json={"provider": "github", "repository": "openhands/software-agent-sdk"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": expected_status}
+    assert "details" not in response.text
+
+
+def test_validate_repository_reports_transport_failure_as_unavailable(client):
+    """Transport failures must never be mistaken for repository access."""
+    provider_client = _ProviderClient(httpx.ConnectError("provider unavailable"))
+    client_factory = MagicMock(return_value=provider_client)
+
+    with patch("openhands.agent_server.git_router.httpx.AsyncClient", client_factory):
+        response = client.post(
+            "/api/git/validate-repository",
+            json={"provider": "github", "repository": "openhands/software-agent-sdk"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "unavailable"}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"provider": "unknown", "repository": "openhands/software-agent-sdk"},
+        {"provider": "github", "repository": "https://example.test/repo"},
+        {"provider": "github", "repository": "group/subgroup/project"},
+        {
+            "provider": "github",
+            "repository": "openhands/software-agent-sdk",
+            "ref": "bad ref",
+        },
+        {
+            "provider": "github",
+            "repository": "openhands/software-agent-sdk",
+            "ref": "x" * 256,
+        },
+        {
+            "provider": "github",
+            "repository": "openhands/software-agent-sdk",
+            "credential_names": ["bad-name"],
+        },
+        {
+            "provider": "github",
+            "repository": "openhands/software-agent-sdk",
+            "credential_names": [
+                "TOKEN_0",
+                "TOKEN_1",
+                "TOKEN_2",
+                "TOKEN_3",
+                "TOKEN_4",
+                "TOKEN_5",
+            ],
+        },
+    ],
+)
+def test_validate_repository_rejects_unbounded_or_invalid_input(client, payload):
+    """The endpoint rejects unsupported providers and oversized identifiers."""
+    client_factory = MagicMock()
+
+    with patch("openhands.agent_server.git_router.httpx.AsyncClient", client_factory):
+        response = client.post("/api/git/validate-repository", json=payload)
+
+    assert response.status_code == 422
+    client_factory.assert_not_called()
+
+
+def test_validate_repository_never_leaks_secret_or_provider_body(client, caplog):
+    """Credentials and upstream response bodies stay out of responses and logs."""
+    secret = "repo-probe-secret-sentinel"
+    provider_body = "provider-internal-sentinel"
+    store = MagicMock()
+    store.get_secret.return_value = secret
+    provider_client = _ProviderClient(httpx.Response(403, text=provider_body))
+    client_factory = MagicMock(return_value=provider_client)
+
+    with (
+        caplog.at_level(logging.DEBUG),
+        patch(
+            "openhands.agent_server.git_router.get_secrets_store",
+            return_value=store,
+        ),
+        patch("openhands.agent_server.git_router.httpx.AsyncClient", client_factory),
+    ):
+        response = client.post(
+            "/api/git/validate-repository",
+            json={
+                "provider": "github",
+                "repository": "openhands/software-agent-sdk",
+                "credential_names": ["GITHUB_TOKEN"],
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "denied"}
+    assert provider_client.requests == [
+        (
+            "https://api.github.com/repos/openhands/software-agent-sdk",
+            {"Authorization": f"Bearer {secret}"},
+        )
+    ]
+    assert secret not in response.text
+    assert provider_body not in response.text
+    assert secret not in caplog.text
+    assert provider_body not in caplog.text
 
 
 # =============================================================================
