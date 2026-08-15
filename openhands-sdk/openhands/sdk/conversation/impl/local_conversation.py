@@ -143,11 +143,19 @@ def _agent_already_surfaced_error(events: Sequence[Event], since: int = 0) -> bo
     prevents a stale source="agent" event from a prior run from suppressing the error
     event for an unrelated exception in a subsequent run on the same conversation.
     """
+    latest = _latest_conversation_error(events, since)
+    return latest is not None and latest.source == "agent"
+
+
+def _latest_conversation_error(
+    events: Sequence[Event], since: int = 0
+) -> ConversationErrorEvent | None:
+    """Return the latest conversation error emitted during the current run."""
     for i in range(len(events) - 1, since - 1, -1):
         event = events[i]
         if isinstance(event, ConversationErrorEvent):
-            return event.source == "agent"
-    return False
+            return event
+    return None
 
 
 def _is_acp_prompt_message(event: Event) -> TypeGuard[MessageEvent]:
@@ -2014,7 +2022,12 @@ class LocalConversation(BaseConversation):
 
             # Re-raise with conversation id and persistence dir for better UX
             raise ConversationRunError(
-                self._state.id, e, persistence_dir=self._state.persistence_dir
+                self._state.id,
+                e,
+                persistence_dir=self._state.persistence_dir,
+                conversation_error=_latest_conversation_error(
+                    self._state.events, _run_start_event_count
+                ),
             ) from e
         finally:
             self._cancel_token = None
@@ -2470,7 +2483,12 @@ class LocalConversation(BaseConversation):
                         )
                     )
             raise ConversationRunError(
-                self._state.id, e, persistence_dir=self._state.persistence_dir
+                self._state.id,
+                e,
+                persistence_dir=self._state.persistence_dir,
+                conversation_error=_latest_conversation_error(
+                    self._state.events, _run_start_event_count
+                ),
             ) from e
         finally:
             # A cancelled token must stay observable: interrupted tool calls run

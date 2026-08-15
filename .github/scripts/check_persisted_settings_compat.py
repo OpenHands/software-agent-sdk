@@ -5,6 +5,7 @@ This script guards the versioned persisted-settings surfaces that are already
 loaded through explicit migration entry points today:
 
 - ``validate_agent_settings(...)``
+- ``validate_agent_profile(...)``
 - ``ConversationSettings.from_persisted(...)``
 - ``PersistedSettings.from_persisted(...)``
 
@@ -41,6 +42,7 @@ from openhands.agent_server.persistence import (
     PERSISTED_SETTINGS_SCHEMA_VERSION,
     PersistedSettings,
 )
+from openhands.sdk.profiles import AGENT_PROFILE_SCHEMA_VERSION, validate_agent_profile
 from openhands.sdk.settings import (
     AGENT_SETTINGS_SCHEMA_VERSION,
     CONVERSATION_SETTINGS_SCHEMA_VERSION,
@@ -55,6 +57,7 @@ _FIXTURE_DIR_RE = re.compile(r"v(?P<version>[1-9][0-9]*)$")
 _FIXTURE_EXPECTED_KEY = "__expected__"
 _FIXTURE_SURFACE_PREFIXES = {
     "agent_settings": "agent_settings",
+    "agent_profile": "agent_profile",
     "conversation_settings": "conversation_settings",
     "persisted_settings": "persisted_settings",
 }
@@ -92,6 +95,11 @@ try:
     from openhands.sdk import Tool
 except Exception:
     from openhands.sdk.tool import Tool
+
+try:
+    from openhands.sdk.profiles import OpenHandsAgentProfile
+except Exception:
+    OpenHandsAgentProfile = None
 
 import openhands.sdk.settings as settings_mod
 
@@ -138,6 +146,13 @@ emit(
     "agent_settings/populated",
     _dump(agent_populated, context={"expose_secrets": "plaintext"}),
 )
+
+if OpenHandsAgentProfile is not None:
+    agent_profile = OpenHandsAgentProfile(
+        name="baseline-agent-profile",
+        llm_profile_ref="baseline-profile",
+    )
+    emit("agent_profile/default", _dump(agent_profile))
 
 ACPAgentSettingsCls = getattr(settings_mod, "ACPAgentSettings", None)
 if ACPAgentSettingsCls is not None:
@@ -239,6 +254,17 @@ SURFACES: dict[str, SurfaceConfig] = {
             "_AGENT_SETTINGS_MIGRATIONS."
         ),
         dump_context={"expose_secrets": "plaintext"},
+    ),
+    "agent_profile": SurfaceConfig(
+        key="agent_profile",
+        display_name="AgentProfile",
+        current_version=AGENT_PROFILE_SCHEMA_VERSION,
+        loader=validate_agent_profile,
+        migration_guidance=(
+            "If this persisted shape changed intentionally, bump "
+            "AGENT_PROFILE_SCHEMA_VERSION and add a migration in "
+            "_AGENT_PROFILE_MIGRATIONS."
+        ),
     ),
     "conversation_settings": SurfaceConfig(
         key="conversation_settings",
