@@ -16,6 +16,123 @@ def clear_chromium_detection_cache():
     BrowserToolExecutor.check_chromium_available.cache_clear()
 
 
+def _create_executable(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch()
+    path.chmod(0o755)
+    return path
+
+
+@pytest.fixture
+def windows_browser_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    program_files = tmp_path / "Program Files"
+    local_app_data = tmp_path / "AppData" / "Local"
+    playwright_cache = tmp_path / "playwright-browsers"
+
+    monkeypatch.setattr("openhands.tools.browser_use.impl.sys.platform", "win32")
+    monkeypatch.setattr(
+        "openhands.tools.browser_use.impl.shutil.which", lambda _binary: None
+    )
+    monkeypatch.setenv("PROGRAMFILES", str(program_files))
+    monkeypatch.setenv("PROGRAMFILES(X86)", str(tmp_path / "Program Files (x86)"))
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(playwright_cache))
+
+    return {
+        "program_files": program_files,
+        "playwright_cache": playwright_cache,
+    }
+
+
+def test_windows_prefers_playwright_chromium_over_system_chrome(
+    windows_browser_paths: dict[str, Path],
+):
+    system_chrome = _create_executable(
+        windows_browser_paths["program_files"]
+        / "Google"
+        / "Chrome"
+        / "Application"
+        / "chrome.exe"
+    )
+    playwright_chromium = _create_executable(
+        windows_browser_paths["playwright_cache"]
+        / "chromium-1200"
+        / "chrome-win64"
+        / "chrome.exe"
+    )
+
+    result = BrowserToolExecutor.check_chromium_available()
+
+    assert system_chrome.is_file()
+    assert result == str(playwright_chromium)
+
+
+def test_windows_prefers_latest_available_playwright_build(
+    windows_browser_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    playwright_cache = windows_browser_paths["playwright_cache"]
+    older_chromium = _create_executable(
+        playwright_cache / "chromium-999" / "chrome-win64" / "chrome.exe"
+    )
+    latest_chromium = _create_executable(
+        playwright_cache / "chromium-1200" / "chrome-win64" / "chrome.exe"
+    )
+    original_glob = Path.glob
+
+    def reverse_build_order(path: Path, pattern: str):
+        if path == playwright_cache and pattern == "chromium-*":
+            return iter([older_chromium.parents[1], latest_chromium.parents[1]])
+        return original_glob(path, pattern)
+
+    monkeypatch.setattr(Path, "glob", reverse_build_order)
+
+    result = BrowserToolExecutor.check_chromium_available()
+
+    assert result == str(latest_chromium)
+
+
+def test_windows_skips_playwright_build_without_executable(
+    windows_browser_paths: dict[str, Path],
+):
+    missing_executable = (
+        windows_browser_paths["playwright_cache"]
+        / "chromium-1300"
+        / "chrome-win64"
+        / "chrome.exe"
+    )
+    missing_executable.parent.mkdir(parents=True)
+    system_chrome = _create_executable(
+        windows_browser_paths["program_files"]
+        / "Google"
+        / "Chrome"
+        / "Application"
+        / "chrome.exe"
+    )
+
+    result = BrowserToolExecutor.check_chromium_available()
+
+    assert not missing_executable.exists()
+    assert result == str(system_chrome)
+
+
+def test_windows_falls_back_to_system_browser_without_playwright(
+    windows_browser_paths: dict[str, Path],
+):
+    system_edge = _create_executable(
+        windows_browser_paths["program_files"]
+        / "Microsoft"
+        / "Edge"
+        / "Application"
+        / "msedge.exe"
+    )
+
+    result = BrowserToolExecutor.check_chromium_available()
+
+    assert not windows_browser_paths["playwright_cache"].exists()
+    assert result == str(system_edge)
+
+
 class TestChromiumDetection:
     """Test Chromium detection functionality."""
 
@@ -131,6 +248,10 @@ class TestChromiumDetection:
             patch("shutil.which", return_value=None),
             patch("os.environ.get", side_effect=mock_environ_get),
             patch.object(Path, "exists", mock_exists),
+            patch(
+                "openhands.tools.browser_use.impl._is_browser_executable",
+                side_effect=lambda path, _platform=None: str(path) == str(edge_path),
+            ),
         ):
             result = executor.check_chromium_available()
             assert result == str(edge_path)
@@ -208,6 +329,11 @@ class TestChromiumDetection:
             patch("os.environ.get", side_effect=mock_environ_get),
             patch.object(Path, "exists", mock_exists),
             patch.object(Path, "glob") as mock_glob,
+            patch(
+                "openhands.tools.browser_use.impl._is_browser_executable",
+                side_effect=lambda path, _platform=None: str(path)
+                == str(mock_chrome_path),
+            ),
         ):
             mock_glob.return_value = [mock_chromium_dir]
 

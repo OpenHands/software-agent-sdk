@@ -152,6 +152,9 @@ def _playwright_cache_dirs(platform: str | None = None) -> list[Path]:
         case "darwin":
             return [Path.home() / "Library" / "Caches" / "ms-playwright"]
         case "win32":
+            if configured_path := os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
+                if configured_path != "0":
+                    return [Path(configured_path).expanduser()]
             if local_app_data := os.environ.get("LOCALAPPDATA"):
                 return [Path(local_app_data) / "ms-playwright"]
             return [Path.home() / "AppData" / "Local" / "ms-playwright"]
@@ -195,6 +198,36 @@ def _playwright_chromium_paths(
                 chromium_dir / "chrome-linux64" / "chrome",
                 chromium_dir / "chrome-linux" / "chrome",
             ]
+
+
+def _playwright_build_sort_key(chromium_dir: Path) -> tuple[int, str]:
+    build = chromium_dir.name.removeprefix("chromium-")
+    build_number = int(build) if build.isdigit() else -1
+    return build_number, chromium_dir.name
+
+
+def _playwright_chromium_install_paths(
+    platform: str | None = None,
+) -> list[Path]:
+    current_platform = _current_platform(platform)
+    paths: list[Path] = []
+    for playwright_cache in _playwright_cache_dirs(current_platform):
+        if not playwright_cache.exists():
+            continue
+        chromium_dirs = list(playwright_cache.glob("chromium-*"))
+        if current_platform == "win32":
+            chromium_dirs.sort(key=_playwright_build_sort_key, reverse=True)
+        for chromium_dir in chromium_dirs:
+            paths.extend(_playwright_chromium_paths(chromium_dir, current_platform))
+    return paths
+
+
+def _is_browser_executable(path: Path, platform: str | None = None) -> bool:
+    if not path.exists():
+        return False
+    if _current_platform(platform) != "win32":
+        return True
+    return path.is_file() and os.access(path, os.X_OK)
 
 
 def _path_binary_candidates(platform: str | None = None) -> tuple[str, ...]:
@@ -288,20 +321,17 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         Returns:
             Path to Chromium binary if found, None otherwise
         """
-        # Check standard installation paths (prefer full Chrome installs)
-        for path in _standard_chromium_paths():
-            if path.exists():
-                return str(path)
+        current_platform = _current_platform()
+        path_sources = (
+            (_playwright_chromium_install_paths, _standard_chromium_paths)
+            if current_platform == "win32"
+            else (_standard_chromium_paths, _playwright_chromium_install_paths)
+        )
 
-        # Check Playwright-installed Chromium (preferred over PATH lookups
-        # because PATH binaries like homebrew chromium may lack CDP support)
-        for playwright_cache in _playwright_cache_dirs():
-            if playwright_cache.exists():
-                chromium_dirs = list(playwright_cache.glob("chromium-*"))
-                for chromium_dir in chromium_dirs:
-                    for path in _playwright_chromium_paths(chromium_dir):
-                        if path.exists():
-                            return str(path)
+        for path_source in path_sources:
+            for path in path_source(current_platform):
+                if _is_browser_executable(path, current_platform):
+                    return str(path)
 
         # Fallback: check PATH for any chromium-based binary
         for binary in _path_binary_candidates():
@@ -355,7 +385,9 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
 
         def init_logic():
             nonlocal headless
-            executable_path = self._ensure_chromium_available()
+            executable_path = (
+                config.pop("executable_path", None) or self._ensure_chromium_available()
+            )
             self._server = CustomBrowserUseServer(
                 session_timeout_minutes=session_timeout_minutes,
             )
