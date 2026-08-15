@@ -197,12 +197,13 @@ class DelegateExecutor(ToolExecutor):
             if self._closed:
                 return
             self._closed = True
-            background_tasks = [
+            background_tasks = list(self._background_tasks.values())
+            active_background_tasks = [
                 task
-                for task in self._background_tasks.values()
+                for task in background_tasks
                 if task.status not in _TERMINAL_TASK_STATUSES
             ]
-            for task in background_tasks:
+            for task in active_background_tasks:
                 task.stop_requested = True
             sub_agents = list(self._sub_agents.items())
             blocking_conversations = [
@@ -211,7 +212,7 @@ class DelegateExecutor(ToolExecutor):
                 if operation_id.startswith("blocking:") and agent_id in self._sub_agents
             ]
 
-        for task in background_tasks:
+        for task in active_background_tasks:
             self._interrupt_sub_agent(task.agent_id, task.conversation)
         for conversation in blocking_conversations:
             self._interrupt_sub_agent("blocking", conversation)
@@ -629,15 +630,15 @@ class DelegateExecutor(ToolExecutor):
                     prompt=prompt,
                     conversation=conversations[agent_id],
                 )
-                thread = threading.Thread(
-                    target=self._run_background_task,
-                    args=(task_id,),
-                    name=f"Delegate-{agent_id}-{task_id[-8:]}",
-                    daemon=True,
-                )
-                task.thread = thread
                 self._background_tasks[task_id] = task
                 try:
+                    thread = threading.Thread(
+                        target=self._run_background_task,
+                        args=(task_id,),
+                        name=f"Delegate-{agent_id}-{task_id[-8:]}",
+                        daemon=True,
+                    )
+                    task.thread = thread
                     thread.start()
                 except Exception as e:
                     task.status = DelegateTaskStatus.FAILED
@@ -705,14 +706,22 @@ class DelegateExecutor(ToolExecutor):
                 )
             )
 
-            final_response = get_agent_final_response(task.conversation.state.events)
+            final_response, extraction_error = self._extract_background_response(
+                task.conversation
+            )
             with self._lock:
                 stop_requested = task.stop_requested
             if stop_requested:
                 self._settle_background_task(
                     task_id,
                     status=DelegateTaskStatus.CANCELLED,
-                    result=final_response or None,
+                    result=final_response,
+                )
+            elif extraction_error is not None:
+                self._settle_background_task(
+                    task_id,
+                    status=DelegateTaskStatus.FAILED,
+                    error=extraction_error,
                 )
             elif (
                 task.conversation.state.execution_status
@@ -729,31 +738,63 @@ class DelegateExecutor(ToolExecutor):
                     status=DelegateTaskStatus.FAILED,
                     error=self._background_failure_detail(
                         task.conversation,
-                        final_response,
+                        final_response or "",
                     ),
                 )
-        except Exception as e:
+        except asyncio.CancelledError:
             with self._lock:
                 stop_requested = task.stop_requested
+            result, extraction_error = self._extract_background_response(
+                task.conversation
+            )
             if stop_requested:
-                result = get_agent_final_response(task.conversation.state.events)
                 self._settle_background_task(
                     task_id,
                     status=DelegateTaskStatus.CANCELLED,
-                    result=result or None,
+                    result=result,
                 )
             else:
+                error = "Sub-agent execution was cancelled unexpectedly"
+                if extraction_error is not None:
+                    error = f"{error}\n{extraction_error}"
                 logger.error(
                     "Sub-agent %s failed background task %s: %s",
                     task.agent_id,
                     task_id,
-                    e,
+                    error,
+                )
+                self._settle_background_task(
+                    task_id,
+                    status=DelegateTaskStatus.FAILED,
+                    error=error,
+                )
+        except Exception as e:
+            with self._lock:
+                stop_requested = task.stop_requested
+            result, extraction_error = self._extract_background_response(
+                task.conversation
+            )
+            if stop_requested:
+                self._settle_background_task(
+                    task_id,
+                    status=DelegateTaskStatus.CANCELLED,
+                    result=result,
+                )
+            else:
+                error = str(e)
+                if extraction_error is not None:
+                    error = f"{error}\n{extraction_error}"
+                logger.error(
+                    "Sub-agent %s failed background task %s: %s",
+                    task.agent_id,
+                    task_id,
+                    error,
                     exc_info=True,
                 )
                 self._settle_background_task(
                     task_id,
                     status=DelegateTaskStatus.FAILED,
-                    error=str(e),
+                    error=error,
                 )
 
     async def _arun_until_finished(
@@ -799,6 +840,16 @@ class DelegateExecutor(ToolExecutor):
         if stop_requested:
             conversation.interrupt()
         await run_task
+
+    @staticmethod
+    def _extract_background_response(
+        conversation: LocalConversation,
+    ) -> tuple[str | None, str | None]:
+        try:
+            response = get_agent_final_response(conversation.state.events)
+        except Exception as e:
+            return None, f"Failed to extract sub-agent response: {e}"
+        return response or None, None
 
     @staticmethod
     def _background_failure_detail(

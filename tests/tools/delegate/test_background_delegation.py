@@ -180,6 +180,14 @@ class ConfirmationConversation(ControlledConversation):
         self.state.execution_status = ConversationExecutionStatus.FINISHED
 
 
+class UnexpectedCancellationConversation(ControlledConversation):
+    """Surface an unexpected cancellation instead of consuming it."""
+
+    async def arun(self) -> None:
+        self.started.set()
+        raise asyncio.CancelledError
+
+
 class InterruptibleLLM(LLM):
     """Real LocalConversation LLM that only exits through cancellation."""
 
@@ -347,6 +355,68 @@ def test_background_failure_is_stable_across_polls() -> None:
     assert second_output.text == first_output.text
     conversation.conversation_stats.get_combined_metrics.assert_called_once_with()
 
+    executor.close()
+
+
+def test_unexpected_background_cancellation_fails_and_releases_agent() -> None:
+    conversation = UnexpectedCancellationConversation()
+    executor = _executor_with_agents(worker=conversation)
+    parent = _parent()
+
+    started = executor(
+        DelegateAction(
+            command="delegate",
+            tasks={"worker": "cancel unexpectedly"},
+            background=True,
+        ),
+        parent,
+    )
+    task_id = _task_id(started, "worker")
+    _join_background_task(executor, task_id)
+
+    status = executor(DelegateAction(command="status", task_id=task_id), parent)
+    output = executor(DelegateAction(command="output", task_id=task_id), parent)
+
+    assert status.status == DelegateTaskStatus.FAILED
+    assert output.status == DelegateTaskStatus.FAILED
+    assert output.is_error is True
+    assert "cancelled unexpectedly" in output.text
+    assert executor._active_agents.get("worker") is None
+    conversation.conversation_stats.get_combined_metrics.assert_called_once_with()
+    executor.close()
+
+
+def test_background_result_extraction_failure_settles_failed() -> None:
+    conversation = ControlledConversation()
+    executor = _executor_with_agents(worker=conversation)
+    parent = _parent()
+
+    started = executor(
+        DelegateAction(
+            command="delegate",
+            tasks={"worker": "fail while extracting output"},
+            background=True,
+        ),
+        parent,
+    )
+    task_id = _task_id(started, "worker")
+    assert conversation.started.wait(timeout=2)
+
+    with patch(
+        "openhands.tools.delegate.impl.get_agent_final_response",
+        side_effect=RuntimeError("result extraction failed"),
+    ):
+        conversation.complete("result")
+        _join_background_task(executor, task_id)
+
+    status = executor(DelegateAction(command="status", task_id=task_id), parent)
+    output = executor(DelegateAction(command="output", task_id=task_id), parent)
+    assert status.status == DelegateTaskStatus.FAILED
+    assert output.status == DelegateTaskStatus.FAILED
+    assert output.is_error is True
+    assert "result extraction failed" in output.text
+    assert executor._active_agents.get("worker") is None
+    conversation.conversation_stats.get_combined_metrics.assert_called_once_with()
     executor.close()
 
 
@@ -526,6 +596,112 @@ def test_multiple_background_agents_run_concurrently_and_close_cleans_workers() 
     assert all(not record.thread.is_alive() for record in records if record.thread)
     assert executor._background_tasks == {}
     assert executor._sub_agents == {}
+
+
+def test_close_waits_for_terminal_worker_to_leave_settlement() -> None:
+    conversation = ControlledConversation()
+    executor = _executor_with_agents(worker=conversation)
+    parent = _parent()
+    settled = threading.Event()
+    release_worker = threading.Event()
+    join_called = threading.Event()
+    original_settle = executor._settle_background_task
+
+    def hold_worker_after_settlement(*args: Any, **kwargs: Any) -> None:
+        original_settle(*args, **kwargs)
+        settled.set()
+        assert release_worker.wait(timeout=5)
+
+    with patch.object(
+        executor, "_settle_background_task", hold_worker_after_settlement
+    ):
+        started = executor(
+            DelegateAction(
+                command="delegate",
+                tasks={"worker": "finish before close"},
+                background=True,
+            ),
+            parent,
+        )
+        task_id = _task_id(started, "worker")
+        assert conversation.started.wait(timeout=2)
+        record = executor._background_tasks[task_id]
+        assert record.thread is not None
+        original_join = record.thread.join
+
+        def observe_join(timeout: float | None = None) -> None:
+            join_called.set()
+            original_join(timeout=timeout)
+
+        conversation.complete("done")
+        assert settled.wait(timeout=2)
+        status = executor(
+            DelegateAction(command="status", task_id=task_id),
+            parent,
+        )
+        assert status.status == DelegateTaskStatus.COMPLETED
+
+        close_thread = threading.Thread(target=executor.close)
+        with patch.object(record.thread, "join", observe_join):
+            close_thread.start()
+            try:
+                assert join_called.wait(timeout=2)
+            finally:
+                release_worker.set()
+            close_thread.join(timeout=2)
+
+        assert not close_thread.is_alive()
+        assert not record.thread.is_alive()
+        assert executor._background_tasks == {}
+
+
+def test_background_thread_constructor_failure_is_recorded_and_released() -> None:
+    first = ControlledConversation()
+    second = ControlledConversation()
+    executor = _executor_with_agents(first=first, second=second)
+    parent = _parent()
+    original_thread = threading.Thread
+
+    def fail_second_constructor(*args: Any, **kwargs: Any) -> threading.Thread:
+        if kwargs.get("name", "").startswith("Delegate-second-"):
+            raise RuntimeError("injected thread constructor failure")
+        return original_thread(*args, **kwargs)
+
+    with patch(
+        "openhands.tools.delegate.impl.threading.Thread",
+        side_effect=fail_second_constructor,
+    ):
+        started = executor(
+            DelegateAction(
+                command="delegate",
+                tasks={"first": "run", "second": "fail to construct"},
+                background=True,
+            ),
+            parent,
+        )
+
+    assert started.is_error is True
+    assert started.task_ids is not None
+    first_id = started.task_ids["first"]
+    second_id = started.task_ids["second"]
+    assert first.started.wait(timeout=2)
+    first.complete("done")
+    _join_background_task(executor, first_id)
+
+    second_status = executor(
+        DelegateAction(command="status", task_id=second_id),
+        parent,
+    )
+    second_output = executor(
+        DelegateAction(command="output", task_id=second_id),
+        parent,
+    )
+    assert second_status.status == DelegateTaskStatus.FAILED
+    assert second_output.status == DelegateTaskStatus.FAILED
+    assert "constructor failure" in second_output.text
+    assert executor._active_agents == {}
+    assert second.conversation_stats.get_combined_metrics.call_count == 0
+    executor.close()
 
 
 def test_same_agent_rejects_overlapping_and_allows_later_unique_task() -> None:
@@ -736,3 +912,95 @@ def test_stop_uses_real_local_conversation_interrupt(tmp_path) -> None:
     assert conversation.state.execution_status == ConversationExecutionStatus.PAUSED
     _join_background_task(executor, task_id)
     executor.close()
+
+
+def test_stop_during_real_conversation_initialization_settles_cancelled(
+    tmp_path,
+) -> None:
+    llm = InterruptibleLLM()
+    conversation = LocalConversation(
+        agent=Agent(llm=llm, tools=[]),
+        workspace=str(tmp_path),
+        visualizer=None,
+        persistence_dir=None,
+    )
+    executor = _executor_with_agents(worker=conversation)
+    parent = _parent()
+
+    arun_init_started = threading.Event()
+    release_arun_init = threading.Event()
+    interrupt_called = threading.Event()
+    ensure_lock = threading.Lock()
+    ensure_calls = 0
+    original_ensure_agent_ready = conversation._ensure_agent_ready
+    original_interrupt = conversation.interrupt
+
+    def block_arun_initialization() -> None:
+        nonlocal ensure_calls
+        with ensure_lock:
+            ensure_calls += 1
+            current_call = ensure_calls
+        # send_message() initializes synchronously first. Hold the second call,
+        # which LocalConversation.arun() dispatches through asyncio.to_thread().
+        if current_call == 2:
+            arun_init_started.set()
+            assert release_arun_init.wait(timeout=5)
+        original_ensure_agent_ready()
+
+    def observe_interrupt() -> None:
+        original_interrupt()
+        interrupt_called.set()
+
+    stop_result: dict[str, DelegateObservation] = {}
+    stop_thread: threading.Thread | None = None
+    try:
+        with (
+            patch.object(
+                conversation,
+                "_ensure_agent_ready",
+                block_arun_initialization,
+            ),
+            patch.object(conversation, "interrupt", observe_interrupt),
+        ):
+            started = executor(
+                DelegateAction(
+                    command="delegate",
+                    tasks={"worker": "cancel during initialization"},
+                    background=True,
+                ),
+                parent,
+            )
+            task_id = _task_id(started, "worker")
+            assert arun_init_started.wait(timeout=2)
+
+            stop_thread = threading.Thread(
+                target=lambda: stop_result.setdefault(
+                    "observation",
+                    executor(
+                        DelegateAction(command="stop", task_id=task_id),
+                        parent,
+                    ),
+                )
+            )
+            stop_thread.start()
+            assert interrupt_called.wait(timeout=2)
+            release_arun_init.set()
+            stop_thread.join(timeout=2)
+            assert not stop_thread.is_alive()
+
+            _join_background_task(executor, task_id)
+            final_status = executor(
+                DelegateAction(command="status", task_id=task_id),
+                parent,
+            )
+            reservation = executor._active_agents.get("worker")
+
+        assert stop_result["observation"].status == DelegateTaskStatus.CANCELLED
+        assert stop_result["observation"].is_error is False
+        assert final_status.status == DelegateTaskStatus.CANCELLED
+        assert reservation is None
+    finally:
+        release_arun_init.set()
+        if stop_thread is not None:
+            stop_thread.join(timeout=2)
+        executor.close()
