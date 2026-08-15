@@ -25,9 +25,11 @@ import mcp.types as mcp_types
 import pytest
 from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_context
+from pydantic import SecretStr, ValidationError
 
+from openhands.sdk.agent import Agent
 from openhands.sdk.agent.base import AgentBase
-from openhands.sdk.llm import TextContent
+from openhands.sdk.llm import LLM, TextContent
 from openhands.sdk.mcp import MCPClient, create_mcp_tools
 from openhands.sdk.mcp.config import coerce_mcp_config
 from openhands.sdk.mcp.tool import MCPToolDefinition
@@ -85,6 +87,7 @@ class _FakeClient:
         self._server_tools = list(tools)
         self._tools: list[MCPToolDefinition] = []
         self._closed = False
+        self._tools_reconciled_callback = None
 
     async def list_tools(self) -> list[mcp_types.Tool]:
         return list(self._server_tools)
@@ -102,6 +105,7 @@ class _ConcreteAgent(AgentBase):
         # Skip pydantic validation; set the attributes the helpers read.
         object.__setattr__(self, "_initialized", _initialized)
         object.__setattr__(self, "_tools", _tools)
+        object.__setattr__(self, "_tools_lock", threading.RLock())
         object.__setattr__(self, "filter_tools_regex", None)
 
     def step(self, conversation, on_event, on_token=None):  # noqa: ARG002, ANN001
@@ -145,6 +149,61 @@ def test_refresh_tools_drops_removed_tools():
     asyncio.new_event_loop().run_until_complete(run())
 
     assert {t.name for t in client._tools} == {"a"}
+
+
+def test_refresh_tools_reconciles_updates_and_removals():
+    """The full snapshot callback receives updated definitions and removals."""
+    old_tool = mcp_types.Tool(
+        name="changing",
+        description="old schema",
+        inputSchema={
+            "type": "object",
+            "properties": {"old": {"type": "string"}},
+            "required": ["old"],
+        },
+    )
+    new_tool = mcp_types.Tool(
+        name="changing",
+        description="new schema",
+        inputSchema={
+            "type": "object",
+            "properties": {"new": {"type": "integer"}},
+            "required": ["new"],
+        },
+    )
+    client = _FakeClient([new_tool])
+    old_definition = MCPToolDefinition.create(
+        mcp_tool=old_tool,
+        mcp_client=cast(MCPClient, client),
+    )[0]
+    old_definition.action_from_arguments({"old": "value"})
+    client._tools = [
+        old_definition,
+        MCPToolDefinition.create(
+            mcp_tool=_make_mcp_tool("gone"),
+            mcp_client=cast(MCPClient, client),
+        )[0],
+    ]
+    received: list[tuple[object, list[MCPToolDefinition]]] = []
+
+    async def run():
+        await _refresh_tools(
+            cast(MCPClient, client),
+            on_tools_reconciled=lambda owner, tools: received.append(
+                (owner, list(tools))
+            ),
+        )
+
+    asyncio.new_event_loop().run_until_complete(run())
+
+    assert len(received) == 1
+    owner, tools = received[0]
+    assert owner is client
+    assert [tool.name for tool in tools] == ["changing"]
+    assert tools[0].description == "new schema"
+    tools[0].action_from_arguments({"new": 42})
+    with pytest.raises(ValidationError):
+        tools[0].action_from_arguments({"old": "value"})
 
 
 def test_refresh_tools_no_callback_still_reconciles():
@@ -281,6 +340,40 @@ def test_no_callback_still_connects(progressive_server: int):
         assert "register_extra_tool" in names
 
 
+def test_default_provider_wires_on_tools_reconciled_before_connect(
+    progressive_server: int,
+):
+    """DefaultMCPToolProvider must forward on_tools_reconciled to
+    create_mcp_tools() so it's attached before the client connects, instead
+    of being set on the client after create_tools() already returned (which
+    would drop any notification that arrives during the initial connect).
+    """
+    from openhands.sdk.mcp.utils import DefaultMCPToolProvider
+
+    port = progressive_server
+    config = _native_config(
+        {
+            "mcpServers": {
+                "progressive": {
+                    "transport": "http",
+                    "url": f"http://127.0.0.1:{port}/mcp",
+                }
+            }
+        }
+    )
+
+    def on_tools_reconciled(client, tools):  # noqa: ANN001
+        pass
+
+    client = DefaultMCPToolProvider().create_tools(
+        config, timeout=10.0, on_tools_reconciled=on_tools_reconciled
+    )
+    try:
+        assert client._tools_reconciled_callback is on_tools_reconciled
+    finally:
+        client.sync_close()
+
+
 def test_list_changed_notification_reconciles_readded_agent_tool(
     progressive_server: int,
 ):
@@ -301,12 +394,15 @@ def test_list_changed_notification_reconciles_readded_agent_tool(
 
     def on_tools_changed(tools):  # noqa: ANN001
         received.extend(tool.name for tool in tools)
-        agent._on_mcp_tools_changed(tools)
+
+    def on_tools_reconciled(client, tools):  # noqa: ANN001
+        agent._on_mcp_tools_reconciled(client, tools)
 
     with create_mcp_tools(
         config,
         timeout=10.0,
         on_tools_changed=on_tools_changed,
+        on_tools_reconciled=on_tools_reconciled,
     ) as client:
         agent.add_runtime_tools(client.tools)
         initial_names = {t.name for t in client.tools}
@@ -350,13 +446,13 @@ def test_list_changed_notification_reconciles_readded_agent_tool(
             time.sleep(0.1)
 
         assert all(tool.name != "extra" for tool in client.tools)
-        assert agent.tools_map["extra"] is first_agent_extra
+        assert "extra" not in agent.tools_map
 
         register_observation = register_tool(register_tool.action_from_arguments({}))
         assert not register_observation.is_error
 
         deadline = time.time() + 10.0
-        while time.time() < deadline and agent.tools_map["extra"] is first_agent_extra:
+        while time.time() < deadline and "extra" not in agent.tools_map:
             time.sleep(0.1)
 
         readded_agent_extra = agent.tools_map["extra"]
@@ -385,9 +481,178 @@ def test_on_mcp_tools_changed_registers_runtime_tools():
     assert agent.tools_map["dynamic"] is tool
 
 
+def test_add_runtime_tools_does_not_leak_into_model_copy():
+    """Registering a tool on a copied Agent must not mutate the original.
+
+    Agent.model_copy() shares private-attr objects (e.g. _tools) by
+    reference, so mutating the tool map in place would leak across copies.
+    """
+    original = Agent(llm=LLM(model="test-model", api_key=SecretStr("k")), tools=[])
+    original._initialized = True
+    copy = original.model_copy()
+    client = _FakeClient([])
+    tool = MCPToolDefinition.create(
+        mcp_tool=_make_mcp_tool("dynamic"),
+        mcp_client=cast(MCPClient, client),
+    )[0]
+
+    copy.add_runtime_tools([tool])
+
+    assert "dynamic" in copy.tools_map
+    assert "dynamic" not in original.tools_map
+
+
+def test_add_runtime_tools_tolerates_notification_installed_before_return():
+    """A tool installed mid-connect by the reconciliation callback must not
+    collide with the caller's own add_runtime_tools() call.
+
+    If notifications/tools/list_changed arrives while the initial
+    tools/list request is still in flight, on_tools_changed can install the
+    tool via this same MCPClient before create_tools() returns. The caller
+    (e.g. LocalConversation._ensure_agent_ready()) then calls
+    add_runtime_tools() again with the client's returned snapshot, which
+    already contains that tool; this must be treated as a refresh rather
+    than a duplicate-tool conflict.
+    """
+    agent = _ConcreteAgent(_initialized=True, _tools={})
+    client = _FakeClient([])
+    tool = MCPToolDefinition.create(
+        mcp_tool=_make_mcp_tool("only_tool"),
+        mcp_client=cast(MCPClient, client),
+    )[0]
+
+    # Simulates the mid-flight on_tools_changed callback installing the tool
+    # before create_tools() returns.
+    agent._on_mcp_tools_changed([tool])
+
+    # Simulates the caller's add_runtime_tools() call using the client's
+    # returned snapshot, which already includes the same tool.
+    agent.add_runtime_tools([tool])
+
+    assert agent.tools_map["only_tool"] is tool
+
+
 def test_on_mcp_tools_changed_skips_when_not_initialized():
     """Before initialization, notifications are dropped, not crashed on."""
     agent = _ConcreteAgent(_initialized=False, _tools=None)
 
     # Must not raise even though add_runtime_tools would warn.
     agent._on_mcp_tools_changed([])  # type: ignore[arg-type]
+
+
+def test_on_mcp_tools_reconciled_does_not_remove_other_client_tools():
+    """A client snapshot only replaces tools owned by that client."""
+    first_client = _FakeClient([])
+    second_client = _FakeClient([])
+    first_tool = MCPToolDefinition.create(
+        mcp_tool=_make_mcp_tool("first"),
+        mcp_client=cast(MCPClient, first_client),
+    )[0]
+    second_tool = MCPToolDefinition.create(
+        mcp_tool=_make_mcp_tool("second"),
+        mcp_client=cast(MCPClient, second_client),
+    )[0]
+    replacement = MCPToolDefinition.create(
+        mcp_tool=_make_mcp_tool("replacement"),
+        mcp_client=cast(MCPClient, first_client),
+    )[0]
+    agent = _ConcreteAgent(
+        _initialized=True,
+        _tools={"first": first_tool, "second": second_tool},
+    )
+
+    agent._on_mcp_tools_reconciled(
+        cast(MCPClient, first_client),
+        [replacement],
+    )
+
+    assert set(agent.tools_map) == {"replacement", "second"}
+    assert agent.tools_map["second"] is second_tool
+
+
+def test_on_mcp_tools_reconciled_filters_before_conflict_check():
+    first_client = _FakeClient([])
+    second_client = _FakeClient([])
+    blocked = MCPToolDefinition.create(
+        mcp_tool=_make_mcp_tool("blocked"),
+        mcp_client=cast(MCPClient, first_client),
+    )[0]
+    filtered_conflict = MCPToolDefinition.create(
+        mcp_tool=_make_mcp_tool("blocked"),
+        mcp_client=cast(MCPClient, second_client),
+    )[0]
+    allowed = MCPToolDefinition.create(
+        mcp_tool=_make_mcp_tool("allowed"),
+        mcp_client=cast(MCPClient, second_client),
+    )[0]
+    agent = _ConcreteAgent(_initialized=True, _tools={"blocked": blocked})
+    object.__setattr__(agent, "filter_tools_regex", r"^allowed$")
+
+    agent._on_mcp_tools_reconciled(
+        cast(MCPClient, second_client),
+        [filtered_conflict, allowed],
+    )
+
+    assert set(agent.tools_map) == {"blocked", "allowed"}
+
+
+def test_on_mcp_tools_reconciled_serializes_client_updates():
+    first_snapshot = threading.Event()
+    second_snapshot = threading.Event()
+
+    class CoordinatedDict(dict[str, MCPToolDefinition]):
+        def __init__(self, values: dict[str, MCPToolDefinition]):
+            super().__init__(values)
+            self.local = threading.local()
+
+        def items(self):  # type: ignore[override]  # noqa: ANN201
+            snapshot = list(super().items())
+            count = getattr(self.local, "count", 0) + 1
+            self.local.count = count
+            if count == 2:
+                if first_snapshot.is_set():
+                    second_snapshot.set()
+                else:
+                    first_snapshot.set()
+                    second_snapshot.wait(0.2)
+            return snapshot
+
+    first_client = _FakeClient([])
+    second_client = _FakeClient([])
+    first_old = MCPToolDefinition.create(
+        mcp_tool=_make_mcp_tool("first_old"),
+        mcp_client=cast(MCPClient, first_client),
+    )[0]
+    second_old = MCPToolDefinition.create(
+        mcp_tool=_make_mcp_tool("second_old"),
+        mcp_client=cast(MCPClient, second_client),
+    )[0]
+    first_new = MCPToolDefinition.create(
+        mcp_tool=_make_mcp_tool("first_new"),
+        mcp_client=cast(MCPClient, first_client),
+    )[0]
+    second_new = MCPToolDefinition.create(
+        mcp_tool=_make_mcp_tool("second_new"),
+        mcp_client=cast(MCPClient, second_client),
+    )[0]
+    agent = _ConcreteAgent(
+        _initialized=True,
+        _tools=CoordinatedDict({"first_old": first_old, "second_old": second_old}),
+    )
+    threads = [
+        threading.Thread(
+            target=agent._on_mcp_tools_reconciled,
+            args=(cast(MCPClient, first_client), [first_new]),
+        ),
+        threading.Thread(
+            target=agent._on_mcp_tools_reconciled,
+            args=(cast(MCPClient, second_client), [second_new]),
+        ),
+    ]
+
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert set(agent.tools_map) == {"first_new", "second_new"}

@@ -803,7 +803,8 @@ jobs:
 
                   <!-- AGENT_SERVER_IMAGES_START -->
                   ---
-                  **Agent Server images for this PR**
+                  <details>
+                  <summary><b>🐳 Agent Server images for this PR</b> — GHCR package, pull/run commands, and all pushed tags (click to expand)</summary>
 
                   • **GHCR package:** ${GHCR_URL}
 
@@ -835,6 +836,7 @@ jobs:
                   - Each variant tag (e.g., \`${SHORT_SHA}-python\`) is a **multi-arch manifest** supporting both **amd64** and **arm64**
                   - Docker automatically pulls the correct architecture for your platform
                   - Individual architecture tags (e.g., \`${SHORT_SHA}-python-amd64\`) are also available if needed
+                  </details>
                   <!-- AGENT_SERVER_IMAGES_END -->
                   EOF
                   )

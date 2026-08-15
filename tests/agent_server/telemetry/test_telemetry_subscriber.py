@@ -15,6 +15,7 @@ from openhands.agent_server.telemetry.subscriber import (
 )
 from openhands.sdk.event import AgentErrorEvent, ConversationStateUpdateEvent
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
+from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
 
 
 class CollectingSink:
@@ -78,12 +79,12 @@ def make_subscriber(sink, factory, user_id: str | None = "user-1"):
 # ── lifecycle ─────────────────────────────────────────────────────────────
 
 
-async def test_emits_exactly_one_started_event(factory):
+async def test_emits_exactly_one_created_event(factory):
     sink = CollectingSink()
     sub = make_subscriber(sink, factory)
 
     sub.emit_started()
-    assert sink.names == [m.EventName.CONVERSATION_STARTED]
+    assert sink.names == [m.EventName.CONVERSATION_CREATED]
 
 
 def test_started_is_only_emitted_for_genuinely_new_conversations():
@@ -91,7 +92,7 @@ def test_started_is_only_emitted_for_genuinely_new_conversations():
 
     It is called when an idle conversation is lazily reloaded and when RUNNING
     conversations are recovered after a restart. Emitting
-    ``conversation_started`` from all of those would inflate the metric on
+    ``conversation_created`` from all of those would inflate the metric on
     every server bounce, so the flag must default to *not* emitting.
     """
     import inspect
@@ -102,7 +103,7 @@ def test_started_is_only_emitted_for_genuinely_new_conversations():
     param = sig.parameters["is_new_conversation"]
 
     assert param.default is False, (
-        "_start_event_service must default to NOT emitting conversation_started; "
+        "_start_event_service must default to NOT emitting conversation_created; "
         "the hydration path relies on that default"
     )
     assert param.kind is inspect.Parameter.KEYWORD_ONLY
@@ -155,7 +156,7 @@ async def test_close_is_silent_when_no_run_was_observed(factory):
 
     The subscriber attaches on every _start_event_service path, including the
     lazy attach when a user merely views an old conversation. Emitting on close
-    produced a conversation_finished with no matching conversation_started,
+    produced a conversation_finished with no matching conversation_created,
     repeated on every view-then-restart cycle for the same conversation_ref.
     """
     sink = CollectingSink()
@@ -257,6 +258,76 @@ async def test_conversation_error_event_reports_only_the_code(factory):
     assert detail not in serialized
     assert "/home/bob" not in serialized
     assert sink.events[0].to_payload()["error_class"] == "LLMAuthError"
+    assert sink.events[0].to_payload()["error_telemetry"] == "diagnostic"
+
+
+async def test_known_error_outcomes_are_not_diagnostics(factory):
+    sink = CollectingSink()
+    sub = make_subscriber(sink, factory)
+
+    await sub(
+        ConversationErrorEvent(
+            source="environment",
+            code="OpenAIError",
+            detail="Incorrect API key provided",
+        )
+    )
+
+    assert sink.events[0].to_payload()["error_telemetry"] == "outcome"
+
+
+async def test_agent_error_with_agent_action_classification_is_outcome(factory):
+    """A tool validation error (agent_action) is an outcome, not a diagnostic."""
+    sink = CollectingSink()
+    sub = make_subscriber(sink, factory)
+
+    await sub(
+        AgentErrorEvent(
+            error="Error executing tool 'bash': invalid argument",
+            tool_name="bash",
+            tool_call_id="call-1",
+            classification=ErrorClassification(
+                kind=FailureKind.AGENT_ACTION, retryable=True, user_action="retry"
+            ),
+        )
+    )
+
+    assert sink.events[0].to_payload()["error_telemetry"] == "outcome"
+
+
+async def test_agent_error_with_internal_classification_is_diagnostic(factory):
+    """An unexpected crash (internal) is a diagnostic, not an outcome."""
+    sink = CollectingSink()
+    sub = make_subscriber(sink, factory)
+
+    await sub(
+        AgentErrorEvent(
+            error="A restart occurred while this tool was in progress.",
+            tool_name="bash",
+            tool_call_id="call-1",
+            classification=ErrorClassification(
+                kind=FailureKind.INTERNAL, retryable=False
+            ),
+        )
+    )
+
+    assert sink.events[0].to_payload()["error_telemetry"] == "diagnostic"
+
+
+async def test_agent_error_without_classification_is_diagnostic(factory):
+    """A bare AgentErrorEvent (unknown) defaults to diagnostic."""
+    sink = CollectingSink()
+    sub = make_subscriber(sink, factory)
+
+    await sub(
+        AgentErrorEvent(
+            error="something unexpected",
+            tool_name="bash",
+            tool_call_id="call-1",
+        )
+    )
+
+    assert sink.events[0].to_payload()["error_telemetry"] == "diagnostic"
 
 
 # ── isolation ─────────────────────────────────────────────────────────────
@@ -326,7 +397,7 @@ async def test_disabled_sink_short_circuits_before_building_events(factory):
 
     sub.emit_started()
     # emit() itself is a no-op on a disabled sink; nothing is recorded.
-    assert sink.events == [] or sink.names == [m.EventName.CONVERSATION_STARTED]
+    assert sink.events == [] or sink.names == [m.EventName.CONVERSATION_CREATED]
 
 
 # ── identity ──────────────────────────────────────────────────────────────

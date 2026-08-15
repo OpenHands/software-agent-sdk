@@ -1248,3 +1248,193 @@ def test_list_profiles_no_auto_create_after_deleting_active_profile(client, stor
     body = response.json()
     assert body["profiles"] == []
     assert body["active_profile"] is None
+
+
+# ── Pre-flight validation: POST /api/profiles/{name}/validate ────────────────
+
+
+def test_validate_profile_success(client):
+    """POST /api/profiles/{name}/validate returns valid=True when the LLM works."""
+    from unittest.mock import MagicMock
+
+    with (
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch(
+            "openhands.sdk.llm.llm.LLM.acompletion",
+            return_value=MagicMock(),
+        ),
+    ):
+        response = client.post(
+            "/api/profiles/test-profile/validate",
+            json={"llm": {"model": "gpt-4o", "api_key": "sk-test"}},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is True
+    assert body["error"] is None
+
+
+def test_validate_profile_responses_api(client):
+    """Pre-flight uses the Responses API when the profile model requires it.
+
+    Regression: the endpoint must route through ``aresponses`` for profiles
+    where ``uses_responses_api()`` is true, matching the runtime dispatch used
+    by real conversations (`amake_llm_completion`) — otherwise preflight would
+    validate a different path than the server actually calls.
+    """
+    from unittest.mock import MagicMock
+
+    traced: dict[str, bool] = {}
+
+    def fake_append(messages, **kwargs):
+        traced["called"] = True
+        return MagicMock()
+
+    with (
+        patch(
+            "openhands.sdk.llm.llm.LLM.uses_responses_api",
+            return_value=True,
+        ),
+        patch("openhands.sdk.llm.llm.LLM.aresponses", side_effect=fake_append),
+    ):
+        response = client.post(
+            "/api/profiles/responses-profile/validate",
+            json={
+                "llm": {
+                    "model": "gpt-4o",
+                    "api_mode": "responses",
+                    "api_key": "sk-test",
+                }
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is True
+    assert body["error"] is None
+    assert traced["called"], "expected aresponses to be used for responses-api profiles"
+
+
+def test_validate_profile_invalid_model_returns_error(client):
+    """POST /api/profiles/{name}/validate returns valid=False on bad model."""
+    from openhands.sdk.llm.exceptions import LLMBadRequestError
+
+    with (
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch(
+            "openhands.sdk.llm.llm.LLM.acompletion",
+            side_effect=LLMBadRequestError(
+                "The supported API model names are deepseek-v4-pro or "
+                "deepseek-v4-flash, but you passed deepseek-chat"
+            ),
+        ),
+    ):
+        response = client.post(
+            "/api/profiles/bad-model/validate",
+            json={"llm": {"model": "deepseek-chat", "api_key": "sk-test"}},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert body["error"]["type"] == "LLMBadRequestError"
+    assert "deepseek" in body["error"]["message"]
+
+
+def test_validate_profile_auth_error_returns_error(client):
+    """POST /api/profiles/{name}/validate returns valid=False on bad API key."""
+    from openhands.sdk.llm.exceptions import LLMAuthenticationError
+
+    with (
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch(
+            "openhands.sdk.llm.llm.LLM.acompletion",
+            side_effect=LLMAuthenticationError("Invalid or missing API credentials"),
+        ),
+    ):
+        response = client.post(
+            "/api/profiles/bad-key/validate",
+            json={"llm": {"model": "gpt-4o", "api_key": "sk-invalid"}},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert body["error"]["type"] == "LLMAuthenticationError"
+
+
+def test_validate_profile_rate_limit_does_not_block(client):
+    """POST /api/profiles/{name}/validate returns valid=True on rate limit."""
+    from openhands.sdk.llm.exceptions import LLMRateLimitError
+
+    with (
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch(
+            "openhands.sdk.llm.llm.LLM.acompletion",
+            side_effect=LLMRateLimitError("Rate limit exceeded"),
+        ),
+    ):
+        response = client.post(
+            "/api/profiles/rate-limited/validate",
+            json={"llm": {"model": "gpt-4o", "api_key": "sk-test"}},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is True
+    assert body["error"] is None
+
+
+def test_validate_profile_service_unavailable_blocks(client):
+    """POST /api/profiles/{name}/validate returns valid=False on provider 503."""
+    from openhands.sdk.llm.exceptions import LLMServiceUnavailableError
+
+    with (
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch(
+            "openhands.sdk.llm.llm.LLM.acompletion",
+            side_effect=LLMServiceUnavailableError("Service unavailable"),
+        ),
+    ):
+        response = client.post(
+            "/api/profiles/unavailable/validate",
+            json={"llm": {"model": "gpt-4o", "api_key": "sk-test"}},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert body["error"]["type"] == "LLMServiceUnavailableError"
+
+
+def test_validate_profile_unknown_error_returns_error(client):
+    """POST /api/profiles/{name}/validate catches unexpected exceptions."""
+
+    with (
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch(
+            "openhands.sdk.llm.llm.LLM.acompletion",
+            side_effect=RuntimeError("Connection refused"),
+        ),
+    ):
+        response = client.post(
+            "/api/profiles/unknown-err/validate",
+            json={"llm": {"model": "gpt-4o", "api_key": "sk-test"}},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert body["error"]["type"] == "RuntimeError"
+    assert "Connection refused" in body["error"]["message"]
+
+
+def test_validate_profile_invalid_name(client):
+    """POST /api/profiles/{name}/validate returns 422 for invalid profile names."""
+    response = client.post(
+        "/api/profiles/invalid name/validate",
+        json={"llm": {"model": "gpt-4o", "api_key": "sk-test"}},
+    )
+
+    assert response.status_code == 422

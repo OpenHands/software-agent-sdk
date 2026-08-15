@@ -33,6 +33,17 @@ class LocalWorkspace(BaseWorkspace):
         # but normalize to str for the underlying model field.
         super().__init__(working_dir=str(working_dir), **kwargs)
 
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """Exit the workspace context and send the completion callback.
+
+        Mirrors ``RemoteWorkspace.__exit__`` so automations driving a local
+        agent report their outcome — and their accumulated LLM cost — the same
+        way remote ones do. Does nothing unless ``AUTOMATION_CALLBACK_URL`` is
+        set, so ordinary local usage is unaffected.
+        """
+        self._send_completion_callback(exc_type, exc_val)
+        super().__exit__(exc_type, exc_val, exc_tb)
+
     def execute_command(
         self,
         command: str,

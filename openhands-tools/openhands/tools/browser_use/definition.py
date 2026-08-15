@@ -837,7 +837,17 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
         conv_state: "ConversationState",
         **executor_config,
     ) -> list[ToolDefinition[BrowserAction, BrowserObservation]]:
-        executor = cls._get_or_create_shared_executor(conv_state, **executor_config)
+        try:
+            executor = cls._get_or_create_shared_executor(conv_state, **executor_config)
+        except Exception:
+            # A browser that cannot start must not fail the whole conversation;
+            # the agent keeps working with its remaining tools.
+            _logger.warning(
+                "Browser tools are unavailable: the browser executor failed to "
+                "start. Continuing without them.",
+                exc_info=True,
+            )
+            return []
 
         # Each tool.create() returns a Sequence[Self], so we flatten the results
         tools: list[ToolDefinition[BrowserAction, BrowserObservation]] = []
