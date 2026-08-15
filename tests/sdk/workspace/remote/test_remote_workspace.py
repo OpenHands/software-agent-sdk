@@ -431,10 +431,21 @@ def test_get_llm_returns_configured_llm(monkeypatch):
         },
         "conversation_settings": {},
         "llm_api_key_is_set": True,
-        "active_profile": None,
+        "active_profile": "default",
     }
     mock_response.raise_for_status = Mock()
-    mock_client.get.return_value = mock_response
+    profile_response = Mock()
+    profile_response.status_code = 200
+    profile_response.raise_for_status = Mock()
+    profile_response.json.return_value = {
+        "name": "default",
+        "config": {
+            "model": "gpt-4",
+            "api_key": "sk-test-key",
+            "base_url": "https://api.openai.com/v1",
+        },
+    }
+    mock_client.get.side_effect = [mock_response, profile_response]
     workspace._client = mock_client
 
     llm = workspace.get_llm()
@@ -449,12 +460,10 @@ def test_get_llm_returns_configured_llm(monkeypatch):
         assert llm.api_key == "sk-test-key"
     assert llm.base_url == "https://api.openai.com/v1"
 
-    # Verify API was called with correct headers
-    mock_client.get.assert_called_once()
-    call_args = mock_client.get.call_args
-    assert call_args[0][0] == "/api/settings"
-    assert call_args[1]["headers"]["X-Expose-Secrets"] == "plaintext"
-    assert call_args[1]["headers"]["X-Session-API-Key"] == "test-key"
+    assert [call.args[0] for call in mock_client.get.call_args_list] == [
+        "/api/settings",
+        "/api/profiles/default",
+    ]
 
 
 def test_get_llm_without_name_resolves_active_profile(monkeypatch):
@@ -505,10 +514,8 @@ def test_get_llm_without_name_resolves_active_profile(monkeypatch):
     ]
 
 
-def test_get_llm_without_active_profile_warns_and_falls_back(monkeypatch, caplog):
-    """When no active_profile is set, fall back to agent_settings.llm with a warning."""
-    import logging
-
+def test_get_llm_without_active_profile_fails(monkeypatch):
+    """When no active_profile is set, fail instead of using stale settings."""
     monkeypatch.setenv("ALLOW_SHORT_CONTEXT_WINDOWS", "true")
     workspace = RemoteWorkspace(
         host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
@@ -529,11 +536,13 @@ def test_get_llm_without_active_profile_warns_and_falls_back(monkeypatch, caplog
     client.get.return_value = settings_response
     workspace._client = client
 
-    with caplog.at_level(logging.WARNING, logger="openhands.sdk.workspace.remote.base"):
-        llm = workspace.get_llm()
+    with pytest.raises(RuntimeError, match="No active LLM profile is configured"):
+        workspace.get_llm()
 
-    assert llm.model == "gpt-4"
-    assert "No active LLM profile" in caplog.text
+    client.get.assert_called_once_with(
+        "/api/settings",
+        headers={"X-Session-API-Key": "test-key", "X-Expose-Secrets": "plaintext"},
+    )
 
 
 def test_get_llm_with_kwargs_override(monkeypatch):
@@ -558,12 +567,23 @@ def test_get_llm_with_kwargs_override(monkeypatch):
         },
         "conversation_settings": {},
         "llm_api_key_is_set": True,
+        "active_profile": "default",
     }
     mock_response.raise_for_status = Mock()
-    mock_client.get.return_value = mock_response
+    profile_response = Mock()
+    profile_response.status_code = 200
+    profile_response.raise_for_status = Mock()
+    profile_response.json.return_value = {
+        "name": "default",
+        "config": {
+            "model": "gpt-3.5-turbo",
+            "api_key": "sk-persisted-key",
+        },
+    }
+    mock_client.get.side_effect = [mock_response, profile_response]
     workspace._client = mock_client
 
-    # Override model but use persisted API key
+    # Override model but use the active profile API key
     llm = workspace.get_llm(model="gpt-4o")
 
     assert llm.model == "gpt-4o"  # Overridden

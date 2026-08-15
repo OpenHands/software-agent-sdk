@@ -371,16 +371,16 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         reraise=True,
     )
     def get_llm(self, profile_name: str | None = None, **llm_kwargs: Any) -> "LLM":
-        """Fetch the active LLM profile or fall back to persisted settings.
+        """Fetch the active or explicitly named LLM profile.
 
         Args:
             profile_name: Optional LLM profile name. When provided, loads that
                 named profile instead of resolving the active profile.
-            **llm_kwargs: Additional keyword arguments that override persisted
-                or profile values (e.g., ``model``, ``temperature``).
+            **llm_kwargs: Additional keyword arguments that override profile
+                values (e.g., ``model``, ``temperature``).
 
         Returns:
-            An LLM instance configured with the active profile or persisted settings.
+            An LLM instance configured with the active or named profile.
 
         Raises:
             FileNotFoundError: If ``profile_name`` does not exist.
@@ -404,25 +404,11 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             settings_response = self._fetch_settings_response()
             resolved_profile_name = settings_response.active_profile
 
-        if resolved_profile_name is not None:
-            llm_data = self._fetch_llm_profile_config(resolved_profile_name)
-            llm_data["usage_id"] = f"profile:{resolved_profile_name}"
-        else:
-            # No active_profile is set on the server. Fall back to the legacy
-            # agent_settings.llm payload, but log a warning so the caller knows
-            # they are not using a named profile and may be using stale or
-            # keyless configuration.
-            logger.warning(
-                "No active LLM profile is set on the agent-server; "
-                "falling back to agent_settings.llm. Configure a named "
-                "profile and activate it to ensure credentials are preserved."
-            )
-            assert settings_response is not None
-            settings = settings_response.get_agent_settings()
-            if not llm_kwargs:
-                return settings.llm
-            llm_data = settings.llm.model_dump(context={"expose_secrets": "plaintext"})
+        if resolved_profile_name is None:
+            raise RuntimeError("No active LLM profile is configured")
 
+        llm_data = self._fetch_llm_profile_config(resolved_profile_name)
+        llm_data["usage_id"] = f"profile:{resolved_profile_name}"
         llm_data.update(llm_kwargs)
         return LLM(**llm_data)
 
