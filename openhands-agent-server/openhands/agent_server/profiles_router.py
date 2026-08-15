@@ -20,7 +20,13 @@ from openhands.agent_server.persistence import (
     get_llm_profile_store,
     get_settings_store,
 )
-from openhands.sdk.llm import LLM
+from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm.exceptions import (
+    LLMError,
+    LLMRateLimitError,
+    LLMServiceUnavailableError,
+    LLMTimeoutError,
+)
 from openhands.sdk.llm.llm_profile_store import (
     PROFILE_NAME_PATTERN,
     ProfileLimitExceeded,
@@ -209,6 +215,111 @@ async def save_profile(
 
     logger.info(f"Saved profile '{name}' (include_secrets={body.include_secrets})")
     return ProfileMutationResponse(name=name, message=f"Profile '{name}' saved")
+
+
+class ValidateProfileRequest(BaseModel):
+    """Request body for LLM pre-flight validation.
+
+    Accepts an LLM config (same shape as ``SaveProfileRequest.llm``) so the
+    frontend can validate a draft *before* persisting it.
+    """
+
+    llm: LLM
+
+
+class ValidateProfileError(BaseModel):
+    """Structured error returned when validation fails."""
+
+    type: str
+    message: str
+
+
+class ValidateProfileResponse(BaseModel):
+    """Result of an LLM pre-flight check."""
+
+    valid: bool
+    error: ValidateProfileError | None = None
+
+
+# Errors that should NOT block saving — they are transient and unrelated to
+# the correctness of the configuration itself.
+_TRANSIENT_ERROR_TYPES = (LLMRateLimitError, LLMTimeoutError)
+
+
+@profiles_router.post(
+    "/{name}/validate",
+    response_model=ValidateProfileResponse,
+)
+async def validate_profile(
+    request: Request,
+    name: ProfileName,
+    body: ValidateProfileRequest,
+) -> ValidateProfileResponse:
+    """Pre-flight check: fire a minimal LLM completion to catch misconfigurations.
+
+    Instantiates the submitted LLM config and sends a 1-token completion to
+    surface errors like invalid model names, missing provider prefixes, bad
+    base URLs, and invalid API keys — *before* the profile is saved.
+
+    Transient errors (rate limits, timeouts) are treated as non-blocking: the
+    response is ``valid=True`` with no error, since those don't indicate a
+    misconfigured profile.
+    """
+    cipher = get_cipher(request)
+    llm = decrypt_incoming_llm_secrets(body.llm, cipher) if cipher else body.llm
+
+    messages = [
+        Message(
+            role="user",
+            content=[TextContent(text="ping")],
+        )
+    ]
+
+    try:
+        # Mirror the runtime dispatch (see ``amake_llm_completion``) and stay
+        # async so provider I/O doesn't pin the FastAPI event loop.
+        if llm.uses_responses_api():
+            await llm.aresponses(messages=messages, max_tokens=1)
+        else:
+            await llm.acompletion(messages=messages, max_tokens=1)
+    except _TRANSIENT_ERROR_TYPES as exc:
+        # Transient — don't block the save
+        logger.info(
+            f"Profile '{name}' pre-flight hit a transient error "
+            f"({type(exc).__name__}); not blocking save."
+        )
+        return ValidateProfileResponse(valid=True)
+    except (
+        # LLMServiceUnavailableError (provider 503) is intentionally treated as
+        # a blocking config error: at this layer a provider outage is
+        # indistinguishable from a wrong base URL, so we prefer a false
+        # negative over silently saving a misconfigured profile.
+        LLMServiceUnavailableError,
+        LLMError,
+    ) as exc:
+        error_type = type(exc).__name__
+        logger.info(f"Profile '{name}' pre-flight failed: {error_type}: {exc.message}")
+        return ValidateProfileResponse(
+            valid=False,
+            error=ValidateProfileError(
+                type=error_type,
+                message=exc.message,
+            ),
+        )
+    except Exception as exc:
+        # Unknown errors — block the save and surface the raw message so the
+        # user can debug, but classify generically.
+        msg = str(exc) or type(exc).__name__
+        logger.info(f"Profile '{name}' pre-flight failed (unknown): {msg}")
+        return ValidateProfileResponse(
+            valid=False,
+            error=ValidateProfileError(
+                type=type(exc).__name__,
+                message=msg,
+            ),
+        )
+
+    return ValidateProfileResponse(valid=True)
 
 
 @profiles_router.delete("/{name}", response_model=ProfileMutationResponse)
