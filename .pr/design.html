@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Background delegation lifecycle — issue #2047</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #08111f;
+      --panel: #101c2f;
+      --panel-2: #15243a;
+      --ink: #edf5ff;
+      --muted: #9fb2ca;
+      --line: #29425f;
+      --blue: #6ec8ff;
+      --green: #63e6a7;
+      --amber: #ffd166;
+      --red: #ff7b88;
+      --purple: #c7a6ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 85% 5%, #153158 0, transparent 28rem),
+        radial-gradient(circle at 10% 30%, #142c38 0, transparent 24rem),
+        var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+    main { width: min(1160px, calc(100% - 32px)); margin: 0 auto; padding: 48px 0 80px; }
+    h1, h2, h3 { line-height: 1.15; letter-spacing: -0.025em; }
+    h1 { margin: 12px 0 16px; font-size: clamp(2.2rem, 6vw, 4.5rem); max-width: 900px; }
+    h2 { margin: 0 0 18px; font-size: 1.65rem; }
+    h3 { margin: 0 0 10px; font-size: 1.05rem; color: var(--blue); }
+    p { margin: 0 0 12px; }
+    a { color: var(--blue); }
+    code, pre { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace; }
+    code { color: #d7ecff; }
+    pre {
+      margin: 0;
+      padding: 18px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #07101c;
+      color: #d9eaff;
+      font-size: .88rem;
+      line-height: 1.58;
+    }
+    .eyebrow { color: var(--green); font-weight: 750; letter-spacing: .12em; text-transform: uppercase; }
+    .lede { color: var(--muted); font-size: 1.2rem; max-width: 860px; }
+    .badges { display: flex; flex-wrap: wrap; gap: 9px; margin: 24px 0 34px; }
+    .badge {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 6px 11px;
+      background: rgba(16, 28, 47, .78);
+      color: var(--muted);
+      font-size: .82rem;
+      font-weight: 700;
+    }
+    .badge.good { border-color: #276948; color: var(--green); }
+    section {
+      margin-top: 26px;
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: linear-gradient(145deg, rgba(21, 36, 58, .92), rgba(12, 24, 41, .92));
+      box-shadow: 0 18px 60px rgba(0, 0, 0, .17);
+    }
+    .grid { display: grid; gap: 16px; }
+    .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .card { padding: 17px; border: 1px solid var(--line); border-radius: 13px; background: var(--panel); }
+    .card p, li, td { color: var(--muted); }
+    .fact { font-size: 1.55rem; font-weight: 800; color: var(--ink); }
+    .label { color: var(--muted); font-size: .78rem; letter-spacing: .09em; text-transform: uppercase; }
+    .callout { border-left: 4px solid var(--green); padding: 13px 16px; background: #0c2824; color: #c9f9e4; }
+    .warn { border-left-color: var(--amber); background: #2b2412; color: #ffeab0; }
+    table { width: 100%; border-collapse: collapse; font-size: .92rem; }
+    th, td { padding: 12px 11px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+    th { color: var(--ink); font-size: .78rem; text-transform: uppercase; letter-spacing: .08em; }
+    tr:last-child td { border-bottom: 0; }
+    ul { margin: 8px 0 0; padding-left: 20px; }
+    .state-wrap { overflow-x: auto; }
+    svg { display: block; width: 100%; min-width: 840px; height: auto; }
+    .sequence { display: grid; grid-template-columns: 150px 1fr; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+    .sequence > div { padding: 11px 13px; border-bottom: 1px solid var(--line); }
+    .sequence > div:nth-last-child(-n+2) { border-bottom: 0; }
+    .actor { color: var(--blue); background: #0c1727; font-weight: 750; }
+    .step { color: var(--muted); background: var(--panel); }
+    .step strong { color: var(--ink); }
+    .foot { margin-top: 28px; color: var(--muted); font-size: .85rem; text-align: center; }
+    @media (max-width: 820px) {
+      .grid.two, .grid.three { grid-template-columns: 1fr; }
+      .sequence { grid-template-columns: 105px 1fr; }
+      section { padding: 18px; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">OpenHands software-agent-sdk · design evidence</div>
+    <h1>Non-blocking background subagent execution</h1>
+    <p class="lede">
+      An additive lifecycle for <code>DelegateExecutor</code>: explicit background delegation
+      returns stable task IDs immediately, while the parent can poll status, retrieve output,
+      or cooperatively stop a task. This implements
+      <a href="https://github.com/OpenHands/software-agent-sdk/issues/2047">issue #2047</a>
+      and unblocks the background item in
+      <a href="https://github.com/OpenHands/software-agent-sdk/issues/2186">#2186</a>.
+    </p>
+    <div class="badges">
+      <span class="badge good">Additive API</span>
+      <span class="badge good">background=False by default</span>
+      <span class="badge">Per-executor, in-process registry</span>
+      <span class="badge">LocalConversation owns execution</span>
+      <span class="badge">Cooperative cancellation only</span>
+    </div>
+  </header>
+
+  <section>
+    <h2>Design in one screen</h2>
+    <div class="grid three">
+      <div class="card"><div class="label">Parent latency</div><div class="fact">Immediate</div><p>Only explicit <code>background=True</code> avoids the existing joins.</p></div>
+      <div class="card"><div class="label">Task identity</div><div class="fact">UUID-backed</div><p><code>delegate_&lt;uuid4 hex&gt;</code>, separate from agent IDs and repeated invocations.</p></div>
+      <div class="card"><div class="label">Cleanup bound</div><div class="fact">5 seconds</div><p>One shared executor-close deadline; no per-worker unbounded wait.</p></div>
+    </div>
+    <p class="callout" style="margin-top:16px">
+      The registry does not replace conversation state. It records task identity and a five-state
+      lifecycle; <code>LocalConversation.arun()</code>, its event history, and its metrics remain
+      authoritative for execution, output, failure, and cancellation.
+    </p>
+  </section>
+
+  <section>
+    <h2>Before / after API</h2>
+    <div class="grid two">
+      <div>
+        <h3>Before — always blocking</h3>
+        <pre><code>observation = executor(
+    DelegateAction(
+        command="delegate",
+        tasks={"researcher": "Trace the call path"},
+    ),
+    parent,
+)
+# Returns only after the subagent thread is joined.</code></pre>
+      </div>
+      <div>
+        <h3>After — blocking remains the default</h3>
+        <pre><code>started = executor(
+    DelegateAction(
+        command="delegate",
+        tasks={"researcher": "Trace the call path"},
+        background=True,
+    ),
+    parent,
+)
+task_id = started.task_ids["researcher"]
+
+executor(DelegateAction(command="status", task_id=task_id), parent)
+executor(DelegateAction(command="output", task_id=task_id), parent)
+executor(DelegateAction(command="stop", task_id=task_id), parent)</code></pre>
+      </div>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <table>
+        <thead><tr><th>Model</th><th>Additive fields / values</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>DelegateAction</code></td><td><code>background: bool = False</code></td><td>Opt in only on <code>delegate</code>.</td></tr>
+          <tr><td><code>DelegateAction</code></td><td><code>task_id: str | None</code></td><td>Input for <code>status</code>, <code>output</code>, and <code>stop</code>.</td></tr>
+          <tr><td><code>command</code></td><td><code>status</code>, <code>output</code>, <code>stop</code></td><td>Lifecycle operations expressed through native Action/Observation flow.</td></tr>
+          <tr><td><code>DelegateObservation</code></td><td><code>task_ids</code>, <code>task_id</code>, <code>agent_id</code>, <code>status</code></td><td>Structured fields accompany the existing text content.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Task state machine</h2>
+    <div class="state-wrap">
+      <svg viewBox="0 0 1040 320" role="img" aria-labelledby="state-title state-desc">
+        <title id="state-title">Background delegation state machine</title>
+        <desc id="state-desc">Queued transitions to running, then completed or failed. Stop from queued or running transitions to cancelled.</desc>
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#6ec8ff"/>
+          </marker>
+          <style>
+            .n { fill:#101c2f; stroke:#416486; stroke-width:2; rx:13; }
+            .terminal { stroke:#63e6a7; }
+            .failed { stroke:#ff7b88; }
+            .cancel { stroke:#ffd166; }
+            .t { fill:#edf5ff; font:700 17px Inter,system-ui,sans-serif; text-anchor:middle; dominant-baseline:middle; }
+            .s { fill:#9fb2ca; font:13px Inter,system-ui,sans-serif; text-anchor:middle; }
+            .a { fill:none; stroke:#6ec8ff; stroke-width:2; marker-end:url(#arrow); }
+            .l { fill:#9fb2ca; font:12px Inter,system-ui,sans-serif; text-anchor:middle; }
+          </style>
+        </defs>
+        <rect class="n" x="45" y="115" width="160" height="70"/><text class="t" x="125" y="150">queued</text>
+        <rect class="n" x="315" y="115" width="160" height="70"/><text class="t" x="395" y="150">running</text>
+        <rect class="n terminal" x="705" y="25" width="190" height="70"/><text class="t" x="800" y="60">completed</text>
+        <rect class="n failed" x="705" y="125" width="190" height="70"/><text class="t" x="800" y="160">failed</text>
+        <rect class="n cancel" x="705" y="225" width="190" height="70"/><text class="t" x="800" y="260">cancelled</text>
+        <path class="a" d="M205 150 L315 150"/><text class="l" x="260" y="137">worker begins</text>
+        <path class="a" d="M475 140 C575 115 605 60 705 60"/><text class="l" x="590" y="82">FINISHED + output</text>
+        <path class="a" d="M475 155 L705 158"/><text class="l" x="590" y="143">exception / non-FINISHED</text>
+        <path class="a" d="M395 185 C445 265 575 265 705 260"/><text class="l" x="545" y="285">stop requested</text>
+        <path class="a" d="M125 185 C190 305 500 305 705 270"/><text class="l" x="330" y="309">stop before worker begins</text>
+        <text class="s" x="800" y="112">terminal states never change on later polls</text>
+      </svg>
+    </div>
+    <p class="callout warn">
+      <strong>Linearization:</strong> a stop that reserves the task before terminal settlement wins
+      and produces <code>cancelled</code>. Polling never mutates state. A completed or failed task
+      rejects a later stop; stopping an already-cancelled task is idempotent success.
+    </p>
+  </section>
+
+  <section>
+    <h2>Ownership and concurrency</h2>
+    <div class="grid two">
+      <div class="card">
+        <h3>Executor-owned registry</h3>
+        <ul>
+          <li>One registry per <code>DelegateExecutor</code>, bound to its first parent conversation.</li>
+          <li>A re-entrant lock guards task records, task ID publication, and agent reservations.</li>
+          <li>One active reservation per agent ID prevents two tasks from mutating the same <code>LocalConversation</code>.</li>
+          <li>Different agent conversations receive independent daemon worker threads and may run concurrently.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Conversation-owned execution</h3>
+        <ul>
+          <li>Workers call <code>send_message()</code> once, then run <code>arun()</code>.</li>
+          <li>Existing confirmation handling repeats asynchronous runs at confirmation boundaries.</li>
+          <li>Final output is extracted once from the conversation event history.</li>
+          <li>Cumulative subagent metrics replace <code>delegate:&lt;agent_id&gt;</code> once at terminal settlement.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Start, stop, and cleanup sequences</h2>
+    <div class="grid two">
+      <div>
+        <h3>Start path</h3>
+        <div class="sequence">
+          <div class="actor">Parent agent</div><div class="step"><strong>delegate(background=True)</strong> with an agent → prompt map</div>
+          <div class="actor">Executor lock</div><div class="step">Validate agent IDs, reject active conflicts, allocate UUID task IDs, reserve conversations</div>
+          <div class="actor">Registry</div><div class="step">Publish <strong>queued</strong> records before starting workers</div>
+          <div class="actor">Worker</div><div class="step">Transition to <strong>running</strong>; call <code>send_message()</code> and async conversation execution</div>
+          <div class="actor">Parent agent</div><div class="step">Receive <code>task_ids</code> without joining the worker</div>
+        </div>
+      </div>
+      <div>
+        <h3>Stop / close path</h3>
+        <div class="sequence">
+          <div class="actor">Parent agent</div><div class="step"><strong>stop(task_id)</strong> marks <code>stop_requested</code></div>
+          <div class="actor">Executor</div><div class="step">Call existing <code>LocalConversation.interrupt()</code>; never kill a Python thread</div>
+          <div class="actor">Conversation</div><div class="step">Cancel tracked arun task, signal tool cancellation token, emit interrupt event, enter <strong>PAUSED</strong></div>
+          <div class="actor">Worker</div><div class="step">Settle result/metrics once, release agent reservation, transition to <strong>cancelled</strong></div>
+          <div class="actor">Executor</div><div class="step">Join cooperatively. <code>close()</code> shares one 5 s deadline across all workers, then closes conversations.</div>
+        </div>
+      </div>
+    </div>
+    <p class="callout warn" style="margin-top:16px">
+      Python threads are not force-killed. If an external confirmation callback or dependency ignores
+      cooperative cancellation past the deadline, cleanup logs a warning and returns; daemon status
+      prevents that worker from holding process exit. Normal <code>LocalConversation</code> cancellation
+      is verified to leave no worker thread alive.
+    </p>
+  </section>
+
+  <section>
+    <h2>Lifecycle command semantics</h2>
+    <table>
+      <thead><tr><th>Operation</th><th>Known, non-terminal</th><th>Terminal</th><th>Unknown / invalid</th></tr></thead>
+      <tbody>
+        <tr><td><code>status</code></td><td>Returns queued or running.</td><td>Returns stable completed, failed, or cancelled.</td><td>Error observation; lists available task IDs.</td></tr>
+        <tr><td><code>output</code></td><td>Error observation: task is not finished; status is included.</td><td>Completed returns output. Failed returns the captured error. Cancelled returns cancellation plus partial output when present.</td><td>Error observation.</td></tr>
+        <tr><td><code>stop</code></td><td>Requests cooperative cancellation and waits up to 5 s. If still active, returns an error with its current status.</td><td>Completed/failed reject stop. Cancelled returns idempotent success.</td><td>Error observation.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Compatibility and persistence boundary</h2>
+    <div class="grid two">
+      <div class="card">
+        <h3>Preserved</h3>
+        <ul>
+          <li><code>spawn</code> and blocking <code>delegate</code> behavior; background remains opt-in.</li>
+          <li><code>max_children</code>, agent type resolution, definition hooks, permission mode, and inherited confirmation policy.</li>
+          <li>Parent visualizer sub-visualizers and parent <code>subagents/</code> persistence layout.</li>
+          <li>Cumulative metrics replacement, avoiding repeated usage accumulation.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Explicit boundary</h3>
+        <ul>
+          <li>Task registry entries are runtime control handles, not conversation events or persisted settings.</li>
+          <li>A fresh process or executor cannot resolve old task IDs and returns “not found”.</li>
+          <li>Persisted subagent conversations remain where they were; no false promise of restoring worker threads is added.</li>
+          <li>Reusing an executor with another parent conversation is rejected.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Verification map</h2>
+    <p>Focused tests live in <code>tests/tools/delegate/test_background_delegation.py</code>.</p>
+    <div class="grid three" style="margin-top:14px">
+      <div class="card"><h3>Scheduling</h3><p>Event-gated quick return, running → completed, two-agent concurrency, barrier-driven same-agent race.</p></div>
+      <div class="card"><h3>Lifecycle</h3><p>Failure, pending output, repeated output, unknown IDs, early stop, repeated stop, terminal status.</p></div>
+      <div class="card"><h3>Cleanup</h3><p>Executor close, zero residual workers, real <code>LocalConversation.interrupt()</code>, process-local registry boundary.</p></div>
+      <div class="card"><h3>Accounting</h3><p>Final response and metrics settle once; status/output polling does not call metric aggregation again.</p></div>
+      <div class="card"><h3>Compatibility</h3><p>Blocking default, confirmation handler, max-children cap, existing delegate/visualizer suite.</p></div>
+      <div class="card"><h3>Static gates</h3><p>Ruff format/check, pycodestyle, Pyright, import rules, and tool registration via pre-commit.</p></div>
+    </div>
+  </section>
+
+  <p class="foot">Self-contained reviewer artifact · no external CSS, JavaScript, fonts, or images</p>
+</main>
+</body>
+</html>
