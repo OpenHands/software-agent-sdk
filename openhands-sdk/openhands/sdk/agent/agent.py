@@ -670,6 +670,11 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         # LLM calls in this step (avoids shared mutable state on the LLM).
         call_context: LLMCallContext = conversation.get_llm_call_context()
 
+        # Establish route-aware runtime metadata (cached, no I/O on a hit)
+        # before the condenser decides a token threshold, so a routed model's
+        # real endpoint limit drives condensation on the first step.
+        self.llm.resolve_runtime_metadata()
+
         # Prepare LLM messages from the cached, incrementally-maintained view.
         # See https://github.com/OpenHands/software-agent-sdk/issues/3053.
         _messages_or_condensation = prepare_llm_messages(
@@ -858,6 +863,11 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             )
 
         call_context: LLMCallContext = conversation.get_llm_call_context()
+
+        # Establish route-aware runtime metadata (cached, no I/O on a hit)
+        # before the condenser decides a token threshold, so a routed model's
+        # real endpoint limit drives condensation on the first step.
+        await self.llm.aresolve_runtime_metadata()
 
         # Prepare LLM messages from the cached, incrementally-maintained view.
         # See https://github.com/OpenHands/software-agent-sdk/issues/3053.

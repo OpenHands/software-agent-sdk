@@ -663,6 +663,52 @@ async def download_file_query(
     return await _download_file(path)
 
 
+@file_router.post("/create_directory")
+async def create_directory(
+    path: Annotated[str, Query(description="Absolute directory path to create")],
+) -> Success:
+    """Create a directory in the workspace, including any missing parents.
+
+    Idempotent: an existing directory succeeds and its contents are left
+    untouched. Creating over an existing file, or under a path whose parent is
+    a file, is a client error (400) rather than a server fault.
+    """
+    update_last_execution_time()
+    logger.info(f"Creating directory: {path}")
+
+    target_path = Path(path)
+    if not target_path.is_absolute():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Path must be absolute",
+        )
+
+    try:
+        await asyncio.to_thread(lambda: target_path.mkdir(parents=True, exist_ok=True))
+    except (FileExistsError, NotADirectoryError):
+        # mkdir(exist_ok=True) still raises when the final component exists as a
+        # non-directory; NotADirectoryError covers a parent component being a
+        # file. Both are the caller's path being wrong, not a server fault.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Path exists and is not a directory",
+        )
+    except PermissionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Permission denied: {e}",
+        )
+    except Exception as e:
+        logger.error(f"Failed to create directory {path}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create directory: {str(e)}",
+        )
+
+    logger.info(f"Created directory {target_path}")
+    return Success()
+
+
 def _list_home_favorites(
     home: Path, limit: int = 50, include_hidden: bool = False
 ) -> list[FileBrowserEntry]:
