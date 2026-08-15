@@ -124,10 +124,15 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
                 else None
             )
             if error is None:
+                cause = (
+                    exc_val.original_exception
+                    if isinstance(exc_val, ConversationRunError)
+                    else exc_val
+                )
                 error = ConversationErrorEvent(
                     source="environment",
-                    code=type(exc_val).__name__,
-                    detail=str(exc_val),
+                    code=type(cause).__name__,
+                    detail=str(cause),
                 )
             payload["error"] = error.model_dump(mode="json")
 

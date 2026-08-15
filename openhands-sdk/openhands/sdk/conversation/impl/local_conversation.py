@@ -143,11 +143,8 @@ def _agent_already_surfaced_error(events: Sequence[Event], since: int = 0) -> bo
     prevents a stale source="agent" event from a prior run from suppressing the error
     event for an unrelated exception in a subsequent run on the same conversation.
     """
-    for i in range(len(events) - 1, since - 1, -1):
-        event = events[i]
-        if isinstance(event, ConversationErrorEvent):
-            return event.source == "agent"
-    return False
+    latest = _latest_conversation_error(events, since)
+    return latest is not None and latest.source == "agent"
 
 
 def _latest_conversation_error(

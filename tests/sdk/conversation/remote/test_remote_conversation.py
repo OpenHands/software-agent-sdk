@@ -1237,7 +1237,6 @@ class TestRemoteConversation:
             code="LLMAuthenticationError",
             detail="invalid api key",
         )
-        conversation.state.events._cached_events.append(error)
         ws_callback = mock_ws_client.call_args.kwargs["callback"]
 
         original_side_effect = mock_client_instance.request.side_effect
@@ -1245,6 +1244,7 @@ class TestRemoteConversation:
         def post_run_seeds_error(method, url, **kwargs):
             resp = original_side_effect(method, url, **kwargs)
             if method == "POST" and url.endswith("/run"):
+                conversation.state.events.add_event(error)
                 ws_callback(
                     ConversationStateUpdateEvent(key="execution_status", value="error")
                 )
@@ -1256,8 +1256,8 @@ class TestRemoteConversation:
             conversation.run(blocking=True, poll_interval=10.0)
 
         attached = excinfo.value.conversation_error
-        assert attached is error
         assert attached is not None
+        assert attached is error
         classification = attached.classification
         assert classification is not None
         assert classification.kind == "auth"

@@ -1159,6 +1159,7 @@ class RemoteConversation(BaseConversation):
         # subscription snapshot from being mistaken for the post-run snapshot.
         self._run_armed.clear()
         self._drain_terminal_status_queue()
+        run_start_event_count = len(self._state.events)
 
         # Trigger a run on the server using the dedicated run endpoint.
         # Let the server tell us if it's already running (409), avoiding an extra GET.
@@ -1184,7 +1185,9 @@ class RemoteConversation(BaseConversation):
             # after the run was triggered are treated as run-completion signals.
             self._run_armed.set()
             try:
-                self._wait_for_run_completion(poll_interval, timeout)
+                self._wait_for_run_completion(
+                    poll_interval, timeout, run_start_event_count
+                )
             finally:
                 self._run_armed.clear()
 
@@ -1192,6 +1195,7 @@ class RemoteConversation(BaseConversation):
         self,
         poll_interval: float = 1.0,
         timeout: float = 1800.0,
+        since: int = 0,
     ) -> None:
         """Wait for the conversation run to complete.
 
@@ -1246,7 +1250,7 @@ class RemoteConversation(BaseConversation):
             try:
                 ws_status = self._terminal_status_queue.get(timeout=poll_interval)
                 # Raises ConversationRunError on ERROR/STUCK; no-op otherwise.
-                self._handle_conversation_status(ws_status)
+                self._handle_conversation_status(ws_status, since)
                 logger.info(
                     "Run completed via post-run WebSocket state update "
                     "(status: %s, elapsed: %.1fs)",
@@ -1279,7 +1283,7 @@ class RemoteConversation(BaseConversation):
                 terminal_first_seen_at = None
             else:
                 # Raises ConversationRunError for ERROR/STUCK states
-                self._handle_conversation_status(status)
+                self._handle_conversation_status(status, since)
 
                 if status and ConversationExecutionStatus(status).is_terminal():
                     # ERROR/STUCK have already been handled above. FINISHED from
@@ -1340,18 +1344,20 @@ class RemoteConversation(BaseConversation):
         info = resp.json()
         return info.get("execution_status")
 
-    def _handle_conversation_status(self, status: str | None) -> bool:
+    def _handle_conversation_status(self, status: str | None, since: int = 0) -> bool:
         """Handle non-running statuses; return True if the run is complete."""
         if status == ConversationExecutionStatus.RUNNING.value:
             return False
         if status == ConversationExecutionStatus.ERROR.value:
-            error = self._get_last_conversation_error()
+            self._state.events.reconcile()
+            error = self._get_last_conversation_error(since)
+            detail = (
+                f"{error.code}: {error.detail}".strip(": ")
+                if error
+                else "Remote conversation ended with error"
+            )
             raise ConversationRunError(
-                self._id,
-                RuntimeError(
-                    error.detail if error else "Remote conversation ended with error"
-                ),
-                conversation_error=error,
+                self._id, RuntimeError(detail), conversation_error=error
             )
         if status == ConversationExecutionStatus.STUCK.value:
             raise ConversationRunError(
@@ -1389,10 +1395,12 @@ class RemoteConversation(BaseConversation):
             return
         raise ConversationRunError(self._id, exc) from exc
 
-    def _get_last_conversation_error(self) -> ConversationErrorEvent | None:
+    def _get_last_conversation_error(
+        self, since: int = 0
+    ) -> ConversationErrorEvent | None:
         """Return the most recent structured conversation error, if available."""
         events = self._state.events
-        for idx in range(len(events) - 1, -1, -1):
+        for idx in range(len(events) - 1, since - 1, -1):
             event = events[idx]
             if isinstance(event, ConversationErrorEvent):
                 return event
