@@ -2,6 +2,7 @@
 
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -114,6 +115,141 @@ def test_windows_skips_playwright_build_without_executable(
 
     assert not missing_executable.exists()
     assert result == str(system_chrome)
+
+
+def test_windows_uses_older_playwright_build_when_latest_is_invalid(
+    windows_browser_paths: dict[str, Path],
+):
+    invalid_executable = (
+        windows_browser_paths["playwright_cache"]
+        / "chromium-1300"
+        / "chrome-win64"
+        / "chrome.exe"
+    )
+    invalid_executable.mkdir(parents=True)
+    older_chromium = _create_executable(
+        windows_browser_paths["playwright_cache"]
+        / "chromium-1200"
+        / "chrome-win"
+        / "chrome.exe"
+    )
+
+    result = BrowserToolExecutor.check_chromium_available()
+
+    assert result == str(older_chromium)
+
+
+def test_windows_discovers_playwright_hermetic_cache(
+    windows_browser_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    playwright_package = windows_browser_paths["playwright_cache"].parent / "playwright"
+    hermetic_chromium = _create_executable(
+        playwright_package
+        / "driver"
+        / "package"
+        / ".local-browsers"
+        / "chromium-1200"
+        / "chrome-win64"
+        / "chrome.exe"
+    )
+    system_chrome = _create_executable(
+        windows_browser_paths["program_files"]
+        / "Google"
+        / "Chrome"
+        / "Application"
+        / "chrome.exe"
+    )
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", "0")
+    monkeypatch.setattr(
+        "openhands.tools.browser_use.impl.importlib.util.find_spec",
+        lambda name: (
+            SimpleNamespace(
+                origin=str(playwright_package / "__init__.py"),
+                submodule_search_locations=[str(playwright_package)],
+            )
+            if name == "playwright"
+            else None
+        ),
+    )
+
+    result = BrowserToolExecutor.check_chromium_available()
+
+    assert system_chrome.is_file()
+    assert result == str(hermetic_chromium)
+
+
+def test_windows_falls_back_without_playwright_hermetic_package(
+    windows_browser_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    system_edge = _create_executable(
+        windows_browser_paths["program_files"]
+        / "Microsoft"
+        / "Edge"
+        / "Application"
+        / "msedge.exe"
+    )
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", "0")
+    monkeypatch.setattr(
+        "openhands.tools.browser_use.impl.importlib.util.find_spec",
+        lambda _name: None,
+    )
+
+    result = BrowserToolExecutor.check_chromium_available()
+
+    assert result == str(system_edge)
+
+
+def test_windows_skips_unreadable_playwright_cache(
+    windows_browser_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    playwright_cache = windows_browser_paths["playwright_cache"]
+    playwright_cache.mkdir(parents=True)
+    system_chrome = _create_executable(
+        windows_browser_paths["program_files"]
+        / "Google"
+        / "Chrome"
+        / "Application"
+        / "chrome.exe"
+    )
+    original_glob = Path.glob
+
+    def unreadable_cache(path: Path, pattern: str):
+        if path == playwright_cache:
+            raise PermissionError("Playwright cache is unreadable")
+        return original_glob(path, pattern)
+
+    monkeypatch.setattr(Path, "glob", unreadable_cache)
+
+    result = BrowserToolExecutor.check_chromium_available()
+
+    assert result == str(system_chrome)
+
+
+def test_windows_rechecks_cached_path_removed_before_initialization(
+    windows_browser_paths: dict[str, Path],
+):
+    playwright_chromium = _create_executable(
+        windows_browser_paths["playwright_cache"]
+        / "chromium-1300"
+        / "chrome-win64"
+        / "chrome.exe"
+    )
+    system_chrome = _create_executable(
+        windows_browser_paths["program_files"]
+        / "Google"
+        / "Chrome"
+        / "Application"
+        / "chrome.exe"
+    )
+    executor = BrowserToolExecutor.__new__(BrowserToolExecutor)
+
+    assert executor.check_chromium_available() == str(playwright_chromium)
+    playwright_chromium.unlink()
+
+    assert executor._ensure_chromium_available() == str(system_chrome)
 
 
 def test_windows_falls_back_to_system_browser_without_playwright(

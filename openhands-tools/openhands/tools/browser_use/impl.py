@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import builtins
 import functools
+import importlib.util
 import json
 import logging
 import os
@@ -147,6 +148,21 @@ def _standard_chromium_paths(platform: str | None = None) -> list[Path]:
             ]
 
 
+def _playwright_hermetic_cache_dirs() -> list[Path]:
+    try:
+        spec = importlib.util.find_spec("playwright")
+    except (ImportError, ValueError):
+        return []
+
+    if spec is None or spec.submodule_search_locations is None:
+        return []
+
+    return [
+        Path(package_root) / "driver" / "package" / ".local-browsers"
+        for package_root in spec.submodule_search_locations
+    ]
+
+
 def _playwright_cache_dirs(platform: str | None = None) -> list[Path]:
     match _current_platform(platform):
         case "darwin":
@@ -155,6 +171,7 @@ def _playwright_cache_dirs(platform: str | None = None) -> list[Path]:
             if configured_path := os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
                 if configured_path != "0":
                     return [Path(configured_path).expanduser()]
+                return _playwright_hermetic_cache_dirs()
             if local_app_data := os.environ.get("LOCALAPPDATA"):
                 return [Path(local_app_data) / "ms-playwright"]
             return [Path.home() / "AppData" / "Local" / "ms-playwright"]
@@ -212,9 +229,14 @@ def _playwright_chromium_install_paths(
     current_platform = _current_platform(platform)
     paths: list[Path] = []
     for playwright_cache in _playwright_cache_dirs(current_platform):
-        if not playwright_cache.exists():
+        try:
+            if not playwright_cache.exists():
+                continue
+            chromium_dirs = list(playwright_cache.glob("chromium-*"))
+        except OSError:
+            if current_platform != "win32":
+                raise
             continue
-        chromium_dirs = list(playwright_cache.glob("chromium-*"))
         if current_platform == "win32":
             chromium_dirs.sort(key=_playwright_build_sort_key, reverse=True)
         for chromium_dir in chromium_dirs:
@@ -346,6 +368,8 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         Raises:
             Exception: If Chromium is not available
         """
+        if _current_platform() == "win32":
+            BrowserToolExecutor.check_chromium_available.cache_clear()
         if path := self.check_chromium_available():
             logger.info(f"Chromium is available for browser operations at {path}")
             return path
