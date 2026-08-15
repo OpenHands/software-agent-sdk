@@ -67,6 +67,7 @@ class EventName(StrEnum):
     SERVER_STARTED = "agent_server.server_started"
     SERVER_STOPPED = "agent_server.server_stopped"
     CONVERSATION_STARTED = "agent_server.conversation_started"
+    CONVERSATION_CREATED = "agent_server.conversation_created"
     CONVERSATION_FINISHED = "agent_server.conversation_finished"
     CONVERSATION_FAILED = "agent_server.conversation_failed"
     CONVERSATION_ERROR = "agent_server.conversation_error"
@@ -202,6 +203,7 @@ class ErrorProperties(_BaseProperties):
     error_origin_lineno: int | None = Field(default=None, ge=0)
     is_first_party: bool
     is_terminal: bool
+    error_telemetry: Literal["outcome", "diagnostic"] = "diagnostic"
     tool_name: SafeToken | None = None
     error_id: SafeToken | None = None
 
@@ -244,6 +246,7 @@ class DiagnosticEvent(BaseModel):
     event_name: EventName
     schema_version: int = TELEMETRY_SCHEMA_VERSION
     occurred_at: datetime
+    insert_id: SafeToken | None = None
 
     distinct_id: Annotated[str, StringConstraints(min_length=1, max_length=256)]
     """Correlation identity, passed through verbatim.
@@ -270,6 +273,8 @@ class DiagnosticEvent(BaseModel):
             **self.runtime.model_dump(mode="json"),
             **self.properties.model_dump(mode="json", exclude={"kind"}),
         }
+        if self.insert_id is not None:
+            payload["$insert_id"] = self.insert_id
         return payload
 
 
@@ -286,6 +291,7 @@ EXPECTED_PROPERTY_NAMES: Final[frozenset[str]] = frozenset(
         "platform",
         "deferred_init",
         "source",
+        "$insert_id",
         "conversation_ref",
         "llm_model_family",
         "agent_kind",
@@ -306,6 +312,7 @@ EXPECTED_PROPERTY_NAMES: Final[frozenset[str]] = frozenset(
         "error_origin_lineno",
         "is_first_party",
         "is_terminal",
+        "error_telemetry",
         "tool_name",
         "error_id",
         "route_template",

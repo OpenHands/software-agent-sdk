@@ -324,15 +324,21 @@ PersistedProfileMigrator = Callable[[dict[str, Any]], dict[str, Any]]
 
 
 def _migrate_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
+    """Remove the retired embedded-skills configuration from v1 profiles."""
+    migrated = dict(payload)
+    # ``skills`` was removed from the persisted profile shape in v2.  It must
+    # be discarded here, before strict model validation, so a v1 profile can
+    # be opened and saved as its canonical v2 representation.
+    migrated.pop("skills", None)
     if (
-        payload.get("agent_kind", "openhands") == "openhands"
-        and payload.get("name") == "default"
-        and payload.get("revision", 0) == 0
-        and payload.get("tools") == []
+        migrated.get("agent_kind", "openhands") == "openhands"
+        and migrated.get("name") == "default"
+        and migrated.get("revision", 0) == 0
+        and migrated.get("tools") == []
     ):
-        payload["tools"] = None
-    payload["schema_version"] = 2
-    return payload
+        migrated["tools"] = None
+    migrated["schema_version"] = 2
+    return migrated
 
 
 _AGENT_PROFILE_MIGRATIONS: dict[int, PersistedProfileMigrator] = {

@@ -50,6 +50,7 @@ from openhands.sdk.event.condenser import (
     Condensation,
     CondensationRequest,
 )
+from openhands.sdk.event.error_classification import AGENT_OUTCOME
 from openhands.sdk.llm import (
     LLM,
     ImageContent,
@@ -72,6 +73,7 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import (
     maybe_init_laminar,
     observe,
+    record_tool_result,
     should_enable_observability,
 )
 from openhands.sdk.observability.utils import extract_action_name
@@ -233,6 +235,7 @@ class _ActionBatch:
         tool_runner: Callable[[ActionEvent], list[Event]],
         tools: dict[str, ToolDefinition] | None = None,
         cancel_token: CancellationToken | None = None,
+        span_owner: object | None = None,
     ) -> _ActionBatch:
         """Truncate, partition blocked actions, execute the rest, return the batch."""
         action_events, has_finish = cls._truncate_at_finish(action_events)
@@ -247,7 +250,11 @@ class _ActionBatch:
                 executable.append(ae)
 
         executed_results = executor.execute_batch(
-            executable, tool_runner, tools, cancel_token
+            executable,
+            tool_runner,
+            tools,
+            cancel_token,
+            span_owner=span_owner,
         )
         results_by_id = dict(zip([ae.id for ae in executable], executed_results))
 
@@ -267,6 +274,7 @@ class _ActionBatch:
         tool_runner: Callable[[ActionEvent], list[Event]],
         tools: dict[str, ToolDefinition] | None = None,
         cancel_token: CancellationToken | None = None,
+        span_owner: object | None = None,
     ) -> _ActionBatch:
         """Async variant of :meth:`prepare`.
 
@@ -286,7 +294,11 @@ class _ActionBatch:
                 executable.append(ae)
 
         executed_results = await executor.aexecute_batch(
-            executable, tool_runner, tools, cancel_token
+            executable,
+            tool_runner,
+            tools,
+            cancel_token,
+            span_owner=span_owner,
         )
         results_by_id = dict(zip([ae.id for ae in executable], executed_results))
 
@@ -297,21 +309,31 @@ class _ActionBatch:
             results_by_id=results_by_id,
         )
 
-    def emit(self, on_event: ConversationCallbackType) -> None:
+    def emit(
+        self,
+        conversation: LocalConversation,
+        on_event: ConversationCallbackType,
+    ) -> None:
         """Emit all events in original action order."""
         for ae in self.action_events:
             reason = self.blocked_reasons.get(ae.id)
             if reason is not None:
                 logger.info(f"Action '{ae.tool_name}' blocked by hook: {reason}")
-                on_event(
-                    UserRejectObservation(
-                        action_id=ae.id,
-                        tool_name=ae.tool_name,
-                        tool_call_id=ae.tool_call_id,
-                        rejection_reason=reason,
-                        rejection_source="hook",
-                    )
+                rejection = UserRejectObservation(
+                    action_id=ae.id,
+                    tool_name=ae.tool_name,
+                    tool_call_id=ae.tool_call_id,
+                    rejection_reason=reason,
+                    rejection_source="hook",
                 )
+                record_tool_result(
+                    conversation,
+                    name=extract_action_name(ae),
+                    tool_call_id=ae.tool_call_id,
+                    tool_input=ae.action,
+                    tool_output=rejection.to_llm_message(),
+                )
+                on_event(rejection)
             else:
                 for event in self.results_by_id[ae.id]:
                     on_event(event)
@@ -561,8 +583,9 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             tool_runner=lambda ae: self._execute_action_event(conversation, ae),
             tools=self.tools_map,
             cancel_token=conversation.cancel_token,
+            span_owner=conversation,
         )
-        batch.emit(on_event)
+        batch.emit(conversation, on_event)
         batch.finalize(
             on_event=on_event,
             check_iterative_refinement=lambda ae: (
@@ -595,8 +618,9 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             tool_runner=lambda ae: self._execute_action_event(conversation, ae),
             tools=self.tools_map,
             cancel_token=conversation.cancel_token,
+            span_owner=conversation,
         )
-        batch.emit(on_event)
+        batch.emit(conversation, on_event)
         batch.finalize(
             on_event=on_event,
             check_iterative_refinement=lambda ae: (
@@ -645,6 +669,11 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         # Build per-conversation context once and thread it through all
         # LLM calls in this step (avoids shared mutable state on the LLM).
         call_context: LLMCallContext = conversation.get_llm_call_context()
+
+        # Establish route-aware runtime metadata (cached, no I/O on a hit)
+        # before the condenser decides a token threshold, so a routed model's
+        # real endpoint limit drives condensation on the first step.
+        self.llm.resolve_runtime_metadata()
 
         # Prepare LLM messages from the cached, incrementally-maintained view.
         # See https://github.com/OpenHands/software-agent-sdk/issues/3053.
@@ -834,6 +863,11 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             )
 
         call_context: LLMCallContext = conversation.get_llm_call_context()
+
+        # Establish route-aware runtime metadata (cached, no I/O on a hit)
+        # before the condenser decides a token threshold, so a routed model's
+        # real endpoint limit drives condensation on the first step.
+        await self.llm.aresolve_runtime_metadata()
 
         # Prepare LLM messages from the cached, incrementally-maintained view.
         # See https://github.com/OpenHands/software-agent-sdk/issues/3053.
@@ -1110,6 +1144,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         *,
         error: str,
         tool_name: str,
+        span_name: str,
+        conversation: LocalConversation,
         tool_call: MessageToolCall,
         llm_response_id: str,
         on_event: ConversationCallbackType,
@@ -1145,13 +1181,20 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             action=None,
         )
         on_event(tc_event)
-        on_event(
-            AgentErrorEvent(
-                error=error,
-                tool_name=tool_name,
-                tool_call_id=tool_call.id,
-            )
+        error_event = AgentErrorEvent(
+            error=error,
+            tool_name=tool_name,
+            tool_call_id=tool_call.id,
+            classification=AGENT_OUTCOME,
         )
+        record_tool_result(
+            conversation,
+            name=span_name,
+            tool_call_id=tool_call.id,
+            tool_input=tool_call,
+            tool_output=error_event.to_llm_message(),
+        )
+        on_event(error_event)
 
     def _get_action_event(
         self,
@@ -1197,6 +1240,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 self._emit_tool_error(
                     error=err,
                     tool_name=tool_name,
+                    span_name="InvalidToolCall",
+                    conversation=conversation,
                     tool_call=tool_call,
                     llm_response_id=llm_response_id,
                     on_event=on_event,
@@ -1208,6 +1253,10 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 return
 
             arguments = fix_malformed_tool_arguments(arguments, tool.action_type)
+            if tool.response_schema is not None:
+                arguments = fix_malformed_tool_arguments(
+                    arguments, tool.response_schema
+                )
             normalized_tool_call = tool_call.model_copy(
                 update={
                     "name": tool_name,
@@ -1253,6 +1302,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             self._emit_tool_error(
                 error=err,
                 tool_name=display_tool_name,
+                span_name=(tool.action_type.__name__ if tool else "InvalidToolCall"),
+                conversation=conversation,
                 tool_call=tool_call,
                 llm_response_id=llm_response_id,
                 on_event=on_event,
@@ -1323,6 +1374,9 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 observation: Observation = observe(
                     name=tool_name,
                     span_type="TOOL",
+                    # Only the action is input; the conversation would serialize
+                    # as a bare object repr carrying a memory address.
+                    ignore_inputs=["conversation"],
                     metadata={"tool_call_id": action_event.tool_call.id},
                 )(tool)(action_event.action, conversation)
             else:
@@ -1339,6 +1393,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 error=err,
                 tool_name=tool.name,
                 tool_call_id=action_event.tool_call.id,
+                classification=AGENT_OUTCOME,
             )
             return [error_event]
 

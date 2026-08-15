@@ -10,6 +10,7 @@ from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.agent.acp_agent import ACPAgent
+from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.exceptions import (
     ConversationRunError,
     WebSocketConnectionError,
@@ -18,12 +19,13 @@ from openhands.sdk.conversation.impl.remote_conversation import RemoteConversati
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.visualizer import DefaultConversationVisualizer
 from openhands.sdk.event import MessageEvent
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import (
     FULL_STATE_KEY,
     ConversationStateUpdateEvent,
 )
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
-from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm import LLM, Message, Metrics, TextContent
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
 from openhands.sdk.workspace import RemoteWorkspace
 
@@ -1230,7 +1232,11 @@ class TestRemoteConversation:
 
         mock_ws_client.return_value = Mock()
         conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
-        conversation._get_last_error_detail = Mock(return_value="boom")
+        error = ConversationErrorEvent(
+            source="environment",
+            code="LLMAuthenticationError",
+            detail="invalid api key",
+        )
         ws_callback = mock_ws_client.call_args.kwargs["callback"]
 
         original_side_effect = mock_client_instance.request.side_effect
@@ -1238,6 +1244,7 @@ class TestRemoteConversation:
         def post_run_seeds_error(method, url, **kwargs):
             resp = original_side_effect(method, url, **kwargs)
             if method == "POST" and url.endswith("/run"):
+                conversation.state.events.add_event(error)
                 ws_callback(
                     ConversationStateUpdateEvent(key="execution_status", value="error")
                 )
@@ -1245,10 +1252,15 @@ class TestRemoteConversation:
 
         mock_client_instance.request.side_effect = post_run_seeds_error
 
-        with pytest.raises(Exception) as excinfo:
+        with pytest.raises(ConversationRunError) as excinfo:
             conversation.run(blocking=True, poll_interval=10.0)
 
-        assert "boom" in str(excinfo.value) or "error" in str(excinfo.value).lower()
+        attached = excinfo.value.conversation_error
+        assert attached is not None
+        assert attached is error
+        classification = attached.classification
+        assert classification is not None
+        assert classification.kind == "auth"
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
@@ -1800,6 +1812,94 @@ class TestRemoteConversation:
         # Verify HTTP client was NOT closed because it's shared with the workspace.
         # The workspace owns the client and will close it during its own cleanup.
         mock_client_instance.close.assert_not_called()
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_close_reports_accumulated_cost_to_workspace(self, mock_ws_client):
+        """Closing hands the accumulated LLM cost to the workspace."""
+        self.setup_mock_client()
+        mock_ws_client.return_value = Mock()
+        conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+        metrics = Metrics(model_name="gpt-4o-mini")
+        metrics.add_cost(0.75)
+        stats = ConversationStats(usage_to_metrics={"agent": metrics})
+        conversation.state.update_state_from_event(
+            self.full_state_event("finished", stats=stats.model_dump(mode="json"))
+        )
+
+        conversation.close()
+
+        assert self.workspace.accumulated_cost == 0.75
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_close_does_not_fetch_state_to_read_cost(self, mock_ws_client):
+        """Closing never fetches state over HTTP — the server may already be gone."""
+        mock_client_instance = self.setup_mock_client()
+        mock_ws_client.return_value = Mock()
+        conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+        mock_client_instance.request.reset_mock()
+
+        conversation.close()
+
+        assert mock_client_instance.request.call_args_list == []
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_close_leaves_cost_unreported_when_state_has_no_stats(self, mock_ws_client):
+        """An unknown cost stays unreported rather than being reported as 0.0."""
+        self.setup_mock_client()
+        mock_ws_client.return_value = Mock()
+        conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+        conversation.state.update_state_from_event(
+            ConversationStateUpdateEvent(key="execution_status", value="finished")
+        )
+
+        conversation.close()
+
+        assert self.workspace.accumulated_cost is None
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_close_reports_streamed_cost_on_error_only_wakeup(self, mock_ws_client):
+        """The failure path reports this run's spend, not the subscribe snapshot.
+
+        ERROR/STUCK wake run() from a per-field update, so close() runs before
+        the server's post-run full-state snapshot lands. Cost is still correct
+        because the agent server streams a "stats" update after every LLM
+        response (EventService._setup_stats_streaming).
+        """
+        self.setup_mock_client()
+        mock_ws_client.return_value = Mock()
+        conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+
+        # Subscribe-time full-state snapshot: stats exist, but cost is still 0.
+        conversation.state.update_state_from_event(
+            self.full_state_event(
+                "running", stats=ConversationStats().model_dump(mode="json")
+            )
+        )
+        # Server streams stats after the run's LLM response.
+        metrics = Metrics(model_name="gpt-4o-mini")
+        metrics.add_cost(0.75)
+        conversation.state.update_state_from_event(
+            ConversationStateUpdateEvent(
+                key="stats",
+                value=ConversationStats(usage_to_metrics={"agent": metrics}),
+            )
+        )
+        # Run fails: only the per-field status update arrives before close().
+        conversation.state.update_state_from_event(
+            ConversationStateUpdateEvent(key="execution_status", value="error")
+        )
+
+        conversation.close()
+
+        assert self.workspace.accumulated_cost == 0.75
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"

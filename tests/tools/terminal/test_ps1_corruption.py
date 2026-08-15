@@ -9,7 +9,10 @@ The regex uses negative lookahead to match only the LAST ###PS1JSON### before
 each ###PS1END###, automatically handling corruption scenarios.
 """
 
+import logging
 from unittest.mock import MagicMock
+
+import pytest
 
 from openhands.tools.terminal.constants import CMD_OUTPUT_METADATA_PS1_REGEX
 from openhands.tools.terminal.metadata import CmdOutputMetadata
@@ -419,3 +422,32 @@ COMMAND OUTPUT AFTER PS1"""
     content = matches[0].group(1).strip()
     data = json.loads(content)
     assert data["pid"] == "456"  # Should be the second block's data
+
+
+@pytest.mark.parametrize(
+    ("handler_name", "handler_kwargs"),
+    [
+        ("_handle_nochange_timeout_command", {}),
+        ("_handle_hard_timeout_command", {"timeout": 1.0}),
+    ],
+)
+def test_timeout_logs_omit_terminal_content(caplog, handler_name, handler_kwargs):
+    terminal = MagicMock()
+    terminal.work_dir = "/workspace"
+    terminal.username = None
+    terminal.is_powershell.return_value = False
+    session = TerminalSession(terminal=terminal)
+    session._cwd = "/workspace"
+    secret = "ghp_" + "c" * 36
+    caplog.set_level(logging.DEBUG)
+
+    handler = getattr(session, handler_name)
+    handler(
+        command=f"echo {secret}",
+        terminal_content=f"terminal output containing {secret}",
+        ps1_matches=[],
+        **handler_kwargs,
+    )
+
+    assert "Expected exactly one PS1 metadata block" in caplog.text
+    assert secret not in caplog.text
