@@ -1386,6 +1386,28 @@ def test_validate_profile_rate_limit_does_not_block(client):
     assert body["error"] is None
 
 
+def test_validate_profile_service_unavailable_blocks(client):
+    """POST /api/profiles/{name}/validate returns valid=False on provider 503."""
+    from openhands.sdk.llm.exceptions import LLMServiceUnavailableError
+
+    with (
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch(
+            "openhands.sdk.llm.llm.LLM.acompletion",
+            side_effect=LLMServiceUnavailableError("Service unavailable"),
+        ),
+    ):
+        response = client.post(
+            "/api/profiles/unavailable/validate",
+            json={"llm": {"model": "gpt-4o", "api_key": "sk-test"}},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert body["error"]["type"] == "LLMServiceUnavailableError"
+
+
 def test_validate_profile_unknown_error_returns_error(client):
     """POST /api/profiles/{name}/validate catches unexpected exceptions."""
 

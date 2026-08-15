@@ -22,8 +22,6 @@ from openhands.agent_server.persistence import (
 )
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.exceptions import (
-    LLMAuthenticationError,
-    LLMBadRequestError,
     LLMError,
     LLMRateLimitError,
     LLMServiceUnavailableError,
@@ -292,8 +290,6 @@ async def validate_profile(
         )
         return ValidateProfileResponse(valid=True)
     except (
-        LLMAuthenticationError,
-        LLMBadRequestError,
         # LLMServiceUnavailableError (provider 503) is intentionally treated as
         # a blocking config error: at this layer a provider outage is
         # indistinguishable from a wrong base URL, so we prefer a false
