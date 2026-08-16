@@ -857,6 +857,57 @@ async def test_search_refreshes_cached_info_on_metadata_only_update(
 
 
 @pytest.mark.asyncio
+async def test_search_refreshes_cached_info_on_metadata_update_after_eviction(
+    persisted_conversation,
+):
+    """Metadata-only updates after idle eviction invalidate the cached row.
+
+    Auto-title runs as a background task that holds a reference to
+    ``event_service.stored``. After idle eviction, ``record.stored`` IS
+    ``event_service.stored`` (same object), so the task's in-place mutation
+    of ``stored.title`` propagates to the record — but the cache was populated
+    with the pre-title snapshot and is keyed by ``base_state.json`` alone for
+    idle rows. A subsequent search must not serve the stale title.
+    """
+    conversations_dir, conversation_id = persisted_conversation
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        runtime = await service.get_event_service(conversation_id)
+        assert runtime is not None
+
+        # Populate the cached ConversationInfo from the untitled snapshot.
+        initial = await service.search_conversations()
+        assert [item.id for item in initial.items] == [conversation_id]
+        assert initial.items[0].title is None
+        record = service._conversation_records[conversation_id]
+        assert record.cached_info is not None
+
+        # Simulate idle eviction: the event service is closed and removed
+        # from the live map, but the record (with its cached_info) persists.
+        assert service._event_services is not None
+        service._event_services.pop(conversation_id, None)
+        record.stored = runtime.stored
+        record.cached_info = None
+        await runtime.__aexit__(None, None, None)
+
+        # First search after eviction — populates cache with no title.
+        page1 = await service.search_conversations()
+        assert page1.items[0].title is None
+        assert record.cached_info is not None
+        assert record.cached_info.title is None
+
+        # Auto-title task completes after eviction, mutating the shared
+        # stored object in-place (same reference as record.stored).
+        record.stored = record.stored.model_copy(update={"title": "Generated Title"})
+        await runtime.save_meta()
+
+        # Second search must reflect the new title, not the stale cache.
+        page2 = await service.search_conversations()
+        assert [item.id for item in page2.items] == [conversation_id]
+        assert page2.items[0].title == "Generated Title"
+
+
+@pytest.mark.asyncio
 async def test_waiting_hydration_cannot_restore_deleted_conversation(
     persisted_conversation,
 ):
