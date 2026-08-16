@@ -26,6 +26,10 @@ from openhands.sdk.tool import (
     ToolDefinition,
     register_tool,
 )
+from openhands.sdk.tool.builtins.switch_llm import (
+    format_llm_profiles,
+    get_llm_profile_names,
+)
 
 
 if TYPE_CHECKING:
@@ -47,6 +51,19 @@ class TaskAction(Action):
     subagent_type: str = Field(
         default="general-purpose",
         description="The type of specialized agent to use for this task.",
+    )
+    llm_profile: str | None = Field(
+        default=None,
+        description=(
+            "Name of a saved LLM profile to run this subagent on, instead of "
+            "inheriting your current model. Use this for mixed-model workflows, "
+            "e.g. delegating implementation to a cheaper or faster profile while "
+            "you continue planning on your current model. This affects only the "
+            "delegated subagent — your own model is unchanged (use the switch_llm "
+            "tool to change your own model). If the chosen subagent_type's "
+            "definition pins its own model, that pin takes precedence and this "
+            "field is ignored."
+        ),
     )
     resume: str | None = Field(
         default=None,
@@ -117,7 +134,7 @@ tests, but each delegation has overhead — use them when the task genuinely ben
 Available agent types and the tools they have access to:
 {agent_types_info}
 
-When NOT to use the task tool:
+{llm_profiles_section}When NOT to use the task tool:
 - A single grep, find, or cat command would answer your question — just run it yourself
 - You are making a file edit (use file_editor directly)
 - You already have the context needed
@@ -235,6 +252,17 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
 
         agent_types_info = get_factory_info()
 
+        profile_names = get_llm_profile_names()
+        llm_profiles_section = ""
+        if profile_names:
+            llm_profiles_section = (
+                "To run a subagent on a different model than your own, pass "
+                "llm_profile with one of these saved LLM profiles:\n"
+                f"{format_llm_profiles(profile_names)}\n"
+                "This affects only the delegated subagent; "
+                "your own model is unchanged.\n\n"
+            )
+
         registered = {d.name for d in get_registered_agent_definitions()}
         task_tool_examples = "\n".join(
             ex for name, ex in TASK_TOOL_EXAMPLES.items() if name in registered
@@ -242,6 +270,7 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
 
         task_description = TASK_TOOL_DESCRIPTION.format(
             agent_types_info=agent_types_info,
+            llm_profiles_section=llm_profiles_section,
             task_tool_examples=task_tool_examples,
         )
 

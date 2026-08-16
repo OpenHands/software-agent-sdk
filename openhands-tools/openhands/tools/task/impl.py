@@ -35,6 +35,7 @@ class TaskExecutor(ToolExecutor):
                 description=action.description,
                 resume=action.resume,
                 conversation=conversation,
+                llm_profile=action.llm_profile,
             )
             match task.status:
                 case TaskStatus.COMPLETED:
