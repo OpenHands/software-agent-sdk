@@ -1682,6 +1682,40 @@ class LocalConversation(BaseConversation):
             self._bind_conversation_context(llm)
             return llm
 
+    def load_profile_llm(
+        self, profile_name: str, profile_store_dir: str | None = None
+    ) -> LLM:
+        """Load a saved profile LLM without registering or activating it.
+
+        Unlike :meth:`get_or_create_profile_llm`, the returned LLM is not added
+        to ``llm_registry`` and no subscription transforms are applied, so the
+        caller owns metrics attribution (e.g. per-subagent-task accounting).
+        Secrets are decrypted with the conversation's cipher, matching
+        :meth:`switch_profile`.
+
+        Args:
+            profile_name: Name of a profile previously saved via
+                LLMProfileStore (a ``.json`` suffix is tolerated).
+            profile_store_dir: Optional override for the store directory. When
+                None, the conversation's default store is used.
+
+        Raises:
+            ValueError: If the profile does not exist in the store.
+        """
+        store = (
+            self._profile_store
+            if profile_store_dir is None
+            else LLMProfileStore(profile_store_dir)
+        )
+        name = profile_name.removesuffix(".json")
+        available = [n.removesuffix(".json") for n in store.list()]
+        if name not in available:
+            raise ValueError(
+                f"Profile '{profile_name}' not found in profile store.\n"
+                f"Available profiles: {available}"
+            )
+        return store.load(name, cipher=self._cipher)
+
     def switch_acp_model(self, model: str) -> None:
         """Switch the model on an ACP conversation.
 

@@ -1,9 +1,13 @@
 import json
+from unittest.mock import patch
 
-from openhands.sdk import Agent, Conversation, LocalConversation, Tool
+from pydantic import SecretStr
+
+from openhands.sdk import LLM, Agent, Conversation, LocalConversation, Tool
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event.llm_convertible.observation import ObservationEvent
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.subagent.registry import _reset_registry_for_tests, register_agent
 from openhands.sdk.testing import TestLLM
 from openhands.tools.task import TaskToolSet
@@ -17,6 +21,7 @@ def _task_tool_call(
     subagent_type: str = "test_agent",
     description: str | None = None,
     resume: str | None = None,
+    llm_profile: str | None = None,
 ) -> Message:
     """Build a Message whose only tool call is the task tool."""
     args: dict = {
@@ -27,6 +32,8 @@ def _task_tool_call(
         args["description"] = description
     if resume is not None:
         args["resume"] = resume
+    if llm_profile is not None:
+        args["llm_profile"] = llm_profile
 
     return Message(
         role="assistant",
@@ -152,6 +159,77 @@ class TestTaskToolSetIntegration:
         assert observations[0].subagent == "agent_a"
         assert observations[1].subagent == "agent_b"
 
+    def test_two_sequential_tasks_with_llm_profiles(self, tmp_path):
+        """Two sequential tasks can each run on a different saved LLM profile."""
+        # The conftest redirects the default profile dir to tmp_path / "profiles",
+        # which is where the parent conversation's profile store resolves.
+        store = LLMProfileStore(base_dir=tmp_path / "profiles")
+        for name, model in (("fast", "fast-model"), ("slow", "slow-model")):
+            store.save(
+                name,
+                LLM(model=model, api_key=SecretStr(f"{name}-key"), usage_id=name),
+                include_secrets=True,
+            )
+
+        factory_llms: list[LLM] = []
+
+        def make_factory(sub_llm: TestLLM):
+            def factory(llm: LLM) -> Agent:
+                factory_llms.append(llm)
+                return Agent(llm=sub_llm, tools=[])
+
+            return factory
+
+        register_agent(
+            name="agent_a",
+            factory_func=make_factory(
+                TestLLM.from_messages([_text_message("first result")])
+            ),
+            description="Test agent: agent_a",
+        )
+        register_agent(
+            name="agent_b",
+            factory_func=make_factory(
+                TestLLM.from_messages([_text_message("second result")])
+            ),
+            description="Test agent: agent_b",
+        )
+
+        parent_llm = TestLLM.from_messages(
+            [
+                _task_tool_call(
+                    "call_1",
+                    prompt="Task A",
+                    subagent_type="agent_a",
+                    llm_profile="fast",
+                ),
+                _task_tool_call(
+                    "call_2",
+                    prompt="Task B",
+                    subagent_type="agent_b",
+                    llm_profile="slow",
+                ),
+                _text_message("Both tasks done."),
+            ]
+        )
+
+        agent = Agent(llm=parent_llm, tools=[Tool(name=TaskToolSet.name)])
+        conversation = Conversation(
+            agent=agent, workspace=str(tmp_path), visualizer=None
+        )
+
+        conversation.send_message("Run two tasks")
+        conversation.run()
+
+        assert (
+            conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+        )
+        observations = _get_task_observations(conversation)
+        assert len(observations) == 2
+        assert observations[0].text == "first result"
+        assert observations[1].text == "second result"
+        assert [llm.model for llm in factory_llms] == ["fast-model", "slow-model"]
+
     def test_task_resume_across_turns(self, tmp_path):
         """A task can be launched, then resumed by passing the task_id."""
         # Sub-agent for the first call
@@ -238,6 +316,40 @@ class TestTaskToolSetIntegration:
         obs = observations[0]
         assert obs.is_error is True
         assert "nonexistent_agent" in obs.text or "Unknown agent" in obs.text
+
+    def test_unknown_llm_profile_returns_error_observation(self, tmp_path):
+        """An unknown llm_profile yields an error TaskObservation naming it."""
+        sub_llm = TestLLM.from_messages([_text_message("never reached")])
+        _register_simple_agent("test_agent", sub_llm)
+
+        parent_llm = TestLLM.from_messages(
+            [
+                _task_tool_call(
+                    "call_1",
+                    prompt="Do something",
+                    subagent_type="test_agent",
+                    llm_profile="nonexistent_profile",
+                ),
+                _text_message("Oops."),
+            ]
+        )
+
+        agent = Agent(llm=parent_llm, tools=[Tool(name=TaskToolSet.name)])
+        conversation = Conversation(
+            agent=agent, workspace=str(tmp_path), visualizer=None
+        )
+
+        conversation.send_message("Do something")
+        conversation.run()
+
+        assert (
+            conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+        )
+        observations = _get_task_observations(conversation)
+        assert len(observations) == 1
+        obs = observations[0]
+        assert obs.is_error is True
+        assert "nonexistent_profile" in obs.text
 
     def test_sub_agent_exception_returns_error_observation(self, tmp_path):
         """When the sub-agent's LLM raises, the task reports an error."""
@@ -386,6 +498,34 @@ class TestTaskToolExamples:
         description = tools[0].description
         for name, example_text in TASK_TOOL_EXAMPLES.items():
             assert example_text.strip() not in description
+
+    def test_description_lists_llm_profiles(self, tmp_path):
+        """The tool description lists saved LLM profiles for llm_profile."""
+        with patch(
+            "openhands.tools.task.definition.get_llm_profile_names",
+            return_value=["fast", "slow"],
+        ):
+            tools = TaskToolSet.create(
+                conv_state=None,  # type: ignore[arg-type]
+            )
+        description = tools[0].description
+        assert "llm_profile" in description
+        assert "- fast" in description
+        assert "- slow" in description
+
+    def test_description_without_profiles_omits_section(self, tmp_path):
+        """With no saved profiles, the llm_profile section is omitted entirely
+        rather than rendering an incoherent "one of these: none" list."""
+        with patch(
+            "openhands.tools.task.definition.get_llm_profile_names",
+            return_value=[],
+        ):
+            tools = TaskToolSet.create(
+                conv_state=None,  # type: ignore[arg-type]
+            )
+        description = tools[0].description
+        assert "llm_profile" not in description
+        assert "saved LLM profiles" not in description
 
     def test_only_registered_examples_included(self, tmp_path):
         """Only examples for registered agents appear; others are excluded."""
