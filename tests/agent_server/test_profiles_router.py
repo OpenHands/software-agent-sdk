@@ -1438,3 +1438,61 @@ def test_validate_profile_invalid_name(client):
     )
 
     assert response.status_code == 422
+
+
+def test_validate_profile_redacts_api_key_in_error(client):
+    """Pre-flight error messages must not leak the API key.
+
+    Regression: when the LLM provider returns an error whose message contains
+    the submitted API key (e.g. OpenAI's ``Incorrect API key provided:
+    sk-proj-…``), the validate endpoint must redact the key before returning it
+    in the HTTP response or logging it.
+    """
+    from openhands.sdk.llm.exceptions import LLMAuthenticationError
+
+    leaked_key = "sk-proj-abc123defGHIjklMNOpqrsTUVwxyz1234567890"
+
+    with (
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch(
+            "openhands.sdk.llm.llm.LLM.acompletion",
+            side_effect=LLMAuthenticationError(
+                f"Incorrect API key provided: {leaked_key}"
+            ),
+        ),
+    ):
+        response = client.post(
+            "/api/profiles/leaky/validate",
+            json={"llm": {"model": "gpt-4o", "api_key": leaked_key}},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert leaked_key not in body["error"]["message"], (
+        "API key must not appear in the validate error response"
+    )
+
+
+def test_validate_profile_redacts_api_key_in_unknown_error(client):
+    """Unknown exceptions must also have API keys redacted from the response."""
+    leaked_key = "sk-proj-abc123defGHIjklMNOpqrsTUVwxyz1234567890"
+
+    with (
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch(
+            "openhands.sdk.llm.llm.LLM.acompletion",
+            side_effect=RuntimeError(f"Request failed with key {leaked_key}"),
+        ),
+    ):
+        response = client.post(
+            "/api/profiles/leaky-unknown/validate",
+            json={"llm": {"model": "gpt-4o", "api_key": leaked_key}},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert leaked_key not in body["error"]["message"], (
+        "API key must not appear in the validate error response"
+    )
