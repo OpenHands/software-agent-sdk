@@ -262,22 +262,20 @@ def test_make_llm_completion_with_completion_api(mock_llm, sample_messages):
     # Setup mock
     mock_llm.uses_responses_api.return_value = False
     mock_response = Mock(spec=LLMResponse)
-    mock_llm.completion.return_value = mock_response
+    mock_llm.complete.return_value = mock_response
 
     # Call function
     result = make_llm_completion(mock_llm, sample_messages)
 
     # Verify results
     assert result == mock_response
-    mock_llm.uses_responses_api.assert_called_once()
-    mock_llm.completion.assert_called_once_with(
+    mock_llm.complete.assert_called_once_with(
         messages=sample_messages,
         tools=[],
         add_security_risk_prediction=True,
         on_token=None,
         call_context=None,
     )
-    mock_llm.responses.assert_not_called()
 
 
 def test_make_llm_completion_with_responses_api(mock_llm, sample_messages):
@@ -285,24 +283,20 @@ def test_make_llm_completion_with_responses_api(mock_llm, sample_messages):
     # Setup mock
     mock_llm.uses_responses_api.return_value = True
     mock_response = Mock(spec=LLMResponse)
-    mock_llm.responses.return_value = mock_response
+    mock_llm.complete.return_value = mock_response
 
     # Call function
     result = make_llm_completion(mock_llm, sample_messages)
 
     # Verify results
     assert result == mock_response
-    mock_llm.uses_responses_api.assert_called_once()
-    mock_llm.responses.assert_called_once_with(
+    mock_llm.complete.assert_called_once_with(
         messages=sample_messages,
         tools=[],
-        include=None,
-        store=False,
         add_security_risk_prediction=True,
         on_token=None,
         call_context=None,
     )
-    mock_llm.completion.assert_not_called()
 
 
 def test_make_llm_completion_with_tools_completion_api(
@@ -312,15 +306,14 @@ def test_make_llm_completion_with_tools_completion_api(
     # Setup mock
     mock_llm.uses_responses_api.return_value = False
     mock_response = Mock(spec=LLMResponse)
-    mock_llm.completion.return_value = mock_response
+    mock_llm.complete.return_value = mock_response
 
     # Call function
     result = make_llm_completion(mock_llm, sample_messages, tools=sample_tools)
 
     # Verify results
     assert result == mock_response
-    mock_llm.uses_responses_api.assert_called_once()
-    mock_llm.completion.assert_called_once_with(
+    mock_llm.complete.assert_called_once_with(
         messages=sample_messages,
         tools=sample_tools,
         add_security_risk_prediction=True,
@@ -336,19 +329,16 @@ def test_make_llm_completion_with_tools_responses_api(
     # Setup mock
     mock_llm.uses_responses_api.return_value = True
     mock_response = Mock(spec=LLMResponse)
-    mock_llm.responses.return_value = mock_response
+    mock_llm.complete.return_value = mock_response
 
     # Call function
     result = make_llm_completion(mock_llm, sample_messages, tools=sample_tools)
 
     # Verify results
     assert result == mock_response
-    mock_llm.uses_responses_api.assert_called_once()
-    mock_llm.responses.assert_called_once_with(
+    mock_llm.complete.assert_called_once_with(
         messages=sample_messages,
         tools=sample_tools,
-        include=None,
-        store=False,
         add_security_risk_prediction=True,
         on_token=None,
         call_context=None,
@@ -360,14 +350,14 @@ def test_make_llm_completion_with_none_tools(mock_llm, sample_messages):
     # Setup mock
     mock_llm.uses_responses_api.return_value = False
     mock_response = Mock(spec=LLMResponse)
-    mock_llm.completion.return_value = mock_response
+    mock_llm.complete.return_value = mock_response
 
     # Call function
     result = make_llm_completion(mock_llm, sample_messages, tools=None)
 
     # Verify results
     assert result == mock_response
-    mock_llm.completion.assert_called_once_with(
+    mock_llm.complete.assert_called_once_with(
         messages=sample_messages,
         tools=[],
         add_security_risk_prediction=True,
@@ -381,14 +371,14 @@ def test_make_llm_completion_with_empty_tools_list(mock_llm, sample_messages):
     # Setup mock
     mock_llm.uses_responses_api.return_value = False
     mock_response = Mock(spec=LLMResponse)
-    mock_llm.completion.return_value = mock_response
+    mock_llm.complete.return_value = mock_response
 
     # Call function
     result = make_llm_completion(mock_llm, sample_messages, tools=[])
 
     # Verify results
     assert result == mock_response
-    mock_llm.completion.assert_called_once_with(
+    mock_llm.complete.assert_called_once_with(
         messages=sample_messages,
         tools=[],
         add_security_risk_prediction=True,
@@ -402,14 +392,14 @@ def test_make_llm_completion_empty_messages(mock_llm):
     # Setup mock
     mock_llm.uses_responses_api.return_value = False
     mock_response = Mock(spec=LLMResponse)
-    mock_llm.completion.return_value = mock_response
+    mock_llm.complete.return_value = mock_response
 
     # Call function
     result = make_llm_completion(mock_llm, [])
 
     # Verify results
     assert result == mock_response
-    mock_llm.completion.assert_called_once_with(
+    mock_llm.complete.assert_called_once_with(
         messages=[],
         tools=[],
         add_security_risk_prediction=True,
@@ -434,7 +424,7 @@ def test_prepare_llm_messages_and_make_llm_completion_integration(
     # Setup mocks for make_llm_completion
     mock_llm.uses_responses_api.return_value = False
     mock_response = Mock(spec=LLMResponse)
-    mock_llm.completion.return_value = mock_response
+    mock_llm.complete.return_value = mock_response
 
     # Call functions in sequence (simulating real usage)
     messages = prepare_llm_messages(view)
@@ -443,7 +433,7 @@ def test_prepare_llm_messages_and_make_llm_completion_integration(
     # Verify results
     assert messages == sample_messages
     assert result == mock_response
-    mock_llm.completion.assert_called_once_with(
+    mock_llm.complete.assert_called_once_with(
         messages=sample_messages,
         tools=[],
         add_security_risk_prediction=True,
@@ -453,12 +443,11 @@ def test_prepare_llm_messages_and_make_llm_completion_integration(
 
 
 def test_make_llm_completion_api_selection():
-    """Test that make_llm_completion correctly selects between completion and responses APIs."""  # noqa: E501
-    # Test completion API selection
+    """Test that make_llm_completion correctly delegates to complete()."""
     mock_llm = Mock(spec=LLM)
     mock_llm.uses_responses_api.return_value = False
     mock_response = Mock(spec=LLMResponse)
-    mock_llm.completion.return_value = mock_response
+    mock_llm.complete.return_value = mock_response
 
     messages = [
         Message(
@@ -470,32 +459,26 @@ def test_make_llm_completion_api_selection():
     result = make_llm_completion(mock_llm, messages)
 
     assert result == mock_response
-    mock_llm.uses_responses_api.assert_called_once()
-    mock_llm.completion.assert_called_once_with(
+    mock_llm.complete.assert_called_once_with(
         messages=messages,
         tools=[],
         add_security_risk_prediction=True,
         on_token=None,
         call_context=None,
     )
-    mock_llm.responses.assert_not_called()
 
-    # Reset mocks and test responses API selection
+    # Reset mocks and test with responses API flag (still goes through complete)
     mock_llm.reset_mock()
     mock_llm.uses_responses_api.return_value = True
-    mock_llm.responses.return_value = mock_response
+    mock_llm.complete.return_value = mock_response
 
     result = make_llm_completion(mock_llm, messages)
 
     assert result == mock_response
-    mock_llm.uses_responses_api.assert_called_once()
-    mock_llm.responses.assert_called_once_with(
+    mock_llm.complete.assert_called_once_with(
         messages=messages,
         tools=[],
-        include=None,
-        store=False,
         add_security_risk_prediction=True,
         on_token=None,
         call_context=None,
     )
-    mock_llm.completion.assert_not_called()

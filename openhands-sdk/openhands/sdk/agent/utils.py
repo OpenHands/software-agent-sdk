@@ -668,24 +668,13 @@ def make_llm_completion(
         Summary field is always added to tool schemas for transparency and
         explainability of agent actions.
     """
-    if llm.uses_responses_api():
-        return llm.responses(
-            messages=messages,
-            tools=tools or [],
-            include=None,
-            store=False,
-            add_security_risk_prediction=True,
-            on_token=on_token,
-            call_context=call_context,
-        )
-    else:
-        return llm.completion(
-            messages=messages,
-            tools=tools or [],
-            add_security_risk_prediction=True,
-            on_token=on_token,
-            call_context=call_context,
-        )
+    return llm.complete(
+        messages=messages,
+        tools=tools or [],
+        add_security_risk_prediction=True,
+        on_token=on_token,
+        call_context=call_context,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -731,21 +720,10 @@ async def amake_llm_completion(
     call_context: LLMCallContext | None = None,
 ) -> LLMResponse:
     """Async variant of :func:`make_llm_completion`."""
-    if llm.uses_responses_api():
-        return await llm.aresponses(
-            messages=messages,
-            tools=tools or [],
-            include=None,
-            store=False,
-            add_security_risk_prediction=True,
-            on_token=on_token,
-            call_context=call_context,
-        )
-    else:
-        return await llm.acompletion(
-            messages=messages,
-            tools=tools or [],
-            add_security_risk_prediction=True,
-            on_token=on_token,
-            call_context=call_context,
-        )
+    return await llm.acomplete(
+        messages=messages,
+        tools=tools or [],
+        add_security_risk_prediction=True,
+        on_token=on_token,
+        call_context=call_context,
+    )

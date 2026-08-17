@@ -1342,7 +1342,7 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             include_default_tools.append(SwitchLLMTool.__name__)
 
         llm = create_subscription_llm_from_config(self.llm)
-        condenser = None if llm.is_subscription else self.build_condenser(llm)
+        condenser = self.build_condenser(llm)
         return Agent(
             llm=llm,
             tools=tools,

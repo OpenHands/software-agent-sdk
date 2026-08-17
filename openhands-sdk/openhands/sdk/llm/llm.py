@@ -2057,6 +2057,80 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
 
     # =========================================================================
+    # Unified completion dispatch
+    # =========================================================================
+
+    def complete(
+        self,
+        messages: list[Message],
+        tools: Sequence[ToolDefinition] | None = None,
+        add_security_risk_prediction: bool = False,
+        on_token: TokenCallbackType | None = None,
+        call_context: LLMCallContext | None = None,
+        store: bool | None = False,
+        **kwargs,
+    ) -> LLMResponse:
+        """Unified entry point that dispatches to responses() or completion().
+
+        Uses the Responses API when ``uses_responses_api()`` is True (e.g. Codex
+        subscription LLMs), falling back to the Chat Completions API otherwise.
+        This lets callers (agent loop, condenser, critic) invoke the LLM without
+        knowing which API path the provider requires.
+        """
+        if self.uses_responses_api():
+            return self.responses(
+                messages=messages,
+                tools=tools or [],
+                include=None,
+                store=store,
+                add_security_risk_prediction=add_security_risk_prediction,
+                on_token=on_token,
+                call_context=call_context,
+                **kwargs,
+            )
+        else:
+            return self.completion(
+                messages=messages,
+                tools=tools,
+                add_security_risk_prediction=add_security_risk_prediction,
+                on_token=on_token,
+                call_context=call_context,
+                **kwargs,
+            )
+
+    async def acomplete(
+        self,
+        messages: list[Message],
+        tools: Sequence[ToolDefinition] | None = None,
+        add_security_risk_prediction: bool = False,
+        on_token: AnyTokenCallbackType | None = None,
+        call_context: LLMCallContext | None = None,
+        store: bool | None = False,
+        **kwargs,
+    ) -> LLMResponse:
+        """Async variant of :meth:`complete`."""
+        if self.uses_responses_api():
+            return await self.aresponses(
+                messages=messages,
+                tools=tools or [],
+                include=None,
+                store=store,
+                add_security_risk_prediction=add_security_risk_prediction,
+                on_token=on_token,
+                call_context=call_context,
+                **kwargs,
+            )
+        else:
+            return await self.acompletion(
+                messages=messages,
+                tools=tools,
+                add_security_risk_prediction=add_security_risk_prediction,
+                on_token=on_token,
+                call_context=call_context,
+                **kwargs,
+            )
+
+    # =========================================================================
     # Transport + helpers
     # =========================================================================
 
