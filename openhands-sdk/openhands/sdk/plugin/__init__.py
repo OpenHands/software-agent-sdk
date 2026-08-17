@@ -22,6 +22,7 @@ from openhands.sdk.plugin.fetch import (
     fetch_plugin_with_resolution,
 )
 from openhands.sdk.plugin.format import (
+    AgentPluginsFormat,
     ClaudeCodePluginFormat,
     PluginFormat,
     detect_format,
@@ -67,6 +68,7 @@ __all__ = [
     "CommandDefinition",
     # Plugin format strategies
     "PluginFormat",
+    "AgentPluginsFormat",
     "ClaudeCodePluginFormat",
     "detect_format",
     # Plugin loading
