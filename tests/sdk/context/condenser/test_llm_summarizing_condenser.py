@@ -99,7 +99,6 @@ def mock_llm() -> LLM:
     def set_mock_response_content(content: str):
         result = create_completion_result(content)
         mock_llm.complete.return_value = result
-        mock_llm.complete.return_value = result
         mock_llm.acomplete = AsyncMock(return_value=result)
 
     mock_llm.set_mock_response_content = set_mock_response_content

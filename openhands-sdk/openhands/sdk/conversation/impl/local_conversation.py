@@ -202,7 +202,6 @@ class LocalConversation(BaseConversation):
     _resolved_plugins: list[ResolvedPluginSource] | None
     _plugins_loaded: bool
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
-    _subscription_disabled_condenser: Any | None
     _mcp_tool_provider: MCPToolProvider
 
     def __init__(
@@ -314,7 +313,6 @@ class LocalConversation(BaseConversation):
         self._plugins_loaded = False
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
-        self._subscription_disabled_condenser = None
         self._mcp_tool_provider = mcp_tool_provider or DefaultMCPToolProvider()
 
         # Create-or-resume: factory inspects BASE_STATE to decide
@@ -1621,21 +1619,10 @@ class LocalConversation(BaseConversation):
         lock = contextlib.nullcontext() if skip_lock else self._state
         with lock:
             update: dict[str, object] = {"llm": new_llm}
-            if new_llm.is_subscription:
-                if self.agent.condenser is not None:
-                    self._subscription_disabled_condenser = self.agent.condenser
-                update["condenser"] = None
-            elif (
-                self.agent.condenser is None
-                and self._subscription_disabled_condenser is not None
-            ):
-                update["condenser"] = self._subscription_disabled_condenser
-                self._subscription_disabled_condenser = None
-            else:
-                update["condenser"] = self._condenser_for_switched_llm(
-                    self.agent.llm,
-                    new_llm,
-                )
+            update["condenser"] = self._condenser_for_switched_llm(
+                self.agent.llm,
+                new_llm,
+            )
             self.agent = self.agent.model_copy(update=update)
             self._state.agent = self.agent
             self._bind_conversation_context(new_llm)
