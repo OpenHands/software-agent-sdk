@@ -59,3 +59,17 @@ def test_conversation_idle_ttl_can_be_disabled_and_overridden(monkeypatch, tmp_p
 def test_conversation_idle_ttl_rejects_non_positive_values():
     with pytest.raises(ValidationError):
         Config(conversation_idle_ttl_seconds=0)
+
+
+def test_lease_ttl_defaults_to_disabled():
+    assert Config().lease_ttl_seconds == 0.0
+
+
+def test_lease_ttl_can_be_enabled_via_env(monkeypatch):
+    monkeypatch.setenv("OH_LEASE_TTL_SECONDS", "45")
+    assert load_config().lease_ttl_seconds == 45.0
+
+
+def test_lease_ttl_rejects_negative_values():
+    with pytest.raises(ValidationError):
+        Config(lease_ttl_seconds=-1.0)
