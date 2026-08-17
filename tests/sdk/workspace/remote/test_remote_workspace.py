@@ -514,8 +514,10 @@ def test_get_llm_without_name_resolves_active_profile(monkeypatch):
     ]
 
 
-def test_get_llm_without_active_profile_fails(monkeypatch):
-    """When no active_profile is set, fail instead of using stale settings."""
+def test_get_llm_without_active_profile_falls_back_to_legacy(monkeypatch):
+    """When no active_profile is set, fall back to legacy agent_settings.llm."""
+    from pydantic import SecretStr
+
     monkeypatch.setenv("ALLOW_SHORT_CONTEXT_WINDOWS", "true")
     workspace = RemoteWorkspace(
         host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
@@ -536,9 +538,13 @@ def test_get_llm_without_active_profile_fails(monkeypatch):
     client.get.return_value = settings_response
     workspace._client = client
 
-    with pytest.raises(RuntimeError, match="No active LLM profile is configured"):
-        workspace.get_llm()
+    llm = workspace.get_llm()
 
+    assert llm.model == "gpt-4"
+    assert isinstance(llm.api_key, SecretStr)
+    assert llm.api_key.get_secret_value() == "sk-legacy"
+
+    # Only /api/settings is fetched; no profile lookup since active_profile is None.
     client.get.assert_called_once_with(
         "/api/settings",
         headers={"X-Session-API-Key": "test-key", "X-Expose-Secrets": "plaintext"},

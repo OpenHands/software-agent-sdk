@@ -373,6 +373,13 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
     def get_llm(self, profile_name: str | None = None, **llm_kwargs: Any) -> "LLM":
         """Fetch the active or explicitly named LLM profile.
 
+        When no ``profile_name`` is given, the persisted ``active_profile``
+        pointer is resolved first (so the UI-advertised default is honored).
+        If no ``active_profile`` is configured, the legacy
+        ``agent_settings.llm`` payload is used as a fallback (preserving
+        backward compatibility for servers that have not adopted named
+        profiles), with a warning.
+
         Args:
             profile_name: Optional LLM profile name. When provided, loads that
                 named profile instead of resolving the active profile.
@@ -397,7 +404,6 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         if not self.host or self.host == "undefined":
             raise RuntimeError("Workspace host is not set")
 
-        llm_data: dict[str, Any] = {}
         resolved_profile_name = profile_name
         settings_response: SettingsResponse | None = None
         if resolved_profile_name is None:
@@ -405,10 +411,21 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             resolved_profile_name = settings_response.active_profile
 
         if resolved_profile_name is None:
-            raise RuntimeError("No active LLM profile is configured")
+            assert settings_response is not None  # reachable only via the fetch above
+            logger.warning(
+                "No active LLM profile is configured; falling back to legacy "
+                "agent_settings.llm. Set an active profile to avoid stale settings."
+            )
+            agent_settings = settings_response.get_agent_settings()
+            if not llm_kwargs:
+                return agent_settings.llm
+            llm_data = agent_settings.llm.model_dump(
+                context={"expose_secrets": "plaintext"}
+            )
+        else:
+            llm_data = self._fetch_llm_profile_config(resolved_profile_name)
+            llm_data["usage_id"] = f"profile:{resolved_profile_name}"
 
-        llm_data = self._fetch_llm_profile_config(resolved_profile_name)
-        llm_data["usage_id"] = f"profile:{resolved_profile_name}"
         llm_data.update(llm_kwargs)
         return LLM(**llm_data)
 
