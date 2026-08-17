@@ -1236,7 +1236,7 @@ async def test_acomplete_dispatches_to_aresponses_when_responses_api(
     llm.is_subscription = True
     assert llm.uses_responses_api()
 
-    with patch.object(llm, "_get_litellm_auth_values", return_value=(None, {})):
+    with patch.object(llm, "_aget_litellm_auth_values", return_value=(None, {})):
         messages = [Message(role="user", content=[TextContent(text="Hello")])]
         response = await llm.acomplete(messages=messages)
 
