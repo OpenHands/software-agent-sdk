@@ -86,10 +86,10 @@ class LLMSummarizingCondenser(RollingCondenser):
         # streaming LLM requires. Disable streaming once so every summary path
         # is covered. model_copy is non-mutating and shares usage_id/metrics,
         # so summary tokens stay attributed to the conversation.
-        # Subscription LLMs are exempt: the Codex API requires stream=True,
-        # and the responses() method drains the stream internally without an
-        # on_token callback.
-        if self.llm.stream and not self.llm.is_subscription:
+        # Providers that require streaming are exempt: the Codex API requires
+        # stream=True, and the responses() method drains the stream internally
+        # without an on_token callback.
+        if self.llm.stream and not self.llm.requires_streaming:
             self.llm = self.llm.model_copy(update={"stream": False})
         return self
 
