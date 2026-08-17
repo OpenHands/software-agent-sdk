@@ -1161,6 +1161,7 @@ def test_complete_dispatches_to_completion_when_not_responses_api(mock_completio
     response = llm.complete(messages=messages)
 
     assert mock_completion.call_count == 1
+    assert isinstance(response.message.content[0], TextContent)
     assert response.message.content[0].text == "from completion"
 
 
@@ -1187,6 +1188,7 @@ def test_complete_dispatches_to_responses_when_responses_api(mock_responses):
         response = llm.complete(messages=messages)
 
     assert mock_responses.call_count == 1
+    assert isinstance(response.message.content[0], TextContent)
     assert response.message.content[0].text == "from responses"
 
 
@@ -1210,6 +1212,7 @@ async def test_acomplete_dispatches_to_acompletion_when_not_responses_api(
     response = await llm.acomplete(messages=messages)
 
     assert mock_acompletion.call_count == 1
+    assert isinstance(response.message.content[0], TextContent)
     assert response.message.content[0].text == "from acompletion"
 
 
@@ -1238,4 +1241,5 @@ async def test_acomplete_dispatches_to_aresponses_when_responses_api(
         response = await llm.acomplete(messages=messages)
 
     assert mock_aresponses.call_count == 1
+    assert isinstance(response.message.content[0], TextContent)
     assert response.message.content[0].text == "from aresponses"
