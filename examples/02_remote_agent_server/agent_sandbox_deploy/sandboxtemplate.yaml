@@ -1,47 +1,48 @@
+---
 # SandboxTemplate that runs the OpenHands agent server. See the canonical copy and
 # docs at openhands-workspace/openhands/workspace/agent_sandbox/.
 apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxTemplate
 metadata:
-  name: openhands-agent-server
-  namespace: default
+    name: openhands-agent-server
+    namespace: default
 spec:
-  volumeClaimTemplates:
-    - metadata:
-        name: workspace-volume
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        resources:
-          requests:
-            storage: 5Gi
-  podTemplate:
-    spec:
-      # runtimeClassName: gvisor   # uncomment for strong isolation of untrusted code
-      securityContext:
-        runAsUser: 10001
-        runAsGroup: 10001
-        fsGroup: 10001
-      containers:
-        - name: agent-server
-          image: ghcr.io/openhands/agent-server:1.38.0-python
-          args: ["--host", "0.0.0.0", "--port", "8000"]
-          workingDir: /workspace
-          ports:
-            - containerPort: 8000
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: 8000
-            initialDelaySeconds: 3
-            periodSeconds: 3
-            failureThreshold: 40
-          resources:
-            requests:
-              cpu: "250m"
-              memory: 512Mi
-            limits:
-              cpu: "2"
-              memory: 2Gi
-          volumeMounts:
-            - name: workspace-volume
-              mountPath: /workspace
+    volumeClaimTemplates:
+        - metadata:
+              name: workspace-volume
+          spec:
+              accessModes: [ReadWriteOnce]
+              resources:
+                  requests:
+                      storage: 5Gi
+    podTemplate:
+        spec:
+            # runtimeClassName: gvisor   # uncomment for strong isolation of untrusted code
+            securityContext:
+                runAsUser: 10001
+                runAsGroup: 10001
+                fsGroup: 10001
+            containers:
+                - name: agent-server
+                  image: ghcr.io/openhands/agent-server:1.42.1-python
+                  args: [--host, 0.0.0.0, --port, '8000']
+                  workingDir: /workspace
+                  ports:
+                      - containerPort: 8000
+                  readinessProbe:
+                      httpGet:
+                          path: /health
+                          port: 8000
+                      initialDelaySeconds: 3
+                      periodSeconds: 3
+                      failureThreshold: 40
+                  resources:
+                      requests:
+                          cpu: 250m
+                          memory: 512Mi
+                      limits:
+                          cpu: '2'
+                          memory: 2Gi
+                  volumeMounts:
+                      - name: workspace-volume
+                        mountPath: /workspace

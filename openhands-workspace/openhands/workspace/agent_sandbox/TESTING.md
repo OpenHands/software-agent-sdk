@@ -55,8 +55,8 @@ The first pull of `ghcr.io/openhands/agent-server` can take a minute. On kind yo
 pre-load it to avoid an in-cluster pull:
 
 ```bash
-docker pull ghcr.io/openhands/agent-server:1.38.0-python
-kind load docker-image ghcr.io/openhands/agent-server:1.38.0-python --name <cluster>
+docker pull ghcr.io/openhands/agent-server:1.42.1-python
+kind load docker-image ghcr.io/openhands/agent-server:1.42.1-python --name <cluster>
 ```
 
 ## 3. Keyless workspace smoke test (no LLM)
