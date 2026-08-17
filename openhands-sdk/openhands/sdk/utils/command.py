@@ -4,6 +4,7 @@ import subprocess
 import sys
 import threading
 from collections.abc import Mapping
+from typing import Final
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.redact import redact_text_secrets
@@ -16,6 +17,7 @@ logger = get_logger(__name__)
 # executed by the agent). These credentials allow access to user secrets via
 # the SaaS API and must remain isolated to the SDK's Python process.
 _SENSITIVE_ENV_VARS = frozenset({"SESSION_API_KEY"})
+_AI_AGENT_ENV_VAR: Final[str] = "AI_AGENT"
 
 
 def sanitized_env(
@@ -30,6 +32,9 @@ def sanitized_env(
     Sensitive environment variables (e.g., ``SESSION_API_KEY``) are stripped
     to prevent LLM-driven agents from accessing credentials via terminal
     commands.
+
+    ``AI_AGENT`` defaults to ``openhands`` so downstream tools can select
+    agent-friendly output without relying on product-specific heuristics.
     """
 
     base_env: dict[str, str]
@@ -41,6 +46,9 @@ def sanitized_env(
     # Strip sensitive env vars to prevent agent access via bash commands
     for key in _SENSITIVE_ENV_VARS:
         base_env.pop(key, None)
+
+    if not base_env.get(_AI_AGENT_ENV_VAR, "").strip():
+        base_env[_AI_AGENT_ENV_VAR] = "openhands"
 
     if "LD_LIBRARY_PATH_ORIG" in base_env:
         origin = base_env["LD_LIBRARY_PATH_ORIG"]

@@ -76,6 +76,7 @@ def test_property_names_match_the_declared_allowlist():
     actual: set[str] = {"schema_version"}
     for model in PROPERTY_MODELS:
         actual.update(n for n in model.model_fields if n != "kind")
+    actual.add("$insert_id")
 
     assert actual == set(m.EXPECTED_PROPERTY_NAMES), (
         "Diagnostic property set changed. Update EXPECTED_PROPERTY_NAMES "
