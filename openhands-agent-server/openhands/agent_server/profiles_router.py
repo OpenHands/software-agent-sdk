@@ -37,6 +37,7 @@ from openhands.sdk.profiles import (
     delete_llm_profile,
     rename_llm_profile,
 )
+from openhands.sdk.utils.redact import redact_text_secrets
 
 
 logger = get_logger(__name__)
@@ -298,18 +299,19 @@ async def validate_profile(
         LLMError,
     ) as exc:
         error_type = type(exc).__name__
-        logger.info(f"Profile '{name}' pre-flight failed: {error_type}: {exc.message}")
+        safe_msg = redact_text_secrets(exc.message)
+        logger.info(f"Profile '{name}' pre-flight failed: {error_type}: {safe_msg}")
         return ValidateProfileResponse(
             valid=False,
             error=ValidateProfileError(
                 type=error_type,
-                message=exc.message,
+                message=safe_msg,
             ),
         )
     except Exception as exc:
         # Unknown errors — block the save and surface the raw message so the
         # user can debug, but classify generically.
-        msg = str(exc) or type(exc).__name__
+        msg = redact_text_secrets(str(exc) or type(exc).__name__)
         logger.info(f"Profile '{name}' pre-flight failed (unknown): {msg}")
         return ValidateProfileResponse(
             valid=False,

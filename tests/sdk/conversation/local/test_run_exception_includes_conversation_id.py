@@ -70,6 +70,9 @@ def test_run_raises_conversation_run_error_with_id():
         assert str(conv.id) in str(err)
         # original exception preserved via chaining
         assert isinstance(getattr(err, "original_exception", None), ValueError)
+        assert err.conversation_error is not None
+        assert err.conversation_error.code == "ValueError"
+        assert err.conversation_error.detail == "boom"
 
 
 def test_run_error_includes_persistence_dir_and_issue_url():
@@ -171,7 +174,7 @@ def test_run_does_not_duplicate_agent_emitted_error():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         conv = Conversation(agent=agent, workspace=tmpdir)
-        with pytest.raises(ConversationRunError):
+        with pytest.raises(ConversationRunError) as excinfo:
             conv.run()
 
         errors = [e for e in conv.state.events if isinstance(e, ConversationErrorEvent)]
@@ -179,6 +182,7 @@ def test_run_does_not_duplicate_agent_emitted_error():
         assert errors[0].source == "agent"
         assert errors[0].code == "ACPPromptError"
         assert "model 'x' not found" in errors[0].detail
+        assert excinfo.value.conversation_error is errors[0]
 
 
 def test_run_emits_generic_error_when_agent_did_not():
