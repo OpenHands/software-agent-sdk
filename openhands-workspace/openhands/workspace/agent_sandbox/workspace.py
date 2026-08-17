@@ -205,14 +205,15 @@ class AgentSandboxWorkspace(RemoteWorkspace):
             raise
 
     def _connect_port_forward_with_retry(
-        self, attempts: int = 5, *, preferred_port: int | None = None
+        self, attempts: int = 8, *, preferred_port: int | None = None
     ) -> None:
         """Start a port-forward and wait for health, retrying transient failures.
 
         Right after a resume the pod's network namespace can still be churning, so
         kubectl port-forward may drop with "network namespace ... is closed". A
-        dead forward is detected quickly, so retrying with a fresh local port is
-        cheap and lets the pod settle.
+        dead forward exits immediately, so the retries back off progressively --
+        otherwise the whole budget is spent in a few seconds, well before a
+        freshly resumed pod is forwardable.
 
         ``preferred_port`` is only honored on the first attempt; pass None (the
         default, used on resume) to always take a freshly allocated port, since
@@ -235,7 +236,7 @@ class AgentSandboxWorkspace(RemoteWorkspace):
                     e,
                 )
                 self._stop_port_forward()
-                time.sleep(2)
+                time.sleep(min(2 * (i + 1), 10))
         raise RuntimeError(
             f"Could not reach agent server after {attempts} attempts: {last_error}"
         )
