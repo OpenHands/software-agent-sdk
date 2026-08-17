@@ -46,15 +46,15 @@ def mock_event_service():
             service = EventService(
                 stored=StoredConversation(
                     id=uuid4(),
-                    agent=Agent(
-                        llm=LLM(
-                            usage_id="test-llm",
-                            model="test-model",
-                            api_key=SecretStr("test-key"),
-                        ),
-                        tools=[],
-                    ),
                     workspace=LocalWorkspace(working_dir="workspace/project"),
+                ),
+                agent=Agent(
+                    llm=LLM(
+                        usage_id="test-llm",
+                        model="test-model",
+                        api_key=SecretStr("test-key"),
+                    ),
+                    tools=[],
                 ),
                 conversations_dir=temp_path / "conversations_dir",
             )
@@ -1255,7 +1255,7 @@ class TestConversationWebhookSubscriber:
         # Create sample conversation info
         conversation_info = ConversationInfo(
             id=uuid4(),
-            agent=mock_event_service.stored.agent,
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=mock_event_service.stored.workspace,
             created_at=utc_now(),
             updated_at=utc_now(),
@@ -1303,7 +1303,7 @@ class TestConversationWebhookSubscriber:
         # Create sample conversation info
         conversation_info = ConversationInfo(
             id=uuid4(),
-            agent=mock_event_service.stored.agent,
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=mock_event_service.stored.workspace,
             created_at=utc_now(),
             updated_at=utc_now(),
@@ -1344,7 +1344,7 @@ class TestConversationWebhookSubscriber:
         # Create sample conversation info
         conversation_info = ConversationInfo(
             id=uuid4(),
-            agent=mock_event_service.stored.agent,
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=mock_event_service.stored.workspace,
             created_at=utc_now(),
             updated_at=utc_now(),
