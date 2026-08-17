@@ -33,7 +33,7 @@ from openhands.sdk.settings.model import (
 from openhands.sdk.tool import Tool
 
 
-AGENT_PROFILE_SCHEMA_VERSION = 1
+AGENT_PROFILE_SCHEMA_VERSION = 2
 
 
 class ProfileVerificationSettings(BaseModel):
@@ -159,6 +159,7 @@ class OpenHandsAgentProfile(AgentProfileBase):
             "non-empty list is used exactly as given."
         ),
     )
+
     system_message_suffix: str | None = Field(
         default=None,
         description="Optional suffix appended to the system prompt.",
@@ -255,6 +256,14 @@ class ACPAgentProfile(AgentProfileBase):
             "resets on every update from the server."
         ),
     )
+    acp_startup_timeout: float = Field(
+        default=90.0,
+        gt=0,
+        description=(
+            "Timeout (seconds) for ACP server startup: spawn, "
+            "initialize/authenticate, and new_session()/load_session()."
+        ),
+    )
     acp_command: str | None = Field(
         default=None,
         description=(
@@ -314,31 +323,36 @@ validate/construct instances from raw payloads.
 PersistedProfileMigrator = Callable[[dict[str, Any]], dict[str, Any]]
 
 
-# No migrations: the profile model has never shipped to prod or any client, so
-# v1 is a clean baseline — embedded ``skills`` and the allow-list ``skill_refs``
-# never existed in a released profile, so there is nothing to migrate. This
-# registry is the home for the first *real* post-ship schema change; until then
-# ``_apply_persisted_migrations`` is a validating no-op and a stray removed key
-# (``skills`` / ``skill_refs``) is rejected by ``extra="forbid"`` at validation
-# rather than silently dropped. Register migrators here (keyed by source version)
-# when the first shipped schema needs to evolve.
-_AGENT_PROFILE_MIGRATIONS: dict[int, PersistedProfileMigrator] = {}
+def _migrate_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
+    """Remove the retired embedded-skills configuration from v1 profiles."""
+    migrated = dict(payload)
+    # ``skills`` was removed from the persisted profile shape in v2.  It must
+    # be discarded here, before strict model validation, so a v1 profile can
+    # be opened and saved as its canonical v2 representation.
+    migrated.pop("skills", None)
+    if (
+        migrated.get("agent_kind", "openhands") == "openhands"
+        and migrated.get("name") == "default"
+        and migrated.get("revision", 0) == 0
+        and migrated.get("tools") == []
+    ):
+        migrated["tools"] = None
+    migrated["schema_version"] = 2
+    return migrated
+
+
+_AGENT_PROFILE_MIGRATIONS: dict[int, PersistedProfileMigrator] = {
+    1: _migrate_v1_to_v2,
+}
 
 
 def _apply_persisted_migrations(payload: dict[str, Any]) -> dict[str, Any]:
-    """Bring a persisted ``AgentProfile`` payload up to the current schema.
-
-    A payload missing ``schema_version`` predates versioning (or is a freshly
-    authored dict); canonicalize it by stamping the field to ``1``. Otherwise
-    the version is validated and walked forward through
-    :data:`_AGENT_PROFILE_MIGRATIONS`. Mirrors the migration dispatcher in
-    ``settings/model.py``.
-    """
+    """Bring an ``AgentProfile`` payload up to the current schema."""
     migrated = dict(payload)
     version_raw = migrated.get("schema_version")
     if version_raw is None:
-        migrated["schema_version"] = 1
-        version = 1
+        migrated["schema_version"] = AGENT_PROFILE_SCHEMA_VERSION
+        version = AGENT_PROFILE_SCHEMA_VERSION
     elif isinstance(version_raw, int) and not isinstance(version_raw, bool):
         version = version_raw
     else:

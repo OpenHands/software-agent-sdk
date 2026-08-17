@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import threading
 from abc import ABC, abstractmethod
 from collections import Counter
 from collections.abc import Generator, Iterable, Sequence
@@ -27,7 +28,9 @@ from openhands.sdk.critic.base import CriticBase
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import MCPServer
+from openhands.sdk.mcp.tool import MCPToolDefinition, MCPToolExecutor
 from openhands.sdk.tool import (
     BUILT_IN_TOOL_CLASSES,
     BUILT_IN_TOOLS,
@@ -40,6 +43,7 @@ from openhands.sdk.tool.builtins.vision_inspect import (
     VisionInspectTool,
     has_vision_profile_available,
 )
+from openhands.sdk.utils.deprecation import deprecated
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
 
@@ -132,7 +136,18 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     mcp_config: dict[str, MCPServer] = Field(
         default_factory=dict,
         description="Optional MCP servers to expose as tools.",
-        examples=[{"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}],
+        examples=[
+            {
+                "fetch": {
+                    "command": "uvx",
+                    "args": [
+                        "--with",
+                        "mcp==1.29.0",
+                        "mcp-server-fetch==2026.7.10",
+                    ],
+                }
+            }
+        ],
     )
     filter_tools_regex: str | None = Field(
         default=None,
@@ -287,6 +302,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
     # Runtime materialized tools; private and non-serializable
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)
+    _tools_lock: threading.RLock = PrivateAttr(default_factory=threading.RLock)
     _initialized: bool = PrivateAttr(default=False)
 
     @property
@@ -363,6 +379,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             "enable_browser",
             any(t.name == "browser_tool_set" for t in self.tools),
         )
+        template_kwargs.setdefault(
+            "memory_enabled",
+            self.agent_context is not None and self.agent_context.load_memory,
+        )
         template_kwargs["security_policy_filename"] = self.security_policy_filename
         template_kwargs.setdefault("model_name", self.llm.model)
         if (
@@ -424,6 +444,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         repo_skills: tuple[tuple[str, str], ...] = ()
         available_skills_prompt: str | None = None
         custom_suffix: str | None = None
+        memory_context: str | None = None
         secret_infos: tuple[tuple[str, str | None], ...] = ()
 
         if agent_context is not None:
@@ -441,6 +462,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             repo_skills = tuple((s.name, s.content) for s in data.repo_skills)
             available_skills_prompt = data.available_skills_prompt or None
             custom_suffix = agent_context.system_message_suffix or None
+            memory_context = agent_context.memory_context or None
             secret_infos = tuple(
                 (info["name"] or "", info["description"]) for info in data.secret_infos
             )
@@ -469,6 +491,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             repo_skills=repo_skills,
             available_skills_prompt=available_skills_prompt,
             custom_suffix=custom_suffix,
+            memory_context=memory_context,
             secret_infos=secret_infos,
         )
 
@@ -712,6 +735,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         return self
 
+    @deprecated(
+        deprecated_in="1.40.0",
+        removed_in="1.45.0",
+        details="Use model_dump(exclude_none=True) instead.",
+    )
     def model_dump_succint(self, **kwargs):
         """Like model_dump, but excludes None fields by default."""
         if "exclude_none" not in kwargs:
@@ -802,6 +830,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             logger.warning("Error closing executor for tool '%s': %s", tool.name, exc)
 
     def add_runtime_tools(self, tools: Sequence[ToolDefinition]) -> None:
+        """Register tools materialized at runtime (e.g. MCP tools).
+
+        Tools are subject to `filter_tools_regex`; built-in default tools are
+        exempt, matching the behavior of `_initialize()`.
+        """
         if not self._initialized:
             logger.warning(
                 "add_runtime_tools called before agent initialization; "
@@ -815,18 +848,168 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                     f"Got type: {type(tool)}"
                 )
 
+        if self.filter_tools_regex:
+            pattern = re.compile(self.filter_tools_regex)
+            builtin_classes = tuple(BUILT_IN_TOOL_CLASSES.values())
+            num_tools = len(tools)
+            tools = [
+                tool
+                for tool in tools
+                if isinstance(tool, builtin_classes) or pattern.match(tool.name)
+            ]
+            if len(tools) != num_tools:
+                logger.info(
+                    "Filtered runtime tools from %d to %d after applying regex filter",
+                    num_tools,
+                    len(tools),
+                )
+
         tool_names = [tool.name for tool in tools]
         if len(tool_names) != len(set(tool_names)):
             duplicates = {
                 name for name, count in Counter(tool_names).items() if count > 1
             }
             raise ValueError(f"Duplicate runtime tool names found: {duplicates}")
-        existing = set(self._tools) & set(tool_names)
-        if existing:
-            raise ValueError(f"Duplicate tool names found: {existing}")
+        with self._tools_lock:
+            # A tools/list_changed notification can race the caller: if it
+            # arrives while the provider's initial create_tools() call is
+            # still in flight, _on_mcp_tools_changed/_on_mcp_tools_reconciled
+            # may already have installed the same tool via this same client
+            # before the caller's own add_runtime_tools() call (using the
+            # client's returned snapshot) gets here. Treat that as a refresh,
+            # not a conflict, matching the same-client exemption already used
+            # by _on_mcp_tools_changed/_on_mcp_tools_reconciled.
+            conflicts: set[str] = set()
+            for tool in tools:
+                existing_tool = self._tools.get(tool.name)
+                if existing_tool is None:
+                    continue
+                existing_executor = existing_tool.executor
+                replacement_executor = tool.executor
+                if (
+                    isinstance(existing_executor, MCPToolExecutor)
+                    and isinstance(replacement_executor, MCPToolExecutor)
+                    and existing_executor.client is replacement_executor.client
+                ):
+                    continue
+                conflicts.add(tool.name)
+            if conflicts:
+                raise ValueError(f"Duplicate tool names found: {conflicts}")
 
-        for tool in tools:
-            self._tools[tool.name] = tool
+            # AgentBase is frozen; replace the tool map rather than mutating
+            # it in place, so Agent.model_copy() snapshots don't share state.
+            updated = {**self._tools, **{tool.name: tool for tool in tools}}
+            object.__setattr__(self, "_tools", updated)
+
+    def _on_mcp_tools_changed(self, tools: Sequence[ToolDefinition]) -> None:
+        """Handle dynamically advertised MCP tools.
+
+        Invoked on the MCP client's background event-loop thread when an MCP
+        server sends ``notifications/tools/list_changed`` (progressive
+        disclosure, e.g. Datadog's hosted MCP server). Registers new tools and
+        refreshes same-client tools that return after being removed.
+        """
+        if not self._initialized:
+            logger.warning(
+                "MCP tools/list_changed received before agent initialization; "
+                "skipping registration of %d tools",
+                len(tools),
+            )
+            return
+        tool_names = [tool.name for tool in tools]
+        if len(tool_names) != len(set(tool_names)):
+            duplicates = {
+                name for name, count in Counter(tool_names).items() if count > 1
+            }
+            raise ValueError(f"Duplicate MCP tool names found: {duplicates}")
+
+        with self._tools_lock:
+            additions: list[ToolDefinition] = []
+            replacements: list[ToolDefinition] = []
+            conflicts: set[str] = set()
+            for tool in tools:
+                existing = self._tools.get(tool.name)
+                if existing is None:
+                    additions.append(tool)
+                    continue
+
+                existing_executor = existing.executor
+                replacement_executor = tool.executor
+                if (
+                    isinstance(existing_executor, MCPToolExecutor)
+                    and isinstance(replacement_executor, MCPToolExecutor)
+                    and existing_executor.client is replacement_executor.client
+                ):
+                    replacements.append(tool)
+                else:
+                    conflicts.add(tool.name)
+
+            if conflicts:
+                raise ValueError(
+                    "Dynamically advertised MCP tools conflict with existing runtime "
+                    f"tools: {sorted(conflicts)}"
+                )
+
+            self.add_runtime_tools(additions)
+            if replacements:
+                updated = {
+                    **self._tools,
+                    **{tool.name: tool for tool in replacements},
+                }
+                object.__setattr__(self, "_tools", updated)
+
+        if additions:
+            logger.info(
+                "Registered %d dynamically advertised MCP tools: %s",
+                len(additions),
+                ", ".join(tool.name for tool in additions),
+            )
+        if replacements:
+            logger.info(
+                "Refreshed %d dynamically advertised MCP tools: %s",
+                len(replacements),
+                ", ".join(tool.name for tool in replacements),
+            )
+
+    def _on_mcp_tools_reconciled(
+        self,
+        client: MCPClient,
+        tools: Sequence[MCPToolDefinition],
+    ) -> None:
+        """Replace this MCP client's tools with its current server snapshot."""
+        tool_names = [tool.name for tool in tools]
+        if len(tool_names) != len(set(tool_names)):
+            duplicates = {
+                name for name, count in Counter(tool_names).items() if count > 1
+            }
+            raise ValueError(f"Duplicate MCP tool names found: {duplicates}")
+
+        if self.filter_tools_regex:
+            pattern = re.compile(self.filter_tools_regex)
+            tools = [tool for tool in tools if pattern.match(tool.name)]
+            tool_names = [tool.name for tool in tools]
+
+        with self._tools_lock:
+            owned_names = {
+                name
+                for name, tool in self._tools.items()
+                if isinstance(tool.executor, MCPToolExecutor)
+                and tool.executor.client is client
+            }
+            conflicts = (set(tool_names) & set(self._tools)) - owned_names
+            if conflicts:
+                raise ValueError(
+                    "Dynamically advertised MCP tools conflict with existing runtime "
+                    f"tools: {sorted(conflicts)}"
+                )
+
+            reconciled = {
+                name: tool
+                for name, tool in self._tools.items()
+                if name not in owned_names
+            }
+            reconciled.update((tool.name, tool) for tool in tools)
+            object.__setattr__(self, "_tools", reconciled)
 
     @property
     def tools_map(self) -> dict[str, ToolDefinition]:
@@ -836,7 +1019,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         """
         if not self._initialized:
             raise RuntimeError("Agent not initialized; call _initialize() before use")
-        return self._tools
+        # Isolate readers from background MCP tool updates.
+        with self._tools_lock:
+            return dict(self._tools)
 
     # -- Capability helpers -----------------------------------------------
     # Downstream code should branch on these properties rather than doing

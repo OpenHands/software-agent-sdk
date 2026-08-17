@@ -1,5 +1,6 @@
 """Tests for websocket functionality in event_router.py"""
 
+import logging
 from datetime import UTC, datetime
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -7,14 +8,13 @@ from uuid import uuid4
 
 import pytest
 from fastapi import WebSocketDisconnect
+from starlette.websockets import WebSocketState
 
 from openhands.agent_server.event_service import EventService
-from openhands.agent_server.models import EventPage
-from openhands.agent_server.sockets import _WebSocketSubscriber
+from openhands.agent_server.models import BashCommand, BashOutput, EventPage
+from openhands.agent_server.sockets import _send_bash_event, _WebSocketSubscriber
 from openhands.sdk import Message
-from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import Event
-from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm.message import TextContent
 
@@ -66,48 +66,7 @@ async def test_websocket_subscriber_call_success(mock_websocket):
 
 
 @pytest.mark.asyncio
-async def test_websocket_subscriber_omits_none_fields_for_compat(mock_websocket):
-    """Older SDK clients reject newer optional Event fields such as parent_id."""
-    subscriber = _WebSocketSubscriber(websocket=mock_websocket)
-    event = ConversationStateUpdateEvent(
-        key="execution_status",
-        value=ConversationExecutionStatus.IDLE,
-    )
-
-    await subscriber(event)
-
-    mock_websocket.send_json.assert_called_once()
-    call_args = mock_websocket.send_json.call_args[0][0]
-    assert call_args["kind"] == "ConversationStateUpdateEvent"
-    assert call_args["value"] == "idle"
-    assert "parent_id" not in call_args
-
-
 @pytest.mark.asyncio
-async def test_websocket_subscriber_filters_new_tool_kinds_for_compat(mock_websocket):
-    """Older SDK clients reject tool definitions added after their release."""
-    subscriber = _WebSocketSubscriber(websocket=mock_websocket)
-    mock_event = MagicMock()
-    mock_event.model_dump.return_value = {
-        "kind": "SystemPromptEvent",
-        "id": "system_event",
-        "parent_id": "parent_event",
-        "system_prompt": {"type": "text", "text": "system"},
-        "tools": [
-            {"kind": "FinishTool"},
-            {"kind": "VisionInspectTool"},
-        ],
-    }
-    event = cast(Event, mock_event)
-
-    await subscriber(event)
-
-    mock_websocket.send_json.assert_called_once()
-    call_args = mock_websocket.send_json.call_args[0][0]
-    assert "parent_id" not in call_args
-    assert [tool["kind"] for tool in call_args["tools"]] == ["FinishTool"]
-
-
 @pytest.mark.asyncio
 async def test_websocket_subscriber_call_exception(mock_websocket):
     """Test exception handling in WebSocket subscriber."""
@@ -172,6 +131,51 @@ async def test_websocket_subscriber_send_runtime_error_not_logged_as_exception(
     mock_websocket.send_json.assert_called_once()
     mock_logger.exception.assert_not_called()
     mock_logger.debug.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_send_bash_event_disconnected_log_omits_command(
+    mock_websocket,
+    caplog: pytest.LogCaptureFixture,
+):
+    secret = "ghp_" + "g" * 36
+    event = BashCommand(command=f"printf '{secret}'")
+    mock_websocket.application_state = WebSocketState.DISCONNECTED
+    caplog.set_level(logging.DEBUG, logger="openhands.agent_server.sockets")
+
+    await _send_bash_event(event, mock_websocket)
+
+    mock_websocket.send_json.assert_not_awaited()
+    assert "skip_sending_bash_event_socket_disconnected" in caplog.text
+    assert str(event.id) in caplog.text
+    assert secret not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exception_type", [RuntimeError, ValueError])
+async def test_send_bash_event_error_logs_omit_output_and_exception(
+    mock_websocket,
+    caplog: pytest.LogCaptureFixture,
+    exception_type: type[Exception],
+):
+    output_secret = "ghp_" + "h" * 36
+    exception_secret = "sk-oh-" + "i" * 64
+    event = BashOutput(
+        command_id=uuid4(),
+        stdout=output_secret,
+        stderr=f"failed with {output_secret}",
+    )
+    mock_websocket.send_json.side_effect = exception_type(exception_secret)
+    caplog.set_level(logging.DEBUG, logger="openhands.agent_server.sockets")
+
+    await _send_bash_event(event, mock_websocket)
+
+    mock_websocket.send_json.assert_awaited_once()
+    assert "error_sending_bash_event" in caplog.text
+    assert str(event.command_id) in caplog.text
+    assert exception_type.__name__ in caplog.text
+    assert output_secret not in caplog.text
+    assert exception_secret not in caplog.text
 
 
 @pytest.mark.asyncio

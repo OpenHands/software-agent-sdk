@@ -23,12 +23,15 @@ from openhands.sdk.plugin import (
     install_plugin,
     installed,
 )
+from openhands.sdk.skills import Skill
+from openhands.sdk.skills.skill import DEFAULT_MARKETPLACE_PATH
 from openhands.sdk.tool.builtins import ThinkTool
 
 
 class EmptyMCPClient:
     def __init__(self):
         self.tools = []
+        self._tools_reconciled_callback: Any = None
 
 
 class RecordingMCPToolProvider:
@@ -39,16 +42,22 @@ class RecordingMCPToolProvider:
         state_locked: Callable[[], bool] | None = None,
     ):
         self.created = created
-        self.client = client or EmptyMCPClient()
+        self.client: Any = client or EmptyMCPClient()
         self.state_locked = state_locked
 
     def create_tools(
-        self, mcp_config: dict[str, MCPServer], timeout: float = 30.0
+        self,
+        mcp_config: dict[str, MCPServer],
+        timeout: float = 30.0,
+        *,
+        on_tools_changed: Any = None,
+        on_tools_reconciled: Any = None,
     ) -> MCPClient:
         if self.state_locked is None:
             self.created.append(mcp_config)
         else:
             self.created.append((mcp_config, self.state_locked()))
+        self.client._tools_reconciled_callback = on_tools_reconciled
         return cast(MCPClient, self.client)
 
 
@@ -145,6 +154,32 @@ def create_test_marketplace(
     return marketplace_dir
 
 
+def create_test_marketplace_with_standalone_skills(
+    marketplace_dir: Path,
+    skills: list[str],
+    name: str = "skills-marketplace",
+) -> Path:
+    """Helper to create a marketplace declaring only standalone skills."""
+    manifest_dir = marketplace_dir / ".plugin"
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    entries = []
+    for skill_name in skills:
+        skill_dir = marketplace_dir / "skills" / skill_name
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {skill_name}\ndescription: {skill_name} desc\n---\nbody"
+        )
+        entries.append({"name": skill_name, "source": f"./skills/{skill_name}"})
+    manifest = {
+        "name": name,
+        "owner": {"name": "Test Team"},
+        "plugins": [],
+        "skills": entries,
+    }
+    (manifest_dir / "marketplace.json").write_text(json.dumps(manifest))
+    return marketplace_dir
+
+
 class TestLocalConversationPlugins:
     """Tests for plugin loading in LocalConversation.
 
@@ -153,7 +188,6 @@ class TestLocalConversationPlugins:
     """
 
     def test_auto_load_marketplace_plugins(self, tmp_path: Path, mock_llm):
-        """Test marketplace registrations auto-load plugins at startup."""
         marketplace_dir = create_test_marketplace(
             tmp_path / "marketplace",
             plugins=[
@@ -165,18 +199,32 @@ class TestLocalConversationPlugins:
         )
         workspace = tmp_path / "workspace"
         workspace.mkdir()
-        agent = Agent(
-            llm=mock_llm,
-            tools=[],
-            agent_context=AgentContext(
-                registered_marketplaces=[
-                    MarketplaceRegistration(
-                        name="auto",
-                        source=str(marketplace_dir),
-                        auto_load=True,
-                    )
-                ]
-            ),
+        public_skill = Skill(name="public-skill", content="Public", trigger=None)
+        with patch(
+            "openhands.sdk.context.agent_context.load_available_skills",
+            return_value={"public-skill": public_skill},
+        ) as load_available_skills:
+            agent = Agent(
+                llm=mock_llm,
+                tools=[],
+                agent_context=AgentContext(
+                    load_public_skills=True,
+                    registered_marketplaces=[
+                        MarketplaceRegistration(
+                            name="auto",
+                            source=str(marketplace_dir),
+                            auto_load=True,
+                        )
+                    ],
+                ),
+            )
+
+        load_available_skills.assert_called_with(
+            work_dir=None,
+            include_user=False,
+            include_project=False,
+            include_public=True,
+            marketplace_path=DEFAULT_MARKETPLACE_PATH,
         )
 
         conversation = LocalConversation(
@@ -189,8 +237,108 @@ class TestLocalConversationPlugins:
         assert conversation.agent.agent_context is not None
         skill_names = [s.name for s in conversation.agent.agent_context.skills]
         assert "auto-skill" in skill_names
+        assert "public-skill" in skill_names
         assert conversation.resolved_plugins is not None
         assert len(conversation.resolved_plugins) == 1
+
+    def test_auto_load_marketplace_standalone_skills(self, tmp_path: Path, mock_llm):
+        """Standalone marketplace skills auto-load into the agent context."""
+        marketplace_dir = create_test_marketplace_with_standalone_skills(
+            tmp_path / "marketplace",
+            skills=["greet", "commit"],
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        with patch(
+            "openhands.sdk.context.agent_context.load_available_skills",
+            return_value={},
+        ):
+            agent = Agent(
+                llm=mock_llm,
+                tools=[],
+                agent_context=AgentContext(
+                    registered_marketplaces=[
+                        MarketplaceRegistration(
+                            name="skills-only",
+                            source=str(marketplace_dir),
+                            auto_load=True,
+                        )
+                    ],
+                ),
+            )
+
+        conversation = LocalConversation(
+            agent=agent,
+            workspace=workspace,
+            visualizer=None,
+        )
+        conversation._ensure_plugins_loaded()
+
+        assert conversation.agent.agent_context is not None
+        skill_names = {s.name for s in conversation.agent.agent_context.skills}
+        assert {"greet", "commit"} <= skill_names
+
+        conversation.close()
+
+    def test_plugin_wins_over_standalone_on_name_collision(
+        self, tmp_path: Path, mock_llm
+    ):
+        """A plugin skill overrides a same-named standalone skill (catalog rule)."""
+        marketplace_dir = tmp_path / "marketplace"
+        create_test_plugin(
+            marketplace_dir / "plugins" / "p",
+            name="p",
+            skills=[{"name": "shared", "content": "FROM_PLUGIN"}],
+        )
+        standalone = marketplace_dir / "skills" / "shared"
+        standalone.mkdir(parents=True)
+        (standalone / "SKILL.md").write_text(
+            "---\nname: shared\ndescription: d\n---\nFROM_STANDALONE"
+        )
+        manifest_dir = marketplace_dir / ".plugin"
+        manifest_dir.mkdir(parents=True, exist_ok=True)
+        (manifest_dir / "marketplace.json").write_text(
+            json.dumps(
+                {
+                    "name": "collision",
+                    "owner": {"name": "Test Team"},
+                    "plugins": [{"name": "p", "source": "./plugins/p"}],
+                    "skills": [{"name": "shared", "source": "./skills/shared"}],
+                }
+            )
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        with patch(
+            "openhands.sdk.context.agent_context.load_available_skills",
+            return_value={},
+        ):
+            agent = Agent(
+                llm=mock_llm,
+                tools=[],
+                agent_context=AgentContext(
+                    registered_marketplaces=[
+                        MarketplaceRegistration(
+                            name="collision",
+                            source=str(marketplace_dir),
+                            auto_load=True,
+                        )
+                    ],
+                ),
+            )
+
+        conversation = LocalConversation(
+            agent=agent,
+            workspace=workspace,
+            visualizer=None,
+        )
+        conversation._ensure_plugins_loaded()
+
+        assert conversation.agent.agent_context is not None
+        skills = {s.name: s for s in conversation.agent.agent_context.skills}
+        assert "shared" in skills
+        assert "FROM_PLUGIN" in skills["shared"].content
+        assert "FROM_STANDALONE" not in skills["shared"].content
 
         conversation.close()
 
@@ -476,12 +624,10 @@ class TestLocalConversationPlugins:
 
         conversation.close()
 
-    def test_registered_marketplaces_skip_legacy_public_skill_loading(
-        self, tmp_path: Path
-    ):
-        """Test registered marketplaces suppress legacy public skill loading."""
+    def test_registered_marketplaces_keep_public_skill_loading(self, tmp_path: Path):
         with patch(
-            "openhands.sdk.context.agent_context.load_available_skills"
+            "openhands.sdk.context.agent_context.load_available_skills",
+            return_value={},
         ) as mock_load_available_skills:
             AgentContext(
                 load_public_skills=True,
@@ -494,7 +640,13 @@ class TestLocalConversationPlugins:
                 ],
             )
 
-        mock_load_available_skills.assert_not_called()
+        mock_load_available_skills.assert_called_with(
+            work_dir=None,
+            include_user=False,
+            include_project=False,
+            include_public=True,
+            marketplace_path=DEFAULT_MARKETPLACE_PATH,
+        )
 
     def test_create_conversation_with_plugins(self, tmp_path: Path, basic_agent):
         """Test creating LocalConversation with plugins parameter."""
@@ -645,6 +797,7 @@ class TestLocalConversationPlugins:
         class RuntimeMCPClient:
             def __init__(self):
                 self.tools = [runtime_tool]
+                self._tools_reconciled_callback: Any = None
 
         marketplace_dir = create_test_marketplace(
             tmp_path / "marketplace",
@@ -668,13 +821,14 @@ class TestLocalConversationPlugins:
                 ]
             ),
         )
+        runtime_client = RuntimeMCPClient()
         conversation = LocalConversation(
             agent=agent,
             workspace=workspace,
             visualizer=None,
             mcp_tool_provider=RecordingMCPToolProvider(
                 mcp_tools_created,
-                RuntimeMCPClient(),
+                runtime_client,
                 state_locked=lambda: conversation.state.locked(),
             ),
         )
@@ -686,6 +840,7 @@ class TestLocalConversationPlugins:
         for name, tool in existing_tools.items():
             assert conversation.agent.tools_map[name] is tool
         assert conversation.agent.tools_map[runtime_tool.name] is runtime_tool
+        assert callable(runtime_client._tools_reconciled_callback)
         assert "runtime-server" in conversation.agent.mcp_config
         assert len(mcp_tools_created) == 1
         created_config, state_locked = mcp_tools_created[0]

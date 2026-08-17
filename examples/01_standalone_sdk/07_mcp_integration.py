@@ -39,7 +39,10 @@ tools = [
 
 # Add MCP Tools
 mcp_config = {
-    "fetch": MCPServer(command="uvx", args=["mcp-server-fetch"]),
+    "fetch": MCPServer(
+        command="uvx",
+        args=["--with", "mcp==1.29.0", "mcp-server-fetch==2026.7.10"],
+    ),
     "repomix": MCPServer(command="npx", args=["-y", "repomix@1.4.2", "--mcp"]),
 }
 # Agent

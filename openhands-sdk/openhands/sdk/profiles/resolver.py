@@ -99,10 +99,6 @@ class AgentProfileDiagnostics(BaseModel):
     # MCP composition (both variants).
     mcp_server_refs: list[str] | None = None
     resolved_mcp_config_keys: list[str] = Field(default_factory=list)
-    resolved_mcp_servers: list[str] = Field(
-        default_factory=list,
-        description="Deprecated alias for resolved_mcp_config_keys.",
-    )
     dangling_mcp_server_refs: list[str] = Field(default_factory=list)
 
     # Skill selection (OpenHands only). ``disabled_skills`` is a deny-list over
@@ -294,6 +290,7 @@ def _build_acp_settings(
         "acp_model": profile.acp_model,
         "acp_session_mode": profile.acp_session_mode,
         "acp_prompt_timeout": profile.acp_prompt_timeout,
+        "acp_startup_timeout": profile.acp_startup_timeout,
         "acp_command": command,
         "acp_args": list(profile.acp_args) if profile.acp_args else [],
         "mcp_config": mcp_config,
@@ -371,7 +368,6 @@ def resolve_agent_profile_dry_run(
         agent_kind=profile.agent_kind,
         mcp_server_refs=profile.mcp_server_refs,
         resolved_mcp_config_keys=resolved,
-        resolved_mcp_servers=resolved,
         dangling_mcp_server_refs=dangling,
     )
     if dangling:

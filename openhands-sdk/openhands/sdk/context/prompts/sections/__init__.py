@@ -12,6 +12,7 @@ from openhands.sdk.context.prompts.sections.dynamic import (
     CustomSecretsSection,
     CustomSuffixSection,
     DateTimeSection,
+    MemoryContextSection,
     RepoContextSection,
 )
 from openhands.sdk.context.prompts.sections.planning import PlanningSection
@@ -48,6 +49,7 @@ __all__ = [
     "EnvironmentSetupSection",
     "ExternalServicesSection",
     "FileSystemSection",
+    "MemoryContextSection",
     "MemorySection",
     "ModelSpecificSection",
     "PlanningSection",

@@ -12,6 +12,8 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    GetCoreSchemaHandler,
+    GetJsonSchemaHandler,
     SecretStr,
     SerializationInfo,
     TypeAdapter,
@@ -21,6 +23,8 @@ from pydantic import (
     model_serializer,
     model_validator,
 )
+from pydantic.json_schema import JsonSchemaValue
+from pydantic_core import CoreSchema
 
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import (
@@ -31,10 +35,10 @@ from openhands.sdk.utils.pydantic_secrets import (
 )
 
 
-def _validate_optional_secret(value: object, info: ValidationInfo) -> object:
-    if isinstance(value, str | SecretStr):
-        return validate_secret(value, info)
-    return value
+def _validate_optional_secret(
+    value: SecretStr | None, info: ValidationInfo
+) -> SecretStr | None:
+    return validate_secret(value, info)
 
 
 def _serialize_optional_secret(
@@ -45,17 +49,14 @@ def _serialize_optional_secret(
     return cast(str | None, serialize_secret(value, info))
 
 
-def _validate_secret_map(value: object, info: ValidationInfo) -> object:
-    if not isinstance(value, dict):
-        return value
-    validated = {}
+def _validate_secret_map(
+    value: dict[str, SecretStr], info: ValidationInfo
+) -> dict[str, SecretStr]:
+    validated: dict[str, SecretStr] = {}
     for key, item in value.items():
-        if isinstance(item, str | SecretStr):
-            secret = validate_secret(item, info)
-            if secret is not None:
-                validated[key] = secret
-        else:
-            validated[key] = item
+        secret = validate_secret(item, info)
+        if secret is not None:
+            validated[key] = secret
     return validated
 
 
@@ -93,10 +94,34 @@ def _drop_empty_fields(value: object) -> object:
     return {key: item for key, item in value.items() if item is not None and item != {}}
 
 
+def _without_compact_serializer(core_schema: CoreSchema) -> CoreSchema:
+    schema_without_serializer = copy.copy(cast(dict[str, Any], core_schema))
+    current = schema_without_serializer
+    while current.get("type") != "model":
+        inner = current.get("schema")
+        if not isinstance(inner, dict):
+            return core_schema
+        copied_inner = copy.copy(inner)
+        current["schema"] = copied_inner
+        current = copied_inner
+    current.pop("serialization", None)
+    return cast(CoreSchema, schema_without_serializer)
+
+
 class _MCPBaseModel(BaseModel):
     @model_serializer(mode="wrap")
     def _serialize_compact(self, handler, _info: SerializationInfo) -> object:
         return _drop_empty_fields(handler(self))
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls,
+        core_schema: CoreSchema,
+        handler: GetJsonSchemaHandler,
+    ) -> JsonSchemaValue:
+        if handler.mode != "serialization":
+            return handler(core_schema)
+        return handler(_without_compact_serializer(core_schema))
 
 
 class MCPNoneAuthCredential(_MCPBaseModel):
@@ -111,9 +136,11 @@ class MCPApiKeyAuthCredential(_MCPBaseModel):
     value: SecretStr | None = None
     header_name: str | None = None
 
-    @field_validator("value", mode="before")
+    @field_validator("value", mode="after")
     @classmethod
-    def _validate_value(cls, value: object, info: ValidationInfo) -> object:
+    def _validate_value(
+        cls, value: SecretStr | None, info: ValidationInfo
+    ) -> SecretStr | None:
         return _validate_optional_secret(value, info)
 
     @field_serializer("value", when_used="always")
@@ -135,9 +162,11 @@ class MCPBearerAuthCredential(_MCPBaseModel):
     strategy: Literal["bearer"]
     value: SecretStr | None = None
 
-    @field_validator("value", mode="before")
+    @field_validator("value", mode="after")
     @classmethod
-    def _validate_value(cls, value: object, info: ValidationInfo) -> object:
+    def _validate_value(
+        cls, value: SecretStr | None, info: ValidationInfo
+    ) -> SecretStr | None:
         return _validate_optional_secret(value, info)
 
     @field_serializer("value", when_used="always")
@@ -157,9 +186,11 @@ class MCPBasicAuthCredential(_MCPBaseModel):
     username: str
     password: SecretStr | None = None
 
-    @field_validator("password", mode="before")
+    @field_validator("password", mode="after")
     @classmethod
-    def _validate_password(cls, value: object, info: ValidationInfo) -> object:
+    def _validate_password(
+        cls, value: SecretStr | None, info: ValidationInfo
+    ) -> SecretStr | None:
         return _validate_optional_secret(value, info)
 
     @field_serializer("password", when_used="always")
@@ -183,9 +214,11 @@ class MCPHeaderAuthCredential(_MCPBaseModel):
     strategy: Literal["header"]
     headers: dict[str, SecretStr] = Field(default_factory=dict)
 
-    @field_validator("headers", mode="before")
+    @field_validator("headers", mode="after")
     @classmethod
-    def _validate_headers(cls, value: object, info: ValidationInfo) -> object:
+    def _validate_headers(
+        cls, value: dict[str, SecretStr], info: ValidationInfo
+    ) -> dict[str, SecretStr]:
         return _validate_secret_map(value, info)
 
     @field_serializer("headers", when_used="always")
@@ -204,9 +237,11 @@ class MCPOAuthTokenState(_MCPBaseModel):
     access_token: SecretStr | None = None
     refresh_token: SecretStr | None = None
 
-    @field_validator("access_token", "refresh_token", mode="before")
+    @field_validator("access_token", "refresh_token", mode="after")
     @classmethod
-    def _validate_secret(cls, value: object, info: ValidationInfo) -> object:
+    def _validate_secret(
+        cls, value: SecretStr | None, info: ValidationInfo
+    ) -> SecretStr | None:
         return _validate_optional_secret(value, info)
 
     @field_serializer("access_token", "refresh_token", when_used="always")
@@ -221,9 +256,11 @@ class MCPOAuthClientInfoState(_MCPBaseModel):
 
     client_secret: SecretStr | None = None
 
-    @field_validator("client_secret", mode="before")
+    @field_validator("client_secret", mode="after")
     @classmethod
-    def _validate_client_secret(cls, value: object, info: ValidationInfo) -> object:
+    def _validate_client_secret(
+        cls, value: SecretStr | None, info: ValidationInfo
+    ) -> SecretStr | None:
         return _validate_optional_secret(value, info)
 
     @field_serializer("client_secret", when_used="always")
@@ -257,9 +294,11 @@ class MCPOAuthAuthentication(_MCPBaseModel):
     client_secret: SecretStr | None = None
     additional_client_metadata: dict[str, Any] | None = None
 
-    @field_validator("client_secret", mode="before")
+    @field_validator("client_secret", mode="after")
     @classmethod
-    def _validate_client_secret(cls, value: object, info: ValidationInfo) -> object:
+    def _validate_client_secret(
+        cls, value: SecretStr | None, info: ValidationInfo
+    ) -> SecretStr | None:
         return _validate_optional_secret(value, info)
 
     @field_serializer("client_secret", when_used="always")
@@ -269,9 +308,51 @@ class MCPOAuthAuthentication(_MCPBaseModel):
         return _serialize_optional_secret(value, info)
 
 
+class _MCPOAuthTokenStateDict(dict[str, Any]):
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls,
+        _source_type: Any,
+        handler: GetCoreSchemaHandler,
+    ) -> CoreSchema:
+        return handler(dict[str, Any])
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls,
+        _core_schema: CoreSchema,
+        handler: GetJsonSchemaHandler,
+    ) -> JsonSchemaValue:
+        return handler(
+            _without_compact_serializer(MCPOAuthTokenState.__pydantic_core_schema__)
+        )
+
+
+class _MCPOAuthClientInfoStateDict(dict[str, Any]):
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls,
+        _source_type: Any,
+        handler: GetCoreSchemaHandler,
+    ) -> CoreSchema:
+        return handler(dict[str, Any])
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls,
+        _core_schema: CoreSchema,
+        handler: GetJsonSchemaHandler,
+    ) -> JsonSchemaValue:
+        return handler(
+            _without_compact_serializer(
+                MCPOAuthClientInfoState.__pydantic_core_schema__
+            )
+        )
+
+
 class MCPOAuthStateResponse(_MCPBaseModel):
-    tokens: dict[str, Any] | None = None
-    client_info: dict[str, Any] | None = None
+    tokens: _MCPOAuthTokenStateDict | None = None
+    client_info: _MCPOAuthClientInfoStateDict | None = None
     token_expires_at: float | None = None
 
 
@@ -430,11 +511,24 @@ class MCPServer(_MCPBaseModel):
     keep_alive: bool | None = None
     headers: dict[str, SecretStr] | None = None
     auth: MCPAuthCredential | None = None
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether this server is exposed to the agent. A disabled server "
+            "stays fully configured -- including its secrets -- but is skipped "
+            "when MCP tools are created and when servers are forwarded to an "
+            "ACP subprocess."
+        ),
+    )
 
-    @field_validator("env", "headers", mode="before")
+    @field_validator("env", "headers", mode="after")
     @classmethod
-    def _validate_secret_mapping(cls, value: object, info: ValidationInfo) -> object:
-        return _validate_secret_map(value, info)
+    def _validate_secret_mapping(
+        cls,
+        value: dict[str, SecretStr] | None,
+        info: ValidationInfo,
+    ) -> dict[str, SecretStr] | None:
+        return _validate_secret_map(value, info) if value is not None else None
 
     @field_serializer("env", "headers", when_used="always")
     def _serialize_secret_mapping(
@@ -560,6 +654,12 @@ def _normalize_server_for_fastmcp(
     server: Mapping[str, Any],
 ) -> dict[str, Any]:
     server = copy.deepcopy(dict(server))
+    # ``enabled`` is an OpenHands-side flag; FastMCP server models are
+    # ``extra="allow"``, so leaving it in would be silently absorbed rather
+    # than rejected. Callers are expected to have dropped disabled servers
+    # already (see ``enabled_mcp_servers``) -- this only keeps the key from
+    # leaking through the public ``to_fastmcp_mcp_config`` boundary.
+    server.pop("enabled", None)
     auth = server.pop("auth", None)
     raw_headers = server.get("headers")
     headers = dict(raw_headers) if isinstance(raw_headers, Mapping) else {}
@@ -621,6 +721,19 @@ def dump_mcp_config(
         )
         for name, server in mcp_config.items()
     }
+
+
+def enabled_mcp_servers(
+    mcp_config: Mapping[str, MCPServer],
+) -> dict[str, MCPServer]:
+    """Drop servers the user has switched off.
+
+    Disabled servers stay in the settings map (so their configuration and
+    secrets survive) but must never reach a live MCP connection, whether the
+    agent turns them into SDK tools or an ACP subprocess connects to them
+    itself.
+    """
+    return {name: server for name, server in mcp_config.items() if server.enabled}
 
 
 def to_fastmcp_mcp_config(

@@ -1,9 +1,12 @@
 import asyncio
+import time
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import cast
 from uuid import UUID, uuid4
 
 from pydantic import ValidationError
@@ -22,6 +25,10 @@ from openhands.agent_server.models import (
 from openhands.agent_server.pub_sub import PubSub, Subscriber
 from openhands.sdk import LLM, AgentBase, Event, Message, TextContent, get_logger
 from openhands.sdk.agent import ACPAgent
+from openhands.sdk.agent.acp_file_credentials import (
+    CODEX_AUTH_SECRET_NAME,
+    is_valid_codex_auth,
+)
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.goal import (
@@ -39,11 +46,18 @@ from openhands.sdk.conversation.impl.local_conversation import (
     ACP_SUPERSEDE_INFLIGHT_PROMPT,
     LocalConversation,
 )
+from openhands.sdk.conversation.persistence_const import BASE_STATE
 from openhands.sdk.conversation.response_utils import get_agent_final_response
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
+)
+from openhands.sdk.credential import (
+    CredentialBindingError,
+    CredentialNeedsReauthentication,
+    HttpVersionedCredentialBinding,
+    VersionedCredentialBinding,
 )
 from openhands.sdk.event import (
     AgentErrorEvent,
@@ -51,6 +65,7 @@ from openhands.sdk.event import (
     StreamingDeltaEvent,
 )
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
@@ -60,6 +75,7 @@ from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.files import atomic_write_text
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -72,6 +88,24 @@ INITIAL_STATE_PUSH_TIMEOUT_SECONDS = 0.5
 logger = get_logger(__name__)
 
 
+class CredentialBindingActivationTooLate(RuntimeError):
+    pass
+
+
+def _without_agent_context_secret(
+    agent: AgentBase,
+    secret_name: str,
+) -> AgentBase:
+    context = agent.agent_context
+    if context is None or not context.secrets or secret_name not in context.secrets:
+        return agent
+    secrets = dict(context.secrets)
+    secrets.pop(secret_name, None)
+    return agent.model_copy(
+        update={"agent_context": context.model_copy(update={"secrets": secrets})}
+    )
+
+
 @dataclass
 class EventService:
     """
@@ -81,8 +115,16 @@ class EventService:
 
     stored: StoredConversation
     conversations_dir: Path
+    # Agent for a NEW conversation. meta.json (``stored``) no longer carries the
+    # agent — base_state.json is its single source of truth — so the creating
+    # caller passes it here. On resume this is ``None`` and the agent is loaded
+    # from base_state.json.
+    agent: AgentBase | None = None
     cipher: Cipher | None = None
     mcp_tool_provider: MCPToolProvider | None = None
+    credential_bindings: dict[str, VersionedCredentialBinding] = field(
+        default_factory=dict
+    )
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
     _conversation: LocalConversation | None = field(default=None, init=False)
@@ -112,6 +154,10 @@ class EventService:
     # Background task for a /goal loop that is running inside this conversation.
     _goal_loop_task: asyncio.Task | None = field(default=None, init=False)
     _goal_loop_outcome: GoalOutcome | None = field(default=None, init=False)
+    # Monotonic clock of the last activity, used for idle eviction.
+    _last_active_monotonic: float = field(default_factory=time.monotonic, init=False)
+    # Subscribers attached at startup; later ones (e.g. websockets) are external.
+    _internal_subscriber_ids: set[UUID] = field(default_factory=set, init=False)
 
     @property
     def conversation_dir(self):
@@ -136,6 +182,175 @@ class EventService:
                     }
                 )
             )
+
+    def _without_stored_secret(self, secret_name: str) -> StoredConversation:
+        # meta.json (StoredConversation) no longer carries the agent, so there is
+        # no agent_context secret to scrub here — only the stored secrets map.
+        # The agent's own secret scrub happens on base_state.json (see
+        # _scrub_persisted_credentials).
+        secrets = dict(self.stored.secrets)
+        secrets.pop(secret_name, None)
+        return self.stored.model_copy(update={"secrets": secrets})
+
+    async def _scrub_persisted_credentials(
+        self,
+        credential_bindings: Mapping[str, VersionedCredentialBinding] | None = None,
+    ) -> None:
+        bindings = (
+            self.credential_bindings
+            if credential_bindings is None
+            else credential_bindings
+        )
+        if not bindings:
+            return
+
+        required_bindings = {
+            name
+            for name, binding in bindings.items()
+            if isinstance(binding, HttpVersionedCredentialBinding)
+        }
+        if required_bindings:
+            # Scrubbed durable credentials must never become a fallback again.
+            self.stored = self.stored.model_copy(
+                update={
+                    "required_runtime_credential_bindings": (
+                        self.stored.required_runtime_credential_bindings
+                        | required_bindings
+                    )
+                }
+            )
+
+        context = {"cipher": self.cipher}
+        base_state_file = self.conversation_dir / BASE_STATE
+        meta_file = self.conversation_dir / "meta.json"
+        legacy_auth_file = self.conversation_dir / "acp" / "codex" / "auth.json"
+        codex_binding = bindings.get(CODEX_AUTH_SECRET_NAME)
+        if codex_binding is not None and legacy_auth_file.exists():
+            resolved = await codex_binding.load()
+            if not is_valid_codex_auth(resolved.value):
+                raise CredentialNeedsReauthentication(
+                    "ChatGPT authentication is invalid. Please sign in again."
+                )
+        for secret_name in bindings:
+            self.stored = self._without_stored_secret(secret_name)
+
+        if (
+            not base_state_file.exists()
+            and not meta_file.exists()
+            and not legacy_auth_file.exists()
+        ):
+            return
+
+        with self._write_guard():
+            if base_state_file.exists():
+                state = ConversationState.model_validate_json(
+                    base_state_file.read_text(),
+                    context=context,
+                )
+                sources = dict(state.secret_registry.secret_sources)
+                for secret_name in bindings:
+                    sources.pop(secret_name, None)
+                    state.agent = _without_agent_context_secret(
+                        state.agent,
+                        secret_name,
+                    )
+                state.secret_registry = state.secret_registry.model_copy(
+                    update={"secret_sources": sources}
+                )
+                atomic_write_text(
+                    base_state_file,
+                    state.model_dump_json(exclude_none=True, context=context),
+                )
+
+            if meta_file.exists():
+                atomic_write_text(
+                    meta_file,
+                    self.stored.model_dump_json(context=context),
+                )
+            if codex_binding is not None:
+                legacy_auth_file.unlink(missing_ok=True)
+
+    async def activate_credential_binding(
+        self,
+        secret_name: str,
+        binding: VersionedCredentialBinding,
+    ) -> None:
+        existing = self.credential_bindings.get(secret_name)
+        if isinstance(existing, HttpVersionedCredentialBinding) and isinstance(
+            binding, HttpVersionedCredentialBinding
+        ):
+            if existing.url != binding.url:
+                raise CredentialBindingActivationTooLate
+            await self._scrub_persisted_credentials(
+                {**self.credential_bindings, secret_name: binding}
+            )
+            existing.reauthorize(binding)
+            return
+        if existing is not None:
+            raise CredentialBindingActivationTooLate
+
+        conversation = self._conversation
+        if conversation is None:
+            raise CredentialBindingActivationTooLate
+
+        state = conversation._state
+        with state:
+            if not isinstance(conversation.agent, ACPAgent):
+                raise CredentialBindingActivationTooLate
+            agent = cast(
+                ACPAgent,
+                _without_agent_context_secret(conversation.agent, secret_name),
+            )
+            try:
+                agent.activate_file_credential_binding(secret_name, binding)
+            except RuntimeError as exc:
+                raise CredentialBindingActivationTooLate from exc
+
+            self.credential_bindings[secret_name] = binding
+            sources = dict(state.secret_registry.secret_sources)
+            sources.pop(secret_name, None)
+            state.secret_registry = state.secret_registry.model_copy(
+                update={"secret_sources": sources}
+            )
+            state.agent = agent
+            conversation.agent = agent
+            self.stored = self._without_stored_secret(secret_name)
+        await self._scrub_persisted_credentials()
+
+    async def apply_resume_secrets(
+        self,
+        secrets: dict[str, SecretValue],
+    ) -> None:
+        conversation = self._conversation
+        if conversation is None:
+            raise ValueError("inactive_service")
+        secrets = {
+            name: value
+            for name, value in secrets.items()
+            if name not in self.credential_bindings
+        }
+        if not secrets:
+            return
+
+        def _update() -> None:
+            state = conversation._state
+            with state:
+                registry = state.secret_registry.model_copy(
+                    update={
+                        "secret_sources": dict(state.secret_registry.secret_sources)
+                    }
+                )
+                registry.update_secrets(secrets)
+                state.secret_registry = registry
+                agent = conversation.agent
+                if isinstance(agent, ACPAgent):
+                    agent.restart_for_updated_credentials(secrets)
+
+        await asyncio.to_thread(_update)
+        self.stored = self.stored.model_copy(
+            update={"secrets": {**self.stored.secrets, **secrets}}
+        )
+        await self.save_meta()
 
     def _write_guard(self):
         if self._lease is None or self._lease_generation is None:
@@ -752,15 +967,32 @@ class EventService:
             )
             lease_claim = self._lease.claim()
             self._lease_generation = lease_claim.generation
+        await self._scrub_persisted_credentials()
         workspace = self.stored.workspace
         assert isinstance(workspace, LocalWorkspace)
         working_dir = Path(workspace.working_dir)
         working_dir.mkdir(parents=True, exist_ok=True)
         self._ensure_workspace_is_git_repo(working_dir)
-        agent_cls = type(self.stored.agent)
-        agent = agent_cls.model_validate(
-            self.stored.agent.model_dump(context={"expose_secrets": True}),
+        # base_state.json is the single source of truth for the agent. On resume
+        # (base_state exists) pass ``agent=None`` so LocalConversation keeps the
+        # persisted agent. On a new conversation the creating caller supplied the
+        # agent via ``self.agent``; deep-copy it (expose_secrets) so the running
+        # agent is independent of the caller's object.
+        base_state_exists = await asyncio.to_thread(
+            (self.conversation_dir / BASE_STATE).exists
         )
+        if base_state_exists:
+            agent: AgentBase | None = None
+        else:
+            if self.agent is None:
+                raise ValueError(
+                    "Cannot start a new conversation without an agent: no "
+                    "base_state.json to resume and no agent was provided."
+                )
+            agent_cls = type(self.agent)
+            agent = agent_cls.model_validate(
+                self.agent.model_dump(context={"expose_secrets": True}),
+            )
 
         # Create LocalConversation with plugins and hook_config.
         # Plugins are loaded lazily on first run()/send_message() call.
@@ -772,16 +1004,18 @@ class EventService:
             self._pub_sub, loop=asyncio.get_running_loop()
         )
 
-        # Only wire token streaming for agents that can actually emit token
-        # callbacks. SDK LLM agents need stream=True, while ACP agents emit
-        # AgentMessageChunk text through their bridge without exposing an LLM.
-        streaming_enabled = isinstance(agent, ACPAgent) or any(
-            llm.stream for llm in agent.get_all_llms()
-        )
-        logger.debug(
-            "Token streaming: %s",
-            "enabled" if streaming_enabled else "disabled (no LLM has stream=True)",
-        )
+        # Token streaming is wired only for agents that can actually emit token
+        # callbacks (SDK LLM agents with stream=True, or ACP agents). For a NEW
+        # conversation the agent is known here, so decide now. On RESUME the
+        # agent is loaded from base_state.json during construction, so defer the
+        # decision until after (see the post-construction block below).
+        def _agent_can_stream(a: AgentBase) -> bool:
+            return isinstance(a, ACPAgent) or any(
+                llm.stream for llm in a.get_all_llms()
+            )
+
+        streaming_enabled = _agent_can_stream(agent) if agent is not None else True
+        streaming_decided = agent is not None
 
         def _publish_stream_delta(
             content: str | None = None,
@@ -844,7 +1078,24 @@ class EventService:
 
         conversation.set_confirmation_policy(self.stored.confirmation_policy)
         conversation.set_security_analyzer(self.stored.security_analyzer)
+        # On resume the agent was unknown at construction time (loaded from
+        # base_state.json), so decide token streaming now and disable it when the
+        # resolved agent can't emit token callbacks.
+        if not streaming_decided:
+            streaming_enabled = _agent_can_stream(conversation.agent)
+            logger.debug(
+                "Token streaming: %s",
+                "enabled" if streaming_enabled else "disabled (no LLM has stream=True)",
+            )
+            if not streaming_enabled:
+                conversation.set_token_callbacks(None)
         self._conversation = conversation
+        if isinstance(conversation.agent, ACPAgent):
+            for secret_name, binding in self.credential_bindings.items():
+                conversation.agent.activate_file_credential_binding(
+                    secret_name,
+                    binding,
+                )
         self._conversation._state.set_write_guard(self._write_guard)
         if not self._external_lease_renewal:
             self._lease_task = asyncio.create_task(self._renew_lease_loop())
@@ -895,6 +1146,9 @@ class EventService:
                             "A restart occurred while this tool was in progress. "
                             "This may indicate a fatal memory error or system crash. "
                             "The tool execution was interrupted and did not complete."
+                        ),
+                        classification=ErrorClassification(
+                            kind=FailureKind.INTERNAL, retryable=False
                         ),
                     )
                     self._conversation._on_event(error_event)
@@ -1172,11 +1426,20 @@ class EventService:
                 if status in (
                     ConversationExecutionStatus.PAUSED,
                     ConversationExecutionStatus.ERROR,
-                    ConversationExecutionStatus.STUCK,
                 ):
                     logger.info("Goal loop halted early: status=%s", status)
                     await _emit_status(active=False, status="interrupted")
                     return
+                if status == ConversationExecutionStatus.STUCK:
+                    # The stuck detector is a heuristic that often fires during
+                    # legitimate iteration (re-running a test, retrying an edit).
+                    # The goal loop already has an authoritative judge that
+                    # audits completion each round, so a STUCK run is not a
+                    # reason to halt the whole goal -- proceed to the judge and
+                    # let it decide continue-vs-stop (sending a followup nudge
+                    # that breaks the agent out of any genuine loop). Only
+                    # PAUSED/ERROR (real stop signals) terminate the goal.
+                    logger.info("Goal loop continuing past stuck run")
                 step = await loop.run_in_executor(None, _snapshot_and_judge)
                 if isinstance(step, GoalDone):
                     self._goal_loop_outcome = step.outcome
@@ -1359,6 +1622,9 @@ class EventService:
         """Update secrets in the conversation."""
         if not self._conversation:
             raise ValueError("inactive_service")
+        if CODEX_AUTH_SECRET_NAME in self.credential_bindings:
+            secrets = dict(secrets)
+            secrets.pop(CODEX_AUTH_SECRET_NAME, None)
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.update_secrets, secrets)
 
@@ -1394,13 +1660,13 @@ class EventService:
 
         For a conversation that has already started, runs the (blocking)
         protocol-level ``session/set_model`` round-trip in a worker thread; for
-        one not yet run, the SDK defers the switch (persist-only). Either way it
-        mirrors the new model into ``meta.json`` so the switch survives an
-        agent-server restart: ``start()`` rebuilds the agent from
-        ``self.stored.agent`` and ``ConversationState.create()`` copies that over
-        the persisted base_state.json on resume. Only ``acp_model`` needs
-        updating — ``model_post_init`` re-derives the sentinel ``llm.model`` on
-        reload.
+        one not yet run, the SDK defers the switch (persist-only). Either way the
+        switched model is persisted as the authoritative value in
+        ``base_state.json``: ``LocalConversation.switch_acp_model`` sets
+        ``state.agent`` to an agent copy carrying the new ``acp_model``, which the
+        autosave path writes to base_state. On resume the agent is rebuilt from
+        base_state (the single source of truth), so no ``meta.json`` mirror is
+        needed.
         """
         if self._conversation is None:
             # Match the inactive-service convention of the other event-service
@@ -1410,10 +1676,6 @@ class EventService:
             raise ValueError("inactive_service")
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.switch_acp_model, model)
-        self.stored = self.stored.model_copy(
-            update={"agent": self.stored.agent.model_copy(update={"acp_model": model})}
-        )
-        await self.save_meta()
 
     async def close(self):
         self._closing = True
@@ -1464,6 +1726,7 @@ class EventService:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._conversation.close)
             self._conversation = None
+        self.credential_bindings = {}
 
         if self._lease is not None and self._lease_generation is not None:
             self._lease.release(self._lease_generation)
@@ -1577,6 +1840,7 @@ class EventService:
         return self
 
     async def __aexit__(self, exc_type, exc_value, traceback):
+        save_error: BaseException | None = None
         try:
             await self.save_meta()
         except ConversationOwnershipLostError:
@@ -1584,7 +1848,61 @@ class EventService:
                 "Skipping meta save after ownership loss for conversation %s",
                 self.stored.id,
             )
-        await self.close()
+        except BaseException as exc:
+            save_error = exc
+        close_error: BaseException | None = None
+        try:
+            await self.close()
+        except BaseException as exc:
+            close_error = exc
+        if isinstance(close_error, CredentialBindingError):
+            raise close_error
+        if save_error is not None:
+            if close_error is not None:
+                logger.warning(
+                    "Event service close also failed after meta save failure",
+                    exc_info=(
+                        type(close_error),
+                        close_error,
+                        close_error.__traceback__,
+                    ),
+                )
+            raise save_error
+        if close_error is not None:
+            raise close_error
 
     def is_open(self) -> bool:
         return bool(self._conversation)
+
+    def touch(self) -> None:
+        """Record activity so idle-eviction defers this conversation."""
+        self._last_active_monotonic = time.monotonic()
+
+    def idle_seconds(self) -> float:
+        """Seconds since the last recorded activity."""
+        return time.monotonic() - self._last_active_monotonic
+
+    def mark_subscription_baseline(self) -> None:
+        """Snapshot the current (internal) subscribers; later ones are external."""
+        self._internal_subscriber_ids = self._pub_sub.subscriber_ids()
+
+    def has_external_subscribers(self) -> bool:
+        """True if a non-internal subscriber (e.g. a websocket) is attached."""
+        return bool(self._pub_sub.subscriber_ids() - self._internal_subscriber_ids)
+
+    def is_idle_evictable(self) -> bool:
+        """Safe to evict only with no in-flight work and no external subscriber."""
+        run_active = self._run_task is not None and not self._run_task.done()
+        goal_active = (
+            self._goal_loop_task is not None and not self._goal_loop_task.done()
+        )
+        if (
+            self._closing
+            or run_active
+            or goal_active
+            or self._rerun_requested
+            or self._acp_internal_rerun_requested
+            or self.has_external_subscribers()
+        ):
+            return False
+        return True

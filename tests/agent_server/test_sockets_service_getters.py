@@ -166,7 +166,7 @@ async def test_events_socket_uses_app_state_conversation_service():
     # Simulate app.state after /api/init delivers a per-user service.
     ws.app.state = SimpleNamespace(
         conversation_service=per_app_conv_svc,
-        config=Config(),  # empty session_api_keys → no auth check
+        config=Config(session_api_keys=[]),
     )
 
     await events_socket(uuid4(), ws, session_api_key=None)
@@ -196,7 +196,7 @@ async def test_bash_events_socket_uses_app_state_bash_event_service():
     # Simulate app.state after /api/init delivers a per-user service.
     ws.app.state = SimpleNamespace(
         bash_event_service=per_app_bash_svc,
-        config=Config(),  # empty session_api_keys → no auth check
+        config=Config(session_api_keys=[]),
     )
 
     await bash_events_socket(ws, session_api_key=None)

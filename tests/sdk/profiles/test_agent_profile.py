@@ -73,6 +73,14 @@ def test_openhands_profile_new_field_defaults() -> None:
     assert reloaded.disabled_skills == []
 
 
+def test_default_profile_preserves_explicit_empty_tools() -> None:
+    profile = OpenHandsAgentProfile(
+        name="default", llm_profile_ref="default", revision=0, tools=[]
+    )
+
+    assert profile.tools == []
+
+
 def test_disabled_skills_round_trips() -> None:
     """A non-empty deny-list survives the JSON round-trip verbatim."""
     profile = validate_agent_profile(
@@ -275,6 +283,74 @@ def test_payload_missing_schema_version_canonicalizes() -> None:
     assert profile.schema_version == AGENT_PROFILE_SCHEMA_VERSION
 
 
+def test_schemaless_default_preserves_explicit_empty_tools() -> None:
+    profile = validate_agent_profile(
+        {
+            "name": "default",
+            "llm_profile_ref": "default",
+            "revision": 0,
+            "tools": [],
+        }
+    )
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert profile.tools == []
+
+
+def test_v1_untouched_default_migrates_empty_tools_to_null() -> None:
+    profile = validate_agent_profile(
+        {
+            "schema_version": 1,
+            "name": "default",
+            "llm_profile_ref": "default",
+            "revision": 0,
+            "tools": [],
+        }
+    )
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert profile.schema_version == AGENT_PROFILE_SCHEMA_VERSION
+    assert profile.tools is None
+
+
+@pytest.mark.parametrize(
+    "skills",
+    [[], [{"name": "old-skill", "content": "do stuff"}]],
+)
+def test_v1_profile_migrates_legacy_embedded_skills(skills: list[object]) -> None:
+    profile = validate_agent_profile(
+        {
+            "schema_version": 1,
+            "name": "default",
+            "llm_profile_ref": "default",
+            "revision": 0,
+            "skills": skills,
+        }
+    )
+
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert profile.schema_version == AGENT_PROFILE_SCHEMA_VERSION
+    assert profile.disabled_skills == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"name": "default", "revision": 1},
+        {"name": "bare", "revision": 0},
+    ],
+)
+def test_v1_explicit_empty_tools_remain_empty(payload: dict[str, object]) -> None:
+    profile = validate_agent_profile(
+        {
+            "schema_version": 1,
+            "llm_profile_ref": "default",
+            "tools": [],
+            **payload,
+        }
+    )
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert profile.tools == []
+
+
 def test_rejects_newer_schema_version() -> None:
     with pytest.raises(ValueError, match="newer than supported"):
         validate_agent_profile(
@@ -394,18 +470,17 @@ def test_openhands_profile_has_no_embedded_skills_field() -> None:
 
 
 # ---------------------------------------------------------------------------
-# clean v1 baseline: nothing ever shipped, so the removed ``skills`` /
-# ``skill_refs`` fields are rejected (``extra="forbid"``), not migrated (#4017)
+# Removed fields remain invalid in current-version payloads.  ``skills`` is an
+# exception for v1 payloads because the v1-to-v2 migration explicitly retires it.
 # ---------------------------------------------------------------------------
 
 
-def test_removed_skills_field_is_rejected() -> None:
-    """The embedded ``skills`` field never shipped, so a payload carrying it is a
-    genuine ``extra="forbid"`` violation — there is no migration to drop it."""
+def test_current_profile_with_skills_field_is_rejected() -> None:
+    """A v2 payload must not retain the retired embedded ``skills`` field."""
     with pytest.raises(ValidationError):
         validate_agent_profile(
             {
-                "schema_version": 1,
+                "schema_version": AGENT_PROFILE_SCHEMA_VERSION,
                 "agent_kind": "openhands",
                 "name": "oh",
                 "llm_profile_ref": "default",

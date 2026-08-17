@@ -6,6 +6,7 @@ without dependencies on the openhands.sdk module.
 """
 
 import asyncio
+import json
 import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -45,15 +46,15 @@ def mock_event_service():
             service = EventService(
                 stored=StoredConversation(
                     id=uuid4(),
-                    agent=Agent(
-                        llm=LLM(
-                            usage_id="test-llm",
-                            model="test-model",
-                            api_key=SecretStr("test-key"),
-                        ),
-                        tools=[],
-                    ),
                     workspace=LocalWorkspace(working_dir="workspace/project"),
+                ),
+                agent=Agent(
+                    llm=LLM(
+                        usage_id="test-llm",
+                        model="test-model",
+                        api_key=SecretStr("test-key"),
+                    ),
+                    tools=[],
                 ),
                 conversations_dir=temp_path / "conversations_dir",
             )
@@ -786,6 +787,144 @@ class TestWebhookSubscriberIntegration:
         assert mock_client.request.call_count == 2
 
 
+@pytest.mark.asyncio
+async def test_concurrent_event_delivery_has_one_request_in_flight(
+    mock_event_service, sample_event, sample_conversation_id
+):
+    spec = WebhookSpec(
+        base_url="https://example.com",
+        event_buffer_size=5,
+        flush_delay=3600,
+        num_retries=0,
+    )
+    subscriber = WebhookSubscriber(
+        conversation_id=sample_conversation_id,
+        service=mock_event_service,
+        spec=spec,
+    )
+
+    request_started = asyncio.Event()
+    release_requests = asyncio.Event()
+    active_requests = 0
+    peak_active_requests = 0
+    batches: list[list[dict]] = []
+
+    async def blocked_request(*args, **kwargs):
+        nonlocal active_requests, peak_active_requests
+        active_requests += 1
+        peak_active_requests = max(peak_active_requests, active_requests)
+        batches.append(kwargs["json"])
+        request_started.set()
+        await release_requests.wait()
+        active_requests -= 1
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        return response
+
+    with patch("httpx.AsyncClient") as mock_client_class:
+        mock_client = AsyncMock()
+        mock_client.request = blocked_request
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        tasks = [asyncio.create_task(subscriber(sample_event)) for _ in range(40)]
+        await asyncio.wait_for(request_started.wait(), timeout=1)
+        await asyncio.sleep(0.05)
+        try:
+            assert peak_active_requests == 1
+        finally:
+            release_requests.set()
+            await asyncio.gather(*tasks)
+
+        await subscriber.close()
+
+    assert peak_active_requests == 1
+    assert sum(len(batch) for batch in batches) == 40
+    assert all(len(batch) <= spec.event_buffer_size for batch in batches)
+
+
+@pytest.mark.asyncio
+@patch("httpx.AsyncClient")
+async def test_post_events_splits_batches_by_serialized_bytes(
+    mock_client_class, mock_event_service, sample_conversation_id
+):
+    spec = WebhookSpec(
+        base_url="https://example.com",
+        event_buffer_size=100,
+        flush_delay=3600,
+        num_retries=0,
+        max_batch_bytes=4096,
+    )
+    subscriber = WebhookSubscriber(
+        conversation_id=sample_conversation_id,
+        service=mock_event_service,
+        spec=spec,
+    )
+    subscriber.queue = [
+        MessageEvent(
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="x" * 3000)]),
+        )
+        for _ in range(3)
+    ]
+
+    mock_client = AsyncMock()
+    response = MagicMock()
+    response.raise_for_status.return_value = None
+    mock_client.request.return_value = response
+    mock_client_class.return_value.__aenter__.return_value = mock_client
+
+    await subscriber._post_events()
+
+    batches = [call.kwargs["json"] for call in mock_client.request.call_args_list]
+    assert len(batches) == 3
+    for batch in batches:
+        payload_bytes = len(
+            json.dumps(batch, ensure_ascii=False, separators=(",", ":")).encode()
+        )
+        assert payload_bytes <= spec.max_batch_bytes or len(batch) == 1
+
+
+@pytest.mark.asyncio
+async def test_queue_drops_oldest_events_past_serialized_byte_limit(
+    mock_event_service, sample_conversation_id
+):
+    events = [
+        MessageEvent(
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text=f"{i}" * 1000)]),
+        )
+        for i in range(2)
+    ]
+    event_size = len(
+        json.dumps(
+            events[0].model_dump(mode="json"),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode()
+    )
+    spec = WebhookSpec(
+        base_url="https://example.com",
+        event_buffer_size=100,
+        flush_delay=3600,
+        max_batch_bytes=1024 * 1024,
+        max_queue_bytes=event_size + 1,
+    )
+    subscriber = WebhookSubscriber(
+        conversation_id=sample_conversation_id,
+        service=mock_event_service,
+        spec=spec,
+    )
+
+    try:
+        await subscriber(events[0])
+        await subscriber(events[1])
+
+        assert subscriber.queue == [events[1]]
+        assert subscriber._queue_bytes <= spec.max_queue_bytes
+        assert subscriber._dropped_events == 1
+    finally:
+        subscriber._cancel_flush_timer()
+
+
 class TestWebhookSubscriberErrorHandling:
     """Test cases for error handling in WebhookSubscriber."""
 
@@ -1116,7 +1255,7 @@ class TestConversationWebhookSubscriber:
         # Create sample conversation info
         conversation_info = ConversationInfo(
             id=uuid4(),
-            agent=mock_event_service.stored.agent,
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=mock_event_service.stored.workspace,
             created_at=utc_now(),
             updated_at=utc_now(),
@@ -1164,7 +1303,7 @@ class TestConversationWebhookSubscriber:
         # Create sample conversation info
         conversation_info = ConversationInfo(
             id=uuid4(),
-            agent=mock_event_service.stored.agent,
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=mock_event_service.stored.workspace,
             created_at=utc_now(),
             updated_at=utc_now(),
@@ -1205,7 +1344,7 @@ class TestConversationWebhookSubscriber:
         # Create sample conversation info
         conversation_info = ConversationInfo(
             id=uuid4(),
-            agent=mock_event_service.stored.agent,
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=mock_event_service.stored.workspace,
             created_at=utc_now(),
             updated_at=utc_now(),
