@@ -404,22 +404,22 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         if not self.host or self.host == "undefined":
             raise RuntimeError("Workspace host is not set")
 
-        resolved_profile_name = profile_name
-        settings_response: SettingsResponse | None = None
-        if resolved_profile_name is None:
+        if profile_name is None:
             settings_response = self._fetch_settings_response()
             resolved_profile_name = settings_response.active_profile
-
-        if resolved_profile_name is None:
-            agent_settings = settings_response.get_agent_settings()
-            if not llm_kwargs:
-                return agent_settings.llm
-            llm_data = agent_settings.llm.model_dump(
-                context={"expose_secrets": "plaintext"}
-            )
+            if resolved_profile_name is None:
+                agent_settings = settings_response.get_agent_settings()
+                if not llm_kwargs:
+                    return agent_settings.llm
+                llm_data = agent_settings.llm.model_dump(
+                    context={"expose_secrets": "plaintext"}
+                )
+            else:
+                llm_data = self._fetch_llm_profile_config(resolved_profile_name)
+                llm_data["usage_id"] = f"profile:{resolved_profile_name}"
         else:
-            llm_data = self._fetch_llm_profile_config(resolved_profile_name)
-            llm_data["usage_id"] = f"profile:{resolved_profile_name}"
+            llm_data = self._fetch_llm_profile_config(profile_name)
+            llm_data["usage_id"] = f"profile:{profile_name}"
 
         llm_data.update(llm_kwargs)
         return LLM(**llm_data)
