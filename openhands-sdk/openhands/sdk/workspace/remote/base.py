@@ -411,11 +411,6 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             resolved_profile_name = settings_response.active_profile
 
         if resolved_profile_name is None:
-            assert settings_response is not None  # reachable only via the fetch above
-            logger.warning(
-                "No active LLM profile is configured; falling back to legacy "
-                "agent_settings.llm. Set an active profile to avoid stale settings."
-            )
             agent_settings = settings_response.get_agent_settings()
             if not llm_kwargs:
                 return agent_settings.llm
