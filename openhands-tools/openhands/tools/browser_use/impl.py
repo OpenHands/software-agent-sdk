@@ -219,7 +219,10 @@ def _playwright_chromium_paths(
 
 def _playwright_build_sort_key(chromium_dir: Path) -> tuple[int, str]:
     build = chromium_dir.name.removeprefix("chromium-")
-    build_number = int(build) if build.isdigit() else -1
+    try:
+        build_number = int(build) if build.isdigit() else -1
+    except ValueError:
+        build_number = -1
     return build_number, chromium_dir.name
 
 
@@ -245,11 +248,17 @@ def _playwright_chromium_install_paths(
 
 
 def _is_browser_executable(path: Path, platform: str | None = None) -> bool:
-    if not path.exists():
+    current_platform = _current_platform(platform)
+    try:
+        if not path.exists():
+            return False
+        if current_platform != "win32":
+            return True
+        return path.is_file() and os.access(path, os.X_OK)
+    except OSError:
+        if current_platform != "win32":
+            raise
         return False
-    if _current_platform(platform) != "win32":
-        return True
-    return path.is_file() and os.access(path, os.X_OK)
 
 
 def _path_binary_candidates(platform: str | None = None) -> tuple[str, ...]:

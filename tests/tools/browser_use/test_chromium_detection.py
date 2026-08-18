@@ -7,7 +7,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from openhands.tools.browser_use.impl import BrowserToolExecutor, _install_chromium
+from openhands.tools.browser_use.impl import (
+    BrowserToolExecutor,
+    _install_chromium,
+    _is_browser_executable,
+    _playwright_build_sort_key,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -137,6 +142,114 @@ def test_windows_uses_older_playwright_build_when_latest_is_invalid(
     result = BrowserToolExecutor.check_chromium_available()
 
     assert result == str(older_chromium)
+
+
+def test_windows_skips_playwright_candidate_with_metadata_error(
+    windows_browser_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    newest_chromium = _create_executable(
+        windows_browser_paths["playwright_cache"]
+        / "chromium-1300"
+        / "chrome-win64"
+        / "chrome.exe"
+    )
+    older_chromium = _create_executable(
+        windows_browser_paths["playwright_cache"]
+        / "chromium-1200"
+        / "chrome-win64"
+        / "chrome.exe"
+    )
+    original_exists = Path.exists
+
+    def metadata_error(path: Path):
+        if path == newest_chromium:
+            raise PermissionError("candidate metadata is unavailable")
+        return original_exists(path)
+
+    monkeypatch.setattr(Path, "exists", metadata_error)
+
+    assert BrowserToolExecutor.check_chromium_available() == str(older_chromium)
+
+
+def test_windows_falls_back_when_all_playwright_candidates_have_metadata_errors(
+    windows_browser_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    newest_chromium = _create_executable(
+        windows_browser_paths["playwright_cache"]
+        / "chromium-1300"
+        / "chrome-win64"
+        / "chrome.exe"
+    )
+    older_chromium = _create_executable(
+        windows_browser_paths["playwright_cache"]
+        / "chromium-1200"
+        / "chrome-win64"
+        / "chrome.exe"
+    )
+    system_chrome = _create_executable(
+        windows_browser_paths["program_files"]
+        / "Google"
+        / "Chrome"
+        / "Application"
+        / "chrome.exe"
+    )
+    unreadable_candidates = {newest_chromium, older_chromium}
+    original_exists = Path.exists
+
+    def metadata_error(path: Path):
+        if path in unreadable_candidates:
+            raise PermissionError("candidate metadata is unavailable")
+        return original_exists(path)
+
+    monkeypatch.setattr(Path, "exists", metadata_error)
+
+    assert BrowserToolExecutor.check_chromium_available() == str(system_chrome)
+
+
+def test_non_windows_candidate_metadata_error_is_preserved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    candidate = tmp_path / "chromium"
+
+    def metadata_error(_path: Path):
+        raise PermissionError("candidate metadata is unavailable")
+
+    monkeypatch.setattr(Path, "exists", metadata_error)
+
+    with pytest.raises(PermissionError, match="metadata is unavailable"):
+        _is_browser_executable(candidate, "linux")
+
+
+def test_windows_ranks_unparseable_build_after_numeric_build(
+    windows_browser_paths: dict[str, Path],
+):
+    malformed_chromium = _create_executable(
+        windows_browser_paths["playwright_cache"]
+        / "chromium-²"
+        / "chrome-win64"
+        / "chrome.exe"
+    )
+    numeric_chromium = _create_executable(
+        windows_browser_paths["playwright_cache"]
+        / "chromium-1200"
+        / "chrome-win64"
+        / "chrome.exe"
+    )
+
+    assert malformed_chromium.is_file()
+    assert BrowserToolExecutor.check_chromium_available() == str(numeric_chromium)
+
+
+def test_playwright_build_sort_key_handles_extreme_revision():
+    build = "9" * 5000
+
+    assert _playwright_build_sort_key(Path(f"chromium-{build}")) == (
+        -1,
+        f"chromium-{build}",
+    )
 
 
 def test_windows_discovers_playwright_hermetic_cache(
