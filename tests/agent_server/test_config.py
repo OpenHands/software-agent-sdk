@@ -40,6 +40,14 @@ def test_load_config_reads_registered_marketplaces_from_env(monkeypatch, tmp_pat
     assert registration.auto_load is True
 
 
+def test_load_config_reads_telemetry_deployment_kind_from_env(monkeypatch, tmp_path):
+    config_path = tmp_path / "missing.json"
+    monkeypatch.setenv(CONFIG_PATH_ENV, str(config_path))
+    monkeypatch.setenv("OH_TELEMETRY_DEPLOYMENT_KIND", "saas")
+
+    assert load_config().telemetry.deployment_kind == "saas"
+
+
 def test_conversation_idle_ttl_defaults_to_twenty_minutes():
     assert DEFAULT_CONVERSATION_IDLE_TTL_SECONDS == 1200.0
     assert Config().conversation_idle_ttl_seconds == 1200.0

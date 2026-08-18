@@ -22,6 +22,8 @@ from typing import Annotated, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
+from openhands.agent_server.telemetry_types import DeploymentKind
+
 
 TELEMETRY_SCHEMA_VERSION: Final[int] = 1
 
@@ -144,6 +146,7 @@ class RuntimeProperties(BaseModel):
     python_version: SafeToken
     platform: SafeToken
     deferred_init: bool
+    deployment_kind: DeploymentKind = "local"
     source: Literal["openhands-agent-server"] = "openhands-agent-server"
 
 
@@ -290,6 +293,7 @@ EXPECTED_PROPERTY_NAMES: Final[frozenset[str]] = frozenset(
         "python_version",
         "platform",
         "deferred_init",
+        "deployment_kind",
         "source",
         "$insert_id",
         "conversation_ref",
