@@ -421,3 +421,17 @@ def test_agent_type_annotation_on_basemodel_works_json() -> None:
     assert isinstance(deserialized_model.agent, Agent)
     assert deserialized_model.agent.model_dump() == agent.model_dump()
     assert deserialized_model.model_dump() == model.model_dump()
+
+
+def test_include_default_tools_serialization_default() -> None:
+    """Test that include_default_tools serializes correctly with default value."""
+    llm = LLM(model="test-model", usage_id="test-llm")
+    agent = Agent(llm=llm, tools=[])
+
+    # Serialize to JSON
+    agent_json = agent.model_dump_json()
+    agent_dict = json.loads(agent_json)
+
+    # Default should include both FinishTool and ThinkTool as strings
+    assert "include_default_tools" in agent_dict
+    assert set(agent_dict["include_default_tools"]) == {"FinishTool", "ThinkTool"}
