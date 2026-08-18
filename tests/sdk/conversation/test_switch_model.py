@@ -736,11 +736,11 @@ def test_switch_llm_to_subscription_profile_keeps_condenser(
     assert conv.agent.llm.is_subscription
     # Condenser must NOT be disabled for subscription LLMs — the condenser's
     # own LLM config differs from the agent's, so it is preserved as-is.
-    assert conv.agent.condenser is not None
-    assert conv.state.agent.condenser is not None
+    assert conv.agent.condenser is condenser
+    assert conv.state.agent.condenser is condenser
 
     conv.switch_llm(_make_llm("regular-model", "regular"))
 
     assert conv.agent.llm.model == "regular-model"
-    assert conv.agent.condenser is not None
-    assert conv.state.agent.condenser is not None
+    assert conv.agent.condenser is condenser
+    assert conv.state.agent.condenser is condenser
