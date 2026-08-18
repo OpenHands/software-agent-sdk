@@ -559,6 +559,31 @@ def test_get_llm_without_active_profile_falls_back_to_legacy(monkeypatch):
     }
 
 
+def test_get_llm_with_empty_active_profile_falls_back_to_legacy(monkeypatch):
+    """Malformed empty active_profile values use the legacy fallback."""
+    monkeypatch.setenv("ALLOW_SHORT_CONTEXT_WINDOWS", "true")
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/tmp")
+
+    settings_response = Mock()
+    settings_response.json.return_value = {
+        "agent_settings": {"llm": {"model": "gpt-4", "api_key": "sk-legacy"}},
+        "conversation_settings": {},
+        "llm_api_key_is_set": True,
+        "active_profile": "",
+    }
+    settings_response.raise_for_status = Mock()
+
+    client = MagicMock()
+    client.get.return_value = settings_response
+    workspace._client = client
+
+    assert workspace.get_llm().model == "gpt-4"
+    assert [call.args[0] for call in client.get.call_args_list] == [
+        "/api/settings",
+        "/api/settings",
+    ]
+
+
 def test_get_llm_with_kwargs_override(monkeypatch):
     """Test get_llm allows kwargs to override persisted settings."""
     from pydantic import SecretStr

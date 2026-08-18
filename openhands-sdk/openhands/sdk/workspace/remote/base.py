@@ -405,7 +405,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         if profile_name is None:
             settings_response = self._fetch_settings_response(expose_secrets=False)
             resolved_profile_name = settings_response.active_profile
-            if resolved_profile_name is None:
+            if not resolved_profile_name:
                 settings_response = self._fetch_settings_response()
                 agent_settings = settings_response.get_agent_settings()
                 if not llm_kwargs:
