@@ -5,6 +5,16 @@ from openhands.sdk.llm.auth import (
     OpenAISubscriptionAuth,
 )
 from openhands.sdk.llm.call_context import LLMCallContext
+from openhands.sdk.llm.cleanup_profile import (
+    CLEANUP_PROFILE_NAME,
+    aclean_outward_text,
+    clean_outward_text,
+)
+from openhands.sdk.llm.cleanup_profile import (
+    CLEANUP_PROFILE_NAME,
+    aclean_outward_text,
+    clean_outward_text,
+)
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.llm import LLM, LLM_PROFILE_SCHEMA_VERSION
 from openhands.sdk.llm.llm_profile_store import (
@@ -46,6 +56,9 @@ __all__ = [
     "OpenAISubscriptionAuth",
     "OPENAI_CODEX_MODELS",
     # Core
+    "CLEANUP_PROFILE_NAME",
+    "aclean_outward_text",
+    "clean_outward_text",
     "FallbackStrategy",
     "LLMResponse",
     "LLM",

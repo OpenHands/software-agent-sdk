@@ -72,7 +72,6 @@ def _probe_auto_title_spans() -> dict[str, Any]:
 
     stored = StoredConversation(
         id=uuid4(),
-        agent=agent,
         workspace=LocalWorkspace(working_dir="workspace/project"),
         confirmation_policy=NeverConfirm(),
         initial_message=None,

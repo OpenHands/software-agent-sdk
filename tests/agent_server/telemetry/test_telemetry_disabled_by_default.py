@@ -6,10 +6,11 @@ import sys
 from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import create_app
-from openhands.agent_server.config import Config
+from openhands.agent_server.config import Config, TelemetrySpec
 from openhands.agent_server.telemetry import (
     NoOpTelemetrySink,
     build_telemetry_sink,
+    get_event_factory,
     get_telemetry_sink,
 )
 
@@ -23,6 +24,22 @@ async def test_building_from_a_default_config_stays_a_noop(temp_persistence_dir)
     sink = await build_telemetry_sink(Config(static_files_path=None))
     assert isinstance(sink, NoOpTelemetrySink)
     assert sink.enabled is False
+
+
+async def test_building_sink_carries_configured_deployment_kind(
+    temp_persistence_dir,
+):
+    sink = await build_telemetry_sink(
+        Config(
+            static_files_path=None, telemetry=TelemetrySpec(deployment_kind="remote")
+        )
+    )
+    try:
+        factory = get_event_factory()
+        assert factory is not None
+        assert factory.runtime.deployment_kind == "remote"
+    finally:
+        await sink.aclose()
 
 
 async def test_opt_in_without_an_api_key_stays_inactive(config_factory):
@@ -57,7 +74,7 @@ def test_importing_the_telemetry_package_does_not_import_posthog():
 import sys
 
 import openhands.agent_server.telemetry as t
-from openhands.agent_server.config import Config
+from openhands.agent_server.config import Config, TelemetrySpec
 from openhands.agent_server.api import create_app
 
 assert "posthog" not in sys.modules, "importing telemetry pulled in posthog"
@@ -118,7 +135,6 @@ async def test_conversation_service_reads_the_live_sink_not_a_captured_one(
         DiagnosticEventFactory,
         build_runtime_properties,
     )
-    from openhands.sdk import LLM, Agent
     from openhands.sdk.security.confirmation_policy import NeverConfirm
     from openhands.sdk.workspace import LocalWorkspace
 
@@ -157,6 +173,7 @@ async def test_conversation_service_reads_the_live_sink_not_a_captured_one(
     class _FakeEventService:
         def __init__(self):
             self.subscribers: list[object] = []
+            self._conversation = None
 
         async def subscribe_to_events(self, subscriber):
             self.subscribers.append(subscriber)
@@ -164,7 +181,6 @@ async def test_conversation_service_reads_the_live_sink_not_a_captured_one(
     event_service = _FakeEventService()
     stored = StoredConversation(
         id=uuid4(),
-        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test"), tools=[]),
         workspace=LocalWorkspace(working_dir=str(tmp_path)),
         confirmation_policy=NeverConfirm(),
         initial_message=None,

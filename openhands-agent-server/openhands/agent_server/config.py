@@ -14,6 +14,7 @@ from openhands.agent_server.env_parser import (
     get_env_parser,
     merge,
 )
+from openhands.agent_server.telemetry_types import DeploymentKind
 from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.utils.cipher import Cipher
 
@@ -135,13 +136,19 @@ TelemetryExporterKind = Literal["none", "posthog", "http"]
 class TelemetrySpec(BaseModel):
     """Deployment-supplied product-analytics transport settings.
 
-    This carries *transport* only. Whether telemetry may be delivered is
-    resolved from consent (``misc_settings.telemetry.consent``, optionally
-    seeded or overridden by ``OH_TELEMETRY_CONSENT``) — there is no deployment
-    "mode" here, and nothing in the agent-server special-cases a hosted
-    deployment.
+    This carries transport plus the non-identifying deployment tag. Whether
+    telemetry may be delivered is resolved from consent
+    (``misc_settings.telemetry.consent``, optionally seeded or overridden by
+    ``OH_TELEMETRY_CONSENT``).
     """
 
+    deployment_kind: DeploymentKind = Field(
+        default="local",
+        description=(
+            "Deployment kind attached to diagnostic events. Use 'remote' for "
+            "hosted OpenHands and 'local' for self-hosted or developer runs."
+        ),
+    )
     exporter: TelemetryExporterKind = Field(
         default="none",
         description=(
