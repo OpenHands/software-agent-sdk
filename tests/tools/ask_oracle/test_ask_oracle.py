@@ -23,6 +23,7 @@ from openhands.tools.ask_oracle import (
     AskOracleObservation,
     AskOracleTool,
 )
+from openhands.tools.ask_oracle.impl import AskOracleExecutor
 
 
 class CapturingTestLLM(TestLLM):
@@ -110,6 +111,15 @@ def test_ask_oracle_tool_added_by_name() -> None:
     assert "ask_oracle" in conversation.agent.tools_map
 
 
+def test_ask_oracle_tool_requires_active_conversation() -> None:
+    observation = AskOracleExecutor()(
+        AskOracleAction(question="What should I do next?")
+    )
+
+    assert observation.is_error
+    assert observation.text == "Cannot ask the Oracle without an active conversation."
+
+
 def test_ask_oracle_tool_returns_oracle_recommendation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -144,7 +154,6 @@ def test_ask_oracle_tool_returns_oracle_recommendation(
 
     assert isinstance(observation, AskOracleObservation)
     assert not observation.is_error
-    assert observation.response == "Prefer the smaller, typed settings field."
     assert observation.text == "Prefer the smaller, typed settings field."
     assert "Prefer the smaller" in observation.visualize.plain
     assert [message.role for message in oracle_llm.last_messages] == ["system", "user"]
@@ -176,7 +185,6 @@ def test_ask_oracle_tool_reports_missing_profile(
 
     assert isinstance(observation, AskOracleObservation)
     assert observation.is_error
-    assert observation.response == ""
     assert "not available" in observation.text
     assert ORACLE_PROFILE_NAME in observation.text
 
@@ -207,5 +215,4 @@ def test_ask_oracle_tool_reports_empty_oracle_response(
 
     assert isinstance(observation, AskOracleObservation)
     assert observation.is_error
-    assert observation.response == ""
     assert "did not return a response" in observation.text

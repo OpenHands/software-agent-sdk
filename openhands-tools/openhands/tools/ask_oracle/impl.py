@@ -117,7 +117,4 @@ class AskOracleExecutor(ToolExecutor[AskOracleAction, AskOracleObservation]):
                 is_error=True,
             )
 
-        return AskOracleObservation.from_text(
-            text=oracle_text,
-            response=oracle_text,
-        )
+        return AskOracleObservation.from_text(text=oracle_text)

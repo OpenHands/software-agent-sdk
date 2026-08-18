@@ -56,11 +56,6 @@ class AskOracleAction(Action):
 class AskOracleObservation(Observation):
     """Observation returned by the Oracle consultation."""
 
-    response: str = Field(
-        default="",
-        description="Text response returned by the Oracle.",
-    )
-
     @property
     def visualize(self) -> Text:
         content = Text()
