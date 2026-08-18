@@ -18,7 +18,9 @@ from openhands.sdk.llm import (
     ImageContent,
     Message,
     MessageToolCall,
+    ReasoningItemModel,
     TextContent,
+    ThinkingBlock,
 )
 from openhands.sdk.tool import Action, Observation
 
@@ -328,6 +330,75 @@ class TestEventsToMessages:
         # All should be weather function calls
         for tool_call in tool_calls:
             assert tool_call.name == "get_current_weather"
+
+    def test_parallel_batch_preserves_first_event_reasoning(self):
+        """The combined message keeps the first event's reasoning state.
+
+        ThinkingBlock's own docstring requires these blocks be preserved and
+        passed back to the API for tool use scenarios — so a batched message
+        must carry them exactly like a singleton does.
+        """
+        first = ActionEvent(
+            source="agent",
+            thought=[TextContent(text="batching two calls")],
+            reasoning_content="step-by-step reasoning",
+            thinking_blocks=[ThinkingBlock(thinking="let me think", signature="sig-1")],
+            action=EventsToMessagesMockAction(command="one"),
+            tool_name="terminal",
+            tool_call_id="call_1",
+            tool_call=create_tool_call("call_1", "terminal", {"command": "one"}),
+            llm_response_id="response_reasoning",
+        )
+        second = ActionEvent(
+            source="agent",
+            thought=[],
+            action=EventsToMessagesMockAction(command="two"),
+            tool_name="terminal",
+            tool_call_id="call_2",
+            tool_call=create_tool_call("call_2", "terminal", {"command": "two"}),
+            llm_response_id="response_reasoning",
+        )
+
+        events = [first, second]
+        messages = LLMConvertibleEvent.events_to_messages(events)  # type: ignore
+
+        assert len(messages) == 1
+        combined = messages[0]
+        assert combined.reasoning_content == "step-by-step reasoning"
+        assert len(combined.thinking_blocks) == 1
+        assert combined.thinking_blocks[0].thinking == "let me think"  # type: ignore
+
+    def test_parallel_batch_preserves_responses_reasoning_item(self):
+        """A singleton keeps its responses reasoning item; a batch must too."""
+        first = ActionEvent(
+            source="agent",
+            thought=[TextContent(text="batching two calls")],
+            responses_reasoning_item=ReasoningItemModel(
+                id="rs_1", summary=["reasoned about the batch"]
+            ),
+            action=EventsToMessagesMockAction(command="one"),
+            tool_name="terminal",
+            tool_call_id="call_1",
+            tool_call=create_tool_call("call_1", "terminal", {"command": "one"}),
+            llm_response_id="response_reasoning_item",
+        )
+        second = ActionEvent(
+            source="agent",
+            thought=[],
+            action=EventsToMessagesMockAction(command="two"),
+            tool_name="terminal",
+            tool_call_id="call_2",
+            tool_call=create_tool_call("call_2", "terminal", {"command": "two"}),
+            llm_response_id="response_reasoning_item",
+        )
+
+        events = [first, second]
+        messages = LLMConvertibleEvent.events_to_messages(events)  # type: ignore
+
+        assert len(messages) == 1
+        combined = messages[0]
+        assert combined.responses_reasoning_item is not None
+        assert combined.responses_reasoning_item.id == "rs_1"
 
     def test_multiple_separate_action_events(self):
         """Test multiple ActionEvents with different response_ids (separate calls)."""
