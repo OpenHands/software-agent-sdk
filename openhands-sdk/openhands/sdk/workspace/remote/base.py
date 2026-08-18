@@ -321,15 +321,11 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
     # settings endpoints. Subclasses like OpenHandsCloudWorkspace may override
     # to use alternative endpoints (e.g., Cloud API).
 
-    def _fetch_settings_response(self) -> SettingsResponse:
-        """Call ``GET /api/settings`` with plaintext secret exposure.
-
-        Keep the outer response available so default LLM resolution can honor
-        ``active_profile`` rather than discarding the pointer and silently using
-        a stale ``agent_settings.llm`` payload.
-        """
+    def _fetch_settings_response(self, *, expose_secrets: bool = True) -> SettingsResponse:
+        """Call ``GET /api/settings`` and return the validated response."""
         headers = dict(self._headers)
-        headers["X-Expose-Secrets"] = "plaintext"
+        if expose_secrets:
+            headers["X-Expose-Secrets"] = "plaintext"
 
         response = self.client.get("/api/settings", headers=headers)
         response.raise_for_status()
@@ -378,7 +374,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         If no ``active_profile`` is configured, the legacy
         ``agent_settings.llm`` payload is used as a fallback (preserving
         backward compatibility for servers that have not adopted named
-        profiles), with a warning.
+        profiles).
 
         Args:
             profile_name: Optional LLM profile name. When provided, loads that
@@ -405,9 +401,10 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             raise RuntimeError("Workspace host is not set")
 
         if profile_name is None:
-            settings_response = self._fetch_settings_response()
+            settings_response = self._fetch_settings_response(expose_secrets=False)
             resolved_profile_name = settings_response.active_profile
             if resolved_profile_name is None:
+                settings_response = self._fetch_settings_response()
                 agent_settings = settings_response.get_agent_settings()
                 if not llm_kwargs:
                     return agent_settings.llm

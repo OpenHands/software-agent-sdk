@@ -544,11 +544,19 @@ def test_get_llm_without_active_profile_falls_back_to_legacy(monkeypatch):
     assert isinstance(llm.api_key, SecretStr)
     assert llm.api_key.get_secret_value() == "sk-legacy"
 
-    # Only /api/settings is fetched; no profile lookup since active_profile is None.
-    client.get.assert_called_once_with(
+    # Discovery avoids exposing legacy credentials; the fallback fetches them only
+    # when active_profile is absent.
+    assert [call.args[0] for call in client.get.call_args_list] == [
         "/api/settings",
-        headers={"X-Session-API-Key": "test-key", "X-Expose-Secrets": "plaintext"},
-    )
+        "/api/settings",
+    ]
+    assert client.get.call_args_list[0].kwargs["headers"] == {
+        "X-Session-API-Key": "test-key"
+    }
+    assert client.get.call_args_list[1].kwargs["headers"] == {
+        "X-Session-API-Key": "test-key",
+        "X-Expose-Secrets": "plaintext",
+    }
 
 
 def test_get_llm_with_kwargs_override(monkeypatch):
