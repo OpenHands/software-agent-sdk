@@ -188,6 +188,23 @@ def test_condense_returns_condensation_when_needed(mock_llm: LLM) -> None:
     cast(MagicMock, mock_llm.completion).assert_called_once()
 
 
+def test_condense_uses_responses_api_when_required(mock_llm: LLM) -> None:
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=3)
+    cast(Any, mock_llm).set_mock_response_content("Summary from responses")
+    mock_llm.uses_responses_api = lambda: True
+    cast(Any, mock_llm.responses).return_value = cast(
+        Any, mock_llm.completion
+    ).return_value
+
+    view = View.from_events([message_event(f"Event {i}") for i in range(11)])
+    result = condenser.condense(view)
+
+    assert isinstance(result, Condensation)
+    assert result.summary == "Summary from responses"
+    cast(MagicMock, mock_llm.responses).assert_called_once()
+    cast(MagicMock, mock_llm.completion).assert_not_called()
+
+
 def test_get_condensation_with_previous_summary(mock_llm: LLM) -> None:
     """Test that condenser properly handles previous summary content."""
     max_size = 10

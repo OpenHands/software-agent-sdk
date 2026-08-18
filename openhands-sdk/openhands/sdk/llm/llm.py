@@ -918,9 +918,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def requires_streaming(self) -> bool:
         """Whether the provider requires stream=True for all requests.
 
-        Subscription LLMs (Codex API) must stream — the endpoint rejects
-        non-streaming requests. Other providers may set this independently
-        in the future.
+        Set when the underlying endpoint rejects non-streaming requests;
+        callers must leave streaming enabled and must not require an
+        on_token callback because the response is drained internally.
         """
         return self._is_subscription
 
@@ -1767,9 +1767,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if user_enable_streaming and on_token is None and not self.requires_streaming:
             # Gracefully degrade to non-streaming rather than crashing a run when
-            # streaming is requested without a callback wired (providers that
-            # require streaming are exempt — they stream internally without
-            # an on_token). See #4014.
+            # streaming is requested without a callback wired. Providers that
+            # require streaming are exempt — they drain the stream internally
+            # without an on_token callback. See requires_streaming and #4014.
             logger.debug(
                 "Streaming requested without an on_token callback; "
                 "falling back to a non-streaming responses call."
@@ -1918,9 +1918,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if user_enable_streaming and on_token is None and not self.requires_streaming:
             # Gracefully degrade to non-streaming rather than crashing a run when
-            # streaming is requested without a callback wired (providers that
-            # require streaming are exempt — they stream internally without
-            # an on_token). See #4014.
+            # streaming is requested without a callback wired. Providers that
+            # require streaming are exempt — they drain the stream internally
+            # without an on_token callback. See requires_streaming and #4014.
             logger.debug(
                 "Streaming requested without an on_token callback; "
                 "falling back to a non-streaming responses call."
