@@ -31,6 +31,7 @@ from openhands.sdk.agent.acp_file_credentials import (
 )
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.events_list_base import EventsListBase
+from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.goal import (
     GoalController,
     GoalDone,
@@ -64,6 +65,7 @@ from openhands.sdk.event import (
     ObservationBaseEvent,
     StreamingDeltaEvent,
 )
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
@@ -656,6 +658,25 @@ class EventService:
             if state.execution_status != ConversationExecutionStatus.ERROR:
                 state.execution_status = ConversationExecutionStatus.ERROR
 
+    def _publish_backstop_error_event_sync(self, exc: BaseException) -> None:
+        """Emit a ConversationErrorEvent so the UI sees the failure detail.
+
+        For failures that escape run()/arun()'s own emission (issue #16686).
+        Best-effort: never raises (the caller is an error handler).
+        """
+        if not self._conversation:
+            return
+        try:
+            error_event = ConversationErrorEvent(
+                source="environment",
+                code=type(exc).__name__,
+                detail=str(exc),
+            )
+            with self._conversation._state:
+                self._conversation._on_event(error_event)
+        except Exception:
+            logger.exception("Failed to publish backstop ConversationErrorEvent")
+
     def _create_state_update_event_sync(self) -> ConversationStateUpdateEvent:
         if not self._conversation:
             raise ValueError("inactive_service")
@@ -1226,7 +1247,7 @@ class EventService:
                         await conversation.arun()
                     else:
                         await loop.run_in_executor(self._run_executor, conversation.run)
-                except Exception:
+                except Exception as exc:
                     logger.exception("Error during conversation run")
                     # Backstop: a run that raised before reaching its own error
                     # handling (e.g. an ACP cold-start failure in init_state,
@@ -1234,6 +1255,14 @@ class EventService:
                     # status at IDLE/RUNNING. Force ERROR so the finally's
                     # _publish_state_update() surfaces the failure instead of a
                     # misleading non-error state.
+                    #
+                    # Also surface the detail to the UI (issue #16686). A
+                    # ConversationRunError means run()/arun() already emitted its
+                    # own event, so skip it there to avoid duplicating the error.
+                    if not isinstance(exc, ConversationRunError):
+                        await loop.run_in_executor(
+                            None, self._publish_backstop_error_event_sync, exc
+                        )
                     await loop.run_in_executor(None, self._mark_error_status_sync)
                 finally:
                     # Wait for all pending events to be published via
