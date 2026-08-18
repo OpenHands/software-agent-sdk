@@ -193,7 +193,9 @@ def test_list_summaries_marks_broken_when_connection_deleted(tmp_path):
     provider = ProviderConnectionStore(base_dir=tmp_path / "conns")
     provider.create(_connection())
     profiles = LLMProfileStore(base_dir=tmp_path / "profiles", provider_store=provider)
-    profiles.save("p", LLM(model="anthropic/claude-sonnet-4", provider_connection_id="conn1"))
+    profiles.save(
+        "p", LLM(model="anthropic/claude-sonnet-4", provider_connection_id="conn1")
+    )
 
     # Confirm not broken before deletion.
     assert profiles.list_summaries()[0]["provider_connection_broken"] is False

@@ -108,7 +108,11 @@ class ProviderConnection(BaseModel):
         if v is None:
             return None
         secret_value = v.get_secret_value() if isinstance(v, SecretStr) else v
-        if not secret_value or not secret_value.strip() or is_redacted_secret(secret_value):
+        if (
+            not secret_value
+            or not secret_value.strip()
+            or is_redacted_secret(secret_value)
+        ):
             return None
         cipher = (info.context or {}).get("cipher")
         if cipher is not None and secret_value.startswith(FERNET_TOKEN_PREFIX):

@@ -1652,7 +1652,7 @@ def test_get_profile_maps_corrupted_provider_file(client, temp_profiles_dir):
 
 
 def test_patch_provider_connection_rejects_null_display_name(client):
-    """Fix: PATCH display_name=null must return 422, not persist null and poison the store."""
+    """Fix: PATCH display_name=null must return 422, not persist null."""
     connection_id = client.post(
         "/api/llm/provider-connections",
         json={
@@ -1689,4 +1689,3 @@ def test_patch_provider_connection_rejects_null_provider(client):
         json={"provider": None},
     )
     assert response.status_code == 422
-

@@ -61,7 +61,7 @@ class ProviderConnectionUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     @model_validator(mode="after")
-    def _reject_null_required_fields(self) -> "ProviderConnectionUpdateRequest":
+    def _reject_null_required_fields(self) -> ProviderConnectionUpdateRequest:
         # Only `base_url` may be set to null (to clear it). `display_name` and
         # `provider` are required on the stored model; accepting explicit null on
         # PATCH would persist a null that poisons every subsequent store read.
