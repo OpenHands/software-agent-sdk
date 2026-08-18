@@ -66,7 +66,7 @@ def parse_extension_source(source: str) -> tuple[SourceType, str]:
                 f"Invalid GitHub shorthand format: {source}. "
                 f"Expected format: github:owner/repo"
             )
-        url = f"https://github.com/{repo_path}.git"
+        url = normalize_git_url(f"https://github.com/{repo_path}")
         return (SourceType.GITHUB, url)
 
     # Git URLs: detect by protocol/scheme rather than enumerating providers
