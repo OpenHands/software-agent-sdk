@@ -7,6 +7,7 @@ from typing import cast
 import pytest
 
 from openhands.sdk.event.base import LLMConvertibleEvent
+from openhands.sdk.event.condenser import CondensationSummaryEvent
 from openhands.sdk.event.llm_convertible import (
     ActionEvent,
     AgentErrorEvent,
@@ -138,6 +139,107 @@ class TestEventsToMessages:
             "Implement the feature",
             "Relevant project context",
         ]
+
+    def test_user_message_merge_cascades_across_three_events(self):
+        """A merged message stays a plain user turn, so the merge cascades."""
+        first = MessageEvent(
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="one")]),
+        )
+        second = MessageEvent(
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="two")]),
+        )
+        third = MessageEvent(
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="three")]),
+        )
+
+        events = cast(list[LLMConvertibleEvent], [first, second, third])
+        messages = LLMConvertibleEvent.events_to_messages(events)
+
+        assert [message.role for message in messages] == ["user"]
+        assert [
+            content.text
+            for content in messages[0].content
+            if isinstance(content, TextContent)
+        ] == ["one", "two", "three"]
+
+    def test_user_message_merge_preserves_mixed_content_order(self):
+        """Merged content concatenates in log order, text and images alike."""
+        text_first = MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user", content=[TextContent(text="what is in this image?")]
+            ),
+        )
+        image_second = MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user",
+                content=[ImageContent(image_urls=["http://example.com/a.png"])],
+            ),
+        )
+
+        events = cast(list[LLMConvertibleEvent], [text_first, image_second])
+        messages = LLMConvertibleEvent.events_to_messages(events)
+
+        assert len(messages) == 1
+        assert [type(content) for content in messages[0].content] == [
+            TextContent,
+            ImageContent,
+        ]
+
+    def test_events_to_messages_does_not_mutate_input_events(self):
+        """Merging must not leak into the source events' stored messages."""
+        first = MessageEvent(
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="one")]),
+        )
+        second = MessageEvent(
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="two")]),
+        )
+        events = cast(list[LLMConvertibleEvent], [first, second])
+
+        first_pass = LLMConvertibleEvent.events_to_messages(events)
+        assert len(first_pass[0].content) == 2
+
+        # The events' own messages are untouched, so a second projection over
+        # the same log produces the same output instead of merging twice.
+        assert len(first.llm_message.content) == 1
+        assert len(second.llm_message.content) == 1
+        second_pass = LLMConvertibleEvent.events_to_messages(events)
+        assert len(second_pass[0].content) == 2
+
+    def test_condensation_summary_merges_with_adjacent_user_message(self):
+        """A summary event converts to a plain user message, so it coalesces.
+
+        The summarizing condenser inserts the summary where the forgotten
+        block began (summary_offset == forgetting_start), and the kept suffix
+        can legally begin with a user message — so this adjacency is
+        reachable, and the fusion erases the summary's structural boundary.
+        """
+        summary_event = CondensationSummaryEvent(
+            summary="Earlier we refactored the module."
+        )
+        user_after = MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user", content=[TextContent(text="Now continue.")]
+            ),
+        )
+
+        events = cast(list[LLMConvertibleEvent], [summary_event, user_after])
+        messages = LLMConvertibleEvent.events_to_messages(events)
+
+        assert len(messages) == 1
+        assert messages[0].role == "user"
+        assert [
+            content.text
+            for content in messages[0].content
+            if isinstance(content, TextContent)
+        ] == ["Earlier we refactored the module.", "Now continue."]
 
     def test_user_messages_with_tool_call_id_not_merged(self):
         """Tool-result user messages must not be coalesced."""
@@ -431,6 +533,92 @@ class TestEventsToMessages:
         assert messages[1].role == "assistant"
         assert messages[1].content[0].text == "Second command"  # type: ignore
         assert messages[1].tool_calls[0].id == "call_2"  # type: ignore
+
+    def test_trailing_parallel_batch_at_end_of_stream(self):
+        """A parallel batch as the LAST events survives intact, in log order."""
+        user_msg = MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user", content=[TextContent(text="do three things")]
+            ),
+        )
+        first = create_action_event(
+            thought_text="batching all three",
+            tool_name="terminal",
+            tool_call_id="call_1",
+            llm_response_id="response_tail",
+            action_args={"command": "one"},
+        )
+        second = ActionEvent(
+            source="agent",
+            thought=[],  # Empty thought for subsequent calls in a parallel batch
+            action=EventsToMessagesMockAction(command="two"),
+            tool_name="terminal",
+            tool_call_id="call_2",
+            tool_call=create_tool_call("call_2", "terminal", {"command": "two"}),
+            llm_response_id="response_tail",
+        )
+        third = ActionEvent(
+            source="agent",
+            thought=[],  # Empty thought for subsequent calls in a parallel batch
+            action=EventsToMessagesMockAction(command="three"),
+            tool_name="terminal",
+            tool_call_id="call_3",
+            tool_call=create_tool_call("call_3", "terminal", {"command": "three"}),
+            llm_response_id="response_tail",
+        )
+
+        events = [user_msg, first, second, third]
+        messages = LLMConvertibleEvent.events_to_messages(events)  # type: ignore
+
+        assert len(messages) == 2
+        tail = messages[-1]
+        assert tail.role == "assistant"
+        # Exact sequence, not membership: order within the batch is log order.
+        assert [tc.id for tc in tail.tool_calls] == [  # type: ignore
+            "call_1",
+            "call_2",
+            "call_3",
+        ]
+
+    def test_interleaved_response_ids_do_not_batch(self):
+        """Only ADJACENT same-response-id actions recombine into one message."""
+        action_a1 = create_action_event(
+            thought_text="First call of response 1",
+            tool_name="terminal",
+            tool_call_id="call_a1",
+            llm_response_id="response_1",
+            action_args={"command": "a1"},
+        )
+        action_b = create_action_event(
+            thought_text="Unrelated response in between",
+            tool_name="terminal",
+            tool_call_id="call_b",
+            llm_response_id="response_2",
+            action_args={"command": "b"},
+        )
+        action_a2 = ActionEvent(
+            source="agent",
+            thought=[],  # Second call of resp-1 carries no thought of its own
+            action=EventsToMessagesMockAction(command="a2"),
+            tool_name="terminal",
+            tool_call_id="call_a2",
+            tool_call=create_tool_call("call_a2", "terminal", {"command": "a2"}),
+            llm_response_id="response_1",
+        )
+
+        events = [action_a1, action_b, action_a2]
+        messages = LLMConvertibleEvent.events_to_messages(events)  # type: ignore
+
+        # The resp-1 batch closes at the resp-2 interruption; resp-1's two
+        # calls are NOT reconstructed into a single assistant message.
+        assert len(messages) == 3
+        assert [m.role for m in messages] == ["assistant", "assistant", "assistant"]
+        assert [m.tool_calls[0].id for m in messages] == [  # type: ignore
+            "call_a1",
+            "call_b",
+            "call_a2",
+        ]
 
     def test_mixed_event_types(self):
         """Test conversion of mixed event types in sequence."""
