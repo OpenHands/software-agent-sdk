@@ -78,6 +78,9 @@ if TYPE_CHECKING:
     from openhands.sdk.subagent.schema import AgentDefinition
 
 
+_AUTOMATION_TAG_KEYS = ("automationtrigger", "automationid", "automationrunid")
+
+
 class CredentialBindingActivationRequired(RuntimeError):
     pass
 
@@ -2334,6 +2337,11 @@ def _build_telemetry_context(
     agent explicitly. When ``agent`` is ``None`` (no live conversation), the
     agent-derived fields simply degrade to ``unknown``.
     """
+    tags = getattr(stored, "tags", None)
+    is_automation = isinstance(tags, dict) and any(
+        bool(tags.get(key)) for key in _AUTOMATION_TAG_KEYS
+    )
+
     llm = getattr(agent, "llm", None)
 
     workspace = getattr(stored, "workspace", None)
@@ -2357,6 +2365,7 @@ def _build_telemetry_context(
         confirmation_policy=safe_token(
             type(getattr(stored, "confirmation_policy", None)).__name__.lower()
         ),
+        is_automation=is_automation,
     )
 
 
