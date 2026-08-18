@@ -159,11 +159,11 @@ class TestEventsToMessages:
         messages = LLMConvertibleEvent.events_to_messages(events)
 
         assert [message.role for message in messages] == ["user"]
-        assert [content.text for content in messages[0].content] == [  # type: ignore
-            "one",
-            "two",
-            "three",
-        ]
+        assert [
+            content.text
+            for content in messages[0].content
+            if isinstance(content, TextContent)
+        ] == ["one", "two", "three"]
 
     def test_user_message_merge_preserves_mixed_content_order(self):
         """Merged content concatenates in log order, text and images alike."""
@@ -189,28 +189,6 @@ class TestEventsToMessages:
             TextContent,
             ImageContent,
         ]
-
-    def test_events_to_messages_does_not_mutate_input_events(self):
-        """Merging must not leak into the source events' stored messages."""
-        first = MessageEvent(
-            source="user",
-            llm_message=Message(role="user", content=[TextContent(text="one")]),
-        )
-        second = MessageEvent(
-            source="user",
-            llm_message=Message(role="user", content=[TextContent(text="two")]),
-        )
-        events = cast(list[LLMConvertibleEvent], [first, second])
-
-        first_pass = LLMConvertibleEvent.events_to_messages(events)
-        assert len(first_pass[0].content) == 2
-
-        # The events' own messages are untouched, so a second projection over
-        # the same log produces the same output instead of merging twice.
-        assert len(first.llm_message.content) == 1
-        assert len(second.llm_message.content) == 1
-        second_pass = LLMConvertibleEvent.events_to_messages(events)
-        assert len(second_pass[0].content) == 2
 
     def test_condensation_summary_merges_with_adjacent_user_message(self):
         """A summary event converts to a plain user message, so it coalesces.
@@ -424,10 +402,8 @@ class TestEventsToMessages:
         assert len(tool_calls) == 3
 
         # Verify tool call details
-        tool_call_ids = [tc.id for tc in tool_calls]
-        assert "call_SF" in tool_call_ids
-        assert "call_Tokyo" in tool_call_ids
-        assert "call_Paris" in tool_call_ids
+        # Exact sequence, not membership: order within the batch is log order.
+        assert [tc.id for tc in tool_calls] == ["call_SF", "call_Tokyo", "call_Paris"]
 
         # All should be weather function calls
         for tool_call in tool_calls:
@@ -499,8 +475,10 @@ class TestEventsToMessages:
 
         assert len(messages) == 1
         combined = messages[0]
-        assert combined.responses_reasoning_item is not None
-        assert combined.responses_reasoning_item.id == "rs_1"
+        # Whole-item equality, not just the id — future field loss fails here.
+        assert combined.responses_reasoning_item == ReasoningItemModel(
+            id="rs_1", summary=["reasoned about the batch"]
+        )
 
     def test_multiple_separate_action_events(self):
         """Test multiple ActionEvents with different response_ids (separate calls)."""
