@@ -321,7 +321,9 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
     # settings endpoints. Subclasses like OpenHandsCloudWorkspace may override
     # to use alternative endpoints (e.g., Cloud API).
 
-    def _fetch_settings_response(self, *, expose_secrets: bool = True) -> SettingsResponse:
+    def _fetch_settings_response(
+        self, *, expose_secrets: bool = True
+    ) -> SettingsResponse:
         """Call ``GET /api/settings`` and return the validated response."""
         headers = dict(self._headers)
         if expose_secrets:
