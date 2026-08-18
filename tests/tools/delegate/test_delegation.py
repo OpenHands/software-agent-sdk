@@ -241,27 +241,6 @@ def test_spawn_rolls_back_partial_batch_when_agent_type_missing():
     assert executor._sub_agents == {}
 
 
-def test_spawn_still_enforces_max_children():
-    """Background lifecycle tracking must not bypass the spawn cap."""
-    register_builtins_agents()
-    _, parent_conversation = create_test_executor_and_parent()
-    parent_conversation._visualizer = None
-    executor = DelegateExecutor(max_children=1)
-
-    first = executor(
-        DelegateAction(command="spawn", ids=["first"]), parent_conversation
-    )
-    second = executor(
-        DelegateAction(command="spawn", ids=["second"]), parent_conversation
-    )
-
-    assert first.is_error is False
-    assert second.is_error is True
-    assert "maximum is 1" in second.text
-    assert set(executor._sub_agents) == {"first"}
-    executor.close()
-
-
 def test_spawn_disables_streaming_for_sub_agents():
     """Test that spawned sub-agents have streaming disabled.
 

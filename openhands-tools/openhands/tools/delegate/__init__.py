@@ -3,7 +3,6 @@
 from openhands.tools.delegate.definition import (
     DelegateAction,
     DelegateObservation,
-    DelegateTaskStatus,
 )
 from openhands.tools.delegate.impl import ConfirmationHandler, DelegateExecutor
 from openhands.tools.delegate.visualizer import DelegationVisualizer
@@ -13,7 +12,6 @@ __all__ = [
     "ConfirmationHandler",
     "DelegateAction",
     "DelegateObservation",
-    "DelegateTaskStatus",
     "DelegateExecutor",
     "DelegationVisualizer",
 ]
