@@ -10,11 +10,6 @@ from openhands.sdk.llm.cleanup_profile import (
     aclean_outward_text,
     clean_outward_text,
 )
-from openhands.sdk.llm.cleanup_profile import (
-    CLEANUP_PROFILE_NAME,
-    aclean_outward_text,
-    clean_outward_text,
-)
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.llm import LLM, LLM_PROFILE_SCHEMA_VERSION
 from openhands.sdk.llm.llm_profile_store import (
