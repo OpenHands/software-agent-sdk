@@ -35,6 +35,21 @@ class BashEventService:
         default_factory=lambda: PubSub[BashEventBase](max_subscribers=50),
         init=False,
     )
+    # Multiple open terminal tabs poll bash events concurrently. Moving each
+    # directory scan to the default thread pool keeps it off the event loop, but
+    # unbounded concurrent scans can still occupy every worker and starve other
+    # endpoints that use asyncio.to_thread (notably conversations/search).
+    # Serialize only the expensive bash-event filesystem work: queued callers
+    # remain asynchronous while one worker performs the shared-directory scan.
+    # 1 (full serialization) is an intentional strict bound: a single scan is
+    # cheap (~0.2s on 100k files), so overlapping even a few scans saves little
+    # wall time but, at scale, risks monopolizing the shared worker pool for the
+    # sake of marginal poll latency; queued callers still proceed asynchronously.
+    _filesystem_search_semaphore: asyncio.Semaphore = field(
+        default_factory=lambda: asyncio.Semaphore(1),
+        init=False,
+        repr=False,
+    )
 
     def _ensure_bash_events_dir(self) -> None:
         """Ensure the bash events directory exists."""
@@ -83,15 +98,22 @@ class BashEventService:
 
     async def get_bash_event(self, event_id: str) -> BashEventBase | None:
         """Get the event with the id given, or None if there was no such event."""
-        # Use glob pattern to find files ending with the event_id
-        pattern = f"*_{event_id}"
-        files = self._get_event_files_by_pattern(pattern)
+        async with self._filesystem_search_semaphore:
+            return await asyncio.to_thread(self._get_bash_event_sync, event_id)
 
-        if not files:
-            return None
+    def _get_bash_event_sync(self, event_id: str) -> BashEventBase | None:
+        """Sync: find the event file whose name ends with ``_<event_id>``.
 
-        # Load and return the first matching event
-        return self._load_event_from_file(files[0])
+        Scans the events directory in a single ``os.scandir`` pass (one readdir,
+        no per-entry stat or regex) and returns the first matching file.
+        """
+        self._ensure_bash_events_dir()
+        suffix = f"_{event_id}"
+        with os.scandir(self.bash_events_dir) as it:
+            for entry in it:
+                if entry.name.endswith(suffix):
+                    return self._load_event_from_file(Path(entry.path))
+        return None
 
     async def batch_get_bash_events(
         self, event_ids: list[str]
@@ -114,72 +136,102 @@ class BashEventService:
         page_id: str | None = None,
         limit: int = 100,
     ) -> BashEventPage:
-        """Search for events. If an command_id is given, only the observations for the
-        action are returned."""
+        """Search for events. If a command_id is given, only the observations for
+        the action are returned.
 
-        # Build the search pattern based on filename format:
-        # - BashCommand: <timestamp>_<kind>_<event_id>
-        # - BashOutput: <timestamp>_<kind>_<command_id>_<event_id>
-        search_parts = ["*"]  # Start with wildcard for timestamp
+        The directory scan, sort, filter and file reads are all blocking I/O,
+        so the whole search runs off the asyncio event loop in a worker thread
+        (``asyncio.to_thread``) to avoid stalling concurrent requests.
+        """
+        async with self._filesystem_search_semaphore:
+            return await asyncio.to_thread(
+                self._search_bash_events_sync,
+                kind__eq,
+                command_id__eq,
+                timestamp__gte,
+                timestamp__lt,
+                order__gt,
+                sort_order,
+                page_id,
+                limit,
+            )
 
-        if kind__eq:
-            search_parts.append(kind__eq)
-        else:
-            search_parts.append("*")  # Wildcard for kind if not specified
+    def _search_bash_events_sync(
+        self,
+        kind__eq: str | None,
+        command_id__eq: UUID | None,
+        timestamp__gte: datetime | None,
+        timestamp__lt: datetime | None,
+        order__gt: int | None,
+        sort_order: BashEventSortOrder,
+        page_id: str | None,
+        limit: int,
+    ) -> BashEventPage:
+        """Sync search: one ``os.scandir`` pass + cheap segment filter.
 
-        if command_id__eq:
-            search_parts.append(command_id__eq.hex)
+        Splits each filename on ``_`` and compares the fixed segments
+        (kind, command_id) directly rather than matching with regexes. Filenames
+        are ``<timestamp>_<kind>[_<command_id>]_<event_id>`` with a 20-digit
+        timestamp prefix, so a lexicographic name comparison is a timestamp
+        comparison and is used both to pre-filter by the time window and to sort.
+        """
+        self._ensure_bash_events_dir()
+        gte_str = self._timestamp_to_str(timestamp__gte) if timestamp__gte else None
+        lt_str = self._timestamp_to_str(timestamp__lt) if timestamp__lt else None
+        kind_filter = kind__eq
+        cmd_filter = command_id__eq.hex if command_id__eq else None
+        reverse = sort_order == BashEventSortOrder.TIMESTAMP_DESC
 
-        # Always end with wildcard for event_id
-        search_parts.append("*")
+        matched: list[str] = []
+        with os.scandir(self.bash_events_dir) as it:
+            for entry in it:
+                name = entry.name
+                # Timestamp-prefix pre-filter: filenames sort lexicographically
+                # by timestamp, so a string compare on the whole name bounds
+                # the time window without parsing the timestamp.
+                if gte_str is not None and name < gte_str:
+                    continue
+                if lt_str is not None and name >= lt_str:
+                    continue
+                # Segment filter: [timestamp, kind, (command_id), event_id].
+                # Cheaper than fnmatch and avoids matching unrelated files.
+                if kind_filter is not None or cmd_filter is not None:
+                    parts = name.split("_")
+                    if kind_filter is not None:
+                        if len(parts) < 2 or parts[1] != kind_filter:
+                            continue
+                    if cmd_filter is not None:
+                        # Only BashOutput (4 segments) carries a command_id.
+                        if len(parts) < 4 or parts[2] != cmd_filter:
+                            continue
+                matched.append(name)
 
-        search_pattern = "_".join(search_parts)
-        files = self._get_event_files_by_pattern(search_pattern)
-        files.sort(
-            key=lambda f: f.name,
-            reverse=(sort_order == BashEventSortOrder.TIMESTAMP_DESC),
-        )
+        matched.sort(reverse=reverse)
 
-        # Timestamp filtering.
-        if timestamp__gte:
-            timestamp_gte_str = self._timestamp_to_str(timestamp__gte)
-            files = [file for file in files if file.name >= timestamp_gte_str]
-        if timestamp__lt:
-            timestamp_lt_str = self._timestamp_to_str(timestamp__lt)
-            files = [file for file in files if file.name < timestamp_lt_str]
-
-        # Handle pagination
-        page_files = []
+        # Resolve page_id to a starting index.
         start_index = 0
-
-        # Find the starting point if page_id is provided
         if page_id:
-            for i, file in enumerate(files):
-                if str(file.name) == page_id:
+            for i, name in enumerate(matched):
+                if name == page_id:
                     start_index = i
                     break
 
-        # Collect items for this page
+        page_slice = matched[start_index : start_index + limit]
         next_page_id = None
-        for i in range(start_index, len(files)):
-            if len(page_files) >= limit:
-                # We have collected enough items for this page
-                # Set next_page_id to the current file for next page
-                next_page_id = str(files[i].name)
-                break
-            page_files.append(files[i])
+        if start_index + limit < len(matched):
+            next_page_id = matched[start_index + limit]
 
-        # Load only the page files (not all files)
-        page_events = []
-        for file_path in page_files:
-            event = self._load_event_from_file(file_path)
-            if event is not None:
-                # Filter by order if specified (only applies to BashOutput events)
-                if order__gt is not None:
-                    event_order = getattr(event, "order", None)
-                    if event_order is not None and event_order <= order__gt:
-                        continue
-                page_events.append(event)
+        page_events: list[BashEventBase] = []
+        for name in page_slice:
+            event = self._load_event_from_file(self.bash_events_dir / name)
+            if event is None:
+                continue
+            # Filter by order if specified (only applies to BashOutput events)
+            if order__gt is not None:
+                event_order = getattr(event, "order", None)
+                if event_order is not None and event_order <= order__gt:
+                    continue
+            page_events.append(event)
 
         return BashEventPage(items=page_events, next_page_id=next_page_id)
 
@@ -187,7 +239,6 @@ class BashEventService:
         self,
         process: asyncio.subprocess.Process,
         sig: signal.Signals,
-        command: str,
     ) -> None:
         try:
             os.killpg(os.getpgid(process.pid), sig)
@@ -195,8 +246,9 @@ class BashEventService:
             pass
         except OSError as e:
             logger.debug(
-                f"Failed to send {sig.name} to process group for command "
-                f"'{command}': {e}"
+                "Failed to send %s to process group (error_type=%s)",
+                sig.name,
+                type(e).__name__,
             )
 
     async def start_bash_command(
@@ -298,21 +350,22 @@ class BashEventService:
             except TimeoutError:
                 # Send SIGTERM to the whole process group so user-installed
                 # cleanup traps can run, then escalate to SIGKILL if needed.
-                self._signal_process_group(process, signal.SIGTERM, command.command)
+                self._signal_process_group(process, signal.SIGTERM)
                 try:
                     await asyncio.wait_for(process.wait(), timeout=1.0)
                 except TimeoutError:
-                    self._signal_process_group(process, signal.SIGKILL, command.command)
+                    self._signal_process_group(process, signal.SIGKILL)
                     try:
                         await asyncio.wait_for(process.wait(), timeout=1.0)
                     except TimeoutError:
                         logger.error(
-                            f"Failed to kill process for command: {command.command}"
+                            "Failed to kill process (command_id=%s)", command.id
                         )
                 exit_code = -1
                 logger.warning(
-                    f"Command timed out after {command.timeout} seconds: "
-                    f"{command.command}"
+                    "Command timed out after %s seconds (command_id=%s)",
+                    command.timeout,
+                    command.id,
                 )
 
             # Create final output event with any remaining buffer content and exit code
@@ -334,7 +387,11 @@ class BashEventService:
                 await self._pub_sub(final_output)
 
         except Exception as e:
-            logger.error(f"Error executing bash command '{command.command}': {e}")
+            logger.error(
+                "Error executing bash command (command_id=%s, error_type=%s)",
+                command.id,
+                type(e).__name__,
+            )
             # Create error output event
             error_output = BashOutput(
                 command_id=command.id,

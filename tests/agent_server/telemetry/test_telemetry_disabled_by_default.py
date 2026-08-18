@@ -106,7 +106,7 @@ async def test_conversation_service_reads_the_live_sink_not_a_captured_one(
     captured at construction, every conversation would see the pre-init NoOp and
     emit nothing regardless of consent. Build the service while the sink is still a
     NoOp, enable telemetry afterwards, and assert a new conversation still attaches
-    the subscriber and emits ``conversation_started``.
+    the subscriber and emits ``conversation_created``.
     """
     from uuid import uuid4
 
@@ -118,7 +118,6 @@ async def test_conversation_service_reads_the_live_sink_not_a_captured_one(
         DiagnosticEventFactory,
         build_runtime_properties,
     )
-    from openhands.sdk import LLM, Agent
     from openhands.sdk.security.confirmation_policy import NeverConfirm
     from openhands.sdk.workspace import LocalWorkspace
 
@@ -157,6 +156,7 @@ async def test_conversation_service_reads_the_live_sink_not_a_captured_one(
     class _FakeEventService:
         def __init__(self):
             self.subscribers: list[object] = []
+            self._conversation = None
 
         async def subscribe_to_events(self, subscriber):
             self.subscribers.append(subscriber)
@@ -164,7 +164,6 @@ async def test_conversation_service_reads_the_live_sink_not_a_captured_one(
     event_service = _FakeEventService()
     stored = StoredConversation(
         id=uuid4(),
-        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test"), tools=[]),
         workspace=LocalWorkspace(working_dir=str(tmp_path)),
         confirmation_policy=NeverConfirm(),
         initial_message=None,
@@ -178,7 +177,7 @@ async def test_conversation_service_reads_the_live_sink_not_a_captured_one(
     )
 
     assert len(event_service.subscribers) == 1
-    assert m.EventName.CONVERSATION_STARTED in sink.events
+    assert m.EventName.CONVERSATION_CREATED in sink.events
 
 
 def test_app_exposes_a_sink_on_state_after_startup(temp_persistence_dir):
@@ -269,12 +268,9 @@ async def test_telemetry_init_does_not_hijack_the_settings_store_singleton(
 ):
     """Regression: telemetry must prime the settings store WITH the config.
 
-    ``get_settings_store`` is a singleton whose persistence directory and
-    cipher are fixed by the first call. Telemetry initialises during lifespan
-    startup, before ``ConversationService.get_instance()`` makes its own
-    priming call, so a no-arg ``get_settings_store()`` here previously won the
-    race and left the whole process writing settings *and secrets* to the
-    default relative directory with encryption disabled.
+    ``get_settings_store`` is a singleton whose cipher is fixed by the first
+    call. Telemetry initialises during lifespan startup, so a no-arg call here
+    would leave the whole process writing secrets with encryption disabled.
     """
     from base64 import urlsafe_b64encode
 
@@ -292,8 +288,6 @@ async def test_telemetry_init_does_not_hijack_the_settings_store_singleton(
             pass
 
     monkeypatch.setattr(pe, "PostHogExporter", lambda *a, **k: _FakeExporter())
-    monkeypatch.delenv("OH_PERSISTENCE_DIR", raising=False)
-
     config = Config(
         static_files_path=None,
         conversations_path=temp_persistence_dir / "workspace/conversations",
@@ -310,8 +304,6 @@ async def test_telemetry_init_does_not_hijack_the_settings_store_singleton(
             "telemetry primed the settings store without a cipher; secrets "
             "would be persisted unencrypted process-wide"
         )
-        assert temp_persistence_dir in store.persistence_dir.parents or (
-            store.persistence_dir.is_relative_to(temp_persistence_dir)
-        ), f"settings store landed outside the configured dir: {store.persistence_dir}"
+        assert store.persistence_dir == temp_persistence_dir
     finally:
         await sink.aclose()

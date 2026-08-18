@@ -1,4 +1,6 @@
 import asyncio
+import copy
+import json
 import re
 import threading
 from abc import ABC, abstractmethod
@@ -13,6 +15,11 @@ from typing import (
     TypeVar,
 )
 
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import (
+    SchemaError,
+    ValidationError as JSONSchemaValidationError,
+)
 from litellm import (
     ChatCompletionToolParam,
     ChatCompletionToolParamFunctionChunk,
@@ -43,9 +50,152 @@ if TYPE_CHECKING:
 
 ActionT = TypeVar("ActionT", bound=Action)
 ObservationT = TypeVar("ObservationT", bound=Observation)
+type ResponseSchema = type[BaseModel] | dict[str, Any]
 _action_types_with_risk: dict[type, type] = {}
 _action_types_with_summary: dict[type, type] = {}
 _action_type_lock = threading.Lock()
+# JSON schema for Pydantic-model response schemas, cached by the immutable class
+# so model_json_schema() runs at most once per class. Dict schemas are not cached
+# (they are not safely identity-keyed); they use the cheap deepcopy path below.
+# Guarded by its own lock rather than _action_type_lock: the two never nest, and
+# a separate lock keeps schema building off the action-type critical section.
+_response_schema_json_cache: dict[type[BaseModel], dict[str, Any]] = {}
+_response_schema_json_lock = threading.Lock()
+_RESERVED_RESPONSE_FIELDS = frozenset(
+    {"kind", "security_risk", "structured_output", "summary"}
+)
+_SUPPORTED_RESPONSE_SCHEMA_KEYS = frozenset(
+    {
+        "$anchor",
+        "$comment",
+        "$defs",
+        "$dynamicAnchor",
+        "$id",
+        "$schema",
+        "$vocabulary",
+        "additionalProperties",
+        "default",
+        "deprecated",
+        "description",
+        "examples",
+        "properties",
+        "readOnly",
+        "required",
+        "title",
+        "type",
+        "writeOnly",
+    }
+)
+
+
+def _validated_response_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    try:
+        Draft202012Validator.check_schema(schema)
+    except SchemaError as exc:
+        raise ValueError(f"Invalid response_schema: {exc.message}") from exc
+    if schema.get("type") != "object":
+        raise ValueError("response_schema must describe a JSON object")
+    return schema
+
+
+def _response_schema_json(response_schema: ResponseSchema) -> dict[str, Any]:
+    if isinstance(response_schema, dict):
+        return _validated_response_schema(copy.deepcopy(response_schema))
+    if not (
+        isinstance(response_schema, type) and issubclass(response_schema, BaseModel)
+    ):
+        raise TypeError("response_schema must be a Pydantic model or JSON Schema")
+
+    # Build under the lock so model_json_schema() really does run at most once
+    # per class, and hand back a private copy so callers cannot mutate the cache.
+    with _response_schema_json_lock:
+        cached = _response_schema_json_cache.get(response_schema)
+        if cached is None:
+            cached = _validated_response_schema(response_schema.model_json_schema())
+            _response_schema_json_cache[response_schema] = cached
+        return copy.deepcopy(cached)
+
+
+def _response_tool_schema(response_schema: ResponseSchema) -> dict[str, Any]:
+    schema = _response_schema_json(response_schema)
+    properties = schema.get("properties")
+    if not properties:
+        raise ValueError("response_schema must define named properties")
+
+    unsupported = set(schema) - _SUPPORTED_RESPONSE_SCHEMA_KEYS
+    if unsupported:
+        raise ValueError(
+            f"response_schema has unsupported top-level keywords: {sorted(unsupported)}"
+        )
+
+    additional_properties = schema.get("additionalProperties")
+    if additional_properties not in (None, False):
+        raise ValueError(
+            "response_schema does not support dynamic fields via additionalProperties"
+        )
+
+    unnamed_required = set(schema.get("required", ())) - set(properties)
+    if unnamed_required:
+        raise ValueError(
+            f"response_schema required fields {sorted(unnamed_required)} must be "
+            "named properties"
+        )
+
+    expanded = _expand_response_refs(schema, schema.get("$defs", {}))
+    assert isinstance(expanded, dict)
+    return expanded
+
+
+def _expand_response_refs(
+    node: dict[str, Any] | bool,
+    defs: dict[str, Any],
+    visiting: frozenset[str] = frozenset(),
+) -> dict[str, Any] | bool:
+    if isinstance(node, bool):
+        return node
+    if "$ref" in node:
+        ref = node["$ref"]
+        if ref.startswith("#/$defs/"):
+            name = ref.removeprefix("#/$defs/")
+            if name not in defs:
+                return copy.deepcopy(node)
+            if name in visiting:
+                return _shallow_response_ref(defs[name])
+            expanded = _expand_response_refs(defs[name], defs, visiting | {name})
+            if isinstance(expanded, dict):
+                siblings = {key: value for key, value in node.items() if key != "$ref"}
+                expanded_siblings = _expand_response_refs(
+                    siblings, defs, visiting | {name}
+                )
+                assert isinstance(expanded_siblings, dict)
+                expanded.update(expanded_siblings)
+            return expanded
+
+    result = copy.deepcopy(node)
+    result.pop("$defs", None)
+    if "properties" in result:
+        result["properties"] = {
+            name: _expand_response_refs(value, defs, visiting)
+            for name, value in result["properties"].items()
+        }
+    for keyword in ("items", "additionalProperties", "not"):
+        value = result.get(keyword)
+        if isinstance(value, (dict, bool)):
+            result[keyword] = _expand_response_refs(value, defs, visiting)
+    for keyword in ("allOf", "anyOf", "oneOf", "prefixItems"):
+        if keyword in result:
+            result[keyword] = [
+                _expand_response_refs(value, defs, visiting)
+                for value in result[keyword]
+            ]
+    return result
+
+
+def _shallow_response_ref(node: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {"type": node.get("type", "object")}
+    if "description" in node:
+        result["description"] = node["description"]
+    return result
 
 
 def _camel_to_snake(name: str) -> str:
@@ -252,6 +402,10 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         default=None, repr=False, exclude=True
     )
 
+    response_schema: SkipJsonSchema[ResponseSchema | None] = Field(
+        default=None, repr=False, exclude=True
+    )
+
     @classmethod
     def is_usable(cls) -> bool:
         """Return whether the tool can be used in the current environment."""
@@ -318,6 +472,28 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         """Create a new Tool instance with the given executor."""
         return self.model_copy(update={"executor": executor})
 
+    def set_response_schema(self, response_schema: ResponseSchema | None) -> Self:
+        """Return a copy configured for structured output."""
+        if response_schema is None:
+            return self.model_copy(update={"response_schema": None})
+
+        response_fields = set(
+            _response_tool_schema(response_schema).get("properties", {})
+        )
+        reserved = response_fields & _RESERVED_RESPONSE_FIELDS
+        if reserved:
+            raise ValueError(f"response_schema fields {sorted(reserved)} are reserved")
+
+        base_tool = self.model_copy(update={"response_schema": None})
+        tool_fields = set(base_tool._get_tool_schema().get("properties", {}))
+        overlap = response_fields & tool_fields
+        if overlap:
+            raise ValueError(
+                f"response_schema fields {sorted(overlap)} collide with "
+                f"existing fields on {self.action_type.__name__}"
+            )
+        return self.model_copy(update={"response_schema": response_schema})
+
     def as_executable(self) -> ExecutableTool:
         """Return this tool as an ExecutableTool, ensuring it has an executor.
 
@@ -345,18 +521,88 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         return DeclaredResources(keys=(), declared=False)
 
     def action_from_arguments(self, arguments: dict[str, Any]) -> Action:
-        """Create an action from parsed arguments.
+        """Create an action from parsed arguments."""
+        action_arguments, structured_output = self._split_response_arguments(arguments)
+        action = self.action_type.model_validate(action_arguments)
+        action._structured_output = structured_output
+        return action
 
-        This method can be overridden by subclasses to provide custom logic
-        for creating actions from arguments (e.g., for MCP tools).
+    def _split_response_arguments(
+        self, arguments: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        if self.response_schema is None:
+            return dict(arguments), None
 
-        Args:
-            arguments: The parsed arguments from the tool call.
+        schema = _response_schema_json(self.response_schema)
+        response_fields = set(schema.get("properties", {}))
+        response_arguments = {
+            key: value for key, value in arguments.items() if key in response_fields
+        }
+        action_arguments = {
+            key: value for key, value in arguments.items() if key not in response_fields
+        }
 
-        Returns:
-            The action instance created from the arguments.
-        """
-        return self.action_type.model_validate(arguments)
+        if isinstance(self.response_schema, type):
+            response = self.response_schema.model_validate(response_arguments)
+            structured_output = response.model_dump(mode="json")
+        else:
+            try:
+                Draft202012Validator(schema).validate(response_arguments)
+            except JSONSchemaValidationError as exc:
+                raise ValueError(
+                    f"response_schema validation failed: {exc.message}"
+                ) from exc
+            structured_output = response_arguments
+        return action_arguments, structured_output
+
+    def parse_response(self, action: Action) -> BaseModel | dict[str, Any]:
+        """Parse structured output from an action."""
+        if self.response_schema is None:
+            raise ValueError(f"Tool '{self.name}' has no response_schema configured.")
+        if action.structured_output is None:
+            raise ValueError(
+                f"Action '{type(action).__name__}' has no structured output"
+            )
+        if isinstance(self.response_schema, type):
+            return self.response_schema.model_validate(
+                action.structured_output, by_name=True
+            )
+        try:
+            Draft202012Validator(self.response_schema).validate(
+                action.structured_output
+            )
+        except JSONSchemaValidationError as exc:
+            raise ValueError(
+                f"response_schema validation failed: {exc.message}"
+            ) from exc
+        return action.structured_output
+
+    def parse_last_response(
+        self, events: "Sequence[Any]"
+    ) -> BaseModel | dict[str, Any] | None:
+        """Parse the most recent action for this tool."""
+        from openhands.sdk.event import ActionEvent
+
+        event = next(
+            (
+                event
+                for event in reversed(events)
+                if isinstance(event, ActionEvent)
+                and event.tool_name == self.name
+                and event.action is not None
+            ),
+            None,
+        )
+        if event is None:
+            return None
+        arguments = json.loads(event.tool_call.arguments)
+        _, structured_output = self._split_response_arguments(arguments)
+        if structured_output is None:
+            return None
+        assert event.action is not None
+        action = event.action.model_copy()
+        action._structured_output = structured_output
+        return self.parse_response(action)
 
     def __call__(
         self, action: ActionT, conversation: "LocalConversation | None" = None
@@ -417,10 +663,13 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
             input_schema: Optionally override the input schema.
             output_schema: Optionally override the output schema.
         """
+        input_schema = (
+            self.action_type.to_mcp_schema() if input_schema is None else input_schema
+        )
         out = {
             "name": self.name,
             "description": self.description,
-            "inputSchema": input_schema or self.action_type.to_mcp_schema(),
+            "inputSchema": self._merge_response_schema(input_schema),
         }
         if self.annotations:
             out["annotations"] = self.annotations
@@ -455,12 +704,35 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         # Always add summary field for transparency and explainability
         action_type = _create_action_type_with_summary(action_type)
 
-        schema = action_type.to_mcp_schema()
+        schema = self._merge_response_schema(action_type.to_mcp_schema())
         _prioritize_schema_fields(
             schema=schema,
             priority=("security_risk", "summary"),
         )
         return schema
+
+    def _merge_response_schema(self, schema: dict[str, Any]) -> dict[str, Any]:
+        if self.response_schema is None:
+            return schema
+
+        response_schema = _response_tool_schema(self.response_schema)
+        merged = copy.deepcopy(schema)
+        properties = merged.setdefault("properties", {})
+        response_properties = response_schema.get("properties", {})
+        overlap = set(properties) & set(response_properties)
+        if overlap:
+            raise ValueError(
+                f"response_schema fields {sorted(overlap)} collide with tool fields"
+            )
+        properties.update(response_properties)
+
+        required = merged.setdefault("required", [])
+        for field_name in response_schema.get("required", []):
+            if field_name not in required:
+                required.append(field_name)
+        if response_schema.get("additionalProperties") is False:
+            merged["additionalProperties"] = False
+        return merged
 
     def to_openai_tool(
         self,

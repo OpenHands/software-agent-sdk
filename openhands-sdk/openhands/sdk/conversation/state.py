@@ -446,7 +446,7 @@ class ConversationState(OpenHandsModel):
     def create(
         cls: type["ConversationState"],
         id: ConversationID,
-        agent: AgentBase,
+        agent: AgentBase | None,
         workspace: BaseWorkspace,
         persistence_dir: str | None = None,
         max_iterations: int = 500,
@@ -537,12 +537,18 @@ class ConversationState(OpenHandsModel):
             # version or be corrupted.
             state.rebuild_view()
 
-            # Verify compatibility (agent class + tools)
-            agent.verify(state.agent, events=state._events)
-
             # Commit runtime-provided values (may autosave)
             state._autosave_enabled = True
-            state.agent = agent
+            # Agent: base_state.json is the single source of truth. When the
+            # caller does not supply an agent (``agent is None``), keep the
+            # persisted one untouched — this is what lets a persisted
+            # switch_llm survive an idle-eviction reload. When a caller *does*
+            # supply an agent (legacy behavior), verify tool compatibility and
+            # let it override, so existing callers that reconfigure on resume
+            # keep working.
+            if agent is not None:
+                agent.verify(state.agent, events=state._events)
+                state.agent = agent
             state.workspace = workspace
             state.max_iterations = max_iterations
 

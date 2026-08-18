@@ -1,6 +1,6 @@
 [project]
 name = "openhands-sdk"
-version = "1.37.1"
+version = "1.42.1"
 description = "OpenHands SDK - Core functionality for building AI agents"
 
 requires-python = ">=3.12"
@@ -11,8 +11,9 @@ dependencies = [
     "fastmcp>=3.0.0",
     "filelock>=3.20.1",
     "httpx[socks]>=0.27.0",
-    "joserfc>=1.0.0",
-    "litellm>=1.84.1",
+    "jsonschema>=4.23.0",
+    "joserfc>=1.6.8",
+    "litellm>=1.93.0",
     "pillow>=12.1.1",
     "pydantic>=2.12.5",
     "python-frontmatter>=1.1.0",
@@ -47,4 +48,4 @@ include = ["openhands.sdk*"]
 namespaces = true
 
 [tool.setuptools.package-data]
-"*" = ["py.typed", "*.j2"]
+"*" = ["py.typed", "*.j2", "schemas/*.json"]

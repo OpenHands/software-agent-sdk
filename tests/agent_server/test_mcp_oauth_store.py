@@ -6,6 +6,7 @@ import socket
 import threading
 import time
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -20,6 +21,7 @@ import openhands.sdk.mcp.utils as mcp_utils
 from openhands.agent_server.config import Config
 from openhands.agent_server.mcp_oauth_store import (
     MCPSettingsOAuthTokenStore,
+    SettingsBackedMCPToolProvider,
     create_settings_backed_mcp_tool_provider,
 )
 from openhands.agent_server.persistence import (
@@ -362,3 +364,24 @@ async def test_mcp_oauth_token_storage_does_not_attach_to_non_oauth_server(
         assert "auth" not in server
     finally:
         reset_stores()
+
+
+def test_settings_backed_provider_forwards_on_tools_reconciled():
+    """on_tools_reconciled must reach create_mcp_tools(), not be dropped.
+
+    Previously this provider only accepted on_tools_changed, so callers had
+    to attach on_tools_reconciled to the returned client after the fact --
+    missing any notification that arrived during the initial connect.
+    """
+    provider = SettingsBackedMCPToolProvider()
+    config = coerce_mcp_config({"fake": {"command": "true"}})
+
+    def callback(client, tools):
+        return None
+
+    with patch(
+        "openhands.agent_server.mcp_oauth_store.create_mcp_tools"
+    ) as mock_create:
+        provider.create_tools(config, on_tools_reconciled=callback)
+
+    assert mock_create.call_args.kwargs["on_tools_reconciled"] is callback

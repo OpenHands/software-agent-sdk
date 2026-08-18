@@ -65,6 +65,7 @@ from openhands.sdk.event import (
     StreamingDeltaEvent,
 )
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
@@ -114,6 +115,11 @@ class EventService:
 
     stored: StoredConversation
     conversations_dir: Path
+    # Agent for a NEW conversation. meta.json (``stored``) no longer carries the
+    # agent — base_state.json is its single source of truth — so the creating
+    # caller passes it here. On resume this is ``None`` and the agent is loaded
+    # from base_state.json.
+    agent: AgentBase | None = None
     cipher: Cipher | None = None
     mcp_tool_provider: MCPToolProvider | None = None
     credential_bindings: dict[str, VersionedCredentialBinding] = field(
@@ -178,17 +184,13 @@ class EventService:
             )
 
     def _without_stored_secret(self, secret_name: str) -> StoredConversation:
+        # meta.json (StoredConversation) no longer carries the agent, so there is
+        # no agent_context secret to scrub here — only the stored secrets map.
+        # The agent's own secret scrub happens on base_state.json (see
+        # _scrub_persisted_credentials).
         secrets = dict(self.stored.secrets)
         secrets.pop(secret_name, None)
-        return self.stored.model_copy(
-            update={
-                "secrets": secrets,
-                "agent": _without_agent_context_secret(
-                    self.stored.agent,
-                    secret_name,
-                ),
-            }
-        )
+        return self.stored.model_copy(update={"secrets": secrets})
 
     async def _scrub_persisted_credentials(
         self,
@@ -971,10 +973,26 @@ class EventService:
         working_dir = Path(workspace.working_dir)
         working_dir.mkdir(parents=True, exist_ok=True)
         self._ensure_workspace_is_git_repo(working_dir)
-        agent_cls = type(self.stored.agent)
-        agent = agent_cls.model_validate(
-            self.stored.agent.model_dump(context={"expose_secrets": True}),
+        # base_state.json is the single source of truth for the agent. On resume
+        # (base_state exists) pass ``agent=None`` so LocalConversation keeps the
+        # persisted agent. On a new conversation the creating caller supplied the
+        # agent via ``self.agent``; deep-copy it (expose_secrets) so the running
+        # agent is independent of the caller's object.
+        base_state_exists = await asyncio.to_thread(
+            (self.conversation_dir / BASE_STATE).exists
         )
+        if base_state_exists:
+            agent: AgentBase | None = None
+        else:
+            if self.agent is None:
+                raise ValueError(
+                    "Cannot start a new conversation without an agent: no "
+                    "base_state.json to resume and no agent was provided."
+                )
+            agent_cls = type(self.agent)
+            agent = agent_cls.model_validate(
+                self.agent.model_dump(context={"expose_secrets": True}),
+            )
 
         # Create LocalConversation with plugins and hook_config.
         # Plugins are loaded lazily on first run()/send_message() call.
@@ -986,16 +1004,18 @@ class EventService:
             self._pub_sub, loop=asyncio.get_running_loop()
         )
 
-        # Only wire token streaming for agents that can actually emit token
-        # callbacks. SDK LLM agents need stream=True, while ACP agents emit
-        # AgentMessageChunk text through their bridge without exposing an LLM.
-        streaming_enabled = isinstance(agent, ACPAgent) or any(
-            llm.stream for llm in agent.get_all_llms()
-        )
-        logger.debug(
-            "Token streaming: %s",
-            "enabled" if streaming_enabled else "disabled (no LLM has stream=True)",
-        )
+        # Token streaming is wired only for agents that can actually emit token
+        # callbacks (SDK LLM agents with stream=True, or ACP agents). For a NEW
+        # conversation the agent is known here, so decide now. On RESUME the
+        # agent is loaded from base_state.json during construction, so defer the
+        # decision until after (see the post-construction block below).
+        def _agent_can_stream(a: AgentBase) -> bool:
+            return isinstance(a, ACPAgent) or any(
+                llm.stream for llm in a.get_all_llms()
+            )
+
+        streaming_enabled = _agent_can_stream(agent) if agent is not None else True
+        streaming_decided = agent is not None
 
         def _publish_stream_delta(
             content: str | None = None,
@@ -1058,6 +1078,17 @@ class EventService:
 
         conversation.set_confirmation_policy(self.stored.confirmation_policy)
         conversation.set_security_analyzer(self.stored.security_analyzer)
+        # On resume the agent was unknown at construction time (loaded from
+        # base_state.json), so decide token streaming now and disable it when the
+        # resolved agent can't emit token callbacks.
+        if not streaming_decided:
+            streaming_enabled = _agent_can_stream(conversation.agent)
+            logger.debug(
+                "Token streaming: %s",
+                "enabled" if streaming_enabled else "disabled (no LLM has stream=True)",
+            )
+            if not streaming_enabled:
+                conversation.set_token_callbacks(None)
         self._conversation = conversation
         if isinstance(conversation.agent, ACPAgent):
             for secret_name, binding in self.credential_bindings.items():
@@ -1115,6 +1146,9 @@ class EventService:
                             "A restart occurred while this tool was in progress. "
                             "This may indicate a fatal memory error or system crash. "
                             "The tool execution was interrupted and did not complete."
+                        ),
+                        classification=ErrorClassification(
+                            kind=FailureKind.INTERNAL, retryable=False
                         ),
                     )
                     self._conversation._on_event(error_event)
@@ -1392,11 +1426,20 @@ class EventService:
                 if status in (
                     ConversationExecutionStatus.PAUSED,
                     ConversationExecutionStatus.ERROR,
-                    ConversationExecutionStatus.STUCK,
                 ):
                     logger.info("Goal loop halted early: status=%s", status)
                     await _emit_status(active=False, status="interrupted")
                     return
+                if status == ConversationExecutionStatus.STUCK:
+                    # The stuck detector is a heuristic that often fires during
+                    # legitimate iteration (re-running a test, retrying an edit).
+                    # The goal loop already has an authoritative judge that
+                    # audits completion each round, so a STUCK run is not a
+                    # reason to halt the whole goal -- proceed to the judge and
+                    # let it decide continue-vs-stop (sending a followup nudge
+                    # that breaks the agent out of any genuine loop). Only
+                    # PAUSED/ERROR (real stop signals) terminate the goal.
+                    logger.info("Goal loop continuing past stuck run")
                 step = await loop.run_in_executor(None, _snapshot_and_judge)
                 if isinstance(step, GoalDone):
                     self._goal_loop_outcome = step.outcome
@@ -1617,13 +1660,13 @@ class EventService:
 
         For a conversation that has already started, runs the (blocking)
         protocol-level ``session/set_model`` round-trip in a worker thread; for
-        one not yet run, the SDK defers the switch (persist-only). Either way it
-        mirrors the new model into ``meta.json`` so the switch survives an
-        agent-server restart: ``start()`` rebuilds the agent from
-        ``self.stored.agent`` and ``ConversationState.create()`` copies that over
-        the persisted base_state.json on resume. Only ``acp_model`` needs
-        updating — ``model_post_init`` re-derives the sentinel ``llm.model`` on
-        reload.
+        one not yet run, the SDK defers the switch (persist-only). Either way the
+        switched model is persisted as the authoritative value in
+        ``base_state.json``: ``LocalConversation.switch_acp_model`` sets
+        ``state.agent`` to an agent copy carrying the new ``acp_model``, which the
+        autosave path writes to base_state. On resume the agent is rebuilt from
+        base_state (the single source of truth), so no ``meta.json`` mirror is
+        needed.
         """
         if self._conversation is None:
             # Match the inactive-service convention of the other event-service
@@ -1633,10 +1676,6 @@ class EventService:
             raise ValueError("inactive_service")
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.switch_acp_model, model)
-        self.stored = self.stored.model_copy(
-            update={"agent": self.stored.agent.model_copy(update={"acp_model": model})}
-        )
-        await self.save_meta()
 
     async def close(self):
         self._closing = True

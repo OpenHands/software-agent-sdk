@@ -42,6 +42,10 @@ class StuckDetector:
     ):
         self.state = state
         self.thresholds = thresholds or StuckDetectionThresholds()
+        # Id of the AgentErrorEvent already nudged for, so a frozen streak
+        # (e.g. an empty/reasoning-only response that adds no new action)
+        # doesn't re-emit the same nudge every iteration.
+        self._last_nudged_error_event_id: str | None = None
 
     @property
     def action_observation_threshold(self) -> int:
@@ -59,18 +63,14 @@ class StuckDetector:
     def alternating_pattern_threshold(self) -> int:
         return self.thresholds.alternating_pattern
 
-    def is_stuck(self) -> bool:
-        """Check if the agent is currently stuck.
+    def _events_since_last_user_message(self) -> list[Event]:
+        """Events in the scan window, after the last user message (if any).
 
-        Note: To avoid materializing potentially large file-backed event histories,
-        only the last MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION events of the active
-        branch are analyzed (abandoned branches are excluded). If a user message
-        exists within this window, only events after it are checked. Otherwise, all
-        events in the window are analyzed.
+        Windowed rather than full-history to avoid materializing large
+        file-backed event logs.
         """
         events = self.state.active_branch(limit=MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION)
 
-        # Only look at history after the last user message
         last_user_msg_index = next(
             (
                 i
@@ -81,6 +81,29 @@ class StuckDetector:
         )
         if last_user_msg_index != -1:
             events = events[last_user_msg_index + 1 :]
+        return events
+
+    def _collect_actions_and_observations(
+        self, events: list[Event], max_needed: int
+    ) -> tuple[list[Event], list[Event]]:
+        """The last ``max_needed`` actions and observations, most recent first."""
+        last_actions: list[Event] = []
+        last_observations: list[Event] = []
+        for event in reversed(events):
+            if isinstance(event, ActionEvent) and len(last_actions) < max_needed:
+                last_actions.append(event)
+            elif (
+                isinstance(event, ObservationBaseEvent)
+                and len(last_observations) < max_needed
+            ):
+                last_observations.append(event)
+            if len(last_actions) >= max_needed and len(last_observations) >= max_needed:
+                break
+        return last_actions, last_observations
+
+    def is_stuck(self) -> bool:
+        """Check if the agent is currently stuck."""
+        events = self._events_since_last_user_message()
 
         # Determine minimum events needed
         min_threshold = min(
@@ -96,22 +119,14 @@ class StuckDetector:
             f"Events after last user message: {[type(e).__name__ for e in events]}"
         )
 
-        # Collect enough actions and observations for detection
-        max_needed = max(self.action_observation_threshold, self.action_error_threshold)
-        last_actions: list[Event] = []
-        last_observations: list[Event] = []
-
-        # Retrieve the last N actions and observations from the end of history
-        for event in reversed(events):
-            if isinstance(event, ActionEvent) and len(last_actions) < max_needed:
-                last_actions.append(event)
-            elif (
-                isinstance(event, ObservationBaseEvent)
-                and len(last_observations) < max_needed
-            ):
-                last_observations.append(event)
-            if len(last_actions) >= max_needed and len(last_observations) >= max_needed:
-                break
+        # action_error needs one extra pair to tell a fresh streak from one
+        # that already continued past the nudge (see get_action_error_nudge)
+        max_needed = max(
+            self.action_observation_threshold, self.action_error_threshold + 1
+        )
+        last_actions, last_observations = self._collect_actions_and_observations(
+            events, max_needed
+        )
 
         # Check all stuck patterns
         # scenario 1: same action, same observation
@@ -174,29 +189,63 @@ class StuckDetector:
 
         return False
 
+    def _action_error_streak(
+        self, last_actions: list[Event], last_observations: list[Event]
+    ) -> int:
+        """Length of the trailing run of one action repeatedly erroring."""
+        if not last_actions or not last_observations:
+            return 0
+        reference = last_actions[0]
+        streak = 0
+        for action, observation in zip(last_actions, last_observations):
+            if not self._event_eq(reference, action):
+                break
+            if not isinstance(observation, AgentErrorEvent):
+                break
+            streak += 1
+        return streak
+
     def _is_stuck_repeating_action_error(
         self, last_actions: list[Event], last_observations: list[Event]
     ) -> bool:
-        # scenario 2: same action, errors
+        # scenario 2: same action, errors — one repeat past the threshold
         threshold = self.action_error_threshold
-        if len(last_actions) < threshold or len(last_observations) < threshold:
-            return False
-
-        # are the last N actions the "same"?
-        if all(
-            self._event_eq(last_actions[0], action)
-            for action in last_actions[:threshold]
-        ):
-            # and the last N observations are all errors?
-            if all(
-                isinstance(obs, AgentErrorEvent)
-                for obs in last_observations[:threshold]
-            ):
-                logger.warning("Action, Error loop detected")
-                return True
-
-        # Check if observations are errors
+        if self._action_error_streak(last_actions, last_observations) > threshold:
+            logger.warning("Action, Error loop detected")
+            return True
         return False
+
+    def get_action_error_nudge(self) -> str | None:
+        """Nudge text once an action-error streak first hits the threshold.
+
+        Nudges once per streak: if the streak is still frozen on the same
+        error event (e.g. an empty/reasoning-only response added no new
+        action) we've already nudged for it, so we don't re-fire.
+        """
+        events = self._events_since_last_user_message()
+        threshold = self.action_error_threshold
+        last_actions, last_observations = self._collect_actions_and_observations(
+            events, threshold + 1
+        )
+        if self._action_error_streak(last_actions, last_observations) != threshold:
+            return None
+
+        action = last_actions[0]
+        error = last_observations[0]
+        assert isinstance(action, ActionEvent)
+        assert isinstance(error, AgentErrorEvent)
+
+        if error.id == self._last_nudged_error_event_id:
+            return None
+        self._last_nudged_error_event_id = error.id
+
+        return (
+            f"You've called `{action.tool_name}` with the same arguments "
+            f"{threshold} times in a row and gotten the same error each "
+            f"time: {error.error}. Repeating the exact same call again "
+            "will not work — review the error message and either correct "
+            "the arguments or try a different approach."
+        )
 
     def _is_stuck_monologue(self, events: list[Event]) -> bool:
         # scenario 3: monologue
