@@ -767,6 +767,150 @@ def test_validate_agent_settings_rejects_newer_schema_version() -> None:
         )
 
 
+def test_openhands_agent_settings_from_persisted_migrates_legacy_payloads() -> None:
+    v0 = OpenHandsAgentSettings.from_persisted({"llm": {"model": "v0-model"}})
+    assert isinstance(v0, OpenHandsAgentSettings)
+    assert v0.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert v0.agent_kind == "openhands"
+    assert v0.llm.model == "v0-model"
+
+    v1 = OpenHandsAgentSettings.from_persisted(
+        {
+            "schema_version": 1,
+            "agent_kind": "llm",
+            "llm": {"model": "legacy-model"},
+        }
+    )
+    assert isinstance(v1, OpenHandsAgentSettings)
+    assert v1.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert v1.agent_kind == "openhands"
+    assert v1.llm.model == "legacy-model"
+
+    v2 = OpenHandsAgentSettings.from_persisted(
+        {
+            "schema_version": 2,
+            "agent_kind": "openhands",
+            "verification": {
+                "critic_enabled": True,
+                "confirmation_mode": True,
+                "security_analyzer": "llm",
+            },
+        }
+    )
+    assert isinstance(v2, OpenHandsAgentSettings)
+    assert v2.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert v2.verification.critic_enabled is True
+    verification = v2.verification.model_dump(mode="json")
+    assert "confirmation_mode" not in verification
+    assert "security_analyzer" not in verification
+
+
+def test_acp_agent_settings_from_persisted_returns_acp_subtype() -> None:
+    settings = ACPAgentSettings.from_persisted(
+        {
+            "schema_version": 1,
+            "agent_kind": "acp",
+            "acp_command": ["echo", "test"],
+            "acp_model": "claude-opus-4-6",
+        }
+    )
+
+    assert type(settings) is ACPAgentSettings
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert settings.acp_command == ["echo", "test"]
+
+
+def test_openhands_agent_settings_from_persisted_rejects_current_llm_kind() -> None:
+    with pytest.raises(ValidationError):
+        OpenHandsAgentSettings.from_persisted(
+            {
+                "schema_version": AGENT_SETTINGS_SCHEMA_VERSION,
+                "agent_kind": "llm",
+                "llm": {"model": "legacy-model"},
+            }
+        )
+
+
+def test_agent_settings_from_persisted_current_payload_matches_model_validate() -> None:
+    payload = OpenHandsAgentSettings(llm=LLM(model="current-model")).model_dump(
+        mode="json"
+    )
+    original_payload = json.loads(json.dumps(payload))
+
+    settings = OpenHandsAgentSettings.from_persisted(payload)
+
+    assert settings == OpenHandsAgentSettings.model_validate(payload)
+    assert payload == original_payload
+
+
+def test_agent_settings_from_persisted_preserves_validated_instance_secrets() -> None:
+    settings = OpenHandsAgentSettings(
+        llm=LLM(model="current-model", api_key=SecretStr("sk-test-key"))
+    )
+
+    restored = OpenHandsAgentSettings.from_persisted(settings)
+
+    assert restored is settings
+    assert isinstance(restored.llm.api_key, SecretStr)
+    assert restored.llm.api_key.get_secret_value() == "sk-test-key"
+
+
+def test_agent_settings_from_persisted_decrypts_mcp_secrets() -> None:
+    from openhands.sdk.utils.cipher import Cipher
+
+    cipher = Cipher(secret_key="test-encryption-key")
+    settings = OpenHandsAgentSettings(
+        mcp_config=coerce_mcp_config(
+            {
+                "github": {
+                    "command": "uvx",
+                    "args": ["mcp-server-github"],
+                    "env": {"GITHUB_TOKEN": "ghp-test-token"},
+                    "headers": {"X-API-Token": "tok-test-token"},
+                }
+            }
+        )
+    )
+    persisted = settings.model_dump(mode="json", context={"cipher": cipher})
+
+    restored = OpenHandsAgentSettings.from_persisted(
+        persisted, context={"cipher": cipher}
+    )
+
+    restored_mcp = dump_mcp_config(restored.mcp_config)
+    assert restored_mcp["github"]["env"] == {"GITHUB_TOKEN": "ghp-test-token"}
+    assert restored_mcp["github"]["headers"] == {"X-API-Token": "tok-test-token"}
+
+
+def test_openhands_agent_settings_from_persisted_matches_union_validator() -> None:
+    payload = {
+        "schema_version": 1,
+        "agent_kind": "llm",
+        "llm": {"model": "legacy-model"},
+    }
+
+    from_persisted_settings = OpenHandsAgentSettings.from_persisted(payload)
+    union_settings = validate_agent_settings(payload)
+
+    # agent_context.current_datetime defaults to now(); exclude it so the
+    # comparison is not sensitive to the microseconds between validations.
+    volatile = {"agent_context": {"current_datetime"}}
+    assert from_persisted_settings.model_dump(
+        exclude=volatile
+    ) == union_settings.model_dump(exclude=volatile)
+
+
+def test_agent_settings_from_persisted_rejects_malformed_payload() -> None:
+    with pytest.raises(ValidationError):
+        OpenHandsAgentSettings.from_persisted(
+            {
+                "schema_version": AGENT_SETTINGS_SCHEMA_VERSION,
+                "agent_kind": "openhands",
+                "llm": "not-an-llm-settings-payload",
+            }
+        )
+
+
 def test_conversation_settings_from_persisted_migrates_v0_payload() -> None:
     settings = ConversationSettings.from_persisted({"max_iterations": 42})
 
@@ -1015,9 +1159,10 @@ def test_llm_summarizing_condenser_max_tokens_none_when_llm_has_no_limit() -> No
     assert agent.condenser.max_tokens is None
 
 
-def test_llm_summarizing_condenser_explicit_none_max_tokens_not_overridden() -> None:
-    """An explicit ``max_tokens=None`` must disable token-based condensation
-    even if the agent LLM has a configured ``max_input_tokens``.
+def test_llm_summarizing_condenser_explicit_none_max_tokens_remains_unset() -> None:
+    """An explicit ``max_tokens=None`` remains unset on the condenser configuration.
+
+    The active agent LLM's effective input limit still governs condensation at runtime.
     """
     llm = LLM(model="test-model", usage_id="agent", max_input_tokens=65536)
     settings = OpenHandsAgentSettings(

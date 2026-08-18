@@ -52,16 +52,16 @@ def event_service(tmp_path):
         service = EventService(
             stored=StoredConversation(
                 id=uuid4(),
-                agent=Agent(
-                    llm=LLM(
-                        usage_id="test-llm",
-                        model="test-model",
-                        api_key=SecretStr("test-key"),
-                        stream=True,
-                    ),
-                    tools=[],
-                ),
                 workspace=LocalWorkspace(working_dir=str(tmp_path / "workspace")),
+            ),
+            agent=Agent(
+                llm=LLM(
+                    usage_id="test-llm",
+                    model="test-model",
+                    api_key=SecretStr("test-key"),
+                    stream=True,
+                ),
+                tools=[],
             ),
             conversations_dir=tmp_path / "conversations",
         )
@@ -192,16 +192,16 @@ async def test_token_callbacks_not_wired_when_stream_disabled(tmp_path):
         service = EventService(
             stored=StoredConversation(
                 id=uuid4(),
-                agent=Agent(
-                    llm=LLM(
-                        usage_id="test-llm",
-                        model="test-model",
-                        api_key=SecretStr("test-key"),
-                        stream=False,
-                    ),
-                    tools=[],
-                ),
                 workspace=LocalWorkspace(working_dir=str(tmp_path / "workspace")),
+            ),
+            agent=Agent(
+                llm=LLM(
+                    usage_id="test-llm",
+                    model="test-model",
+                    api_key=SecretStr("test-key"),
+                    stream=False,
+                ),
+                tools=[],
             ),
             conversations_dir=tmp_path / "conversations",
         )
@@ -224,9 +224,9 @@ async def test_acp_agents_wire_token_callback_without_llm_streaming(tmp_path):
     service = EventService(
         stored=StoredConversation(
             id=uuid4(),
-            agent=ACPAgent(acp_command=["echo", "test"]),
             workspace=LocalWorkspace(working_dir=str(tmp_path / "workspace")),
         ),
+        agent=ACPAgent(acp_command=["echo", "test"]),
         conversations_dir=tmp_path / "conversations",
     )
     (tmp_path / "workspace").mkdir(exist_ok=True)
@@ -248,9 +248,9 @@ async def test_acp_string_token_callback_publishes_delta(tmp_path):
     service = EventService(
         stored=StoredConversation(
             id=uuid4(),
-            agent=ACPAgent(acp_command=["echo", "test"]),
             workspace=LocalWorkspace(working_dir=str(tmp_path / "workspace")),
         ),
+        agent=ACPAgent(acp_command=["echo", "test"]),
         conversations_dir=tmp_path / "conversations",
     )
     collector = _CollectorSubscriber()

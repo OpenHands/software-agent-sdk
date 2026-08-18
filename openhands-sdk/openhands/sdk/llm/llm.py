@@ -5,6 +5,7 @@ import copy
 import importlib
 import json
 import os
+import threading
 import warnings
 from collections.abc import AsyncIterable, Callable, Iterable, Mapping, Sequence
 from contextvars import ContextVar
@@ -26,6 +27,15 @@ from pydantic.json_schema import SkipJsonSchema
 
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.utils.model_info import get_litellm_model_info
+from openhands.sdk.llm.utils.runtime_metadata import (
+    ModelRuntimeMetadata,
+    aresolve_provider_metadata,
+    cache_key as runtime_metadata_cache_key,
+    cached_metadata,
+    in_negative_cache,
+    resolve_provider_metadata_sync,
+    store_result,
+)
 from openhands.sdk.settings.metadata import SettingProminence, field_meta
 from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
@@ -633,6 +643,26 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _call_context: LLMCallContext = PrivateAttr(default_factory=LLMCallContext)
     _effective_max_input_tokens: int | None = PrivateAttr(default=None)
     _effective_max_output_tokens: int | None = PrivateAttr(default=None)
+    # Provider-aware runtime metadata resolved lazily (see
+    # `utils/runtime_metadata.py`). `fetched_at` and `negative_until` are
+    # monotonic timestamps used for the positive/negative caches;
+    # `generation` is bumped each time a lookup is *started* so that a stale
+    # (earlier-started, later-finished) probe can never overwrite the result
+    # of a newer one (single-flight by generation, see `resolve_runtime_metadata`).
+    _runtime_metadata: ModelRuntimeMetadata | None = PrivateAttr(default=None)
+    _runtime_metadata_fetched_at: float | None = PrivateAttr(default=None)
+    _runtime_metadata_negative_until: float | None = PrivateAttr(default=None)
+    _runtime_metadata_key: tuple[str, str, str] | None = PrivateAttr(default=None)
+    # Single-flight / stale-proofing for runtime-metadata resolution. Each
+    # *started* lookup records the generation it belongs to (see above); a
+    # completed probe only publishes its result if that generation is still the
+    # latest, so a slow earlier-started probe can never overwrite a newer one.
+    _runtime_metadata_generation: int = PrivateAttr(default=0)
+    # Guards the runtime-metadata cache fields above. The synchronous resolver
+    # may be driven from a worker thread, and the async resolver can also store
+    # a result, so the read/check and store are kept atomic. ClassVar (shared);
+    # critical sections are tiny and never cover network I/O.
+    _runtime_metadata_lock: ClassVar[threading.Lock] = threading.Lock()
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="ignore", arbitrary_types_allowed=True
     )
@@ -759,8 +789,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Pydantic copies private attrs without re-running validators, even for
         # deep copies, so routing-field updates must rebuild derived metadata.
         copied = super().model_copy(update=update, deep=deep)
-        if update is not None and ("model" in update or "base_url" in update):
+        route_changed = update is not None and any(
+            k in update for k in ("model", "base_url", "litellm_extra_body")
+        )
+        if route_changed:
             copied._refresh_litellm_metadata()
+            copied._reset_runtime_metadata_for_key()
         return copied
 
     def _openrouter_headers(self) -> dict[str, str]:
@@ -1486,19 +1520,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Note:
             Summary field is always added to tool schemas for transparency and
             explainability of agent actions.
-
-        Raises:
-            ValueError: If streaming is requested (not supported).
-
-        Example:
-            ```python
-            from openhands.sdk.llm import Message, TextContent
-
-            messages = [Message(role="user", content=[TextContent(text="Hello")])]
-            response = llm.completion(messages)
-            print(response.content)
-            ```
         """
+        # Resolve provider-aware runtime metadata (e.g. OpenRouter route limits)
+        # before the first completion so ``effective_max_input_tokens`` /
+        # ``effective_max_output_tokens`` reflect the actual runtime route for
+        # any context management that runs later in this call. The result is
+        # cached (1h TTL) and negative-cached on failure, and the probe is a
+        # no-op for providers without runtime metadata.
+        self.resolve_runtime_metadata()
+
         _caller_kwargs = kwargs.copy()
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if enable_streaming and on_token is None:
@@ -1595,6 +1625,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Uses ``litellm.acompletion`` under the hood, freeing the event loop
         while waiting for the LLM provider response.
         """
+        # Resolve provider-aware runtime metadata (e.g. OpenRouter route limits)
+        # before the first completion on the agent-server async path so
+        # ``effective_max_input_tokens`` reflects the actual runtime route.
+        # The result is cached (1h TTL) and negative-cached on failure, and the
+        # probe is a no-op for providers without runtime metadata, so repeated
+        # calls are cheap.
+        await self.aresolve_runtime_metadata()
+
         _caller_kwargs = kwargs.copy()
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if enable_streaming and on_token is None:
@@ -1708,6 +1746,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             Summary field is always added to tool schemas for transparency and
             explainability of agent actions.
         """
+        # Resolve provider-aware runtime metadata before the first request so
+        # ``effective_max_input_tokens`` / ``effective_max_output_tokens``
+        # reflect the actual runtime route during subsequent context management.
+        # Cached (1h TTL) / negative-cached; no-op for providers without runtime
+        # metadata.
+        self.resolve_runtime_metadata()
+
         _caller_kwargs = kwargs.copy()
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if user_enable_streaming and on_token is None and not self.is_subscription:
@@ -1853,6 +1898,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Uses ``litellm.aresponses`` under the hood, freeing the event loop
         while waiting for the LLM provider response.
         """
+        # See :meth:`acompletion`: resolve provider-aware runtime metadata before
+        # the first request so context management reads runtime (not model-level)
+        # limits. No blocking network I/O in-process.
+        await self.aresolve_runtime_metadata()
+
         _caller_kwargs = kwargs.copy()
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if user_enable_streaming and on_token is None and not self.is_subscription:
@@ -2486,19 +2536,135 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def effective_max_input_tokens(self) -> int | None:
         """Resolved context window used at runtime.
 
-        ``max_input_tokens`` remains the user-configured value. When it is
-        unset, this property reflects the value discovered from model metadata.
+        ``max_input_tokens`` remains the user-configured value and always wins.
+        When it is unset, a previously resolved provider-aware runtime limit is
+        used (this property performs no network I/O), falling back to the value
+        discovered from model metadata.
         """
-        return self.max_input_tokens or self._effective_max_input_tokens
+        if self.max_input_tokens:
+            return self.max_input_tokens
+        cached = cached_metadata(
+            self._runtime_metadata, self._runtime_metadata_fetched_at
+        )
+        if cached is not None and cached.max_input_tokens is not None:
+            return cached.max_input_tokens
+        return self._effective_max_input_tokens
 
     @property
     def effective_max_output_tokens(self) -> int | None:
         """Resolved output token limit used at runtime.
 
-        ``max_output_tokens`` remains the user-configured value. When it is
-        unset, this property reflects provider/model defaults and safety caps.
+        ``max_output_tokens`` remains the user-configured value and always
+        wins. This property performs no network I/O and falls back to the value
+        discovered from model metadata. Runtime (provider) resolution only
+        refines the input/context limit, never the output limit, so no call
+        here is needed for output tokens (see issue #4421).
         """
         return self.max_output_tokens or self._effective_max_output_tokens
+
+    # =========================================================================
+    # Runtime (provider-aware) metadata
+    # =========================================================================
+    def resolve_runtime_metadata(
+        self, *, force: bool = False
+    ) -> ModelRuntimeMetadata | None:
+        """Resolve provider-aware runtime limits synchronously (lazy + cached).
+
+        Discovery never runs during construction. Unsupported providers and
+        unresolvable routes return ``None`` so callers fall back to static
+        model metadata. Successful results are cached for
+        ``RUNTIME_METADATA_TTL_SECONDS``; failures are negative-cached briefly.
+
+        Prefer :meth:`aresolve_runtime_metadata` on the agent-server event loop,
+        which performs no blocking network I/O in-process. A concurrent
+        resolution already in flight cannot be overwritten by a stale
+        (earlier-started) probe: each probe carries a generation, and only the
+        latest generation may publish its result.
+        """
+        # The LLM may be shared across threads via the sync path, so the cache
+        # read/check and the store must be atomic. The network probe itself runs
+        # outside the lock so a slow endpoint cannot block other threads from
+        # reading the cache.
+        with self._runtime_metadata_lock:
+            if not force:
+                cached = cached_metadata(
+                    self._runtime_metadata, self._runtime_metadata_fetched_at
+                )
+                if cached is not None:
+                    return cached
+                if in_negative_cache(self._runtime_metadata_negative_until):
+                    return None
+            generation = self._runtime_metadata_generation + 1
+            self._runtime_metadata_generation = generation
+
+        metadata = resolve_provider_metadata_sync(self)
+        self._store_runtime_metadata(metadata, generation)
+        return metadata
+
+    async def aresolve_runtime_metadata(
+        self, *, force: bool = False
+    ) -> ModelRuntimeMetadata | None:
+        """Async variant of :meth:`resolve_runtime_metadata`.
+
+        Concurrent calls for the same route are deduplicated so only one
+        upstream request is issued. If the caller is configuring the condenser
+        or context management, resolve before computing a token threshold.
+
+        Because the agent-server may drive a shared ``LLM`` from multiple event
+        loops, a result is only published if no *newer* resolution (started via
+        the sync path on another thread, or a forced re-resolution) has landed
+        meanwhile.
+        """
+        if not force:
+            cached = cached_metadata(
+                self._runtime_metadata, self._runtime_metadata_fetched_at
+            )
+            if cached is not None:
+                return cached
+            if in_negative_cache(self._runtime_metadata_negative_until):
+                return None
+
+        with self._runtime_metadata_lock:
+            generation = self._runtime_metadata_generation + 1
+            self._runtime_metadata_generation = generation
+
+        metadata = await aresolve_provider_metadata(self)
+        self._store_runtime_metadata(metadata, generation)
+        return metadata
+
+    def _store_runtime_metadata(
+        self, metadata: ModelRuntimeMetadata | None, generation: int
+    ) -> None:
+        fetched_at, negative_until, resolved = store_result(metadata)
+        # Locked so a concurrent synchronous resolver (its probe runs outside the
+        # lock) cannot observe a torn / interleaved cache state. Generation
+        # guards against a stale (earlier-started) probe overwriting the result
+        # of a newer resolution: only the latest generation may publish.
+        with self._runtime_metadata_lock:
+            if generation != self._runtime_metadata_generation:
+                # Superseded by a newer resolution; drop this result.
+                return
+            self._runtime_metadata_fetched_at = fetched_at
+            self._runtime_metadata_negative_until = negative_until
+            if resolved is not None:
+                self._runtime_metadata = resolved
+            self._runtime_metadata_key = runtime_metadata_cache_key(self)
+
+    def _reset_runtime_metadata_for_key(self) -> None:
+        """Drop the runtime-metadata cache when the route (cache key) changes."""
+        with self._runtime_metadata_lock:
+            self._runtime_metadata = None
+            self._runtime_metadata_fetched_at = None
+            self._runtime_metadata_negative_until = None
+            self._runtime_metadata_key = None
+            self._runtime_metadata_generation += 1
+
+    @property
+    def resolved_runtime_metadata(self) -> ModelRuntimeMetadata | None:
+        """Currently cached runtime metadata, without triggering discovery."""
+        return cached_metadata(
+            self._runtime_metadata, self._runtime_metadata_fetched_at
+        )
 
     # =========================================================================
     # Utilities preserved from previous class
