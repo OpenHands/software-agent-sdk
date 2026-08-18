@@ -118,7 +118,6 @@ async def test_conversation_service_reads_the_live_sink_not_a_captured_one(
         DiagnosticEventFactory,
         build_runtime_properties,
     )
-    from openhands.sdk import LLM, Agent
     from openhands.sdk.security.confirmation_policy import NeverConfirm
     from openhands.sdk.workspace import LocalWorkspace
 
@@ -157,6 +156,7 @@ async def test_conversation_service_reads_the_live_sink_not_a_captured_one(
     class _FakeEventService:
         def __init__(self):
             self.subscribers: list[object] = []
+            self._conversation = None
 
         async def subscribe_to_events(self, subscriber):
             self.subscribers.append(subscriber)
@@ -164,7 +164,6 @@ async def test_conversation_service_reads_the_live_sink_not_a_captured_one(
     event_service = _FakeEventService()
     stored = StoredConversation(
         id=uuid4(),
-        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test"), tools=[]),
         workspace=LocalWorkspace(working_dir=str(tmp_path)),
         confirmation_policy=NeverConfirm(),
         initial_message=None,

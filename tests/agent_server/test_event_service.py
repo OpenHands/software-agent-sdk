@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import json
 import shutil
 import threading
 import time
@@ -60,12 +61,23 @@ from tests.agent_server.stress.scripts import (
 )
 
 
+# Agent for a new conversation. meta.json (StoredConversation) no longer carries
+# the agent — base_state.json is its single source of truth — so tests pass it to
+# EventService separately.
+def _sample_agent() -> Agent:
+    return Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[])
+
+
+@pytest.fixture
+def sample_agent():
+    return _sample_agent()
+
+
 @pytest.fixture
 def sample_stored_conversation():
     """Create a sample StoredConversation for testing."""
     return StoredConversation(
         id=uuid4(),
-        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
         workspace=LocalWorkspace(working_dir="workspace/project"),
         confirmation_policy=NeverConfirm(),
         initial_message=None,
@@ -76,10 +88,11 @@ def sample_stored_conversation():
 
 
 @pytest.fixture
-def event_service(sample_stored_conversation):
+def event_service(sample_stored_conversation, sample_agent):
     """Create an EventService instance for testing."""
     service = EventService(
         stored=sample_stored_conversation,
+        agent=sample_agent,
         conversations_dir=Path("test_conversation_dir"),
     )
     return service
@@ -1820,19 +1833,18 @@ class TestEventServiceSaveMeta:
         assert env["TAVILY_API_KEY"].get_secret_value() == "${TAVILY_API_KEY}"
 
     @pytest.mark.asyncio
-    async def test_switch_acp_model_persists_to_meta(self, tmp_path):
-        """switch_acp_model mirrors the new model into meta.json.
+    async def test_switch_acp_model_persists_via_conversation(self, tmp_path):
+        """switch_acp_model delegates to the SDK conversation, which persists the
+        new model to base_state.json (the single source of truth).
 
-        start() rebuilds the runtime agent from meta.json (self.stored.agent),
-        and ConversationState.create() copies that agent over the persisted
-        base_state.json on resume. So the switched model must also be written
-        to meta.json, otherwise a restart silently reverts to the old model.
+        meta.json no longer carries the agent, so the event service must NOT
+        mirror the switch there. The SDK ``LocalConversation.switch_acp_model``
+        sets ``state.agent`` to an agent carrying the new ``acp_model``, which the
+        autosave path writes to base_state.json; on resume the agent is rebuilt
+        from base_state.
         """
-        from openhands.sdk.agent import ACPAgent
-
         stored = StoredConversation(
             id=uuid4(),
-            agent=ACPAgent(acp_command=["echo", "test"], acp_model="old-model"),
             workspace=LocalWorkspace(working_dir=str(tmp_path)),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -1842,24 +1854,29 @@ class TestEventServiceSaveMeta:
         conv_dir = tmp_path / stored.id.hex
         conv_dir.mkdir(parents=True, exist_ok=True)
 
-        # Stand in for a live conversation; the protocol-level switch is
-        # covered elsewhere — here we only assert the meta.json mirroring.
+        # Write a meta.json up front so the assertion below proves the switch
+        # does not overwrite an *existing* meta.json with an agent mirror, rather
+        # than trivially passing because meta.json was never created.
+        await service.save_meta()
+        meta_file = conv_dir / "meta.json"
+        assert meta_file.exists()
+        assert "agent" not in json.loads(meta_file.read_text())
+
+        # Stand in for a live conversation; the protocol-level switch and the
+        # base_state persistence are covered by the SDK's own tests — here we
+        # only assert delegation and that meta.json is not written with an agent.
         service._conversation = MagicMock()
 
         await service.switch_acp_model("new-model")
 
-        # Live switch was delegated to the conversation...
+        # Live switch is delegated to the SDK conversation (which persists to
+        # base_state.json).
         service._conversation.switch_acp_model.assert_called_once_with("new-model")
-        # ...the in-memory stored agent was updated...
-        assert isinstance(service.stored.agent, ACPAgent)
-        assert service.stored.agent.acp_model == "new-model"
-        # ...and the new model was persisted to meta.json so it survives a
-        # restart.
-        loaded = StoredConversation.model_validate_json(
-            (conv_dir / "meta.json").read_text()
-        )
-        assert isinstance(loaded.agent, ACPAgent)
-        assert loaded.agent.acp_model == "new-model"
+        # StoredConversation no longer carries the agent at all.
+        assert not hasattr(service.stored, "agent")
+        # meta.json still exists and was never given an agent mirror.
+        assert meta_file.exists()
+        assert "agent" not in json.loads(meta_file.read_text())
 
     @pytest.mark.asyncio
     async def test_switch_acp_model_inactive_service_raises_value_error(self, tmp_path):
@@ -1870,11 +1887,9 @@ class TestEventServiceSaveMeta:
         the first run(), so the only failure mode here is a closed/never-started
         service.
         """
-        from openhands.sdk.agent import ACPAgent
 
         stored = StoredConversation(
             id=uuid4(),
-            agent=ACPAgent(acp_command=["echo", "test"], acp_model="old-model"),
             workspace=LocalWorkspace(working_dir=str(tmp_path)),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -3027,10 +3042,6 @@ class TestStatsCallbackNoDeadlock:
     def _make_service_with_callback(self):
         stored = StoredConversation(
             id=uuid4(),
-            agent=Agent(
-                llm=LLM(model="gpt-4o", usage_id="test-stats"),
-                tools=[],
-            ),
             workspace=LocalWorkspace(working_dir="workspace/project"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -3040,6 +3051,7 @@ class TestStatsCallbackNoDeadlock:
         )
         service = EventService(
             stored=stored,
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-stats"), tools=[]),
             conversations_dir=Path("test_conversation_dir"),
         )
         # A real FIFOLock on a Mock-ish state so the callback contends on
@@ -3367,7 +3379,6 @@ def test_llm_log_callback_swallows_emit_failures(
 def _make_stored(tmp_path: Path) -> StoredConversation:
     return StoredConversation(
         id=uuid4(),
-        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test"), tools=[]),
         workspace=LocalWorkspace(working_dir=str(tmp_path)),
         confirmation_policy=NeverConfirm(),
         initial_message=None,
@@ -3393,6 +3404,7 @@ async def test_event_service_skips_lease_when_ttl_is_zero(tmp_path: Path) -> Non
     stored = _make_stored(tmp_path)
     service = EventService(
         stored=stored,
+        agent=_sample_agent(),
         conversations_dir=tmp_path,
         lease_ttl_seconds=0,
     )
@@ -3411,6 +3423,7 @@ async def test_event_service_creates_lease_with_custom_ttl(tmp_path: Path) -> No
     stored = _make_stored(tmp_path)
     service = EventService(
         stored=stored,
+        agent=_sample_agent(),
         conversations_dir=tmp_path,
         lease_ttl_seconds=10.0,
     )
