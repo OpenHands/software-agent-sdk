@@ -154,8 +154,40 @@ VERIFIED_OPENHANDS_MODELS = [
 ]
 
 
+# AIMLAPI (https://aimlapi.com) — one OpenAI-compatible key, 300+ models routed
+# via LiteLLM's ``aiml`` provider (a model resolves as ``aiml/<catalog-id>``).
+# The ids below are the catalog ids (as returned by AIMLAPI ``GET /v1/models``),
+# curated to the current flagship tool-calling chat models.
+VERIFIED_AIML_MODELS = [
+    # Anthropic
+    "anthropic/claude-opus-5",
+    "anthropic/claude-opus-4.8",
+    "anthropic/claude-sonnet-5",
+    "anthropic/claude-fable-5",
+    # OpenAI
+    "openai/gpt-5.6-luna-pro",
+    "openai/gpt-5.6-sol-pro",
+    "openai/gpt-5.6-terra-pro",
+    # Google
+    "google/gemini-3.6-flash",
+    # xAI
+    "x-ai/grok-4-5",
+    # DeepSeek
+    "deepseek/deepseek-v4-pro",
+    # Alibaba Qwen
+    "alibaba/qwen3.7-max",
+    # Zhipu GLM
+    "zhipu/glm-5.2",
+    # Moonshot
+    "moonshot/kimi-k3",
+    # MiniMax
+    "minimax/minimax-m3",
+]
+
+
 VERIFIED_MODELS = {
     "openhands": VERIFIED_OPENHANDS_MODELS,
+    "aiml": VERIFIED_AIML_MODELS,
     "anthropic": VERIFIED_ANTHROPIC_MODELS,
     "openai": VERIFIED_OPENAI_MODELS,
     "mistral": VERIFIED_MISTRAL_MODELS,
