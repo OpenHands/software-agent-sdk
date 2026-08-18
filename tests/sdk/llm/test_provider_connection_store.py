@@ -226,7 +226,7 @@ def test_bare_profile_store_auto_wires_provider_store(tmp_path, monkeypatch):
     profiles.save("p", LLM(model="gpt-4o", provider_connection_id="conn1"))
 
     llm = profiles.load("p")
-    assert llm.api_key is not None
+    assert isinstance(llm.api_key, SecretStr)
     assert llm.api_key.get_secret_value() == "sk-shared"
     assert llm.base_url == "https://api.anthropic.com"
 
