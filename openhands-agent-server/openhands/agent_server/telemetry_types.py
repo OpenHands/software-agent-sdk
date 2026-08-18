@@ -1,4 +1,4 @@
 from typing import Literal
 
 
-DeploymentKind = Literal["local", "saas"]
+DeploymentKind = Literal["local", "remote"]

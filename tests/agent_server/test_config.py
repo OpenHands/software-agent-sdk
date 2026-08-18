@@ -43,9 +43,9 @@ def test_load_config_reads_registered_marketplaces_from_env(monkeypatch, tmp_pat
 def test_load_config_reads_telemetry_deployment_kind_from_env(monkeypatch, tmp_path):
     config_path = tmp_path / "missing.json"
     monkeypatch.setenv(CONFIG_PATH_ENV, str(config_path))
-    monkeypatch.setenv("OH_TELEMETRY_DEPLOYMENT_KIND", "saas")
+    monkeypatch.setenv("OH_TELEMETRY_DEPLOYMENT_KIND", "remote")
 
-    assert load_config().telemetry.deployment_kind == "saas"
+    assert load_config().telemetry.deployment_kind == "remote"
 
 
 def test_conversation_idle_ttl_defaults_to_twenty_minutes():

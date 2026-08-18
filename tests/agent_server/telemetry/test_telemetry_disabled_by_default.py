@@ -30,12 +30,14 @@ async def test_building_sink_carries_configured_deployment_kind(
     temp_persistence_dir,
 ):
     sink = await build_telemetry_sink(
-        Config(static_files_path=None, telemetry=TelemetrySpec(deployment_kind="saas"))
+        Config(
+            static_files_path=None, telemetry=TelemetrySpec(deployment_kind="remote")
+        )
     )
     try:
         factory = get_event_factory()
         assert factory is not None
-        assert factory.runtime.deployment_kind == "saas"
+        assert factory.runtime.deployment_kind == "remote"
     finally:
         await sink.aclose()
 

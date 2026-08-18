@@ -145,7 +145,7 @@ class TelemetrySpec(BaseModel):
     deployment_kind: DeploymentKind = Field(
         default="local",
         description=(
-            "Deployment kind attached to diagnostic events. Use 'saas' for "
+            "Deployment kind attached to diagnostic events. Use 'remote' for "
             "hosted OpenHands and 'local' for self-hosted or developer runs."
         ),
     )

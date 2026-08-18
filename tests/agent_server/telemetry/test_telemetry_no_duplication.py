@@ -77,13 +77,15 @@ def test_no_deployment_mode_concept_remains():
 def test_deployment_kind_is_a_runtime_property_not_a_mode():
     import openhands.agent_server.config as config_mod
 
-    assert config_mod.TelemetrySpec(deployment_kind="saas").deployment_kind == "saas"
+    assert (
+        config_mod.TelemetrySpec(deployment_kind="remote").deployment_kind == "remote"
+    )
     assert m.RuntimeProperties.model_fields["deployment_kind"].default == "local"
     assert (
         build_runtime_properties(
-            deferred_init=False, deployment_kind="saas"
+            deferred_init=False, deployment_kind="remote"
         ).deployment_kind
-        == "saas"
+        == "remote"
     )
 
 
