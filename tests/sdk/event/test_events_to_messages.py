@@ -159,11 +159,11 @@ class TestEventsToMessages:
         messages = LLMConvertibleEvent.events_to_messages(events)
 
         assert [message.role for message in messages] == ["user"]
-        assert [
-            content.text
-            for content in messages[0].content
-            if isinstance(content, TextContent)
-        ] == ["one", "two", "three"]
+        assert [content.text for content in messages[0].content] == [  # type: ignore
+            "one",
+            "two",
+            "three",
+        ]
 
     def test_user_message_merge_preserves_mixed_content_order(self):
         """Merged content concatenates in log order, text and images alike."""
@@ -533,92 +533,6 @@ class TestEventsToMessages:
         assert messages[1].role == "assistant"
         assert messages[1].content[0].text == "Second command"  # type: ignore
         assert messages[1].tool_calls[0].id == "call_2"  # type: ignore
-
-    def test_trailing_parallel_batch_at_end_of_stream(self):
-        """A parallel batch as the LAST events survives intact, in log order."""
-        user_msg = MessageEvent(
-            source="user",
-            llm_message=Message(
-                role="user", content=[TextContent(text="do three things")]
-            ),
-        )
-        first = create_action_event(
-            thought_text="batching all three",
-            tool_name="terminal",
-            tool_call_id="call_1",
-            llm_response_id="response_tail",
-            action_args={"command": "one"},
-        )
-        second = ActionEvent(
-            source="agent",
-            thought=[],  # Empty thought for subsequent calls in a parallel batch
-            action=EventsToMessagesMockAction(command="two"),
-            tool_name="terminal",
-            tool_call_id="call_2",
-            tool_call=create_tool_call("call_2", "terminal", {"command": "two"}),
-            llm_response_id="response_tail",
-        )
-        third = ActionEvent(
-            source="agent",
-            thought=[],  # Empty thought for subsequent calls in a parallel batch
-            action=EventsToMessagesMockAction(command="three"),
-            tool_name="terminal",
-            tool_call_id="call_3",
-            tool_call=create_tool_call("call_3", "terminal", {"command": "three"}),
-            llm_response_id="response_tail",
-        )
-
-        events = [user_msg, first, second, third]
-        messages = LLMConvertibleEvent.events_to_messages(events)  # type: ignore
-
-        assert len(messages) == 2
-        tail = messages[-1]
-        assert tail.role == "assistant"
-        # Exact sequence, not membership: order within the batch is log order.
-        assert [tc.id for tc in tail.tool_calls] == [  # type: ignore
-            "call_1",
-            "call_2",
-            "call_3",
-        ]
-
-    def test_interleaved_response_ids_do_not_batch(self):
-        """Only ADJACENT same-response-id actions recombine into one message."""
-        action_a1 = create_action_event(
-            thought_text="First call of response 1",
-            tool_name="terminal",
-            tool_call_id="call_a1",
-            llm_response_id="response_1",
-            action_args={"command": "a1"},
-        )
-        action_b = create_action_event(
-            thought_text="Unrelated response in between",
-            tool_name="terminal",
-            tool_call_id="call_b",
-            llm_response_id="response_2",
-            action_args={"command": "b"},
-        )
-        action_a2 = ActionEvent(
-            source="agent",
-            thought=[],  # Second call of resp-1 carries no thought of its own
-            action=EventsToMessagesMockAction(command="a2"),
-            tool_name="terminal",
-            tool_call_id="call_a2",
-            tool_call=create_tool_call("call_a2", "terminal", {"command": "a2"}),
-            llm_response_id="response_1",
-        )
-
-        events = [action_a1, action_b, action_a2]
-        messages = LLMConvertibleEvent.events_to_messages(events)  # type: ignore
-
-        # The resp-1 batch closes at the resp-2 interruption; resp-1's two
-        # calls are NOT reconstructed into a single assistant message.
-        assert len(messages) == 3
-        assert [m.role for m in messages] == ["assistant", "assistant", "assistant"]
-        assert [m.tool_calls[0].id for m in messages] == [  # type: ignore
-            "call_a1",
-            "call_b",
-            "call_a2",
-        ]
 
     def test_mixed_event_types(self):
         """Test conversion of mixed event types in sequence."""

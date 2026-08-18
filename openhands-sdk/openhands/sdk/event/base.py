@@ -106,8 +106,12 @@ class LLMConvertibleEvent(Event, ABC):
 
     @staticmethod
     def events_to_messages(events: list["LLMConvertibleEvent"]) -> list[Message]:
-        """Convert event stream to LLM message stream, handling multi-action batches"""
-        # TODO: We should add extensive tests for this
+        """Convert event stream to LLM message stream, handling multi-action batches.
+
+        This is a read-only projection over the event log: events are
+        immutable once created and appended, so merges build new content
+        lists rather than mutating the events' own messages.
+        """
         from openhands.sdk.event.llm_convertible import ActionEvent
 
         messages = []
