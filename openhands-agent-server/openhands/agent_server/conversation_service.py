@@ -715,6 +715,16 @@ class ConversationService:
             base_state_file.read_text(), context=context
         )
 
+    def _agent_from_base_state(self, conversation_id: UUID) -> AgentBase | None:
+        """Return the persisted agent from ``base_state.json`` (its single source
+        of truth), or ``None`` if there is no persisted state yet.
+
+        Used by cold-path checks (e.g. codex-agent detection) that used to read
+        the agent from ``meta.json`` before the agent was removed from it.
+        """
+        state = self._load_persisted_state_sync(conversation_id)
+        return state.agent if state is not None else None
+
     def _children_index(self) -> dict[UUID, list[UUID]]:
         """Reverse map parent_id -> child ids; rebuilt per call because the
         catalog is mutated from several places and a cache could go stale."""
@@ -802,11 +812,19 @@ class ConversationService:
     async def _resolve_credential_bindings(
         self,
         stored: StoredConversation,
+        agent: AgentBase | None = None,
     ) -> dict[str, VersionedCredentialBinding]:
+        # The agent no longer lives on ``stored`` (meta.json). Callers pass the
+        # agent explicitly (the new-conversation request agent, or the live
+        # agent); otherwise fall back to the persisted base_state.json agent.
+        # Read it off the event loop — it does blocking file I/O, mirroring the
+        # ``_load_persisted_state_sync`` usage elsewhere.
+        if agent is None:
+            agent = await asyncio.to_thread(self._agent_from_base_state, stored.id)
         bindings = self._credential_bindings.pop(stored.id, {})
         if (
             CODEX_AUTH_SECRET_NAME not in bindings
-            and self._is_codex_agent(stored.agent)
+            and self._is_codex_agent(agent)
             and await self._has_local_codex_credential()
         ):
             assert self.secrets_store is not None
@@ -1037,6 +1055,7 @@ class ConversationService:
         conversation_id: UUID,
         *,
         require_runtime_bindings: bool = True,
+        agent: AgentBase | None = None,
     ) -> EventService | None:
         event_services = self._event_services
         if event_services is None:
@@ -1063,7 +1082,7 @@ class ConversationService:
 
         await asyncio.to_thread(self._prepare_persisted_runtime, record.stored)
         try:
-            return await self._start_event_service(record.stored)
+            return await self._start_event_service(record.stored, agent=agent)
         except ConversationLeaseHeldError as exc:
             logger.debug(
                 "Skipping active conversation %s owned by %s until %s",
@@ -1302,13 +1321,19 @@ class ConversationService:
                     existing_event_service is not None
                     and existing_event_service.is_open()
                 ):
+                    # ``is_open()`` above guarantees a live conversation, so the
+                    # public getter never raises here.
+                    existing_agent = existing_event_service.get_conversation().agent
                     if (
-                        self._is_codex_agent(existing_event_service.stored.agent)
+                        self._is_codex_agent(existing_agent)
                         and CODEX_AUTH_SECRET_NAME
                         not in existing_event_service.credential_bindings
                     ):
+                        # Reuse the live agent we already resolved above instead
+                        # of letting _resolve_credential_bindings fall back to a
+                        # synchronous base_state.json read.
                         late_bindings = await self._resolve_credential_bindings(
-                            existing_event_service.stored
+                            existing_event_service.stored, agent=existing_agent
                         )
                         try:
                             for secret_name, binding in late_bindings.items():
@@ -1354,9 +1379,13 @@ class ConversationService:
                     raise ValueError(
                         f"Persisted conversation {conversation_id} has no record"
                     )
-                managed_codex_credential = self._is_codex_agent(
-                    existing_record.stored.agent
-                ) and (
+                # Read base_state.json off the event loop, matching the
+                # asyncio.to_thread pattern used for the same read elsewhere
+                # (_resolve_credential_bindings, _conversation_info).
+                reattach_agent = await asyncio.to_thread(
+                    self._agent_from_base_state, conversation_id
+                )
+                managed_codex_credential = self._is_codex_agent(reattach_agent) and (
                     CODEX_AUTH_SECRET_NAME
                     in self._credential_bindings.get(conversation_id, {})
                     or await self._has_local_codex_credential()
@@ -1377,8 +1406,10 @@ class ConversationService:
                             }
                         )
                     try:
+                        # Reuse the agent we already parsed from base_state.json
+                        # above so the load path doesn't read and parse it again.
                         event_service = await self._get_or_load_event_service_locked(
-                            conversation_id
+                            conversation_id, agent=reattach_agent
                         )
                     finally:
                         if injected_fallback:
@@ -1546,6 +1577,17 @@ class ConversationService:
             exclude={"agent_profile_id", "agent_launch_additions"},
         )
 
+        # The agent is persisted to base_state.json (not meta.json), so it must
+        # not be splatted into StoredConversation (which no longer carries the
+        # agent). Pull it out explicitly rather than relying on Pydantic's
+        # ``extra="ignore"`` to drop it silently. The serialized payload is kept
+        # for the secrets_encrypted path, which re-validates it with the cipher.
+        agent_payload = request_data.pop("agent", None)
+
+        # The agent is passed to _start_event_service separately. Default to
+        # request.agent.
+        new_agent: AgentBase = request.agent
+
         # If secrets_encrypted=True, the agent's secrets (e.g., LLM api_key) are
         # cipher-encrypted and need decryption during model validation. Pass the
         # cipher in the validation context so validate_secret() can decrypt them.
@@ -1567,6 +1609,13 @@ class ConversationService:
                 },
                 context={"cipher": self.cipher},
             )
+            # Decrypt the agent's secrets too (it no longer rides on `stored`).
+            # Re-validate the serialized agent with the cipher context so
+            # validate_secret() decrypts LLM api_key, MCP env, etc.
+            agent_cls = type(request.agent)
+            new_agent = agent_cls.model_validate(
+                agent_payload, context={"cipher": self.cipher}
+            )
         else:
             stored = StoredConversation(
                 id=conversation_id,
@@ -1574,8 +1623,12 @@ class ConversationService:
                 **request_data,
             )
         async with self._lifecycle_lock:
+            # New conversation: the agent is written to base_state.json (its
+            # single source of truth), not to meta.json. Pass it explicitly.
+            # ``new_agent`` is ``request.agent`` (decrypted when the request was
+            # secrets_encrypted).
             event_service = await self._start_event_service(
-                stored, is_new_conversation=True
+                stored, is_new_conversation=True, agent=new_agent
             )
         initial_message = request.initial_message
         if initial_message:
@@ -1833,9 +1886,12 @@ class ConversationService:
         # fork-specific fields. Without this, e.g. a fork of a client-tool
         # conversation would lose ``client_tools`` in meta.json and be unable
         # to re-register its tools after a server restart.
+        # Note: the agent is NOT stored in meta.json (StoredConversation) — the
+        # fork's agent is already persisted to the fork's base_state.json by
+        # ``source_conversation.fork`` above. It is passed to
+        # ``_start_event_service`` via ``agent=`` for the new-conversation path.
         fork_overrides: dict[str, Any] = {
             "id": fork_conv_id,
-            "agent": fork_agent,
             "workspace": fork_workspace,
             "title": title,
             "created_at": utc_now(),
@@ -1854,7 +1910,7 @@ class ConversationService:
         try:
             async with self._lifecycle_lock:
                 fork_event_service = await self._start_event_service(
-                    fork_stored, is_new_conversation=True
+                    fork_stored, is_new_conversation=True, agent=fork_agent
                 )
         except Exception:
             safe_rmtree(fork_dir)
@@ -2122,16 +2178,26 @@ class ConversationService:
         )
 
     async def _start_event_service(
-        self, stored: StoredConversation, *, is_new_conversation: bool = False
+        self,
+        stored: StoredConversation,
+        *,
+        is_new_conversation: bool = False,
+        agent: AgentBase | None = None,
     ) -> EventService:
         event_services = self._event_services
         if event_services is None:
             raise ValueError("inactive_service")
 
-        credential_bindings = await self._resolve_credential_bindings(stored)
+        # ``agent`` is supplied for a NEW conversation (meta.json no longer
+        # carries it). On resume it is ``None`` and both the credential check
+        # and EventService read the agent from base_state.json.
+        credential_bindings = await self._resolve_credential_bindings(
+            stored, agent=agent
+        )
         event_service = EventService(
             stored=stored,
             conversations_dir=self.conversations_dir,
+            agent=agent,
             cipher=self.cipher,
             mcp_tool_provider=self.mcp_tool_provider,
             credential_bindings=credential_bindings,
@@ -2237,11 +2303,15 @@ class ConversationService:
             if factory is None:
                 return
 
+            live_conversation = event_service._conversation
+            live_agent = (
+                live_conversation.agent if live_conversation is not None else None
+            )
             subscriber = TelemetrySubscriber(
                 conversation_id=stored.id,
                 sink=sink,
                 factory=factory,
-                context=_build_telemetry_context(stored, factory),
+                context=_build_telemetry_context(stored, factory, agent=live_agent),
             )
             await event_service.subscribe_to_events(subscriber)
             if is_new_conversation:
@@ -2251,14 +2321,19 @@ class ConversationService:
 
 
 def _build_telemetry_context(
-    stored: StoredConversation, factory: DiagnosticEventFactory
+    stored: StoredConversation,
+    factory: DiagnosticEventFactory,
+    agent: AgentBase | None = None,
 ) -> ConversationTelemetryContext:
     """Reduce a stored conversation to its sanitized telemetry facts.
 
     Every read is defensive: a shape change upstream should degrade a property
     to ``unknown``, never raise into conversation startup.
+
+    The agent is no longer stored on meta.json; callers pass the live/persisted
+    agent explicitly. When ``agent`` is ``None`` (no live conversation), the
+    agent-derived fields simply degrade to ``unknown``.
     """
-    agent = getattr(stored, "agent", None)
     llm = getattr(agent, "llm", None)
 
     workspace = getattr(stored, "workspace", None)
