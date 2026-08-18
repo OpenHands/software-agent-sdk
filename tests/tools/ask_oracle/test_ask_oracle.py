@@ -15,7 +15,6 @@ from openhands.sdk.llm import (
     llm_profile_store,
 )
 from openhands.sdk.llm.llm import LLMCallContext
-from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.tool import ToolDefinition
 from openhands.tools.ask_oracle import (
@@ -124,15 +123,15 @@ def test_ask_oracle_tool_returns_oracle_recommendation(
     )
 
     def load_profile(
-        self: LLMProfileStore,
-        name: str,
-        *,
-        cipher=None,
+        self: LocalConversation,
+        profile_name: str,
+        usage_id: str,
     ) -> LLM:
-        assert name == ORACLE_PROFILE_NAME
+        assert profile_name == ORACLE_PROFILE_NAME
+        assert usage_id == f"oracle:{ORACLE_PROFILE_NAME}"
         return oracle_llm
 
-    monkeypatch.setattr(LLMProfileStore, "load", load_profile)
+    monkeypatch.setattr(LocalConversation, "get_or_create_profile_llm", load_profile)
     conversation = _make_conversation()
 
     observation = conversation.execute_tool(
@@ -192,14 +191,13 @@ def test_ask_oracle_tool_reports_empty_oracle_response(
     )
 
     def load_profile(
-        self: LLMProfileStore,
-        name: str,
-        *,
-        cipher=None,
+        self: LocalConversation,
+        profile_name: str,
+        usage_id: str,
     ) -> LLM:
         return oracle_llm
 
-    monkeypatch.setattr(LLMProfileStore, "load", load_profile)
+    monkeypatch.setattr(LocalConversation, "get_or_create_profile_llm", load_profile)
     conversation = _make_conversation()
 
     observation = conversation.execute_tool(

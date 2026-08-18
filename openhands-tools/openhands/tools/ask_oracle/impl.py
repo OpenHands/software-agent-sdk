@@ -4,7 +4,6 @@ from typing import TYPE_CHECKING
 
 from openhands.sdk.agent.utils import make_llm_completion
 from openhands.sdk.llm import Message, TextContent
-from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.tool.tool import ToolExecutor
 from openhands.tools.ask_oracle.definition import (
     ORACLE_PROFILE_NAME,
@@ -15,6 +14,9 @@ from openhands.tools.ask_oracle.definition import (
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+
+
+ORACLE_USAGE_PREFIX = "oracle"
 
 
 _ORACLE_SYSTEM_PROMPT = """\
@@ -46,9 +48,17 @@ class AskOracleExecutor(ToolExecutor[AskOracleAction, AskOracleObservation]):
         action: AskOracleAction,
         conversation: "LocalConversation | None" = None,
     ) -> AskOracleObservation:
-        cipher = conversation._cipher if conversation is not None else None
+        if conversation is None:
+            return AskOracleObservation.from_text(
+                text="Cannot ask the Oracle without an active conversation.",
+                is_error=True,
+            )
+
         try:
-            oracle_llm = LLMProfileStore().load(ORACLE_PROFILE_NAME, cipher=cipher)
+            oracle_llm = conversation.get_or_create_profile_llm(
+                profile_name=ORACLE_PROFILE_NAME,
+                usage_id=f"{ORACLE_USAGE_PREFIX}:{ORACLE_PROFILE_NAME}",
+            )
         except FileNotFoundError:
             return AskOracleObservation.from_text(
                 text=(
