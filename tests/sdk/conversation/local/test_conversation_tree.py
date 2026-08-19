@@ -2,8 +2,9 @@
 and branch-slice fork through a real LocalConversation (no LLM). (#3747, #3748)
 """
 
+import json
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import pytest
@@ -15,7 +16,7 @@ from openhands.sdk.agent import Agent
 from openhands.sdk.context.view import View
 from openhands.sdk.conversation import Conversation, LocalConversation
 from openhands.sdk.conversation.state import ConversationState
-from openhands.sdk.event import ActionEvent
+from openhands.sdk.event import ActionEvent, ObservationEvent
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
@@ -24,7 +25,7 @@ from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.event.types import ROOT_PARENT_ID, SourceType
 from openhands.sdk.event.user_action import PauseEvent
 from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
-from openhands.sdk.tool.schema import Action
+from openhands.sdk.tool.schema import Action, Observation
 
 
 def _agent() -> Agent:
@@ -430,6 +431,72 @@ def test_legacy_resume_never_orphans_history_regardless_of_tail(make_tail):
         assert reachable[-1] == new.id
 
 
+def _make_kind_unregistered(tmpdir: str, event_id: str) -> None:
+    """Rewrite the stored event so its ``kind`` cannot be resolved in this process.
+
+    What a custom tool's event looks like on disk when the module that defines it
+    was never imported: the envelope and its ``parent_id`` are intact, the ``kind``
+    naming the payload type is unknown (#4080).
+    """
+    path = next(Path(tmpdir).rglob(f"*{event_id}.json"))
+    payload = json.loads(path.read_text())
+    # For an observation the unknown kind is the nested one; the envelope is fine.
+    target = payload.get("observation", payload)
+    target["kind"] = "CanvasUIObservation"
+    path.write_text(json.dumps(payload))
+
+
+def test_legacy_resume_with_unreadable_tail_keeps_history():
+    """A legacy log whose stored tail cannot be deserialized still resumes (#4080).
+
+    With no persisted leaf, ``_resolve_active_leaf`` scans back from the tail for
+    the last real event. Reading that tail strictly would fail the entire load on
+    one event whose kind this process does not know, and the agent-server drops
+    the whole conversation on any load exception.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        conv = _conversation(tmp, delete_on_close=False)
+        # Legacy flat log (no parent_id, leaf never advances) — pre-tree shape.
+        legacy = [_msg(f"legacy-{i}") for i in range(3)]
+        for ev in legacy:
+            conv.state.events.append(ev)
+        conv_id = conv.id
+        conv.close()
+        _make_kind_unregistered(tmp, legacy[-1].id)
+
+        resumed = _conversation(tmp, conversation_id=conv_id, delete_on_close=False)
+
+        # The unreadable tail is skipped; the rest of the history survives.
+        assert resumed.state.leaf_event_id is None
+        assert _view_ids(resumed) == [e.id for e in legacy[:-1]]
+
+
+def test_resume_drops_action_left_unpaired_by_an_unreadable_observation():
+    """Skipping an observation must not leave its action unpaired in the view.
+
+    The view is what is sent to the LLM, and an action with no matching
+    observation is rejected by the API, so dropping only the observation would
+    trade a dead conversation for a failing one. ``ToolCallMatchingProperty``
+    drops the orphaned action (#4080).
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        conv = _conversation(tmp, delete_on_close=False)
+        first = _emit(conv, _msg("draw a chart"))
+        action = _action_event()
+        _emit(conv, action)  # emitting preserves the id, so `action` stays valid
+        observation = _emit(conv, _observation_event(action))
+        last = _emit(conv, _msg("done", source="agent"))
+        conv_id = conv.id
+        conv.close()
+        _make_kind_unregistered(tmp, observation.id)
+
+        resumed = _conversation(tmp, conversation_id=conv_id, delete_on_close=False)
+
+        # All four events are on disk; the view keeps the two that still pair up.
+        assert len(resumed.state.events) == 4
+        assert _view_ids(resumed) == [first.id, last.id]
+
+
 def test_parent_id_round_trips_on_disk_and_root_omits_it():
     """parent_id survives persistence; the root event's JSON omits it (additive)."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -500,6 +567,14 @@ class _MockAction(Action):
     command: str
 
 
+class _MockObservation(Observation):
+    result: str
+
+    @property
+    def to_llm_content(self) -> Sequence[TextContent]:
+        return [TextContent(text=self.result)]
+
+
 def _action_event(call_id: str = "call_1") -> ActionEvent:
     """A minimal executable ActionEvent — pending until a matching observation."""
     tool_call = ChatCompletionMessageToolCall(
@@ -515,6 +590,17 @@ def _action_event(call_id: str = "call_1") -> ActionEvent:
         tool_call_id=call_id,
         tool_call=MessageToolCall.from_chat_tool_call(tool_call),
         llm_response_id="resp-1",
+    )
+
+
+def _observation_event(action: ActionEvent) -> ObservationEvent:
+    """The observation that pairs with ``action`` and settles it."""
+    return ObservationEvent(
+        source="environment",
+        observation=_MockObservation(result="ok"),
+        action_id=action.id,
+        tool_name=action.tool_name,
+        tool_call_id=action.tool_call_id,
     )
 
 

@@ -1,10 +1,14 @@
 # state.py
+import json
 import operator
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, nullcontext
 from typing import SupportsIndex, overload
 
-from openhands.sdk.conversation.events_list_base import EventsListBase
+from openhands.sdk.conversation.events_list_base import (
+    UNREADABLE_EVENT_ERRORS,
+    EventsListBase,
+)
 from openhands.sdk.conversation.persistence_const import (
     EVENT_FILE_PATTERN,
     EVENT_NAME_RE,
@@ -52,6 +56,12 @@ class EventLog(EventsListBase):
         self._id_to_idx: dict[EventID, int] = {}
         self._idx_to_id: dict[int, EventID] = {}
         self._event_cache: dict[int, Event] = {}
+        # idx -> parent to walk to instead, for events that failed to deserialize.
+        # ``active_branch()`` re-walks the branch every agent step. The event itself
+        # is still re-read each walk, deliberately: its kind may become registered
+        # later, once the module defining it is imported. The parent recovery and
+        # the warning are what happen only once.
+        self._unreadable_parents: dict[int, EventID | None] = {}
         self._lock_path = f"{dir_path}/{LOCK_FILE_NAME}"
         self._write_guard = None
         self._length = self._scan_and_build_index()
@@ -88,20 +98,69 @@ class EventLog(EventsListBase):
             return item.id in self._id_to_idx
         return item in self._id_to_idx
 
-    def _effective_parent_id(self, idx: int, event: Event) -> EventID | None:
-        """Resolve the parent of ``event`` (at ``idx``) for tree traversal.
+    def _resolve_parent_id(self, idx: int, parent_id: EventID | None) -> EventID | None:
+        """Resolve the parent link for the event at ``idx`` from its ``parent_id``.
 
         Legacy events predating the tree have no ``parent_id``; they fall back to
         the linear chain (event ``idx - 1``) so old conversations load unbranched
         with no disk rewrite.
         """
-        if event.parent_id == ROOT_PARENT_ID:
+        if parent_id == ROOT_PARENT_ID:
             return None  # explicit root (feature-created root at idx > 0)
-        if event.parent_id is not None:
-            return event.parent_id  # explicit (new events)
+        if parent_id is not None:
+            return parent_id  # explicit (new events)
         if idx == 0:
             return None  # genuine root
         return self.get_id(idx - 1)  # legacy linear chain (back-compat)
+
+    def _effective_parent_id(self, idx: int, event: Event) -> EventID | None:
+        """Resolve the parent of ``event`` (at ``idx``) for tree traversal."""
+        return self._resolve_parent_id(idx, event.parent_id)
+
+    def _unreadable_parent_id(self, idx: int) -> EventID | None:
+        """Resolve the parent of the event at ``idx`` without deserializing it.
+
+        ``parent_id`` is a plain string on the stored payload, so it stays
+        readable when the event as a whole does not validate (an unregistered
+        ``kind``, say). Reading it directly keeps a branch walk on the correct
+        lineage across an event this process cannot materialize.
+
+        The recovered id comes from a payload we just failed to validate, so it is
+        only trusted once it names an event we actually hold. Anything else (an
+        unusable payload, a parent that is not in the index) falls back to the
+        linear chain, which cannot strand the walk.
+        """
+        parent_id: EventID | None = None
+        try:
+            payload = json.loads(self._fs.read(self._path(idx)))
+            if isinstance(payload, dict):
+                raw = payload.get("parent_id")
+                parent_id = raw if isinstance(raw, str) else None
+        except (FileNotFoundError, ValueError, KeyError):
+            parent_id = None
+
+        resolved = self._resolve_parent_id(idx, parent_id)
+        if resolved is not None and resolved not in self._id_to_idx:
+            logger.warning(
+                "Unreadable event at index %d names parent %s, which is not in the "
+                "log; falling back to the linear chain.",
+                idx,
+                resolved,
+            )
+            return self._resolve_parent_id(idx, None)
+        return resolved
+
+    def _skip_unreadable(self, idx: int, exc: Exception) -> EventID | None:
+        """Warn once for the unreadable event at ``idx`` and say where to walk next."""
+        if idx not in self._unreadable_parents:
+            logger.warning(
+                "Skipping unreadable event at index %d (%s): %s",
+                idx,
+                type(exc).__name__,
+                exc,
+            )
+            self._unreadable_parents[idx] = self._unreadable_parent_id(idx)
+        return self._unreadable_parents[idx]
 
     def path_to_root(
         self, leaf_id: EventID | None, limit: int | None = None
@@ -112,6 +171,12 @@ class EventLog(EventsListBase):
         events (walking back from the leaf), so callers wanting a recent window
         stay O(limit) instead of O(branch). Raises ValueError on a cycle, KeyError
         if ``leaf_id`` or an ancestor is missing.
+
+        An event that cannot be deserialized is skipped rather than failing the
+        walk: one unregistered ``kind`` (a custom tool's observation whose module
+        is not imported, or an event from a newer writer) would otherwise strand
+        the whole conversation. ``View.from_events`` drops the action left
+        unpaired by a skipped observation via ``ToolCallMatchingProperty``.
         """
         chain: list[Event] = []
         seen: set[EventID] = set()
@@ -121,7 +186,12 @@ class EventLog(EventsListBase):
                 raise ValueError(f"Cycle in event tree at {cur_id}")
             seen.add(cur_id)
             idx = self.get_index(cur_id)
-            chain.append(evt := self[idx])
+            try:
+                evt = self[idx]
+            except UNREADABLE_EVENT_ERRORS as exc:
+                cur_id = self._skip_unreadable(idx, exc)
+                continue
+            chain.append(evt)
             cur_id = self._effective_parent_id(idx, evt)
         return chain[::-1]
 
