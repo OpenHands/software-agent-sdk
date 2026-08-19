@@ -601,7 +601,7 @@ def test_generate_title_reads_active_branch(monkeypatch):
 
         captured: dict = {}
 
-        def _fake_generate(events, llm, max_length=50):
+        def _fake_generate(events, llm, max_length=50, on_error=None):
             captured["events"] = list(events)
             return "title"
 
