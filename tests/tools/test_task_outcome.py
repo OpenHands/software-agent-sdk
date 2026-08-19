@@ -15,7 +15,6 @@ def test_task_outcome_accepts_outcome_summary_alias():
         ],
         confidence=0.7,
         needs_user_action=True,
-        terminal_reason="finish_action",
     )
 
     assert outcome.summary == "Could not continue without a token."
@@ -32,6 +31,9 @@ def test_task_outcome_finish_tool_schema_uses_outcome_summary():
     assert "outcome_summary" in properties
     assert "summary" not in properties
     assert "source" not in properties
+    assert "reported_at" not in properties
+    assert "terminal_reason" not in properties
+
     assert properties["status"]["description"] == (
         "Agent's semantic assessment of task completion."
     )

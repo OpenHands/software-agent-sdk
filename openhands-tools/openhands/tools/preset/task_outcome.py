@@ -1,6 +1,5 @@
 """Experimental structured task outcome models for conversation finish actions."""
 
-from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -63,15 +62,4 @@ class TaskOutcome(BaseModel):
     needs_user_action: bool = Field(
         default=False,
         description="Whether the user needs to act before the task can proceed.",
-    )
-    reported_at: datetime | None = Field(
-        default=None,
-        description="When this outcome was recorded by the runtime.",
-    )
-    terminal_reason: str | None = Field(
-        default=None,
-        description=(
-            "Optional terminal condition that produced this outcome, e.g. "
-            "finish_action, exception, timeout, cancelled, max_iterations, or stuck."
-        ),
     )
