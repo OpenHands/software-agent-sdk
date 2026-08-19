@@ -785,5 +785,5 @@ def test_default_provider_store_is_sibling_of_base_dir(tmp_path: Path) -> None:
     store.save("linked", llm)
 
     resolved = store.load("linked")
-    assert resolved.api_key is not None
+    assert isinstance(resolved.api_key, SecretStr)
     assert resolved.api_key.get_secret_value() == "sk-shared"
