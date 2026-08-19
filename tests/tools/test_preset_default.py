@@ -21,11 +21,15 @@ def test_default_agent_can_parameterize_finish_tool_without_prior_registration()
         agent = get_default_agent(
             llm=llm,
             cli_mode=True,
-            finish_tool_params={"response_schema": _FinishResult},
+            finish_tool_response_schema=_FinishResult,
         )
 
-        assert any(tool.name == "FinishTool" for tool in agent.tools)
-        assert "FinishTool" not in agent.include_default_tools
+        assert any(
+            tool.name == "FinishTool"
+            and tool.params == {"response_schema": _FinishResult}
+            for tool in agent.tools
+        )
+        assert "FinishTool" in agent.include_default_tools
         assert "ThinkTool" in agent.include_default_tools
 
         conv = Conversation(agent=agent, visualizer=None)

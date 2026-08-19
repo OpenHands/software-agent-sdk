@@ -598,6 +598,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 VisionInspectTool.__name__,
             )
 
+        explicit_tool_names = {tool.name for tool in tools}
         for tool_name in default_tool_names:
             tool_class = BUILT_IN_TOOL_CLASSES.get(tool_name)
             if tool_class is None:
@@ -606,7 +607,20 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                     f"Expected one of: {list(BUILT_IN_TOOL_CLASSES.keys())}"
                 )
             tool_instances = tool_class.create(state)
-            tools.extend(tool_instances)
+            default_tools_to_add = [
+                tool for tool in tool_instances if tool.name not in explicit_tool_names
+            ]
+            if len(default_tools_to_add) < len(tool_instances):
+                skipped_names = sorted(
+                    tool.name
+                    for tool in tool_instances
+                    if tool.name in explicit_tool_names
+                )
+                logger.info(
+                    "Skipping default tool(s) overridden by explicit tools: %s",
+                    skipped_names,
+                )
+            tools.extend(default_tools_to_add)
 
         # Check tool types
         for tool in tools:

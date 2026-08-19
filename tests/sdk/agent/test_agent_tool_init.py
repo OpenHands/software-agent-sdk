@@ -3,13 +3,13 @@ from typing import ClassVar
 from unittest.mock import patch
 
 import pytest
-from pydantic import Field
+from pydantic import BaseModel, Field
 from rich.text import Text
 
 from openhands.sdk import LLM, Conversation
 from openhands.sdk.agent import Agent
 from openhands.sdk.llm.message import ImageContent, TextContent
-from openhands.sdk.tool import ToolDefinition
+from openhands.sdk.tool import ToolDefinition, registry as tool_registry
 from openhands.sdk.tool.registry import register_tool
 from openhands.sdk.tool.spec import Tool
 from openhands.sdk.tool.tool import Action, Observation, ToolExecutor
@@ -47,6 +47,11 @@ class _UpperTool(ToolDefinition[_Action, _Obs]):
                 executor=_Exec(),
             )
         ]
+
+
+class _FinishResult(BaseModel):
+    success: bool
+    outcome_summary: str
 
 
 def test_agent_initializes_tools_from_toolspec_locally(monkeypatch):
@@ -118,6 +123,36 @@ def test_agent_disable_all_default_tools():
         assert "think" not in runtime_tools
 
 
+def test_agent_parameterized_builtin_finish_overrides_default_finish():
+    with tool_registry._LOCK:
+        saved_resolver = tool_registry._REG.pop("FinishTool", None)
+        saved_checker = tool_registry._USABILITY_REG.pop("FinishTool", None)
+        saved_module = tool_registry._MODULE_QUALNAMES.pop("FinishTool", None)
+
+    try:
+        llm = LLM(model="test-model", usage_id="test-llm")
+        agent = Agent(
+            llm=llm,
+            tools=[Tool(name="FinishTool", params={"response_schema": _FinishResult})],
+        )
+
+        conv = Conversation(agent=agent, visualizer=None)
+        conv._ensure_agent_ready()
+
+        runtime_tools = agent.tools_map
+        finish_tool = runtime_tools["finish"]
+        assert finish_tool.response_schema is _FinishResult
+        assert "think" in runtime_tools
+    finally:
+        with tool_registry._LOCK:
+            if saved_resolver is not None:
+                tool_registry._REG["FinishTool"] = saved_resolver
+            if saved_checker is not None:
+                tool_registry._USABILITY_REG["FinishTool"] = saved_checker
+            if saved_module is not None:
+                tool_registry._MODULE_QUALNAMES["FinishTool"] = saved_module
+
+
 def test_runtime_tools_cannot_replace_existing_tool():
     register_tool("upper", _UpperTool)
     llm = LLM(model="test-model", usage_id="test-llm")
@@ -178,21 +213,29 @@ def test_agent_replace_finish_with_custom_tool():
     agent = Agent(
         llm=llm,
         tools=[Tool(name="custom_finish")],
-        include_default_tools=[
-            "ThinkTool"
-        ],  # Only include ThinkTool, exclude FinishTool
+        include_default_tools=["ThinkTool"],
     )
 
     conv = Conversation(agent=agent, visualizer=None)
-    # Trigger lazy agent initialization
     conv._ensure_agent_ready()
 
     with patch.object(Agent, "step", wraps=agent.step):
         runtime_tools = agent.tools_map
-        # Custom finish tool should be present with the name "finish"
-        assert "finish" in runtime_tools
-        # Verify it's our custom tool by checking the action type
         finish_tool = runtime_tools["finish"]
         assert finish_tool.action_type == _CustomFinishAction
-        # Think tool should still be present
         assert "think" in runtime_tools
+
+
+def test_agent_explicit_finish_tool_overrides_default_finish_tool():
+    register_tool("custom_finish", _CustomFinishTool)
+
+    llm = LLM(model="test-model", usage_id="test-llm")
+    agent = Agent(llm=llm, tools=[Tool(name="custom_finish")])
+
+    conv = Conversation(agent=agent, visualizer=None)
+    conv._ensure_agent_ready()
+
+    runtime_tools = agent.tools_map
+    finish_tool = runtime_tools["finish"]
+    assert finish_tool.action_type == _CustomFinishAction
+    assert "think" in runtime_tools

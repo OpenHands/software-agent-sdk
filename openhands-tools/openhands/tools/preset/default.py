@@ -74,27 +74,19 @@ def get_default_condenser(llm: LLM) -> CondenserBase:
 def get_default_agent(
     llm: LLM,
     cli_mode: bool = False,
-    finish_tool_params: dict[str, Any] | None = None,
+    finish_tool_response_schema: Any | None = None,
 ) -> Agent:
     tools = get_default_tools(
         # Disable browser tools in CLI mode
         enable_browser=not cli_mode,
     )
-    include_default_tools: list[str] | None = None
-    if finish_tool_params is not None:
-        from openhands.sdk.tool.builtins import BUILT_IN_TOOLS, FinishTool
-        from openhands.sdk.tool.registry import list_registered_tools, register_tool
-
-        if "FinishTool" not in list_registered_tools():
-            register_tool("FinishTool", FinishTool)
-        tools.append(Tool(name="FinishTool", params=finish_tool_params))
-        include_default_tools = [
-            tool.__name__ for tool in BUILT_IN_TOOLS if tool is not FinishTool
-        ]
-
-    agent_kwargs: dict[str, Any] = {}
-    if include_default_tools is not None:
-        agent_kwargs["include_default_tools"] = include_default_tools
+    if finish_tool_response_schema is not None:
+        tools.append(
+            Tool(
+                name="FinishTool",
+                params={"response_schema": finish_tool_response_schema},
+            )
+        )
 
     agent = Agent(
         llm=llm,
@@ -103,7 +95,6 @@ def get_default_agent(
         condenser=get_default_condenser(
             llm=llm.model_copy(update={"usage_id": "condenser"})
         ),
-        **agent_kwargs,
     )
     return agent
 
