@@ -151,6 +151,10 @@ class EventService:
     _lease_task: asyncio.Task | None = field(default=None, init=False)
     _external_lease_renewal: bool = field(default=False, init=False)
     _run_executor: ThreadPoolExecutor | None = field(default=None, init=False)
+    # Server-wide admission limit shared by every EventService so
+    # max_concurrent_runs also bounds the native async path, not just the
+    # thread pool. None when a service runs standalone (no global limit).
+    _run_semaphore: asyncio.Semaphore | None = field(default=None, init=False)
     # Background task for a /goal loop that is running inside this conversation.
     _goal_loop_task: asyncio.Task | None = field(default=None, init=False)
     _goal_loop_outcome: GoalOutcome | None = field(default=None, init=False)
@@ -1222,10 +1226,23 @@ class EventService:
                         and type(conversation).arun is not BaseConversation.arun
                         and type(conversation.agent).astep is not AgentBase.astep
                     )
-                    if has_native_arun:
-                        await conversation.arun()
-                    else:
-                        await loop.run_in_executor(self._run_executor, conversation.run)
+                    # Hold the admission permit across the whole run so both
+                    # paths count against max_concurrent_runs. `async with`
+                    # releases it on exception and on cancellation.
+                    queued_generation = self._explicit_interrupt_generation
+                    async with self._run_semaphore or nullcontext():
+                        # A pause()/interrupt() that lands while this run is
+                        # still queued has nothing to cancel, so honour it here
+                        # rather than starting the run and overwriting the
+                        # requested state once the permit arrives.
+                        if self._explicit_interrupt_generation != queued_generation:
+                            return
+                        if has_native_arun:
+                            await conversation.arun()
+                        else:
+                            await loop.run_in_executor(
+                                self._run_executor, conversation.run
+                            )
                 except Exception:
                     logger.exception("Error during conversation run")
                     # Backstop: a run that raised before reaching its own error
