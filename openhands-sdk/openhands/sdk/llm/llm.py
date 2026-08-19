@@ -8,8 +8,6 @@ import os
 import threading
 import warnings
 from collections.abc import AsyncIterable, Callable, Iterable, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, get_args, get_origin
@@ -29,7 +27,17 @@ from pydantic.json_schema import SkipJsonSchema
 
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.utils.model_info import get_litellm_model_info
+from openhands.sdk.llm.utils.runtime_metadata import (
+    ModelRuntimeMetadata,
+    aresolve_provider_metadata,
+    cache_key as runtime_metadata_cache_key,
+    cached_metadata,
+    in_negative_cache,
+    resolve_provider_metadata_sync,
+    store_result,
+)
 from openhands.sdk.settings.metadata import SettingProminence, field_meta
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
 
@@ -123,6 +131,9 @@ from openhands.sdk.logger import ENV_LOG_DIR, get_logger
 
 
 logger = get_logger(__name__)
+
+litellm.modify_params = True
+
 _serialized_is_subscription = ContextVar(
     "serialized_is_subscription",
     default=False,
@@ -250,6 +261,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             SettingProminence.CRITICAL,
             label="API Key",
         ),
+    )
+    provider_connection_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional provider connection whose shared API key and base URL "
+            "are resolved and applied each time this LLM profile is loaded "
+            "(read-at-use). When set, the profile stores no inline api_key or "
+            "base_url of its own."
+        ),
+        json_schema_extra=field_meta(SettingProminence.MAJOR),
     )
     auth_type: Literal["api_key", "subscription"] = Field(
         default="api_key",
@@ -450,8 +471,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     drop_params: bool = Field(default=True, json_schema_extra=field_meta())
     modify_params: bool = Field(
         default=True,
-        description="Modify params allows litellm to do transformations like adding"
-        " a default message, when a message is empty.",
+        description=(
+            "Compatibility field. LiteLLM parameter modification is enabled "
+            "process-wide so concurrent LLM calls do not mutate shared global state."
+        ),
+        deprecated=(
+            "Deprecated since v1.42.0 and scheduled for removal in v1.47.0. "
+            "LiteLLM parameter modification is enabled process-wide; remove this "
+            "argument."
+        ),
         json_schema_extra=field_meta(),
     )
     disable_vision: bool | None = Field(
@@ -625,22 +653,26 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _call_context: LLMCallContext = PrivateAttr(default_factory=LLMCallContext)
     _effective_max_input_tokens: int | None = PrivateAttr(default=None)
     _effective_max_output_tokens: int | None = PrivateAttr(default=None)
-    # Plain (non-reentrant) Lock: the async transport path acquires this off
-    # the event loop thread (see `_alitellm_modify_params_ctx`) and releases
-    # it back on the event loop thread, which an RLock would reject since it
-    # tracks a single owning thread.
-    _litellm_modify_params_lock: ClassVar[threading.Lock] = threading.Lock()
-    # Waiting on the lock from the async path is offloaded to this dedicated
-    # executor rather than the event loop's default one. The coroutine that
-    # *holds* the lock may itself need a default-executor thread to make
-    # progress before it can release (e.g. draining a synchronous stream via
-    # ``run_in_executor``); if lock-waiters shared that pool they could occupy
-    # every worker and starve the holder, deadlocking instead of just
-    # serialising. Keeping the wait on its own pool prevents that.
-    _litellm_modify_params_lock_executor: ClassVar[ThreadPoolExecutor] = (
-        ThreadPoolExecutor(thread_name_prefix="llm-modify-params-lock")
-    )
-
+    # Provider-aware runtime metadata resolved lazily (see
+    # `utils/runtime_metadata.py`). `fetched_at` and `negative_until` are
+    # monotonic timestamps used for the positive/negative caches;
+    # `generation` is bumped each time a lookup is *started* so that a stale
+    # (earlier-started, later-finished) probe can never overwrite the result
+    # of a newer one (single-flight by generation, see `resolve_runtime_metadata`).
+    _runtime_metadata: ModelRuntimeMetadata | None = PrivateAttr(default=None)
+    _runtime_metadata_fetched_at: float | None = PrivateAttr(default=None)
+    _runtime_metadata_negative_until: float | None = PrivateAttr(default=None)
+    _runtime_metadata_key: tuple[str, str, str] | None = PrivateAttr(default=None)
+    # Single-flight / stale-proofing for runtime-metadata resolution. Each
+    # *started* lookup records the generation it belongs to (see above); a
+    # completed probe only publishes its result if that generation is still the
+    # latest, so a slow earlier-started probe can never overwrite a newer one.
+    _runtime_metadata_generation: int = PrivateAttr(default=0)
+    # Guards the runtime-metadata cache fields above. The synchronous resolver
+    # may be driven from a worker thread, and the async resolver can also store
+    # a result, so the read/check and store are kept atomic. ClassVar (shared);
+    # critical sections are tiny and never cover network I/O.
+    _runtime_metadata_lock: ClassVar[threading.Lock] = threading.Lock()
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="ignore", arbitrary_types_allowed=True
     )
@@ -668,6 +700,18 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if not isinstance(data, dict):
             return data
         d = dict(data)
+
+        if "modify_params" in d:
+            warn_deprecated(
+                "LLM.modify_params",
+                deprecated_in="1.42.0",
+                removed_in="1.47.0",
+                details=(
+                    "LiteLLM parameter modification is enabled process-wide; "
+                    "remove this argument."
+                ),
+                stacklevel=3,
+            )
 
         model_val = d.get("model")
         if not model_val:
@@ -755,8 +799,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Pydantic copies private attrs without re-running validators, even for
         # deep copies, so routing-field updates must rebuild derived metadata.
         copied = super().model_copy(update=update, deep=deep)
-        if update is not None and ("model" in update or "base_url" in update):
+        route_changed = update is not None and any(
+            k in update for k in ("model", "base_url", "litellm_extra_body")
+        )
+        if route_changed:
             copied._refresh_litellm_metadata()
+            copied._reset_runtime_metadata_for_key()
         return copied
 
     def _openrouter_headers(self) -> dict[str, str]:
@@ -1482,19 +1530,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Note:
             Summary field is always added to tool schemas for transparency and
             explainability of agent actions.
-
-        Raises:
-            ValueError: If streaming is requested (not supported).
-
-        Example:
-            ```python
-            from openhands.sdk.llm import Message, TextContent
-
-            messages = [Message(role="user", content=[TextContent(text="Hello")])]
-            response = llm.completion(messages)
-            print(response.content)
-            ```
         """
+        # Resolve provider-aware runtime metadata (e.g. OpenRouter route limits)
+        # before the first completion so ``effective_max_input_tokens`` /
+        # ``effective_max_output_tokens`` reflect the actual runtime route for
+        # any context management that runs later in this call. The result is
+        # cached (1h TTL) and negative-cached on failure, and the probe is a
+        # no-op for providers without runtime metadata.
+        self.resolve_runtime_metadata()
+
         _caller_kwargs = kwargs.copy()
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if enable_streaming and on_token is None:
@@ -1591,6 +1635,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Uses ``litellm.acompletion`` under the hood, freeing the event loop
         while waiting for the LLM provider response.
         """
+        # Resolve provider-aware runtime metadata (e.g. OpenRouter route limits)
+        # before the first completion on the agent-server async path so
+        # ``effective_max_input_tokens`` reflects the actual runtime route.
+        # The result is cached (1h TTL) and negative-cached on failure, and the
+        # probe is a no-op for providers without runtime metadata, so repeated
+        # calls are cheap.
+        await self.aresolve_runtime_metadata()
+
         _caller_kwargs = kwargs.copy()
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if enable_streaming and on_token is None:
@@ -1704,6 +1756,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             Summary field is always added to tool schemas for transparency and
             explainability of agent actions.
         """
+        # Resolve provider-aware runtime metadata before the first request so
+        # ``effective_max_input_tokens`` / ``effective_max_output_tokens``
+        # reflect the actual runtime route during subsequent context management.
+        # Cached (1h TTL) / negative-cached; no-op for providers without runtime
+        # metadata.
+        self.resolve_runtime_metadata()
+
         _caller_kwargs = kwargs.copy()
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if user_enable_streaming and on_token is None and not self.is_subscription:
@@ -1740,65 +1799,60 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             assert self._telemetry is not None
             self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
             final_kwargs = {**call_kwargs, **retry_kwargs}
-            with self._litellm_modify_params_ctx(self.modify_params):
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=DeprecationWarning)
-                    litellm_kwargs = self._build_responses_call_kwargs(
-                        input_items, instructions, resp_tools, final_kwargs
+            litellm_kwargs = self._build_responses_call_kwargs(
+                input_items, instructions, resp_tools, final_kwargs
+            )
+            ret = litellm_responses(**litellm_kwargs)
+
+            if isinstance(ret, ResponsesAPIResponse):
+                if user_enable_streaming:
+                    logger.warning(
+                        "Responses streaming was requested, but the "
+                        "provider returned a non-streaming response; "
+                        "no on_token deltas will be emitted."
                     )
-                    ret = litellm_responses(**litellm_kwargs)
+                self._telemetry.on_response(
+                    ret,
+                    provider_info=self._provider_info,
+                )
+                return ret
 
-                    if isinstance(ret, ResponsesAPIResponse):
-                        if user_enable_streaming:
-                            logger.warning(
-                                "Responses streaming was requested, but the "
-                                "provider returned a non-streaming response; "
-                                "no on_token deltas will be emitted."
-                            )
-                        self._telemetry.on_response(
-                            ret,
-                            provider_info=self._provider_info,
-                        )
-                        return ret
-
-                    # When stream=True, LiteLLM returns a streaming
-                    # iterator rather than a single ResponsesAPIResponse.
-                    # Third-party wrappers may replace LiteLLM's concrete
-                    # iterator with another iterable, so drain by protocol.
-                    if final_kwargs.get("stream", False):
-                        stream_callback = on_token if user_enable_streaming else None
-                        # Collect output items from streaming events.
-                        # Some endpoints (e.g., Codex subscription) send
-                        # output items as separate events but the final
-                        # response.completed event has output=[].  We
-                        # accumulate them here and patch the completed
-                        # response if needed.
-                        collected_output_items: list[Any] = []
-                        completed_response = getattr(ret, "completed_response", None)
-                        stream = cast(Iterable[Any], ret)
-                        for event in stream:
-                            if event is None:
-                                continue
-                            if isinstance(event, ResponseCompletedEvent):
-                                completed_response = event
-                            output_item, delta_chunk = self._process_stream_event(
-                                event, emit_deltas=stream_callback is not None
-                            )
-                            if output_item is not None:
-                                collected_output_items.append(output_item)
-                            if stream_callback is not None and delta_chunk is not None:
-                                stream_callback(delta_chunk)
-
-                        completed_response = getattr(
-                            ret, "completed_response", completed_response
-                        )
-                        return self._finalize_stream_response(
-                            completed_response, collected_output_items
-                        )
-
-                    raise AssertionError(
-                        f"Expected ResponsesAPIResponse, got {type(ret)}"
+            # When stream=True, LiteLLM returns a streaming
+            # iterator rather than a single ResponsesAPIResponse.
+            # Third-party wrappers may replace LiteLLM's concrete
+            # iterator with another iterable, so drain by protocol.
+            if final_kwargs.get("stream", False):
+                stream_callback = on_token if user_enable_streaming else None
+                # Collect output items from streaming events.
+                # Some endpoints (e.g., Codex subscription) send
+                # output items as separate events but the final
+                # response.completed event has output=[].  We
+                # accumulate them here and patch the completed
+                # response if needed.
+                collected_output_items: list[Any] = []
+                completed_response = getattr(ret, "completed_response", None)
+                stream = cast(Iterable[Any], ret)
+                for event in stream:
+                    if event is None:
+                        continue
+                    if isinstance(event, ResponseCompletedEvent):
+                        completed_response = event
+                    output_item, delta_chunk = self._process_stream_event(
+                        event, emit_deltas=stream_callback is not None
                     )
+                    if output_item is not None:
+                        collected_output_items.append(output_item)
+                    if stream_callback is not None and delta_chunk is not None:
+                        stream_callback(delta_chunk)
+
+                completed_response = getattr(
+                    ret, "completed_response", completed_response
+                )
+                return self._finalize_stream_response(
+                    completed_response, collected_output_items
+                )
+
+            raise AssertionError(f"Expected ResponsesAPIResponse, got {type(ret)}")
 
         try:
             return self._build_responses_result(_one_attempt())
@@ -1854,6 +1908,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Uses ``litellm.aresponses`` under the hood, freeing the event loop
         while waiting for the LLM provider response.
         """
+        # See :meth:`acompletion`: resolve provider-aware runtime metadata before
+        # the first request so context management reads runtime (not model-level)
+        # limits. No blocking network I/O in-process.
+        await self.aresolve_runtime_metadata()
+
         _caller_kwargs = kwargs.copy()
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if user_enable_streaming and on_token is None and not self.is_subscription:
@@ -1892,89 +1951,84 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             assert self._telemetry is not None
             self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
             final_kwargs = {**call_kwargs, **retry_kwargs}
-            async with self._alitellm_modify_params_ctx(self.modify_params):
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=DeprecationWarning)
-                    auth_values = await self._aget_litellm_auth_values()
-                    litellm_kwargs = self._build_responses_call_kwargs(
-                        input_items,
-                        instructions,
-                        resp_tools,
-                        final_kwargs,
-                        auth_values=auth_values,
+            auth_values = await self._aget_litellm_auth_values()
+            litellm_kwargs = self._build_responses_call_kwargs(
+                input_items,
+                instructions,
+                resp_tools,
+                final_kwargs,
+                auth_values=auth_values,
+            )
+            ret = await litellm_aresponses(**litellm_kwargs)
+
+            if isinstance(ret, ResponsesAPIResponse):
+                if user_enable_streaming:
+                    logger.warning(
+                        "Responses streaming was requested, but the "
+                        "provider returned a non-streaming response; "
+                        "no on_token deltas will be emitted."
                     )
-                    ret = await litellm_aresponses(**litellm_kwargs)
+                self._telemetry.on_response(
+                    ret,
+                    provider_info=self._provider_info,
+                )
+                return ret
 
-                    if isinstance(ret, ResponsesAPIResponse):
-                        if user_enable_streaming:
-                            logger.warning(
-                                "Responses streaming was requested, but the "
-                                "provider returned a non-streaming response; "
-                                "no on_token deltas will be emitted."
-                            )
-                        self._telemetry.on_response(
-                            ret,
-                            provider_info=self._provider_info,
+            # When stream=True, LiteLLM returns a streaming
+            # iterator rather than a single ResponsesAPIResponse.
+            # Third-party wrappers may replace LiteLLM's concrete
+            # iterator with another sync or async iterable, so drain
+            # by protocol.
+            if final_kwargs.get("stream", False):
+                stream_cb = on_token if user_enable_streaming else None
+                # Collect output items from streaming events.
+                # Some endpoints (e.g., Codex subscription) send
+                # output items as separate events but the final
+                # response.completed event has output=[].  We
+                # accumulate them here and patch the completed
+                # response if needed.
+                collected_output_items: list[Any] = []
+                completed_response = getattr(ret, "completed_response", None)
+                if hasattr(ret, "__aiter__"):
+                    stream = cast(AsyncIterable[Any], ret)
+                    async for event in stream:
+                        if event is None:
+                            continue
+                        if isinstance(event, ResponseCompletedEvent):
+                            completed_response = event
+                        output_item, delta_chunk = self._process_stream_event(
+                            event, emit_deltas=stream_cb is not None
                         )
-                        return ret
-
-                    # When stream=True, LiteLLM returns a streaming
-                    # iterator rather than a single ResponsesAPIResponse.
-                    # Third-party wrappers may replace LiteLLM's concrete
-                    # iterator with another sync or async iterable, so drain
-                    # by protocol.
-                    if final_kwargs.get("stream", False):
-                        stream_cb = on_token if user_enable_streaming else None
-                        # Collect output items from streaming events.
-                        # Some endpoints (e.g., Codex subscription) send
-                        # output items as separate events but the final
-                        # response.completed event has output=[].  We
-                        # accumulate them here and patch the completed
-                        # response if needed.
-                        collected_output_items: list[Any] = []
-                        completed_response = getattr(ret, "completed_response", None)
-                        if hasattr(ret, "__aiter__"):
-                            stream = cast(AsyncIterable[Any], ret)
-                            async for event in stream:
-                                if event is None:
-                                    continue
-                                if isinstance(event, ResponseCompletedEvent):
-                                    completed_response = event
-                                output_item, delta_chunk = self._process_stream_event(
-                                    event, emit_deltas=stream_cb is not None
-                                )
-                                if output_item is not None:
-                                    collected_output_items.append(output_item)
-                                if stream_cb is not None and delta_chunk is not None:
-                                    await _invoke_token_callback(stream_cb, delta_chunk)
-                        else:
-                            loop = asyncio.get_running_loop()
-                            events: list[Any] = await loop.run_in_executor(
-                                None, list, cast(Iterable[Any], ret)
-                            )
-                            for event in events:
-                                if event is None:
-                                    continue
-                                if isinstance(event, ResponseCompletedEvent):
-                                    completed_response = event
-                                output_item, delta_chunk = self._process_stream_event(
-                                    event, emit_deltas=stream_cb is not None
-                                )
-                                if output_item is not None:
-                                    collected_output_items.append(output_item)
-                                if stream_cb is not None and delta_chunk is not None:
-                                    await _invoke_token_callback(stream_cb, delta_chunk)
-
-                        completed_response = getattr(
-                            ret, "completed_response", completed_response
-                        )
-                        return self._finalize_stream_response(
-                            completed_response, collected_output_items
-                        )
-
-                    raise AssertionError(
-                        f"Expected ResponsesAPIResponse, got {type(ret)}"
+                        if output_item is not None:
+                            collected_output_items.append(output_item)
+                        if stream_cb is not None and delta_chunk is not None:
+                            await _invoke_token_callback(stream_cb, delta_chunk)
+                else:
+                    loop = asyncio.get_running_loop()
+                    events: list[Any] = await loop.run_in_executor(
+                        None, list, cast(Iterable[Any], ret)
                     )
+                    for event in events:
+                        if event is None:
+                            continue
+                        if isinstance(event, ResponseCompletedEvent):
+                            completed_response = event
+                        output_item, delta_chunk = self._process_stream_event(
+                            event, emit_deltas=stream_cb is not None
+                        )
+                        if output_item is not None:
+                            collected_output_items.append(output_item)
+                        if stream_cb is not None and delta_chunk is not None:
+                            await _invoke_token_callback(stream_cb, delta_chunk)
+
+                completed_response = getattr(
+                    ret, "completed_response", completed_response
+                )
+                return self._finalize_stream_response(
+                    completed_response, collected_output_items
+                )
+
+            raise AssertionError(f"Expected ResponsesAPIResponse, got {type(ret)}")
 
         try:
             return self._build_responses_result(await _one_attempt())
@@ -2110,55 +2164,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         api_key_value, _ = await self._aget_litellm_auth_values()
         return api_key_value
 
-    @staticmethod
-    @contextmanager
-    def _suppress_transport_warnings():
-        """Filter the noisy provider/litellm warnings emitted during a
-        transport call. Shared by the sync and async transport guards."""
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore", category=DeprecationWarning, module="httpx.*"
-            )
-            warnings.filterwarnings(
-                "ignore",
-                message=r".*content=.*upload.*",
-                category=DeprecationWarning,
-            )
-            warnings.filterwarnings(
-                "ignore",
-                message="There is no current event loop",
-                category=DeprecationWarning,
-            )
-            warnings.filterwarnings("ignore", category=UserWarning)
-            warnings.filterwarnings(
-                "ignore",
-                category=DeprecationWarning,
-                message="Accessing the 'model_fields' attribute.*",
-            )
-            yield
-
-    @contextmanager
-    def _transport_ctx(self):
-        """Guard a litellm transport call.
-
-        ``litellm.modify_params`` is GLOBAL, so it is guarded for thread-safety,
-        and the noisy provider/litellm warnings are filtered out for the call.
-        """
-        with self._litellm_modify_params_ctx(self.modify_params):
-            with self._suppress_transport_warnings():
-                yield
-
-    @asynccontextmanager
-    async def _atransport_ctx(self):
-        """Async variant of :meth:`_transport_ctx`.
-
-        See :meth:`_alitellm_modify_params_ctx` for why this must not use a
-        plain blocking ``with`` statement around the lock.
-        """
-        async with self._alitellm_modify_params_ctx(self.modify_params):
-            with self._suppress_transport_warnings():
-                yield
-
     def _prepare_transport_kwargs(
         self,
         *,
@@ -2205,24 +2210,23 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         on_token: TokenCallbackType | None = None,
         **kwargs,
     ) -> ModelResponse:
-        with self._transport_ctx():
-            ret = litellm_completion(
-                **self._prepare_transport_kwargs(
-                    messages=messages, enable_streaming=enable_streaming, **kwargs
-                )
+        ret = litellm_completion(
+            **self._prepare_transport_kwargs(
+                messages=messages, enable_streaming=enable_streaming, **kwargs
             )
-            if enable_streaming and on_token is not None:
-                chunks: list[ModelResponseStream] = []
-                stream = cast(Iterable[ModelResponseStream], ret)
-                for chunk in stream:
-                    on_token(chunk)
-                    chunks.append(chunk)
-                ret = litellm.stream_chunk_builder(chunks, messages=messages)
+        )
+        if enable_streaming and on_token is not None:
+            chunks: list[ModelResponseStream] = []
+            stream = cast(Iterable[ModelResponseStream], ret)
+            for chunk in stream:
+                on_token(chunk)
+                chunks.append(chunk)
+            ret = litellm.stream_chunk_builder(chunks, messages=messages)
 
-            assert isinstance(ret, ModelResponse), (
-                f"Expected ModelResponse, got {type(ret)}"
-            )
-            return ret
+        assert isinstance(ret, ModelResponse), (
+            f"Expected ModelResponse, got {type(ret)}"
+        )
+        return ret
 
     async def _atransport_call(
         self,
@@ -2234,112 +2238,37 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     ) -> ModelResponse:
         """Async variant of :meth:`_transport_call`."""
         auth_values = await self._aget_litellm_auth_values()
-        async with self._atransport_ctx():
-            ret = await litellm_acompletion(
-                **self._prepare_transport_kwargs(
-                    messages=messages,
-                    enable_streaming=enable_streaming,
-                    auth_values=auth_values,
-                    **kwargs,
-                )
+        ret = await litellm_acompletion(
+            **self._prepare_transport_kwargs(
+                messages=messages,
+                enable_streaming=enable_streaming,
+                auth_values=auth_values,
+                **kwargs,
             )
-            if enable_streaming and on_token is not None:
-                chunks: list[ModelResponseStream] = []
-                # Some litellm wrappers (lmnr 0.7.47's instrumentor) hand
-                # back a plain sync generator from ``litellm_acompletion``
-                if hasattr(ret, "__aiter__"):
-                    stream = cast(AsyncIterable[ModelResponseStream], ret)
-                    async for chunk in stream:
-                        await _invoke_token_callback(on_token, chunk)
-                        chunks.append(chunk)
-                else:
-                    loop = asyncio.get_running_loop()
-                    synced_chunks: list[
-                        ModelResponseStream
-                    ] = await loop.run_in_executor(
-                        None, list, cast(Iterable[ModelResponseStream], ret)
-                    )
-                    for chunk in synced_chunks:
-                        await _invoke_token_callback(on_token, chunk)
-                        chunks.append(chunk)
-                ret = litellm.stream_chunk_builder(chunks, messages=messages)
-
-            assert isinstance(ret, ModelResponse), (
-                f"Expected ModelResponse, got {type(ret)}"
-            )
-            return ret
-
-    @contextmanager
-    def _litellm_modify_params_ctx(self, flag: bool):
-        with self._litellm_modify_params_lock:
-            old = getattr(litellm, "modify_params", None)
-            try:
-                litellm.modify_params = flag
-                yield
-            finally:
-                litellm.modify_params = old
-
-    @asynccontextmanager
-    async def _alitellm_modify_params_ctx(self, flag: bool):
-        """Async variant of :meth:`_litellm_modify_params_ctx`.
-
-        ``litellm.modify_params`` is a process-wide global, so the lock must
-        stay held for the full duration of the transport call, not just the
-        moment the flag is set. A plain ``with self._litellm_modify_params_lock:``
-        would work for that, but only for the sync path: entering it here
-        with a blocking ``with`` statement would hold a real OS-level lock
-        across the ``await`` below. If a concurrent *sync* transport call
-        (e.g. a condenser or non-async agent step running in a worker
-        thread) is holding that lock at the time, this coroutine's attempt
-        to acquire it blocks the event loop thread itself -- which freezes
-        every other request the server is handling until the sync call
-        finishes (this is what makes agent-server stop responding to all
-        requests while waiting on a slow/local LLM response, most visible
-        during condensation).
-
-        Acquiring via ``run_in_executor`` moves the wait for the lock onto a
-        worker thread, so the event loop stays free to serve other requests
-        while this call is blocked on a concurrent transport call. The lock
-        is a plain (non-reentrant) ``threading.Lock``, so it is safe to
-        acquire on one thread and release on another.
-
-        Cancellation subtlety: if this coroutine is cancelled while waiting
-        (conversation stop/pause, timeout), the worker thread has already
-        started ``acquire()`` and cannot be interrupted -- it will still take
-        the lock. We therefore ``shield`` the acquire so the cancellation does
-        not mark it cancelled: the shielded future still resolves to the real
-        acquire result, and a done-callback releases the lock if it was
-        actually taken. Without this the lock would be acquired with nobody to
-        release it, permanently wedging every LLM call process-wide.
-        """
-        loop = asyncio.get_running_loop()
-        acquire = loop.run_in_executor(
-            self._litellm_modify_params_lock_executor,
-            self._litellm_modify_params_lock.acquire,
         )
-        try:
-            await asyncio.shield(acquire)
-        except asyncio.CancelledError:
-            lock = self._litellm_modify_params_lock
+        if enable_streaming and on_token is not None:
+            chunks: list[ModelResponseStream] = []
+            # Some litellm wrappers (lmnr 0.7.47's instrumentor) hand
+            # back a plain sync generator from ``litellm_acompletion``
+            if hasattr(ret, "__aiter__"):
+                stream = cast(AsyncIterable[ModelResponseStream], ret)
+                async for chunk in stream:
+                    await _invoke_token_callback(on_token, chunk)
+                    chunks.append(chunk)
+            else:
+                loop = asyncio.get_running_loop()
+                synced_chunks: list[ModelResponseStream] = await loop.run_in_executor(
+                    None, list, cast(Iterable[ModelResponseStream], ret)
+                )
+                for chunk in synced_chunks:
+                    await _invoke_token_callback(on_token, chunk)
+                    chunks.append(chunk)
+            ret = litellm.stream_chunk_builder(chunks, messages=messages)
 
-            def _release_if_acquired(fut: asyncio.Future) -> None:
-                # ``shield`` kept ``acquire`` alive, so its result reflects
-                # whether the worker thread actually took the lock. Release it
-                # if so, since the cancelled coroutine below never will.
-                if not fut.cancelled() and fut.exception() is None:
-                    lock.release()
-
-            acquire.add_done_callback(_release_if_acquired)
-            raise
-        try:
-            old = getattr(litellm, "modify_params", None)
-            try:
-                litellm.modify_params = flag
-                yield
-            finally:
-                litellm.modify_params = old
-        finally:
-            self._litellm_modify_params_lock.release()
+        assert isinstance(ret, ModelResponse), (
+            f"Expected ModelResponse, got {type(ret)}"
+        )
+        return ret
 
     # =========================================================================
     # Capabilities, formatting, and info
@@ -2617,19 +2546,135 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def effective_max_input_tokens(self) -> int | None:
         """Resolved context window used at runtime.
 
-        ``max_input_tokens`` remains the user-configured value. When it is
-        unset, this property reflects the value discovered from model metadata.
+        ``max_input_tokens`` remains the user-configured value and always wins.
+        When it is unset, a previously resolved provider-aware runtime limit is
+        used (this property performs no network I/O), falling back to the value
+        discovered from model metadata.
         """
-        return self.max_input_tokens or self._effective_max_input_tokens
+        if self.max_input_tokens:
+            return self.max_input_tokens
+        cached = cached_metadata(
+            self._runtime_metadata, self._runtime_metadata_fetched_at
+        )
+        if cached is not None and cached.max_input_tokens is not None:
+            return cached.max_input_tokens
+        return self._effective_max_input_tokens
 
     @property
     def effective_max_output_tokens(self) -> int | None:
         """Resolved output token limit used at runtime.
 
-        ``max_output_tokens`` remains the user-configured value. When it is
-        unset, this property reflects provider/model defaults and safety caps.
+        ``max_output_tokens`` remains the user-configured value and always
+        wins. This property performs no network I/O and falls back to the value
+        discovered from model metadata. Runtime (provider) resolution only
+        refines the input/context limit, never the output limit, so no call
+        here is needed for output tokens (see issue #4421).
         """
         return self.max_output_tokens or self._effective_max_output_tokens
+
+    # =========================================================================
+    # Runtime (provider-aware) metadata
+    # =========================================================================
+    def resolve_runtime_metadata(
+        self, *, force: bool = False
+    ) -> ModelRuntimeMetadata | None:
+        """Resolve provider-aware runtime limits synchronously (lazy + cached).
+
+        Discovery never runs during construction. Unsupported providers and
+        unresolvable routes return ``None`` so callers fall back to static
+        model metadata. Successful results are cached for
+        ``RUNTIME_METADATA_TTL_SECONDS``; failures are negative-cached briefly.
+
+        Prefer :meth:`aresolve_runtime_metadata` on the agent-server event loop,
+        which performs no blocking network I/O in-process. A concurrent
+        resolution already in flight cannot be overwritten by a stale
+        (earlier-started) probe: each probe carries a generation, and only the
+        latest generation may publish its result.
+        """
+        # The LLM may be shared across threads via the sync path, so the cache
+        # read/check and the store must be atomic. The network probe itself runs
+        # outside the lock so a slow endpoint cannot block other threads from
+        # reading the cache.
+        with self._runtime_metadata_lock:
+            if not force:
+                cached = cached_metadata(
+                    self._runtime_metadata, self._runtime_metadata_fetched_at
+                )
+                if cached is not None:
+                    return cached
+                if in_negative_cache(self._runtime_metadata_negative_until):
+                    return None
+            generation = self._runtime_metadata_generation + 1
+            self._runtime_metadata_generation = generation
+
+        metadata = resolve_provider_metadata_sync(self)
+        self._store_runtime_metadata(metadata, generation)
+        return metadata
+
+    async def aresolve_runtime_metadata(
+        self, *, force: bool = False
+    ) -> ModelRuntimeMetadata | None:
+        """Async variant of :meth:`resolve_runtime_metadata`.
+
+        Concurrent calls for the same route are deduplicated so only one
+        upstream request is issued. If the caller is configuring the condenser
+        or context management, resolve before computing a token threshold.
+
+        Because the agent-server may drive a shared ``LLM`` from multiple event
+        loops, a result is only published if no *newer* resolution (started via
+        the sync path on another thread, or a forced re-resolution) has landed
+        meanwhile.
+        """
+        if not force:
+            cached = cached_metadata(
+                self._runtime_metadata, self._runtime_metadata_fetched_at
+            )
+            if cached is not None:
+                return cached
+            if in_negative_cache(self._runtime_metadata_negative_until):
+                return None
+
+        with self._runtime_metadata_lock:
+            generation = self._runtime_metadata_generation + 1
+            self._runtime_metadata_generation = generation
+
+        metadata = await aresolve_provider_metadata(self)
+        self._store_runtime_metadata(metadata, generation)
+        return metadata
+
+    def _store_runtime_metadata(
+        self, metadata: ModelRuntimeMetadata | None, generation: int
+    ) -> None:
+        fetched_at, negative_until, resolved = store_result(metadata)
+        # Locked so a concurrent synchronous resolver (its probe runs outside the
+        # lock) cannot observe a torn / interleaved cache state. Generation
+        # guards against a stale (earlier-started) probe overwriting the result
+        # of a newer resolution: only the latest generation may publish.
+        with self._runtime_metadata_lock:
+            if generation != self._runtime_metadata_generation:
+                # Superseded by a newer resolution; drop this result.
+                return
+            self._runtime_metadata_fetched_at = fetched_at
+            self._runtime_metadata_negative_until = negative_until
+            if resolved is not None:
+                self._runtime_metadata = resolved
+            self._runtime_metadata_key = runtime_metadata_cache_key(self)
+
+    def _reset_runtime_metadata_for_key(self) -> None:
+        """Drop the runtime-metadata cache when the route (cache key) changes."""
+        with self._runtime_metadata_lock:
+            self._runtime_metadata = None
+            self._runtime_metadata_fetched_at = None
+            self._runtime_metadata_negative_until = None
+            self._runtime_metadata_key = None
+            self._runtime_metadata_generation += 1
+
+    @property
+    def resolved_runtime_metadata(self) -> ModelRuntimeMetadata | None:
+        """Currently cached runtime metadata, without triggering discovery."""
+        return cached_metadata(
+            self._runtime_metadata, self._runtime_metadata_fetched_at
+        )
 
     # =========================================================================
     # Utilities preserved from previous class

@@ -283,6 +283,7 @@ gh run rerun <RUN_ID> --repo <OWNER>/<REPO> --failed
 - DON'T write TEST CLASSES unless absolutely necessary!
 - If you find yourself duplicating logics in preparing mocks, loading data etc, these logic should be fixtures in conftest.py!
 - Please test only the logic implemented in the current codebase. Do not test functionality (e.g., BaseModel.model_dumps()) that is not implemented in this repository.
+- Assert observable behavior rather than source text, static implementation lists, private helpers or state, generic framework behavior, exhaustive default/export mirrors, or mock wiring. Tests should survive behavior-preserving refactors.
 - For changes to prompt templates, tool descriptions, or agent decision logic, add the `integration-test` label to trigger integration tests and verify no unexpected impact on benchmark performance.
 
 # Stress Tests
@@ -327,7 +328,7 @@ Note: This is separate from `persistence_dir` which is used for conversation sta
 - Clean caches: `make clean`
 - Run SDK examples: see [openhands-sdk/openhands/sdk/AGENTS.md](openhands-sdk/openhands/sdk/AGENTS.md).
 - The example workflow runs `uv run pytest tests/examples/test_examples.py --run-examples`; each successful example must print an `EXAMPLE_COST: ...` line to stdout (use `EXAMPLE_COST: 0` for non-LLM examples).
-- Example scripts in `examples/` should use top-level code flow (e.g. `with` blocks, bare statements) rather than wrapping logic in a `def main()` function. The `def main` pattern creates unnecessary nesting that makes examples harder to read; keep the code flat and script-like.
+- Linear walkthroughs in `examples/` should use top-level code flow (e.g. `with` blocks, bare statements) rather than wrapping the whole example in `def main()`. CLI-style examples with argument-driven branches may use a `main()` entrypoint.
 - Conversation plugins passed via `plugins=[...]` are lazy-loaded on the first `send_message()` or `run()`, so example code should inspect plugin-added skills or `resolved_plugins` only after that first interaction.
 </QUICK_COMMANDS>
 

@@ -56,7 +56,13 @@ def factory() -> DiagnosticEventFactory:
     )
 
 
-def make_subscriber(sink, factory, user_id: str | None = "user-1"):
+def make_subscriber(
+    sink,
+    factory,
+    user_id: str | None = "user-1",
+    *,
+    is_automation: bool = False,
+):
     conversation_id = uuid.uuid4()
     return TelemetrySubscriber(
         conversation_id=conversation_id,
@@ -72,6 +78,7 @@ def make_subscriber(sink, factory, user_id: str | None = "user-1"):
             has_agent_profile=False,
             workspace_kind="localworkspace",
             confirmation_policy="neverconfirm",
+            is_automation=is_automation,
         ),
     )
 
@@ -79,12 +86,21 @@ def make_subscriber(sink, factory, user_id: str | None = "user-1"):
 # ── lifecycle ─────────────────────────────────────────────────────────────
 
 
-async def test_emits_exactly_one_started_event(factory):
+async def test_emits_exactly_one_created_event(factory):
     sink = CollectingSink()
     sub = make_subscriber(sink, factory)
 
     sub.emit_started()
-    assert sink.names == [m.EventName.CONVERSATION_STARTED]
+    assert sink.names == [m.EventName.CONVERSATION_CREATED]
+
+
+async def test_created_event_identifies_automation_conversations(factory):
+    sink = CollectingSink()
+    sub = make_subscriber(sink, factory, is_automation=True)
+
+    sub.emit_started()
+
+    assert sink.events[0].to_payload()["is_automation"] is True
 
 
 def test_started_is_only_emitted_for_genuinely_new_conversations():
@@ -92,7 +108,7 @@ def test_started_is_only_emitted_for_genuinely_new_conversations():
 
     It is called when an idle conversation is lazily reloaded and when RUNNING
     conversations are recovered after a restart. Emitting
-    ``conversation_started`` from all of those would inflate the metric on
+    ``conversation_created`` from all of those would inflate the metric on
     every server bounce, so the flag must default to *not* emitting.
     """
     import inspect
@@ -103,7 +119,7 @@ def test_started_is_only_emitted_for_genuinely_new_conversations():
     param = sig.parameters["is_new_conversation"]
 
     assert param.default is False, (
-        "_start_event_service must default to NOT emitting conversation_started; "
+        "_start_event_service must default to NOT emitting conversation_created; "
         "the hydration path relies on that default"
     )
     assert param.kind is inspect.Parameter.KEYWORD_ONLY
@@ -156,7 +172,7 @@ async def test_close_is_silent_when_no_run_was_observed(factory):
 
     The subscriber attaches on every _start_event_service path, including the
     lazy attach when a user merely views an old conversation. Emitting on close
-    produced a conversation_finished with no matching conversation_started,
+    produced a conversation_finished with no matching conversation_created,
     repeated on every view-then-restart cycle for the same conversation_ref.
     """
     sink = CollectingSink()
@@ -397,7 +413,7 @@ async def test_disabled_sink_short_circuits_before_building_events(factory):
 
     sub.emit_started()
     # emit() itself is a no-op on a disabled sink; nothing is recorded.
-    assert sink.events == [] or sink.names == [m.EventName.CONVERSATION_STARTED]
+    assert sink.events == [] or sink.names == [m.EventName.CONVERSATION_CREATED]
 
 
 # ── identity ──────────────────────────────────────────────────────────────
@@ -576,9 +592,9 @@ def test_confirmation_policy_is_read_from_the_field_that_exists():
     assert "confirmation_mode" not in StoredConversation.model_fields
     assert "confirmation_policy" in StoredConversation.model_fields
 
+    agent = Agent(llm=LLM(model="anthropic/claude-sonnet-5", usage_id="t"), tools=[])
     stored = StoredConversation(
         id=_uuid.uuid4(),
-        agent=Agent(llm=LLM(model="anthropic/claude-sonnet-5", usage_id="t"), tools=[]),
         workspace=LocalWorkspace(working_dir="/Users/alice/secret-project"),
         confirmation_policy=AlwaysConfirm(),
         user_id="canvas-user-42",
@@ -589,6 +605,7 @@ def test_confirmation_policy_is_read_from_the_field_that_exists():
             runtime=build_runtime_properties(deferred_init=False),
             salt="s",
         ),
+        agent=agent,
     )
 
     from dataclasses import asdict
@@ -600,3 +617,46 @@ def test_confirmation_policy_is_read_from_the_field_that_exists():
     fields = asdict(ctx)
     assert "unknown" not in fields.values()
     assert "secret-project" not in repr(fields)
+
+
+@pytest.mark.parametrize(
+    ("tags", "is_automation"),
+    [
+        ({"automationtrigger": "cron"}, True),
+        ({"automationid": "auto-1"}, True),
+        ({"automationrunid": "run-1"}, True),
+        ({"automationtrigger": ""}, False),
+        ({"automationname": "Nightly Audit"}, False),
+        ({"source": "automation"}, False),
+        ({}, False),
+    ],
+)
+def test_is_automation_is_derived_from_allowlisted_tags(tags, is_automation):
+    from openhands.agent_server.conversation_service import _build_telemetry_context
+    from openhands.agent_server.models import StoredConversation
+    from openhands.agent_server.telemetry.factory import (
+        DiagnosticEventFactory,
+        build_runtime_properties,
+    )
+    from openhands.sdk.agent import Agent
+    from openhands.sdk.llm import LLM
+    from openhands.sdk.workspace import LocalWorkspace
+
+    agent = Agent(llm=LLM(model="anthropic/claude-sonnet-5", usage_id="t"), tools=[])
+    stored = StoredConversation(
+        id=uuid.uuid4(),
+        workspace=LocalWorkspace(working_dir="/tmp"),
+        user_id="canvas-user-42",
+        tags=tags,
+    )
+
+    context = _build_telemetry_context(
+        stored,
+        DiagnosticEventFactory(
+            runtime=build_runtime_properties(deferred_init=False),
+            salt="s",
+        ),
+        agent=agent,
+    )
+
+    assert context.is_automation is is_automation

@@ -655,3 +655,26 @@ def test_callback_omits_conversation_id_when_not_registered(monkeypatch):
         payload = mock_client.post.call_args.kwargs["json"]
         assert payload["status"] == "COMPLETED"
         assert "conversation_id" not in payload
+
+
+def test_callback_includes_registered_cost(monkeypatch):
+    """Callback payload reports the accumulated LLM cost when registered."""
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+    monkeypatch.setenv("AUTOMATION_RUN_ID", "run-42")
+    ws = _make_local_workspace()
+    ws.register_cost(1.25)
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        ws.__exit__(None, None, None)
+
+        payload = mock_client.post.call_args.kwargs["json"]
+        assert payload["cost"] == 1.25

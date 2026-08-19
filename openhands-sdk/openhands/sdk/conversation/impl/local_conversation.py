@@ -72,8 +72,14 @@ from openhands.sdk.mcp.utils import (
     MCPToolProvider,
     ToolsChangedCallback,
     ToolsReconciledCallback,
+    provider_supports_on_tools_reconciled,
 )
-from openhands.sdk.observability.laminar import OPERATION_METADATA_KEY, observe
+from openhands.sdk.observability.laminar import (
+    OPERATION_METADATA_KEY,
+    observe,
+    record_tool_result,
+)
+from openhands.sdk.observability.utils import extract_action_name
 from openhands.sdk.plugin import (
     Plugin,
     PluginSource,
@@ -137,11 +143,19 @@ def _agent_already_surfaced_error(events: Sequence[Event], since: int = 0) -> bo
     prevents a stale source="agent" event from a prior run from suppressing the error
     event for an unrelated exception in a subsequent run on the same conversation.
     """
+    latest = _latest_conversation_error(events, since)
+    return latest is not None and latest.source == "agent"
+
+
+def _latest_conversation_error(
+    events: Sequence[Event], since: int = 0
+) -> ConversationErrorEvent | None:
+    """Return the latest conversation error emitted during the current run."""
     for i in range(len(events) - 1, since - 1, -1):
         event = events[i]
         if isinstance(event, ConversationErrorEvent):
-            return event.source == "agent"
-    return False
+            return event
+    return None
 
 
 def _is_acp_prompt_message(event: Event) -> TypeGuard[MessageEvent]:
@@ -193,7 +207,7 @@ class LocalConversation(BaseConversation):
 
     def __init__(
         self,
-        agent: AgentBase,
+        agent: AgentBase | None,
         workspace: str | Path | LocalWorkspace,
         plugins: list[PluginSource] | None = None,
         persistence_dir: str | Path | None = None,
@@ -313,12 +327,31 @@ class LocalConversation(BaseConversation):
         # or, when resuming a persisted conversation without re-supplying them,
         # from the persisted agent's tool specs — mirroring the server resume
         # path so a fresh process can re-register the dynamic tools.
+        # Client tools are injected into the caller-supplied agent. When
+        # ``agent`` is None the agent is resumed from base_state.json (which
+        # already carries its persisted tool specs), so there is nothing to
+        # inject here — but the ``ClientTool`` classes still need re-registering
+        # from those persisted specs (done below, after the agent is loaded).
         resolved_client_tools = list(client_tools or [])
-        if not resolved_client_tools and persistence_dir is not None:
+        if agent is None and resolved_client_tools:
+            # On resume the client tools are recovered from the persisted agent
+            # (see below), so caller-supplied ``client_tools`` cannot be injected
+            # into a caller-supplied agent — warn rather than drop them silently.
+            logger.warning(
+                "client_tools were passed with agent=None (resume); the "
+                "caller-supplied specs are not re-injected — the conversation's "
+                "client tools are recovered from the persisted agent in "
+                "base_state.json instead, so they remain executable."
+            )
+        if (
+            agent is not None
+            and not resolved_client_tools
+            and persistence_dir is not None
+        ):
             resolved_client_tools = self._recover_persisted_client_tools(
                 persistence_dir, desired_id
             )
-        if resolved_client_tools:
+        if agent is not None and resolved_client_tools:
             from openhands.sdk.tool.client_tool import register_client_tools
 
             client_tool_specs = register_client_tools(resolved_client_tools)
@@ -328,8 +361,6 @@ class LocalConversation(BaseConversation):
             ]
             if new_tools:
                 agent = agent.model_copy(update={"tools": [*agent.tools, *new_tools]})
-
-        self.agent = agent
         if isinstance(workspace, (str, Path)):
             # LocalWorkspace accepts both str and Path via BeforeValidator
             workspace = LocalWorkspace(working_dir=workspace)
@@ -353,6 +384,27 @@ class LocalConversation(BaseConversation):
             cipher=cipher,
             tags=tags,
         )
+        # base_state.json is the source of truth for the agent. On resume with
+        # ``agent=None`` the state holds the persisted agent; adopt it here so
+        # ``self.agent`` and ``self._state.agent`` are the same object.
+        if agent is None:
+            agent = self._state.agent
+            # The persisted agent carries client-tool ``Tool`` specs, but in a
+            # fresh process the ``ClientTool`` *classes* are absent from the
+            # global registry. Re-register them from the persisted specs so
+            # client tools stay executable on this resume path (the agent-server
+            # also does this via ``stored.client_tools``; this covers direct SDK
+            # ``LocalConversation(agent=None)`` resume). ``register_client_tools``
+            # is idempotent, so a double-register is harmless.
+            from openhands.sdk.tool.client_tool import (
+                extract_client_tool_specs,
+                register_client_tools,
+            )
+
+            recovered_specs = extract_client_tool_specs(agent.tools)
+            if recovered_specs:
+                register_client_tools(recovered_specs)
+        self.agent = agent
 
         self._bind_conversation_context(self.agent.llm)
 
@@ -1288,12 +1340,18 @@ class LocalConversation(BaseConversation):
         mcp_config = enabled_mcp_servers(mcp_config)
         if not mcp_config:
             return []
+        create_kwargs: dict[str, Any] = {"on_tools_changed": on_tools_changed}
+        if provider_supports_on_tools_reconciled(self._mcp_tool_provider):
+            create_kwargs["on_tools_reconciled"] = on_tools_reconciled
+        elif on_tools_reconciled is not None:
+            logger.debug(
+                "%s does not accept on_tools_reconciled; dynamic MCP tool "
+                "removals/updates won't reach the agent for this provider",
+                type(self._mcp_tool_provider).__name__,
+            )
         client = self._mcp_tool_provider.create_tools(
-            mcp_config,
-            _RUNTIME_MCP_TIMEOUT_SECS,
-            on_tools_changed=on_tools_changed,
+            mcp_config, _RUNTIME_MCP_TIMEOUT_SECS, **create_kwargs
         )
-        client._tools_reconciled_callback = on_tools_reconciled
         return list(client.tools)
 
     def _on_mcp_tools_reconciled(
@@ -2002,7 +2060,12 @@ class LocalConversation(BaseConversation):
 
             # Re-raise with conversation id and persistence dir for better UX
             raise ConversationRunError(
-                self._state.id, e, persistence_dir=self._state.persistence_dir
+                self._state.id,
+                e,
+                persistence_dir=self._state.persistence_dir,
+                conversation_error=_latest_conversation_error(
+                    self._state.events, _run_start_event_count
+                ),
             ) from e
         finally:
             self._cancel_token = None
@@ -2458,7 +2521,12 @@ class LocalConversation(BaseConversation):
                         )
                     )
             raise ConversationRunError(
-                self._state.id, e, persistence_dir=self._state.persistence_dir
+                self._state.id,
+                e,
+                persistence_dir=self._state.persistence_dir,
+                conversation_error=_latest_conversation_error(
+                    self._state.events, _run_start_event_count
+                ),
             ) from e
         finally:
             # A cancelled token must stay observable: interrupted tool calls run
@@ -2473,6 +2541,23 @@ class LocalConversation(BaseConversation):
         with self._state:
             self._state.confirmation_policy = policy
         logger.info(f"Confirmation policy set to: {policy}")
+
+    def set_token_callbacks(
+        self, token_callbacks: list[ConversationTokenCallbackType] | None
+    ) -> None:
+        """Replace the token-streaming callbacks after construction.
+
+        On resume the agent is unknown at construction time (it is loaded from
+        ``base_state.json``), so a caller may only learn whether the resolved
+        agent can emit token deltas afterwards. Use this to enable or disable
+        token streaming at that point. Passing ``None`` or an empty list
+        disables it.
+        """
+        self._on_token = (
+            BaseConversation.compose_callbacks(token_callbacks)
+            if token_callbacks
+            else None
+        )
 
     def reject_pending_actions(self, reason: str = "User rejected the action") -> None:
         """Reject all pending actions from the agent.
@@ -2503,6 +2588,13 @@ class LocalConversation(BaseConversation):
                     tool_name=action_event.tool_name,
                     tool_call_id=action_event.tool_call_id,
                     rejection_reason=reason,
+                )
+                record_tool_result(
+                    self,
+                    name=extract_action_name(action_event),
+                    tool_call_id=action_event.tool_call_id,
+                    tool_input=action_event.action,
+                    tool_output=rejection_event.to_llm_message(),
                 )
                 self._on_event(rejection_event)
                 logger.info(f"Rejected pending action: {action_event} - {reason}")
@@ -2628,6 +2720,17 @@ class LocalConversation(BaseConversation):
         first_attempt = not getattr(self, "_cleanup_initiated", False)
         if first_attempt:
             self._cleanup_initiated = True
+
+            # Best-effort: hand the accumulated LLM cost to the workspace so it
+            # can be included in the automation completion callback. State is
+            # in-process here, so unlike RemoteConversation there is no cache to
+            # consult and no fetch that could block against a dead server.
+            try:
+                cost = self._state.stats.get_combined_metrics().accumulated_cost
+                self.workspace.register_cost(cost)
+            except Exception as e:
+                logger.debug(f"Could not register accumulated cost: {e}")
+
             logger.debug("Closing conversation and cleaning up tool executors")
             hook_processor = getattr(self, "_hook_processor", None)
             if hook_processor is not None:
