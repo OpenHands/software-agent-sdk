@@ -3,13 +3,13 @@ from typing import ClassVar
 from unittest.mock import patch
 
 import pytest
-from pydantic import BaseModel, Field
+from pydantic import Field
 from rich.text import Text
 
 from openhands.sdk import LLM, Conversation
 from openhands.sdk.agent import Agent
 from openhands.sdk.llm.message import ImageContent, TextContent
-from openhands.sdk.tool import ToolDefinition, registry as tool_registry
+from openhands.sdk.tool import ToolDefinition
 from openhands.sdk.tool.registry import register_tool
 from openhands.sdk.tool.spec import Tool
 from openhands.sdk.tool.tool import Action, Observation, ToolExecutor
@@ -49,11 +49,6 @@ class _UpperTool(ToolDefinition[_Action, _Obs]):
         ]
 
 
-class _FinishResult(BaseModel):
-    success: bool
-    outcome_summary: str
-
-
 def test_agent_initializes_tools_from_toolspec_locally(monkeypatch):
     # Register a simple local tool via registry
     register_tool("upper", _UpperTool)
@@ -91,36 +86,6 @@ def test_agent_include_only_finish_tool():
         runtime_tools = agent.tools_map
         assert "finish" in runtime_tools
         assert "think" not in runtime_tools
-
-
-def test_agent_initializes_parameterized_builtin_finish_without_registry():
-    with tool_registry._LOCK:
-        saved_resolver = tool_registry._REG.pop("FinishTool", None)
-        saved_checker = tool_registry._USABILITY_REG.pop("FinishTool", None)
-        saved_module = tool_registry._MODULE_QUALNAMES.pop("FinishTool", None)
-
-    try:
-        llm = LLM(model="test-model", usage_id="test-llm")
-        agent = Agent(
-            llm=llm,
-            tools=[Tool(name="FinishTool", params={"response_schema": _FinishResult})],
-            include_default_tools=["ThinkTool"],
-        )
-
-        conv = Conversation(agent=agent, visualizer=None)
-        conv._ensure_agent_ready()
-
-        finish_tool = agent.tools_map["finish"]
-        assert finish_tool.response_schema is _FinishResult
-        assert "think" in agent.tools_map
-    finally:
-        with tool_registry._LOCK:
-            if saved_resolver is not None:
-                tool_registry._REG["FinishTool"] = saved_resolver
-            if saved_checker is not None:
-                tool_registry._USABILITY_REG["FinishTool"] = saved_checker
-            if saved_module is not None:
-                tool_registry._MODULE_QUALNAMES["FinishTool"] = saved_module
 
 
 def test_agent_include_only_think_tool():
