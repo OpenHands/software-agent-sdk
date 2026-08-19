@@ -18,9 +18,6 @@ from openhands.sdk.conversation import (
     ConversationExecutionStatus,
     LocalConversation,
     RemoteConversation,
-    TaskOutcome,
-    TaskOutcomeBlocker,
-    TaskOutcomeStatus,
 )
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.event import Event, HookExecutionEvent, LLMConvertibleEvent
@@ -156,9 +153,6 @@ __all__ = [
     "RemoteConversation",
     "ConversationExecutionStatus",
     "ConversationCallbackType",
-    "TaskOutcome",
-    "TaskOutcomeBlocker",
-    "TaskOutcomeStatus",
     "Event",
     "LLMConvertibleEvent",
     "AgentContext",

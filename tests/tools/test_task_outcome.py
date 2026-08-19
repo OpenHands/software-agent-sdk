@@ -1,5 +1,5 @@
-from openhands.sdk import TaskOutcome, TaskOutcomeBlocker
 from openhands.sdk.tool.spec import Tool
+from openhands.tools.preset import TaskOutcome, TaskOutcomeBlocker
 
 
 def test_task_outcome_accepts_outcome_summary_alias():
