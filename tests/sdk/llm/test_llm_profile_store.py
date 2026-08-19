@@ -741,3 +741,49 @@ def test_multiple_profiles(profile_store: LLMProfileStore) -> None:
     profile_store.delete("gpt4")
     assert len(profile_store.list()) == 2
     assert "gpt4.json" not in profile_store.list()
+
+
+def test_default_provider_store_is_sibling_of_base_dir(tmp_path: Path) -> None:
+    """A custom-dir profile store resolves connections under its own base_dir.
+
+    Regression: the default ProviderConnectionStore must be derived from
+    ``base_dir`` (a sibling ``provider-connections`` directory), not from
+    ``$HOME``. Otherwise a custom-directory profile store reads profiles from
+    ``base_dir`` but credentials from ``~/.openhands`` — the wrong source.
+    """
+    from openhands.sdk.llm.provider_connection_store import (
+        ProviderConnection,
+        ProviderConnectionStore,
+    )
+
+    store = LLMProfileStore(base_dir=tmp_path)
+
+    provider_store = store._provider_store
+    assert provider_store is not None
+    assert provider_store.base_dir == tmp_path.parent / "provider-connections"
+    assert Path.home() not in provider_store.base_dir.parents
+
+    connections = ProviderConnectionStore(
+        base_dir=tmp_path.parent / "provider-connections"
+    )
+    now = 1_000
+    connections.create(
+        ProviderConnection(
+            id="conn1",
+            display_name="Anthropic",
+            provider="anthropic",
+            api_key=SecretStr("sk-shared"),
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    llm = LLM(
+        usage_id="linked",
+        model="anthropic/claude-sonnet-4",
+        provider_connection_id="conn1",
+    )
+    store.save("linked", llm)
+
+    resolved = store.load("linked")
+    assert resolved.api_key is not None
+    assert resolved.api_key.get_secret_value() == "sk-shared"

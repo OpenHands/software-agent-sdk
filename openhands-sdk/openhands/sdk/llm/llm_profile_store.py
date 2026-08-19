@@ -96,11 +96,12 @@ class LLMProfileStore:
             provider_store: Store of shared provider connections used to
                 resolve a profile's ``provider_connection_id`` at load time.
                 When `None` (the default), a :class:`ProviderConnectionStore`
-                is created at its own default directory so that every
-                ``LLMProfileStore`` — including bare standalone SDK instances —
-                can resolve linked profiles. Pass an explicit store to use a
-                non-default directory (e.g. the agent-server's config-scoped
-                directory) or a pre-constructed test double.
+                is created in a ``provider-connections`` directory *sibling to*
+                ``base_dir`` so that every ``LLMProfileStore`` — including
+                custom-directory and bare standalone SDK instances — resolves
+                connections from the same location it reads profiles from. Pass
+                an explicit store to use an unrelated directory (e.g. the
+                agent-server's config-scoped directory) or a test double.
         """
         self.base_dir = Path(base_dir) if base_dir is not None else _DEFAULT_PROFILE_DIR
         # ensure directory existence
@@ -111,8 +112,15 @@ class LLMProfileStore:
                 ProviderConnectionStore,
             )
 
+            # Derive the connections directory from base_dir rather than $HOME,
+            # so a custom-directory profile store reads its linked credentials
+            # from the same location it reads profiles from. For the default
+            # ~/.openhands/profiles this resolves to ~/.openhands/provider-
+            # connections, matching ProviderConnectionStore's own default.
             self._provider_store: ProviderConnectionStore | None = (
-                ProviderConnectionStore()
+                ProviderConnectionStore(
+                    base_dir=self.base_dir.parent / "provider-connections"
+                )
             )
         else:
             self._provider_store = provider_store

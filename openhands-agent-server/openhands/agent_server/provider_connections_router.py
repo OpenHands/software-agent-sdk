@@ -18,7 +18,11 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
-from openhands.agent_server._secrets_exposure import get_cipher, get_config
+from openhands.agent_server._secrets_exposure import (
+    get_cipher,
+    get_config,
+    store_errors,
+)
 from openhands.agent_server.persistence import (
     ProviderConnection,
     get_llm_profile_store,
@@ -141,7 +145,9 @@ async def list_provider_connections(
 ) -> list[ProviderConnectionResponse]:
     cipher = get_cipher(request)
     store = get_provider_connections_store(get_config(request))
-    return [_to_response(c) for c in store.list(cipher=cipher)]
+    with store_errors():
+        connections = store.list(cipher=cipher)
+    return [_to_response(c) for c in connections]
 
 
 @provider_connections_router.post(
@@ -163,7 +169,8 @@ async def create_provider_connection(
         updated_at=now,
     )
     try:
-        store.create(connection, cipher=cipher)
+        with store_errors():
+            store.create(connection, cipher=cipher)
     except ProviderConnectionLimitExceeded as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -190,7 +197,8 @@ async def update_provider_connection(
 
     cipher = get_cipher(request)
     store = get_provider_connections_store(get_config(request))
-    connection = store.get(connection_id, cipher=cipher)
+    with store_errors():
+        connection = store.get(connection_id, cipher=cipher)
     if connection is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -213,13 +221,18 @@ async def update_provider_connection(
         updates["api_key"] = body.api_key
     updated = connection.model_copy(update=updates)
 
-    try:
-        store.update(updated, cipher=cipher)
-    except ProviderConnectionNotFound:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Provider connection '{connection_id}' not found",
-        )
+    # store_errors() maps infra failures (lock timeout -> 503, corrupted/
+    # wrong-cipher file -> 4xx); the inner except keeps the deleted-between-
+    # get-and-update race as a 404 rather than the 422 store_errors would give
+    # ProviderConnectionNotFound.
+    with store_errors():
+        try:
+            store.update(updated, cipher=cipher)
+        except ProviderConnectionNotFound:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Provider connection '{connection_id}' not found",
+            )
     logger.info(
         "Updated LLM provider connection", extra={"connection_id": connection_id}
     )
@@ -235,7 +248,8 @@ async def delete_provider_connection(
     config = get_config(request)
     cipher = get_cipher(request)
     store = get_provider_connections_store(config)
-    connection = store.get(connection_id, cipher=cipher)
+    with store_errors():
+        connection = store.get(connection_id, cipher=cipher)
     if connection is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -243,7 +257,15 @@ async def delete_provider_connection(
         )
     _raise_if_connection_is_referenced(config, connection_id)
 
-    store.delete(connection_id, cipher=cipher)
+    # See update handler: keep the delete-race as 404, map infra errors.
+    with store_errors():
+        try:
+            store.delete(connection_id, cipher=cipher)
+        except ProviderConnectionNotFound:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Provider connection '{connection_id}' not found",
+            )
     logger.info(
         "Deleted LLM provider connection", extra={"connection_id": connection_id}
     )

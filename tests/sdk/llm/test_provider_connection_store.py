@@ -210,15 +210,17 @@ def test_list_summaries_marks_broken_when_connection_deleted(tmp_path):
     assert summary["api_key_set"] is False
 
 
-def test_bare_profile_store_auto_wires_provider_store(tmp_path, monkeypatch):
+def test_bare_profile_store_auto_wires_provider_store(tmp_path):
     """Fix: bare LLMProfileStore() auto-creates a ProviderConnectionStore so that
     standalone SDK paths (LocalConversation, FallbackStrategy, switch_llm) can
-    resolve linked profiles saved by the agent-server."""
-    import openhands.sdk.llm.provider_connection_store as pcs_mod
+    resolve linked profiles saved by the agent-server.
 
-    # Redirect the default provider-connection dir so the test is isolated.
-    monkeypatch.setattr(pcs_mod, "_DEFAULT_DIR", tmp_path / "conns")
-    provider = ProviderConnectionStore(base_dir=tmp_path / "conns")
+    The auto-wired store lives in a ``provider-connections`` directory sibling
+    to the profile store's ``base_dir`` (not under ``$HOME``), so a custom-dir
+    profile store reads its credentials from the same location.
+    """
+    # The auto-wired provider store is a sibling of base_dir.
+    provider = ProviderConnectionStore(base_dir=tmp_path / "provider-connections")
     provider.create(_connection())
 
     # Construct with only base_dir — no explicit provider_store arg.
