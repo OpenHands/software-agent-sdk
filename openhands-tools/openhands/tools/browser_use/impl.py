@@ -8,7 +8,6 @@ import json
 import logging
 import os
 import shutil
-import subprocess
 import sys
 import threading
 from collections.abc import Callable, Coroutine
@@ -21,7 +20,6 @@ if TYPE_CHECKING:
 
 from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.tool import ToolExecutor
-from openhands.sdk.utils import sanitized_env
 from openhands.sdk.utils.async_executor import AsyncExecutor
 from openhands.tools.browser_use.definition import (
     BROWSER_RECORDING_OUTPUT_DIR,
@@ -223,34 +221,6 @@ def _format_browser_operation_error(
     else:
         error_detail = error.__class__.__name__
     return f"Browser operation failed: {error_detail}"
-
-
-def _install_chromium() -> bool:
-    """Attempt to install Chromium via uvx playwright install."""
-    try:
-        # Check if uvx is available
-        if not shutil.which("uvx"):
-            logger.warning("uvx not found - cannot auto-install Chromium")
-            return False
-
-        logger.info("Attempting to install Chromium via uvx...")
-        result = subprocess.run(
-            ["uvx", "playwright", "install", "chromium", "--with-deps", "--no-shell"],
-            capture_output=True,
-            text=True,
-            timeout=300,  # 5 minutes timeout for installation
-            env=sanitized_env(),
-        )
-
-        if result.returncode == 0:
-            logger.info("Chromium installation completed successfully")
-            return True
-        else:
-            logger.error(f"Chromium installation failed: {result.stderr}")
-            return False
-    except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
-        logger.error(f"Error during Chromium installation: {e}")
-        return False
 
 
 def _get_chromium_error_message() -> str:
