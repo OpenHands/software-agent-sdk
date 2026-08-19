@@ -1480,6 +1480,35 @@ class ConversationService:
                 load_memory=bool(stored_context and stored_context.load_memory),
             )
             request = request.model_copy(update={"agent": resolved_agent})
+        elif request.agent_settings is not None:
+            # The client-supplied ``agent_settings`` payload may have had its
+            # LLM secrets redacted to ``"**********"`` (e.g. fetched via
+            # ``GET /api/settings`` without ``X-Expose-Secrets``), which
+            # ``validate_secret`` turns into ``None`` during request
+            # validation. Backfill any still-missing LLM secret fields from
+            # the server's persisted agent settings, mirroring how the
+            # ``agent_profile_id`` path above always resolves credentials
+            # server-side rather than trusting client-supplied secret values.
+            from openhands.agent_server.persistence import (
+                PersistedSettings,
+                get_settings_store,
+            )
+            from openhands.sdk.llm.llm import LLM_SECRET_FIELDS
+
+            settings = get_settings_store().load() or PersistedSettings()
+            persisted_llm = settings.agent_settings.llm
+            updates: dict[str, Any] = {}
+            for field in LLM_SECRET_FIELDS:
+                if getattr(request.agent.llm, field, None) is not None:
+                    continue
+                persisted_value = getattr(persisted_llm, field, None)
+                if persisted_value is not None:
+                    updates[field] = persisted_value
+            if updates:
+                new_llm = request.agent.llm.model_copy(update=updates)
+                request = request.model_copy(
+                    update={"agent": request.agent.model_copy(update={"llm": new_llm})}
+                )
 
         additions = request.agent_launch_additions
         suffix = (

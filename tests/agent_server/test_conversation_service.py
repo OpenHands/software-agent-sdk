@@ -34,6 +34,7 @@ from openhands.agent_server.models import (
     StoredConversation,
     UpdateConversationRequest,
 )
+from openhands.agent_server.persistence import PersistedSettings
 from openhands.agent_server.utils import safe_rmtree as _safe_rmtree
 from openhands.sdk import LLM, Agent, AgentBase, Message
 from openhands.sdk.agent.acp_agent import ACPAgent
@@ -340,6 +341,167 @@ async def test_start_conversation_decrypts_encrypted_agent_settings_mcp_env(
         ]
         == "ghp-plaintext"
     )
+
+
+@pytest.mark.asyncio
+async def test_start_conversation_backfills_redacted_llm_api_key_from_agent_settings(
+    conversation_service, tmp_path
+):
+    """Regression test for #4533.
+
+    When a client launches via the ``agent_settings`` fallback (the seeded
+    default agent profile path) using a settings payload it fetched from
+    ``GET /api/settings`` without ``X-Expose-Secrets``, the LLM ``api_key``
+    arrives redacted (``"**********"``) and ``validate_secret`` turns it
+    into ``None`` during request validation. The launched agent must still
+    carry the real, server-persisted API key rather than launching with a
+    ``None`` key.
+    """
+    from openhands.sdk.settings.model import default_agent_settings
+    from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
+
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    persisted_settings = PersistedSettings(
+        agent_settings=default_agent_settings().model_copy(
+            update={
+                "llm": LLM(
+                    model="gpt-4o",
+                    usage_id="test-llm",
+                    api_key=SecretStr("sk-real-persisted-key"),
+                )
+            }
+        )
+    )
+
+    request = StartConversationRequest(
+        agent_settings={
+            "schema_version": 1,
+            "agent_kind": "llm",
+            "llm": {
+                "model": "gpt-4o",
+                "usage_id": "test-llm",
+                # As sent back by a client that fetched settings without
+                # X-Expose-Secrets: the real key redacted to this marker.
+                "api_key": REDACTED_SECRET_VALUE,
+            },
+            "tools": [],
+        },
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+    # Sanity check: validation already dropped the redacted key to None,
+    # same as the reported bug's base_state.json before any fix.
+    assert request.agent.llm.api_key is None
+
+    captured: dict[str, Any] = {}
+
+    async def fake_start_event_service(stored: StoredConversation, **kwargs):
+        agent = cast(AgentBase, kwargs.get("agent"))
+        captured["agent"] = agent
+        service = AsyncMock(spec=EventService)
+        service.stored = stored
+        service.get_state.return_value = ConversationState(
+            id=stored.id,
+            agent=agent,
+            workspace=stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=stored.confirmation_policy,
+        )
+        return service
+
+    with (
+        patch(
+            "openhands.agent_server.persistence.get_settings_store"
+        ) as mock_get_store,
+        patch.object(
+            conversation_service,
+            "_start_event_service",
+            side_effect=fake_start_event_service,
+        ),
+    ):
+        mock_get_store.return_value.load.return_value = persisted_settings
+        await conversation_service.start_conversation(request)
+
+    agent = captured["agent"]
+    assert isinstance(agent.llm.api_key, SecretStr)
+    assert agent.llm.api_key.get_secret_value() == "sk-real-persisted-key"
+
+
+@pytest.mark.asyncio
+async def test_start_conversation_agent_settings_does_not_override_explicit_llm_api_key(
+    conversation_service, tmp_path
+):
+    """A client-supplied (non-redacted) api_key must never be clobbered by
+    the persisted server value — the backfill only fills in what's missing.
+    """
+    from openhands.sdk.settings.model import default_agent_settings
+
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    persisted_settings = PersistedSettings(
+        agent_settings=default_agent_settings().model_copy(
+            update={
+                "llm": LLM(
+                    model="gpt-4o",
+                    usage_id="test-llm",
+                    api_key=SecretStr("sk-persisted-should-not-be-used"),
+                )
+            }
+        )
+    )
+
+    request = StartConversationRequest(
+        agent_settings={
+            "schema_version": 1,
+            "agent_kind": "llm",
+            "llm": {
+                "model": "gpt-4o",
+                "usage_id": "test-llm",
+                "api_key": "sk-explicit-client-key",
+            },
+            "tools": [],
+        },
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+    assert isinstance(request.agent.llm.api_key, SecretStr)
+    assert request.agent.llm.api_key.get_secret_value() == "sk-explicit-client-key"
+
+    captured: dict[str, Any] = {}
+
+    async def fake_start_event_service(stored: StoredConversation, **kwargs):
+        agent = cast(AgentBase, kwargs.get("agent"))
+        captured["agent"] = agent
+        service = AsyncMock(spec=EventService)
+        service.stored = stored
+        service.get_state.return_value = ConversationState(
+            id=stored.id,
+            agent=agent,
+            workspace=stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=stored.confirmation_policy,
+        )
+        return service
+
+    with (
+        patch(
+            "openhands.agent_server.persistence.get_settings_store"
+        ) as mock_get_store,
+        patch.object(
+            conversation_service,
+            "_start_event_service",
+            side_effect=fake_start_event_service,
+        ),
+    ):
+        mock_get_store.return_value.load.return_value = persisted_settings
+        await conversation_service.start_conversation(request)
+
+    agent = captured["agent"]
+    assert isinstance(agent.llm.api_key, SecretStr)
+    assert agent.llm.api_key.get_secret_value() == "sk-explicit-client-key"
 
 
 @pytest.mark.asyncio
