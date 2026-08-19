@@ -2868,24 +2868,10 @@ class LocalConversation(BaseConversation):
             ValueError: If no user messages are found in the conversation.
         """
         effective_llm = llm if llm is not None else self.agent.llm
-
-        def _on_title_error(exc: Exception) -> None:
-            # Surface the LLM failure to clients (issue #16686). Title
-            # generation stays non-fatal — it still falls back to truncation —
-            # so this does not change the conversation's execution status.
-            self._on_event_with_state_lock(
-                ConversationErrorEvent(
-                    source="environment",
-                    code=type(exc).__name__,
-                    detail=str(exc),
-                )
-            )
-
         return generate_conversation_title(
             events=self._state.active_branch(),
             llm=effective_llm,
             max_length=max_length,
-            on_error=_on_title_error,
         )
 
     def condense(self) -> None:

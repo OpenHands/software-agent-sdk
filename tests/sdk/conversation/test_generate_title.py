@@ -10,7 +10,7 @@ from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
-from openhands.sdk.event.conversation_error import ConversationErrorEvent
+from openhands.sdk.conversation.title_utils import generate_title_with_llm
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm import LLM, LLMResponse, Message, MetricsSnapshot, TextContent
 
@@ -126,30 +126,19 @@ def test_generate_title_llm_error_fallback(mock_completion):
 
 
 @patch("openhands.sdk.llm.llm.LLM.completion")
-def test_generate_title_llm_error_emits_conversation_error_event(mock_completion):
-    """A title-generation LLM failure is surfaced as a ConversationErrorEvent
-    (issue #16686) while the title still falls back to truncation."""
-    agent = create_test_agent()
-    conv = Conversation(agent=agent, visualizer=None)
-
-    user_message = create_user_message_event("Fix the bug in my application")
-    conv.state.events.append(user_message)
-
+def test_generate_title_with_llm_invokes_on_error(mock_completion):
+    """generate_title_with_llm reports the swallowed LLM error via on_error
+    (the opt-in seam used to surface it to clients — issue #16686) while still
+    returning None so callers fall back to truncation."""
     custom_llm = LLM(model="gpt-4o-mini", api_key=SecretStr("key"), usage_id="err")
     mock_completion.side_effect = Exception("model does not exist")
 
-    title = conv.generate_title(llm=custom_llm)
+    seen: list[Exception] = []
+    result = generate_title_with_llm("Fix the bug", custom_llm, on_error=seen.append)
 
-    # Non-fatal: still falls back to truncation.
-    assert title == "Fix the bug in my application"
-
-    # ...and the LLM error detail is now on the event stream for the UI.
-    error_events = [
-        e for e in conv.state.events if isinstance(e, ConversationErrorEvent)
-    ]
-    assert len(error_events) == 1
-    assert error_events[0].detail == "model does not exist"
-    assert error_events[0].source == "environment"
+    assert result is None
+    assert len(seen) == 1
+    assert str(seen[0]) == "model does not exist"
 
 
 @patch("openhands.sdk.llm.llm.LLM.completion")

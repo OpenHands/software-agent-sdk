@@ -658,11 +658,12 @@ class EventService:
             if state.execution_status != ConversationExecutionStatus.ERROR:
                 state.execution_status = ConversationExecutionStatus.ERROR
 
-    def _publish_backstop_error_event_sync(self, exc: BaseException) -> None:
+    def _publish_error_event_sync(self, exc: BaseException) -> None:
         """Emit a ConversationErrorEvent so the UI sees the failure detail.
 
-        For failures that escape run()/arun()'s own emission (issue #16686).
-        Best-effort: never raises (the caller is an error handler).
+        For LLM/runtime failures that would otherwise only reach the logs — the
+        run-loop backstop and auto-title generation (issue #16686). Best-effort:
+        never raises (the caller is an error handler).
         """
         if not self._conversation:
             return
@@ -1261,7 +1262,7 @@ class EventService:
                     # own event, so skip it there to avoid duplicating the error.
                     if not isinstance(exc, ConversationRunError):
                         await loop.run_in_executor(
-                            None, self._publish_backstop_error_event_sync, exc
+                            None, self._publish_error_event_sync, exc
                         )
                     await loop.run_in_executor(None, self._mark_error_status_sync)
                 finally:

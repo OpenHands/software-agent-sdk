@@ -2379,7 +2379,7 @@ class _EventSubscriber(Subscriber):
 
 @observe(
     name="conversation.generate_title",
-    ignore_inputs=["conversation", "llm"],
+    ignore_inputs=["conversation", "llm", "on_error"],
     metadata={OPERATION_METADATA_KEY: "title_generation"},
 )
 def _generate_title_traced(
@@ -2389,8 +2389,9 @@ def _generate_title_traced(
     message: str,
     llm: LLM | None,
     max_length: int,
+    on_error: Callable[[Exception], None] | None = None,
 ) -> str:
-    return generate_title_from_message(message, llm, max_length)
+    return generate_title_from_message(message, llm, max_length, on_error=on_error)
 
 
 @dataclass
@@ -2420,6 +2421,11 @@ class AutoTitleSubscriber(Subscriber):
         if title_llm is None:
             title_llm = conversation.agent.llm if conversation else None
 
+        # Surface an LLM failure during auto-titling to the UI (issue #16686);
+        # generation itself stays non-fatal and falls back to truncation.
+        def _on_title_error(exc: Exception) -> None:
+            self.service._publish_error_event_sync(exc)
+
         async def _generate_and_save() -> None:
             try:
                 loop = asyncio.get_running_loop()
@@ -2430,6 +2436,7 @@ class AutoTitleSubscriber(Subscriber):
                     message_text,
                     title_llm,
                     50,
+                    _on_title_error,
                 )
                 if title and self.service.stored.title is None:
                     self.service.stored.title = title
