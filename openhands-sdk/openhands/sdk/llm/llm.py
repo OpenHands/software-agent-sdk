@@ -9,7 +9,6 @@ import threading
 import warnings
 from collections.abc import AsyncIterable, Callable, Iterable, Mapping, Sequence
 from contextvars import ContextVar
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, get_args, get_origin
 
 from pydantic import (
@@ -44,6 +43,7 @@ from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secr
 if TYPE_CHECKING:  # type hints only, avoid runtime import cycle
     from openhands.sdk.llm.auth import SupportedVendor
     from openhands.sdk.llm.auth.openai import OpenAIAuthMethod
+    from openhands.sdk.llm.call_context import LLMCallContext
     from openhands.sdk.tool.tool import ToolDefinition
 
 from openhands.sdk.llm.auth.openai import transform_for_subscription
@@ -196,25 +196,20 @@ LLM_SECRET_FIELDS: Final[tuple[str, ...]] = (
 LLM_PROFILE_SCHEMA_VERSION: Final[int] = 1
 
 
-@dataclass(frozen=True)
-class LLMCallContext:
-    """Per-conversation state threaded through the completion call chain.
+def __getattr__(name: str) -> Any:
+    """Provide the deprecated pre-refactor import path for call context."""
+    if name == "LLMCallContext":
+        warn_deprecated(
+            "openhands.sdk.llm.llm.LLMCallContext",
+            deprecated_in="1.42.1",
+            removed_in="2.0.0",
+            details="Import LLMCallContext from openhands.sdk.llm instead.",
+            stacklevel=2,
+        )
+        from openhands.sdk.llm.call_context import LLMCallContext
 
-    The primary path threads this explicitly:
-    ``Agent.step()`` → ``make_llm_completion()`` → ``llm.completion(call_context=...)``
-    → ``select_chat_options(call_context=...)``.
-
-    A fallback copy is also stored as a ``PrivateAttr`` on :class:`LLM`
-    (via ``_bind_conversation_context``) for callers that don't thread
-    context explicitly (e.g. the condenser's dedicated LLM).  The
-    PrivateAttr is:
-    * dropped on ``model_dump()`` / ``model_validate()`` round-trips,
-    * shallow-copied by ``model_copy()`` (sub-agent),
-    * never serialised into user-visible config.
-    """
-
-    prompt_cache_key: str | None = None
-    session_id: str | None = None
+        return LLMCallContext
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
@@ -640,7 +635,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _subscription_credential_store: Any = PrivateAttr(default=None)
     _subscription_credentials: Any = PrivateAttr(default=None)
     _provider_info: LLMProvider | None = PrivateAttr(default=None)
-    _call_context: LLMCallContext = PrivateAttr(default_factory=LLMCallContext)
     _effective_max_input_tokens: int | None = PrivateAttr(default=None)
     _effective_max_output_tokens: int | None = PrivateAttr(default=None)
     # Provider-aware runtime metadata resolved lazily (see

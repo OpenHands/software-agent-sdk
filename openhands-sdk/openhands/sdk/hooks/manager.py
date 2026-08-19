@@ -13,6 +13,7 @@ from openhands.sdk.hooks.types import HookEvent, HookEventType
 if TYPE_CHECKING:
     from openhands.sdk.conversation.conversation_stats import ConversationStats
     from openhands.sdk.llm import LLM
+    from openhands.sdk.llm.call_context import LLMCallContext
 
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,7 @@ class HookManager:
         session_id: str | None = None,
         llm: "LLM | None" = None,
         llm_getter: "Callable[[], LLM | None] | None" = None,
+        llm_call_context: "LLMCallContext | None" = None,
         persistence_dir: str | None = None,
         visualizer: type[ConversationVisualizerBase]
         | ConversationVisualizerBase
@@ -39,6 +41,7 @@ class HookManager:
             working_dir=working_dir,
             llm=llm,
             llm_getter=llm_getter,
+            llm_call_context=llm_call_context,
             persistence_dir=persistence_dir,
             visualizer=visualizer,
             conversation_stats=conversation_stats,
