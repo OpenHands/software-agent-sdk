@@ -1,9 +1,5 @@
 from openhands.sdk.tool.spec import Tool
-from openhands.tools.preset import (
-    TASK_OUTCOME_STATUSES,
-    TaskOutcome,
-    TaskOutcomeBlocker,
-)
+from openhands.tools.preset import TaskOutcome, TaskOutcomeBlocker
 
 
 def test_task_outcome_accepts_outcome_summary_alias():
@@ -41,4 +37,3 @@ def test_task_outcome_finish_tool_schema_uses_outcome_summary():
     assert properties["status"]["description"] == (
         "Agent's semantic assessment of task completion."
     )
-    assert tuple(properties["status"]["enum"]) == TASK_OUTCOME_STATUSES

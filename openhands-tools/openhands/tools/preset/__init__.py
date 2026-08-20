@@ -27,7 +27,6 @@ from .gemini import get_gemini_agent, get_gemini_tools
 from .gpt5 import get_gpt5_agent
 from .planning import get_planning_agent
 from .task_outcome import (
-    TASK_OUTCOME_STATUSES,
     TaskOutcome,
     TaskOutcomeBlocker,
     TaskOutcomeStatus,
@@ -42,7 +41,6 @@ __all__ = [
     "get_gpt5_agent",
     "get_planning_agent",
     "register_builtins_agents",
-    "TASK_OUTCOME_STATUSES",
     "TaskOutcome",
     "TaskOutcomeBlocker",
     "TaskOutcomeStatus",

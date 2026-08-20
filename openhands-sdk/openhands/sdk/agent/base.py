@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -81,6 +82,70 @@ _PRESET_BY_FILENAME: dict[str, PromptPreset] = {
     "system_prompt.j2": PromptPreset.DEFAULT,
     "system_prompt_planning.j2": PromptPreset.PLANNING,
 }
+
+
+def _normalize_tool_param(value: Any) -> Any:
+    if isinstance(value, type) and issubclass(value, BaseModel):
+        return value.model_json_schema()
+    if isinstance(value, dict):
+        return {key: _normalize_tool_param(val) for key, val in value.items()}
+    if isinstance(value, list):
+        return [_normalize_tool_param(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_normalize_tool_param(item) for item in value)
+    return value
+
+
+def _stable_tool_contract(value: Any) -> str:
+    return json.dumps(
+        _normalize_tool_param(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+
+
+def _tool_definition_contract(tool: ToolDefinition) -> str:
+    return _stable_tool_contract(
+        {
+            "description": tool.description,
+            "schema": tool._get_tool_schema(),
+        }
+    )
+
+
+def _tool_spec_contracts(tool_spec: Tool) -> dict[str, str]:
+    conv_state: Any = None
+    try:
+        tool_definitions = resolve_tool(tool_spec, conv_state)
+    except Exception:
+        return {
+            tool_spec.name: _stable_tool_contract(
+                {"spec_name": tool_spec.name, "params": tool_spec.params}
+            )
+        }
+    return {tool.name: _tool_definition_contract(tool) for tool in tool_definitions}
+
+
+def _default_tool_contracts(tool_class_name: str) -> dict[str, str]:
+    tool_class = BUILT_IN_TOOL_CLASSES.get(tool_class_name)
+    if tool_class is None:
+        return {}
+    return {
+        tool.name: _tool_definition_contract(tool)
+        for tool in tool_class.create(conv_state=None)
+    }
+
+
+def _effective_tool_contracts(agent: AgentBase) -> dict[str, str]:
+    contracts: dict[str, str] = {}
+    for tool_spec in agent.tools:
+        contracts.update(_tool_spec_contracts(tool_spec))
+
+    for tool_class_name in agent.include_default_tools:
+        for name, contract in _default_tool_contracts(tool_class_name).items():
+            contracts.setdefault(name, contract)
+    return contracts
 
 
 def _load_soul_md() -> str:
@@ -694,11 +759,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         Compatibility requirements:
         - Agent class/type must match.
-        - Tools may only be added, never removed.
+        - Tools may only be added, never removed or changed.
 
-        Removing tools breaks backward compatibility because the LLM may have
-        already been told about them.  Adding new tools is safe — the LLM
-        simply gains new capabilities on the next turn.
+        Removing or changing tools breaks backward compatibility because the LLM
+        may have already been told about their schemas. Adding new tools is safe —
+        the LLM simply gains new capabilities on the next turn.
 
         All other configuration (LLM, agent_context, condenser, etc.) can be
         freely changed between sessions.
@@ -720,21 +785,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 f"{self.__class__.__name__}."
             )
 
-        # Collect explicit tool names
-        runtime_names = {tool.name for tool in self.tools}
-        persisted_names = {tool.name for tool in persisted.tools}
-
-        # Add builtin tool names from include_default_tools
-        # These are runtime names like 'finish', 'think'
-        for tool_class_name in self.include_default_tools:
-            tool_class = BUILT_IN_TOOL_CLASSES.get(tool_class_name)
-            if tool_class is not None:
-                runtime_names.add(tool_class.name)
-
-        for tool_class_name in persisted.include_default_tools:
-            tool_class = BUILT_IN_TOOL_CLASSES.get(tool_class_name)
-            if tool_class is not None:
-                persisted_names.add(tool_class.name)
+        runtime_tools = _effective_tool_contracts(self)
+        persisted_tools = _effective_tool_contracts(persisted)
+        runtime_names = set(runtime_tools)
+        persisted_names = set(persisted_tools)
 
         # Removing tools breaks backward compatibility because the LLM may
         # have already been told about them.  Adding new tools is safe — the
@@ -744,6 +798,18 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             raise ValueError(
                 f"Cannot resume conversation: tools were removed mid-conversation "
                 f"(removed: {sorted(missing_in_runtime)}). "
+                f"To use different tools, start a new conversation."
+            )
+
+        changed_tools = sorted(
+            name
+            for name in persisted_names & runtime_names
+            if persisted_tools[name] != runtime_tools[name]
+        )
+        if changed_tools:
+            raise ValueError(
+                f"Cannot resume conversation: tool definitions changed "
+                f"mid-conversation (changed: {changed_tools}). "
                 f"To use different tools, start a new conversation."
             )
 

@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 
 import pytest
-from pydantic import SecretStr, ValidationError
+from pydantic import BaseModel, SecretStr, ValidationError
 
 from openhands.sdk import Agent, Conversation
 from openhands.sdk.agent.base import AgentBase
@@ -25,6 +25,10 @@ from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_registry import RegistryEvent
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
 from openhands.sdk.workspace import LocalWorkspace
+
+
+class _FinishResultForVerifyTest(BaseModel):
+    outcome_summary: str
 
 
 class _DifferentAgentForVerifyTest(AgentBase):
@@ -1335,6 +1339,68 @@ def test_agent_verify_fails_when_builtin_tool_removed():
     # Should fail because ThinkTool was removed
     with pytest.raises(ValueError, match="tools were removed mid-conversation"):
         runtime_agent.verify(persisted_agent)
+
+
+def test_agent_verify_rejects_structured_finish_override_of_persisted_default():
+    """Resume fails if the effective finish tool schema changes."""
+    from openhands.sdk.tool import Tool
+
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
+    persisted_agent_obj = Agent(
+        llm=llm,
+        tools=[],
+        include_default_tools=["FinishTool"],
+    )
+
+    serialized = persisted_agent_obj.model_dump_json()
+    persisted_agent = AgentBase.model_validate_json(serialized)
+
+    runtime_agent = Agent(
+        llm=llm,
+        tools=[
+            Tool(
+                name="FinishTool",
+                params={"response_schema": _FinishResultForVerifyTest},
+            )
+        ],
+        include_default_tools=["FinishTool"],
+    )
+
+    with pytest.raises(ValueError, match="tool definitions changed mid-conversation"):
+        runtime_agent.verify(persisted_agent)
+
+
+def test_agent_verify_allows_same_structured_finish_after_persistence():
+    """A class response_schema and its persisted JSON schema compare equally."""
+    from openhands.sdk.tool import Tool
+
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
+    persisted_agent_obj = Agent(
+        llm=llm,
+        tools=[
+            Tool(
+                name="FinishTool",
+                params={"response_schema": _FinishResultForVerifyTest},
+            )
+        ],
+        include_default_tools=["FinishTool"],
+    )
+
+    serialized = persisted_agent_obj.model_dump_json()
+    persisted_agent = AgentBase.model_validate_json(serialized)
+
+    runtime_agent = Agent(
+        llm=llm,
+        tools=[
+            Tool(
+                name="FinishTool",
+                params={"response_schema": _FinishResultForVerifyTest},
+            )
+        ],
+        include_default_tools=["FinishTool"],
+    )
+
+    assert runtime_agent.verify(persisted_agent) is runtime_agent
 
 
 def test_v1_11_5_cli_default_conversation_resumes_when_runtime_adds_delegate(
