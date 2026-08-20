@@ -4,10 +4,11 @@ Runs an OpenHands agent inside an agent-sandbox pod, driven by a local Ollama mo
 and has it create a file with a bash command.
 
 Two things make this work reliably with a small local model:
-  * a model that emits *structured* tool calls -- qwen2.5:7b and llama3.1:8b do;
-    qwen2.5-coder and the :3b variants return tool calls as plain text (unusable);
-  * a minimal, terminal-only agent -- the default multi-tool agent overwhelms models
-    at this size (they plan/think/finish without executing).
+  * a model that emits structured tool calls. qwen2.5:7b and llama3.1:8b do;
+    qwen2.5-coder and the :3b variants return tool calls as plain text, which the
+    agent cannot act on;
+  * a minimal, terminal-only agent. The default multi-tool agent overwhelms models
+    at this size, and they plan, think and finish without ever executing.
 
 Prerequisites (see TESTING.md): a cluster with the agent-sandbox controller and a
 warm pool, an Ollama endpoint the *sandbox pod* can reach (in-cluster Service, or any

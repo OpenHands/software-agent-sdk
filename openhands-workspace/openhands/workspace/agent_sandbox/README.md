@@ -9,8 +9,8 @@ pause/resume (via the Sandbox `operatingMode`) and, with a persistent volume,
 workspace state that survives a suspend. gVisor / Kata isolation is available by
 setting a `runtimeClass` on the `SandboxTemplate`.
 
-It is a drop-in `RemoteWorkspace`, so it works anywhere a `DockerWorkspace` does —
-from a laptop kind / minikube cluster to a cloud cluster such as GKE.
+It is a drop-in `RemoteWorkspace`, so it works anywhere a `DockerWorkspace` does,
+from a laptop kind or minikube cluster to a cloud cluster such as GKE.
 
 ## Install
 
@@ -52,11 +52,11 @@ with AgentSandboxWorkspace(warmpool="openhands-pool", namespace="default") as wo
 
 ### Connection modes
 
-* `connection="port_forward"` (default) — spawns `kubectl port-forward` to the pod.
-  Works from a laptop against local kind / minikube or any cluster your kubeconfig
-  can reach. `host_port` auto-selects a free local port.
-* `connection="direct"` — you provide `host` (a `sandbox-router` / Gateway URL, or
-  the in-cluster DNS name when OpenHands itself runs in the cluster); no
+* `connection="port_forward"` (default) spawns `kubectl port-forward` to the pod.
+  This works from a laptop against local kind or minikube, and against any cluster
+  your kubeconfig can reach. `host_port` picks a free local port for you.
+* `connection="direct"` means you supply `host` yourself: a `sandbox-router` or
+  Gateway URL, or the in-cluster DNS name when OpenHands runs in the cluster. No
   port-forward is started.
 
 ### Testing
@@ -75,10 +75,11 @@ workspace.resume()   # operatingMode -> Running; reconnects to the agent server
 
 Most knobs belong in Kubernetes, not on the Python constructor:
 
-- **CPU / memory / image / runtimeClass / security context** → `SandboxTemplate.spec.podTemplate`.
-- **Pre-warming / pool size** → `SandboxWarmPool.spec.replicas`.
-- **Network egress allow-listing** → the template's `NetworkPolicy`.
-- **Persistent volumes** → the template's `volumeClaimTemplates`.
+- CPU, memory, image, `runtimeClass` and the security context belong in
+  `SandboxTemplate.spec.podTemplate`.
+- Pre-warming and pool size belong in `SandboxWarmPool.spec.replicas`.
+- Network egress allow-listing belongs in the template's `NetworkPolicy`.
+- Persistent volumes belong in the template's `volumeClaimTemplates`.
 
 Python-side knobs: `warmpool` (required), `namespace`, `server_port`, `connection`,
 `host_port`, `kube_context`, `sandbox_ready_timeout`, `health_check_timeout`,

@@ -1,14 +1,14 @@
 # Testing `AgentSandboxWorkspace`
 
-Three tiers, from no-cluster to a full agent run — all runnable locally with no API
-key. The steps are cluster-agnostic: they work on kind, minikube, or any cluster your
-`kubectl` can reach.
+Three tiers, from no cluster at all to a full agent run. Every one of them runs
+locally without an API key. The steps are cluster-agnostic, so they work on kind,
+minikube, or any cluster your `kubectl` can reach.
 
-1. **Unit tests** — no cluster.
-2. **Keyless workspace smoke test** — a real cluster, no LLM. Proves the integration
-   (claim, exec, pause/resume, persistence) on its own.
-3. **Full agent e2e** — a real cluster + a local Ollama model (no key), or a hosted
-   LLM key.
+1. **Unit tests**, which need no cluster.
+2. **Keyless workspace smoke test**, which needs a real cluster but no LLM. It
+   proves the integration on its own: claim, exec, pause/resume and persistence.
+3. **Full agent e2e**, which needs a real cluster plus either a local Ollama model
+   (no key) or a hosted LLM key.
 
 ## Prerequisites
 
@@ -61,8 +61,9 @@ kind load docker-image ghcr.io/openhands/agent-server:1.42.1-python --name <clus
 
 ## 3. Keyless workspace smoke test (no LLM)
 
-This validates the whole integration without an LLM and works against the **secure
-default template** — it never leaves the pod, so no network-policy change is needed.
+This validates the whole integration without an LLM, and it works against the
+**secure default template** because nothing ever leaves the pod, so no network
+policy change is needed.
 
 ```bash
 python testing/smoke_test.py
@@ -78,7 +79,7 @@ An OpenHands agent runs *inside* the sandbox pod and calls the LLM from there, s
 **sandbox pod must be able to reach the LLM**:
 
 - **Hosted LLM (public API):** the secure default template already allows public
-  egress — nothing to change.
+  egress, so there is nothing to change.
 - **Local / in-cluster LLM:** the default template's `NetworkPolicy` blocks private
   ranges (cluster and host IPs). For a test, relax it:
 
@@ -92,11 +93,11 @@ An OpenHands agent runs *inside* the sandbox pod and calls the LLM from there, s
 
   `Unmanaged` drops the policy entirely, which is fine for a throwaway test cluster
   but not for real use. For anything beyond a local test, keep the policy **Managed**
-  and allow only what the agent needs — see the commented `networkPolicy` block in
+  and allow only what the agent needs. See the commented `networkPolicy` block in
   [`deploy/sandboxtemplate.yaml`](deploy/sandboxtemplate.yaml) for a copy-pasteable
   scoped-egress rule (DNS + your LLM endpoint).
 
-### 4a. No key — local Ollama
+### 4a. No key, using local Ollama
 
 Deploy the in-cluster Ollama and pull a tool-capable model:
 
@@ -128,10 +129,10 @@ python testing/agent_ollama_example.py
 ```
 
 Notes baked into the example:
-- `reasoning_effort="none"` — qwen2.5 has no "thinking" mode (otherwise the request
-  is rejected with `does not support thinking`).
-- A **minimal terminal-only agent** — the default multi-tool agent overwhelms models
-  this size; they plan/think/finish without executing.
+- `reasoning_effort="none"`, because qwen2.5 has no "thinking" mode and the request
+  is otherwise rejected with `does not support thinking`.
+- A **minimal terminal-only agent**, because the default multi-tool agent overwhelms
+  models this size: they plan, think and finish without ever executing.
 - Small models on CPU are slow (up to minutes per turn); the example sets a generous
   timeout.
 

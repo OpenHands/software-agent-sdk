@@ -3,7 +3,7 @@
 End-to-end walkthrough for
 [`17_convo_with_agent_sandbox_server.py`](../17_convo_with_agent_sandbox_server.py)
 using [kind](https://kind.sigs.k8s.io/). The same steps work on minikube or a cloud
-cluster (GKE, etc.) — only the cluster-creation step differs.
+cluster such as GKE. Only the cluster-creation step differs.
 
 ## 1. Create a cluster
 

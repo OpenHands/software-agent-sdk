@@ -8,12 +8,13 @@ hosted-runtime backends pay per conversation.
 
 Compared with the other remote backends this one adds:
 
-* **Warm pools** — ``SandboxWarmPool`` hands out an already-running pod on claim.
-* **Native pause/resume** — ``pause()`` / ``resume()`` flip the Sandbox
-  ``spec.operatingMode`` between ``Suspended`` and ``Running``; with a persistent
+* **Warm pools**: ``SandboxWarmPool`` hands out an already-running pod on claim.
+* **Native pause/resume**: ``pause()`` and ``resume()`` flip the Sandbox
+  ``spec.operatingMode`` between ``Suspended`` and ``Running``. With a persistent
   volume the workspace state survives the suspend.
-* **Strong isolation** — the pod can run under gVisor / Kata via a ``runtimeClass``
-  set on the ``SandboxTemplate`` (an infrastructure choice, not a Python knob).
+* **Strong isolation**: the pod can run under gVisor or Kata via a ``runtimeClass``
+  set on the ``SandboxTemplate``, which is an infrastructure choice rather than a
+  Python one.
 
 Requires the optional dependency::
 
@@ -51,12 +52,12 @@ class AgentSandboxWorkspace(RemoteWorkspace):
 
     Two connection modes are supported:
 
-    * ``port_forward`` (default) — spawns ``kubectl port-forward`` to the pod, so
-      it works from a laptop against a local kind / minikube cluster or any cluster
-      your kubeconfig can reach.
-    * ``direct`` — you provide ``host`` (e.g. a ``sandbox-router`` / Gateway URL, or
-      the in-cluster DNS name when OpenHands itself runs in the cluster) and no
-      port-forward is started.
+    * ``port_forward`` (default) spawns ``kubectl port-forward`` to the pod, so it
+      works from a laptop against a local kind or minikube cluster, and against any
+      cluster your kubeconfig can reach.
+    * ``direct`` means you supply ``host`` yourself, such as a ``sandbox-router`` or
+      Gateway URL, or the in-cluster DNS name when OpenHands runs in the cluster.
+      No port-forward is started.
 
     Example:
         with AgentSandboxWorkspace(warmpool="openhands-pool") as workspace:
@@ -185,8 +186,8 @@ class AgentSandboxWorkspace(RemoteWorkspace):
 
         # Everything past this point must clean up the claim on failure: the
         # constructor raising means the caller never gets an object to close, so
-        # the claim (and its pod) would leak until GC -- or forever, since
-        # shutdown_after_seconds is None by default.
+        # the claim and its pod would leak until GC, or forever when
+        # shutdown_after_seconds is left at its default of None.
         try:
             # 2) Establish the connection to the agent server and wait for health.
             if self.connection == "port_forward":
