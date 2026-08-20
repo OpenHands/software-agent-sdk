@@ -83,39 +83,6 @@ _PRESET_BY_FILENAME: dict[str, PromptPreset] = {
 }
 
 
-ToolSchema = dict[str, Any] | None
-
-
-def _tool_spec_schemas(tool_spec: Tool) -> dict[str, ToolSchema]:
-    conv_state: Any = None
-    try:
-        tool_definitions = resolve_tool(tool_spec, conv_state=conv_state)
-    except Exception:
-        return {tool_spec.name: None}
-    return {tool.name: tool._get_tool_schema() for tool in tool_definitions}
-
-
-def _default_tool_schemas(tool_class_name: str) -> dict[str, ToolSchema]:
-    tool_class = BUILT_IN_TOOL_CLASSES.get(tool_class_name)
-    if tool_class is None:
-        return {}
-    return {
-        tool.name: tool._get_tool_schema()
-        for tool in tool_class.create(conv_state=None)
-    }
-
-
-def _effective_tool_schemas(agent: AgentBase) -> dict[str, ToolSchema]:
-    schemas: dict[str, ToolSchema] = {}
-    for tool_spec in agent.tools:
-        schemas.update(_tool_spec_schemas(tool_spec))
-
-    for tool_class_name in agent.include_default_tools:
-        for name, schema in _default_tool_schemas(tool_class_name).items():
-            schemas.setdefault(name, schema)
-    return schemas
-
-
 def _load_soul_md() -> str:
     """Load ``~/.openhands/SOUL.md``, falling back to the built-in default."""
     try:
@@ -728,11 +695,12 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         Compatibility requirements:
         - Agent class/type must match.
         - Tools may only be added, never removed.
-        - Existing tool schemas must not change.
+        - A persisted default built-in tool cannot be replaced with a parameterized
+          explicit built-in mid-conversation.
 
-        Removing tools or changing their schemas breaks backward compatibility
-        because the LLM may have already been told about them. Adding new tools is
-        safe — the LLM simply gains new capabilities on the next turn.
+        Removing tools breaks backward compatibility because the LLM may have
+        already been told about them. Adding new tools is safe — the LLM simply
+        gains new capabilities on the next turn.
 
         All other configuration (LLM, agent_context, condenser, etc.) can be
         freely changed between sessions.
@@ -754,10 +722,21 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 f"{self.__class__.__name__}."
             )
 
-        runtime_tools = _effective_tool_schemas(self)
-        persisted_tools = _effective_tool_schemas(persisted)
-        runtime_names = set(runtime_tools)
-        persisted_names = set(persisted_tools)
+        # Collect explicit tool names.
+        runtime_names = {tool.name for tool in self.tools}
+        persisted_names = {tool.name for tool in persisted.tools}
+
+        # Add builtin tool names from include_default_tools. These are runtime
+        # names like 'finish' and 'think'.
+        for tool_class_name in self.include_default_tools:
+            tool_class = BUILT_IN_TOOL_CLASSES.get(tool_class_name)
+            if tool_class is not None:
+                runtime_names.add(tool_class.name)
+
+        for tool_class_name in persisted.include_default_tools:
+            tool_class = BUILT_IN_TOOL_CLASSES.get(tool_class_name)
+            if tool_class is not None:
+                persisted_names.add(tool_class.name)
 
         # Removing tools breaks backward compatibility because the LLM may
         # have already been told about them.  Adding new tools is safe — the
@@ -770,18 +749,25 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 f"To use different tools, start a new conversation."
             )
 
-        changed_schemas = sorted(
-            name
-            for name in persisted_names & runtime_names
-            if persisted_tools[name] is not None
-            and runtime_tools[name] is not None
-            and persisted_tools[name] != runtime_tools[name]
+        persisted_default_runtime_names = {
+            BUILT_IN_TOOL_CLASSES[name].name
+            for name in persisted.include_default_tools
+            if name in BUILT_IN_TOOL_CLASSES
+        }
+        runtime_explicit_builtin_overrides = {
+            BUILT_IN_TOOL_CLASSES[spec.name].name
+            for spec in self.tools
+            if spec.name in BUILT_IN_TOOL_CLASSES and spec.params
+        }
+        changed_default_overrides = (
+            persisted_default_runtime_names & runtime_explicit_builtin_overrides
         )
-        if changed_schemas:
+        if changed_default_overrides:
             raise ValueError(
-                f"Cannot resume conversation: tool schemas changed "
-                f"mid-conversation (changed: {changed_schemas}). "
-                f"To use different tools, start a new conversation."
+                "Cannot resume conversation: default built-in tools were replaced "
+                "with parameterized explicit built-ins mid-conversation "
+                f"(changed: {sorted(changed_default_overrides)}). "
+                "To use different tools, start a new conversation."
             )
 
         return self

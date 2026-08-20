@@ -1366,23 +1366,18 @@ def test_agent_verify_rejects_structured_finish_override_of_persisted_default():
         include_default_tools=["FinishTool"],
     )
 
-    with pytest.raises(ValueError, match="tool schemas changed mid-conversation"):
+    with pytest.raises(ValueError, match="parameterized explicit built-ins"):
         runtime_agent.verify(persisted_agent)
 
 
-def test_agent_verify_allows_same_structured_finish_after_persistence():
-    """A class response_schema and its persisted JSON schema compare equally."""
+def test_agent_verify_allows_unparameterized_explicit_builtin_after_persisted_default():
+    """Name-only built-in overrides keep the previous resume compatibility scope."""
     from openhands.sdk.tool import Tool
 
     llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
     persisted_agent_obj = Agent(
         llm=llm,
-        tools=[
-            Tool(
-                name="FinishTool",
-                params={"response_schema": _FinishResultForVerifyTest},
-            )
-        ],
+        tools=[],
         include_default_tools=["FinishTool"],
     )
 
@@ -1391,12 +1386,7 @@ def test_agent_verify_allows_same_structured_finish_after_persistence():
 
     runtime_agent = Agent(
         llm=llm,
-        tools=[
-            Tool(
-                name="FinishTool",
-                params={"response_schema": _FinishResultForVerifyTest},
-            )
-        ],
+        tools=[Tool(name="FinishTool")],
         include_default_tools=["FinishTool"],
     )
 
