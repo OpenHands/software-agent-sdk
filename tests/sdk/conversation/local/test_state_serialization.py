@@ -1366,7 +1366,7 @@ def test_agent_verify_rejects_structured_finish_override_of_persisted_default():
         include_default_tools=["FinishTool"],
     )
 
-    with pytest.raises(ValueError, match="tool definitions changed mid-conversation"):
+    with pytest.raises(ValueError, match="tool schemas changed mid-conversation"):
         runtime_agent.verify(persisted_agent)
 
 
