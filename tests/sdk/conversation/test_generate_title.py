@@ -67,6 +67,13 @@ def create_mock_llm_response(content: str) -> LLMResponse:
     )
 
 
+def get_completion_user_prompt(mock_completion: MagicMock) -> str:
+    messages = mock_completion.call_args.args[0]
+    content = messages[1].content[0]
+    assert isinstance(content, TextContent)
+    return content.text
+
+
 @patch("openhands.sdk.llm.llm.LLM.completion")
 def test_generate_title_without_llm_uses_agent_llm(mock_completion):
     """Without an explicit LLM, generate_title falls back to the agent's LLM.
@@ -139,6 +146,58 @@ def test_generate_title_with_llm_invokes_on_error(mock_completion):
     assert result is None
     assert len(seen) == 1
     assert str(seen[0]) == "model does not exist"
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_generate_title_with_llm_renders_custom_prompt_placeholders(mock_completion):
+    custom_llm = LLM(model="gpt-4o-mini", api_key=SecretStr("key"), usage_id="test")
+    mock_completion.return_value = create_mock_llm_response("Fix Login")
+
+    result = generate_title_with_llm(
+        "Fix the login bug",
+        custom_llm,
+        max_length=32,
+        title_generation_prompt=(
+            "Return a title under {max_length} characters for: {conversation_content}"
+        ),
+    )
+
+    assert result == "Fix Login"
+    assert get_completion_user_prompt(mock_completion) == (
+        "Return a title under 32 characters for: Fix the login bug"
+    )
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_generate_title_with_llm_appends_content_to_custom_prompt(mock_completion):
+    custom_llm = LLM(model="gpt-4o-mini", api_key=SecretStr("key"), usage_id="test")
+    mock_completion.return_value = create_mock_llm_response("Fix Login")
+
+    generate_title_with_llm(
+        "Fix the login bug",
+        custom_llm,
+        title_generation_prompt="Use sentence case without an emoji.",
+    )
+
+    assert get_completion_user_prompt(mock_completion) == (
+        "Use sentence case without an emoji.\n\n"
+        "Conversation content:\nFix the login bug"
+    )
+
+
+@pytest.mark.parametrize("prompt", [None, "", "   "])
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_generate_title_with_llm_uses_default_for_blank_prompt(mock_completion, prompt):
+    custom_llm = LLM(model="gpt-4o-mini", api_key=SecretStr("key"), usage_id="test")
+    mock_completion.return_value = create_mock_llm_response("🐛 Fix Login")
+
+    generate_title_with_llm(
+        "Fix the login bug", custom_llm, title_generation_prompt=prompt
+    )
+
+    user_prompt = get_completion_user_prompt(mock_completion)
+    assert user_prompt.startswith("Generate a title (maximum 50 characters)")
+    assert "🐛 bugfix: Bug fixes" in user_prompt
 
 
 @patch("openhands.sdk.llm.llm.LLM.completion")

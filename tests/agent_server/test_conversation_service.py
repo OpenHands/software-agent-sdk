@@ -3004,6 +3004,7 @@ class TestAutoTitle:
         self,
         title: str | None = None,
         title_llm_profile: str | None = None,
+        title_generation_prompt: str | None = None,
         llm_model: str = "gpt-4o",
         llm_usage_id: str = "test-llm",
     ) -> AsyncMock:
@@ -3016,6 +3017,7 @@ class TestAutoTitle:
             metrics=None,
             title=title,
             title_llm_profile=title_llm_profile,
+            title_generation_prompt=title_generation_prompt,
         )
         service = AsyncMock(spec=EventService)
         service.stored = stored
@@ -3062,6 +3064,23 @@ class TestAutoTitle:
 
         assert service.stored.title == "✨ Generated Title"
         service.save_meta.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_autotitle_passes_custom_prompt_to_title_generation(self):
+        service = self._make_service(
+            title_generation_prompt="Use {conversation_content} as the title."
+        )
+
+        with patch(
+            self._GENERATE_TITLE_PATH, return_value="Fix the login bug"
+        ) as mock_generate_title:
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event())
+            await self._drain_title_task(lambda: service.stored.title is not None)
+
+        assert mock_generate_title.call_args.kwargs["title_generation_prompt"] == (
+            "Use {conversation_content} as the title."
+        )
 
     @pytest.mark.asyncio
     async def test_autotitle_skips_non_user_events(self):
