@@ -12,6 +12,7 @@ import os
 import tempfile
 
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, Tool
+from openhands.sdk.conversation.response_utils import get_agent_final_response
 from openhands.tools.preset import register_builtins_agents
 from openhands.tools.task import TaskToolSet
 
@@ -67,12 +68,4 @@ print(f"final status: {status}")
 cost = conv.conversation_stats.get_combined_metrics().accumulated_cost
 print(f"cost: ${cost:.4f}")
 
-final = ""
-for event in reversed(list(conv.state.events)):
-    if (
-        type(event).__name__ == "MessageEvent"
-        and getattr(event, "source", "") == "agent"
-    ):
-        final = str(event)[:400]
-        break
-print(f"last agent message: {final}")
+print(f"final agent response: {get_agent_final_response(conv.state.events)}")
