@@ -1,0 +1,30 @@
+                             │   258                                │           
+                             │                                      │           
+                             │ /home/glitchenstein/repos/software-a │           
+                             │ gent-sdk/openhands-tools/openhands/t │           
+                             │ ools/task/manager.py:359 in          │           
+                             │ _check_agent_enabled                 │           
+                             │                                      │           
+                             │   356 │   │   agent_context = self.p │           
+                             │   357 │   │   disabled = agent_conte │           
+                             │   358 │   │   if subagent_type in di │           
+                             │ ❱ 359 │   │   │   raise ValueError(  │           
+                             │   360 │   │   │   │   f"Sub-agent '{ │           
+                             │   361 │   │   │   │   f"(agent_conte │           
+                             │   362 │   │   │   )                  │           
+                             ╰──────────────────────────────────────╯           
+                             ValueError: Sub-agent 'code-explorer' is           
+                             disabled for this conversation                     
+                             (agent_context.disabled_agents). Choose            
+                             another sub-agent type.                            
+=== E2E RESULT ===
+task tool calls by subagent_type: ['code-explorer']
+refusals observed: 0
+final status: ConversationExecutionStatus.FINISHED
+cost: $0.0000
+last agent message: MessageEvent (agent)
+  assistant: I wasn't able to use the code-explorer subagent because it's disabled for this conversation. However, I can answer your question directly:
+
+**17 × 23 = 391**
+
+Note that the code-explorer subagent is designed for exploring and understanding codebases, so it's not typically used for arithmetic calculations like this. For mathematical questions, I can provide answers
