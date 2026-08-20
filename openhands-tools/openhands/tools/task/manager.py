@@ -48,6 +48,10 @@ logger = get_logger(__name__)
 _SUBAGENTS_DIR: Final[str] = "subagents"
 
 
+class DisabledAgentError(ValueError):
+    """A spawn refused by the parent conversation's disabled_agents deny-list."""
+
+
 class TaskStatus(StrEnum):
     """Represents the lifecycle states of a task."""
 
@@ -356,7 +360,7 @@ class TaskManager:
         agent_context = self.parent_conversation.agent.agent_context
         disabled = agent_context.disabled_agents if agent_context else []
         if subagent_type in disabled:
-            raise ValueError(
+            raise DisabledAgentError(
                 f"Sub-agent '{subagent_type}' is disabled for this conversation "
                 f"(agent_context.disabled_agents). Choose another sub-agent type."
             )
