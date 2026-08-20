@@ -5,13 +5,14 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
-TaskOutcomeStatus = Literal[
+TASK_OUTCOME_STATUSES = (
     "success",
     "partial_success",
     "blocked",
     "failed",
     "unknown",
-]
+)
+TaskOutcomeStatus = Literal[*TASK_OUTCOME_STATUSES]
 
 
 class TaskOutcomeBlocker(BaseModel):
