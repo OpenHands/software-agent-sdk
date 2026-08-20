@@ -52,7 +52,8 @@ for event in conv.state.events:
         st = getattr(event.action, "subagent_type", None)
         if st is not None:
             task_calls.append(st)
-    text = getattr(event, "text", "") or ""
+    observation = getattr(event, "observation", None)
+    text = getattr(observation, "text", "") or getattr(event, "text", "") or ""
     if "disabled for this conversation" in text:
         refusals.append(text.strip())
 
