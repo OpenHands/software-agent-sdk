@@ -287,3 +287,99 @@ def test_generate_title_disables_streaming_when_llm_streams(mock_transport):
     assert mock_transport.call_args.kwargs["enable_streaming"] is False
     assert mock_transport.call_args.kwargs["on_token"] is None
     assert streaming_llm.stream is True
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_generate_title_strips_leading_think_block(mock_completion):
+    """A leading 思考…思考 block in the LLM title response is peeled
+    before the title is returned. Reproduces the Qwen3-behind-Nebius
+    inline-reasoning leak reported in #4530.
+    """
+    agent = create_test_agent()
+    conv = Conversation(agent=agent, visualizer=None)
+
+    user_message = create_user_message_event("Help me create a Python script")
+    conv.state.events.append(user_message)
+
+    custom_llm = LLM(model="gpt-4o-mini", api_key=SecretStr("key"), usage_id="think")
+    mock_completion.return_value = create_mock_llm_response(
+        "思考reasoning…思考🐛 Fix the login bug"
+    )
+
+    title = conv.generate_title(llm=custom_llm)
+
+    assert title == "🐛 Fix the login bug"
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_generate_title_unclosed_think_block_falls_back(mock_completion):
+    """An unterminated 思考 block is consumed by the same peel; if
+    nothing real remains the LLM path returns ``None`` so the
+    user-message truncation fallback supplies the title.
+    """
+    agent = create_test_agent()
+    conv = Conversation(agent=agent, visualizer=None)
+
+    user_message = create_user_message_event("Help me create a Python script")
+    conv.state.events.append(user_message)
+
+    custom_llm = LLM(
+        model="gpt-4o-mini", api_key=SecretStr("key"), usage_id="think-unclosed"
+    )
+    # No closing 思考 — the peel matches nothing, the whole string is
+    # preserved, but it is the *only* content we got, so the LLM path
+    # must not hand it back as a title.
+    mock_completion.return_value = create_mock_llm_response(
+        "思考half-formed reasoning…"
+    )
+
+    title = conv.generate_title(llm=custom_llm)
+
+    # Falls back to the user message, not the raw reasoning block.
+    assert title == "Help me create a Python script"
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_generate_title_think_only_response_falls_back(mock_completion):
+    """A response that is only a 思考 block (closed or unclosed) yields
+    no LLM title, so the truncation fallback runs.
+    """
+    agent = create_test_agent()
+    conv = Conversation(agent=agent, visualizer=None)
+
+    user_message = create_user_message_event("Help me create a Python script")
+    conv.state.events.append(user_message)
+
+    custom_llm = LLM(
+        model="gpt-4o-mini", api_key=SecretStr("key"), usage_id="think-only"
+    )
+    mock_completion.return_value = create_mock_llm_response(
+        "思考deep reasoning chain思考"
+    )
+
+    title = conv.generate_title(llm=custom_llm)
+
+    assert title == "Help me create a Python script"
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_generate_title_preserves_mid_text_think_literal(mock_completion):
+    """A mid-text literal 思考 occurrence in a legitimate title is
+    preserved. The peel only targets a *leading* block, so a title
+    that legitimately contains the characters ``思考`` (e.g. a
+    non-English conversation title) is untouched.
+    """
+    agent = create_test_agent()
+    conv = Conversation(agent=agent, visualizer=None)
+
+    user_message = create_user_message_event("Help me create a Python script")
+    conv.state.events.append(user_message)
+
+    custom_llm = LLM(
+        model="gpt-4o-mini", api_key=SecretStr("key"), usage_id="think-mid"
+    )
+    mock_completion.return_value = create_mock_llm_response("🐛 Use 思考 in a sentence")
+
+    title = conv.generate_title(llm=custom_llm)
+
+    assert title == "🐛 Use 思考 in a sentence"
