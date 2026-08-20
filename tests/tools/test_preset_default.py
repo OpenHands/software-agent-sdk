@@ -10,7 +10,7 @@ class _FinishResult(BaseModel):
     outcome_summary: str
 
 
-def test_default_agent_can_parameterize_finish_tool_without_prior_registration():
+def test_default_agent_registers_finish_tool_for_structured_response():
     with tool_registry._LOCK:
         saved_resolver = tool_registry._REG.pop("FinishTool", None)
         saved_checker = tool_registry._USABILITY_REG.pop("FinishTool", None)
@@ -29,7 +29,8 @@ def test_default_agent_can_parameterize_finish_tool_without_prior_registration()
             and tool.params == {"response_schema": _FinishResult}
             for tool in agent.tools
         )
-        assert "FinishTool" in agent.include_default_tools
+        assert "FinishTool" in tool_registry.list_registered_tools()
+        assert "FinishTool" not in agent.include_default_tools
         assert "ThinkTool" in agent.include_default_tools
 
         conv = Conversation(agent=agent, visualizer=None)

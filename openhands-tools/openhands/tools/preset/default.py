@@ -10,6 +10,8 @@ from openhands.sdk.llm.llm import LLM
 from openhands.sdk.logger import get_logger
 from openhands.sdk.subagent import AgentDefinition, register_agent_if_absent
 from openhands.sdk.tool import Tool
+from openhands.sdk.tool.builtins import BUILT_IN_TOOLS, FinishTool
+from openhands.sdk.tool.registry import register_tool
 
 
 logger = get_logger(__name__)
@@ -80,17 +82,25 @@ def get_default_agent(
         # Disable browser tools in CLI mode
         enable_browser=not cli_mode,
     )
+    include_default_tools = [tool.__name__ for tool in BUILT_IN_TOOLS]
     if finish_tool_response_schema is not None:
+        register_tool(FinishTool.__name__, FinishTool)
         tools.append(
             Tool(
-                name="FinishTool",
+                name=FinishTool.__name__,
                 params={"response_schema": finish_tool_response_schema},
             )
         )
+        include_default_tools = [
+            tool_name
+            for tool_name in include_default_tools
+            if tool_name != FinishTool.__name__
+        ]
 
     agent = Agent(
         llm=llm,
         tools=tools,
+        include_default_tools=include_default_tools,
         system_prompt_kwargs={"cli_mode": cli_mode},
         condenser=get_default_condenser(
             llm=llm.model_copy(update={"usage_id": "condenser"})

@@ -598,7 +598,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 VisionInspectTool.__name__,
             )
 
-        explicit_tool_names = {tool.name for tool in tools}
         for tool_name in default_tool_names:
             tool_class = BUILT_IN_TOOL_CLASSES.get(tool_name)
             if tool_class is None:
@@ -607,20 +606,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                     f"Expected one of: {list(BUILT_IN_TOOL_CLASSES.keys())}"
                 )
             tool_instances = tool_class.create(state)
-            default_tools_to_add = [
-                tool for tool in tool_instances if tool.name not in explicit_tool_names
-            ]
-            if len(default_tools_to_add) < len(tool_instances):
-                skipped_names = sorted(
-                    tool.name
-                    for tool in tool_instances
-                    if tool.name in explicit_tool_names
-                )
-                logger.info(
-                    "Skipping default tool(s) overridden by explicit tools: %s",
-                    skipped_names,
-                )
-            tools.extend(default_tools_to_add)
+            tools.extend(tool_instances)
 
         # Check tool types
         for tool in tools:
@@ -695,12 +681,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         Compatibility requirements:
         - Agent class/type must match.
         - Tools may only be added, never removed.
-        - A persisted default built-in tool cannot be replaced with a parameterized
-          explicit built-in mid-conversation.
 
         Removing tools breaks backward compatibility because the LLM may have
-        already been told about them. Adding new tools is safe — the LLM simply
-        gains new capabilities on the next turn.
+        already been told about them.  Adding new tools is safe — the LLM
+        simply gains new capabilities on the next turn.
 
         All other configuration (LLM, agent_context, condenser, etc.) can be
         freely changed between sessions.
@@ -722,12 +706,12 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 f"{self.__class__.__name__}."
             )
 
-        # Collect explicit tool names.
+        # Collect explicit tool names
         runtime_names = {tool.name for tool in self.tools}
         persisted_names = {tool.name for tool in persisted.tools}
 
-        # Add builtin tool names from include_default_tools. These are runtime
-        # names like 'finish' and 'think'.
+        # Add builtin tool names from include_default_tools
+        # These are runtime names like 'finish', 'think'
         for tool_class_name in self.include_default_tools:
             tool_class = BUILT_IN_TOOL_CLASSES.get(tool_class_name)
             if tool_class is not None:
@@ -747,27 +731,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 f"Cannot resume conversation: tools were removed mid-conversation "
                 f"(removed: {sorted(missing_in_runtime)}). "
                 f"To use different tools, start a new conversation."
-            )
-
-        persisted_default_runtime_names = {
-            BUILT_IN_TOOL_CLASSES[name].name
-            for name in persisted.include_default_tools
-            if name in BUILT_IN_TOOL_CLASSES
-        }
-        runtime_explicit_builtin_overrides = {
-            BUILT_IN_TOOL_CLASSES[spec.name].name
-            for spec in self.tools
-            if spec.name in BUILT_IN_TOOL_CLASSES and spec.params
-        }
-        changed_default_overrides = (
-            persisted_default_runtime_names & runtime_explicit_builtin_overrides
-        )
-        if changed_default_overrides:
-            raise ValueError(
-                "Cannot resume conversation: default built-in tools were replaced "
-                "with parameterized explicit built-ins mid-conversation "
-                f"(changed: {sorted(changed_default_overrides)}). "
-                "To use different tools, start a new conversation."
             )
 
         return self
