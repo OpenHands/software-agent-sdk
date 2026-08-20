@@ -209,6 +209,7 @@ class TaskManager:
                     f"Available tasks: {', '.join(sorted(self._tasks))}"
                 )
 
+            self._check_agent_enabled(subagent_type)
             factory = get_agent_factory(subagent_type)
             worker_agent = self._get_sub_agent_from_factory(factory)
             conversation_id = self._tasks[resume].conversation_id
@@ -251,6 +252,7 @@ class TaskManager:
         1. ``factory.definition.max_iteration_per_run`` (from the agent definition)
         2. The parent conversation's ``max_iteration_per_run``
         """
+        self._check_agent_enabled(subagent_type)
         factory = get_agent_factory(subagent_type)
         worker_agent = self._get_sub_agent_from_factory(factory)
 
@@ -348,6 +350,16 @@ class TaskManager:
             "parent_session_id": str(self.parent_conversation.state.id),
             **link,
         }
+
+    def _check_agent_enabled(self, subagent_type: str) -> None:
+        """Refuse sub-agent types the parent conversation disabled."""
+        agent_context = self.parent_conversation.agent.agent_context
+        disabled = agent_context.disabled_agents if agent_context else []
+        if subagent_type in disabled:
+            raise ValueError(
+                f"Sub-agent '{subagent_type}' is disabled for this conversation "
+                f"(agent_context.disabled_agents). Choose another sub-agent type."
+            )
 
     def _get_sub_agent(self, subagent_type: str) -> Agent:
         """Return the subagent assigned to the task.
