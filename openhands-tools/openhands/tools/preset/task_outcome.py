@@ -42,9 +42,6 @@ class TaskOutcome(BaseModel):
     status: TaskOutcomeStatus = Field(
         description="Agent's semantic assessment of task completion."
     )
-    # FinishTool already has a `summary` action-metadata field, so the tool
-    # schema exposes this outcome field as `outcome_summary` while preserving
-    # the semantic model attribute name.
     summary: str = Field(
         alias="outcome_summary",
         description="Concise summary of the outcome.",

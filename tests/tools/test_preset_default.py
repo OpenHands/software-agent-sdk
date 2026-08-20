@@ -1,7 +1,12 @@
 from pydantic import BaseModel
 
 from openhands.sdk import LLM, Conversation
-from openhands.sdk.tool import registry as tool_registry
+from openhands.sdk.tool.builtins import FinishTool
+from openhands.sdk.tool.registry import (
+    list_registered_tools,
+    register_tool,
+    unregister_tool,
+)
 from openhands.tools.preset.default import get_default_agent
 
 
@@ -10,11 +15,9 @@ class _FinishResult(BaseModel):
     outcome_summary: str
 
 
-def test_default_agent_registers_finish_tool_for_structured_response():
-    with tool_registry._LOCK:
-        saved_resolver = tool_registry._REG.pop("FinishTool", None)
-        saved_checker = tool_registry._USABILITY_REG.pop("FinishTool", None)
-        saved_module = tool_registry._MODULE_QUALNAMES.pop("FinishTool", None)
+def test_default_agent_registers_finish_tool_for_structured_response(caplog):
+    was_registered = FinishTool.__name__ in list_registered_tools()
+    unregister_tool(FinishTool.__name__)
 
     try:
         llm = LLM(model="test-model", usage_id="test-llm")
@@ -29,9 +32,17 @@ def test_default_agent_registers_finish_tool_for_structured_response():
             and tool.params == {"response_schema": _FinishResult}
             for tool in agent.tools
         )
-        assert "FinishTool" in tool_registry.list_registered_tools()
+        assert "FinishTool" in list_registered_tools()
         assert "FinishTool" not in agent.include_default_tools
         assert "ThinkTool" in agent.include_default_tools
+
+        caplog.clear()
+        get_default_agent(
+            llm=llm,
+            cli_mode=True,
+            finish_tool_response_schema=_FinishResult,
+        )
+        assert "Duplicate tool name" not in caplog.text
 
         conv = Conversation(agent=agent, visualizer=None)
         conv._ensure_agent_ready()
@@ -40,13 +51,6 @@ def test_default_agent_registers_finish_tool_for_structured_response():
         assert finish_tool.response_schema is _FinishResult
         assert "think" in agent.tools_map
     finally:
-        with tool_registry._LOCK:
-            tool_registry._REG.pop("FinishTool", None)
-            tool_registry._USABILITY_REG.pop("FinishTool", None)
-            tool_registry._MODULE_QUALNAMES.pop("FinishTool", None)
-            if saved_resolver is not None:
-                tool_registry._REG["FinishTool"] = saved_resolver
-            if saved_checker is not None:
-                tool_registry._USABILITY_REG["FinishTool"] = saved_checker
-            if saved_module is not None:
-                tool_registry._MODULE_QUALNAMES["FinishTool"] = saved_module
+        unregister_tool(FinishTool.__name__)
+        if was_registered:
+            register_tool(FinishTool.__name__, FinishTool)
