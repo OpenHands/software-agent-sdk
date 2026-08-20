@@ -1,0 +1,58 @@
++----------------------------------------------------------------------+
+|  OpenHands SDK v1.42.1                                               |
+|                                                                      |
+|  Report a bug: github.com/OpenHands/software-agent-sdk/issues        |
+|  Get help: openhands.dev/joinslack                                   |
+|  Scale up: openhands.dev/product/sdk                                 |
+|                                                                      |
+|  Set OPENHANDS_SUPPRESS_BANNER=1 to hide this message                |
++----------------------------------------------------------------------+
+
+[08/20/26 06:29:49] INFO     Registered file-based agent          default.py:148
+                             'bash-runner' from                                 
+                             /home/glitchenstein/repos/software-a               
+                             gent-sdk/openhands-tools/openhands/t               
+                             ools/preset/subagents/bash_runner.md               
+[08/20/26 06:29:49] INFO     Registered file-based agent          default.py:148
+                             'code-explorer' from                               
+                             /home/glitchenstein/repos/software-a               
+                             gent-sdk/openhands-tools/openhands/t               
+                             ools/preset/subagents/code_explorer.               
+                             md                                                 
+[08/20/26 06:29:49] INFO     Registered file-based agent          default.py:148
+                             'general-purpose' from                             
+                             /home/glitchenstein/repos/software-a               
+                             gent-sdk/openhands-tools/openhands/t               
+                             ools/preset/subagents/default.md                   
+[08/20/26 06:29:49] INFO     Registered file-based agent          default.py:148
+                             'web-researcher' from                              
+                             /home/glitchenstein/repos/software-a               
+                             gent-sdk/openhands-tools/openhands/t               
+                             ools/preset/subagents/web_researcher               
+                             .md                                                
+[08/20/26 06:29:49] WARNING  No persistence_dir provided; falling   state.py:506
+                             back to InMemoryFileStore. EventLog                
+                             data will not persist across requests.             
+[08/20/26 06:29:49] INFO     Created new conversation               state.py:583
+                             c31f8b19-dbe4-4367-a3b1-5495088ee3d1               
+[08/20/26 06:29:49] INFO     Created new conversation               state.py:583
+                             e321fb95-8c13-414c-aed4-a04ef3a3bad5               
+[08/20/26 06:29:49] INFO     Confirmation policy set  local_conversation.py:2542
+                             to: kind='NeverConfirm'                            
+[08/20/26 06:29:49] INFO     Agent execution pause    local_conversation.py:2654
+                             requested                                          
+[08/20/26 06:29:49] WARNING  Unrecognized event file name:    event_store.py:300
+                             .eventlog.lock                                     
+[08/20/26 06:29:49] INFO     Resumed conversation                   state.py:558
+                             e321fb95-8c13-414c-aed4-a04ef3a3bad5               
+                             from persistent storage                            
+[08/20/26 06:29:49] INFO     Confirmation policy set  local_conversation.py:2542
+                             to: kind='NeverConfirm'                            
+=== Beat 1: resume with a since-disabled type ===
+created + evicted task_00000001 (type was 'default')
+resume as 'general-purpose': refused: Sub-agent 'general-purpose' is disabled for this conversation (agent_context.disabled_agents). Choose another sub-agent type.
+resume as 'default': running  (resume itself works)
+
+=== Beat 2: the wire path (what a frontend POST carries) ===
+client sends: agent_settings.agent_context = {'disabled_agents': ['general-purpose']}
+server-side agent.agent_context.disabled_agents = ['general-purpose']

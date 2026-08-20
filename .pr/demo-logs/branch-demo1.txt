@@ -1,0 +1,118 @@
++----------------------------------------------------------------------+
+|  OpenHands SDK v1.42.1                                               |
+|                                                                      |
+|  Report a bug: github.com/OpenHands/software-agent-sdk/issues        |
+|  Get help: openhands.dev/joinslack                                   |
+|  Scale up: openhands.dev/product/sdk                                 |
+|                                                                      |
+|  Set OPENHANDS_SUPPRESS_BANNER=1 to hide this message                |
++----------------------------------------------------------------------+
+
+[08/20/26 06:29:46] INFO     Registered file-based agent          default.py:148
+                             'bash-runner' from                                 
+                             /home/glitchenstein/repos/software-a               
+                             gent-sdk/openhands-tools/openhands/t               
+                             ools/preset/subagents/bash_runner.md               
+[08/20/26 06:29:46] INFO     Registered file-based agent          default.py:148
+                             'code-explorer' from                               
+                             /home/glitchenstein/repos/software-a               
+                             gent-sdk/openhands-tools/openhands/t               
+                             ools/preset/subagents/code_explorer.               
+                             md                                                 
+[08/20/26 06:29:46] INFO     Registered file-based agent          default.py:148
+                             'general-purpose' from                             
+                             /home/glitchenstein/repos/software-a               
+                             gent-sdk/openhands-tools/openhands/t               
+                             ools/preset/subagents/default.md                   
+[08/20/26 06:29:46] INFO     Registered file-based agent          default.py:148
+                             'web-researcher' from                              
+                             /home/glitchenstein/repos/software-a               
+                             gent-sdk/openhands-tools/openhands/t               
+                             ools/preset/subagents/web_researcher               
+                             .md                                                
+[08/20/26 06:29:46] WARNING  No persistence_dir provided; falling   state.py:506
+                             back to InMemoryFileStore. EventLog                
+                             data will not persist across requests.             
+[08/20/26 06:29:46] INFO     Created new conversation               state.py:583
+                             e198e519-a517-478a-953e-fe13710aee82               
+[08/20/26 06:29:46] ERROR    Task execution failed: Sub-agent         impl.py:59
+                             'general-purpose' is disabled for this             
+                             conversation                                       
+                             (agent_context.disabled_agents). Choose            
+                             another sub-agent type.                            
+                             ╭─ Traceback (most recent call last) ──╮           
+                             │ /home/glitchenstein/repos/software-a │           
+                             │ gent-sdk/openhands-tools/openhands/t │           
+                             │ ools/task/impl.py:32 in __call__     │           
+                             │                                      │           
+                             │   29 │   │   conversation: LocalConv │           
+                             │   30 │   ) -> TaskObservation:       │           
+                             │   31 │   │   try:                    │           
+                             │ ❱ 32 │   │   │   task = self._manage │           
+                             │   33 │   │   │   │   prompt=action.p │           
+                             │   34 │   │   │   │   subagent_type=a │           
+                             │   35 │   │   │   │   description=act │           
+                             │                                      │           
+                             │ /home/glitchenstein/repos/software-a │           
+                             │ gent-sdk/openhands-tools/openhands/t │           
+                             │ ools/task/manager.py:193 in          │           
+                             │ start_task                           │           
+                             │                                      │           
+                             │   190 │   │   │   │   subagent_type= │           
+                             │   191 │   │   │   )                  │           
+                             │   192 │   │   else:                  │           
+                             │ ❱ 193 │   │   │   task = self._creat │           
+                             │   194 │   │   │   │   subagent_type= │           
+                             │   195 │   │   │   │   description=de │           
+                             │   196 │   │   │   )                  │           
+                             │                                      │           
+                             │ /home/glitchenstein/repos/software-a │           
+                             │ gent-sdk/openhands-tools/openhands/t │           
+                             │ ools/task/manager.py:255 in          │           
+                             │ _create_task                         │           
+                             │                                      │           
+                             │   252 │   │   1. ``factory.definitio │           
+                             │   253 │   │   2. The parent conversa │           
+                             │   254 │   │   """                    │           
+                             │ ❱ 255 │   │   self._check_agent_enab │           
+                             │   256 │   │   factory = get_agent_fa │           
+                             │   257 │   │   worker_agent = self._g │           
+                             │   258                                │           
+                             │                                      │           
+                             │ /home/glitchenstein/repos/software-a │           
+                             │ gent-sdk/openhands-tools/openhands/t │           
+                             │ ools/task/manager.py:359 in          │           
+                             │ _check_agent_enabled                 │           
+                             │                                      │           
+                             │   356 │   │   agent_context = self.p │           
+                             │   357 │   │   disabled = agent_conte │           
+                             │   358 │   │   if subagent_type in di │           
+                             │ ❱ 359 │   │   │   raise ValueError(  │           
+                             │   360 │   │   │   │   f"Sub-agent '{ │           
+                             │   361 │   │   │   │   f"(agent_conte │           
+                             │   362 │   │   │   )                  │           
+                             ╰──────────────────────────────────────╯           
+                             ValueError: Sub-agent 'general-purpose'            
+                             is disabled for this conversation                  
+                             (agent_context.disabled_agents). Choose            
+                             another sub-agent type.                            
+[08/20/26 06:29:46] INFO     Created new conversation               state.py:583
+                             5bcc72d0-7318-4d4f-98f7-8b775de43909               
+[08/20/26 06:29:46] INFO     Confirmation policy set  local_conversation.py:2542
+                             to: kind='NeverConfirm'                            
+=== 1. Can the preference even be expressed? ===
+AgentContext(disabled_agents=['general-purpose']) -> ['general-purpose']
+
+=== 2. Does anything stop the spawn? (no LLM involved) ===
+refused: Sub-agent 'general-purpose' is disabled for this conversation (agent_context.disabled_agents). Choose another sub-agent type.
+
+=== 3. What the calling LLM sees (full tool path, TaskExecutor) ===
+is_error=True
+text: Failed to execute task: Sub-agent 'general-purpose' is disabled for this conversation (agent_context.disabled_agents). Choose another sub-agent type.
+
+=== 4. A type not on the list still spawns ===
+spawned: task_00000001 status=running
+
+=== 5. delegate tool spawn path ===
+is_error=True
+text: Sub-agent type(s) disabled for this conversation: general-purpose (agent_context.disabled_agents). Choose another agent type.
