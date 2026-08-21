@@ -1034,8 +1034,8 @@ class ConversationService:
         # when the lock is held by a slow ``asyncio.to_thread`` call for a
         # different conversation.  The dict lookup is safe because
         # ``_event_services`` is only mutated under the lock (insert / delete);
-        # a concurrent reader may see a stale snapshot, but the worst case is a
-        # cache miss that falls through to the locked path below.
+        # a fast-path miss falls through to the locked slow path, which
+        # re-checks the cache and handles any state changes correctly.
         event_services = self._event_services
         if event_services is not None:
             cached = event_services.get(conversation_id)

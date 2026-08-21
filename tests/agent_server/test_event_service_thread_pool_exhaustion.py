@@ -82,6 +82,7 @@ async def test_thread_pool_exhaustion_does_not_block_cached_conversation(
     await service.__aenter__()
     block_event: threading.Event | None = None
     block_task: asyncio.Task[None] | None = None
+    stuck_task: asyncio.Task[None] | None = None
     try:
         # Pre-load both conversations into the cache.
         es_a = await service.get_event_service(conv_a)
@@ -132,5 +133,10 @@ async def test_thread_pool_exhaustion_does_not_block_cached_conversation(
                 await asyncio.wait_for(block_task, timeout=5.0)
             except (TimeoutError, asyncio.CancelledError):
                 block_task.cancel()
+        if stuck_task is not None:
+            try:
+                await asyncio.wait_for(stuck_task, timeout=5.0)
+            except (TimeoutError, asyncio.CancelledError):
+                stuck_task.cancel()
         await service.__aexit__(None, None, None)
         tiny_pool.shutdown(wait=False)
