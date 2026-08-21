@@ -56,6 +56,8 @@
     "summarize:agent-server-api": "node ./scripts/summarize-agent-server-api.mjs",
     "test:agent-server-api-tooling": "node ./scripts/test-agent-server-api-tooling.mjs",
     "test:endpoint-audit-tooling": "node ./scripts/test-endpoint-audit.mjs",
+    "check:public-type-budget": "npm run build --silent && node ./scripts/check-public-type-budget.mjs",
+    "test:public-type-budget": "node ./scripts/check-public-type-budget.mjs --self-test",
     "lint": "eslint src/**/*.ts",
     "lint:fix": "eslint src/**/*.ts --fix",
     "format": "prettier --write \"src/**/*.ts\" \"examples/**/*.ts\" \"scripts/**/*.mjs\"",

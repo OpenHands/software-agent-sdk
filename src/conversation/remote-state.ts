@@ -21,8 +21,11 @@ const FULL_STATE_KEY = '__full_state__';
 export interface ConversationStateUpdateEvent extends Event {
   kind: 'ConversationStateUpdateEvent';
   key: string;
-  value: any;
+  value: unknown;
 }
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 export class RemoteState {
   private client: HttpClient;
@@ -51,7 +54,9 @@ export class RemoteState {
       }
 
       // Fetch from REST API and normalize the `full_state` wrapper once.
-      const response = await this.client.get<any>(`/api/conversations/${this.conversationId}`);
+      const response = await this.client.get<ConversationInfo>(
+        `/api/conversations/${this.conversationId}`
+      );
       const conversationInfo = this.normalizeFullState(response.data);
 
       this.cachedState = conversationInfo;
@@ -66,7 +71,8 @@ export class RemoteState {
    * unwrap themselves.
    */
   private normalizeFullState(info: ConversationInfo): ConversationInfo {
-    return ((info as any).full_state ?? info) as ConversationInfo;
+    const wrapped = info as ConversationInfo & { full_state?: ConversationInfo };
+    return wrapped.full_state ?? info;
   }
 
   /**
@@ -84,13 +90,19 @@ export class RemoteState {
         if (this.cachedState === null) {
           this.cachedState = {} as ConversationInfo;
         }
-        const stateValue = event.value?.full_state ?? event.value;
+        const stateValue =
+          isRecord(event.value) && isRecord(event.value.full_state)
+            ? event.value.full_state
+            : event.value;
+        if (!isRecord(stateValue)) {
+          throw new Error('Full conversation state update must contain an object value.');
+        }
         Object.assign(this.cachedState, stateValue);
       } else {
         if (this.cachedState === null) {
           this.cachedState = {} as ConversationInfo;
         }
-        (this.cachedState as any)[event.key] = event.value;
+        (this.cachedState as Record<string, unknown>)[event.key] = event.value;
       }
       this.cachedAt = Date.now();
     });
@@ -171,7 +183,7 @@ export class RemoteState {
     return agentData;
   }
 
-  async getWorkspace(): Promise<any> {
+  async getWorkspace(): Promise<ConversationInfo['workspace']> {
     const info = await this.getConversationInfo();
     const workspace = info.workspace;
     if (workspace === undefined || workspace === null) {
@@ -189,9 +201,9 @@ export class RemoteState {
     return persistenceDir;
   }
 
-  async modelDump(): Promise<Record<string, any>> {
+  async modelDump(): Promise<Record<string, unknown>> {
     const info = await this.getConversationInfo();
-    return info as Record<string, any>;
+    return info;
   }
 
   async modelDumpJson(): Promise<string> {

@@ -9,7 +9,7 @@ export interface AgentOptions {
   llm: LLM;
   kind?: string;
   name?: string;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 /**
@@ -28,7 +28,7 @@ export class Agent implements AgentBase {
   kind: string;
   llm: LLM;
   name?: string;
-  [key: string]: any;
+  [key: string]: unknown;
 
   constructor(options: AgentOptions) {
     this.kind = options.kind || 'Agent';

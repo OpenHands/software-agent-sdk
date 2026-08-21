@@ -5,5 +5,6 @@ cd "$SCRIPT_DIR/.." || exit $?
 
 npm run lint || exit $?
 npm run build || exit $?
+node scripts/check-public-type-budget.mjs || exit $?
 npm run test:coverage || exit $?
 npm run format:check || exit $?

@@ -29,6 +29,28 @@ jobs:
     - name: Check generated Agent Server contract
       run: npm run check:agent-server-api
 
+  public-type-budget:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Use Node.js 22.12
+      uses: actions/setup-node@v6
+      with:
+        node-version: 22.12
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Test weak-type ratchet behavior
+      run: npm run test:public-type-budget
+
+    - name: Check public weak-type budget
+      run: npm run check:public-type-budget
+
   test:
     runs-on: ubuntu-latest
     

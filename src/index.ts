@@ -313,13 +313,18 @@ export type {
 } from './models/agent-server-api';
 export type {
   MCPAuthCredential,
+  MCPAuthCredential as CanonicalMCPAuthCredential,
   MCPConfig,
   MCPConfigPatch,
   MCPOAuthAuthentication,
+  MCPOAuthAuthentication as CanonicalMCPOAuthAuthentication,
   MCPOAuthState,
+  MCPOAuthState as CanonicalMCPOAuthState,
   MCPServer,
+  MCPServer as CanonicalMCPServer,
   MCPServerPatch,
   MCPTransport,
+  MCPTransport as CanonicalMCPTransport,
   RemoteMCPServer,
   RemoteMCPTransport,
   StdioMCPServer,

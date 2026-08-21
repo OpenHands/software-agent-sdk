@@ -89,4 +89,20 @@ describe('RemoteState full_state normalization', () => {
     await expect(state.getPersistenceDir()).resolves.toBe('/data/conversations/abc');
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it('rejects a non-object full-state event instead of corrupting the cache', async () => {
+    const { state } = makeState(CONVERSATION_INFO);
+
+    await expect(
+      state.updateStateFromEvent({
+        id: 'evt-2',
+        kind: 'ConversationStateUpdateEvent',
+        timestamp: '2024-01-01T00:00:00Z',
+        key: '__full_state__',
+        value: 'not-an-object',
+      })
+    ).rejects.toThrow('Full conversation state update must contain an object value');
+
+    await expect(state.getExecutionStatus()).resolves.toBe('running');
+  });
 });
