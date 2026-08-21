@@ -193,7 +193,7 @@ def generate_title_from_message(
     llm: LLM | None = None,
     max_length: int = 50,
     on_error: Callable[[Exception], None] | None = None,
-    title_generation_prompt: str | None = None,
+    prompt: str | None = None,
 ) -> str:
     """Generate a title from an already-extracted user message."""
     # Skip the ACP sentinel LLM — it has no credentials and cannot be
