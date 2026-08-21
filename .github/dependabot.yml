@@ -2,22 +2,20 @@
 # Dependabot configuration for automated dependency updates
 # See: https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
 #
-# Note: Python (`pip`/`uv`) ecosystems are NOT configured here because Dependabot
-# does not yet fully support uv workspaces (this repo is a multi-package monorepo
-# with a single root `uv.lock`). Enabling it would produce incomplete or broken
-# update PRs. See issue #2510 for tracking.
+# Note: Dependabot supports the `uv` ecosystem and has discovered and updated
+# workspace-member dependencies since dependabot-core#14627 was deployed in May
+# 2026. Python updates remain disabled here because workspace handling is not yet
+# fully reliable for this multi-package repository with one root `uv.lock`.
 #
-# Last recheck: July 2026. Upstream blockers still open / unfixed:
-#   - dependabot-core#14004  Dependabot resolves workspace members on PyPI
-#                            instead of treating them as local packages (OPEN)
-#   - dependabot-core#14103  Member-package deps ignored (closed, but the fix
-#                            in PR #14627 does not work in practice; not reopened)
-#   - dependabot-core#13202  No `dependency-type` grouping for uv (OPEN)
-#   - dependabot-core#14665  Grouped security updates silently drop packages due
-#                            to case-sensitivity vs PEP 503 names (OPEN)
-#   - dependabot-core#14119  Version updates fail with
-#                            `dependency_file_content_not_changed` on casing
-#                            mismatch between `pyproject.toml` and `uv.lock` (OPEN)
+# Last recheck: August 2026. Open correctness gaps include:
+#   - dependabot-core#14004  Workspace members can be queried on PyPI
+#   - dependabot-core#15558  Grouped updates can replace similarly named deps
+#   - dependabot-core#15786  Grouped updates can rewrite unrelated member pins
+#   - dependabot-core#13202  `dependency-type` grouping is unsupported for uv
+#   - dependabot-core#14665  Grouped security updates can miss case variants
+#   - dependabot-core#14119  Version updates can fail on dependency casing
+#
+# See issue #2510 for tracking.
 
 version: 2
 
