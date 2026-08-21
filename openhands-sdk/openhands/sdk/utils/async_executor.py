@@ -195,9 +195,7 @@ class AsyncExecutor:
         # (for example an await blocked inside a worker thread), and anyio
         # joins it with no timeout.
         try:
-            waiter = threading.Thread(
-                target=_shutdown, name=thread_name, daemon=True
-            )
+            waiter = threading.Thread(target=_shutdown, name=thread_name, daemon=True)
             waiter.start()
         except RuntimeError:
             # Interpreter is shutting down and will not start new threads.
