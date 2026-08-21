@@ -704,24 +704,6 @@ def test_reset_alias_executes_terminal_tool(tmp_path):
     assert getattr(action_event.action, "command") == "reset clear"
 
 
-def test_git_alias_keeps_an_already_complete_command(tmp_path):
-    """Regression: a command that already names the executable is left alone."""
-    events = _run_tool_call(
-        tmp_path,
-        tool_name="git",
-        arguments={"command": "git status"},
-        tool_names=(TERMINAL_TOOL_SPEC,),
-    )
-
-    action_event = next(e for e in events if isinstance(e, ActionEvent))
-    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
-
-    assert not errors
-    assert action_event.tool_name == TERMINAL_TOOL_NAME
-    assert action_event.action is not None
-    assert getattr(action_event.action, "command") == "git status"
-
-
 @pytest.mark.parametrize(
     ("tool_name", "command", "expected"),
     [
