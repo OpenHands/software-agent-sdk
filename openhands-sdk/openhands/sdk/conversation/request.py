@@ -277,7 +277,7 @@ class ConversationConfig(BaseModel):
             "the agent's LLM."
         ),
     )
-    title_generation_prompt: str | None = Field(
+    prompt: str | None = Field(
         default=None,
         max_length=2000,
         description=(
