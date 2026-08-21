@@ -5,6 +5,7 @@ PooledTmuxTerminal, including declared_resources() and concurrent execution
 through the executor's __call__ interface.
 """
 
+import platform
 import tempfile
 import threading
 import time
@@ -31,6 +32,21 @@ def pool_executor():
         )
         yield executor
         executor.close()
+
+
+@pytest.mark.skipif(
+    platform.system() != "Linux",
+    reason="Linux niceness is only observable on Linux",
+)
+def test_pool_commands_inherit_lower_priority(pool_executor) -> None:
+    observation = pool_executor(
+        TerminalAction(
+            command="python -c 'import os; print(os.getpriority(os.PRIO_PROCESS, 0))'"
+        )
+    )
+
+    assert observation.exit_code == 0
+    assert int(observation.text.strip()) >= 10
 
 
 class TestDeclaredResources:

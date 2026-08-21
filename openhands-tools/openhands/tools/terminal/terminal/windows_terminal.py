@@ -101,6 +101,7 @@ class WindowsTerminal(TerminalInterface):
                 startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
             creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             creationflags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            creationflags |= getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
 
         env = build_terminal_env(self._env)
         env.setdefault("PYTHONIOENCODING", "utf-8")

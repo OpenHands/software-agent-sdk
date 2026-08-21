@@ -35,6 +35,9 @@ from openhands.tools.terminal.env import (
 from openhands.tools.terminal.metadata import CmdOutputMetadata
 from openhands.tools.terminal.terminal import TerminalInterface
 from openhands.tools.terminal.terminal.interface import parse_ctrl_key
+from openhands.tools.terminal.terminal.process_priority import (
+    get_process_priority_prefix,
+)
 
 
 logger = get_logger(__name__)
@@ -151,7 +154,7 @@ class SubprocessTerminal(TerminalInterface):
         env["PS2"] = ""
         env["TERM"] = "xterm-256color"
 
-        bash_cmd = [resolved_shell_path, "-i"]
+        bash_cmd = [*get_process_priority_prefix(), resolved_shell_path, "-i"]
 
         # Create a PTY; give the slave to the child, keep the master
         master_fd, slave_fd = pty.openpty()
