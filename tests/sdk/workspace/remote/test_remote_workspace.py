@@ -514,8 +514,11 @@ def test_get_llm_without_name_resolves_active_profile(monkeypatch):
     ]
 
 
-def test_get_llm_without_active_profile_falls_back_to_legacy(monkeypatch):
-    """When no active_profile is set, fall back to legacy agent_settings.llm."""
+@pytest.mark.parametrize("active_profile", [None, ""])
+def test_get_llm_without_active_profile_falls_back_to_legacy(
+    monkeypatch, active_profile
+):
+    """Falsy active_profile values use the legacy agent_settings.llm fallback."""
     from pydantic import SecretStr
 
     monkeypatch.setenv("ALLOW_SHORT_CONTEXT_WINDOWS", "true")
@@ -530,7 +533,7 @@ def test_get_llm_without_active_profile_falls_back_to_legacy(monkeypatch):
         },
         "conversation_settings": {},
         "llm_api_key_is_set": True,
-        "active_profile": None,
+        "active_profile": active_profile,
     }
     settings_response.raise_for_status = Mock()
 
@@ -557,31 +560,6 @@ def test_get_llm_without_active_profile_falls_back_to_legacy(monkeypatch):
         "X-Session-API-Key": "test-key",
         "X-Expose-Secrets": "plaintext",
     }
-
-
-def test_get_llm_with_empty_active_profile_falls_back_to_legacy(monkeypatch):
-    """Malformed empty active_profile values use the legacy fallback."""
-    monkeypatch.setenv("ALLOW_SHORT_CONTEXT_WINDOWS", "true")
-    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/tmp")
-
-    settings_response = Mock()
-    settings_response.json.return_value = {
-        "agent_settings": {"llm": {"model": "gpt-4", "api_key": "sk-legacy"}},
-        "conversation_settings": {},
-        "llm_api_key_is_set": True,
-        "active_profile": "",
-    }
-    settings_response.raise_for_status = Mock()
-
-    client = MagicMock()
-    client.get.return_value = settings_response
-    workspace._client = client
-
-    assert workspace.get_llm().model == "gpt-4"
-    assert [call.args[0] for call in client.get.call_args_list] == [
-        "/api/settings",
-        "/api/settings",
-    ]
 
 
 def test_get_llm_with_kwargs_override(monkeypatch):

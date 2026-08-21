@@ -339,8 +339,10 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         """Return the validated agent settings from ``GET /api/settings``.
 
         Uses ``X-Expose-Secrets: plaintext`` so secret fields (e.g. LLM
-        api_key) are returned as plain strings. The persisted settings migration
-        entry point selects the correct discriminated-union variant.
+        api_key) are returned as plain strings. The validated
+        ``SettingsResponse`` is narrowed through
+        :meth:`SettingsResponse.get_agent_settings`, which selects the correct
+        discriminated-union variant.
         """
         return self._fetch_settings_response().get_agent_settings()
 
@@ -405,7 +407,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         if profile_name is None:
             settings_response = self._fetch_settings_response(expose_secrets=False)
             resolved_profile_name = settings_response.active_profile
-            if not resolved_profile_name:
+            if resolved_profile_name in (None, ""):
                 settings_response = self._fetch_settings_response()
                 agent_settings = settings_response.get_agent_settings()
                 if not llm_kwargs:
