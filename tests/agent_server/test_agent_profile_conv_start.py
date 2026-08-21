@@ -10,7 +10,7 @@ Covers:
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
@@ -31,7 +31,7 @@ from openhands.agent_server.models import (
     StoredConversation,
 )
 from openhands.agent_server.persistence import PersistedSettings
-from openhands.sdk import LLM, Agent, AgentContext
+from openhands.sdk import LLM, Agent, AgentBase, AgentContext
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -603,6 +603,67 @@ async def _start_from_profile(
     return captured["stored"], captured["agent"]
 
 
+async def _start_with_agent(
+    tmp_path,
+    persisted_settings: PersistedSettings,
+    *,
+    agent: Agent | None = None,
+    agent_settings: dict[str, Any] | None = None,
+) -> Any:
+    """Launch via a concrete ``agent`` or a raw ``agent_settings`` payload and
+    return the captured agent.
+
+    Neither shape touches profile resolution, so unlike ``_start_from_profile``
+    only the settings-store read that feeds ``load_memory`` needs stubbing.
+    """
+    request = StartConversationRequest(
+        agent=cast(AgentBase, agent),
+        agent_settings=agent_settings,
+        workspace=LocalWorkspace(working_dir=str(tmp_path)),
+    )
+    captured: dict[str, Any] = {}
+
+    async def capture_start(stored, **kwargs):
+        launched_agent = kwargs["agent"]
+        captured["agent"] = launched_agent
+        event_service = AsyncMock(spec=EventService)
+        event_service.get_state.return_value = ConversationState(
+            id=uuid4(),
+            agent=launched_agent,
+            workspace=request.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+        )
+        event_service.stored = MagicMock(
+            launched_agent_profile=None,
+            client_tools=[],
+            title=None,
+            metrics=None,
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+            forked_from_conversation_id=None,
+            forked_from_event_id=None,
+            parent_conversation_id=None,
+        )
+        return event_service
+
+    service = ConversationService(conversations_dir=tmp_path)
+    service._event_services = {}
+
+    with (
+        patch(_SETTINGS_STORE_PATH) as MockSettingsStore,
+        patch.object(
+            service,
+            "_start_event_service",
+            new_callable=AsyncMock,
+            side_effect=capture_start,
+        ),
+    ):
+        MockSettingsStore.return_value.load.return_value = persisted_settings
+        await service.start_conversation(request)
+
+    return captured["agent"]
+
+
 class TestConversationServiceStartFromProfile:
     @pytest.mark.asyncio
     async def test_start_from_profile_stamps_launched_agent_profile_on_stored(
@@ -759,6 +820,148 @@ class TestConversationServiceStartFromProfile:
 
         assert agent.agent_context is not None
         assert agent.agent_context.load_memory is False
+
+
+class TestConversationServiceStartWithDirectAgent:
+    @pytest.mark.asyncio
+    async def test_direct_agent_launch_inherits_the_stored_memory_preference(
+        self, tmp_path
+    ):
+        """Same guarantee as the profile launch, for the ``agent`` shape.
+
+        ``request.agent`` is already set when a client sends ``agent``
+        directly, so this path never touched ``_resolve_agent_from_profile``'s
+        stamp and silently dropped the global preference before this fix.
+        """
+        persisted = PersistedSettings(
+            agent_settings=OpenHandsAgentSettings(
+                agent_context=AgentContext(load_memory=True)
+            )
+        )
+
+        agent = await _start_with_agent(tmp_path, persisted, agent=_make_agent())
+
+        assert agent.agent_context is not None
+        assert agent.agent_context.load_memory is True
+
+    @pytest.mark.parametrize(
+        "persisted_settings",
+        [
+            pytest.param(
+                PersistedSettings(
+                    agent_settings=OpenHandsAgentSettings(agent_context=AgentContext())
+                ),
+                id="preference-off",
+            ),
+            pytest.param(
+                PersistedSettings(agent_settings=ACPAgentSettings()),
+                id="stored-settings-without-agent-context",
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_direct_agent_launch_leaves_memory_off_without_the_preference(
+        self, tmp_path, persisted_settings
+    ):
+        agent = await _start_with_agent(
+            tmp_path, persisted_settings, agent=_make_agent()
+        )
+
+        # A directly-constructed Agent has no AgentContext by default, so "off"
+        # surfaces as agent_context staying None rather than an explicit
+        # AgentContext(load_memory=False) — both mean the same thing to the
+        # runtime (see AgentBase's own check: agent_context is not None and
+        # agent_context.load_memory).
+        effective_load_memory = (
+            agent.agent_context is not None and agent.agent_context.load_memory
+        )
+        assert effective_load_memory is False
+
+    @pytest.mark.asyncio
+    async def test_agent_settings_launch_inherits_the_stored_memory_preference(
+        self, tmp_path
+    ):
+        """Locks in the third shape: ``_populate_agent_from_settings`` converts
+        this to ``request.agent`` before ``_start_conversation`` even runs, so
+        it needs the same coverage as the ``agent`` shape above, not just the
+        two paths that were already tested pre-fix.
+        """
+        persisted = PersistedSettings(
+            agent_settings=OpenHandsAgentSettings(
+                agent_context=AgentContext(load_memory=True)
+            )
+        )
+
+        agent = await _start_with_agent(
+            tmp_path,
+            persisted,
+            agent_settings={
+                "agent_kind": "openhands",
+                "llm": {"model": "gpt-4o", "usage_id": "llm"},
+            },
+        )
+
+        assert agent.agent_context is not None
+        assert agent.agent_context.load_memory is True
+
+    @pytest.mark.parametrize(
+        "persisted_settings",
+        [
+            pytest.param(
+                PersistedSettings(
+                    agent_settings=OpenHandsAgentSettings(agent_context=AgentContext())
+                ),
+                id="preference-off",
+            ),
+            pytest.param(
+                PersistedSettings(agent_settings=ACPAgentSettings()),
+                id="stored-settings-without-agent-context",
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_agent_settings_launch_leaves_memory_off_without_the_preference(
+        self, tmp_path, persisted_settings
+    ):
+        agent = await _start_with_agent(
+            tmp_path,
+            persisted_settings,
+            agent_settings={
+                "agent_kind": "openhands",
+                "llm": {"model": "gpt-4o", "usage_id": "llm"},
+            },
+        )
+
+        assert agent.agent_context is not None
+        assert agent.agent_context.load_memory is False
+
+    @pytest.mark.asyncio
+    async def test_agent_launch_preserves_context_when_load_memory_already_true(
+        self, tmp_path
+    ):
+        """The stamp must update load_memory in place, not replace the whole
+        AgentContext — a client who already opted in keeps every other field
+        they set (skills, suffix, etc.) untouched."""
+        agent_with_context = Agent(
+            llm=LLM(model="gpt-4o", usage_id="llm"),
+            tools=[],
+            agent_context=AgentContext(
+                load_memory=True,
+                skills=[],
+                system_message_suffix="client-set suffix",
+            ),
+        )
+        persisted = PersistedSettings(
+            agent_settings=OpenHandsAgentSettings(
+                agent_context=AgentContext(load_memory=True)
+            )
+        )
+
+        agent = await _start_with_agent(tmp_path, persisted, agent=agent_with_context)
+
+        assert agent.agent_context is not None
+        assert agent.agent_context.load_memory is True
+        assert agent.agent_context.system_message_suffix == "client-set suffix"
 
 
 # ---------------------------------------------------------------------------
