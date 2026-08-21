@@ -294,10 +294,22 @@ _PROVIDER_CONFIG: dict[GitProvider, tuple[str, str]] = {
 }
 
 
-def _build_clone_url(url: str, provider: GitProvider, token: str | None) -> str:
+def _build_clone_url(
+    url: str,
+    provider: GitProvider,
+    token: str | None,
+    *,
+    explicit_provider: bool = False,
+) -> str:
     """Build authenticated clone URL based on the repository URL and provider.
 
-    Uses proper URL parsing to prevent token injection into malicious URLs.
+    Uses proper URL parsing to prevent token injection into malicious URLs:
+    for an auto-detected provider, the token is only injected if the host
+    matches the provider's public SaaS domain exactly. When the caller
+    explicitly configured the provider (self-hosted instances, e.g. a
+    company GitLab), the token is injected using the URL's own host instead,
+    since that pairing was authored by the caller rather than derived from
+    an untrusted URL.
     """
     config = _PROVIDER_CONFIG.get(provider)
     if not config:
@@ -311,14 +323,22 @@ def _build_clone_url(url: str, provider: GitProvider, token: str | None) -> str:
     if is_short_format:
         return f"https://{auth_prefix}{base_url}/{url}.git"
 
-    # Handle full URLs - inject authentication only if hostname matches exactly
-    if token:
-        parsed = urllib.parse.urlparse(url)
-        if parsed.netloc.lower() == base_url:
-            # Replace only the first occurrence to prevent double injection
-            return url.replace(
-                f"https://{base_url}", f"https://{auth_prefix}{base_url}", 1
-            )
+    if not token:
+        return url
+
+    parsed = urllib.parse.urlparse(url)
+    hostname = parsed.netloc.lower()
+
+    # Public SaaS host - always eligible, whether detected or explicit.
+    host = base_url if hostname == base_url else None
+    # Self-hosted instance - only trust the URL's own host when the provider
+    # was explicitly configured, not auto-detected from the URL itself.
+    if host is None and explicit_provider and hostname:
+        host = hostname
+
+    if host is not None:
+        # Replace only the first occurrence to prevent double injection
+        return url.replace(f"https://{host}", f"https://{auth_prefix}{host}", 1)
 
     return url
 
@@ -367,7 +387,9 @@ def _clone_single_repo(repo: RepoSource, dest: Path, token: str | None) -> bool:
     """Clone a single repository. Returns True on success."""
     try:
         provider = repo.get_provider()
-        clone_url = _build_clone_url(repo.url, provider, token)
+        clone_url = _build_clone_url(
+            repo.url, provider, token, explicit_provider=repo.provider is not None
+        )
         provider_str = provider.value
     except ValueError:
         # No provider detected (e.g., file:// URLs) - use URL as-is
