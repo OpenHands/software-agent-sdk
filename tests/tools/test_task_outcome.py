@@ -1,25 +1,20 @@
 from openhands.sdk.tool.spec import Tool
-from openhands.tools.preset import TaskOutcome, TaskOutcomeBlocker
+from openhands.tools.preset import TaskOutcome
 
 
 def test_task_outcome_accepts_outcome_summary_alias():
     outcome = TaskOutcome(
         status="blocked",
-        outcome_summary="Could not continue without a token.",
-        blockers=[
-            TaskOutcomeBlocker(
-                type="missing_secret",
-                message="A required API token was not configured.",
-                recoverable=True,
-            )
-        ],
-        confidence=0.7,
-        needs_user_action=True,
+        outcome_summary=(
+            "Could not continue without a token. Blocker: missing_secret. "
+            "User action required: configure the API token."
+        ),
     )
 
-    assert outcome.summary == "Could not continue without a token."
-    assert outcome.blockers[0].type == "missing_secret"
-    assert outcome.needs_user_action is True
+    assert outcome.summary == (
+        "Could not continue without a token. Blocker: missing_secret. "
+        "User action required: configure the API token."
+    )
 
 
 def test_task_outcome_finish_tool_schema_uses_outcome_summary():
@@ -28,12 +23,11 @@ def test_task_outcome_finish_tool_schema_uses_outcome_summary():
     ).model_dump(mode="json")["params"]["response_schema"]
 
     properties = schema["properties"]
-    assert "outcome_summary" in properties
-    assert "summary" not in properties
-    assert "source" not in properties
-    assert "reported_at" not in properties
-    assert "terminal_reason" not in properties
-
+    assert set(properties) == {"status", "outcome_summary"}
+    assert properties["outcome_summary"]["description"] == (
+        "Concise outcome summary. Include what was completed, blockers, "
+        "required user action, and relevant next steps."
+    )
     assert properties["status"]["description"] == (
         "Agent's semantic assessment of task completion."
     )
