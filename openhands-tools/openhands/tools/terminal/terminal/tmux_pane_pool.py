@@ -175,7 +175,12 @@ class TmuxPanePool:
         if self.username in ["root", "openhands"]:
             shell_command = ["su", self.username, "-"]
 
-        window_command = shlex.join((*get_process_priority_prefix(), *shell_command))
+        window_command = shlex.join(
+            (
+                *get_process_priority_prefix(build_terminal_env(self.env)),
+                *shell_command,
+            )
+        )
 
         window = self._session.new_window(
             window_name=f"pane-{len(self._all_panes)}",

@@ -6,10 +6,12 @@ through the executor's __call__ interface.
 """
 
 import platform
+import re
 import tempfile
 import threading
 import time
 
+import psutil
 import pytest
 
 from openhands.sdk.tool import DeclaredResources
@@ -39,14 +41,22 @@ def pool_executor():
     reason="Linux niceness is only observable on Linux",
 )
 def test_pool_commands_inherit_lower_priority(pool_executor) -> None:
+    parent_priority = int(psutil.Process().nice())
     observation = pool_executor(
         TerminalAction(
-            command="python -c 'import os; print(os.getpriority(os.PRIO_PROCESS, 0))'"
+            command=(
+                "python -c 'import os; "
+                'print("OH_PRIORITY=" + '
+                "str(os.getpriority(os.PRIO_PROCESS, 0)))'"
+            )
         )
     )
 
     assert observation.exit_code == 0
-    assert int(observation.text.strip()) >= 10
+    match = re.search(r"OH_PRIORITY=(-?\d+)", observation.text)
+    assert match is not None, observation.text
+    expected_priority = min(19, parent_priority + 10)
+    assert int(match.group(1)) >= expected_priority
 
 
 class TestDeclaredResources:

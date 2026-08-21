@@ -88,7 +88,7 @@ class TmuxTerminal(TerminalInterface):
             # This starts a non-login (new) shell for the given user
             shell_command = ["su", self.username, "-"]
 
-        window_command = shlex.join((*get_process_priority_prefix(), *shell_command))
+        window_command = shlex.join((*get_process_priority_prefix(env), *shell_command))
 
         logger.debug(f"Initializing tmux terminal with command: {window_command}")
         session_name = f"openhands-{self.username}-{uuid.uuid4()}"

@@ -100,12 +100,20 @@ def test_basic_command_execution(windows_session) -> None:
 def test_terminal_process_runs_below_normal_priority(windows_session) -> None:
     terminal = cast(WindowsTerminal, windows_session.terminal)
     assert terminal.process is not None
-    process = terminal.process
     try:
-        assert psutil.Process(process.pid).nice() == psutil.BELOW_NORMAL_PRIORITY_CLASS
+        observation = windows_session.execute(
+            TerminalAction(
+                command=(
+                    'python -c "import psutil; '
+                    "print('OH_PRIORITY=' + str(psutil.Process().nice()))\""
+                )
+            )
+        )
+        assert observation.exit_code == 0
+        assert f"OH_PRIORITY={psutil.BELOW_NORMAL_PRIORITY_CLASS}" in observation.text
     finally:
-        process.terminate()
-        process.wait(timeout=5)
+        terminal.process.terminate()
+        terminal.process.wait(timeout=5)
 
 
 @pytest.mark.parametrize(
