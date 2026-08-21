@@ -1837,7 +1837,6 @@ class LocalConversation(BaseConversation):
                     ConversationExecutionStatus.IDLE
                 )  # new message resets terminal states
 
-            # TODO: We should add test cases for all these scenarios
             activated_skill_names: list[str] = []
             extended_content: list[TextContent] = []
 

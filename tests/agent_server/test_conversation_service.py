@@ -3115,6 +3115,29 @@ class TestAutoTitle:
         service.save_meta.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_autotitle_surfaces_llm_error_to_ui(self):
+        """When the title LLM call fails, the error is surfaced to the UI via
+        the EventService error-event helper (issue #16686) — while auto-titling
+        stays non-fatal and falls back to truncation."""
+        service = self._make_service()
+
+        # Let the real title utils run; only the LLM call fails, so the error
+        # is swallowed into a fallback title and reported through on_error.
+        with patch(
+            "openhands.sdk.llm.llm.LLM.completion",
+            side_effect=Exception("model does not exist"),
+        ):
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event())
+            await self._drain_title_task(
+                lambda: service._publish_error_event_sync.called
+            )
+
+        service._publish_error_event_sync.assert_called_once()
+        (exc,) = service._publish_error_event_sync.call_args.args
+        assert str(exc) == "model does not exist"
+
+    @pytest.mark.asyncio
     async def test_autotitle_skips_empty_message(self):
         """No title generation if the user message has no text content."""
         service = self._make_service()
