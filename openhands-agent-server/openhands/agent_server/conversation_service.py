@@ -2406,7 +2406,7 @@ def _generate_title_traced(
         llm,
         max_length,
         on_error=on_error,
-        title_generation_prompt=title_generation_prompt,
+        prompt=prompt,
     )
 
 
@@ -2453,7 +2453,7 @@ class AutoTitleSubscriber(Subscriber):
                     title_llm,
                     50,
                     _on_title_error,
-                    self.service.stored.title_generation_prompt,
+                    self.service.stored.prompt,
                 )
                 if title and self.service.stored.title is None:
                     self.service.stored.title = title

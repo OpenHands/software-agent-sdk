@@ -1,6 +1,7 @@
 """Utility functions for generating conversation titles."""
 
 from collections.abc import Callable, Sequence
+from typing import Final
 
 from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.base import Event
@@ -28,8 +29,8 @@ categories = [
     {"emoji": "♻️", "name": "refactor", "description": "Code refactoring"},
 ]
 
-CONVERSATION_CONTENT_PLACEHOLDER = "{conversation_content}"
-MAX_LENGTH_PLACEHOLDER = "{max_length}"
+CONVERSATION_CONTENT_PLACEHOLDER: Final[str] = "{conversation_content}"
+MAX_LENGTH_PLACEHOLDER: Final[str] = "{max_length}"
 
 
 def extract_message_text(event: MessageEvent) -> str | None:
@@ -78,7 +79,7 @@ def generate_title_with_llm(
         on_error: Optional callback invoked with the exception when the LLM
             call fails. Title generation still falls back (returns None); the
             callback lets callers surface the otherwise-swallowed error.
-        title_generation_prompt: Optional user-message prompt override. The
+        prompt: Optional user-message prompt override. The
             ``{conversation_content}`` and ``{max_length}`` placeholders are
             replaced when present. If the conversation placeholder is omitted,
             the message content is appended automatically.
@@ -96,13 +97,12 @@ def generate_title_with_llm(
         f"{c['emoji']} {c['name']}: {c['description']}" for c in categories
     )
 
-    if title_generation_prompt and title_generation_prompt.strip():
-        prompt = title_generation_prompt.strip()
-        includes_conversation = CONVERSATION_CONTENT_PLACEHOLDER in prompt
-        user_prompt = prompt.replace(
+    template = (prompt or "").strip()
+    if template:
+        user_prompt = template.replace(
             CONVERSATION_CONTENT_PLACEHOLDER, truncated_message
         ).replace(MAX_LENGTH_PLACEHOLDER, str(max_length))
-        if not includes_conversation:
+        if CONVERSATION_CONTENT_PLACEHOLDER not in template:
             user_prompt = f"{user_prompt}\n\nConversation content:\n{truncated_message}"
     else:
         user_prompt = (
@@ -207,7 +207,7 @@ def generate_title_from_message(
             llm_to_use,
             max_length,
             on_error=on_error,
-            title_generation_prompt=title_generation_prompt,
+            prompt=prompt,
         )
         if llm_title:
             return llm_title

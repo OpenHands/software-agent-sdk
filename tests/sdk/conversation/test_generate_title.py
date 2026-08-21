@@ -157,7 +157,7 @@ def test_generate_title_with_llm_renders_custom_prompt_placeholders(mock_complet
         "Fix the login bug",
         custom_llm,
         max_length=32,
-        title_generation_prompt=(
+        prompt=(
             "Return a title under {max_length} characters for: {conversation_content}"
         ),
     )
@@ -176,7 +176,7 @@ def test_generate_title_with_llm_appends_content_to_custom_prompt(mock_completio
     generate_title_with_llm(
         "Fix the login bug",
         custom_llm,
-        title_generation_prompt="Use sentence case without an emoji.",
+        prompt="Use sentence case without an emoji.",
     )
 
     assert get_completion_user_prompt(mock_completion) == (
@@ -191,9 +191,7 @@ def test_generate_title_with_llm_uses_default_for_blank_prompt(mock_completion, 
     custom_llm = LLM(model="gpt-4o-mini", api_key=SecretStr("key"), usage_id="test")
     mock_completion.return_value = create_mock_llm_response("🐛 Fix Login")
 
-    generate_title_with_llm(
-        "Fix the login bug", custom_llm, title_generation_prompt=prompt
-    )
+    generate_title_with_llm("Fix the login bug", custom_llm, prompt=prompt)
 
     user_prompt = get_completion_user_prompt(mock_completion)
     assert user_prompt.startswith("Generate a title (maximum 50 characters)")
