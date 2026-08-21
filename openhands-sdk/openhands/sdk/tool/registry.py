@@ -146,13 +146,6 @@ def register_tool(
             _MODULE_QUALNAMES[name] = module_qualname
 
 
-def unregister_tool(name: str) -> None:
-    with _LOCK:
-        _REG.pop(name, None)
-        _USABILITY_REG.pop(name, None)
-        _MODULE_QUALNAMES.pop(name, None)
-
-
 def resolve_tool(
     tool_spec: Tool, conv_state: "ConversationState"
 ) -> Sequence[ToolDefinition]:

@@ -88,9 +88,6 @@ def _normalize_model_for_litellm(model: str | None) -> str | None:
             normalized = normalized.removeprefix(prefix)
             break
 
-    if normalized == "kimi-k3":
-        return "moonshot/kimi-k3"
-
     return normalized
 
 
@@ -220,12 +217,14 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
 ]
 
 # Match token -> canonical LiteLLM ID for vision metadata overrides.
-VISION_MODEL_OVERRIDES: dict[str, str] = {}
+VISION_MODEL_OVERRIDES = {"kimi-k3": "moonshot/kimi-k3"}
 
 
 @cache
 def _model_supports_vision(model: str | None) -> bool:
-    """Return whether LiteLLM marks the model as visual."""
+    """Return whether LiteLLM or our override list marks the model as visual."""
+    if model and model_matches(model, VISION_MODEL_OVERRIDES.keys()):
+        return True
     normalized = _normalize_model_for_litellm(model)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
