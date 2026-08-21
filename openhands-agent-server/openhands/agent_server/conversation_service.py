@@ -2399,7 +2399,7 @@ def _generate_title_traced(
     llm: LLM | None,
     max_length: int,
     on_error: Callable[[Exception], None] | None = None,
-    title_generation_prompt: str | None = None,
+    prompt: str | None = None,
 ) -> str:
     return generate_title_from_message(
         message,
