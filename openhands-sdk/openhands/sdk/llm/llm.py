@@ -344,6 +344,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         json_schema_extra=field_meta(),
     )
 
+    # AIMLAPI (https://aimlapi.com) partner attribution, sent only on calls
+    # routed through the ``aiml`` LiteLLM provider so AIMLAPI can attribute
+    # traffic to OpenHands (see AIMLAPI_PARTNER_ID in the CLI's aimlapi/config.py
+    # for the sibling implementation).
+    aimlapi_partner_id: str = Field(
+        default="part_uDVajKg3xPLrOdNdQetOtoGA",
+        json_schema_extra=field_meta(),
+    )
+
     num_retries: int = Field(default=5, ge=0, json_schema_extra=field_meta())
     retry_multiplier: float = Field(default=8.0, ge=0, json_schema_extra=field_meta())
     retry_min_wait: int = Field(default=8, ge=0, json_schema_extra=field_meta())
@@ -820,6 +829,21 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             headers["HTTP-Referer"] = self.openrouter_site_url
         if self.openrouter_app_name:
             headers["X-Title"] = self.openrouter_app_name
+        return headers
+
+    def _aiml_headers(self) -> dict[str, str]:
+        """Build AIMLAPI partner-attribution headers for per-call use.
+
+        Unlike ``_openrouter_headers()``, gated on the parsed LiteLLM provider
+        being ``aiml`` — an unrecognized ``X-AIMLAPI-Partner-ID`` header would
+        just be dead weight on every other provider's request.
+        """
+        if self._provider_info is None or self._provider_info.name != "aiml":
+            return {}
+        headers: dict[str, str] = {}
+        if self.aimlapi_partner_id:
+            headers["X-AIMLAPI-Partner-ID"] = self.aimlapi_partner_id
+            headers["X-AIMLAPI-Source"] = "agent"
         return headers
 
     def _aws_kwargs(self) -> dict[str, str]:

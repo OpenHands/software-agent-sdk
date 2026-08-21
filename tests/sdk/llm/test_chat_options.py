@@ -29,6 +29,8 @@ class DummyLLM:
     _call_context: LLMCallContext = field(default_factory=LLMCallContext)
     openrouter_site_url: str = ""
     openrouter_app_name: str = ""
+    aimlapi_partner_id: str = ""
+    is_aiml_provider: bool = False
 
     def _openrouter_headers(self) -> dict[str, str]:
         headers: dict[str, str] = {}
@@ -36,6 +38,15 @@ class DummyLLM:
             headers["HTTP-Referer"] = self.openrouter_site_url
         if self.openrouter_app_name:
             headers["X-Title"] = self.openrouter_app_name
+        return headers
+
+    def _aiml_headers(self) -> dict[str, str]:
+        if not self.is_aiml_provider:
+            return {}
+        headers: dict[str, str] = {}
+        if self.aimlapi_partner_id:
+            headers["X-AIMLAPI-Partner-ID"] = self.aimlapi_partner_id
+            headers["X-AIMLAPI-Source"] = "agent"
         return headers
 
     def _model_name_for_capabilities(self) -> str:
@@ -388,5 +399,30 @@ def test_chat_options_user_extra_headers_win_over_openrouter_defaults():
 def test_chat_options_omits_openrouter_headers_when_unset():
     """Empty site/app must not add extra_headers."""
     llm = DummyLLM(model="gpt-4o")
+    out = select_chat_options(llm, user_kwargs={}, has_tools=False)
+    assert "extra_headers" not in out
+
+
+def test_chat_options_injects_aimlapi_partner_headers_for_aiml_provider():
+    """AIMLAPI partner attribution must flow per-call when routed via aiml."""
+    llm = DummyLLM(
+        model="aiml/anthropic/claude-opus-5",
+        is_aiml_provider=True,
+        aimlapi_partner_id="part_uDVajKg3xPLrOdNdQetOtoGA",
+    )
+    out = select_chat_options(llm, user_kwargs={}, has_tools=False)
+    assert out["extra_headers"]["X-AIMLAPI-Partner-ID"] == (
+        "part_uDVajKg3xPLrOdNdQetOtoGA"
+    )
+    assert out["extra_headers"]["X-AIMLAPI-Source"] == "agent"
+
+
+def test_chat_options_omits_aimlapi_headers_for_non_aiml_provider():
+    """The partner id must not leak onto unrelated providers as a stray header."""
+    llm = DummyLLM(
+        model="anthropic/claude-opus-5",
+        is_aiml_provider=False,
+        aimlapi_partner_id="part_uDVajKg3xPLrOdNdQetOtoGA",
+    )
     out = select_chat_options(llm, user_kwargs={}, has_tools=False)
     assert "extra_headers" not in out
