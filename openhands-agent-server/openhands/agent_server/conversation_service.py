@@ -1467,7 +1467,9 @@ class ConversationService:
 
         # get_settings_store() is safe here: get_instance() initialises the
         # singleton with the server cipher before any conversation can start.
-        settings = get_settings_store().load() or PersistedSettings()
+        settings = await asyncio.to_thread(
+            lambda: get_settings_store().load() or PersistedSettings()
+        )
 
         # ``ACPAgentSettings.agent_context`` is nullable, hence the guard.
         stored_context = settings.agent_settings.agent_context

@@ -88,18 +88,20 @@ async def launch_and_get_agent(tmp_path: Path, **request_kwargs):
 
 
 async def main():
-    persistence_dir = Path(os.environ["OH_PERSISTENCE_DIR"])
-    reset_stores()  # safety net; harmless if there was nothing to reset
-    get_settings_store().save(
-        PersistedSettings(
-            agent_settings=OpenHandsAgentSettings(
-                agent_context=AgentContext(load_memory=True)
+    with tempfile.TemporaryDirectory() as settings_dir:
+        os.environ["OH_PERSISTENCE_DIR"] = settings_dir
+        reset_stores()
+        get_settings_store().save(
+            PersistedSettings(
+                agent_settings=OpenHandsAgentSettings(
+                    agent_context=AgentContext(load_memory=True)
+                )
             )
         )
-    )
-    print(
-        f"Persisted load_memory=True for real at {persistence_dir / 'settings.json'}\n"
-    )
+        print(
+            f"Persisted load_memory=True for real at "
+            f"{Path(settings_dir) / 'settings.json'} (throwaway temp dir)\n"
+        )
 
     with tempfile.TemporaryDirectory() as workspace_dir:
         workspace = Path(workspace_dir)
