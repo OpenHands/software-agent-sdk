@@ -3,6 +3,7 @@ import importlib
 import json
 import logging
 import os
+import threading
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
@@ -645,6 +646,10 @@ class ConversationService:
         default_factory=dict, init=False
     )
     _lifecycle_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+    _conversation_locks: dict[UUID, asyncio.Lock] = field(
+        default_factory=dict, init=False
+    )
+    _catalog_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     _conversation_webhook_subscribers: list["ConversationWebhookSubscriber"] = field(
         default_factory=list, init=False
     )
@@ -751,7 +756,7 @@ class ConversationService:
         secret_name: str,
         binding: VersionedCredentialBinding,
     ) -> None:
-        async with self._lifecycle_lock:
+        async with self._get_conversation_lock(conversation_id):
             event_services = self._event_services
             event_service = (
                 event_services.get(conversation_id)
@@ -1047,10 +1052,28 @@ class ConversationService:
                 context=f"resuming conversation {stored.id}",
             )
 
+    def _get_conversation_lock(self, conversation_id: UUID) -> asyncio.Lock:
+        """Return the per-conversation lifecycle lock, creating it if needed.
+
+        Replaces the global ``_lifecycle_lock`` for operations that act on a
+        *single* conversation. The ``_catalog_lock`` only guards the
+        ``_conversation_locks`` dict itself (a brief, in-memory mutation), so
+        acquiring a conversation lock never blocks operations on other
+        conversations.
+        """
+        with self._catalog_lock_sync:
+            lock = self._conversation_locks.get(conversation_id)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._conversation_locks[conversation_id] = lock
+            return lock
+
+    _catalog_lock_sync: threading.Lock = field(default_factory=threading.Lock, init=False)
+
     async def _get_or_load_event_service(
         self, conversation_id: UUID
     ) -> EventService | None:
-        async with self._lifecycle_lock:
+        async with self._get_conversation_lock(conversation_id):
             return await self._get_or_load_event_service_locked(conversation_id)
 
     async def _get_or_load_event_service_locked(
@@ -1318,7 +1341,7 @@ class ConversationService:
         if existing_record is not None or (
             existing_event_service is not None and existing_event_service.is_open()
         ):
-            async with self._lifecycle_lock:
+            async with self._get_conversation_lock(conversation_id):
                 existing_event_service = self._event_services.get(conversation_id)
                 if (
                     existing_event_service is not None
@@ -1625,7 +1648,7 @@ class ConversationService:
                 launched_agent_profile=launched_agent_profile,
                 **request_data,
             )
-        async with self._lifecycle_lock:
+        async with self._get_conversation_lock(conversation_id):
             # New conversation: the agent is written to base_state.json (its
             # single source of truth), not to meta.json. Pass it explicitly.
             # ``new_agent`` is ``request.agent`` (decrypted when the request was
@@ -1683,7 +1706,7 @@ class ConversationService:
         return bool(await self._get_or_load_event_service(conversation_id))
 
     async def delete_conversation(self, conversation_id: UUID) -> bool:
-        async with self._lifecycle_lock:
+        async with self._get_conversation_lock(conversation_id):
             event_services = self._event_services
             if event_services is None:
                 raise ValueError("inactive_service")
@@ -1911,7 +1934,7 @@ class ConversationService:
         # directory so we don't leave stale state on disk.
         fork_dir = self.conversations_dir / fork_conv_id.hex
         try:
-            async with self._lifecycle_lock:
+            async with self._get_conversation_lock(conversation_id):
                 fork_event_service = await self._start_event_service(
                     fork_stored, is_new_conversation=True, agent=fork_agent
                 )
