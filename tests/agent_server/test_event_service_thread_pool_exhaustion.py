@@ -27,6 +27,7 @@ from uuid import UUID
 import pytest
 
 from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import StartConversationRequest
 from openhands.sdk import LLM, Agent
 from openhands.sdk.security.confirmation_policy import NeverConfirm
@@ -82,7 +83,7 @@ async def test_thread_pool_exhaustion_does_not_block_cached_conversation(
     await service.__aenter__()
     block_event: threading.Event | None = None
     block_task: asyncio.Task[None] | None = None
-    stuck_task: asyncio.Task[None] | None = None
+    stuck_task: asyncio.Task[EventService | None] | None = None
     try:
         # Pre-load both conversations into the cache.
         es_a = await service.get_event_service(conv_a)
@@ -121,6 +122,7 @@ async def test_thread_pool_exhaustion_does_not_block_cached_conversation(
 
         # Clean up the stuck task.
         block_event.set()
+        assert stuck_task is not None
         try:
             await asyncio.wait_for(stuck_task, timeout=10.0)
         except (TimeoutError, asyncio.CancelledError):
