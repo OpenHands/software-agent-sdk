@@ -300,7 +300,10 @@ class Message(BaseModel):
         if not force_string_serializer and (
             cache_enabled or vision_enabled or function_calling_enabled
         ):
-            message_dict = self._list_serializer(vision_enabled=vision_enabled)
+            message_dict = self._list_serializer(
+                vision_enabled=vision_enabled,
+                cache_enabled=cache_enabled,
+            )
         else:
             # some providers, like HF and Groq/llama, don't support a list here, but a
             # single string
@@ -339,7 +342,9 @@ class Message(BaseModel):
         # tool call keys are added in to_chat_dict to centralize behavior
         return message_dict
 
-    def _list_serializer(self, *, vision_enabled: bool) -> dict[str, Any]:
+    def _list_serializer(
+        self, *, vision_enabled: bool, cache_enabled: bool = True
+    ) -> dict[str, Any]:
         content: list[dict[str, Any]] = []
         role_tool_with_prompt_caching = False
 
@@ -367,7 +372,10 @@ class Message(BaseModel):
             # We have to remove cache_prompt for tool content and move it up to the
             # message level
             # See discussion here for details: https://github.com/BerriAI/litellm/issues/6422#issuecomment-2438765472
-            if self.role == "tool" and item.cache_prompt:
+            if not cache_enabled:
+                for d in item_dicts:
+                    d.pop("cache_control", None)
+            elif self.role == "tool" and item.cache_prompt:
                 role_tool_with_prompt_caching = True
                 for d in item_dicts:
                     d.pop("cache_control", None)
