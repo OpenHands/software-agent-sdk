@@ -1,5 +1,6 @@
 """Persistence/resume behavior for client-defined tools on LocalConversation."""
 
+import locale
 import uuid
 from pathlib import Path
 
@@ -102,5 +103,55 @@ def test_recover_persisted_client_tools_no_state(tmp_path: Path) -> None:
             str(tmp_path / "nonexistent"), uuid.uuid4()
         )
         assert recovered == []
+    finally:
+        convo.close()
+
+
+def test_recover_persisted_client_tools_reads_base_state_as_utf8(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """base_state.json (written UTF-8 by the FileStore) is read back as UTF-8.
+
+    Recovery reads the persisted state directly instead of via the FileStore, so
+    it must pass ``encoding="utf-8"`` explicitly. On a non-UTF-8 default locale
+    (e.g. Windows cp1252) a bare ``read_text()`` misdecodes/crashes with
+    ``UnicodeDecodeError`` on any non-ASCII persisted content. We simulate such a
+    locale so this regression is deterministic on every platform.
+    """
+    specs = [
+        ClientToolSpec(
+            name="persist_note",
+            description="тепловая матрица — аномалии ±0.5 Å",  # non-ASCII → UTF-8
+            parameters={"type": "object", "properties": {}},
+        )
+    ]
+    cid = uuid.uuid4()
+    persist_dir = tmp_path / "persist"
+
+    created = Conversation(
+        agent=_make_agent(),
+        workspace=str(tmp_path / "ws"),
+        persistence_dir=str(persist_dir),
+        conversation_id=cid,
+        client_tools=specs,
+        delete_on_close=False,
+    )
+    created.close()
+
+    # Build the object we call the method on BEFORE simulating the locale, so
+    # only the method-under-test reads the non-ASCII base_state.json.
+    convo = Conversation(
+        agent=_make_agent(),
+        workspace=str(tmp_path / "ws2"),
+        persistence_dir=str(tmp_path / "persist2"),
+        conversation_id=uuid.uuid4(),
+        delete_on_close=False,
+    )
+    try:
+        # Simulate a non-UTF-8 default codec (as on Windows). A bare read_text()
+        # would now raise UnicodeDecodeError on the UTF-8 base_state.json.
+        monkeypatch.setattr(locale, "getpreferredencoding", lambda *a, **k: "ascii")
+        recovered = convo._recover_persisted_client_tools(str(persist_dir), cid)
+        assert [s.name for s in recovered] == ["persist_note"]
     finally:
         convo.close()
