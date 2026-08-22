@@ -67,3 +67,7 @@ class TaskExecutor(ToolExecutor):
 
     def close(self) -> None:
         self._manager.close()
+
+    def interrupt(self) -> None:
+        """Interrupt all active sub-agent tasks."""
+        self._manager.interrupt()
