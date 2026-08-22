@@ -259,7 +259,7 @@ def test_message_list_serializer_with_thinking_blocks():
         thinking_blocks=[thinking_block],
     )
 
-    serialized = message._list_serializer(vision_enabled=False)
+    serialized = message._list_serializer(vision_enabled=False, cache_enabled=False)
 
     # Thinking blocks should be in a separate field, not in content
     assert "thinking_blocks" in serialized
@@ -340,7 +340,7 @@ def test_multiple_thinking_blocks():
     assert message.thinking_blocks[1].signature is not None
 
     # Test serialization - thinking blocks should be in separate field
-    serialized = message._list_serializer(vision_enabled=False)
+    serialized = message._list_serializer(vision_enabled=False, cache_enabled=False)
 
     # Verify thinking_blocks field
     assert "thinking_blocks" in serialized
@@ -402,7 +402,7 @@ def test_thinking_blocks_in_message_dict():
     )
 
     # Test via _list_serializer
-    message_dict = message._list_serializer(vision_enabled=False)
+    message_dict = message._list_serializer(vision_enabled=False, cache_enabled=False)
 
     # Verify thinking_blocks is a top-level field in message_dict
     assert "thinking_blocks" in message_dict
@@ -457,7 +457,7 @@ def test_no_thinking_blocks_field_when_empty():
         content=[TextContent(text="Simple response.")],
     )
 
-    message_dict = message._list_serializer(vision_enabled=False)
+    message_dict = message._list_serializer(vision_enabled=False, cache_enabled=False)
 
     # When there are no thinking blocks, the field should not be present
     assert "thinking_blocks" not in message_dict
@@ -478,7 +478,7 @@ def test_thinking_blocks_only_for_assistant_role():
         thinking_blocks=[thinking_block],
     )
 
-    user_dict = user_message._list_serializer(vision_enabled=False)
+    user_dict = user_message._list_serializer(vision_enabled=False, cache_enabled=False)
 
     # Thinking blocks should not be added for non-assistant roles
     assert "thinking_blocks" not in user_dict
@@ -490,7 +490,7 @@ def test_thinking_blocks_only_for_assistant_role():
         thinking_blocks=[thinking_block],
     )
 
-    assistant_dict = assistant_message._list_serializer(vision_enabled=False)
+    assistant_dict = assistant_message._list_serializer(vision_enabled=False, cache_enabled=False)
 
     # Thinking blocks should be added for assistant role
     assert "thinking_blocks" in assistant_dict
@@ -511,7 +511,7 @@ def test_redacted_thinking_block_in_message_dict():
         thinking_blocks=[redacted_block],
     )
 
-    message_dict = message._list_serializer(vision_enabled=False)
+    message_dict = message._list_serializer(vision_enabled=False, cache_enabled=False)
 
     # Verify redacted thinking block is in message_dict
     assert "thinking_blocks" in message_dict
@@ -536,7 +536,7 @@ def test_mixed_thinking_and_redacted_blocks():
         thinking_blocks=[thinking_block, redacted_block],
     )
 
-    message_dict = message._list_serializer(vision_enabled=False)
+    message_dict = message._list_serializer(vision_enabled=False, cache_enabled=False)
 
     # Verify both types are in message_dict
     assert "thinking_blocks" in message_dict
