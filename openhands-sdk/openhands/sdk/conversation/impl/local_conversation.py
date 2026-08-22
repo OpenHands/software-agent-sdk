@@ -39,6 +39,7 @@ from openhands.sdk.credential import CredentialBindingError
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
+    Condensation,
     CondensationRequest,
     Event,
     EventID,
@@ -454,7 +455,9 @@ class LocalConversation(BaseConversation):
         # This runs on first run()/send_message() call and handles both
         # explicit hooks and plugin hooks in one place
         self._hook_processor = None
-        self._on_event = self._tree_stamping(self._rules_injecting(base_callback))
+        self._on_event = self._tree_stamping(
+            self._activation_state_syncing(self._rules_injecting(base_callback))
+        )
         self._on_token = (
             BaseConversation.compose_callbacks(token_callbacks)
             if token_callbacks
@@ -554,6 +557,51 @@ class LocalConversation(BaseConversation):
             inner(self._maybe_inject_path_rules(event))
 
         return cast(ConversationCallbackType, wrapped)
+
+    def _activation_state_syncing(
+        self, inner: ConversationCallbackType
+    ) -> ConversationCallbackType:
+        """Wrap a callback to rebuild trigger state after condensation."""
+
+        def wrapped(event: Event) -> None:
+            inner(event)
+            if isinstance(event, Condensation):
+                self._rebuild_skill_activation_state()
+
+        return cast(ConversationCallbackType, wrapped)
+
+    def _rebuild_skill_activation_state(self) -> None:
+        """Rebuild trigger deduplication state from the current conversation view."""
+        agent_context = self.agent.agent_context
+        activated_knowledge_skills: list[str] = []
+        activated_path_rules: list[str] = []
+
+        for event in self._state.view.events:
+            if isinstance(event, MessageEvent):
+                activated_names = event.activated_skills
+            elif isinstance(event, ObservationEvent) and event.extended_content:
+                if agent_context is None:
+                    continue
+                file_path = self._touched_rule_path(event)
+                if file_path is None:
+                    continue
+                result = agent_context.get_tool_use_suffix(
+                    file_path=file_path,
+                    skip_skill_names=[],
+                )
+                activated_names = result[1] if result is not None else []
+            else:
+                continue
+
+            for name in activated_names:
+                if isinstance(event, MessageEvent):
+                    if name not in activated_knowledge_skills:
+                        activated_knowledge_skills.append(name)
+                elif name not in activated_path_rules:
+                    activated_path_rules.append(name)
+
+        self._state.activated_knowledge_skills = activated_knowledge_skills
+        self._state.activated_path_rules = activated_path_rules
 
     def _maybe_inject_path_rules(self, event: Event) -> Event:
         """Return ``event`` with matching path-rule content, or unchanged.
@@ -1250,7 +1298,9 @@ class LocalConversation(BaseConversation):
                 visualizer=self._visualizer,
                 conversation_stats=self._state.stats,
             )
-            self._on_event = self._tree_stamping(self._rules_injecting(raw_on_event))
+            self._on_event = self._tree_stamping(
+                self._activation_state_syncing(self._rules_injecting(raw_on_event))
+            )
             self._hook_processor.set_conversation_state(self._state)
             self._hook_processor.run_session_start()
 
@@ -1323,7 +1373,9 @@ class LocalConversation(BaseConversation):
             visualizer=self._visualizer,
             conversation_stats=self._state.stats,
         )
-        self._on_event = self._tree_stamping(self._rules_injecting(raw_on_event))
+        self._on_event = self._tree_stamping(
+            self._activation_state_syncing(self._rules_injecting(raw_on_event))
+        )
         self._hook_processor.set_conversation_state(self._state)
         self._hook_processor.run_session_start()
 
@@ -1847,9 +1899,6 @@ class LocalConversation(BaseConversation):
                     # We skip skills that were already activated
                     skip_skill_names=self._state.activated_knowledge_skills,
                 )
-                # TODO(calvin): we need to update
-                # self._state.activated_knowledge_skills
-                # so condenser can work
                 if ctx:
                     content, activated_skill_names = ctx
                     logger.debug(
