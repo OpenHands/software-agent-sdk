@@ -1,12 +1,16 @@
 """Tests for VSCode service."""
 
 import asyncio
+import re
+import stat
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from openhands.agent_server.vscode_service import (
     VSCodeService,
+    derive_connection_token,
     get_vscode_service,
 )
 
@@ -292,7 +296,7 @@ async def test_start_vscode_process(vscode_service, tmp_path):
 
     with (
         patch(
-            "asyncio.create_subprocess_shell", return_value=mock_process
+            "asyncio.create_subprocess_exec", return_value=mock_process
         ) as mock_create,
         patch.object(vscode_service, "_wait_for_startup") as mock_wait,
     ):
@@ -315,15 +319,16 @@ async def test_start_vscode_process_with_server_base_path():
 
     with (
         patch(
-            "asyncio.create_subprocess_shell", return_value=mock_process
+            "asyncio.create_subprocess_exec", return_value=mock_process
         ) as mock_create,
         patch.object(service, "_wait_for_startup"),
     ):
         await service._start_vscode_process()
 
         # Verify the command includes --server-base-path
-        cmd = mock_create.call_args[0][0]
-        assert "--server-base-path /runtime/vscode" in cmd
+        argv = list(mock_create.call_args[0])
+        assert "--server-base-path" in argv
+        assert argv[argv.index("--server-base-path") + 1] == "/runtime/vscode"
 
 
 @pytest.mark.asyncio
@@ -336,15 +341,95 @@ async def test_start_vscode_process_without_server_base_path():
 
     with (
         patch(
-            "asyncio.create_subprocess_shell", return_value=mock_process
+            "asyncio.create_subprocess_exec", return_value=mock_process
         ) as mock_create,
         patch.object(service, "_wait_for_startup"),
     ):
         await service._start_vscode_process()
 
         # Verify the command does not include --server-base-path
-        cmd = mock_create.call_args[0][0]
-        assert "--server-base-path" not in cmd
+        assert "--server-base-path" not in list(mock_create.call_args[0])
+
+
+@pytest.mark.asyncio
+async def test_start_vscode_process_keeps_token_out_of_argv():
+    """The token must never reach the process table.
+
+    The agent runs bash in this same container, so an argument list readable by
+    `ps` is readable by the agent. openvscode-server's own docs recommend
+    `--connection-token-file` for exactly this reason.
+    """
+    service = VSCodeService(port=8001, connection_token="s3cr3t-token-value")
+
+    mock_process = AsyncMock()
+    mock_process.stdout = AsyncMock()
+
+    with (
+        patch(
+            "asyncio.create_subprocess_exec", return_value=mock_process
+        ) as mock_create,
+        patch.object(service, "_wait_for_startup"),
+    ):
+        await service._start_vscode_process()
+
+    argv = [str(arg) for arg in mock_create.call_args[0]]
+    assert "--connection-token" not in argv
+    assert not any("s3cr3t-token-value" in arg for arg in argv)
+
+    token_file = Path(argv[argv.index("--connection-token-file") + 1])
+    assert token_file.read_text() == "s3cr3t-token-value"
+
+    service._remove_connection_token_file()
+
+
+@pytest.mark.asyncio
+async def test_connection_token_file_is_not_world_readable():
+    """The token file is only useful if its permissions hold up."""
+    service = VSCodeService(port=8001, connection_token="test-token")
+
+    token_file = service._write_connection_token_file()
+    try:
+        assert stat.S_IMODE(token_file.stat().st_mode) == 0o600
+        assert stat.S_IMODE(token_file.parent.stat().st_mode) == 0o700
+    finally:
+        service._remove_connection_token_file()
+
+
+@pytest.mark.asyncio
+async def test_connection_token_file_removed_on_stop():
+    """Test that stopping the service cleans up the token file."""
+    service = VSCodeService(port=8001, connection_token="test-token")
+    token_file = service._write_connection_token_file()
+    assert token_file.exists()
+
+    await service.stop()
+
+    assert not token_file.exists()
+    assert not token_file.parent.exists()
+
+
+@pytest.mark.asyncio
+async def test_connection_token_file_removed_when_start_fails(mock_openvscode_binary):
+    """A start that never completes still has to clean up after itself.
+
+    Nothing calls stop() for a server that never came up, so the failure path
+    owns the token file it wrote.
+    """
+    service = VSCodeService(port=8001, connection_token="test-token")
+    service.openvscode_server_root = mock_openvscode_binary
+
+    with (
+        patch.object(service, "_is_port_available", return_value=True),
+        patch.object(
+            service, "_start_vscode_process", side_effect=OSError("no such binary")
+        ),
+    ):
+        # The token file is written inside _start_vscode_process, so stand one
+        # up first to represent the case where the failure comes after it.
+        token_file = service._write_connection_token_file()
+        assert await service.start() is False
+
+    assert not token_file.exists()
 
 
 @pytest.mark.asyncio
@@ -403,6 +488,55 @@ def test_get_vscode_service_enabled(tmp_path):
         service = get_vscode_service()
 
         assert isinstance(service, VSCodeService)
+
+
+def test_get_vscode_service_derives_token_from_session_api_key():
+    """The editor token must not be the session API key itself.
+
+    The token is a URL query parameter, so it reaches browser history, Referer
+    headers and proxy access logs. Deriving it keeps those disclosures from
+    being disclosures of the credential that authenticates every /api/* call.
+    """
+    with (
+        patch("openhands.agent_server.config.get_default_config") as mock_config,
+        patch("openhands.agent_server.vscode_service._vscode_service", None),
+    ):
+        mock_config.return_value.enable_vscode = True
+        mock_config.return_value.vscode_port = 8001
+        mock_config.return_value.vscode_base_path = None
+        mock_config.return_value.session_api_keys = ["super-secret-key", "second-key"]
+
+        service = get_vscode_service()
+
+        assert isinstance(service, VSCodeService)
+        assert service.connection_token != "super-secret-key"
+        assert service.connection_token == derive_connection_token("super-secret-key")
+        assert service.get_vscode_url() is not None
+        assert "super-secret-key" not in service.get_vscode_url()  # type: ignore[operator]
+
+
+def test_derive_connection_token_is_deterministic():
+    """Callers build the editor URL themselves, so the derivation is a contract.
+
+    A caller holding the session API key computes the same token this server
+    does, with no round trip — that is the property #793 wanted from sharing the
+    key outright.
+    """
+    assert derive_connection_token("key-a") == derive_connection_token("key-a")
+    assert derive_connection_token("key-a") != derive_connection_token("key-b")
+
+
+def test_derive_connection_token_satisfies_vscode_charset():
+    """openvscode-server enforces `^[0-9A-Za-z_-]+$` on connection tokens.
+
+    A session API key that violates it makes the editor refuse to start with a
+    token parse error, so passing the key through was a latent failure for any
+    key containing punctuation. A hex digest always satisfies the rule.
+    """
+    token = derive_connection_token("a key/with+punctuation=and spaces")
+
+    assert re.fullmatch(r"[0-9A-Za-z_-]+", token)
+    assert len(token) == 64
 
 
 def test_get_vscode_service_disabled():
