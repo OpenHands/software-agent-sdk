@@ -1451,6 +1451,14 @@ class RemoteConversation(BaseConversation):
             json={"plugin_ref": plugin_ref},
         )
 
+    def refresh_mcp_tools(self) -> None:
+        """Ask the remote server to refresh this conversation's MCP tools."""
+        _send_request(
+            self._client,
+            "POST",
+            f"{self._conversation_action_base_path}/{self._id}/refresh_mcp_tools",
+        )
+
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None:
         from openhands.sdk.secret.secrets import SecretSource
 

@@ -1692,6 +1692,13 @@ class EventService:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.load_plugin, plugin_ref)
 
+    async def refresh_mcp_tools(self) -> None:
+        """Refresh MCP tools without blocking the agent-server event loop."""
+        if self._conversation is None:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._conversation.refresh_mcp_tools)
+
     async def switch_acp_model(self, model: str) -> None:
         """Switch the model on an ACP conversation.
 

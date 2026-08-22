@@ -570,6 +570,8 @@ def test_remote_conversation_over_real_server(server_env, patched_llm):
         agent=agent, workspace=workspace
     )  # RemoteConversation
 
+    conv.refresh_mcp_tools()
+
     # Send a message and run
     conv.send_message("Say hello")
     conv.run()
