@@ -1,5 +1,5 @@
 ---
-# Workflow that marks issues and PRs with no activity for 30 days with "Stale" and closes them after 7 more days of no activity
+# Workflow that marks issues and PRs with no activity for 40 days with "Stale" and closes them after 10 more days of no activity
 name: Close stale issues
 
 # Runs every day at 01:30
@@ -20,10 +20,10 @@ jobs:
             - uses: actions/stale@v10
               with:
                   repo-token: ${{ secrets.GITHUB_TOKEN }}
-                  stale-issue-message: This issue is stale because it has been open for 40 days with no activity. Remove the stale label or leave a 
-                      comment, otherwise it will be closed in 10 days.
-                  stale-pr-message: This PR is stale because it has been open for 40 days with no activity. Remove the stale label or leave a comment,
+                  stale-issue-message: This issue is stale because it has had no activity for 40 days. Remove the stale label or leave a comment, 
                       otherwise it will be closed in 10 days.
+                  stale-pr-message: This PR is stale because it has had no activity for 40 days. Remove the stale label or leave a comment, otherwise 
+                      it will be closed in 10 days.
                   days-before-stale: 40
                   exempt-issue-labels: roadmap,backlog
                   close-issue-message: This issue was automatically closed due to 50 days of inactivity. We do this to help keep the issues somewhat 
