@@ -1641,7 +1641,21 @@ class LocalConversation(BaseConversation):
 
         Args:
             llm: LLM to install on the agent.
+
+        Raises:
+            ValueError: If the conversation's agent is an :class:`ACPAgent`.
+                Swapping OpenHands' own LLM object has no effect on an ACP
+                subprocess, which owns its own model. Persisting the swap would
+                leave base_state.json and the live session disagreeing (#4158);
+                use :meth:`switch_acp_model` for ACP conversations instead.
         """
+        if isinstance(self.agent, ACPAgent):
+            raise ValueError(
+                "switch_llm/switch_profile is not supported for ACP conversations. "
+                "The ACP server owns its own model, so switching the OpenHands LLM "
+                "would not take effect on the live session. Use switch_acp_model to "
+                "change the model of an ACP conversation."
+            )
         try:
             new_llm = self.llm_registry.get(llm.usage_id)
         except KeyError:

@@ -258,6 +258,34 @@ def test_switch_acp_model_disarms_discarded_agent_finalizer(tmp_path):
     assert switched._atexit_callback is None
 
 
+def test_switch_llm_rejects_acp_agent(tmp_path):
+    """Regression for #4158: switch_llm must reject ACP conversations.
+
+    Swapping the OpenHands LLM has no effect on the ACP subprocess (which owns
+    its own model), so persisting the swap would leave base_state.json and the
+    live session disagreeing. It must fail loudly instead of half-applying.
+    """
+    conv, agent = _make_acp_conversation(tmp_path)
+    with pytest.raises(ValueError, match="not supported for ACP"):
+        conv.switch_llm(_make_llm("kimi", "kimi"))
+    # The agent is untouched — still the ACP agent, and no LLM swap occurred.
+    assert conv.agent is agent
+    assert isinstance(conv.state.agent, ACPAgent)
+
+
+def test_switch_profile_rejects_acp_agent(tmp_path, profile_store):
+    """Regression for #4158: switch_profile must reject ACP conversations.
+
+    The persisted state must not be rewritten to the profile's OpenHands LLM
+    while the live ACP session keeps the old agent.
+    """
+    conv, agent = _make_acp_conversation(tmp_path)
+    with pytest.raises(ValueError, match="not supported for ACP"):
+        conv.switch_profile("fast")
+    assert conv.agent is agent
+    assert isinstance(conv.state.agent, ACPAgent)
+
+
 def test_switch_profile(profile_store):
     """switch_profile switches the agent's LLM."""
     conv = _make_conversation()
