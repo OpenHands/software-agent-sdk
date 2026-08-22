@@ -349,6 +349,11 @@ def _auth_selection_failure_reason(auth_methods: list[Any], env: dict[str, str])
         env.get(name) for name in ("CODEX_API_KEY", "OPENAI_API_KEY")
     ):
         reasons.append("CODEX_API_KEY and OPENAI_API_KEY are unset")
+    if "pi_terminal_login" in method_ids:
+        reasons.append(
+            "PI_SETTINGS_JSON is missing; interactive pi_terminal_login "
+            "is unavailable in the headless runtime"
+        )
     return "; ".join(reasons) or "no supported credential source is available"
 
 
@@ -1082,6 +1087,18 @@ def _classify_acp_turn_error(exc: BaseException) -> str:
         return "ACPAuthRequired"
     return "ACPPromptError"
 
+def _has_preconfigured_terminal_auth(
+    auth_methods: list[Any],
+    env: dict[str, str],
+) -> bool:
+    """Return True when the server reports ``pi_terminal_login`` and we can see
+    a pre-existing ``$PI_CODING_AGENT_DIR/settings.json``.
+    """
+    method_ids = {method.id for method in auth_methods}
+    if "pi_terminal_login" not in method_ids:
+        return False
+    agent_dir = env.get("PI_CODING_AGENT_DIR")
+    return bool(agent_dir and (Path(agent_dir) / "settings.json").is_file())
 
 class _OpenHandsACPBridge:
     """Bridge between OpenHands and ACP that accumulates session updates.
@@ -1552,7 +1569,7 @@ class ACPAgent(AgentBase):
         default=None,
         description=(
             "Provider registry key identifying which ACP CLI this agent runs "
-            "('claude-code', 'codex', 'gemini-cli', or 'custom'); None when the "
+            "('claude-code', 'codex', 'gemini-cli', 'pi', or 'custom'); None when the "
             "agent is built directly rather than via ACPAgentSettings. Set by "
             "ACPAgentSettings.create_agent() from ACPAgentSettings.acp_server so "
             "the authoritative key survives onto the agent — and thus onto "
@@ -1573,6 +1590,7 @@ class ACPAgent(AgentBase):
             "If None (default), auto-detected from the ACP server type: "
             "'bypassPermissions' for claude-agent-acp, "
             "'agent-full-access' for codex-acp."
+            "providers without a required mode skip the protocol call."
         ),
     )
     acp_prompt_timeout: float = Field(
@@ -2353,6 +2371,7 @@ class ACPAgent(AgentBase):
 
         ``HOME`` (gemini-cli's only lever — it hard-codes ``~/.gemini`` and
         ignores ``XDG``) has a wider blast radius than the surgical
+        ``HOME`` Pi uses relocated HOME because pi-acp stores its session map under ~/.pi/pi-acp
         ``CODEX_HOME`` / ``CLAUDE_CONFIG_DIR``: it also relocates the home dir
         seen by anything the CLI subprocess itself spawns (``git``, ``npm``,
         ``node``, shells — e.g. ``~/.gitconfig``, ``~/.npmrc``, the npm cache).
@@ -2787,6 +2806,8 @@ class ACPAgent(AgentBase):
             # (e.g. codex-acp) require an explicit authenticate call
             # before session creation.  We auto-detect the method from
             # the env vars that are available to the process.
+            # If there are no env vars available, then we check if there is 
+            # a preconfigured terminal auth. (Pi-ACP)
             auth_methods = init_response.auth_methods or []
             if auth_methods:
                 method_id = _select_auth_method(auth_methods, env)
@@ -2829,7 +2850,7 @@ class ACPAgent(AgentBase):
                             "ChatGPT authentication needs to be refreshed."
                         ) from exc
                     await self._flush_file_credentials()
-                else:
+                elif not _has_preconfigured_terminal_auth(auth_methods, env):
                     _warn_auth_selection_failure(auth_methods, env)
 
             # Resume the prior ACP session if we have its id.  If the server

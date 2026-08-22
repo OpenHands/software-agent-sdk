@@ -777,6 +777,21 @@ def test_dry_run_acp_reports_credential_channels_by_role(
     assert diag.acp_file_secret_names == ["CODEX_AUTH_JSON"]
     assert diag.resolved_settings is not None
 
+# Test for Pi profile diagnostics
+def test_dry_run_acp_pi_profile_diagnostics(
+    llm_store: LLMProfileStore,
+) -> None:
+    profile = ACPAgentProfile(name="acp-pi", acp_server="pi")
+    diag = resolve_agent_profile_dry_run(
+        profile,
+        llm_store=llm_store,
+        mcp_config={},
+        available_skills=None, 
+    )
+    assert diag.agent_kind == "acp"
+    assert diag.valid is True
+    assert diag.acp_file_secret_names == ["PI_SETTINGS_JSON"]
+
 
 def test_dry_run_acp_reports_no_skills(
     llm_store: LLMProfileStore,

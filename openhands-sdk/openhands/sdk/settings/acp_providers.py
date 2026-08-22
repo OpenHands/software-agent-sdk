@@ -36,7 +36,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -153,9 +153,11 @@ class ACPProviderInfo:
     ``None`` if the provider does not support env-based base-URL override.
     """
 
-    default_session_mode: str
+    default_session_mode: str | None
     """ACP session-mode ID set right after ``session/new``.
 
+    This is an optional provider-specific mode setting (which can be None),
+    rather than strictly a permission-suppressing toggle.
     For servers with a permission-suppressing mode that is the value:
     ``bypassPermissions`` (claude-agent-acp), ``agent-full-access``
     (@agentclientprotocol/codex-acp).
@@ -175,8 +177,7 @@ class ACPProviderInfo:
     """``True`` if this provider selects its *initial* model via the
     ``set_session_model`` protocol call (rather than session ``_meta``).
 
-    This governs the **session-creation** path only. ``True`` for all three
-    built-in providers, which get a one-shot ``set_session_model`` call right
+    This governs the **session-creation** path only. ``True`` for all built-in providers, which get a one-shot ``set_session_model`` call right
     after the session is created. claude-agent-acp was ``False`` until 0.30.0
     was found to silently ignore the session-``_meta`` selection it relied on
     (#3654); its ``_meta`` payload is still sent alongside (see
@@ -203,7 +204,7 @@ class ACPProviderInfo:
     :attr:`supports_runtime_model_switch`.
 
     - ``"claudeCode"`` — claude-agent-acp
-    - ``None``         — codex-acp, gemini-cli
+    - ``None``         — codex-acp, gemini-cli, pi-acp
     """
 
     available_models: tuple[ACPModelOption, ...] = field(default=(), compare=False)
@@ -228,9 +229,9 @@ class ACPProviderInfo:
     for **runtime, mid-conversation model switching**.
 
     The call applies to the live session, so subsequent turns use the new
-    model without restarting the subprocess or losing context. All three
-    built-in providers support it (verified against claude-agent-acp,
-    codex-acp, and gemini-cli).
+    model without restarting the subprocess or losing context. All built-in
+    providers support it (verified against claude-agent-acp, codex-acp,
+    gemini-cli, pi-acp).
 
     Unlike :attr:`supports_set_session_model`, this is about switching the
     model of an *already-running* session, not the initial selection. A
@@ -277,6 +278,8 @@ class ACPProviderInfo:
     - ``CLAUDE_CONFIG_DIR`` — claude-agent-acp (relocates ``~/.claude*``)
     - ``HOME``              — gemini-cli (no dedicated var; it hard-codes
       ``~/.gemini`` and ignores ``XDG``, so only ``HOME`` moves it)
+    - ``HOME``              — pi-acp keeps session/config state under
+      ``~/.pi/pi-acp`` (which requires ``HOME`` to relocate).
 
     ``None`` for providers with no known relocation lever, which then skip
     isolation. Consumed by
@@ -348,6 +351,7 @@ _GEMINI_MODELS: tuple[ACPModelOption, ...] = (
 )
 
 
+
 # ---------------------------------------------------------------------------
 # Reserved file-content credential secrets for the built-in providers.
 #
@@ -356,6 +360,8 @@ _GEMINI_MODELS: tuple[ACPModelOption, ...] = (
 # storage). Gemini's Vertex AI service-account JSON is pointed at directly by
 # ``GOOGLE_APPLICATION_CREDENTIALS``; Vertex also needs a project/location, so
 # warn when those are unset.
+# Pi's authentication is handled by ``PI_SETTINGS_JSON``
+
 # ---------------------------------------------------------------------------
 _CODEX_FILE_SECRETS: tuple[ACPFileSecretSpec, ...] = (
     ACPFileSecretSpec(
@@ -376,6 +382,15 @@ _GEMINI_FILE_SECRETS: tuple[ACPFileSecretSpec, ...] = (
         warn_if_unset=("GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"),
     ),
 )
+_PI_FILE_SECRETS: tuple[ACPFileSecretSpec, ...] = (
+    ACPFileSecretSpec(
+        secret_name="PI_SETTINGS_JSON",
+        filename="settings.json",
+        env_var="PI_CODING_AGENT_DIR",
+        subdir="pi",
+        env_points_to="dir",
+    ),
+)
 
 
 # Pinned npm versions for the built-in ACP launchers. Keep in sync with the
@@ -390,9 +405,14 @@ _GEMINI_FILE_SECRETS: tuple[ACPFileSecretSpec, ...] = (
 # claude-agent-acp 0.44+ / codex-acp select the model via a ``model``
 # ``configOptions`` entry (and retain the legacy ``session/set_model``
 # extension); the SDK detects which mechanism each session advertises.
-CLAUDE_AGENT_ACP_VERSION = "0.63.0"
-CODEX_ACP_VERSION = "1.1.7"
-GEMINI_CLI_VERSION = "0.46.0"
+# Pi requires two separate pins: PI_ACP_VERSION for the ACP adapter launcher
+# (pi-acp) and PI_CODING_AGENT_VERSION for the underlying CLI engine
+# (@earendil-works/pi-coding-agent).
+CLAUDE_AGENT_ACP_VERSION: Final[str] = "0.63.0"
+CODEX_ACP_VERSION: Final[str] = "1.1.7"
+GEMINI_CLI_VERSION: Final[str] = "0.46.0"
+PI_ACP_VERSION: Final[str] = "0.0.33"
+PI_CODING_AGENT_VERSION: Final[str] = "0.83.0"
 
 
 ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
@@ -480,6 +500,31 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             # ``~/.gemini`` (ignoring XDG), so only HOME relocates its state.
             data_dir_env_var="HOME",
         ),
+        "pi": ACPProviderInfo(
+            key="pi",
+            display_name="Pi",
+            default_command=(
+                "npx",
+                "-y",
+                f"--package=pi-acp@{PI_ACP_VERSION}",
+                f"--package=@earendil-works/pi-coding-agent@{PI_CODING_AGENT_VERSION}",
+                "pi-acp",
+            ),
+            api_key_env_var=None,
+            base_url_env_var=None,
+            default_session_mode=None,
+            agent_name_patterns=("pi-acp",),
+            supports_set_session_model=True,
+            supports_runtime_model_switch=True,
+            session_meta_key=None,
+            # Pi-acp exposes model switching thorugh its ACP config/model methods. Tests should verify this
+            available_models=(),
+            default_model=None,
+            file_secrets=_PI_FILE_SECRETS,
+            binary_name="pi-acp",
+            # pi-acp's session map remains under ~/.pi/pi-acp. Relocating HOME isolates both.
+            data_dir_env_var="HOME",
+        ),
     }
 )
 """Read-only registry of built-in ACP providers keyed by ``acp_server`` value."""
@@ -525,7 +570,7 @@ def detect_acp_provider_by_command(
     """Identify a provider from its launch ``command``, before the subprocess runs.
 
     Each provider's :attr:`~ACPProviderInfo.agent_name_patterns` fragments
-    (``"codex-acp"``, ``"claude-agent"``, ``"gemini-cli"``) are prefixes of its
+    (``"codex-acp"``, ``"claude-agent"``, ``"gemini-cli"``, ``"pi-acp"``) are prefixes of its
     npm-package / binary basename, so we can pick the provider *before* the server
     starts and reports its name (when the subprocess environment, e.g. a relocated
     data dir, must already be set).
@@ -535,7 +580,7 @@ def detect_acp_provider_by_command(
     *caller-controlled*: each token is reduced to its basename (last path segment,
     minus a trailing ``@version`` pin) and a provider matches only when that
     basename *starts with* one of its patterns. This accepts the real forms —
-    ``@agentclientprotocol/codex-acp``, ``@google/gemini-cli@0.46.0``,
+    ``@agentclientprotocol/codex-acp``, ``@google/gemini-cli@0.46.0``, ``--package=pi-acp@0.0.33``,
     ``/opt/node_modules/.bin/codex-acp`` — while rejecting incidental substrings
     like ``my-codex-acp-wrapper`` or ``/opt/shims/not-codex-acp`` that a plain
     substring test would misattribute.
