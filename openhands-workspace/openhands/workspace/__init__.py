@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 from openhands.sdk.workspace import PlatformType, TargetType
 
+from .agent_sandbox import AgentSandboxWorkspace
 from .apptainer import ApptainerWorkspace
 from .cloud import (
     CloneResult,
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "APIRemoteWorkspace",
+    "AgentSandboxWorkspace",
     "ApptainerWorkspace",
     "CloneResult",
     "DockerDevWorkspace",
