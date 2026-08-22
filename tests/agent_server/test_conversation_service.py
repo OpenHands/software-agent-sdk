@@ -591,6 +591,56 @@ async def test_prepare_for_sandbox_pause_drains_active_services(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_prepare_for_sandbox_pause_blocks_new_hydration(
+    persisted_conversation,
+):
+    conversations_dir, conversation_id = persisted_conversation
+    service = ConversationService(conversations_dir=conversations_dir)
+    await service.__aenter__()
+    existing_id = uuid4()
+    existing = AsyncMock(spec=EventService)
+    close_entered = asyncio.Event()
+    finish_close = asyncio.Event()
+    hydration_entered = asyncio.Event()
+    record = service._conversation_records[conversation_id]
+    hydrated = AsyncMock(spec=EventService)
+    hydrated.stored = record.stored
+
+    async def close(*_args):
+        close_entered.set()
+        await finish_close.wait()
+
+    async def hydrate(*_args, **_kwargs):
+        hydration_entered.set()
+        assert service._event_services is not None
+        service._event_services[conversation_id] = hydrated
+        return hydrated
+
+    existing.__aexit__.side_effect = close
+    assert service._event_services is not None
+    service._event_services[existing_id] = existing
+
+    try:
+        with patch.object(service, "_start_event_service", side_effect=hydrate):
+            pause_task = asyncio.create_task(service.prepare_for_sandbox_pause())
+            await asyncio.wait_for(close_entered.wait(), timeout=1)
+            hydration_task = asyncio.create_task(
+                service.get_event_service(conversation_id)
+            )
+            await asyncio.sleep(0)
+            assert not hydration_entered.is_set()
+
+            finish_close.set()
+            await asyncio.wait_for(pause_task, timeout=1)
+            assert service._event_services == {}
+            assert not hydration_entered.is_set()
+            assert await asyncio.wait_for(hydration_task, timeout=1) is hydrated
+    finally:
+        finish_close.set()
+        await service.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
 async def test_prepare_for_sandbox_pause_closes_services_concurrently(tmp_path):
     service = ConversationService(conversations_dir=tmp_path / "conversations")
     await service.__aenter__()
@@ -942,7 +992,8 @@ async def test_waiting_hydration_cannot_restore_deleted_conversation(
             ) as start_event_service,
             patch("openhands.agent_server.conversation_service.safe_rmtree"),
         ):
-            await service._get_conversation_lock(conversation_id).acquire()
+            conversation_lock = service._get_conversation_lock(conversation_id)
+            await conversation_lock.acquire()
             try:
                 getter_task = asyncio.create_task(
                     service.get_event_service(conversation_id)
@@ -955,7 +1006,7 @@ async def test_waiting_hydration_cannot_restore_deleted_conversation(
                 )
                 await asyncio.sleep(0)
             finally:
-                service._get_conversation_lock(conversation_id).release()
+                conversation_lock.release()
 
             getter_result, deleted = await asyncio.gather(getter_task, delete_task)
 
@@ -2628,6 +2679,22 @@ class TestConversationServiceDeleteConversation:
         """Test delete_conversation with non-existent conversation ID."""
         result = await conversation_service.delete_conversation(uuid4())
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_missing_conversations_do_not_accumulate_locks(
+        self, conversation_service
+    ):
+        for _ in range(100):
+            conversation_id = uuid4()
+            assert await conversation_service.get_event_service(conversation_id) is None
+            assert (
+                await conversation_service.resume_conversation(conversation_id) is False
+            )
+            assert (
+                await conversation_service.delete_conversation(conversation_id) is False
+            )
+
+        assert len(conversation_service._conversation_locks) == 0
 
     @pytest.mark.asyncio
     async def test_delete_conversation_success(self, conversation_service):

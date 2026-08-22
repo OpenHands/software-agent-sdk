@@ -6,11 +6,12 @@ import os
 import threading
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
+from weakref import WeakValueDictionary
 
 import httpx
 from pydantic import BaseModel
@@ -646,10 +647,14 @@ class ConversationService:
         default_factory=dict, init=False
     )
     _lifecycle_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
-    _conversation_locks: dict[UUID, asyncio.Lock] = field(
-        default_factory=dict, init=False
+    _lifecycle_condition: asyncio.Condition = field(
+        default_factory=asyncio.Condition, init=False
     )
-    _catalog_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+    _active_lifecycle_operations: int = field(default=0, init=False)
+    _exclusive_lifecycle_pending: bool = field(default=False, init=False)
+    _conversation_locks: WeakValueDictionary[UUID, asyncio.Lock] = field(
+        default_factory=WeakValueDictionary, init=False
+    )
     _conversation_webhook_subscribers: list["ConversationWebhookSubscriber"] = field(
         default_factory=list, init=False
     )
@@ -756,7 +761,7 @@ class ConversationService:
         secret_name: str,
         binding: VersionedCredentialBinding,
     ) -> None:
-        async with self._get_conversation_lock(conversation_id):
+        async with self._conversation_lifecycle(conversation_id):
             event_services = self._event_services
             event_service = (
                 event_services.get(conversation_id)
@@ -775,7 +780,7 @@ class ConversationService:
             )
 
     async def prepare_for_sandbox_pause(self) -> None:
-        async with self._lifecycle_lock:
+        async with self._exclusive_lifecycle():
             event_services = self._event_services
             if event_services is None:
                 raise ValueError("inactive_service")
@@ -1053,14 +1058,6 @@ class ConversationService:
             )
 
     def _get_conversation_lock(self, conversation_id: UUID) -> asyncio.Lock:
-        """Return the per-conversation lifecycle lock, creating it if needed.
-
-        Replaces the global ``_lifecycle_lock`` for operations that act on a
-        *single* conversation. The ``_catalog_lock`` only guards the
-        ``_conversation_locks`` dict itself (a brief, in-memory mutation), so
-        acquiring a conversation lock never blocks operations on other
-        conversations.
-        """
         with self._catalog_lock_sync:
             lock = self._conversation_locks.get(conversation_id)
             if lock is None:
@@ -1072,10 +1069,49 @@ class ConversationService:
         default_factory=threading.Lock, init=False
     )
 
+    @asynccontextmanager
+    async def _conversation_lifecycle(self, conversation_id: UUID):
+        async with self._lifecycle_condition:
+            await self._lifecycle_condition.wait_for(
+                lambda: not self._exclusive_lifecycle_pending
+            )
+            self._active_lifecycle_operations += 1
+        try:
+            async with self._get_conversation_lock(conversation_id):
+                yield
+        finally:
+            async with self._lifecycle_condition:
+                self._active_lifecycle_operations -= 1
+                if self._active_lifecycle_operations == 0:
+                    self._lifecycle_condition.notify_all()
+
+    @asynccontextmanager
+    async def _exclusive_lifecycle(self):
+        async with self._lifecycle_lock:
+            try:
+                async with self._lifecycle_condition:
+                    self._exclusive_lifecycle_pending = True
+                    await self._lifecycle_condition.wait_for(
+                        lambda: self._active_lifecycle_operations == 0
+                    )
+                yield
+            finally:
+                async with self._lifecycle_condition:
+                    self._exclusive_lifecycle_pending = False
+                    self._lifecycle_condition.notify_all()
+
     async def _get_or_load_event_service(
         self, conversation_id: UUID
     ) -> EventService | None:
-        async with self._get_conversation_lock(conversation_id):
+        event_services = self._event_services
+        if event_services is None:
+            raise ValueError("inactive_service")
+        if (
+            conversation_id not in event_services
+            and conversation_id not in self._conversation_records
+        ):
+            return None
+        async with self._conversation_lifecycle(conversation_id):
             return await self._get_or_load_event_service_locked(conversation_id)
 
     async def _get_or_load_event_service_locked(
@@ -1343,7 +1379,7 @@ class ConversationService:
         if existing_record is not None or (
             existing_event_service is not None and existing_event_service.is_open()
         ):
-            async with self._get_conversation_lock(conversation_id):
+            async with self._conversation_lifecycle(conversation_id):
                 existing_event_service = self._event_services.get(conversation_id)
                 if (
                     existing_event_service is not None
@@ -1650,7 +1686,7 @@ class ConversationService:
                 launched_agent_profile=launched_agent_profile,
                 **request_data,
             )
-        async with self._get_conversation_lock(conversation_id):
+        async with self._conversation_lifecycle(conversation_id):
             # New conversation: the agent is written to base_state.json (its
             # single source of truth), not to meta.json. Pass it explicitly.
             # ``new_agent`` is ``request.agent`` (decrypted when the request was
@@ -1708,10 +1744,15 @@ class ConversationService:
         return bool(await self._get_or_load_event_service(conversation_id))
 
     async def delete_conversation(self, conversation_id: UUID) -> bool:
-        async with self._get_conversation_lock(conversation_id):
-            event_services = self._event_services
-            if event_services is None:
-                raise ValueError("inactive_service")
+        event_services = self._event_services
+        if event_services is None:
+            raise ValueError("inactive_service")
+        if (
+            conversation_id not in event_services
+            and conversation_id not in self._conversation_records
+        ):
+            return False
+        async with self._conversation_lifecycle(conversation_id):
             event_service = await self._get_or_load_event_service_locked(
                 conversation_id,
                 require_runtime_bindings=False,
@@ -1936,7 +1977,7 @@ class ConversationService:
         # directory so we don't leave stale state on disk.
         fork_dir = self.conversations_dir / fork_conv_id.hex
         try:
-            async with self._get_conversation_lock(source_id):
+            async with self._conversation_lifecycle(fork_conv_id):
                 fork_event_service = await self._start_event_service(
                     fork_stored, is_new_conversation=True, agent=fork_agent
                 )
@@ -2061,7 +2102,7 @@ class ConversationService:
 
         Running or externally-subscribed conversations are skipped.
         """
-        async with self._lifecycle_lock:
+        async with self._exclusive_lifecycle():
             event_services = self._event_services
             if event_services is None:
                 return
@@ -2117,7 +2158,7 @@ class ConversationService:
                 await self._lease_renewal_task
             self._lease_renewal_task = None
 
-        async with self._lifecycle_lock:
+        async with self._exclusive_lifecycle():
             event_services = self._event_services
             if event_services is None:
                 return
