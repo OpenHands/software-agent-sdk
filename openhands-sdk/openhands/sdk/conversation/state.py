@@ -417,6 +417,16 @@ class ConversationState(OpenHandsModel):
         self._write_guard = write_guard
         self._events.set_write_guard(write_guard)
 
+    def _mark_dirty(self) -> None:
+        """Schedule a save after mutating a nested field in place.
+
+        The caller must hold this state as a context manager so the mutation
+        and the deferred save remain under the same lock.
+        """
+        if self._save_depth <= 0 or not self.owned():
+            raise RuntimeError("State must be locked before marking it dirty")
+        self._dirty = True
+
     # ===== Base snapshot helpers (same FileStore usage you had) =====
     def _save_base_state(self, fs: FileStore) -> None:
         """
