@@ -442,9 +442,8 @@ async def test_aresponses_maps_connection_error(mock_aresp):
 def test_fallback_forwards_caller_kwargs(mock_comp):
     """Caller kwargs (e.g. ``metadata``) must reach the fallback LLM call.
 
-    Regression guard for the ``_caller_kwargs`` forwarding added alongside
-    the prompt-cache-too-small retry: the fallback path now receives the
-    same kwargs the caller passed to the primary's ``completion()``.
+    Regression guard that the fallback path receives the same kwargs the caller
+    passed to the primary's ``completion()``.
     """
     primary_error = APIConnectionError(
         message="connection reset", llm_provider="openai", model="gpt-4o"
