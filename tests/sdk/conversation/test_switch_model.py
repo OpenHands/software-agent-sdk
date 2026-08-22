@@ -594,6 +594,71 @@ def test_switch_profile_decrypts_with_cipher(tmp_path, monkeypatch):
     assert api_key.get_secret_value() == "plaintext-secret"
 
 
+def test_load_profile_llm_decrypts_with_cipher(tmp_path, monkeypatch):
+    """load_profile_llm decrypts secrets with the conversation's cipher (like
+    switch_profile) but does NOT register the LLM in llm_registry — the caller
+    (e.g. the task tool) owns metrics attribution.
+    """
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir()
+    monkeypatch.setattr(llm_profile_store, "_DEFAULT_PROFILE_DIR", profile_dir)
+
+    cipher = Cipher("test-key-for-load-profile-llm")
+    store = LLMProfileStore(base_dir=profile_dir)
+    store.save(
+        "encrypted",
+        LLM(
+            model="gpt-4o",
+            usage_id="encrypted",
+            api_key=SecretStr("plaintext-secret"),
+        ),
+        include_secrets=True,
+        cipher=cipher,
+    )
+
+    conv = LocalConversation(
+        agent=Agent(
+            llm=_make_llm("default-model", "test-llm"),
+            tools=[],
+        ),
+        workspace=Path.cwd(),
+        cipher=cipher,
+    )
+
+    llm = conv.load_profile_llm("encrypted")
+
+    assert isinstance(llm.api_key, SecretStr)
+    assert llm.api_key.get_secret_value() == "plaintext-secret"
+    with pytest.raises(KeyError):
+        conv.llm_registry.get(llm.usage_id)
+
+
+def test_load_profile_llm_unknown_lists_available(profile_store):
+    """Unknown profile raises ValueError listing what the same store has."""
+    conv = _make_conversation()
+    with pytest.raises(ValueError, match="not found") as excinfo:
+        conv.load_profile_llm("missing")
+    assert "fast" in str(excinfo.value)
+
+
+def test_load_profile_llm_custom_store_dir(tmp_path, monkeypatch):
+    """profile_store_dir resolves from that dir instead of the default store."""
+    monkeypatch.setattr(
+        llm_profile_store, "_DEFAULT_PROFILE_DIR", tmp_path / "default-profiles"
+    )
+    custom_dir = tmp_path / "custom-profiles"
+    store = LLMProfileStore(base_dir=custom_dir)
+    store.save("custom", _make_llm("custom-model", "custom"), include_secrets=True)
+
+    conv = _make_conversation()
+
+    llm = conv.load_profile_llm("custom", profile_store_dir=str(custom_dir))
+    assert llm.model == "custom-model"
+
+    with pytest.raises(ValueError, match="not found"):
+        conv.load_profile_llm("custom")
+
+
 def test_switch_profile_delegates_to_switch_llm(profile_store, monkeypatch):
     """switch_profile loads from disk and delegates to switch_llm; the LLM
     handed off carries the canonical ``profile:{name}`` usage_id.
