@@ -386,7 +386,12 @@ def get_features(
         ),
         supports_responses_api=_supports_responses_api(model, model_info, overrides),
         force_string_serializer=model_matches(model, FORCE_STRING_SERIALIZER_MODELS),
-        send_reasoning_content=model_matches(model, SEND_REASONING_CONTENT_MODELS),
+        send_reasoning_content=_resolved_bool(
+            "send_reasoning_content",
+            overrides=overrides,
+            metadata=model_info,
+            fallback=model_matches(model, SEND_REASONING_CONTENT_MODELS),
+        ),
         # Extended prompt_cache_retention support follows ordered include/exclude rules.
         supports_prompt_cache_retention=_resolved_bool(
             "supports_prompt_cache_retention",
