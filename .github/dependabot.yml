@@ -2,8 +2,20 @@
 # Dependabot configuration for automated dependency updates
 # See: https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
 #
-# Note: Python (pip) ecosystem is not configured here because Dependabot does not
-# fully support uv workspaces yet. See issue #2510 for tracking.
+# Note: Dependabot supports the `uv` ecosystem and has discovered and updated
+# workspace-member dependencies since dependabot-core#14627 was deployed in May
+# 2026. Python updates remain disabled here because workspace handling is not yet
+# fully reliable for this multi-package repository with one root `uv.lock`.
+#
+# Last recheck: August 2026. Open correctness gaps include:
+#   - dependabot-core#14004  Workspace members can be queried on PyPI
+#   - dependabot-core#15558  Grouped updates can replace similarly named deps
+#   - dependabot-core#15786  Grouped updates can rewrite unrelated member pins
+#   - dependabot-core#13202  `dependency-type` grouping is unsupported for uv
+#   - dependabot-core#14665  Grouped security updates can miss case variants
+#   - dependabot-core#14119  Version updates can fail on dependency casing
+#
+# See issue #2510 for tracking.
 
 version: 2
 
