@@ -18,6 +18,9 @@ jobs:
         steps:
             - name: Checkout
               uses: actions/checkout@v7
+              with:
+                  # SonarQube reads git history to attribute issues to authors.
+                  fetch-depth: 0
 
             - name: Verify test directories
               run: |
@@ -482,7 +485,7 @@ jobs:
     coverage-report:
         runs-on: blacksmith-2vcpu-ubuntu-2404
         needs: [sdk-tests, tools-tests, agent-server-tests, workspace-tests, cross-tests]
-        if: always() && github.event_name == 'pull_request'
+        if: always()
         steps:
             - name: Checkout
               uses: actions/checkout@v7
@@ -547,4 +550,14 @@ jobs:
                   xml-skip-covered: true
                   report-only-changed-files: true
                   remove-links-to-files: true
+
+            # coverage.xml is already produced above, at the path sonar-project.properties
+            # points at. Fork PRs get no secrets, so the scan could only fail on a missing
+            # token -- skip rather than fail red.
+            - name: SonarQube analysis
+              if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+              uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
+              env:
+                  SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+                  SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
                   remove-links-to-lines: true
