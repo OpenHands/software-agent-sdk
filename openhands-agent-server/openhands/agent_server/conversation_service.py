@@ -3,7 +3,6 @@ import importlib
 import json
 import logging
 import os
-import threading
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
@@ -655,9 +654,6 @@ class ConversationService:
     _conversation_locks: WeakValueDictionary[UUID, asyncio.Lock] = field(
         default_factory=WeakValueDictionary, init=False
     )
-    _catalog_lock_sync: threading.Lock = field(
-        default_factory=threading.Lock, init=False
-    )
     _conversation_webhook_subscribers: list["ConversationWebhookSubscriber"] = field(
         default_factory=list, init=False
     )
@@ -1061,12 +1057,11 @@ class ConversationService:
             )
 
     def _get_conversation_lock(self, conversation_id: UUID) -> asyncio.Lock:
-        with self._catalog_lock_sync:
-            lock = self._conversation_locks.get(conversation_id)
-            if lock is None:
-                lock = asyncio.Lock()
-                self._conversation_locks[conversation_id] = lock
-            return lock
+        lock = self._conversation_locks.get(conversation_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._conversation_locks[conversation_id] = lock
+        return lock
 
     @asynccontextmanager
     async def _conversation_lifecycle(self, conversation_id: UUID):

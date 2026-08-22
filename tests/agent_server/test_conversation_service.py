@@ -591,6 +591,30 @@ async def test_prepare_for_sandbox_pause_drains_active_services(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_conversation_lifecycle_serializes_only_matching_ids(tmp_path):
+    service = ConversationService(conversations_dir=tmp_path / "conversations")
+    first_id = uuid4()
+    second_id = uuid4()
+    same_id_entered = asyncio.Event()
+    other_id_entered = asyncio.Event()
+
+    async def enter_lifecycle(conversation_id: UUID, entered: asyncio.Event):
+        async with service._conversation_lifecycle(conversation_id):
+            entered.set()
+
+    async with service._conversation_lifecycle(first_id):
+        same_id_task = asyncio.create_task(enter_lifecycle(first_id, same_id_entered))
+        other_id_task = asyncio.create_task(
+            enter_lifecycle(second_id, other_id_entered)
+        )
+        await asyncio.wait_for(other_id_entered.wait(), timeout=1)
+        assert not same_id_entered.is_set()
+
+    await asyncio.gather(same_id_task, other_id_task)
+    assert same_id_entered.is_set()
+
+
+@pytest.mark.asyncio
 async def test_prepare_for_sandbox_pause_blocks_new_hydration(
     persisted_conversation,
 ):
