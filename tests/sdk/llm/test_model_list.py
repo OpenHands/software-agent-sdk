@@ -159,3 +159,43 @@ def test_trinity_model_is_openhands_only():
         assert "trinity-large-thinking" not in models, (
             f"trinity-large-thinking should not be in provider list {provider!r}"
         )
+
+
+def test_aimlapi_models_are_verified():
+    """The AIMLAPI (``aiml``) provider ships verified with the flagship models."""
+    assert "aiml" in VERIFIED_MODELS
+    aiml_models = VERIFIED_MODELS["aiml"]
+    for model in (
+        "anthropic/claude-opus-5",
+        "anthropic/claude-opus-4.8",
+        "anthropic/claude-sonnet-5",
+        "anthropic/claude-fable-5",
+        "openai/gpt-5.6-luna-pro",
+        "openai/gpt-5.6-sol-pro",
+        "openai/gpt-5.6-terra-pro",
+        "google/gemini-3.6-flash",
+        "x-ai/grok-4-5",
+        "deepseek/deepseek-v4-pro",
+        "alibaba/qwen3.7-max",
+        "zhipu/glm-5.2",
+        "moonshot/kimi-k3",
+        "minimax/minimax-m3",
+    ):
+        assert model in aiml_models, f"{model} missing from VERIFIED_MODELS['aiml']"
+
+
+def test_aimlapi_verified_models_excluded_from_unverified():
+    """Verified ``aiml`` catalog ids must not leak into the unverified bucket."""
+    models = [
+        "aiml/anthropic/claude-opus-5",  # verified -> excluded
+        "aiml/some-experimental-model",  # unverified -> kept
+    ]
+    with patch(
+        "openhands.sdk.llm.utils.unverified_models.get_supported_llm_models",
+        return_value=models,
+    ):
+        result = get_unverified_models()
+
+    aiml_unverified = result.get("aiml", [])
+    assert "anthropic/claude-opus-5" not in aiml_unverified
+    assert "some-experimental-model" in aiml_unverified

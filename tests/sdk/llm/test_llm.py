@@ -1910,4 +1910,27 @@ def test_max_output_tokens_not_capped_when_below_context_window(
     assert llm.effective_max_output_tokens == 8192
 
 
+def test_aiml_headers_present_for_aiml_provider():
+    """AIMLAPI partner attribution is built for a model routed via ``aiml``."""
+    llm = LLM(
+        model="aiml/anthropic/claude-opus-5",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+    )
+    assert llm._aiml_headers() == {
+        "X-AIMLAPI-Partner-ID": "part_uDVajKg3xPLrOdNdQetOtoGA",
+        "X-AIMLAPI-Source": "agent",
+    }
+
+
+def test_aiml_headers_empty_for_non_aiml_provider():
+    """The partner id must not leak onto an unrelated provider's request."""
+    llm = LLM(
+        model="anthropic/claude-opus-5",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+    )
+    assert llm._aiml_headers() == {}
+
+
 # LLM Registry Tests
