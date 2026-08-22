@@ -432,3 +432,25 @@ def test_boolean_schema_nodes_are_normalized(node, expected):
 
     assert result == expected
     json.dumps(result)
+
+
+def test_anyof_with_false_does_not_clobber_concrete_type():
+    """A ``false`` member in ``anyOf`` must not become the representative type.
+
+    JSON Schema ``false`` means "reject everything."  When it appears as one
+    branch of an ``anyOf`` alongside a concrete type (common in schemas emitted
+    by TypeScript/MCP servers), the processor must pick the concrete type, not
+    ``false``.  Previously the filter ``not isinstance(t, dict)`` treated
+    ``False`` as a non-null type, so ``_process_schema_node(False)`` returned
+    ``{"not": {}}`` — making the parameter impossible for the LLM to satisfy.
+    """
+    schema = {
+        "type": "object",
+        "properties": {
+            "value": {
+                "anyOf": [False, {"type": "string"}],
+            },
+        },
+    }
+    result = _process_schema_node(schema, {})
+    assert result["properties"]["value"] == {"type": "string"}
