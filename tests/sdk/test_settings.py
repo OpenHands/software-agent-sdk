@@ -1500,10 +1500,14 @@ def _which_returning(*available: str):
 @pytest.mark.parametrize(
     ("server", "binary", "expected"),
     [
-        ("claude-code", "claude-agent-acp", ["claude-agent-acp"]),
-        ("codex", "codex-acp", ["codex-acp"]),
+        (
+            "claude-code",
+            "claude-agent-acp",
+            ["/usr/local/bin/claude-agent-acp"],
+        ),
+        ("codex", "codex-acp", ["/usr/local/bin/codex-acp"]),
         # gemini's default carries a trailing ``--acp`` that must be preserved.
-        ("gemini-cli", "gemini", ["gemini", "--acp"]),
+        ("gemini-cli", "gemini", ["/usr/local/bin/gemini", "--acp"]),
     ],
 )
 def test_acp_resolve_command_rewrites_default_to_pinned_binary(
@@ -1512,7 +1516,11 @@ def test_acp_resolve_command_rewrites_default_to_pinned_binary(
     binary: str,
     expected: list[str],
 ) -> None:
-    """(a) Registry default + binary on PATH → run the pinned binary directly."""
+    """(a) Registry default + binary on PATH → run the pinned binary directly.
+
+    The rewrite uses the path ``shutil.which`` resolved, not the bare name; see
+    ``test_acp_resolve_command_uses_resolved_path_not_bare_name``.
+    """
     monkeypatch.setattr(shutil, "which", _which_returning(binary))
     settings = ACPAgentSettings(acp_server=server)
     assert settings.resolve_acp_command() == expected
@@ -1533,7 +1541,10 @@ def test_acp_resolve_command_rewrites_explicit_npx_command(
             "--verbose",
         ],
     )
-    assert settings.resolve_acp_command() == ["codex-acp", "--verbose"]
+    assert settings.resolve_acp_command() == [
+        "/usr/local/bin/codex-acp",
+        "--verbose",
+    ]
 
 
 def test_acp_resolve_command_rewrites_versioned_npx_to_pinned_binary(
@@ -1552,7 +1563,29 @@ def test_acp_resolve_command_rewrites_versioned_npx_to_pinned_binary(
             acp_server="codex",
             acp_command=["npx", "-y", pkg],
         )
-        assert settings.resolve_acp_command() == ["codex-acp"], pkg
+        assert settings.resolve_acp_command() == ["/usr/local/bin/codex-acp"], pkg
+
+
+def test_acp_resolve_command_uses_resolved_path_not_bare_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rewrite emits the path ``shutil.which`` returned, not ``binary_name``.
+
+    ``ACPAgent`` feeds this command straight to
+    ``asyncio.create_subprocess_exec``. On Windows that reaches ``CreateProcess``,
+    which appends only ``.exe`` and never consults ``PATHEXT`` — so a bare name
+    pointing at npm's ``codex-acp.cmd`` shim raises ``FileNotFoundError`` even
+    though ``which`` just found it. Emitting the resolved path also closes the
+    PATH-lookup race between resolution and spawn.
+    """
+    monkeypatch.setattr(
+        shutil, "which", lambda name: rf"C:\npm\{name}.cmd" if name else None
+    )
+    settings = ACPAgentSettings(acp_server="codex")
+    command = settings.resolve_acp_command()
+
+    assert command == [r"C:\npm\codex-acp.cmd"]
+    assert command[0] != "codex-acp"
 
 
 def test_acp_resolve_command_keeps_npx_when_binary_absent(
@@ -1636,7 +1669,7 @@ def test_acp_create_agent_uses_pinned_binary_when_present(
     """End-to-end: create_agent() bakes the rewritten command into the agent."""
     monkeypatch.setattr(shutil, "which", _which_returning("codex-acp"))
     agent = ACPAgentSettings(acp_server="codex").create_agent()
-    assert agent.acp_command == ["codex-acp"]
+    assert agent.acp_command == ["/usr/local/bin/codex-acp"]
 
 
 def test_acp_api_key_env_var_maps_known_servers() -> None:

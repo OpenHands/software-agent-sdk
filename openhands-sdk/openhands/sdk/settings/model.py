@@ -1788,11 +1788,19 @@ class ACPAgentSettings(AgentSettingsBase):
 
         When *command* is an ``npx`` invocation of this provider's package and
         the provider's ``binary_name`` resolves via :func:`shutil.which`, return
-        ``[binary_name, *extra]`` (preserving trailing args like gemini's
+        ``[<resolved path>, *extra]`` (preserving trailing args like gemini's
         ``--acp``) — running the agent-server image's pinned wrapper instead of
         downloading npm-latest. Returned unchanged otherwise: no pinned binary
         (custom server), a non-matching/non-npx command, or the binary not on
         ``PATH`` (local dev).
+
+        The *resolved* path from ``shutil.which`` is used rather than the bare
+        ``binary_name``: the caller feeds this straight to
+        ``asyncio.create_subprocess_exec``, which on Windows reaches
+        ``CreateProcess`` — that only ever appends ``.exe`` and never consults
+        ``PATHEXT``, so a bare name pointing at npm's ``binary_name.cmd`` shim
+        raises ``FileNotFoundError``. Handing over the path we already looked up
+        also removes a PATH-lookup race between resolution and spawn.
 
         Package matching ignores any ``@version`` suffix: the registry default
         is version-pinned (so the native fallback can't drift to npm ``latest``),
@@ -1814,10 +1822,13 @@ class ACPAgentSettings(AgentSettingsBase):
         same_package = self._npm_package_name(actual_pkg) == self._npm_package_name(
             default_pkg
         )
-        if not same_package or shutil.which(info.binary_name) is None:
+        if not same_package:
+            return command
+        resolved = shutil.which(info.binary_name)
+        if resolved is None:
             return command
 
-        return [info.binary_name, *extra]
+        return [resolved, *extra]
 
     def create_agent(self) -> ACPAgent:
         """Build an :class:`ACPAgent` from these settings.
