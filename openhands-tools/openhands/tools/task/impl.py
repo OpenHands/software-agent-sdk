@@ -11,7 +11,7 @@ from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.tool import ToolExecutor
 from openhands.tools.task.definition import TaskAction, TaskObservation
-from openhands.tools.task.manager import TaskManager, TaskStatus
+from openhands.tools.task.manager import DisabledAgentError, TaskManager, TaskStatus
 
 
 logger = get_logger(__name__)
@@ -55,15 +55,22 @@ class TaskExecutor(ToolExecutor):
                 case _:
                     # this should never happen
                     raise RuntimeError(f"Unknown task status: {task.status}")
+        except DisabledAgentError as e:
+            logger.info(f"Task refused (disabled_agents): {e}")
+            return self._error_observation(action, str(e))
         except Exception as e:
             logger.error(f"Task execution failed: {e}", exc_info=True)
-            return TaskObservation.from_text(
-                text=f"Failed to execute task: {str(e)}",
-                task_id="unknown",
-                subagent=action.subagent_type,
-                status="error",
-                is_error=True,
-            )
+            return self._error_observation(action, str(e))
+
+    @staticmethod
+    def _error_observation(action: TaskAction, error: str) -> TaskObservation:
+        return TaskObservation.from_text(
+            text=f"Failed to execute task: {error}",
+            task_id="unknown",
+            subagent=action.subagent_type,
+            status="error",
+            is_error=True,
+        )
 
     def close(self) -> None:
         self._manager.close()
