@@ -40,6 +40,7 @@ from typing import Final
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.utils.path import get_user_persistence_dir
 
 
 logger = get_logger(__name__)
@@ -92,7 +93,12 @@ def load_user_agents() -> list[AgentDefinition]:
         directories exist.
     """
     home = Path.home()
-    return _load_agents_from_dirs([home / d for d in _FILE_BASED_AGENTS_DIR])
+    return _load_agents_from_dirs(
+        [
+            home / ".agents" / "agents",
+            get_user_persistence_dir() / "agents",
+        ]
+    )
 
 
 def _load_agents_from_dirs(dirs: list[Path]) -> list[AgentDefinition]:

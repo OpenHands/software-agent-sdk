@@ -9,10 +9,12 @@ validates); AgentContext only carries the resolved text. Daily logs
 agent reads them on demand.
 """
 
+import os
 from pathlib import Path
 from typing import Final
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.path import get_user_persistence_dir
 
 
 logger = get_logger(__name__)
@@ -66,9 +68,19 @@ def load_memory(
     the headers plus one notice per tier (~150 chars for both tiers).
     """
     tiers: list[tuple[str, str]] = []
-    user_index = _read_index(Path.home() / MEMORY_INDEX_RELPATH)
+    user_memory_path = get_user_persistence_dir() / "memory" / "MEMORY.md"
+    user_index = _read_index(user_memory_path)
     if user_index is not None:
-        tiers.append((f"# User memory (~/{MEMORY_INDEX_RELPATH})", user_index))
+        # Name the tier by the path it was actually read from so it matches the
+        # write location advertised in the <MEMORY> guidance. With
+        # OH_PERSISTENCE_DIR set that is the concrete ``<base>/memory/MEMORY.md``;
+        # otherwise keep the plain-tilde ``~/.openhands/memory/MEMORY.md`` form
+        # rather than an expanded per-user home path.
+        if os.environ.get("OH_PERSISTENCE_DIR"):
+            user_header_path = str(user_memory_path)
+        else:
+            user_header_path = f"~/{MEMORY_INDEX_RELPATH}"
+        tiers.append((f"# User memory ({user_header_path})", user_index))
     project_index = _read_index(Path(working_dir) / MEMORY_INDEX_RELPATH)
     if project_index is not None:
         tiers.append((f"# Project memory ({MEMORY_INDEX_RELPATH})", project_index))

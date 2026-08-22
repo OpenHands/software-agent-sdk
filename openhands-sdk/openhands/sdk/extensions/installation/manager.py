@@ -16,12 +16,13 @@ from openhands.sdk.extensions.installation.metadata import (
 )
 from openhands.sdk.extensions.installation.utils import validate_extension_name
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.path import get_user_persistence_dir
 from openhands.sdk.utils.redact import redact_url_credentials
 
 
 logger = get_logger(__name__)
 
-DEFAULT_CACHE_DIR = Path.home() / ".openhands" / "cache" / "extensions"
+DEFAULT_CACHE_DIR = get_user_persistence_dir() / "cache" / "extensions"
 
 
 @dataclass
