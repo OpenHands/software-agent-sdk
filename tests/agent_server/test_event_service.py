@@ -3048,7 +3048,7 @@ async def test_close_blocks_until_executor_thread_finishes(
     (tmp_path / "ws").mkdir()
     parent_llm = SlowTestLLM.from_messages(
         [text_message("done")],
-        latency_s=12.0,  # > the 10 s wait_for in close()
+        latency_s=12.0,  # long enough that a close() stuck on the step is caught
     )
     info = await start_conversation_with_test_llm(
         real_conversation_service,
@@ -3393,6 +3393,76 @@ async def test_run_false_message_in_cleanup_tail_is_not_run(
         f"(call_count={parent_llm._call_count})"
     )
     assert es._run_task is None
+
+
+@pytest.mark.timeout(30)
+async def test_close_during_drain_still_publishes_final_state_update(
+    real_conversation_service, tmp_path, monkeypatch
+):
+    """close() while the run task is parked in its wait_for_pending() drain
+    must still deliver a terminal ConversationStateUpdateEvent to subscribers
+    before the pub_sub is torn down.
+
+    Regression test for #4387: close() awaited the cancelled run task without
+    a shield, so a cancellation landing on the drain await inside the run
+    task's finally block aborted it before _publish_state_update() —
+    subscribers never saw the terminal status and remote clients considered
+    the conversation running forever.
+    """
+    (tmp_path / "ws").mkdir()
+    parent_llm = SlowTestLLM.from_messages([text_message("done")], latency_s=0.0)
+    info = await start_conversation_with_test_llm(
+        real_conversation_service,
+        parent_llm=parent_llm,
+        workspace_dir=str(tmp_path / "ws"),
+        usage_id="close-drain",
+        initial_text=None,
+    )
+    es = await real_conversation_service.get_event_service(info.id)
+    assert es is not None and es._callback_wrapper is not None
+
+    # Spy on the terminal publish rather than counting subscriber-side
+    # ConversationStateUpdateEvents: per-field status changes (RUNNING,
+    # FINISHED, PAUSED) also arrive as ConversationStateUpdateEvents via the
+    # normal callback path, so a subscriber count cannot distinguish the
+    # terminal full snapshot from those.
+    publish_calls: list[bool] = []
+    orig_publish = es._publish_state_update
+
+    async def _spy_publish() -> None:
+        publish_calls.append(True)
+        await orig_publish()
+
+    monkeypatch.setattr(es, "_publish_state_update", _spy_publish)
+
+    # Park the run in its wait_for_pending() tail until released. It runs in
+    # a thread-pool worker, so block on a threading.Event there and signal
+    # entry back to the test.
+    entered_tail = threading.Event()
+    release_tail = threading.Event()
+
+    def _blocking_wait(timeout: float) -> None:
+        entered_tail.set()
+        release_tail.wait(timeout)
+
+    monkeypatch.setattr(es._callback_wrapper, "wait_for_pending", _blocking_wait)
+
+    await es.send_message(
+        Message(role="user", content=[TextContent(text="hi")]), run=True
+    )
+    assert await asyncio.to_thread(entered_tail.wait, 10.0), (
+        "run never reached its wait_for_pending tail"
+    )
+
+    try:
+        await es.close()
+    finally:
+        release_tail.set()  # unblock the abandoned drain thread
+
+    assert publish_calls, (
+        "terminal _publish_state_update() never ran: close() aborted the run "
+        "task's finally block mid-drain"
+    )
 
 
 def test_emit_event_from_thread_uses_captured_loop(event_service: EventService) -> None:
