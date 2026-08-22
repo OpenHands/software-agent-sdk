@@ -16,6 +16,7 @@ from openhands.sdk.git.models import GitDiff
 from openhands.sdk.git.utils import (
     get_valid_ref,
     run_git_command,
+    unquote_git_path,
     validate_git_repository,
 )
 
@@ -68,7 +69,8 @@ def get_git_diff(relative_file_path: str | Path, ref: str | None = None) -> GitD
         GitCommandError: If git commands fail (including when ``ref`` is
             provided but does not resolve in the repository).
     """
-    path = Path(os.getcwd(), relative_file_path).resolve()
+    clean_file_path = unquote_git_path(str(relative_file_path))
+    path = Path(os.getcwd(), clean_file_path).resolve()
 
     # Check if file exists
     if not path.exists():
