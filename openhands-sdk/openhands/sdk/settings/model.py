@@ -1084,7 +1084,12 @@ class ConversationSettings(BaseModel):
     )
     security_analyzer: SecurityAnalyzerType | None = Field(
         default="llm",
-        description="Security analyzer that evaluates actions before execution.",
+        description=(
+            "Security analyzer that evaluates actions before execution. "
+            '"llm" floors the model\'s self-assessed risk with the policy '
+            "rails, which are an enumerated set; compose your own "
+            "EnsembleSecurityAnalyzer for stricter environments."
+        ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Security analyzer",
@@ -1132,9 +1137,21 @@ class ConversationSettings(BaseModel):
         if not analyzer_kind or analyzer_kind == "none":
             return None
         if analyzer_kind == "llm":
+            from openhands.sdk.security.defense_in_depth import (
+                PolicyRailSecurityAnalyzer,
+            )
+            from openhands.sdk.security.ensemble import EnsembleSecurityAnalyzer
             from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 
-            return LLMSecurityAnalyzer()
+            # Floor the model's self-assessed risk with the deterministic
+            # rails, so a LOW label on a destructive action still reaches HIGH.
+            # propagate_unknown keeps UNKNOWN winning: the rails return a
+            # concrete LOW when nothing fires, which would otherwise drop the
+            # confirmation ConfirmRisky gives an unlabelled action.
+            return EnsembleSecurityAnalyzer(
+                analyzers=[LLMSecurityAnalyzer(), PolicyRailSecurityAnalyzer()],
+                propagate_unknown=True,
+            )
         return None
 
     def _start_request_kwargs(self, **kwargs: Any) -> dict[str, Any]:
