@@ -21,6 +21,7 @@ from openhands.sdk.subagent.registry import (
     register_plugin_agents,
 )
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.utils.cipher import Cipher
 
 
 def setup_function() -> None:
@@ -589,6 +590,28 @@ def test_agent_definition_to_factory_model_profile_custom_store(tmp_path: Path) 
     assert agent.llm.stream is False
     # Metrics must be independent from the parent LLM
     assert agent.llm.metrics is not parent_llm.metrics
+
+
+def test_agent_definition_to_factory_decrypts_model_profile(tmp_path: Path) -> None:
+    """Encrypted model profiles are decrypted for file-based sub-agents."""
+    cipher = Cipher("test-secret")
+    store = LLMProfileStore(base_dir=tmp_path)
+    profile_llm = LLM(
+        model="gpt-4o-mini",
+        api_key=SecretStr("profile-key"),
+        usage_id="profile-llm",
+    )
+    store.save("encrypted-profile", profile_llm, include_secrets=True, cipher=cipher)
+    agent_def = AgentDefinition(
+        name="encrypted-profile-agent",
+        model="encrypted-profile",
+        profile_store_dir=str(tmp_path),
+    )
+
+    agent = agent_definition_to_factory(agent_def, cipher=cipher)(_make_test_llm())
+
+    assert isinstance(agent.llm.api_key, SecretStr)
+    assert agent.llm.api_key.get_secret_value() == "profile-key"
 
 
 def test_agent_definition_to_factory_profile_store_dir(tmp_path: Path) -> None:
