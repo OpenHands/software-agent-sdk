@@ -655,6 +655,9 @@ class ConversationService:
     _conversation_locks: WeakValueDictionary[UUID, asyncio.Lock] = field(
         default_factory=WeakValueDictionary, init=False
     )
+    _catalog_lock_sync: threading.Lock = field(
+        default_factory=threading.Lock, init=False
+    )
     _conversation_webhook_subscribers: list["ConversationWebhookSubscriber"] = field(
         default_factory=list, init=False
     )
@@ -1064,10 +1067,6 @@ class ConversationService:
                 lock = asyncio.Lock()
                 self._conversation_locks[conversation_id] = lock
             return lock
-
-    _catalog_lock_sync: threading.Lock = field(
-        default_factory=threading.Lock, init=False
-    )
 
     @asynccontextmanager
     async def _conversation_lifecycle(self, conversation_id: UUID):
