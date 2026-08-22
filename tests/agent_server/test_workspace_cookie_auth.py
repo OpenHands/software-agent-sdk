@@ -175,12 +175,12 @@ def test_mint_session_marks_cookie_secure_on_loopback(client_factory, host_heade
     assert "Partitioned" in set_cookie
 
 
-def test_mint_session_over_remote_plain_http_drops_secure(client_factory):
-    """On non-HTTPS to a non-loopback host we don't claim Secure — the
-    browser would reject a Secure cookie over plain HTTP anyway. The
-    cookie won't actually work for cross-site embedding in that case
-    (SameSite=None requires Secure), but emitting a Secure attribute we
-    can't honor would just make the failure mode less obvious."""
+def test_mint_session_over_remote_plain_http_uses_lax_cookie(client_factory):
+    """Remote plain HTTP needs a browser-compatible same-site cookie.
+
+    Browsers reject ``SameSite=None`` cookies without ``Secure``, while they
+    accept ``SameSite=Lax`` cookies for same-site workspace file requests.
+    """
     client = client_factory(conversation_id=uuid4())
 
     resp = client.post(
@@ -193,7 +193,7 @@ def test_mint_session_over_remote_plain_http_drops_secure(client_factory):
     assert resp.status_code == 204
 
     set_cookie = resp.headers["set-cookie"]
-    assert "SameSite=none" in set_cookie
+    assert "SameSite=lax" in set_cookie
     assert "Secure" not in set_cookie
     assert "Partitioned" not in set_cookie
 
