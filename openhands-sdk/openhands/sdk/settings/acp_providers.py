@@ -308,6 +308,7 @@ _CLAUDE_MODELS: tuple[ACPModelOption, ...] = (
     ACPModelOption(id="default", label="Default (recommended)"),
     ACPModelOption(id="opus[1m]", label="Claude Opus (1M)"),
     ACPModelOption(id="claude-opus-5", label="Claude Opus 5"),
+    ACPModelOption(id="claude-fable-5", label="Claude Fable 5"),
     ACPModelOption(id="sonnet", label="Claude Sonnet"),
     ACPModelOption(id="haiku", label="Claude Haiku"),
 )
