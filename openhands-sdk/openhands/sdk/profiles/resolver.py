@@ -28,7 +28,6 @@ Resource-specific secret channels:
 
 from __future__ import annotations
 
-import shlex
 from collections.abc import Container
 from typing import TYPE_CHECKING, Any
 
@@ -264,8 +263,7 @@ def _build_acp_settings(
 ) -> AgentSettingsConfig:
     """Compose the resolved ``ACPAgentSettings`` from a profile.
 
-    ``acp_command`` is stored as a shell string and split into the settings'
-    token list. No credential is set — provider creds ride
+    No credential is set — provider creds ride
     ``state.secret_registry``. ACP profiles carry no user/public skills (the ACP
     subprocess owns its context), so ``agent_context`` has no discovered skills;
     it is always built (never ``None``) only so ``load_project_skills=True``
@@ -274,7 +272,7 @@ def _build_acp_settings(
     files (e.g. AGENTS.md) may then see that content twice (#4019). A ``custom``
     server has no default command, so one must be supplied.
     """
-    command = shlex.split(profile.acp_command) if profile.acp_command else []
+    command = list(profile.acp_command) if profile.acp_command else []
     if profile.acp_server == "custom" and not command:
         raise ValueError(
             "acp_command is required when acp_server='custom' — there is no "
@@ -416,9 +414,9 @@ def resolve_agent_profile_dry_run(
     diagnostics.valid = not diagnostics.errors
     if diagnostics.valid:
         # Building settings can still fail on input that passes profile
-        # validation (e.g. an acp_command with unbalanced shell quotes, which
-        # shlex.split rejects). Keep the dry-run total: surface such failures as
-        # diagnostics rather than raising, matching the API contract.
+        # validation (e.g. acp_server='custom' with no acp_command). Keep the
+        # dry-run total: surface such failures as diagnostics rather than
+        # raising, matching the API contract.
         try:
             if isinstance(profile, OpenHandsAgentProfile):
                 # valid here implies the LLM load above succeeded; gate

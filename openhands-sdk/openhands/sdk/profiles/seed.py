@@ -7,7 +7,6 @@ migration (lazy on the local agent-server, eager backfill on the cloud one).
 
 from __future__ import annotations
 
-import shlex
 from typing import TYPE_CHECKING
 
 from openhands.sdk.profiles.agent_profile import (
@@ -47,13 +46,7 @@ def build_seed_profile(
             acp_session_mode=agent_settings.acp_session_mode,
             acp_prompt_timeout=agent_settings.acp_prompt_timeout,
             acp_startup_timeout=agent_settings.acp_startup_timeout,
-            # Settings store the command as a token list; the profile holds a
-            # single (re-parseable) string. Empty list => use the server default.
-            acp_command=(
-                shlex.join(agent_settings.acp_command)
-                if agent_settings.acp_command
-                else None
-            ),
+            acp_command=list(agent_settings.acp_command) or None,
             acp_args=list(agent_settings.acp_args) or None,
             mcp_server_refs=None,
             # ACP profiles carry no skill field — the subprocess owns its context.
