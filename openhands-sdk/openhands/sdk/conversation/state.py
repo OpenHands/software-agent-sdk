@@ -24,6 +24,7 @@ from openhands.sdk.conversation.types import (
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
+    Condensation,
     ObservationEvent,
     UserRejectObservation,
 )
@@ -43,6 +44,15 @@ from openhands.sdk.workspace.base import BaseWorkspace
 
 
 logger = get_logger(__name__)
+
+
+class _IncrementalSkip(Exception):
+    """Sentinel raised on the incremental view path to request a full rebuild.
+
+    Used when the tail being replayed contains a ``Condensation`` event, which
+    can leave orphaned action/observation halves that only ``enforce_properties``
+    (run by the full rebuild) can repair.
+    """
 
 
 class ConversationExecutionStatus(str, Enum):
@@ -362,10 +372,20 @@ class ConversationState(OpenHandsModel):
                     tail.append(evt)
                     cur_id = self._events._effective_parent_id(idx, evt)
                 if cur_id == self._view_branch_leaf:
+                    # A Condensation removes events and can leave orphaned
+                    # action/observation halves that only enforce_properties
+                    # can repair.  The incremental path skips that repair, so
+                    # fall through to a full rebuild whenever a condensation is
+                    # in the tail.  Condensations are infrequent (context
+                    # pressure), so the O(n) cost is acceptable.
+                    if any(isinstance(evt, Condensation) for evt in tail):
+                        raise _IncrementalSkip
                     for evt in reversed(tail):
                         self._view.append_event(evt)
                     self._view_branch_leaf = leaf
                     return self._view
+            except _IncrementalSkip:
+                pass
             except Exception:
                 logger.warning(
                     "Incremental view append failed for leaf %s; "
