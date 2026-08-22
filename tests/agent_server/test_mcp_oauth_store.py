@@ -124,8 +124,10 @@ def protected_oauth_mcp_server():
 @pytest.mark.asyncio
 async def test_mcp_oauth_token_store_persists_values_in_settings(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     reset_stores()
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path))
     try:
         config = Config(
             session_api_keys=[],
@@ -241,6 +243,7 @@ def test_oauth_mcp_connection_persists_and_reuses_settings_state(
     """
 
     reset_stores()
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path))
     _HeadlessOAuth.redirect_count = 0
     _HeadlessOAuth.reject_redirects = False
     monkeypatch.setattr(mcp_utils, "OAuth", _HeadlessOAuth)
@@ -330,8 +333,10 @@ def test_oauth_mcp_connection_persists_and_reuses_settings_state(
 @pytest.mark.asyncio
 async def test_mcp_oauth_token_storage_does_not_attach_to_non_oauth_server(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     reset_stores()
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path))
     try:
         config = Config(
             session_api_keys=[],
