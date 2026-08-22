@@ -56,6 +56,7 @@ from openhands.sdk.agent.acp_file_credentials import (
     codex_auth_file,
 )
 from openhands.sdk.agent.acp_models import ACPModelInfo
+from openhands.sdk.agent.acp_tracing import ACPTurnTrace, ACPTurnUsage
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context import AgentContext
 from openhands.sdk.conversation.secret_registry import SecretRegistry
@@ -3664,6 +3665,136 @@ class TestACPAgentTelemetry:
         assert agent.llm.metrics.accumulated_cost == 0.0
         assert len(agent.llm.metrics.costs) == 0
         assert len(agent.llm.metrics.token_usages) == 1
+
+    # -- The usage a turn hands to its observability span ------------------
+    #
+    # ``_record_usage`` returns what it wrote into ``Metrics`` so the turn can
+    # mirror it onto its LLM span (#4368). ``Metrics`` stays the source of
+    # truth; these pin that the returned copy agrees with it.
+
+    def _finish_turn_usages(self, monkeypatch) -> list:
+        """Capture the ``usage`` each finished turn hands its span.
+
+        Patches the module-level name so the trace the agent builds per turn in
+        ``_reset_client_for_attempt`` is the recording one; it still subclasses
+        the real trace, so nothing about span behaviour is faked away.
+        """
+        captured: list[ACPTurnUsage | None] = []
+
+        class RecordingTrace(ACPTurnTrace):
+            def finish_turn(self, text, thoughts, tool_calls, usage=None):
+                captured.append(usage)
+                super().finish_turn(text, thoughts, tool_calls, usage=usage)
+
+        monkeypatch.setattr(acp_agent_module, "ACPTurnTrace", RecordingTrace)
+        return captured
+
+    def test_a_finished_turn_hands_the_span_the_usage_it_recorded(
+        self, tmp_path, monkeypatch
+    ):
+        """Catches a reordering that would close the span before usage lands."""
+        captured = self._finish_turn_usages(monkeypatch)
+        agent, conversation = self._make_step_fixtures(
+            tmp_path,
+            usage={
+                "input": 100,
+                "output": 50,
+                "cache_read": 10,
+                "cache_write": 5,
+                "thought": 20,
+            },
+            cost=(0.05, 200000),
+        )
+
+        agent.step(conversation, on_event=lambda _: None)
+
+        (usage,) = captured
+        recorded = agent.llm.metrics.token_usages[-1]
+        assert usage == ACPTurnUsage(
+            input_tokens=recorded.prompt_tokens,
+            output_tokens=recorded.completion_tokens,
+            cache_read_tokens=recorded.cache_read_tokens,
+            cache_write_tokens=recorded.cache_write_tokens,
+            reasoning_tokens=recorded.reasoning_tokens,
+            cost=agent.llm.metrics.costs[-1].cost,
+        )
+
+    def test_a_turn_reports_the_cost_delta_not_the_cumulative_total(
+        self, tmp_path, monkeypatch
+    ):
+        """ACP reports cost cumulatively per session; the span wants this turn's."""
+        captured = self._finish_turn_usages(monkeypatch)
+        agent = _make_agent()
+
+        for cumulative in (0.05, 0.12):
+            _, conversation = self._make_step_fixtures(
+                tmp_path,
+                agent=agent,
+                usage={"input": 100, "output": 50},
+                cost=(cumulative, 128000),
+            )
+            agent.step(conversation, on_event=lambda _: None)
+
+        first, second = captured
+        assert first is not None and second is not None
+        assert first.cost == pytest.approx(0.05)
+        assert second.cost == pytest.approx(0.07)
+
+    def test_a_turn_reports_the_estimated_cost_when_the_cli_sends_none(
+        self, tmp_path, monkeypatch
+    ):
+        """The gemini-cli path: cost is derived from tokens, and the span gets
+        the derived figure rather than nothing."""
+        captured = self._finish_turn_usages(monkeypatch)
+        agent, conversation = self._make_step_fixtures(
+            tmp_path,
+            agent=_make_agent(acp_model="claude-opus-5"),
+            usage={"input": 100, "output": 50},
+            cost=None,
+        )
+
+        agent.step(conversation, on_event=lambda _: None)
+
+        estimated = _estimate_cost_from_tokens("claude-opus-5", 100, 50)
+        assert estimated > 0, "pick a model litellm can price"
+        (usage,) = captured
+        assert usage is not None
+        assert usage.cost == pytest.approx(estimated)
+
+    def test_a_turn_reports_no_usage_when_the_server_sends_none(
+        self, tmp_path, monkeypatch
+    ):
+        """An all-zero record, which the span then omits rather than
+        reporting as a genuinely free turn."""
+        captured = self._finish_turn_usages(monkeypatch)
+        agent, conversation = self._make_step_fixtures(tmp_path)
+
+        agent.step(conversation, on_event=lambda _: None)
+
+        assert captured == [ACPTurnUsage()]
+        assert agent.llm.metrics.token_usages == []
+
+    def test_a_directly_built_agent_still_labels_spans_with_the_running_cli(
+        self, tmp_path, monkeypatch
+    ):
+        """``acp_server`` is only set by ``ACPAgentSettings.create_agent()``, so a
+        directly-built agent — what the standalone SDK examples do — would leave
+        its spans with no provider. The running server's name supplies it."""
+        built: list[dict] = []
+
+        class RecordingTrace(ACPTurnTrace):
+            def __init__(self, **kwargs):
+                built.append(kwargs)
+                super().__init__(**kwargs)
+
+        monkeypatch.setattr(acp_agent_module, "ACPTurnTrace", RecordingTrace)
+        agent, conversation = self._make_step_fixtures(tmp_path)
+        assert agent.acp_server is None
+        agent._agent_name = "claude-agent-acp"
+
+        agent.step(conversation, on_event=lambda _: None)
+
+        assert built[-1]["acp_server"] == "claude-code"
 
     def test_step_records_partial_metrics_on_usage_timeout(self, tmp_path, caplog):
         """Timeout waiting for UsageUpdate logs warning but records token metrics."""
