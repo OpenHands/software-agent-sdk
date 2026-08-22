@@ -83,7 +83,7 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
     assert general_fields["enable_sub_agents"].default is False
     assert general_fields["enable_sub_agents"].prominence is SettingProminence.MAJOR
     assert general_fields["enable_switch_llm_tool"].value_type == "boolean"
-    assert general_fields["enable_switch_llm_tool"].default is True
+    assert general_fields["enable_switch_llm_tool"].default is False
     assert (
         general_fields["enable_switch_llm_tool"].prominence is SettingProminence.MINOR
     )

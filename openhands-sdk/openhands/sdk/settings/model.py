@@ -1277,7 +1277,7 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         },
     )
     enable_switch_llm_tool: bool = Field(
-        default=True,
+        default=False,
         description=(
             "Enable the built-in switch_llm tool for switching between saved "
             "LLM profiles."
