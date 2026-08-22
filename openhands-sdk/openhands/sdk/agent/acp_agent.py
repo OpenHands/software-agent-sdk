@@ -151,6 +151,16 @@ _ACP_PROMPT_RETRY_DELAYS: tuple[float, ...] = (5.0, 15.0, 30.0)  # seconds
 # Exception types that indicate transient connection issues worth retrying
 _RETRIABLE_CONNECTION_ERRORS = (OSError, ConnectionError, BrokenPipeError, EOFError)
 
+
+class ACPAgentClosedError(RuntimeError):
+    """Raised when the ACP runtime is torn down while a prompt is in flight.
+
+    ``close()`` runs on whatever thread calls it, so it can land while another
+    thread is inside ``step()``/``astep()``. Subclasses ``RuntimeError`` so
+    callers that already handle the pre-session ``RuntimeError`` keep working.
+    """
+
+
 # ``npm run`` exports package/lifecycle configuration into descendants. ACP
 # providers launched through ``npx`` must not inherit that context, otherwise npm
 # can try to resolve against the parent package instead of the requested one.
@@ -1071,6 +1081,8 @@ def _classify_acp_turn_error(exc: BaseException) -> str:
     policy refusals get their own code, credential failures map to ``ACPAuthRequired``
     (so the client can offer re-auth), everything else is a generic ``ACPPromptError``.
     """
+    if isinstance(exc, ACPAgentClosedError):
+        return "ACPAgentClosed"
     if isinstance(exc, ACPFileCredentialSyncError):
         return "ACPPromptError"
     if isinstance(exc, ACPFileCredentialNeedsReauthError):
@@ -2043,6 +2055,21 @@ class ACPAgent(AgentBase):
             and self._session_id is not None
             and self._executor is not None
         )
+
+    def _require_executor(self) -> Any:
+        """Return the live executor, or raise if teardown already started.
+
+        Reads ``_executor`` once so a concurrent :meth:`close` cannot null it
+        out between the check and the call. ``_closed`` is set before teardown
+        begins, so it catches the window where the executor is still assigned
+        but its portal is going away.
+        """
+        executor = self._executor
+        if executor is None or self._closed:
+            raise ACPAgentClosedError(
+                "ACP agent was closed while a prompt was in flight"
+            )
+        return executor
 
     def get_all_llms(self) -> Generator[LLM]:
         yield self.llm
@@ -3642,11 +3669,15 @@ class ACPAgent(AgentBase):
 
             for attempt in range(max_retries + 1):
                 try:
-                    response = self._executor.run_async(_prompt)
+                    response = self._require_executor().run_async(_prompt)
                     break
                 except TimeoutError:
                     raise
                 except _RETRIABLE_CONNECTION_ERRORS as e:
+                    if self._closed:
+                        raise ACPAgentClosedError(
+                            "ACP agent was closed while a prompt was in flight"
+                        ) from e
                     if attempt < max_retries:
                         delay = _ACP_PROMPT_RETRY_DELAYS[
                             min(attempt, len(_ACP_PROMPT_RETRY_DELAYS) - 1)
@@ -3676,6 +3707,7 @@ class ACPAgent(AgentBase):
                     if (
                         e.code in _RETRIABLE_SERVER_ERROR_CODES
                         and attempt < max_retries
+                        and not self._closed
                     ):
                         delay = _ACP_PROMPT_RETRY_DELAYS[
                             min(attempt, len(_ACP_PROMPT_RETRY_DELAYS) - 1)
@@ -3787,12 +3819,14 @@ class ACPAgent(AgentBase):
                 self.acp_prompt_timeout,
                 len(prompt_blocks),
             )
-            portal = self._executor.portal
-
             response: PromptResponse | None = None
             max_retries = _ACP_PROMPT_MAX_RETRIES
             for attempt in range(max_retries + 1):
                 try:
+                    # Re-read per attempt, like step() does, so a teardown
+                    # between retries surfaces as a closed agent rather than
+                    # anyio's "portal is not running".
+                    portal = self._require_executor().portal
                     # Schedule the ACP prompt on the portal loop (where the
                     # connection lives); await the future back on the caller
                     # loop.  Shield the portal task from wait_for timeout so
@@ -3813,6 +3847,10 @@ class ACPAgent(AgentBase):
                 except TimeoutError:
                     raise
                 except _RETRIABLE_CONNECTION_ERRORS as e:
+                    if self._closed:
+                        raise ACPAgentClosedError(
+                            "ACP agent was closed while a prompt was in flight"
+                        ) from e
                     if attempt < max_retries:
                         delay = _ACP_PROMPT_RETRY_DELAYS[
                             min(attempt, len(_ACP_PROMPT_RETRY_DELAYS) - 1)
@@ -3839,6 +3877,7 @@ class ACPAgent(AgentBase):
                     if (
                         e.code in _RETRIABLE_SERVER_ERROR_CODES
                         and attempt < max_retries
+                        and not self._closed
                     ):
                         delay = _ACP_PROMPT_RETRY_DELAYS[
                             min(attempt, len(_ACP_PROMPT_RETRY_DELAYS) - 1)
