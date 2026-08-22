@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Background tasks in TaskToolSet - issue #2047</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f7f7f5;
+      --surface: #ffffff;
+      --ink: #171717;
+      --muted: #5d625f;
+      --line: #d6d9d7;
+      --blue: #175cd3;
+      --blue-soft: #eaf1ff;
+      --green: #157347;
+      --green-soft: #e8f5ed;
+      --amber: #8a5a00;
+      --amber-soft: #fff4d6;
+      --red: #b42318;
+      --red-soft: #ffebe9;
+      --charcoal: #252826;
+    }
+    * { box-sizing: border-box; }
+    html { background: var(--paper); }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+    main { width: min(1120px, calc(100% - 32px)); margin: 0 auto; }
+    header { padding: 54px 0 38px; border-bottom: 1px solid var(--line); }
+    section { padding: 38px 0; border-bottom: 1px solid var(--line); }
+    h1, h2, h3, p { letter-spacing: 0; }
+    h1 { margin: 10px 0 14px; max-width: 920px; font-size: 46px; line-height: 1.08; }
+    h2 { margin: 0 0 18px; font-size: 27px; line-height: 1.2; }
+    h3 { margin: 0 0 8px; font-size: 17px; line-height: 1.3; }
+    p { margin: 0 0 12px; }
+    a { color: var(--blue); }
+    .kicker { color: var(--green); font-size: 14px; font-weight: 750; }
+    .lede { max-width: 880px; color: var(--muted); font-size: 19px; }
+    .meta { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 24px; color: var(--muted); font-size: 14px; }
+    .meta strong { color: var(--ink); }
+    .grid { display: grid; gap: 14px; }
+    .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .fact {
+      min-height: 126px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface);
+    }
+    .fact .value { margin-bottom: 5px; font-size: 22px; font-weight: 780; }
+    .fact p { color: var(--muted); font-size: 14px; }
+    .callout { padding: 14px 16px; border-left: 4px solid var(--green); background: var(--green-soft); }
+    .callout.warn { border-left-color: var(--amber); background: var(--amber-soft); }
+    .callout.error { border-left-color: var(--red); background: var(--red-soft); }
+    code, pre { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace; }
+    code { font-size: .94em; }
+    pre {
+      margin: 0;
+      padding: 16px;
+      overflow: auto;
+      border: 1px solid #3b3f3c;
+      border-radius: 6px;
+      background: var(--charcoal);
+      color: #f7f7f5;
+      font-size: 13px;
+      line-height: 1.58;
+    }
+    table { width: 100%; border-collapse: collapse; background: var(--surface); font-size: 14px; }
+    th, td { padding: 12px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { background: #eceeec; font-size: 13px; }
+    td { color: var(--muted); }
+    td strong { color: var(--ink); }
+    ul { margin: 8px 0 0; padding-left: 20px; }
+    li { margin: 7px 0; color: var(--muted); }
+    .owner-flow {
+      display: grid;
+      grid-template-columns: 1fr 46px 1fr 46px 1fr;
+      align-items: stretch;
+      gap: 8px;
+    }
+    .owner {
+      padding: 15px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface);
+    }
+    .owner small { color: var(--muted); }
+    .arrow { display: grid; place-items: center; color: var(--blue); font-size: 25px; }
+    .timeline { display: grid; grid-template-columns: 135px 1fr; border-top: 1px solid var(--line); }
+    .timeline div { padding: 11px 12px; border-bottom: 1px solid var(--line); }
+    .timeline .actor { color: var(--blue); font-weight: 720; background: var(--blue-soft); }
+    .timeline .event { background: var(--surface); color: var(--muted); }
+    .timeline strong { color: var(--ink); }
+    .diagram { overflow-x: auto; padding: 12px 0; }
+    svg { display: block; width: 100%; min-width: 820px; height: auto; }
+    .small { color: var(--muted); font-size: 13px; }
+    footer { padding: 28px 0 42px; color: var(--muted); font-size: 13px; }
+    @media (max-width: 780px) {
+      h1 { font-size: 36px; }
+      .grid.two, .grid.three { grid-template-columns: 1fr; }
+      .owner-flow { grid-template-columns: 1fr; }
+      .arrow { transform: rotate(90deg); }
+      .timeline { grid-template-columns: 105px 1fr; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="kicker">OpenHands software-agent-sdk / issue #2047</div>
+    <h1>Background tasks in TaskToolSet</h1>
+    <p class="lede">
+      Explicit background execution lets a parent agent launch independent sub-agent
+      conversations, keep working, then read or stop them through native tools. Existing
+      blocking task and resume behavior remains the default.
+    </p>
+    <div class="meta">
+      <span><strong>Owner:</strong> TaskToolSet + TaskManager</span>
+      <span><strong>Scope:</strong> process-local runtime lifecycle</span>
+      <span><strong>Cancellation:</strong> LocalConversation.interrupt()</span>
+      <span><strong>Related:</strong> unblocks #2186 background work</span>
+    </div>
+  </header>
+
+  <section>
+    <h2>Why the implementation owner changed</h2>
+    <div class="grid two">
+      <div class="fact">
+        <div class="value">The old path</div>
+        <p><code>DelegateExecutor</code> is a lower-level legacy path, while the supported sub-agent tool surface is <code>TaskToolSet</code>.</p>
+      </div>
+      <div class="fact">
+        <div class="value">The current path</div>
+        <p><code>TaskToolSet</code> is registered by defaults, settings, and examples. Its existing <code>TaskManager</code> already owns sub-agent conversations, persistence, resume, confirmation, and metrics.</p>
+      </div>
+    </div>
+    <p class="callout" style="margin-top:14px">
+      The change extends the authoritative owner. It does not keep a second background registry
+      beside the supported task tool, and the existing Delegate implementation stays unchanged.
+      This is an explicit API-surface decision: this candidate does not add background lifecycle
+      commands to <code>DelegateAction</code>.
+    </p>
+  </section>
+
+  <section>
+    <h2>API before and after</h2>
+    <div class="grid two">
+      <div>
+        <h3>Before: one blocking tool</h3>
+        <pre><code>task(
+    prompt="Trace the request path",
+    subagent_type="code-explorer",
+)
+
+# TaskObservation arrives after the
+# sub-agent reaches completed or error.</code></pre>
+      </div>
+      <div>
+        <h3>After: opt-in lifecycle tools</h3>
+        <pre><code>started = task(
+    prompt="Trace the request path",
+    subagent_type="code-explorer",
+    run_in_background=True,
+)
+
+task_output(task_id=started.task_id)
+task_output(
+    task_id=started.task_id,
+    block=True,
+    timeout=30,
+)
+task_stop(task_id=started.task_id)</code></pre>
+      </div>
+    </div>
+    <table style="margin-top:16px">
+      <thead><tr><th>Tool</th><th>Action</th><th>Observation</th><th>Contract</th></tr></thead>
+      <tbody>
+        <tr><td><strong>task</strong></td><td><code>TaskAction</code></td><td><code>TaskObservation</code></td><td><code>run_in_background=False</code> preserves blocking behavior. True publishes a stable ID and returns without joining the worker; a very fast task may already have advanced beyond queued.</td></tr>
+        <tr><td><strong>task_output</strong></td><td><code>TaskOutputAction</code></td><td><code>TaskOutputObservation</code></td><td>Immediate poll by default. <code>block=True</code> waits up to a validated 0-3600 second timeout, and wakes when the task settles or a stop/manager-close request needs the reader to observe the current state.</td></tr>
+        <tr><td><strong>task_stop</strong></td><td><code>TaskStopAction</code></td><td><code>TaskStopObservation</code></td><td>Requests cooperative cancellation and uses a bounded cleanup wait.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>One manager, one lifecycle</h2>
+    <div class="owner-flow">
+      <div class="owner"><h3>TaskToolSet</h3><small>Creates all three tool definitions together.</small></div>
+      <div class="arrow" aria-hidden="true">&#8594;</div>
+      <div class="owner"><h3>Shared TaskExecutor</h3><small>Dispatches action types and closes only once even when the parent closes three tools.</small></div>
+      <div class="arrow" aria-hidden="true">&#8594;</div>
+      <div class="owner"><h3>Shared TaskManager</h3><small>Owns registry, conversations, worker threads, result settlement, and cleanup.</small></div>
+    </div>
+    <p class="small" style="margin-top:12px">
+      A manager binds to its first parent conversation. Managers attached to the same parent share
+      only a small ID/metrics lock. New managers continue after persisted task metric IDs, and each
+      task reserves its <code>task:{task_id}</code> usage slot before a worker can settle, preventing
+      ID reuse and structural metrics mutations from background threads.
+    </p>
+  </section>
+
+  <section>
+    <h2>Task state machine</h2>
+    <div class="diagram">
+      <svg viewBox="0 0 1000 330" role="img" aria-labelledby="state-title state-description">
+        <title id="state-title">Background task state machine</title>
+        <desc id="state-description">Queued becomes running. Running becomes completed or error. Queued or running becomes cancelled when stop wins. Explicit resume starts a new run with the same task ID.</desc>
+        <defs>
+          <marker id="arrowhead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#175cd3"></path>
+          </marker>
+          <style>
+            .node { fill:#fff; stroke:#8d9390; stroke-width:2; rx:6; }
+            .ok { fill:#e8f5ed; stroke:#157347; }
+            .bad { fill:#ffebe9; stroke:#b42318; }
+            .cancel { fill:#fff4d6; stroke:#8a5a00; }
+            .edge { fill:none; stroke:#175cd3; stroke-width:2; marker-end:url(#arrowhead); }
+            .name { fill:#171717; font:700 18px Inter,system-ui,sans-serif; text-anchor:middle; dominant-baseline:middle; }
+            .label { fill:#5d625f; font:13px Inter,system-ui,sans-serif; text-anchor:middle; }
+          </style>
+        </defs>
+        <rect class="node" x="35" y="120" width="150" height="64"></rect>
+        <text class="name" x="110" y="152">queued</text>
+        <rect class="node" x="300" y="120" width="150" height="64"></rect>
+        <text class="name" x="375" y="152">running</text>
+        <rect class="node ok" x="700" y="20" width="180" height="64"></rect>
+        <text class="name" x="790" y="52">completed</text>
+        <rect class="node bad" x="700" y="132" width="180" height="64"></rect>
+        <text class="name" x="790" y="164">error</text>
+        <rect class="node cancel" x="700" y="244" width="180" height="64"></rect>
+        <text class="name" x="790" y="276">cancelled</text>
+        <path class="edge" d="M185 152 L300 152"></path>
+        <text class="label" x="242" y="137">worker starts</text>
+        <path class="edge" d="M450 140 C560 104 590 52 700 52"></path>
+        <text class="label" x="575" y="75">FINISHED</text>
+        <path class="edge" d="M450 156 L700 163"></path>
+        <text class="label" x="575" y="145">exception / non-FINISHED</text>
+        <path class="edge" d="M375 184 C430 275 570 276 700 276"></path>
+        <text class="label" x="545" y="300">stop wins before settlement</text>
+        <path class="edge" d="M110 184 C180 320 510 320 700 284"></path>
+        <text class="label" x="315" y="323">stop before worker starts</text>
+      </svg>
+    </div>
+    <div class="grid three">
+      <div class="fact"><div class="value">Poll is read-only</div><p>Repeated <code>task_output</code> calls return stable snapshots and never re-extract output or merge usage.</p></div>
+      <div class="fact"><div class="value">Stop is ordered</div><p>If completion settles first, stop rejects completed/error. If stop reserves first, the terminal state is cancelled.</p></div>
+      <div class="fact"><div class="value">Resume is explicit</div><p>Only a settled terminal task may resume with the same ID. Active and terminal-but-settling tasks reject resume so one conversation is never replaced underneath its worker.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Execution and exactly-once settlement</h2>
+    <div class="grid two">
+      <div>
+        <h3>Background run</h3>
+        <div class="timeline">
+          <div class="actor">Parent</div><div class="event">Calls <strong>task(run_in_background=True)</strong>.</div>
+          <div class="actor">Manager lock</div><div class="event">Allocates task and conversation, reserves its parent metrics slot, publishes <strong>queued</strong>, and starts one managed daemon worker.</div>
+          <div class="actor">Worker</div><div class="event">Sets <strong>running</strong>, sends the prompt once, then calls <code>asyncio.run(LocalConversation.arun())</code>.</div>
+          <div class="actor">Conversation</div><div class="event">Retains existing confirmation, hooks, agent definition, visualizer, persistence, budget, and event behavior.</div>
+          <div class="actor">Settlement</div><div class="event">Extracts final output once, stores terminal state, replaces the reserved cumulative metrics slot once, closes the conversation, and signals both completion and any blocked output readers.</div>
+        </div>
+      </div>
+      <div>
+        <h3>Settlement guard</h3>
+        <pre><code>with manager_lock:
+    if task.settlement_started:
+        return
+    task.settlement_started = True
+
+settle_metrics_once()
+pause_and_close_conversation()
+
+with manager_lock:
+    archive_without_live_conversation()
+    task.settled = True
+    task.completion_event.set()
+    task.wait_event.set()</code></pre>
+        <p class="small" style="margin-top:10px">The guard covers natural completion, response-extraction failures, stop, partial thread-start failure (including <code>BaseException</code>), and close races. A separate lifecycle wait event wakes blocked output readers on stop or manager close; <code>completion_event</code> remains the final-settlement signal.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Cooperative stop and bounded close</h2>
+    <div class="grid two">
+      <div>
+        <h3>task_stop</h3>
+        <div class="timeline">
+          <div class="actor">Manager</div><div class="event">Sets <code>stop_requested</code> under the registry lock.</div>
+          <div class="actor">Conversation</div><div class="event"><code>interrupt()</code> cancels the tracked async task on its event loop and signals the existing cancellation token.</div>
+          <div class="actor">Worker</div><div class="event">Observes the stop request, records <strong>cancelled</strong>, and runs normal settlement.</div>
+          <div class="actor">Caller</div><div class="event">Waits at most five seconds across completion and join. No Python thread is force-killed.</div>
+        </div>
+      </div>
+      <div>
+        <h3>executor / parent close</h3>
+        <div class="timeline">
+          <div class="actor">Close</div><div class="event">Marks the manager closed so no new task can publish.</div>
+          <div class="actor">Close</div><div class="event">Requests stop for every active task and interrupts each conversation.</div>
+          <div class="actor">Close</div><div class="event">Uses one shared five-second deadline, then joins all known task workers.</div>
+          <div class="actor">Cleanup</div><div class="event">Clears registry and temporary storage only after every task has settled.</div>
+        </div>
+      </div>
+    </div>
+    <p class="callout warn" style="margin-top:14px">
+      If an external dependency ignores cooperative cancellation past the deadline, close returns
+      without destroying state underneath the live worker. The registry and temporary directory
+      remain owned until that worker exits; its final settlement completes cleanup later.
+    </p>
+  </section>
+
+  <section>
+    <h2>Deterministic operation semantics</h2>
+    <table>
+      <thead><tr><th>Operation</th><th>Queued / running</th><th>Completed</th><th>Error</th><th>Cancelled</th><th>Unknown ID</th></tr></thead>
+      <tbody>
+        <tr><td><strong>task_output</strong></td><td>Returns current status. Optional bounded wait.</td><td>Returns final response.</td><td>Error observation with captured detail.</td><td>Error observation with partial response when available.</td><td>Error observation with available IDs.</td></tr>
+        <tr><td><strong>task_stop</strong></td><td>Requests cancellation; reports an error if still active after deadline.</td><td>Rejected: already completed.</td><td>Rejected: already failed.</td><td>Idempotent success.</td><td>Error observation.</td></tr>
+        <tr><td><strong>resume</strong></td><td>Rejected: already active.</td><td colspan="3">After settlement, creates a new conversation run from persisted history with the same task ID. A terminal-but-settling task is rejected.</td><td>Error observation; disk data alone is not treated as a live handle.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Compatibility and persistence boundary</h2>
+    <div class="grid two">
+      <div class="fact">
+        <div class="value">Preserved</div>
+        <ul>
+          <li>Blocking task is still the default.</li>
+          <li>Completed task resume remains available.</li>
+          <li>Confirmation handler and inherited confirmation policy.</li>
+          <li>Agent definition hooks, iteration/budget limits, prompt cache key, and visualizer.</li>
+          <li>Parent <code>subagents/</code> persistence layout and <code>task:{task_id}</code> metrics keys.</li>
+          <li>Workflow and existing Delegate callers remain source-compatible; <code>DelegateAction</code> does not gain new lifecycle commands here.</li>
+        </ul>
+      </div>
+      <div class="fact">
+        <div class="value">Intentionally process-local</div>
+        <ul>
+          <li>Registry records, worker threads, events, and stop handles are not serialized.</li>
+          <li>A new process or manager reports an old task ID as unknown.</li>
+          <li>Persisted conversation history does not claim that a worker survived restart.</li>
+          <li>Normal manager close preserves parent-owned persisted conversation data.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Verification evidence</h2>
+    <p>Focused coverage is in <code>tests/tools/task/test_background_task.py</code>; existing task, delegate, workflow, and conversation tests remain part of the affected suite.</p>
+    <div class="grid three" style="margin-top:14px">
+      <div class="fact"><div class="value">Scheduling</div><p>Event-gated immediate return, queued-to-running-to-completed, two independent workers, active resume conflict, parent binding.</p></div>
+      <div class="fact"><div class="value">Failure</div><p>Agent and response-extraction exceptions, unknown ID, timeout bounds including NaN/infinity, terminal stop, and transactional thread-start rollback.</p></div>
+      <div class="fact"><div class="value">Cancellation</div><p>Queued stop, running stop, repeated stop, real LocalConversation interrupt, interrupt failure containment, and stop/close ordering.</p></div>
+      <div class="fact"><div class="value">Cleanup</div><p>Executor close, parent close, post-close reuse rejection without allocation, uncooperative deadline, deferred cleanup, and no residual <code>Task-*</code> worker.</p></div>
+      <div class="fact"><div class="value">Accounting</div><p>Final response and metrics exactly once, repeated output, two managers sharing a parent without ID/usage collision, and parent stats iteration during worker settlement.</p></div>
+      <div class="fact"><div class="value">Boundary</div><p>Blocking compatibility, settled background resume, confirmation flow, persistence restart behavior, hooks/definitions/visualizer through existing tests.</p></div>
+    </div>
+  </section>
+
+  <footer>
+    Self-contained reviewer artifact. No external scripts, styles, fonts, or runtime dependencies.
+  </footer>
+</main>
+</body>
+</html>
