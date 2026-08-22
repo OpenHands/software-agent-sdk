@@ -303,13 +303,8 @@ def _build_clone_url(
 ) -> str:
     """Build authenticated clone URL based on the repository URL and provider.
 
-    Uses proper URL parsing to prevent token injection into malicious URLs:
-    for an auto-detected provider, the token is only injected if the host
-    matches the provider's public SaaS domain exactly. When the caller
-    explicitly configured the provider (self-hosted instances, e.g. a
-    company GitLab), the token is injected using the URL's own host instead,
-    since that pairing was authored by the caller rather than derived from
-    an untrusted URL.
+    The token is injected into the provider's public host, or into the URL's own
+    host when the caller set `provider` explicitly (self-hosted instances).
     """
     config = _PROVIDER_CONFIG.get(provider)
     if not config:
@@ -327,20 +322,17 @@ def _build_clone_url(
         return url
 
     parsed = urllib.parse.urlparse(url)
-    hostname = parsed.netloc.lower()
+    hostname = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" or parsed.username or not hostname:
+        return url
+    if hostname != base_url:
+        # An auto-detected provider is derived from the URL, so it cannot
+        # authorize another host - and never a lookalike of the public one.
+        if not explicit_provider or hostname.startswith(f"{base_url}."):
+            return url
 
-    # Public SaaS host - always eligible, whether detected or explicit.
-    host = base_url if hostname == base_url else None
-    # Self-hosted instance - only trust the URL's own host when the provider
-    # was explicitly configured, not auto-detected from the URL itself.
-    if host is None and explicit_provider and hostname:
-        host = hostname
-
-    if host is not None:
-        # Replace only the first occurrence to prevent double injection
-        return url.replace(f"https://{host}", f"https://{auth_prefix}{host}", 1)
-
-    return url
+    netloc = hostname if parsed.port is None else f"{hostname}:{parsed.port}"
+    return urllib.parse.urlunparse(parsed._replace(netloc=f"{auth_prefix}{netloc}"))
 
 
 # Type for functions that fetch tokens by name (e.g., "github_token" -> token value)

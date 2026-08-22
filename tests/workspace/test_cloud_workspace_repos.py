@@ -280,16 +280,36 @@ class TestHelperFunctions:
         )
         assert url == "https://gitlab.mycompany.com/owner/repo"
 
-    def test_build_clone_url_lookalike_host_not_injected(self):
-        """Regression: a lookalike host must never receive the token, even when
-        a provider was (incorrectly) auto-detected for it."""
+    @pytest.mark.parametrize("explicit_provider", [False, True])
+    def test_build_clone_url_lookalike_host_not_injected(self, explicit_provider):
+        """A lookalike of the public host never receives the token."""
         url = _build_clone_url(
             "https://github.com.evil.com/owner/repo",
             GitProvider.GITHUB,
             "ghtoken123",
-            explicit_provider=False,
+            explicit_provider=explicit_provider,
         )
         assert url == "https://github.com.evil.com/owner/repo"
+
+    def test_build_clone_url_self_hosted_host_is_normalized(self):
+        """Host case and non-default port survive token injection."""
+        url = _build_clone_url(
+            "https://GitLab.MyCompany.com:8443/owner/repo",
+            GitProvider.GITLAB,
+            "gltoken123",
+            explicit_provider=True,
+        )
+        assert url == "https://oauth2:gltoken123@gitlab.mycompany.com:8443/owner/repo"
+
+    def test_build_clone_url_existing_credentials_preserved(self):
+        """A URL that already carries credentials keeps its own."""
+        url = _build_clone_url(
+            "https://oauth2:embedded@gitlab.mycompany.com/owner/repo",
+            GitProvider.GITLAB,
+            "gltoken123",
+            explicit_provider=True,
+        )
+        assert url == "https://oauth2:embedded@gitlab.mycompany.com/owner/repo"
 
 
 class TestGetReposContext:
