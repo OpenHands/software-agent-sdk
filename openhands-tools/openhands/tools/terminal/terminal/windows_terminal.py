@@ -26,6 +26,9 @@ from openhands.tools.terminal.terminal.interface import (
     TerminalInterface,
     parse_ctrl_key,
 )
+from openhands.tools.terminal.terminal.process_priority import (
+    should_lower_process_priority,
+)
 
 
 logger = get_logger(__name__)
@@ -92,6 +95,8 @@ class WindowsTerminal(TerminalInterface):
         if self._initialized:
             return
 
+        env = build_terminal_env(self._env)
+
         startupinfo = None
         creationflags = 0
         if platform.system() == "Windows":
@@ -101,8 +106,9 @@ class WindowsTerminal(TerminalInterface):
                 startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
             creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             creationflags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            if should_lower_process_priority(env):
+                creationflags |= getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
 
-        env = build_terminal_env(self._env)
         env.setdefault("PYTHONIOENCODING", "utf-8")
         env.setdefault("PYTHONUTF8", "1")
 

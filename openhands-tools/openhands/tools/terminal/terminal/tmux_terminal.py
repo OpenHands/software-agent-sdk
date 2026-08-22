@@ -1,5 +1,6 @@
 """Tmux-based terminal backend implementation."""
 
+import shlex
 import time
 import uuid
 from collections.abc import Mapping
@@ -20,6 +21,9 @@ from openhands.tools.terminal.env import (
 from openhands.tools.terminal.metadata import CmdOutputMetadata
 from openhands.tools.terminal.terminal import TerminalInterface
 from openhands.tools.terminal.terminal.interface import parse_ctrl_key
+from openhands.tools.terminal.terminal.process_priority import (
+    get_process_priority_prefix,
+)
 
 
 logger = get_logger(__name__)
@@ -79,12 +83,12 @@ class TmuxTerminal(TerminalInterface):
         env.setdefault("PAGER", "cat")
         # Use a dedicated socket to isolate OpenHands sessions from the user's tmux
         self.server = libtmux.Server(socket_name=TMUX_SOCKET_NAME, environment=env)
-        _shell_command = "/bin/bash"
+        shell_command = ["/bin/bash"]
         if self.username in ["root", "openhands"]:
             # This starts a non-login (new) shell for the given user
-            _shell_command = f"su {self.username} -"
+            shell_command = ["su", self.username, "-"]
 
-        window_command = _shell_command
+        window_command = shlex.join((*get_process_priority_prefix(env), *shell_command))
 
         logger.debug(f"Initializing tmux terminal with command: {window_command}")
         session_name = f"openhands-{self.username}-{uuid.uuid4()}"

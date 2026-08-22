@@ -7,6 +7,7 @@ import uuid
 from collections.abc import Generator
 from typing import cast
 
+import psutil
 import pytest
 from pydantic import SecretStr
 
@@ -19,6 +20,9 @@ from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal import TerminalAction, TerminalTool
 from openhands.tools.terminal.impl import TerminalExecutor
 from openhands.tools.terminal.terminal import TerminalSession, create_terminal_session
+from openhands.tools.terminal.terminal.windows_terminal import (
+    WindowsTerminal,
+)
 
 
 pytestmark = pytest.mark.skipif(
@@ -91,6 +95,25 @@ def test_basic_command_execution(windows_session) -> None:
 
     assert obs.exit_code == 0
     assert "Hello from Windows terminal" in obs.text
+
+
+def test_terminal_process_runs_below_normal_priority(windows_session) -> None:
+    terminal = cast(WindowsTerminal, windows_session.terminal)
+    assert terminal.process is not None
+    try:
+        observation = windows_session.execute(
+            TerminalAction(
+                command=(
+                    'python -c "import psutil; '
+                    "print('OH_PRIORITY=' + str(psutil.Process().nice()))\""
+                )
+            )
+        )
+        assert observation.exit_code == 0
+        assert f"OH_PRIORITY={psutil.BELOW_NORMAL_PRIORITY_CLASS}" in observation.text
+    finally:
+        terminal.process.terminate()
+        terminal.process.wait(timeout=5)
 
 
 @pytest.mark.parametrize(
