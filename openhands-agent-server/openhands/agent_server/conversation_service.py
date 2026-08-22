@@ -1068,7 +1068,9 @@ class ConversationService:
                 self._conversation_locks[conversation_id] = lock
             return lock
 
-    _catalog_lock_sync: threading.Lock = field(default_factory=threading.Lock, init=False)
+    _catalog_lock_sync: threading.Lock = field(
+        default_factory=threading.Lock, init=False
+    )
 
     async def _get_or_load_event_service(
         self, conversation_id: UUID
@@ -1934,7 +1936,7 @@ class ConversationService:
         # directory so we don't leave stale state on disk.
         fork_dir = self.conversations_dir / fork_conv_id.hex
         try:
-            async with self._get_conversation_lock(conversation_id):
+            async with self._get_conversation_lock(source_id):
                 fork_event_service = await self._start_event_service(
                     fork_stored, is_new_conversation=True, agent=fork_agent
                 )

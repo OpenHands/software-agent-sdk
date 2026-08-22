@@ -926,7 +926,9 @@ async def test_waiting_hydration_cannot_restore_deleted_conversation(
         replacement_runtime = AsyncMock(spec=EventService)
         replacement_runtime.stored = record.stored
 
-        async def publish_replacement(_stored: StoredConversation) -> EventService:
+        async def publish_replacement(
+            _stored: StoredConversation, *, agent: AgentBase | None = None
+        ) -> EventService:
             assert service._event_services is not None
             service._event_services[conversation_id] = replacement_runtime
             service._conversation_records[conversation_id] = record
@@ -940,7 +942,7 @@ async def test_waiting_hydration_cannot_restore_deleted_conversation(
             ) as start_event_service,
             patch("openhands.agent_server.conversation_service.safe_rmtree"),
         ):
-            await service._lifecycle_lock.acquire()
+            await service._get_conversation_lock(conversation_id).acquire()
             try:
                 getter_task = asyncio.create_task(
                     service.get_event_service(conversation_id)
@@ -953,7 +955,7 @@ async def test_waiting_hydration_cannot_restore_deleted_conversation(
                 )
                 await asyncio.sleep(0)
             finally:
-                service._lifecycle_lock.release()
+                service._get_conversation_lock(conversation_id).release()
 
             getter_result, deleted = await asyncio.gather(getter_task, delete_task)
 
