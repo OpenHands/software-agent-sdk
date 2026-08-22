@@ -2399,8 +2399,15 @@ def _generate_title_traced(
     llm: LLM | None,
     max_length: int,
     on_error: Callable[[Exception], None] | None = None,
+    prompt: str | None = None,
 ) -> str:
-    return generate_title_from_message(message, llm, max_length, on_error=on_error)
+    return generate_title_from_message(
+        message,
+        llm,
+        max_length,
+        on_error=on_error,
+        prompt=prompt,
+    )
 
 
 @dataclass
@@ -2446,6 +2453,7 @@ class AutoTitleSubscriber(Subscriber):
                     title_llm,
                     50,
                     _on_title_error,
+                    self.service.stored.prompt,
                 )
                 if title and self.service.stored.title is None:
                     self.service.stored.title = title
