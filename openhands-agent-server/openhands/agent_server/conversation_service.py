@@ -1050,6 +1050,20 @@ class ConversationService:
     async def _get_or_load_event_service(
         self, conversation_id: UUID
     ) -> EventService | None:
+        # Fast path: check the cache *without* acquiring the lifecycle lock.
+        # This ensures that already-loaded conversations can be retrieved even
+        # when the lock is held by a slow ``asyncio.to_thread`` call for a
+        # different conversation.  The dict lookup is safe because
+        # ``_event_services`` is only mutated under the lock (insert / delete);
+        # a fast-path miss falls through to the locked slow path, which
+        # re-checks the cache and handles any state changes correctly.
+        event_services = self._event_services
+        if event_services is not None:
+            cached = event_services.get(conversation_id)
+            if cached is not None and cached.is_open():
+                cached.touch()
+                return cached
+
         async with self._lifecycle_lock:
             return await self._get_or_load_event_service_locked(conversation_id)
 
