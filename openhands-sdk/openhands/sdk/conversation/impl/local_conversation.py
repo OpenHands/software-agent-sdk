@@ -406,6 +406,8 @@ class LocalConversation(BaseConversation):
                 register_client_tools(recovered_specs)
         self.agent = agent
 
+        self._cipher = cipher
+        self._profile_store = LLMProfileStore(cipher=cipher)
         self._bind_conversation_context(self.agent.llm)
 
         # Default callback: persist every event to state
@@ -484,8 +486,6 @@ class LocalConversation(BaseConversation):
         # Agent initialization is deferred to _ensure_agent_ready() for lazy loading
         # This ensures plugins are loaded before agent initialization
         self.llm_registry = LLMRegistry()
-        self._profile_store = LLMProfileStore()
-        self._cipher = cipher
 
         # Seed agent_context.secrets into the registry for every agent (regular
         # and ACP), covering callers that skip create_request() — canvas /
@@ -1602,6 +1602,8 @@ class LocalConversation(BaseConversation):
         See #3443 for background.
         """
         llm._call_context = self.get_llm_call_context()
+        if llm.fallback_strategy is not None:
+            llm.fallback_strategy._bind_cipher(self._cipher)
 
     def _condenser_for_switched_llm(
         self,
