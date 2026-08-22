@@ -103,6 +103,7 @@ from openhands.sdk.settings.acp_providers import (
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
 from openhands.sdk.utils import maybe_truncate
+from openhands.sdk.utils.process_tree import ProcessTreeGuard
 from openhands.sdk.utils.pydantic_secrets import (
     serialize_secret,
     validate_secret,
@@ -1717,6 +1718,9 @@ class ACPAgent(AgentBase):
     _conn: ClientSideConnection | None = PrivateAttr(default=None)
     _session_id: str | None = PrivateAttr(default=None)
     _process: Any = PrivateAttr(default=None)  # asyncio subprocess
+    # Windows Job Object holding _process and its descendants, so teardown reaps
+    # the whole tree instead of just the PID we spawned. None off Windows.
+    _process_tree_guard: Any = PrivateAttr(default=None)
     _client: Any = PrivateAttr(default=None)  # _OpenHandsACPBridge
     _filtered_reader: Any = PrivateAttr(default=None)  # StreamReader
     _stdout_filter_task: Any = PrivateAttr(default=None)  # asyncio.Task
@@ -2721,6 +2725,13 @@ class ACPAgent(AgentBase):
             assert process.stdin is not None
             assert process.stdout is not None
             assert process.stderr is not None
+
+            # Hold the subprocess in a kill-on-close Job Object so shutdown
+            # reaps its descendants too (see _shutdown_runtime). No-op off
+            # Windows, where terminate() on a dead stdio pipe is enough.
+            self._process_tree_guard = ProcessTreeGuard.for_process(
+                getattr(process, "pid", None)
+            )
 
             # Wrap the subprocess stdout in a filtering reader that
             # only passes lines starting with '{' (JSON-RPC messages).
@@ -4207,6 +4218,19 @@ class ACPAgent(AgentBase):
                     except Exception as e:
                         logger.debug("Error stopping %s: %s", task_attr, e)
                 setattr(self, task_attr, None)
+
+        # Closing the job terminates anything the server spawned that outlived
+        # the terminate/kill above — on Windows those are single-PID
+        # TerminateProcess calls, so descendants are otherwise orphaned. Done
+        # after the graceful path so a well-behaved server still exits on its
+        # own. Best-effort and idempotent; None when no job was created.
+        guard = self._process_tree_guard
+        if guard is not None:
+            self._process_tree_guard = None
+            try:
+                guard.close()
+            except Exception as e:
+                logger.debug("Error closing ACP process tree guard: %s", e)
 
         credential_failures = self._release_file_credentials_collect()
         failures.update(credential_failures)
