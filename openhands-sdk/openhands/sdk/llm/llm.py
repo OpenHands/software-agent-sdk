@@ -924,6 +924,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def is_subscription(self, value: bool) -> None:
         self._is_subscription = value
 
+    @property
+    def requires_streaming(self) -> bool:
+        """Whether the provider requires stream=True for all requests.
+
+        Set when the underlying endpoint rejects non-streaming requests;
+        callers must leave streaming enabled and must not require an
+        on_token callback because the response is drained internally.
+        """
+        return self._is_subscription
+
     @model_validator(mode="wrap")
     @classmethod
     def _restore_is_subscription(cls, data, handler):
@@ -1765,10 +1775,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         _caller_kwargs = kwargs.copy()
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
-        if user_enable_streaming and on_token is None and not self.is_subscription:
+        if user_enable_streaming and on_token is None and not self.requires_streaming:
             # Gracefully degrade to non-streaming rather than crashing a run when
-            # streaming is requested without a callback wired (subscription mode
-            # is exempt — it streams internally without an on_token). See #4014.
+            # streaming is requested without a callback wired. Providers that
+            # require streaming are exempt — they drain the stream internally
+            # without an on_token callback. See requires_streaming and #4014.
             logger.debug(
                 "Streaming requested without an on_token callback; "
                 "falling back to a non-streaming responses call."
@@ -1915,10 +1926,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         _caller_kwargs = kwargs.copy()
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
-        if user_enable_streaming and on_token is None and not self.is_subscription:
+        if user_enable_streaming and on_token is None and not self.requires_streaming:
             # Gracefully degrade to non-streaming rather than crashing a run when
-            # streaming is requested without a callback wired (subscription mode
-            # is exempt — it streams internally without an on_token). See #4014.
+            # streaming is requested without a callback wired. Providers that
+            # require streaming are exempt — they drain the stream internally
+            # without an on_token callback. See requires_streaming and #4014.
             logger.debug(
                 "Streaming requested without an on_token callback; "
                 "falling back to a non-streaming responses call."

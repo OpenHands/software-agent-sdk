@@ -692,7 +692,7 @@ def test_switch_llm_tool_during_arun_does_not_deadlock(profile_store, tmp_path):
     assert conv.agent.llm.model == "fast-model"
 
 
-def test_switch_llm_to_subscription_profile_disables_condenser(
+def test_switch_llm_to_subscription_profile_keeps_condenser(
     monkeypatch, empty_profile_store
 ):
     import openhands.sdk.conversation.impl.local_conversation as local_conversation
@@ -734,8 +734,10 @@ def test_switch_llm_to_subscription_profile_disables_condenser(
     )
 
     assert conv.agent.llm.is_subscription
-    assert conv.agent.condenser is None
-    assert conv.state.agent.condenser is None
+    # Condenser must NOT be disabled for subscription LLMs — the condenser's
+    # own LLM config differs from the agent's, so it is preserved as-is.
+    assert conv.agent.condenser is condenser
+    assert conv.state.agent.condenser is condenser
 
     conv.switch_llm(_make_llm("regular-model", "regular"))
 
