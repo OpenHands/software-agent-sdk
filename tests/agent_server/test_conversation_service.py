@@ -3457,34 +3457,55 @@ class TestAutoTitle:
         )
 
 
-class TestACPActivityHeartbeatWiring:
-    """Tests for _setup_acp_activity_heartbeat in EventService."""
+class TestActivityHeartbeatWiring:
+    """Tests for _setup_activity_heartbeat in EventService."""
 
     def test_acp_agent_gets_on_activity_wired(self):
-        """_setup_acp_activity_heartbeat should set _on_activity on ACPAgent."""
+        """_setup_activity_heartbeat wires conversation + ACPAgent callbacks."""
         from openhands.agent_server.event_service import EventService
-        from openhands.agent_server.server_details_router import (
-            update_last_execution_time,
-        )
 
-        service = AsyncMock(spec=EventService)
-        # Call the real method
+        service = MagicMock(spec=EventService)
+        service.touch = MagicMock()
         agent = ACPAgent(acp_command=["echo", "test"])
+        conversation = MagicMock()
+        conversation.agent = agent
+        conversation.set_on_activity = MagicMock()
         assert agent._on_activity is None
 
-        EventService._setup_acp_activity_heartbeat(service, agent)
+        EventService._setup_activity_heartbeat(service, conversation)
 
-        assert agent._on_activity is update_last_execution_time
+        conversation.set_on_activity.assert_called_once()
+        activity_cb = conversation.set_on_activity.call_args.args[0]
+        assert agent._on_activity is activity_cb
 
-    def test_non_acp_agent_unchanged(self):
-        """_setup_acp_activity_heartbeat is a no-op for non-ACP agents."""
+        # Invoking the callback should touch the service and refresh idle time.
+        with patch(
+            "openhands.agent_server.server_details_router.update_last_execution_time"
+        ) as mock_update:
+            # Re-bind through the real method so the closure captures service.
+            EventService._setup_activity_heartbeat(service, conversation)
+            activity_cb = conversation.set_on_activity.call_args.args[0]
+            activity_cb()
+            service.touch.assert_called()
+            mock_update.assert_called()
+
+    def test_openhands_agent_gets_conversation_activity_wired(self):
+        """OpenHands agents also get conversation activity heartbeats.
+
+        Needed so blocking TaskToolSet / code-explorer work keeps the idle
+        timer alive while the parent event log is stalled (OpenHands#16341).
+        """
         from openhands.agent_server.event_service import EventService
 
-        service = AsyncMock(spec=EventService)
+        service = MagicMock(spec=EventService)
         agent = Agent(llm=LLM(model="test-model"))
+        conversation = MagicMock()
+        conversation.agent = agent
+        conversation.set_on_activity = MagicMock()
 
-        # Should not raise and should not set any attribute
-        EventService._setup_acp_activity_heartbeat(service, agent)
+        EventService._setup_activity_heartbeat(service, conversation)
+
+        conversation.set_on_activity.assert_called_once()
         assert not hasattr(agent, "_on_activity")
 
 

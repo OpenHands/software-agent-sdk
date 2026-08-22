@@ -114,6 +114,18 @@ async def test_interrupt_without_arun_falls_back_to_pause(tmp_path):
     assert conv.state.execution_status == ConversationExecutionStatus.PAUSED
 
 
+def test_interrupt_before_run_is_not_swallowed(tmp_path):
+    """interrupt() while IDLE must keep the following run() from starting."""
+    conv = _make_conversation(SlowLLM(sleep_seconds=60.0), tmp_path)
+    assert conv.state.execution_status == ConversationExecutionStatus.IDLE
+
+    conv.interrupt()
+    assert conv.state.execution_status == ConversationExecutionStatus.PAUSED
+
+    conv.run()
+    assert conv.state.execution_status == ConversationExecutionStatus.PAUSED
+
+
 @pytest.mark.asyncio
 async def test_arun_task_cleared_after_interrupt(tmp_path):
     """_arun_task should be None after arun() finishes (via interrupt)."""
