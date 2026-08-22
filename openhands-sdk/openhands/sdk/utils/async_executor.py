@@ -13,11 +13,6 @@ from openhands.sdk.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Upper bound on how long close() waits for the portal thread to wind down.
-# The portal thread is a daemon thread, so abandoning it is safe; blocking the
-# caller forever is not.
-DEFAULT_CLOSE_TIMEOUT = 30.0
-
 
 class AsyncExecutor:
     """
@@ -106,59 +101,17 @@ class AsyncExecutor:
 
             return portal.call(_execute)
 
-    def close(self, timeout: float | None = DEFAULT_CLOSE_TIMEOUT):
-        """Shut down the portal, without ever blocking the caller forever.
-
-        Args:
-            timeout: seconds to wait for the portal thread to exit. ``None``
-                waits indefinitely (the previous behaviour).
-        """
+    def close(self):
         with self._lock:
             portal_cm = self._portal_cm
-            portal = self._portal
             self._portal_cm = None
             self._portal = None
 
-        if portal_cm is None:
-            return
-
-        def _shutdown() -> None:
-            try:
-                # Cancel whatever is still running. Without this, anyio's
-                # graceful path (portal.stop(cancel_remaining=False)) waits
-                # for in-flight tasks that may never complete on their own.
-                if portal is not None:
-                    portal.call(portal.stop, True)
-            except RuntimeError:
-                pass  # portal already stopped
-            except Exception as e:
-                logger.warning(f"Error stopping BlockingPortal: {e}")
+        if portal_cm is not None:
             try:
                 portal_cm.__exit__(None, None, None)
             except Exception as e:
                 logger.warning(f"Error closing BlockingPortal: {e}")
-
-        # Run the shutdown on a helper thread so we can bound the wait: the
-        # portal thread can be stuck on work that does not honour cancellation
-        # (for example an await blocked inside a worker thread), and anyio
-        # joins it with no timeout.
-        try:
-            waiter = threading.Thread(
-                target=_shutdown, name="async-executor-close", daemon=True
-            )
-            waiter.start()
-        except RuntimeError:
-            # Interpreter is shutting down and will not start new threads.
-            # The portal thread is a daemon; let the process reap it.
-            return
-
-        waiter.join(timeout)
-        if waiter.is_alive():
-            logger.warning(
-                f"BlockingPortal did not shut down within {timeout}s; "
-                "abandoning its thread. Something scheduled on it is ignoring "
-                "cancellation."
-            )
 
     def __enter__(self):
         return self
