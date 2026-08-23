@@ -17,6 +17,10 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 
+from openhands.agent_server.a2a_router import (
+    a2a_agent_card_router,
+    a2a_router,
+)
 from openhands.agent_server.agent_profiles_router import agent_profiles_router
 from openhands.agent_server.auth_router import auth_router
 from openhands.agent_server.bash_router import bash_router
@@ -452,7 +456,15 @@ def _add_api_routes(app: FastAPI) -> None:
     # /api/auth/* mints workspace cookies and requires the header to bootstrap,
     # so it lives under the header-only auth group.
     api_router.include_router(auth_router)
+    # A2A JSON-RPC endpoint. Mounted with its own dependencies (not the
+    # header-only group above) because A2A clients authenticate with the
+    # standard Authorization header rather than ``X-Session-API-Key``; the
+    # A2A auth dependency accepts either.
+    api_router.include_router(a2a_router)
     app.include_router(api_router)
+
+    # A2A discovery: well-known URIs must live at the app root, outside /api.
+    app.include_router(a2a_agent_card_router)
 
     app.include_router(openai_router, dependencies=[Depends(check_openai_api_key)])
 
