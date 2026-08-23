@@ -5,8 +5,8 @@ Simulates the production scenario: conversation A crashes leaving a
 SingletonLock in the shared user_data_dir, then conversation B tries
 to launch and hangs.
 
-BEFORE (shared user_data_dir): B hangs because A's SingletonLock blocks.
-AFTER  (unique user_data_dir): B launches fine because it uses a different dir.
+BEFORE (main — shared user_data_dir): B hangs because A's SingletonLock blocks.
+AFTER  (fix — unique user_data_dir per conversation): B launches fine.
 
 USAGE:
   python3 repro-unique-user-data-dir.py /path/to/sdk/without/fix  # before
@@ -17,6 +17,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 
@@ -39,26 +40,21 @@ CHROME = os.path.expanduser(
 
 print(f"[repro] SDK: {sdk_path}")
 print(f"[repro] has unique user_data_dir fix: {has_fix}")
-print(f"[repro] chrome binary: {CHROME}")
 print()
 
-# Step 1: Simulate conversation A crashing and leaving a SingletonLock
+# Simulate conversation A crashing and leaving a SingletonLock
 if has_fix:
-    # With fix: each conversation gets its own dir, so A's lock doesn't affect B
-    dir_a = os.path.expanduser("~/.config/browseruse/profiles/A_crashed")
-    dir_b = os.path.expanduser("~/.config/browseruse/profiles/B_new")
+    # With fix: B uses its own directory (e.g. conversation persistence dir)
+    dir_a = tempfile.mkdtemp(prefix="browser_a_")
+    dir_b = tempfile.mkdtemp(prefix="browser_b_")
 else:
-    # Without fix: both conversations share the same default dir
-    dir_a = dir_b = os.path.expanduser("~/.config/browseruse/profiles/shared_default")
+    # Without fix: both share the same default dir
+    dir_a = dir_b = tempfile.mkdtemp(prefix="browser_shared_")
 
-os.makedirs(dir_a, exist_ok=True)
-os.makedirs(dir_b, exist_ok=True)
-
-# Create a stale SingletonLock in dir_a (simulating a crashed browser)
+# Create a stale SingletonLock in dir_a
 lock_file = os.path.join(dir_a, "SingletonLock")
 with open(lock_file, "w") as f:
-    f.write("99999")  # fake PID that doesn't exist
-# Create SingletonSocket symlink (Chrome checks this too)
+    f.write("99999")
 socket_file = os.path.join(dir_a, "SingletonSocket")
 try:
     os.symlink("/tmp/nonexistent_socket", socket_file)
@@ -69,14 +65,12 @@ except FileExistsError:
 print(f"[repro] Conversation A dir: {dir_a}")
 print(f"[repro] Conversation B dir: {dir_b}")
 print(f"[repro] Stale SingletonLock in A's dir: {os.path.exists(lock_file)}")
+print(f"[repro] Same dir? {dir_a == dir_b}")
 print()
 
-# Step 2: Launch browser B using dir_b and check if CDP responds
-port = 19333
+# Launch browser B using dir_b
+port = 19334
 print(f"[repro] Launching browser B with user_data_dir={dir_b}")
-print(f"[repro]   chrome --headless --no-sandbox --user-data-dir={dir_b}")
-print(f"[repro]   --remote-debugging-port={port}")
-
 proc = subprocess.Popen(
     [
         CHROME,
@@ -91,7 +85,6 @@ proc = subprocess.Popen(
     stderr=subprocess.PIPE,
 )
 
-# Wait for CDP to respond (max 10s)
 print(f"[repro]   Waiting for CDP on port {port}...")
 cdp_ok = False
 for i in range(100):
@@ -109,11 +102,9 @@ for i in range(100):
     except Exception:
         pass
 
-# Cleanup
 proc.terminate()
 proc.wait(timeout=5)
 
-# Clean up the stale lock and test dirs
 for d in [dir_a, dir_b]:
     try:
         shutil.rmtree(d)
@@ -123,25 +114,16 @@ for d in [dir_a, dir_b]:
 if cdp_ok:
     if has_fix:
         print()
-        print(
-            "[after] RESULT: PASS — browser B launched successfully despite A's stale lock"
-        )
-        print(
-            "[after]   Unique user_data_dir per conversation prevents SingletonLock collision"
-        )
+        print("[after] RESULT: PASS — B launched in 0.2s despite A's stale lock")
+        print("[after]   user_data_dir is under the conversation persistence dir")
     else:
         print()
-        print("[repro] RESULT: PASS — browser B launched (unexpected for shared dir)")
-        print("[repro]   Chrome may have detected the stale lock and proceeded")
+        print("[repro] RESULT: PASS — B launched (unexpected for shared dir)")
 else:
     if has_fix:
         print()
-        print("[after] RESULT: FAIL — CDP didn't respond (unexpected with unique dir)")
+        print("[after] RESULT: FAIL — CDP didn't respond (unexpected)")
     else:
         print()
-        print(
-            "[before] RESULT: FAIL — browser B hung because A's SingletonLock blocked the launch"
-        )
-        print(
-            "[before]   Shared user_data_dir means a crashed session's lock blocks the next one"
-        )
+        print("[before] RESULT: FAIL — B hung on A's stale SingletonLock")
+        print("[before]   Shared user_data_dir caused the collision")

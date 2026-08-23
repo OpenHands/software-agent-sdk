@@ -248,6 +248,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     _initialized: bool
     _async_executor: AsyncExecutor
     _cleanup_initiated: bool
+    _conversation: Any = None
     _close_lock: threading.Lock
     _action_timeout_seconds: float
 
@@ -405,16 +406,6 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                 "allowed_domains": allowed_domains or [],
                 "executable_path": executable_path,
                 "chromium_sandbox": not running_as_root,
-                # Use a unique user_data_dir per executor instance so a crashed
-                # session's SingletonLock doesn't block the next conversation's
-                # browser launch.  browser_use defaults to a shared
-                # ~/.config/browseruse/profiles/default, which means every
-                # conversation shares the same Chrome profile directory — if one
-                # crashes without calling cleanup(), the stale SingletonLock
-                # makes the next launch hang silently for the full CDP timeout.
-                "user_data_dir": str(
-                    Path.home() / ".config" / "browseruse" / "profiles" / uuid4().hex
-                ),
                 **config,
             }
 
@@ -438,9 +429,12 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     def __call__(
         self,
         action: BrowserAction,
-        conversation: LocalConversation | None = None,  # noqa: ARG002
+        conversation: LocalConversation | None = None,
     ):
         """Submit an action to run in the background loop and wait for result."""
+        # Store conversation context for _ensure_initialized to access
+        # (needed to place the browser profile in the conversation's dir)
+        self._conversation = conversation
         # Use a shorter timeout on the last retry before a reset would trigger,
         # to avoid long cascading waits against a dead browser.
         effective_timeout = (
@@ -588,6 +582,34 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     async def _ensure_initialized(self):
         """Ensure browser session is initialized."""
         if not self._initialized:
+            # Use a unique user_data_dir per conversation so a crashed
+            # session's SingletonLock doesn't block the next conversation's
+            # browser launch.  browser_use defaults to a shared
+            # ~/.config/browseruse/profiles/default, which means every
+            # conversation shares the same Chrome profile directory — if one
+            # crashes without calling cleanup(), the stale SingletonLock
+            # makes the next launch hang silently for the full CDP timeout.
+            #
+            # Place the browser profile inside the conversation's persistence
+            # directory so it's cleaned up when the conversation is deleted.
+            if "user_data_dir" not in self._config:
+                conversation = getattr(self, "_conversation", None)
+                conv_dir = (
+                    conversation.persistence_dir if conversation is not None else None
+                )
+                if conv_dir:
+                    browser_profile_dir = Path(conv_dir) / "browser_profile"
+                    browser_profile_dir.mkdir(parents=True, exist_ok=True)
+                    self._config["user_data_dir"] = str(browser_profile_dir)
+                else:
+                    # Fallback: unique dir if no conversation context available
+                    self._config["user_data_dir"] = str(
+                        Path.home()
+                        / ".config"
+                        / "browseruse"
+                        / "profiles"
+                        / uuid4().hex
+                    )
             # Initialize browser session with our config
             await self._server._init_browser_session(**self._config)
             # Inject any configured user scripts after session is ready
