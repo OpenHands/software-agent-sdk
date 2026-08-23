@@ -306,6 +306,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         # libraries as a full launch. If this fails, the browser would hang
         # inside the bubus event handler.
         import subprocess as _subprocess
+
         try:
             result = _subprocess.run(
                 [path, "--version"],
