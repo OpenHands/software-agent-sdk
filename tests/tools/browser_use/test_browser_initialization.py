@@ -108,6 +108,7 @@ class TestBrowserInitialization:
                 "executable_path": "/usr/bin/chromium",
                 "chromium_sandbox": True,  # Enabled for non-root
                 "custom_param": "test",
+                "user_data_dir": executor._config["user_data_dir"],
             }
 
             assert executor._config == expected_config
