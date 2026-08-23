@@ -318,7 +318,9 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                     f"Chromium binary at {path} exited with code {result.returncode} "
                     f"during pre-flight check. stderr: {result.stderr[:200]}"
                 )
-            logger.info(f"Chromium pre-flight check passed: {result.stdout.strip()[:50]}")
+            logger.info(
+                f"Chromium pre-flight check passed: {result.stdout.strip()[:50]}"
+            )
         except _subprocess.TimeoutExpired:
             raise Exception(
                 f"Chromium binary at {path} did not respond to --version within 10s. "
