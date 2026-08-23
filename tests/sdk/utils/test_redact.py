@@ -284,3 +284,17 @@ class TestRedactTextSecretsDictKeys:
     def test_non_sensitive_entries_unchanged(self):
         text = "{'name': 'alice', 'path': '/tmp/x'}"
         assert redact_text_secrets(text) == text
+
+    def test_does_not_over_redact_keys_containing_keyword_substrings(self):
+        """Keys that merely contain a sensitive keyword as a substring
+        (without underscore separation) must not be over-redacted.
+
+        Regression: ``re.IGNORECASE`` on ``[A-Z_]*KEY[A-Z_]*`` matches
+        ``monkey``, ``donkey``, ``keyboard``, ``secretary``, etc.
+        """
+        text = (
+            "{'monkey': 'banana', 'donkey': 'farm', "
+            "'keyboard': 'mechanical', 'secretary': 'Jane Doe', "
+            "'keyword': 'search-term', 'tokenizer': 'bert-base'}"
+        )
+        assert redact_text_secrets(text) == text
