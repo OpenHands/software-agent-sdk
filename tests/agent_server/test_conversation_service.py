@@ -86,6 +86,26 @@ def sample_stored_conversation():
 
 
 @pytest.mark.asyncio
+async def test_cached_event_service_bypasses_lifecycle_lock(tmp_path):
+    service = ConversationService(conversations_dir=tmp_path / "conversations")
+    conversation_id = uuid4()
+    event_service = MagicMock(spec=EventService)
+    event_service.is_open.return_value = True
+    service._event_services = {conversation_id: event_service}
+
+    await service._lifecycle_lock.acquire()
+    try:
+        result = await asyncio.wait_for(
+            service.get_event_service(conversation_id), timeout=0.1
+        )
+    finally:
+        service._lifecycle_lock.release()
+
+    assert result is event_service
+    event_service.touch.assert_called_once_with()
+
+
+@pytest.mark.asyncio
 async def test_meta_json_has_no_agent_and_reload_uses_base_state(tmp_path):
     """End-to-end single-source-of-truth guarantee.
 

@@ -1100,6 +1100,11 @@ class ConversationService:
         event_services = self._event_services
         if event_services is None:
             raise ValueError("inactive_service")
+        event_service = event_services.get(conversation_id)
+        if event_service is not None and event_service.is_open():
+            # Cached runtimes do not need lifecycle serialization or disk I/O.
+            event_service.touch()
+            return event_service
         if (
             conversation_id not in event_services
             and conversation_id not in self._conversation_records
