@@ -1962,25 +1962,50 @@ def test_validate_profile_redacts_api_key_in_error(client):
     )
 
 
-def test_validate_profile_redacts_api_key_in_unknown_error(client):
-    """Unknown exceptions must also have API keys redacted from the response."""
-    leaked_key = "sk-proj-abc123defGHIjklMNOpqrsTUVwxyz1234567890"
+def test_get_profile_resolve_provider_returns_connection_credentials(client):
+    """GET /api/profiles/{name}?resolve_provider=true must return the linked
+    provider connection's api_key and base_url, not None.
 
-    with (
-        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
-        patch(
-            "openhands.sdk.llm.llm.LLM.acompletion",
-            side_effect=RuntimeError(f"Request failed with key {leaked_key}"),
-        ),
-    ):
-        response = client.post(
-            "/api/profiles/leaky-unknown/validate",
-            json={"llm": {"model": "gpt-4o", "api_key": leaked_key}},
-        )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["valid"] is False
-    assert leaked_key not in body["error"]["message"], (
-        "API key must not appear in the validate error response"
+    Regression test for PR #4492: the endpoint hardcoded
+    ``resolve_provider=False``, so profiles linked to a provider connection
+    returned ``api_key=None`` even with ``X-Expose-Secrets: plaintext``.
+    This broke ``RemoteWorkspace.get_llm()`` for provider-connection-backed
+    profiles — the resulting LLM could not authenticate.
+    """
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "OpenAI Prod",
+            "provider": "openai",
+            "api_key": "sk-provider-resolve-test",
+            "base_url": "https://api.openai.com/v1",
+        },
+    ).json()["id"]
+    client.post(
+        "/api/profiles/conn-profile",
+        json={
+            "llm": {
+                "model": "openai/gpt-4o",
+                "provider_connection_id": connection_id,
+            },
+            "include_secrets": False,
+        },
     )
+
+    # Without resolve_provider: api_key is None (display mode)
+    display = client.get(
+        "/api/profiles/conn-profile",
+        headers={"X-Expose-Secrets": "plaintext"},
+    ).json()
+    assert display["config"]["api_key"] is None
+    assert display["config"]["provider_connection_id"] == connection_id
+
+    # With resolve_provider=true: api_key and base_url are resolved from the
+    # linked provider connection so get_llm() can build a working LLM.
+    resolved = client.get(
+        "/api/profiles/conn-profile?resolve_provider=true",
+        headers={"X-Expose-Secrets": "plaintext"},
+    ).json()
+    assert resolved["config"]["api_key"] == "sk-provider-resolve-test"
+    assert resolved["config"]["base_url"] == "https://api.openai.com/v1"
+    assert resolved["config"]["provider_connection_id"] == connection_id

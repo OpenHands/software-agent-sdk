@@ -165,13 +165,23 @@ async def list_profiles(request: Request) -> ProfileListResponse:
 
 
 @profiles_router.get("/{name}", response_model=ProfileDetailResponse)
-async def get_profile(request: Request, name: ProfileName) -> ProfileDetailResponse:
+async def get_profile(
+    request: Request,
+    name: ProfileName,
+    resolve_provider: bool = False,
+) -> ProfileDetailResponse:
     """Get a profile's configuration.
 
     Use the ``X-Expose-Secrets`` header to control secret exposure:
     - ``encrypted``: Returns cipher-encrypted values (safe for frontend clients)
     - ``plaintext``: Returns raw secret values (backend clients only!)
     - (absent): Returns nulled ``api_key`` with ``api_key_set`` indicator
+
+    When ``resolve_provider=true`` is passed as a query parameter, the linked
+    provider connection's ``api_key`` and ``base_url`` are resolved into the
+    returned config. This is required by ``RemoteWorkspace.get_llm()`` so the
+    resulting LLM can authenticate. Without it (the default), the profile is
+    displayed exactly as stored.
     """
     expose_mode = parse_expose_secrets_header(request)
     cipher = get_cipher(request)
@@ -179,10 +189,7 @@ async def get_profile(request: Request, name: ProfileName) -> ProfileDetailRespo
     store = get_llm_profile_store()
     try:
         with store_errors():
-            # Display the profile exactly as stored: don't inject the linked
-            # provider's credentials, and don't fail a read when the reference
-            # dangles. Effective key presence is reported via ``api_key_set``.
-            llm = store.load(name, cipher=cipher, resolve_provider=False)
+            llm = store.load(name, cipher=cipher, resolve_provider=resolve_provider)
     except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

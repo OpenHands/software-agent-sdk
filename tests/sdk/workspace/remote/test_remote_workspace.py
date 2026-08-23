@@ -653,6 +653,7 @@ def test_get_llm_with_profile_name(monkeypatch):
     assert call_args[0][0] == "/api/profiles/fast-model"
     assert call_args[1]["headers"]["X-Expose-Secrets"] == "plaintext"
     assert call_args[1]["headers"]["X-Session-API-Key"] == "test-key"
+    assert call_args[1]["params"] == {"resolve_provider": "true"}
 
     llm_with_override = workspace.get_llm(
         profile_name="fast-model", usage_id="custom-usage"
