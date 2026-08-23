@@ -13,6 +13,7 @@ import threading
 from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, TypeVar
+from uuid import uuid4
 
 
 if TYPE_CHECKING:
@@ -404,6 +405,16 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                 "allowed_domains": allowed_domains or [],
                 "executable_path": executable_path,
                 "chromium_sandbox": not running_as_root,
+                # Use a unique user_data_dir per executor instance so a crashed
+                # session's SingletonLock doesn't block the next conversation's
+                # browser launch.  browser_use defaults to a shared
+                # ~/.config/browseruse/profiles/default, which means every
+                # conversation shares the same Chrome profile directory — if one
+                # crashes without calling cleanup(), the stale SingletonLock
+                # makes the next launch hang silently for the full CDP timeout.
+                "user_data_dir": str(
+                    Path.home() / ".config" / "browseruse" / "profiles" / uuid4().hex
+                ),
                 **config,
             }
 
