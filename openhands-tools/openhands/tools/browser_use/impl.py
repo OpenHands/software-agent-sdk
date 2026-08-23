@@ -357,12 +357,6 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                 "allowed_domains": allowed_domains or [],
                 "executable_path": executable_path,
                 "chromium_sandbox": not running_as_root,
-                # Use a unique user_data_dir per executor instance so a crashed
-                # session's SingletonLock doesn't block the next conversation's
-                # browser launch.  browser_use defaults to a shared
-                # ~/.config/browseruse/profiles/default — if one conversation
-                # crashes without calling cleanup(), the stale SingletonLock
-                # makes the next launch hang silently for the full CDP timeout.
                 "user_data_dir": str(
                     Path.home() / ".config" / "browseruse" / "profiles" / uuid4().hex
                 ),
@@ -702,6 +696,14 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             except Exception as e:
                 logger.warning(f"Error during browser cleanup: {e}")
             finally:
+                # Remove the browser profile directory to avoid disk accumulation.
+                # browser_use doesn't clean up the user_data_dir on shutdown.
+                user_data_dir = self._config.get("user_data_dir")
+                if user_data_dir and "browseruse/profiles/" in user_data_dir:
+                    try:
+                        shutil.rmtree(user_data_dir, ignore_errors=True)
+                    except Exception:
+                        pass
                 try:
                     # Always close the async executor
                     self._async_executor.close()
