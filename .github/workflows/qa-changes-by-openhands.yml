@@ -19,12 +19,15 @@ permissions:
 jobs:
     qa-changes:
         # Only run for same-repo PRs (secrets aren't available for forks).
+        # Dependabot PRs are same-repo but pull_request events opened by
+        # Dependabot don't receive repository secrets such as LLM_API_KEY,
+        # so skip the automatic triggers for them (mirrors pr-description-check).
         # Trigger conditions mirror pr-review, but use the 'qa-this' label
         # and openhands-agent reviewer request.
         if: |
             github.event.pull_request.head.repo.full_name == github.repository && (
-                (github.event.action == 'opened' && github.event.pull_request.draft == false && github.event.pull_request.author_association != 'FIRST_TIME_CONTRIBUTOR' && github.event.pull_request.author_association != 'NONE') ||
-                (github.event.action == 'ready_for_review' && github.event.pull_request.author_association != 'FIRST_TIME_CONTRIBUTOR' && github.event.pull_request.author_association != 'NONE') ||
+                (github.event.action == 'opened' && github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.draft == false && github.event.pull_request.author_association != 'FIRST_TIME_CONTRIBUTOR' && github.event.pull_request.author_association != 'NONE') ||
+                (github.event.action == 'ready_for_review' && github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.author_association != 'FIRST_TIME_CONTRIBUTOR' && github.event.pull_request.author_association != 'NONE') ||
                 github.event.label.name == 'qa-this' ||
                 github.event.requested_reviewer.login == 'openhands-agent' ||
                 github.event.requested_reviewer.login == 'all-hands-bot'
