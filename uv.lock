@@ -13,6 +13,7 @@ exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
 litellm = "2026-07-20T00:00:00Z"
+lmnr = "2026-08-23T00:00:00Z"
 
 [manifest]
 members = [
@@ -2108,7 +2109,7 @@ wheels = [
 
 [[package]]
 name = "lmnr"
-version = "0.7.56"
+version = "0.7.60"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "blake3" },
@@ -2130,9 +2131,9 @@ dependencies = [
     { name = "tenacity" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4f/db/6665b4ba365db31d8b34799a0d5eacc7a4fb735da979dfaa37bcbfdf96f2/lmnr-0.7.56.tar.gz", hash = "sha256:ec9530f6cc5ddf1eaa3c0fa4dbb5a7a932e2be01b9fa739813f53607d834247b", size = 305842, upload-time = "2026-07-10T16:41:17.854Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f6/9f/cfe8f31e505ac4511c3c13524bebae9940c937c5d5507a1cb0dbb235103e/lmnr-0.7.60.tar.gz", hash = "sha256:35076b302a8f4349824deb08f79d1c7e4c2486b5a14704c0e6efee9879942096", size = 324203, upload-time = "2026-08-22T16:07:28.408Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e2/c1/6cb3f998bb21f3961064b2b91a962b009d29f96b3fe42dae4b5e83c5ca8f/lmnr-0.7.56-py3-none-any.whl", hash = "sha256:bd3a5cc1be5d73cc3b6131c707c6abe74f9c499f9b8d1c7a76f5b2ca0f85e2be", size = 392156, upload-time = "2026-07-10T16:41:16.28Z" },
+    { url = "https://files.pythonhosted.org/packages/6e/6f/a339be793cef3b2119d87e8cba4390af652d6e404c37ab4cac9e7c9f2ea5/lmnr-0.7.60-py3-none-any.whl", hash = "sha256:efec73de28eb8b66bcda6aaab7db0bda8247a26f982e63295a754412bee607f0", size = 408767, upload-time = "2026-08-22T16:07:26.955Z" },
 ]
 
 [[package]]
@@ -2806,7 +2807,7 @@ requires-dist = [
     { name = "joserfc", specifier = ">=1.6.8" },
     { name = "jsonschema", specifier = ">=4.23.0" },
     { name = "litellm", specifier = ">=1.93.0" },
-    { name = "lmnr", specifier = ">=0.7.56,<0.8.0" },
+    { name = "lmnr", specifier = ">=0.7.60,<0.8.0" },
     { name = "pillow", specifier = ">=12.3.0" },
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "python-frontmatter", specifier = ">=1.1.0" },

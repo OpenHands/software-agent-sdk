@@ -283,65 +283,17 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         return None
 
     def _ensure_chromium_available(self) -> str:
-        """Ensure Chromium is available and can actually launch.
-
-        Does a pre-flight smoke test: launches the browser with ``--version``.
-        This catches missing shared libraries, corrupt binaries, and sandbox
-        issues that ``check_chromium_available`` (which only checks the binary
-        exists) misses.
-
-        Without this check, the browser launch goes through the bubus event
-        bus (``BrowserStartEvent``), and if it hangs inside a C-level call,
-        the handler timeout can't cancel it — zombie threads accumulate.
-        See https://github.com/browser-use/bubus/issues/31.
+        """Ensure Chromium is available for browser operations.
 
         Raises:
-            Exception: If Chromium is not available or can't launch.
+            Exception: If Chromium is not available
         """
         if path := self.check_chromium_available():
             logger.info(f"Chromium is available for browser operations at {path}")
-        else:
-            raise Exception(_get_chromium_error_message())
+            return path
 
-        # Pre-flight: verify the binary can actually launch.
-        # ``--version`` exits immediately and requires the same shared
-        # libraries as a full launch. If this fails, the browser would hang
-        # inside the bubus event handler.
-        import subprocess as _subprocess
-
-        try:
-            result = _subprocess.run(
-                [path, "--version"],
-                capture_output=True,
-                timeout=10,
-                text=True,
-            )
-            if result.returncode != 0:
-                raise Exception(
-                    f"Chromium binary at {path} exited with code {result.returncode} "
-                    f"during pre-flight check. stderr: {result.stderr[:200]}"
-                )
-            logger.info(
-                f"Chromium pre-flight check passed: {result.stdout.strip()[:50]}"
-            )
-        except _subprocess.TimeoutExpired:
-            raise Exception(
-                f"Chromium binary at {path} did not respond to --version within 10s. "
-                "The browser may be hung or missing required libraries."
-            )
-        except FileNotFoundError:
-            raise Exception(_get_chromium_error_message())
-        except Exception as e:
-            if "pre-flight" in str(e):
-                raise
-            raise Exception(
-                f"Chromium pre-flight check failed for {path}: {e}. "
-                "The browser binary exists but cannot launch. "
-                "Common causes: missing shared libraries, wrong architecture, "
-                "or sandbox restrictions."
-            ) from e
-
-        return path
+        # Chromium not available - provide clear installation instructions
+        raise Exception(_get_chromium_error_message())
 
     def __init__(
         self,
