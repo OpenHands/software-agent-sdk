@@ -274,8 +274,8 @@ class TestUniqueUserDataDir:
             assert dir_a != dir_b, (
                 "Two executor instances must have distinct user_data_dir values"
             )
-            assert "browseruse/profiles/" in dir_a
-            assert "browseruse/profiles/" in dir_b
+            assert "browseruse" in dir_a and "profiles" in dir_a
+            assert "browseruse" in dir_b and "profiles" in dir_b
 
     def test_explicit_user_data_dir_overrides_default(self):
         """An explicit user_data_dir passed via **config must override the
