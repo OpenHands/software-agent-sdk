@@ -62,6 +62,18 @@ Digest = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{16,64}$")]
 Bucket = SafeToken
 """A bucketed magnitude such as ``11-50``. Never a raw count."""
 
+MAX_DURATION_MS: Final[int] = 86_400_000
+"""Upper bound for raw durations: 24h in ms. A bound keeps the field from ever
+holding an absurd magnitude while leaving real-life operations uncapped."""
+
+DurationMs = Annotated[int, Field(ge=0, le=MAX_DURATION_MS)]
+"""A raw wall-clock duration in integer milliseconds.
+
+The one magnitude deliberately exempted from bucketing, reserved for
+per-operation latency (see :class:`OperationTimingProperties`). Unlike raw
+counts, a duration cannot be joined back to an identity.
+"""
+
 
 class EventName(StrEnum):
     """Stable event names. The wire value is the member value."""
@@ -73,6 +85,7 @@ class EventName(StrEnum):
     CONVERSATION_FINISHED = "agent_server.conversation_finished"
     CONVERSATION_FAILED = "agent_server.conversation_failed"
     CONVERSATION_ERROR = "agent_server.conversation_error"
+    OPERATION_TIMING = "agent_server.operation_timing"
     REQUEST_FAILED = "agent_server.request_failed"
 
 
@@ -232,12 +245,34 @@ class RequestFailedProperties(_BaseProperties):
     error_id: SafeToken | None = None
 
 
+class OperationTimingProperties(_BaseProperties):
+    """Per-operation latency, in raw milliseconds.
+
+    A deliberate, documented departure from the bucketed-magnitude rule
+    (see :class:`ConversationOutcomeProperties`). Per-operation *duration* is
+    allowlisted as raw ``int`` ms because a lone elapsed-time value carries no
+    re-identification surface; the same is **not** true of raw counts joined
+    with a timestamp, so this event intentionally carries no ``conversation_ref``,
+    no counts, and no high-cardinality dimensions. The ``stuck`` dimension
+    distinguishes a deadlock (watchdog fired, no completion event) from a merely
+    slow operation (watchdog fired but the operation then completed).
+    """
+
+    kind: Literal["operation_timing"] = "operation_timing"
+
+    operation: SafeToken
+    duration_ms: DurationMs
+    stuck: bool
+    stuck_budget_ms: DurationMs
+
+
 DiagnosticProperties = Annotated[
     ServerLifecycleProperties
     | ConversationStartedProperties
     | ConversationOutcomeProperties
     | ErrorProperties
-    | RequestFailedProperties,
+    | RequestFailedProperties
+    | OperationTimingProperties,
     Field(discriminator="kind"),
 ]
 
@@ -324,5 +359,9 @@ EXPECTED_PROPERTY_NAMES: Final[frozenset[str]] = frozenset(
         "route_template",
         "method",
         "status_code",
+        "operation",
+        "duration_ms",
+        "stuck",
+        "stuck_budget_ms",
     }
 )

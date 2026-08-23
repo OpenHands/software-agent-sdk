@@ -46,6 +46,7 @@ from openhands.agent_server.telemetry import (
     get_telemetry_sink,
 )
 from openhands.agent_server.telemetry.sanitizer import model_family, safe_token
+from openhands.agent_server.telemetry.timing import timed_operation
 from openhands.agent_server.utils import safe_rmtree, utc_now
 from openhands.sdk import LLM, AgentContext, Event, Message
 from openhands.sdk.agent import ACPAgent
@@ -1353,12 +1354,14 @@ class ConversationService:
     async def start_conversation(
         self, request: StartConversationRequest
     ) -> tuple[ConversationInfo, bool]:
-        return await self._start_conversation(request)
+        async with timed_operation("conversation_create"):
+            return await self._start_conversation(request)
 
     async def start_acp_conversation(
         self, request: StartConversationRequest
     ) -> tuple[ConversationInfo, bool]:
-        return await self._start_conversation(request)
+        async with timed_operation("conversation_create"):
+            return await self._start_conversation(request)
 
     async def _start_conversation(
         self,
@@ -1738,6 +1741,10 @@ class ConversationService:
         return bool(await self._get_or_load_event_service(conversation_id))
 
     async def delete_conversation(self, conversation_id: UUID) -> bool:
+        async with timed_operation("conversation_delete"):
+            return await self._delete_conversation(conversation_id)
+
+    async def _delete_conversation(self, conversation_id: UUID) -> bool:
         event_services = self._event_services
         if event_services is None:
             raise ValueError("inactive_service")
@@ -2157,11 +2164,17 @@ class ConversationService:
             if event_services is None:
                 return
             services = tuple(event_services.items())
+
+            async def _close_event_service(event_service: EventService) -> None:
+                # A wedged close here is the original "stuck close() blocked
+                # everything" shape (#4514). Timing each conversation's teardown
+                # individually lets the blocked one surface a stuck signal even
+                # though the gather waits on all of them.
+                async with timed_operation("conversation_close"):
+                    await event_service.__aexit__(exc_type, exc_value, traceback)
+
             results = await asyncio.gather(
-                *[
-                    event_service.__aexit__(exc_type, exc_value, traceback)
-                    for _, event_service in services
-                ],
+                *[_close_event_service(event_service) for _, event_service in services],
                 return_exceptions=True,
             )
             failed_ids = {

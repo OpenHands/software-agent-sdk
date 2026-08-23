@@ -34,6 +34,9 @@ from openhands.agent_server.models import (
     StoredConversation,
     UpdateConversationRequest,
 )
+from openhands.agent_server.telemetry.timing import (
+    timed_operation as _real_timed_operation,
+)
 from openhands.agent_server.utils import safe_rmtree as _safe_rmtree
 from openhands.sdk import LLM, Agent, AgentBase, Message
 from openhands.sdk.agent.acp_agent import ACPAgent
@@ -3011,6 +3014,120 @@ class TestConversationServiceDeleteConversation:
 
             # Verify removal was attempted
             assert mock_rmtree.call_count == 1
+
+
+class TestOperationTimingInstrumentation:
+    """Per-operation timing on the lifecycle hot paths (issue #4589)."""
+
+    def _recording_timed_operation(self, events, default_budget_ms=None):
+        def wrapped(operation, *, budget_ms=None, emit=None):  # noqa: ARG001
+            return _real_timed_operation(
+                operation,
+                budget_ms=budget_ms or default_budget_ms,
+                emit=events.append,
+            )
+
+        return wrapped
+
+    @pytest.mark.asyncio
+    async def test_start_conversation_emits_timing_completion(
+        self, conversation_service, tmp_path, monkeypatch
+    ):
+        """A real create emits one ``conversation_create`` completion event."""
+        events = []
+        monkeypatch.setattr(
+            "openhands.agent_server.conversation_service.timed_operation",
+            self._recording_timed_operation(events),
+        )
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        request = StartConversationRequest(
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+            confirmation_policy=NeverConfirm(),
+        )
+
+        info, is_new = await conversation_service.start_conversation(request)
+
+        assert is_new is True
+        assert info.id is not None
+        assert len(events) == 1
+        (event,) = events
+        assert event.operation == "conversation_create"
+        assert event.stuck is False
+        assert event.duration_ms >= 0
+        assert event.stuck_budget_ms == 20_000
+
+    @pytest.mark.asyncio
+    async def test_delete_blocked_on_peer_lock_emits_stuck(
+        self, conversation_service, monkeypatch
+    ):
+        """A delete blocked on the lifecycle lock surfaces as stuck + no completion.
+
+        This is the wedge shape from #4514: one conversation's long-running
+        operation holds the per-conversation lock, and the delete of that
+        conversation must be *visible* (stuck signal) without the measurement
+        site itself completing.
+        """
+        events = []
+        monkeypatch.setattr(
+            "openhands.agent_server.conversation_service.timed_operation",
+            self._recording_timed_operation(events, default_budget_ms=100),
+        )
+        conversation_id = uuid4()
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.conversation_dir = "/tmp/test_conversation"
+        mock_service.stored = StoredConversation(
+            id=conversation_id,
+            workspace=LocalWorkspace(working_dir="/tmp/test_workspace"),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+            created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+            updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+        )
+        mock_service.get_state.return_value = ConversationState(
+            id=conversation_id,
+            agent=_sample_agent(),
+            workspace=mock_service.stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=mock_service.stored.confirmation_policy,
+        )
+        conversation_service._event_services[conversation_id] = mock_service
+
+        lock = conversation_service._get_conversation_lock(conversation_id)
+        await lock.acquire()
+
+        task = asyncio.create_task(
+            conversation_service.delete_conversation(conversation_id)
+        )
+
+        # The watchdog fires while the delete is still blocked on the lock.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 5
+        while not any(e.stuck for e in events) and loop.time() < deadline:
+            await asyncio.sleep(0.01)
+        assert any(e.stuck for e in events), "no stuck signal was emitted"
+        stuck = next(e for e in events if e.stuck)
+        assert stuck.operation == "conversation_delete"
+        assert not task.done(), "delete completed while its lock was held"
+
+        with patch(
+            "openhands.agent_server.conversation_service.safe_rmtree"
+        ) as mock_rmtree:
+            mock_rmtree.return_value = True
+            lock.release()
+            result = await task
+            assert result is True
+
+        # A slow-but-alive operation emits a stuck signal and then a
+        # completion that also carries stuck=True (it *was* stuck).
+        assert len(events) == 2
+        signal, completion = events
+        assert signal.stuck is True
+        assert completion.operation == "conversation_delete"
+        assert completion.stuck is True
+        assert completion.duration_ms >= signal.duration_ms >= 100
 
 
 class TestSafeRmtree:
