@@ -75,6 +75,13 @@ Pinned PR CI is reproducible and required. A separate weekly
 `main` commit, records that SHA, and opens or updates an informational drift
 issue. Ordinary client PRs never generate from the moving SDK branch.
 
+
+## Repository boundaries
+
+This repository owns the browser-compatible typed client for the OpenHands Agent Server API. [`OpenHands/software-agent-sdk`](https://github.com/OpenHands/software-agent-sdk) owns the canonical API implementation, Agent Server, and agent behavior; [`OpenHands/OpenHands`](https://github.com/OpenHands/OpenHands) consumes this client for Agent Canvas UI; and [`OpenHands/extensions`](https://github.com/OpenHands/extensions) owns reusable skills, plugins, automations, and integrations; [`OpenHands/automation`](https://github.com/OpenHands/automation) owns scheduling, webhooks, run history, and dispatching.
+
+The normal flow is SDK/Agent Server → OpenAPI contract → this client → Agent Canvas. Add typed endpoint access here, backend behavior in the SDK, UI in Canvas, and automation lifecycle behavior in `automation`. A PR opened in the wrong repository should be closed and moved to the repository that owns the change.
+
 ## Quick Start
 
 ### Start an AgentServer

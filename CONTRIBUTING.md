@@ -62,8 +62,10 @@ python scripts/check-acp-drift.py
 
 ## Pull requests
 
+- Confirm the change belongs in `typescript-client`: backend behavior and endpoints belong in [`software-agent-sdk`](https://github.com/OpenHands/software-agent-sdk), UI belongs in [`OpenHands/OpenHands`](https://github.com/OpenHands/OpenHands), and scheduling/webhooks/dispatch belong in [`OpenHands/automation`](https://github.com/OpenHands/automation).
+- If a PR is opened in the wrong repository, recommend closing and moving it to the repository that owns the change.
 - Open focused PRs with a clear description of what changed and why.
-- Make sure the relevant checks pass before requesting review.
+- Follow the repository's applicable code-review guidance and make sure the relevant checks pass before requesting review.
 - Use conventional prefixes in the PR title when possible, such as `feat`,
   `fix`, `docs`, `refactor`, `test`, `build`, `ci`, or `chore`.
 - Include screenshots or recordings when changing user-facing example apps or

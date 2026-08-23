@@ -6,6 +6,14 @@ This repository contains a TypeScript client library for the OpenHands Agent Ser
 
 The client is designed to mirror the structure and functionality of the Python SDK (`software-agent-sdk`) while providing idiomatic TypeScript/JavaScript APIs with full type safety and modern development tooling.
 
+## Cross-Repository Boundaries
+
+This repository owns the browser-compatible TypeScript client for the OpenHands Agent Server API. The canonical API implementation and behavior belong to [`OpenHands/software-agent-sdk`](https://github.com/OpenHands/software-agent-sdk); [`OpenHands/OpenHands`](https://github.com/OpenHands/OpenHands) consumes this client for Agent Canvas UI; and [`OpenHands/extensions`](https://github.com/OpenHands/extensions) owns reusable skills, plugins, automations, and integrations; [`OpenHands/automation`](https://github.com/OpenHands/automation) owns scheduling, webhooks, run history, and dispatching.
+
+The normal flow is SDK/Agent Server → OpenAPI contract → this client → Agent Canvas. Keep backend behavior and endpoints in the SDK, typed API access here, UI in Agent Canvas, and automation lifecycle behavior in `automation`. If a PR is opened in the wrong repository, explicitly recommend closing and moving it to the owning repository rather than merging it here.
+
+All pull requests must follow the repository's contribution and applicable code-review guidance.
+
 ## Key Features
 
 - **Complete API Coverage**: Implements all endpoints from the OpenHands Agent Server OpenAPI specification
