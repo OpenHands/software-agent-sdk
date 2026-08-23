@@ -15,11 +15,10 @@ risk and flow through OpenHands' normal ConfirmRisky confirmation path.
 
 import json
 import os
-import signal
 import subprocess
 from collections.abc import Callable
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 
 from openhands.sdk import LLM, Agent, BaseConversation, Conversation
 from openhands.sdk.conversation.state import (
@@ -34,22 +33,12 @@ from openhands.sdk.tool import Tool
 from openhands.tools.terminal import TerminalAction, TerminalTool
 
 
-signal.signal(signal.SIGINT, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
-
-
 class HolGuardSecurityAnalyzer(SecurityAnalyzerBase):
     """Classify OpenHands terminal actions with the local HOL Guard CLI."""
 
-    def __init__(
-        self,
-        guard_executable: str = "hol-guard",
-        *,
-        workspace: str = ".",
-        timeout_seconds: float = 10.0,
-    ) -> None:
-        self.guard_executable = guard_executable
-        self.workspace = workspace
-        self.timeout_seconds = timeout_seconds
+    guard_executable: str = "hol-guard"
+    workspace: str = "."
+    timeout_seconds: float = Field(default=10.0, gt=0.0)
 
     def security_risk(self, action: ActionEvent) -> SecurityRisk:
         terminal_action = action.action
@@ -79,8 +68,16 @@ class HolGuardSecurityAnalyzer(SecurityAnalyzerBase):
         except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
             return SecurityRisk.HIGH
 
+        if not isinstance(payload, dict):
+            return SecurityRisk.HIGH
+
         minimum_action = str(payload.get("minimum_action") or "").lower()
-        if minimum_action in {"review", "block", "require-reapproval"}:
+        if minimum_action in {
+            "review",
+            "block",
+            "require-reapproval",
+            "sandbox-required",
+        }:
             return SecurityRisk.HIGH
 
         classification = payload.get("classification")
