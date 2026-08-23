@@ -175,6 +175,10 @@ DEFAULT_MAX_OUTPUT_TOKENS_CAP: Final[int] = 16384
 # default change that made this manifest.
 JOINT_BUDGET_SAFETY_MARGIN_TOKENS: Final[int] = 256
 JOINT_BUDGET_MIN_OUTPUT_TOKENS: Final[int] = 1024
+# Anthropic rejects ``thinking.budget_tokens`` below this minimum, so a clamped
+# ``max_tokens`` that cannot fit ``budget_tokens >= 1024`` while keeping
+# ``budget_tokens < max_tokens`` leaves no legal thinking budget at all.
+ANTHROPIC_MIN_THINKING_BUDGET_TOKENS: Final[int] = 1024
 # Provider name prefixes known to enforce a joint input/output token budget.
 # Kept as a narrow allowlist so direct providers (Anthropic, OpenAI, etc.) --
 # which have independent input/output windows -- are not affected. We match by
@@ -2379,7 +2383,49 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 input_tokens,
                 context_window,
             )
-        return {**call_kwargs, budget_key: clamped}
+
+        updated = {**call_kwargs, budget_key: clamped}
+
+        # The extended-thinking path in chat_options sets ``max_tokens`` without
+        # popping the default ``max_completion_tokens``, so both budget keys can
+        # be present. Clamp the sibling too (only when already present) so a stale
+        # full-size copy can't defeat the clamp downstream.
+        sibling_key = (
+            "max_completion_tokens" if budget_key == "max_tokens" else "max_tokens"
+        )
+        sibling = updated.get(sibling_key)
+        if isinstance(sibling, int) and sibling > clamped:
+            updated[sibling_key] = clamped
+
+        # Preserve the extended-thinking invariant ``budget_tokens < max_tokens``
+        # (Anthropic/Bedrock reject a thinking budget that meets or exceeds
+        # max_tokens). chat_options applied this against the original
+        # max_output_tokens; re-apply it against the clamped budget so lowering
+        # max_tokens for a large input can't invert it into an invalid request.
+        # Anthropic also enforces ``budget_tokens >= 1024``, so when the clamped
+        # budget leaves no room for both constraints there is no legal thinking
+        # budget at all -- degrade the call to non-thinking instead of sending a
+        # request the provider must reject.
+        thinking = updated.get("thinking")
+        if (
+            isinstance(thinking, dict)
+            and isinstance(thinking.get("budget_tokens"), int)
+            and thinking["budget_tokens"] >= clamped
+        ):
+            fitted_budget = clamped - 1
+            if fitted_budget < ANTHROPIC_MIN_THINKING_BUDGET_TOKENS:
+                logger.warning(
+                    "Clamped output budget of %s cannot fit a legal thinking "
+                    "budget (provider minimum %s); disabling extended thinking "
+                    "for this request.",
+                    clamped,
+                    ANTHROPIC_MIN_THINKING_BUDGET_TOKENS,
+                )
+                updated.pop("thinking")
+            else:
+                updated["thinking"] = {**thinking, "budget_tokens": fitted_budget}
+
+        return updated
 
     def _init_model_info_and_caps(self) -> None:
         self._model_info = get_litellm_model_info(
