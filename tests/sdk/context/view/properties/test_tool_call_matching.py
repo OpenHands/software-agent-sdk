@@ -10,6 +10,7 @@ from openhands.sdk.context.view.manipulation_indices import ManipulationIndices
 from openhands.sdk.context.view.properties.tool_call_matching import (
     ToolCallMatchingProperty,
 )
+from openhands.sdk.context.view.view import View
 from openhands.sdk.event.base import LLMConvertibleEvent
 from openhands.sdk.event.llm_convertible import (
     ActionEvent,
@@ -429,3 +430,47 @@ class TestToolCallMatchingPropertyManipulationIndices(TestToolCallMatchingBase):
 
         result = self.property.manipulation_indices(events)
         assert result == ManipulationIndices.complete(events)
+
+    def test_orphaned_agent_error_does_not_crash_before_enforcement(self) -> None:
+        """A restart-recovery result can outlive its matching action in a view."""
+        orphaned_error = AgentErrorEvent(
+            error="Tool execution was interrupted by a restart.",
+            tool_name="task",
+            tool_call_id="call_interrupted",
+        )
+        user_message = message_event("Continue")
+        events: list[LLMConvertibleEvent] = [orphaned_error, user_message]
+
+        assert self.property.manipulation_indices(
+            events
+        ) == ManipulationIndices.complete(events)
+        assert View(events=list(events)).manipulation_indices == (
+            ManipulationIndices.complete(events)
+        )
+
+        repaired_view = View(events=list(events))
+        repaired_view.enforce_properties(events)
+        assert repaired_view.events == [user_message]
+
+    def test_duplicate_observation_does_not_crash_before_enforcement(self) -> None:
+        """ObservationUniquenessProperty owns duplicate-result cleanup."""
+        action = create_action_event_with_none_action(
+            "action_1", "response_1", "call_1"
+        )
+        first_error = AgentErrorEvent(
+            error="Tool execution was interrupted by a restart.",
+            tool_name="task",
+            tool_call_id="call_1",
+        )
+        late_error = AgentErrorEvent(
+            error="Late result for the same tool call.",
+            tool_name="task",
+            tool_call_id="call_1",
+        )
+        events: list[LLMConvertibleEvent] = [action, first_error, late_error]
+
+        result = self.property.manipulation_indices(events)
+
+        assert 1 not in result
+        assert 2 in result
+        assert 3 in result

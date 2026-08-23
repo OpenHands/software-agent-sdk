@@ -84,13 +84,10 @@ class ToolCallMatchingProperty(ViewPropertyBase):
                 case ActionEvent():
                     pending_tool_call_ids.add(event.tool_call_id)
                 case ObservationBaseEvent():
-                    # Intentionally use remove(), not discard(): a second
-                    # observation-like event for the same tool_call_id means the
-                    # view has already violated the 1 action -> 1 result
-                    # invariant that downstream LLM APIs expect. That case must
-                    # be fixed by de-duplicating the view before serialization,
-                    # not by silently tolerating it here.
-                    pending_tool_call_ids.remove(event.tool_call_id)
+                    # This method can run before enforce() repairs a persisted view.
+                    # Tolerate invalid observations here; enforce() and the
+                    # uniqueness property own removing them from the view.
+                    pending_tool_call_ids.discard(event.tool_call_id)
 
             if pending_tool_call_ids:
                 # The enumeration index corresponds to the position of the event, but we
