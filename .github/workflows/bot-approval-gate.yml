@@ -1,0 +1,221 @@
+---
+name: Bot Approval Gate
+
+# Re-runs whenever the PR is updated or the bot submits/changes a review,
+# or when review threads are resolved (comment activity).
+on:
+    pull_request:
+        branches: [main]
+        types: [opened, synchronize, reopened, ready_for_review, edited]
+    pull_request_review:
+        types: [submitted, edited, dismissed]
+    pull_request_review_comment:
+        types: [created]
+
+permissions:
+    contents: read
+    pull-requests: read
+
+concurrency:
+    group: bot-approval-gate-${{ github.event.pull_request.number || github.sha }}
+    cancel-in-progress: true
+
+jobs:
+    bot-approval-gate:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Check bot review status
+              uses: actions/github-script@v9
+              with:
+                  script: |
+                      const pr =
+                        context.payload.pull_request ??
+                        context.payload.review?.pull_request;
+                      if (!pr) {
+                        core.info('No pull_request payload; skipping.');
+                        return;
+                      }
+
+                      // Bot accounts that act as the PR review bot.
+                      const BOT_LOGINS = new Set([
+                        'openhands-agent',
+                        'all-hands-bot',
+                      ]);
+
+                      // ── Waiver ────────────────────────────────────────────
+                      const waiverMatch = pr.body?.match(
+                        /bot-approval-waiver\s*:\s*(.+?)(?:\n|$)/i,
+                      );
+                      const waiverReason = waiverMatch?.[1]?.trim() || null;
+
+                      // ── Fetch reviews ─────────────────────────────────────
+                      const reviews = await github.paginate(
+                        github.rest.pulls.listReviews,
+                        {
+                          owner: context.repo.owner,
+                          repo: context.repo.repo,
+                          pull_number: pr.number,
+                          per_page: 100,
+                        },
+                      );
+
+                      // Keep only reviews from bot accounts.
+                      const botReviews = reviews.filter((r) =>
+                        BOT_LOGINS.has(r.user?.login),
+                      );
+
+                      // If the bot has never reviewed, pass — don't block
+                      // PRs before the bot has even had a chance to run.
+                      if (botReviews.length === 0) {
+                        core.info(
+                          'No bot reviews found yet. Gate passes (bot has not reviewed).',
+                        );
+                        return;
+                      }
+
+                      // Check the latest review state per bot account.
+                      // A bot may leave multiple reviews; only the latest
+                      // matters.
+                      const latestByBot = new Map();
+                      for (const r of botReviews) {
+                        const login = r.user.login;
+                        const existing = latestByBot.get(login);
+                        if (
+                          !existing ||
+                          new Date(r.submitted_at) > new Date(existing.submitted_at)
+                        ) {
+                          latestByBot.set(login, r);
+                        }
+                      }
+
+                      // If any bot account's latest review is APPROVED, pass.
+                      for (const [login, review] of latestByBot) {
+                        if (review.state === 'APPROVED') {
+                          core.info(
+                            `Bot "${login}" has approved the PR. Gate passes.`,
+                          );
+                          return;
+                        }
+                      }
+
+                      // ── Bot reviewed but did not approve ──────────────────
+                      // Check whether the PR author has replied to every
+                      // unresolved bot review thread (explicit disagreement /
+                      // justification counts as addressing the comment).
+                      const prAuthor = pr.user.login;
+                      const unreplied = [];
+
+                      let cursor = null;
+                      do {
+                        const query = `
+                          query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+                            repository(owner: $owner, name: $repo) {
+                              pullRequest(number: $number) {
+                                reviewThreads(first: 100, after: $cursor) {
+                                  nodes {
+                                    id
+                                    isResolved
+                                    comments(first: 50) {
+                                      nodes {
+                                        author { login }
+                                        url
+                                        path
+                                        line
+                                      }
+                                    }
+                                  }
+                                  pageInfo {
+                                    hasNextPage
+                                    endCursor
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        `;
+                        const result = await github.graphql(query, {
+                          owner: context.repo.owner,
+                          repo: context.repo.repo,
+                          number: pr.number,
+                          cursor,
+                        });
+
+                        const page =
+                          result.repository.pullRequest.reviewThreads;
+                        for (const thread of page.nodes) {
+                          // Skip resolved threads — they're addressed.
+                          if (thread.isResolved) continue;
+
+                          const comments = thread.comments.nodes;
+                          if (comments.length === 0) continue;
+
+                          // Was this thread started by a bot?
+                          const firstAuthor =
+                            comments[0]?.author?.login ?? '';
+                          if (!BOT_LOGINS.has(firstAuthor)) continue;
+
+                          // Check if the PR author (or any human) replied.
+                          const hasAuthorReply = comments.some(
+                            (c) =>
+                              c.author?.login &&
+                              !BOT_LOGINS.has(c.author.login),
+                          );
+
+                          if (!hasAuthorReply) {
+                            unreplied.push({
+                              url: comments[0]?.url ?? '(no-url)',
+                              path: comments[0]?.path ?? 'unknown',
+                              line: comments[0]?.line ?? '?',
+                            });
+                          }
+                        }
+
+                        cursor = page.pageInfo.hasNextPage
+                          ? page.pageInfo.endCursor
+                          : null;
+                      } while (cursor);
+
+                      // All bot threads have replies → author addressed
+                      // everything, gate passes even without formal approval.
+                      if (unreplied.length === 0) {
+                        core.info(
+                          'Bot did not approve, but all bot review threads ' +
+                            'have been addressed by the author. Gate passes.',
+                        );
+                        return;
+                      }
+
+                      // ── Build failure summary ─────────────────────────────
+                      const summaryLines = unreplied.map(
+                        (t) =>
+                          `- ${t.url} (file: ${t.path}:${t.line})`,
+                      );
+                      await core.summary
+                        .addHeading(
+                          `Bot review threads without author response: ${unreplied.length}`,
+                        )
+                        .addRaw(summaryLines.join('\n'))
+                        .addRaw(
+                          '\n\nEither address each comment (reply with a ' +
+                            'justification if you disagree) or add ' +
+                            '`bot-approval-waiver: <reason>` to the PR body.',
+                        )
+                        .write();
+
+                      if (waiverReason) {
+                        core.warning(
+                          `${unreplied.length} bot comment(s) without ` +
+                            `author reply, but waiver provided: ${waiverReason}`,
+                        );
+                        return;
+                      }
+
+                      core.setFailed(
+                        `The review bot has not approved this PR, and ` +
+                          `${unreplied.length} bot review comment(s) have no ` +
+                          `reply from the PR author. Please either:\n` +
+                          `  1. Address each bot comment (reply with a ` +
+                          `justification if you disagree), OR\n` +
+                          `  2. Add \`bot-approval-waiver: <reason>\` to the ` +
+                          `PR body to explicitly waive this check.`,
+                      );
