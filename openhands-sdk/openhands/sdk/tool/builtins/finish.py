@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Self
 from pydantic import Field
 from rich.text import Text
 
+from openhands.sdk.tool.registry import register_tool
 from openhands.sdk.tool.tool import (
     Action,
     Observation,
@@ -104,3 +105,12 @@ class FinishTool(ToolDefinition[FinishAction, FinishObservation]):
                 ),
             )
         ]
+
+
+# Self-register so `tool_module_qualnames` can resolve FinishTool on a remote
+# agent-server: clients (e.g. automation presets) put `Tool(name="FinishTool")`
+# in the agent's toolset (to attach a response schema), and the server imports
+# this module expecting it to register the tool, like every other tool module.
+# Registered under the class name (`FinishTool.__name__`) to match how
+# `openhands.tools.preset.default.get_default_agent` names the tool spec.
+register_tool(FinishTool.__name__, FinishTool)
