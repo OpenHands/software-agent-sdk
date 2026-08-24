@@ -13,7 +13,7 @@ from litellm.types.utils import CostPerToken, ModelResponse, Usage
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from openhands.sdk.llm.utils.litellm_provider import LLMProvider
-from openhands.sdk.llm.utils.metrics import Metrics
+from openhands.sdk.llm.utils.metrics import Metrics, PromptComposition
 from openhands.sdk.llm.utils.openhands_provider import litellm_call_kwargs
 from openhands.sdk.logger import get_logger
 
@@ -110,6 +110,12 @@ class Telemetry(BaseModel):
             self._record_usage(
                 usage, response_id, self._req_ctx.get("context_window", 0)
             )
+
+        # 3a) per-call prompt composition estimate (request-side, recorded even
+        # when the provider returned no usage)
+        composition = self._req_ctx.get("prompt_composition")
+        if isinstance(composition, PromptComposition):
+            self.metrics.add_prompt_composition(composition, response_id)
 
         # 4) optional logging
         if self.log_enabled:

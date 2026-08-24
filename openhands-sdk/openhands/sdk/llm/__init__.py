@@ -34,7 +34,12 @@ from openhands.sdk.llm.streaming import (
     LLMStreamChunk,
     TokenCallbackType,
 )
-from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot, TokenUsage
+from openhands.sdk.llm.utils.metrics import (
+    Metrics,
+    MetricsSnapshot,
+    PromptComposition,
+    TokenUsage,
+)
 from openhands.sdk.llm.utils.runtime_metadata import ModelRuntimeMetadata
 from openhands.sdk.llm.utils.unverified_models import (
     UNVERIFIED_MODELS_EXCLUDING_BEDROCK,
@@ -79,6 +84,7 @@ __all__ = [
     # Metrics
     "Metrics",
     "MetricsSnapshot",
+    "PromptComposition",
     "TokenUsage",
     # Runtime metadata
     "ModelRuntimeMetadata",

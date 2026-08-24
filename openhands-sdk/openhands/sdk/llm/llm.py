@@ -124,6 +124,7 @@ from openhands.sdk.llm.utils.openhands_provider import (
     canonicalize_openhands_llm_payload,
     litellm_call_kwargs,
 )
+from openhands.sdk.llm.utils.prompt_composition import compute_prompt_composition
 from openhands.sdk.llm.utils.retry_mixin import RetryMixin
 from openhands.sdk.llm.utils.telemetry import Telemetry
 from openhands.sdk.llm.utils.vertex_preflight import assert_vertex_sdk_available
@@ -1302,7 +1303,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # logging is disabled.
         telemetry = self.telemetry
         telemetry_ctx: dict[str, Any] = {
-            "context_window": self.effective_max_input_tokens or 0
+            "context_window": self.effective_max_input_tokens or 0,
+            # When tool schemas are mocked into the prompt text, they are
+            # already inside the message buckets — don't count them twice.
+            "prompt_composition": compute_prompt_composition(
+                model=self.model,
+                messages=formatted_messages,
+                tools=None if use_mock_tools else cc_tools or None,
+                custom_tokenizer=self._tokenizer,
+            ),
         }
         if telemetry.log_enabled:
             telemetry_ctx.update(
@@ -1347,6 +1356,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         instructions, input_items = self.format_messages_for_responses(messages)
         return self._finalize_responses_params(
+            messages,
             instructions,
             input_items,
             tools,
@@ -1380,6 +1390,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         instructions, input_items = await self.aformat_messages_for_responses(messages)
         return self._finalize_responses_params(
+            messages,
             instructions,
             input_items,
             tools,
@@ -1392,6 +1403,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
     def _finalize_responses_params(
         self,
+        messages: list[Message],
         instructions: str | None,
         input_items: list[dict[str, Any]],
         tools: Sequence[ToolDefinition] | None,
@@ -1438,7 +1450,22 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # logging is disabled.
         telemetry = self.telemetry
         telemetry_ctx: dict[str, Any] = {
-            "context_window": self.effective_max_input_tokens or 0
+            "context_window": self.effective_max_input_tokens or 0,
+            # Counted on the chat-format equivalent of the payload so the
+            # decomposition is comparable with the chat completion path.
+            "prompt_composition": compute_prompt_composition(
+                model=self.model,
+                messages=self._to_chat_dicts(messages),
+                tools=[
+                    t.to_openai_tool(
+                        add_security_risk_prediction=add_security_risk_prediction,
+                    )
+                    for t in tools
+                ]
+                if tools
+                else None,
+                custom_tokenizer=self._tokenizer,
+            ),
         }
         if telemetry.log_enabled:
             telemetry_ctx.update(

@@ -73,6 +73,42 @@ class TokenUsage(BaseModel):
         )
 
 
+class PromptComposition(BaseModel):
+    """Per-call decomposition of prompt tokens by component.
+
+    Counts are client-side estimates computed before the request is sent;
+    the provider-reported ``TokenUsage`` remains authoritative. Each
+    component is counted independently, so per-message framing overhead is
+    included in every bucket and the components may sum to slightly more
+    than the provider-reported ``prompt_tokens``.
+    """
+
+    model: str = Field(default="")
+    system_prompt_tokens: int = Field(
+        default=0, ge=0, description="Estimated tokens in system messages"
+    )
+    tool_tokens: int = Field(
+        default=0, ge=0, description="Estimated tokens in tool schemas"
+    )
+    history_tokens: int = Field(
+        default=0,
+        ge=0,
+        description="Estimated tokens in conversation history (all non-system "
+        "messages except the latest one)",
+    )
+    latest_message_tokens: int = Field(
+        default=0,
+        ge=0,
+        description="Estimated tokens in the latest observation/user message",
+    )
+    is_estimate: bool = Field(
+        default=True,
+        description="True when counts are client-side estimates rather than "
+        "provider-reported usage",
+    )
+    response_id: str = Field(default="")
+
+
 class MetricsSnapshot(BaseModel):
     """A snapshot of metrics at a point in time.
 
@@ -128,6 +164,15 @@ class Metrics(MetricsSnapshot):
     token_usages: list[TokenUsage] = Field(
         default_factory=list, description="List of token usage records"
     )
+    prompt_compositions: list[PromptComposition] = Field(
+        default_factory=list,
+        description="Per-call prompt token composition estimates, one per call",
+    )
+
+    @property
+    def latest_prompt_composition(self) -> PromptComposition | None:
+        """The most recent per-call prompt composition, if any."""
+        return self.prompt_compositions[-1] if self.prompt_compositions else None
 
     @field_validator("accumulated_cost")
     @classmethod
@@ -219,6 +264,14 @@ class Metrics(MetricsSnapshot):
         else:
             self.accumulated_token_usage = self.accumulated_token_usage + new_usage
 
+    def add_prompt_composition(
+        self, composition: PromptComposition, response_id: str = ""
+    ) -> None:
+        """Record the per-call prompt composition snapshot for one call."""
+        if response_id:
+            composition = composition.model_copy(update={"response_id": response_id})
+        self.prompt_compositions.append(composition)
+
     def merge(self, other: "Metrics") -> None:
         """Merge 'other' metrics into this one."""
         self.accumulated_cost += other.accumulated_cost
@@ -230,6 +283,7 @@ class Metrics(MetricsSnapshot):
         self.costs += other.costs
         self.token_usages += other.token_usages
         self.response_latencies += other.response_latencies
+        self.prompt_compositions += other.prompt_compositions
 
         # Merge accumulated token usage using the __add__ operator
         if self.accumulated_token_usage is None:
@@ -252,6 +306,9 @@ class Metrics(MetricsSnapshot):
                 latency.model_dump() for latency in self.response_latencies
             ],
             "token_usages": [usage.model_dump() for usage in self.token_usages],
+            "prompt_compositions": [
+                composition.model_dump() for composition in self.prompt_compositions
+            ],
         }
 
     def log(self) -> str:
@@ -298,6 +355,11 @@ class Metrics(MetricsSnapshot):
 
         # Include only token usages that were added after the baseline
         result.token_usages = self.token_usages[len(baseline.token_usages) :]
+
+        # Include only compositions that were added after the baseline
+        result.prompt_compositions = self.prompt_compositions[
+            len(baseline.prompt_compositions) :
+        ]
 
         # Calculate accumulated token usage difference
         base_usage = baseline.accumulated_token_usage
