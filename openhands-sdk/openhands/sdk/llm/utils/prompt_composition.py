@@ -34,8 +34,13 @@ def compute_prompt_composition(
         custom_tokenizer: Optional LiteLLM custom tokenizer override.
 
     Returns:
-        A PromptComposition snapshot, or None when the model's tokenizer is
-        unavailable (composition recording is best-effort).
+        A PromptComposition snapshot, or None when counting fails or returns
+        no tokens at all (e.g. ``litellm.disable_token_counter``), since
+        composition recording is best-effort.
+
+    Cost scales linearly with prompt size: measured ~31 ms for a ~100K-token
+    prompt and ~61 ms for ~190K tokens (gpt-4o tokenizer, 19 tools), versus
+    ~10-20 ms on typical agent-step payloads.
     """
 
     def count(
@@ -61,7 +66,7 @@ def compute_prompt_composition(
             tool_tokens = count(_TOOLS_PROBE_MESSAGES, tools) - count(
                 _TOOLS_PROBE_MESSAGES, None
             )
-        return PromptComposition(
+        composition = PromptComposition(
             model=model,
             system_prompt_tokens=count(system_messages, None) if system_messages else 0,
             tool_tokens=tool_tokens,
@@ -73,3 +78,92 @@ def compute_prompt_composition(
     except Exception:
         logger.debug("Prompt composition counting failed for %s", model, exc_info=True)
         return None
+
+    if (messages or tools) and not (
+        composition.system_prompt_tokens
+        + composition.tool_tokens
+        + composition.history_tokens
+        + composition.latest_message_tokens
+    ):
+        logger.debug(
+            "Prompt composition counting returned zero tokens for %s; skipping record",
+            model,
+        )
+        return None
+    return composition
+
+
+def responses_payload_to_chat_messages(
+    instructions: str | None, input_items: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Convert a finalized Responses API payload into chat-format dicts.
+
+    Used so prompt composition on the Responses path counts what the provider
+    actually received (instructions + input items) while sharing the chat
+    path's counting convention. Raises ValueError on unrecognized item types;
+    callers treat any failure as "skip the composition record".
+    """
+    messages: list[dict[str, Any]] = []
+    if instructions:
+        messages.append({"role": "system", "content": instructions})
+    for item in input_items:
+        messages.extend(_responses_item_to_chat(item))
+    return messages
+
+
+def _responses_item_to_chat(item: dict[str, Any]) -> list[dict[str, Any]]:
+    item_type = item.get("type")
+    if item_type == "message":
+        return [
+            {
+                "role": item["role"],
+                "content": [
+                    _responses_content_part_to_chat(part)
+                    for part in item.get("content", [])
+                ],
+            }
+        ]
+    if item_type == "function_call":
+        return [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": item.get("call_id", ""),
+                        "type": "function",
+                        "function": {
+                            "name": item.get("name", ""),
+                            "arguments": item.get("arguments", ""),
+                        },
+                    }
+                ],
+            }
+        ]
+    if item_type == "function_call_output":
+        output = item.get("output", "")
+        if isinstance(output, list):
+            output = [_responses_content_part_to_chat(part) for part in output]
+        return [
+            {
+                "role": "tool",
+                "tool_call_id": item.get("call_id", ""),
+                "content": output,
+            }
+        ]
+    if item_type == "reasoning":
+        texts = [part.get("text", "") for part in item.get("summary", [])]
+        texts += [part.get("text", "") for part in item.get("content", [])]
+        encrypted = item.get("encrypted_content")
+        if encrypted:
+            texts.append(encrypted)
+        return [{"role": "assistant", "content": "\n".join(texts)}]
+    raise ValueError(f"Unrecognized Responses input item type: {item_type!r}")
+
+
+def _responses_content_part_to_chat(part: dict[str, Any]) -> dict[str, Any]:
+    part_type = part.get("type")
+    if part_type in ("input_text", "output_text"):
+        return {"type": "text", "text": part.get("text", "")}
+    if part_type == "input_image":
+        return {"type": "image_url", "image_url": {"url": part.get("image_url", "")}}
+    raise ValueError(f"Unrecognized Responses content part type: {part_type!r}")

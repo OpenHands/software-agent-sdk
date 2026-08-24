@@ -117,14 +117,17 @@ from openhands.sdk.llm.utils.image_inline import (
 )
 from openhands.sdk.llm.utils.image_resize import maybe_resize_messages_for_provider
 from openhands.sdk.llm.utils.litellm_provider import LLMProvider
-from openhands.sdk.llm.utils.metrics import Metrics
+from openhands.sdk.llm.utils.metrics import Metrics, PromptComposition
 from openhands.sdk.llm.utils.model_features import ModelFeatures, get_features
 from openhands.sdk.llm.utils.openhands_provider import (
     LiteLLMCallKwargs,
     canonicalize_openhands_llm_payload,
     litellm_call_kwargs,
 )
-from openhands.sdk.llm.utils.prompt_composition import compute_prompt_composition
+from openhands.sdk.llm.utils.prompt_composition import (
+    compute_prompt_composition,
+    responses_payload_to_chat_messages,
+)
 from openhands.sdk.llm.utils.retry_mixin import RetryMixin
 from openhands.sdk.llm.utils.telemetry import Telemetry
 from openhands.sdk.llm.utils.vertex_preflight import assert_vertex_sdk_available
@@ -1356,7 +1359,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         instructions, input_items = self.format_messages_for_responses(messages)
         return self._finalize_responses_params(
-            messages,
             instructions,
             input_items,
             tools,
@@ -1390,7 +1392,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         instructions, input_items = await self.aformat_messages_for_responses(messages)
         return self._finalize_responses_params(
-            messages,
             instructions,
             input_items,
             tools,
@@ -1403,7 +1404,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
     def _finalize_responses_params(
         self,
-        messages: list[Message],
         instructions: str | None,
         input_items: list[dict[str, Any]],
         tools: Sequence[ToolDefinition] | None,
@@ -1451,20 +1451,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         telemetry = self.telemetry
         telemetry_ctx: dict[str, Any] = {
             "context_window": self.effective_max_input_tokens or 0,
-            # Counted on the chat-format equivalent of the payload so the
-            # decomposition is comparable with the chat completion path.
-            "prompt_composition": compute_prompt_composition(
-                model=self.model,
-                messages=self._to_chat_dicts(messages),
-                tools=[
-                    t.to_openai_tool(
-                        add_security_risk_prediction=add_security_risk_prediction,
-                    )
-                    for t in tools
-                ]
-                if tools
-                else None,
-                custom_tokenizer=self._tokenizer,
+            "prompt_composition": self._responses_prompt_composition(
+                instructions,
+                input_items,
+                tools,
+                add_security_risk_prediction,
             ),
         }
         if telemetry.log_enabled:
@@ -1479,6 +1470,47 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
 
         return instructions, input_items, resp_tools, call_kwargs, telemetry_ctx
+
+    def _responses_prompt_composition(
+        self,
+        instructions: str | None,
+        input_items: list[dict[str, Any]],
+        tools: Sequence[ToolDefinition] | None,
+        add_security_risk_prediction: bool,
+    ) -> PromptComposition | None:
+        """Best-effort prompt composition for the Responses path.
+
+        Counts the finalized payload (instructions + input items) so the
+        record reflects what the provider received. Tool schemas are counted
+        from their OpenAI chat-format equivalent so ``tool_tokens`` stays
+        comparable with the chat path. Any serialization or conversion
+        failure yields None rather than breaking the real call.
+        """
+        try:
+            chat_messages = responses_payload_to_chat_messages(
+                instructions, input_items
+            )
+            cc_tools = (
+                [
+                    t.to_openai_tool(
+                        add_security_risk_prediction=add_security_risk_prediction,
+                    )
+                    for t in tools
+                ]
+                if tools
+                else None
+            )
+        except Exception:
+            logger.debug(
+                "Responses prompt composition skipped for %s", self.model, exc_info=True
+            )
+            return None
+        return compute_prompt_composition(
+            model=self.model,
+            messages=chat_messages,
+            tools=cc_tools,
+            custom_tokenizer=self._tokenizer,
+        )
 
     def _validate_chat_response(
         self,

@@ -79,8 +79,10 @@ class PromptComposition(BaseModel):
     Counts are client-side estimates computed before the request is sent;
     the provider-reported ``TokenUsage`` remains authoritative. Each
     component is counted independently, so per-message framing overhead is
-    included in every bucket and the components may sum to slightly more
-    than the provider-reported ``prompt_tokens``.
+    included in every bucket and the components do not necessarily sum
+    exactly to the provider-reported ``prompt_tokens``. Tool schema counts
+    follow litellm's ``token_counter`` serialization convention for tools,
+    which can differ from the provider's wire-format tokenization.
     """
 
     model: str = Field(default="")
