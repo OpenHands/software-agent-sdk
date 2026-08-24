@@ -31,7 +31,6 @@ This repository owns the Python SDK and Agent Server: agent and tool behavior, c
 
 - [`OpenHands/OpenHands`](https://github.com/OpenHands/OpenHands) owns Agent Canvas UI, frontend state, backend selection, and local-stack orchestration.
 - [`OpenHands/typescript-client`](https://github.com/OpenHands/typescript-client) mirrors this repository's Agent Server API for browser-compatible TypeScript clients.
-- [`OpenHands/extensions`](https://github.com/OpenHands/extensions) owns reusable skills, plugins, automations, and integrations.
 - [`OpenHands/extensions`](https://github.com/OpenHands/extensions) owns reusable skills, plugins, automations, and integrations; [`OpenHands/automation`](https://github.com/OpenHands/automation) owns automation definitions, scheduling, webhooks, run history, dispatch, and sandbox lifecycle orchestration; this repository executes the dispatched conversations.
 
 The usual flow is SDK/Agent Server → OpenAPI contract → `typescript-client` → Agent Canvas. Implement backend behavior and endpoints here first, then update the typed client and downstream applications as needed. If a PR is opened in the wrong repository, explicitly recommend closing and moving it to the repository that owns the change rather than merging it here.
