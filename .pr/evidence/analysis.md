@@ -15,6 +15,33 @@ browser-on) on tasks from the published harness-benchmark short suite
   this model, so estimates use litellm's fallback tokenizer). Tasks p09-task-01 (trivial
   rename, 5 calls), p09-task-07 (medium refactor, 26 calls), p09-task-10 (hard cache
   implementation, 10 calls).
+- `gpt-4o-mini/` — `gpt-4o-mini` (chat completions; litellm maps this model to its real
+  `o200k_base` tokenizer — verified by comparing `token_counter` framing overhead against
+  `tiktoken.get_encoding("o200k_base")` vs `cl100k_base` on divergent inputs). Tasks
+  p09-task-01 (9 calls, verifier PASS) and p09-task-07 (28 calls, verifier FAIL — the model
+  left a syntax error in the repo; a completed run, labeled a model-quality failure).
+
+## gpt-4o-mini summary (mapped tokenizer)
+
+| task | calls | avg system | avg tools | avg history | avg latest | avg provider input | est/provider median |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| p09-task-01 | 9 | 3,340 | 5,702 | 987 | 175 | 10,231 | 1.00 |
+| p09-task-07 | 28 | 3,340 | 5,702 | 18,357 | 792 | 28,739 | 0.98 |
+
+- Per-call est/provider ratio band: 0.99–1.00 (task-01), 0.97–0.99 (task-07) — versus
+  0.85–0.97 on the unmapped MiniMax-M3 lane. The mapped-tokenizer band tightens to ~1.0, so
+  the MiniMax underestimate was dominated by the fallback tokenizer; a residual ~1–3%
+  underestimate remains, consistent with uncounted request framing and litellm's tool
+  serialization convention.
+- One notable event: between calls 9 and 10 of task-07, history dropped 30.8K → 10.0K tokens
+  with **no intervening LLM call** — view-property enforcement
+  (`View.enforce_properties`: batch/observation/atomicity properties drop events without a
+  summarization call), not an LLM-summarizing condensation. The composition tracked the
+  shrunken view exactly (ratio stayed 0.99 across the drop), which is itself evidence the
+  history bucket measures the payload actually sent.
+- Total spend for this lane (litellm-computed `accumulated_cost`, PAYG key): $0.0081
+  (task-01) + $0.0808 (task-07) ≈ **$0.089**; 87% of prompt tokens were cache reads.
+
 
 ## MiniMax-M3 summary
 
