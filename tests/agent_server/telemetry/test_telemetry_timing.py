@@ -100,6 +100,20 @@ async def test_timer_exposes_duration_to_the_measured_body():
         await cm.__aexit__(None, None, None)
 
 
+def test_timer_exposes_bucketed_count_to_the_measured_body():
+    captured = []
+
+    async def body():
+        async with timed_operation(
+            "conversation_evict", budget_ms=1000, emit=captured.append
+        ) as timer:
+            timer.evicted_count = "1-5"
+
+    asyncio.run(body())
+    assert len(captured) == 1
+    assert captured[0].evicted_count == "1-5"
+
+
 def test_timing_properties_reject_out_of_bounds_durations():
     m.OperationTimingProperties(
         operation="conversation_create",

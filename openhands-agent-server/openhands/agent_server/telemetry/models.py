@@ -253,9 +253,12 @@ class OperationTimingProperties(_BaseProperties):
     allowlisted as raw ``int`` ms because a lone elapsed-time value carries no
     re-identification surface; the same is **not** true of raw counts joined
     with a timestamp, so this event intentionally carries no ``conversation_ref``,
-    no counts, and no high-cardinality dimensions. The ``stuck`` dimension
-    distinguishes a deadlock (watchdog fired, no completion event) from a merely
-    slow operation (watchdog fired but the operation then completed).
+    no raw counts, and no high-cardinality dimensions. Operations with a
+    meaningful magnitude report it as a coarse :data:`Bucket` (e.g. how many
+    idle conversations an eviction pass closed), never as a raw count. The
+    ``stuck`` dimension distinguishes a deadlock (watchdog fired, no completion
+    event) from a merely slow operation (watchdog fired but the operation then
+    completed).
     """
 
     kind: Literal["operation_timing"] = "operation_timing"
@@ -264,6 +267,8 @@ class OperationTimingProperties(_BaseProperties):
     duration_ms: DurationMs
     stuck: bool
     stuck_budget_ms: DurationMs
+    evicted_count: Bucket | None = None
+    """Idle conversations closed by a ``conversation_evict`` pass, bucketed."""
 
 
 DiagnosticProperties = Annotated[
@@ -363,5 +368,6 @@ EXPECTED_PROPERTY_NAMES: Final[frozenset[str]] = frozenset(
         "duration_ms",
         "stuck",
         "stuck_budget_ms",
+        "evicted_count",
     }
 )

@@ -45,7 +45,12 @@ from openhands.agent_server.telemetry import (
     get_event_factory,
     get_telemetry_sink,
 )
-from openhands.agent_server.telemetry.sanitizer import model_family, safe_token
+from openhands.agent_server.telemetry.sanitizer import (
+    COUNT_BOUNDS,
+    bucket,
+    model_family,
+    safe_token,
+)
 from openhands.agent_server.telemetry.timing import timed_operation
 from openhands.agent_server.utils import safe_rmtree, utc_now
 from openhands.sdk import LLM, AgentContext, Event, Message
@@ -887,10 +892,14 @@ class ConversationService:
             # Direct embedders/tests can inject a live EventService without a
             # persisted state file. There is no disk snapshot to list in that
             # case, so retain the live-state fallback.
-            state = await event_service.get_state()
-            conversation_info = await asyncio.to_thread(
-                _compose_conversation_info_sync, event_service.stored, state, children
-            )
+            async with timed_operation("conversation_info_compose"):
+                state = await event_service.get_state()
+                conversation_info = await asyncio.to_thread(
+                    _compose_conversation_info_sync,
+                    event_service.stored,
+                    state,
+                    children,
+                )
             record.execution_status = conversation_info.execution_status
             return conversation_info
 
@@ -919,9 +928,10 @@ class ConversationService:
         )
         if state is None:
             return None
-        conversation_info = await asyncio.to_thread(
-            _compose_conversation_info, record.stored, state, children
-        )
+        async with timed_operation("conversation_info_compose"):
+            conversation_info = await asyncio.to_thread(
+                _compose_conversation_info, record.stored, state, children
+            )
         record.state_signature = signature
         record.stored_signature = stored_signature
         record.cached_info = conversation_info
@@ -1106,8 +1116,12 @@ class ConversationService:
             and conversation_id not in self._conversation_records
         ):
             return None
-        async with self._conversation_lifecycle(conversation_id):
-            return await self._get_or_load_event_service_locked(conversation_id)
+        # Timed from before lock acquisition: a load wedged on the lifecycle
+        # lock (the #4514 shape) surfaces as stuck-without-completion, while a
+        # slow hydration surfaces as a long duration.
+        async with timed_operation("event_service_load"):
+            async with self._conversation_lifecycle(conversation_id):
+                return await self._get_or_load_event_service_locked(conversation_id)
 
     async def _get_or_load_event_service_locked(
         self,
@@ -2114,37 +2128,44 @@ class ConversationService:
                 and event_service.idle_seconds() >= ttl_seconds
                 and event_service.is_idle_evictable()
             ]
-            for conversation_id in to_evict:
-                event_service = event_services.pop(conversation_id, None)
-                if event_service is None:
-                    continue
-                # Preserve runtime-only state so rehydration is faithful:
-                # sync the catalog to the current stored (switch_acp_model /
-                # secret updates replace it) and hand back credential bindings
-                # (close() clears them).
-                record = self._conversation_records.get(conversation_id)
-                if record is not None:
-                    record.stored = event_service.stored
-                    record.cached_info = None
-                bindings = dict(event_service.credential_bindings)
-                try:
-                    await event_service.__aexit__(None, None, None)
-                except Exception:
-                    logger.warning(
-                        "Failed to evict idle conversation %s",
-                        conversation_id,
-                        exc_info=True,
-                    )
-                else:
-                    logger.info(
-                        "Evicted idle conversation %s (idle >= %.0fs)",
-                        conversation_id,
-                        ttl_seconds,
-                    )
-                if bindings:
-                    pending = self._credential_bindings.setdefault(conversation_id, {})
-                    for secret_name, binding in bindings.items():
-                        pending.setdefault(secret_name, binding)
+            if not to_evict:
+                return
+            async with timed_operation("conversation_evict") as timer:
+                for conversation_id in to_evict:
+                    await self._evict_one_idle_conversation(conversation_id)
+                # How many conversations this pass closed, bucketed like every
+                # other magnitude — never a raw count.
+                timer.evicted_count = bucket(len(to_evict), COUNT_BOUNDS)
+
+    async def _evict_one_idle_conversation(self, conversation_id: UUID) -> None:
+        event_services = self._event_services
+        assert event_services is not None
+        event_service = event_services.pop(conversation_id, None)
+        if event_service is None:
+            return
+        # Preserve runtime-only state so rehydration is faithful:
+        # sync the catalog to the current stored (switch_acp_model /
+        # secret updates replace it) and hand back credential bindings
+        # (close() clears them).
+        record = self._conversation_records.get(conversation_id)
+        if record is not None:
+            record.stored = event_service.stored
+            record.cached_info = None
+        bindings = dict(event_service.credential_bindings)
+        try:
+            await event_service.__aexit__(None, None, None)
+        except Exception:
+            logger.warning(
+                "Failed to evict idle conversation %s",
+                conversation_id,
+                exc_info=True,
+            )
+        else:
+            logger.info("Evicted idle conversation %s", conversation_id)
+        if bindings:
+            pending = self._credential_bindings.setdefault(conversation_id, {})
+            for secret_name, binding in bindings.items():
+                pending.setdefault(secret_name, binding)
 
     async def __aexit__(self, exc_type, exc_value, traceback):
         if self._eviction_task is not None:

@@ -1,7 +1,8 @@
 # Slice 1 design — per-operation timing instrumentation (issue #4589)
 
-Scope for this first PR: **conversation lifecycle create / delete / close** on the
-agent-server, plus the shared telemetry contract that every later slice will reuse.
+Scope for this PR: **conversation lifecycle create / delete / close**, plus
+**event-service load**, **ConversationInfo compose**, and **idle eviction** on
+the agent-server, plus the shared telemetry contract that later slices reuse.
 
 ## Design decisions (confirmed with requester)
 
@@ -55,9 +56,11 @@ New event (one type, `operation` property names the metric):
 agent_server.operation_timing
   kind: "operation_timing"
   operation: SafeToken        # "conversation_create" | "conversation_delete" | "conversation_close"
+                             # | "event_service_load" | "conversation_info_compose" | "conversation_evict"
   duration_ms: DurationMs     # raw ms (wall clock)
   stuck: bool
   stuck_budget_ms: DurationMs # budget that was armed (informational)
+  evicted_count: Bucket|null  # only on conversation_evict; bucketed, never raw
 ```
 
 ## Slice-1 mapping to historical failures (#4514 -> fixed by #4570)
@@ -75,6 +78,27 @@ operations that serialize through those locks are the ones the issue wants timed
   `ConversationService.__aexit__` (server shutdown). A wedged close here is the
   original "stuck close() blocked everything" shape; timing each conversation's
   close individually makes the blocked one visible without blocking measurement.
+- `event_service_load` — `ConversationService._get_or_load_event_service`,
+  timed from before `_conversation_lifecycle` acquisition through
+  `_get_or_load_event_service_locked` (disk hydration + runtime prep). A load
+  wedged on the lifecycle lock (#4514) surfaces as stuck-without-completion.
+- `conversation_info_compose` — both `_compose_conversation_info*` call sites in
+  `_conversation_info` (live in-memory path incl. `get_state()`, and the
+  persisted `to_thread` path). The #4417 shape was a GC wedge composing
+  `ConversationInfo` off the event loop.
+- `conversation_evict` — one pass of `_evict_idle_conversations` (only when
+  at least one conversation is evicted; empty passes emit nothing so they do
+  not deflate the latency percentile). Emits `evicted_count` as a **bucketed**
+  magnitude (`COUNT_BOUNDS`), never a raw count — raw counts joined with a
+  timestamp are the original re-identification vector.
+
+## Bucketed counts (design decision)
+
+Per-operation **duration** is allowlisted raw (see decision 1). Magnitudes that
+are *counts* — e.g. how many conversations an eviction pass closed — stay on
+the bucketed vocabulary (`Bucket` / `COUNT_BOUNDS`), because a raw count joined
+with a timestamp is re-identifying while a lone elapsed time is not. The
+`operation_timing` event carries at most one such magnitude per operation.
 
 All sites resolve the sink/factory lazily at emit time (`get_telemetry_sink()`,
 `get_event_factory()`), matching the existing `_maybe_subscribe_telemetry`

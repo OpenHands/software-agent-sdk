@@ -3129,6 +3129,216 @@ class TestOperationTimingInstrumentation:
         assert completion.stuck is True
         assert completion.duration_ms >= signal.duration_ms >= 100
 
+    @pytest.mark.asyncio
+    async def test_event_service_load_emits_timing_completion(
+        self, conversation_service, monkeypatch
+    ):
+        """A hydration read emits one ``event_service_load`` completion event."""
+        events = []
+        monkeypatch.setattr(
+            "openhands.agent_server.conversation_service.timed_operation",
+            self._recording_timed_operation(events),
+        )
+        conversation_id = uuid4()
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.conversation_dir = "/tmp/test_conversation"
+        mock_service.stored = StoredConversation(
+            id=conversation_id,
+            workspace=LocalWorkspace(working_dir="/tmp/test_workspace"),
+            confirmation_policy=NeverConfirm(),
+        )
+        mock_service.get_state.return_value = ConversationState(
+            id=conversation_id,
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+            workspace=mock_service.stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=mock_service.stored.confirmation_policy,
+        )
+        conversation_service._event_services[conversation_id] = mock_service
+
+        loaded = await conversation_service._get_or_load_event_service(conversation_id)
+
+        assert loaded is mock_service
+        assert len(events) == 1
+        (event,) = events
+        assert event.operation == "event_service_load"
+        assert event.stuck is False
+
+    @pytest.mark.asyncio
+    async def test_event_service_load_blocked_on_lock_emits_stuck(
+        self, conversation_service, monkeypatch
+    ):
+        """A hydration blocked on the lifecycle lock surfaces as stuck (#4514)."""
+        events = []
+        monkeypatch.setattr(
+            "openhands.agent_server.conversation_service.timed_operation",
+            self._recording_timed_operation(events, default_budget_ms=100),
+        )
+        conversation_id = uuid4()
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.conversation_dir = "/tmp/test_conversation"
+        mock_service.stored = StoredConversation(
+            id=conversation_id,
+            workspace=LocalWorkspace(working_dir="/tmp/test_workspace"),
+            confirmation_policy=NeverConfirm(),
+        )
+        mock_service.is_open.return_value = True
+        conversation_service._event_services[conversation_id] = mock_service
+        lock = conversation_service._get_conversation_lock(conversation_id)
+        await lock.acquire()
+        task = asyncio.create_task(
+            conversation_service._get_or_load_event_service(conversation_id)
+        )
+        await asyncio.sleep(0.25)
+        assert any(e.stuck for e in events)
+        assert not task.done(), "load completed while its lock was held"
+        lock.release()
+        result = await task
+        assert result is mock_service
+
+    @pytest.mark.asyncio
+    async def test_conversation_info_compose_emits_timing_completion(
+        self, conversation_service, monkeypatch
+    ):
+        """Composing a live row emits one ``conversation_info_compose`` event."""
+        events = []
+        monkeypatch.setattr(
+            "openhands.agent_server.conversation_service.timed_operation",
+            self._recording_timed_operation(events),
+        )
+        conversation_id = uuid4()
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.conversation_dir = "/tmp/test_conversation"
+        mock_service.stored = StoredConversation(
+            id=conversation_id,
+            workspace=LocalWorkspace(working_dir="/tmp/test_workspace"),
+            confirmation_policy=NeverConfirm(),
+        )
+        mock_service.is_open.return_value = True
+        mock_service.get_state.return_value = ConversationState(
+            id=conversation_id,
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+            workspace=mock_service.stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=mock_service.stored.confirmation_policy,
+        )
+        conversation_service._event_services[conversation_id] = mock_service
+        record = _ConversationRecord(
+            stored=mock_service.stored,
+            execution_status=ConversationExecutionStatus.IDLE,
+        )
+
+        info = await conversation_service._conversation_info(
+            conversation_id, record, {}
+        )
+
+        assert info is not None
+        assert info.id == conversation_id
+        assert len(events) == 1
+        (event,) = events
+        assert event.operation == "conversation_info_compose"
+        assert event.stuck is False
+
+    @pytest.mark.asyncio
+    async def test_conversation_info_compose_slow_state_read_emits_stuck(
+        self, conversation_service, monkeypatch
+    ):
+        """A composition wedged on ``get_state`` surfaces as stuck (#4417)."""
+        events = []
+        monkeypatch.setattr(
+            "openhands.agent_server.conversation_service.timed_operation",
+            self._recording_timed_operation(events, default_budget_ms=100),
+        )
+        conversation_id = uuid4()
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.conversation_dir = "/tmp/test_conversation"
+        mock_service.stored = StoredConversation(
+            id=conversation_id,
+            workspace=LocalWorkspace(working_dir="/tmp/test_workspace"),
+            confirmation_policy=NeverConfirm(),
+        )
+
+        async def slow_get_state():
+            await asyncio.sleep(0.25)
+            return ConversationState(
+                id=conversation_id,
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+                workspace=mock_service.stored.workspace,
+                execution_status=ConversationExecutionStatus.IDLE,
+                confirmation_policy=mock_service.stored.confirmation_policy,
+            )
+
+        mock_service.is_open.return_value = True
+        mock_service.get_state.side_effect = slow_get_state
+        conversation_service._event_services[conversation_id] = mock_service
+        record = _ConversationRecord(
+            stored=mock_service.stored,
+            execution_status=ConversationExecutionStatus.IDLE,
+        )
+
+        started = asyncio.get_running_loop().time()
+        info = await conversation_service._conversation_info(
+            conversation_id, record, {}
+        )
+
+        assert info is not None
+        assert info.id == conversation_id
+        assert len(events) == 2, "stuck signal then completion"
+        signal, completion = events
+        assert signal.operation == "conversation_info_compose"
+        assert signal.stuck is True
+        assert completion.operation == "conversation_info_compose"
+        assert completion.stuck is True
+        assert completion.duration_ms >= 100
+        assert asyncio.get_running_loop().time() - started >= 0.2
+
+    @pytest.mark.asyncio
+    async def test_evict_idle_emits_timing_with_bucketed_count(
+        self, conversation_service, monkeypatch
+    ):
+        """An eviction pass emits ``conversation_evict`` with a bucketed count.
+
+        Raw count is never exported: the magnitude is reported through the
+        coarse ``COUNT_BOUNDS`` vocabulary.
+        """
+        events = []
+        monkeypatch.setattr(
+            "openhands.agent_server.conversation_service.timed_operation",
+            self._recording_timed_operation(events),
+        )
+        idle_cid = uuid4()
+        running_cid = uuid4()
+        for cid in (idle_cid, running_cid):
+            mock_service = AsyncMock(spec=EventService)
+            mock_service.conversation_dir = "/tmp/test_conversation"
+            mock_service.credential_bindings = {}
+            mock_service.stored = StoredConversation(
+                id=cid,
+                workspace=LocalWorkspace(working_dir="/tmp/test_workspace"),
+                confirmation_policy=NeverConfirm(),
+            )
+            conversation_service._event_services[cid] = mock_service
+        idle = conversation_service._event_services[idle_cid]
+        running = conversation_service._event_services[running_cid]
+        idle.is_open.return_value = True
+        idle.idle_seconds.return_value = 999.0
+        idle.is_idle_evictable.return_value = True
+        running.is_open.return_value = True
+        running.idle_seconds.return_value = 999.0
+        running.is_idle_evictable.return_value = False
+
+        await conversation_service._evict_idle_conversations(ttl_seconds=60.0)
+
+        # Only the idle one was closed.
+        idle.__aexit__.assert_awaited_once()
+        running.__aexit__.assert_not_awaited()
+        assert len(events) == 1
+        (event,) = events
+        assert event.operation == "conversation_evict"
+        assert event.stuck is False
+        # One eviction buckets as 1-5 (COUNT_BOUNDS first edge at 1).
+        assert event.evicted_count == "1-5"
+
 
 class TestSafeRmtree:
     """Test cases for the _safe_rmtree helper function."""

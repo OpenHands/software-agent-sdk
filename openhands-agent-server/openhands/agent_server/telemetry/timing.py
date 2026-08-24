@@ -41,6 +41,8 @@ class OperationTimingResult:
     duration_ms: int
     stuck: bool
     stuck_budget_ms: int
+    evicted_count: str | None = None
+    """Bucketed magnitude for ops that report one (e.g. evictions closed)."""
 
 
 def _default_emitter(result: OperationTimingResult) -> None:
@@ -62,6 +64,7 @@ def _default_emitter(result: OperationTimingResult) -> None:
             duration_ms=result.duration_ms,
             stuck=result.stuck,
             stuck_budget_ms=result.stuck_budget_ms,
+            evicted_count=result.evicted_count,
         )
         sink.emit(factory.build(m.EventName.OPERATION_TIMING, properties))
     except Exception:
@@ -90,6 +93,8 @@ class OperationTimer:
         self._emit = emit
         self._started = time.monotonic()
         self.stuck = False
+        #: Optional bucketed magnitude the measured body attaches before exit.
+        self.evicted_count: str | None = None
 
     @property
     def duration_ms(self) -> int:
@@ -102,6 +107,7 @@ class OperationTimer:
                 duration_ms=self.duration_ms,
                 stuck=stuck,
                 stuck_budget_ms=self.budget_ms,
+                evicted_count=self.evicted_count,
             )
         )
 
