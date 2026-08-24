@@ -6,6 +6,7 @@ description = "OpenHands Tools - Runtime tools for AI agents"
 requires-python = ">=3.12"
 dependencies = [
     "openhands-sdk",
+    "httpx>=0.27.0",
     "tree-sitter>=0.24",
     "tree-sitter-bash>=0.23",
     "binaryornot>=0.4.4",
