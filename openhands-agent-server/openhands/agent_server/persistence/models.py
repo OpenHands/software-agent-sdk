@@ -180,6 +180,25 @@ class PersistedSettings(BaseModel):
         )
         return bool(secret_value and secret_value.strip())
 
+    @property
+    def has_any_secret(self) -> bool:
+        """Check if any persisted secret is configured (LLM key or critic key).
+
+        Broader than ``llm_api_key_is_set``: ``verification.critic_api_key``
+        (OpenHands-agent settings only) is a separate secret field that can be
+        set even when the LLM key isn't.
+        """
+        if self.llm_api_key_is_set:
+            return True
+        verification = getattr(self.agent_settings, "verification", None)
+        raw = verification.critic_api_key if verification is not None else None
+        if raw is None:
+            return False
+        secret_value = (
+            raw.get_secret_value() if isinstance(raw, SecretStr) else str(raw)
+        )
+        return bool(secret_value and secret_value.strip())
+
     def update(
         self,
         payload: SettingsUpdatePayload,

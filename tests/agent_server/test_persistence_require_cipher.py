@@ -50,6 +50,19 @@ def test_settings_save_raises_without_cipher_when_require_cipher(persistence_dir
         store.save(_settings_with_api_key())
 
 
+def test_settings_save_raises_for_critic_key_only_when_require_cipher(
+    persistence_dir,
+):
+    """critic_api_key is a separate secret from llm.api_key -- must still guard it."""
+    store = FileSettingsStore(persistence_dir=persistence_dir, require_cipher=True)
+    settings = PersistedSettings.model_validate(
+        {"agent_settings": {"verification": {"critic_api_key": "sk-critic-test"}}}
+    )
+
+    with pytest.raises(MissingCipherError):
+        store.save(settings)
+
+
 def test_secrets_save_raises_without_cipher_when_require_cipher(persistence_dir):
     store = FileSecretsStore(persistence_dir=persistence_dir, require_cipher=True)
 

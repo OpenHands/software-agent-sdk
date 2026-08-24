@@ -376,7 +376,7 @@ class FileSettingsStore(SettingsStore):
         else:
             context = {"expose_secrets": "plaintext"}
             # Warn about plaintext secret storage (only if secrets exist)
-            if settings.llm_api_key_is_set:
+            if settings.has_any_secret:
                 if self.require_cipher:
                     raise MissingCipherError(
                         "Refusing to save settings with secrets in plaintext: "
