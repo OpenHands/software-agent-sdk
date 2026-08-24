@@ -68,7 +68,7 @@ from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
-from openhands.sdk.tool import BROWSER_TOOL_NAME, Tool, is_tool_usable
+from openhands.sdk.tool import BROWSER_TOOL_NAME, Tool, is_tool_usable, resolve_tool
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
@@ -1592,6 +1592,51 @@ class ConversationService:
                     "Dynamically registered %d tools for conversation %s",
                     len(request.tool_module_qualnames),
                     conversation_id,
+                )
+
+            # Attach the named tools to the resolved agent (both the inline
+            # agent-settings and the agent-profile launch paths) so the agent
+            # can actually call them. Registration alone only makes them
+            # resolvable by name; without this, profile-launched agents never
+            # see the client's custom tools. Only tools that resolve as a bare
+            # ``Tool(name=...)`` spec are attached — a qualname key whose tool
+            # needs constructor params (e.g. the low-level ``task`` tool) must
+            # not be force-added, or the conversation crashes at run time. Two
+            # qualname keys can also resolve to the same effective tool name
+            # (``workflow_tool_set`` and ``workflow`` both yield a ``workflow``
+            # tool), so the effective names are deduped as well.
+            existing_names = {t.name for t in request.agent.tools}
+            covered_names = set(existing_names)
+            new_tools: list[Tool] = []
+            for tool_name in request.tool_module_qualnames:
+                if tool_name in covered_names:
+                    continue
+                try:
+                    resolved = resolve_tool(Tool(name=tool_name), None)
+                except Exception:  # noqa: BLE001 — skip tools that can't be
+                    # constructed from a bare spec; they aren't callable anyway
+                    logger.debug(
+                        "Skipping tool '%s' for conversation %s: not resolvable "
+                        "as a bare spec",
+                        tool_name,
+                        conversation_id,
+                    )
+                    continue
+                effective_names = {t.name for t in resolved}
+                if effective_names & covered_names:
+                    logger.debug(
+                        "Skipping tool '%s' for conversation %s: effective "
+                        "names %s already covered",
+                        tool_name,
+                        conversation_id,
+                        effective_names,
+                    )
+                    continue
+                covered_names |= effective_names
+                new_tools.append(Tool(name=tool_name))
+            if new_tools:
+                request.agent = request.agent.model_copy(
+                    update={"tools": [*request.agent.tools, *new_tools]}
                 )
 
         # Register client-defined tools (JSON specs, no Python code). The
