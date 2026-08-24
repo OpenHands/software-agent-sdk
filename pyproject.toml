@@ -11,7 +11,7 @@ constraint-dependencies = [
     "aiohttp>=3.13.3",  # CVE-2025-69223 + 7 others
     "urllib3>=2.6.3",  # CVE-2026-21441, CVE-2025-66471, CVE-2025-66418
     "protobuf>=6.33.5",  # CVE-2026-0994
-    "pillow>=12.1.1",  # CVE-2026-25990
+    "pillow>=12.3.0",  # CVE-2026-25990
     "orjson>=3.11.7",  # CVE-2025-67221
     "rich>=14.3.3", # Version 14.3.2 essentially has a denial-of-service vulnerability which is outlined in https://github.com/Textualize/rich/issues/3958
     "lupa>=2.8",  # CVE-2026-34444
@@ -29,7 +29,7 @@ openhands-agent-server = { workspace = true }
 dev = [
     "pre-commit>=4.3.0",
     "packaging>=24.2",
-    "pillow>=12.1.1",
+    "pillow>=12.3.0",
     "psutil>=7.0.0",
     "pyright[nodejs]>=1.1.405",
     "pytest>=9.0.3",

@@ -27,6 +27,7 @@ from openhands.agent_server.pub_sub import Subscriber
 from openhands.sdk import LLM, Agent, AgentBase, Conversation, Message
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.conversation.event_store import EventLog
+from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.fifo_lock import FIFOLock
 from openhands.sdk.conversation.impl.local_conversation import (
     ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID,
@@ -39,6 +40,7 @@ from openhands.sdk.conversation.state import (
 )
 from openhands.sdk.credential import CredentialSyncError
 from openhands.sdk.event import AgentErrorEvent, Event
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import (
     ActionEvent,
@@ -1322,6 +1324,75 @@ class TestEventServiceSendMessage:
         await event_service._run_task
 
         assert state.execution_status == ConversationExecutionStatus.ERROR
+
+    @pytest.mark.asyncio
+    async def test_run_exception_emits_conversation_error_event(self, event_service):
+        """A failure that escapes run()/arun()'s own emission must be surfaced
+        by the backstop as a ConversationErrorEvent (issue #16686)."""
+        conversation = MagicMock()
+        state = MagicMock()
+        state.execution_status = ConversationExecutionStatus.IDLE
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation.state = state
+        conversation._state = state
+        conversation.send_message = MagicMock()
+        conversation._on_event = MagicMock()
+        conversation.run = MagicMock(side_effect=RuntimeError("model does not exist"))
+
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+
+        await event_service.send_message(Message(role="user", content=[]), run=True)
+        assert event_service._run_task is not None
+        await event_service._run_task
+
+        # A single ConversationErrorEvent was emitted through _on_event, carrying
+        # the exception type and message so the UI can render the detail.
+        error_events = [
+            call.args[0]
+            for call in conversation._on_event.call_args_list
+            if isinstance(call.args[0], ConversationErrorEvent)
+        ]
+        assert len(error_events) == 1
+        assert error_events[0].code == "RuntimeError"
+        assert error_events[0].detail == "model does not exist"
+        assert error_events[0].source == "environment"
+        assert state.execution_status == ConversationExecutionStatus.ERROR
+
+    @pytest.mark.asyncio
+    async def test_run_conversation_run_error_does_not_double_emit(self, event_service):
+        """A ConversationRunError is already surfaced by run()/arun(), so the
+        backstop must not emit a duplicate ConversationErrorEvent."""
+        conversation = MagicMock()
+        state = MagicMock()
+        state.execution_status = ConversationExecutionStatus.ERROR
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation.state = state
+        conversation._state = state
+        conversation.send_message = MagicMock()
+        conversation._on_event = MagicMock()
+        conversation.run = MagicMock(
+            side_effect=ConversationRunError(
+                conversation_id=uuid4(),
+                original_exception=RuntimeError("already surfaced"),
+            )
+        )
+
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+
+        await event_service.send_message(Message(role="user", content=[]), run=True)
+        assert event_service._run_task is not None
+        await event_service._run_task
+
+        error_events = [
+            call.args[0]
+            for call in conversation._on_event.call_args_list
+            if isinstance(call.args[0], ConversationErrorEvent)
+        ]
+        assert error_events == []
 
     @pytest.mark.asyncio
     async def test_send_message_with_different_message_types(self, event_service):

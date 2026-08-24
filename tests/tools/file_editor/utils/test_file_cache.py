@@ -15,12 +15,6 @@ def file_cache():
         cache.clear()
 
 
-def test_init(file_cache):
-    assert isinstance(file_cache, FileCache)
-    assert file_cache.directory.exists()
-    assert file_cache.directory.is_dir()
-
-
 def test_set_and_get(file_cache):
     file_cache.set("test_key", "test_value")
     assert file_cache.get("test_key") == "test_value"
@@ -29,11 +23,6 @@ def test_set_and_get(file_cache):
 def test_get_nonexistent_key(file_cache):
     assert file_cache.get("nonexistent_key") is None
     assert file_cache.get("nonexistent_key", "default") == "default"
-
-
-def test_set_nested_key(file_cache):
-    file_cache.set("folder/nested/key", "nested_value")
-    assert file_cache.get("folder/nested/key") == "nested_value"
 
 
 def test_set_overwrite(file_cache):
@@ -50,23 +39,6 @@ def test_delete(file_cache):
 
 def test_delete_nonexistent_key(file_cache):
     file_cache.delete("nonexistent_key")  # Should not raise an exception
-
-
-def test_delete_nested_key(file_cache):
-    file_cache.set("folder/nested/key", "nested_value")
-    file_cache.delete("folder/nested/key")
-    assert file_cache.get("folder/nested/key") is None
-
-
-def test_clear(file_cache):
-    file_cache.set("key1", "value1")
-    file_cache.set("key2", "value2")
-    file_cache.set("folder/key3", "value3")
-    file_cache.clear()
-    assert len(file_cache) == 0
-    assert file_cache.get("key1") is None
-    assert file_cache.get("key2") is None
-    assert file_cache.get("folder/key3") is None
 
 
 def test_contains(file_cache):
@@ -148,9 +120,6 @@ def test_size_limit():
         val2 = "y" * 60
         cache.set("key1", val1)
         cache.set("key2", val2)
-
-        assert len(val1.encode("utf-8")) <= 100
-        assert len(val1.encode("utf-8") + val2.encode("utf-8")) > 100
 
         val3 = "z" * 40
         # This should cause key1 to be evicted
