@@ -574,8 +574,8 @@ def _extract_and_validate_params(
     return params
 
 
-# Some models emit their own <tool_call> wrapper with the tool name on its own
-# line instead of our <function=NAME> opener:
+# Kimi K3 can emit a <tool_call> wrapper with the tool name on its own line
+# instead of the prompted <function=NAME> opener (see issue #4540):
 #     <tool_call>file_editor
 #     <parameter=command>view</parameter>
 #     </tool_call>
@@ -600,20 +600,12 @@ def _preprocess_model_output(content: str) -> str:
     # Strip </tool_call> when it appears right after </function>
     content = re.sub(r"(?<=</function>)\s*</tool_call>", "", content)
 
-    # Some models (like Kimi K3 served over a plain OpenAI-compatible endpoint)
-    # emit their native <tool_call> wrapper instead of our <function=NAME>
-    # dialect. Rewrite it so the call is recognized instead of leaking into
-    # the assistant text. See:
-    # https://github.com/OpenHands/software-agent-sdk/issues/4540
-    #
-    # Two guards keep this safe: only fire when the model gave us no
-    # <function= of its own, and only on the actual malformed shape
-    # (<tool_call>NAME followed by a <parameter= line), so prose mentioning
-    # the tag is never converted.
     if "<function=" not in content:
-        content, replaced = _TOOL_CALL_WRAPPER_PATTERN.subn(r"<function=\1>\n", content)
+        content, replaced = _TOOL_CALL_WRAPPER_PATTERN.subn(
+            r"<function=\1>\n", content, count=1
+        )
         if replaced:
-            content = re.sub(r"\s*</tool_call>", "\n</function>", content, count=1)
+            content = re.sub(r"</tool_call>(\s*)\Z", r"</function>\1", content, count=1)
     return content
 
 

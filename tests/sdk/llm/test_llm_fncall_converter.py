@@ -962,44 +962,19 @@ def test_security_params_excluded_when_flag_is_false():
     assert "<parameter=summary>" not in system_content
 
 
-def test_tool_call_wrapper_normalized_to_function_call():
-    """Test that a raw ``<tool_call>`` wrapper (Kimi K3 style) is rewritten to
-    the canonical ``<function=NAME>`` form so the tool actually fires.
-
-    See https://github.com/OpenHands/software-agent-sdk/issues/4540
-    """
-    non_fncall_messages = [
-        {"role": "user", "content": "Please list the files"},
-        {
-            "role": "assistant",
-            "content": (
-                "I'll list the files for you.\n"
-                "<tool_call>terminal\n"
-                "<parameter=command>ls</parameter>\n"
-                "</tool_call>"
-            ),
-        },
-    ]
-
-    fncall_messages = convert_non_fncall_messages_to_fncall_messages(
-        non_fncall_messages, FNCALL_TOOLS
-    )
-
-    assistant_msg = next(
-        msg
-        for msg in fncall_messages
-        if msg.get("role") == "assistant" and msg.get("tool_calls")
-    )
-    assert len(assistant_msg["tool_calls"]) == 1
-    tool_call = assistant_msg["tool_calls"][0]["function"]
-    assert tool_call["name"] == "terminal"
-    assert json.loads(tool_call["arguments"]) == {"command": "ls"}
-
-
-def test_tool_call_wrapper_without_closer_still_parses():
-    """A truncated wrapper (no ``</tool_call>``) must still be normalized;
-    ``_fix_stopword`` appends the missing ``</function>`` closer."""
-    content = "<tool_call>terminal\n<parameter=command>ls</parameter>"
+@pytest.mark.parametrize(
+    "content",
+    [
+        (
+            "I'll list the files.\n"
+            "<tool_call>terminal\n"
+            "<parameter=command>ls</parameter>\n"
+            "</tool_call>"
+        ),
+        "<tool_call>terminal\n<parameter=command>ls</parameter>",
+    ],
+)
+def test_tool_call_wrapper_normalized_to_function_call(content):
     messages = [
         {"role": "user", "content": "run ls"},
         {"role": "assistant", "content": content},
@@ -1009,17 +984,31 @@ def test_tool_call_wrapper_without_closer_still_parses():
         messages, FNCALL_TOOLS
     )
 
-    assistant_msg = next(
-        msg
-        for msg in fncall_messages
-        if msg.get("role") == "assistant" and msg.get("tool_calls")
+    tool_call = fncall_messages[1]["tool_calls"][0]["function"]
+    assert tool_call["name"] == "terminal"
+    assert json.loads(tool_call["arguments"]) == {"command": "ls"}
+
+
+def test_tool_call_wrapper_preserves_closing_tag_in_parameter():
+    content = (
+        "<tool_call>terminal\n"
+        "<parameter=command>printf '</tool_call>'</parameter>\n"
+        "</tool_call>"
     )
-    assert assistant_msg["tool_calls"][0]["function"]["name"] == "terminal"
+    messages = [
+        {"role": "user", "content": "print the closing tag"},
+        {"role": "assistant", "content": content},
+    ]
+
+    fncall_messages = convert_non_fncall_messages_to_fncall_messages(
+        messages, FNCALL_TOOLS
+    )
+
+    tool_call = fncall_messages[1]["tool_calls"][0]["function"]
+    assert json.loads(tool_call["arguments"]) == {"command": "printf '</tool_call>'"}
 
 
 def test_tool_call_mention_in_plain_text_is_not_converted():
-    """Prose that merely mentions ``<tool_call>`` (e.g. an agent writing docs)
-    must NOT be turned into a function call."""
     content = (
         "Here is how you write a tool call:\n\n"
         "<tool_call> is the opening tag, followed by parameters."
@@ -1033,7 +1022,4 @@ def test_tool_call_mention_in_plain_text_is_not_converted():
         messages, FNCALL_TOOLS
     )
 
-    assistant_msg = next(
-        msg for msg in fncall_messages if msg.get("role") == "assistant"
-    )
-    assert not assistant_msg.get("tool_calls")
+    assert not fncall_messages[1].get("tool_calls")
