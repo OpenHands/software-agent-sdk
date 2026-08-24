@@ -11,8 +11,10 @@ from openhands.sdk.logger import get_logger
 
 logger = get_logger(__name__)
 
-# token_counter requires at least one message when tools are passed, so tool
-# schema tokens are measured as the marginal cost over an empty probe message.
+# token_counter requires a messages argument when tools are passed, so tool
+# schema tokens are measured as the marginal cost over an empty probe message
+# (messages=[] would also work in litellm 1.84.1; the probe keeps the call
+# shape explicit either way).
 _TOOLS_PROBE_MESSAGES: list[dict[str, Any]] = [{"role": "user", "content": ""}]
 
 
@@ -38,9 +40,10 @@ def compute_prompt_composition(
         no tokens at all (e.g. ``litellm.disable_token_counter``), since
         composition recording is best-effort.
 
-    Cost scales linearly with prompt size: measured ~31 ms for a ~100K-token
-    prompt and ~61 ms for ~190K tokens (gpt-4o tokenizer, 19 tools), versus
-    ~10-20 ms on typical agent-step payloads.
+    Counting is always on by deliberate choice: cost scales linearly with
+    prompt size and stays small in absolute terms — measured ~31 ms for a
+    ~100K-token prompt and ~61 ms for ~190K tokens (gpt-4o tokenizer, 19
+    tools), versus ~10-20 ms on typical agent-step payloads.
     """
 
     def count(
@@ -113,14 +116,18 @@ def responses_payload_to_chat_messages(
 
 def _responses_item_to_chat(item: dict[str, Any]) -> list[dict[str, Any]]:
     item_type = item.get("type")
+    if item_type is None and "role" in item and "content" in item:
+        # Subscription mode normalizes message items to {"role", "content"}
+        # without a "type" key (see transform_for_subscription).
+        item_type = "message"
     if item_type == "message":
+        content = item.get("content", "")
+        if isinstance(content, str):
+            return [{"role": item["role"], "content": content}]
         return [
             {
                 "role": item["role"],
-                "content": [
-                    _responses_content_part_to_chat(part)
-                    for part in item.get("content", [])
-                ],
+                "content": [_responses_content_part_to_chat(part) for part in content],
             }
         ]
     if item_type == "function_call":

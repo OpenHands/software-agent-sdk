@@ -82,7 +82,11 @@ class PromptComposition(BaseModel):
     included in every bucket and the components do not necessarily sum
     exactly to the provider-reported ``prompt_tokens``. Tool schema counts
     follow litellm's ``token_counter`` serialization convention for tools,
-    which can differ from the provider's wire-format tokenization.
+    which can differ from the provider's wire-format tokenization. For
+    models configured with a chat-template tokenizer, counts can also
+    diverge from ``LLM.get_token_count``, which prefers the chat-template
+    path; the composition always uses litellm's generic counter so numbers
+    stay comparable across models.
     """
 
     model: str = Field(default="")
@@ -106,7 +110,8 @@ class PromptComposition(BaseModel):
     is_estimate: bool = Field(
         default=True,
         description="True when counts are client-side estimates rather than "
-        "provider-reported usage",
+        "provider-reported usage; reserved for a future provider-reported "
+        "mode (no current path sets it to False)",
     )
     response_id: str = Field(default="")
 

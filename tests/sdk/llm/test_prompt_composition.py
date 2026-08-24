@@ -12,6 +12,7 @@ from litellm.types.utils import (
     ModelResponse,
     Usage,
 )
+from litellm.utils import token_counter
 from openai.types.responses.response_output_message import ResponseOutputMessage
 from openai.types.responses.response_output_text import ResponseOutputText
 from pydantic import SecretStr
@@ -88,8 +89,6 @@ def test_compute_prompt_composition_decomposes_into_components():
     assert composition.latest_message_tokens > 0
     # Buckets are counted independently with per-message framing overhead,
     # so their sum covers the message content of the whole prompt.
-    from litellm.utils import token_counter
-
     total_messages = token_counter(model="gpt-4o", messages=formatted)
     component_sum = (
         composition.system_prompt_tokens
@@ -138,8 +137,6 @@ def test_compute_prompt_composition_skips_all_zero_records():
 
 def test_compute_prompt_composition_tool_tokens_matches_controlled_delta():
     """tool_tokens must equal the marginal cost of adding tools to the call."""
-    from litellm.utils import token_counter
-
     formatted = _make_llm().format_messages_for_llm(_sample_messages())
     tools = [
         t.to_openai_tool(add_security_risk_prediction=True) for t in _MockTool.create()
@@ -163,6 +160,8 @@ def test_compute_prompt_composition_tool_tokens_matches_controlled_delta():
         + without_tools.history_tokens
         + without_tools.latest_message_tokens
     )
+    # Deliberately pins the joint-counting assumption (tools never enter the
+    # message buckets); it is an identity by construction, kept as a tripwire.
     assert component_sum - other_components == with_tools.tool_tokens
 
     # And the estimate tracks the real marginal cost of the tools closely.
@@ -407,3 +406,79 @@ def test_responses_payload_to_chat_messages_covers_sent_item_types():
 
     with pytest.raises(ValueError, match="Unrecognized Responses input item"):
         responses_payload_to_chat_messages(None, [{"type": "mystery"}])
+
+
+def test_responses_payload_to_chat_messages_image_parts():
+    chat = responses_payload_to_chat_messages(
+        None,
+        [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "what is this?"},
+                    {
+                        "type": "input_image",
+                        "image_url": "data:image/png;base64,AAAA",
+                        "detail": "auto",
+                    },
+                ],
+            }
+        ],
+    )
+
+    assert chat == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "what is this?"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,AAAA"},
+                },
+            ],
+        }
+    ]
+
+
+def test_responses_composition_records_subscription_shaped_payload():
+    """Subscription mode strips the "type" key from message items
+    (transform_for_subscription); a composition must still be recorded."""
+    llm = LLM(
+        model="openai/gpt-5.2-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key=SecretStr("test"),
+        usage_id="test-llm",
+        reasoning_effort="high",
+    )
+    llm._is_subscription = True
+
+    with (
+        patch(
+            "openhands.sdk.llm.llm.litellm_responses",
+            return_value=_responses_api_response(),
+        ),
+        patch.object(llm, "_get_litellm_auth_values", return_value=(None, {})),
+    ):
+        llm.responses(_sample_messages(), tools=list(_MockTool.create()))
+
+    composition = llm.metrics.latest_prompt_composition
+    assert composition is not None
+    assert composition.history_tokens > 0
+    assert composition.latest_message_tokens > 0
+
+
+async def test_aresponses_records_prompt_composition():
+    llm = _make_llm("gpt-5-mini")
+
+    with patch(
+        "openhands.sdk.llm.llm.litellm_aresponses",
+        new_callable=AsyncMock,
+        return_value=_responses_api_response(),
+    ):
+        await llm.aresponses(_sample_messages(), tools=list(_MockTool.create()))
+
+    composition = llm.metrics.latest_prompt_composition
+    assert composition is not None
+    assert composition.response_id == "r1"
+    assert composition.tool_tokens > 0

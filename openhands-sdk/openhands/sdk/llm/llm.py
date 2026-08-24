@@ -1197,12 +1197,24 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
              telemetry_ctx)
         """
         formatted_messages = self.format_messages_for_llm(messages)
-        return self._finalize_completion_params(
+        formatted_messages, cc_tools, use_mock_tools, call_kwargs, telemetry_ctx = (
+            self._finalize_completion_params(
+                formatted_messages,
+                tools,
+                add_security_risk_prediction,
+                kwargs,
+                call_context=call_context,
+            )
+        )
+        telemetry_ctx["prompt_composition"] = self._chat_prompt_composition(
+            formatted_messages, cc_tools, use_mock_tools
+        )
+        return (
             formatted_messages,
-            tools,
-            add_security_risk_prediction,
-            kwargs,
-            call_context=call_context,
+            cc_tools,
+            use_mock_tools,
+            call_kwargs,
+            telemetry_ctx,
         )
 
     async def _aprepare_completion_params(
@@ -1223,15 +1235,31 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         Uses :meth:`aformat_messages_for_llm` so the (potentially blocking)
         image-inlining pass is offloaded to a worker thread instead of running
-        on the event loop.
+        on the event loop; prompt composition counting is likewise offloaded
+        via :func:`asyncio.to_thread`.
         """
         formatted_messages = await self.aformat_messages_for_llm(messages)
-        return self._finalize_completion_params(
+        formatted_messages, cc_tools, use_mock_tools, call_kwargs, telemetry_ctx = (
+            self._finalize_completion_params(
+                formatted_messages,
+                tools,
+                add_security_risk_prediction,
+                kwargs,
+                call_context=call_context,
+            )
+        )
+        telemetry_ctx["prompt_composition"] = await asyncio.to_thread(
+            self._chat_prompt_composition,
             formatted_messages,
-            tools,
-            add_security_risk_prediction,
-            kwargs,
-            call_context=call_context,
+            cc_tools,
+            use_mock_tools,
+        )
+        return (
+            formatted_messages,
+            cc_tools,
+            use_mock_tools,
+            call_kwargs,
+            telemetry_ctx,
         )
 
     def _finalize_completion_params(
@@ -1307,14 +1335,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         telemetry = self.telemetry
         telemetry_ctx: dict[str, Any] = {
             "context_window": self.effective_max_input_tokens or 0,
-            # When tool schemas are mocked into the prompt text, they are
-            # already inside the message buckets — don't count them twice.
-            "prompt_composition": compute_prompt_composition(
-                model=self.model,
-                messages=formatted_messages,
-                tools=None if use_mock_tools else cc_tools or None,
-                custom_tokenizer=self._tokenizer,
-            ),
         }
         if telemetry.log_enabled:
             telemetry_ctx.update(
@@ -1333,6 +1353,24 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             use_mock_tools,
             call_kwargs,
             telemetry_ctx,
+        )
+
+    def _chat_prompt_composition(
+        self,
+        formatted_messages: list[dict[str, Any]],
+        cc_tools: list[ChatCompletionToolParam],
+        use_mock_tools: bool,
+    ) -> PromptComposition | None:
+        """Prompt composition for the chat path.
+
+        When tool schemas are mocked into the prompt text, they are already
+        inside the message buckets — don't count them twice.
+        """
+        return compute_prompt_composition(
+            model=self.model,
+            messages=formatted_messages,
+            tools=None if use_mock_tools else cc_tools or None,
+            custom_tokenizer=self._tokenizer,
         )
 
     def _prepare_responses_params(
@@ -1358,7 +1396,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
              telemetry_ctx)
         """
         instructions, input_items = self.format_messages_for_responses(messages)
-        return self._finalize_responses_params(
+        (
+            instructions,
+            input_items,
+            resp_tools,
+            call_kwargs,
+            telemetry_ctx,
+        ) = self._finalize_responses_params(
             instructions,
             input_items,
             tools,
@@ -1368,6 +1412,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             kwargs,
             call_context=call_context,
         )
+        telemetry_ctx["prompt_composition"] = self._responses_prompt_composition(
+            instructions, input_items, tools, add_security_risk_prediction
+        )
+        return instructions, input_items, resp_tools, call_kwargs, telemetry_ctx
 
     async def _aprepare_responses_params(
         self,
@@ -1388,10 +1436,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """Async variant of :meth:`_prepare_responses_params`.
 
         Uses :meth:`aformat_messages_for_responses` so the image-inlining
-        pass runs off the event loop.
+        pass runs off the event loop; prompt composition counting is likewise
+        offloaded via :func:`asyncio.to_thread`.
         """
         instructions, input_items = await self.aformat_messages_for_responses(messages)
-        return self._finalize_responses_params(
+        (
+            instructions,
+            input_items,
+            resp_tools,
+            call_kwargs,
+            telemetry_ctx,
+        ) = self._finalize_responses_params(
             instructions,
             input_items,
             tools,
@@ -1401,6 +1456,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             kwargs,
             call_context=call_context,
         )
+        telemetry_ctx["prompt_composition"] = await asyncio.to_thread(
+            self._responses_prompt_composition,
+            instructions,
+            input_items,
+            tools,
+            add_security_risk_prediction,
+        )
+        return instructions, input_items, resp_tools, call_kwargs, telemetry_ctx
 
     def _finalize_responses_params(
         self,
@@ -1451,12 +1514,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         telemetry = self.telemetry
         telemetry_ctx: dict[str, Any] = {
             "context_window": self.effective_max_input_tokens or 0,
-            "prompt_composition": self._responses_prompt_composition(
-                instructions,
-                input_items,
-                tools,
-                add_security_risk_prediction,
-            ),
         }
         if telemetry.log_enabled:
             telemetry_ctx.update(
