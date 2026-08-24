@@ -1116,9 +1116,7 @@ class ConversationService:
             and conversation_id not in self._conversation_records
         ):
             return None
-        # Timed from before lock acquisition: a load wedged on the lifecycle
-        # lock (the #4514 shape) surfaces as stuck-without-completion, while a
-        # slow hydration surfaces as a long duration.
+        # Timed before lock acquisition so a lock-wedged load surfaces as stuck.
         async with timed_operation("event_service_load"):
             async with self._conversation_lifecycle(conversation_id):
                 return await self._get_or_load_event_service_locked(conversation_id)
@@ -2133,8 +2131,7 @@ class ConversationService:
             async with timed_operation("conversation_evict") as timer:
                 for conversation_id in to_evict:
                     await self._evict_one_idle_conversation(conversation_id)
-                # How many conversations this pass closed, bucketed like every
-                # other magnitude — never a raw count.
+                # Magnitude bucketed; raw counts are re-identifying.
                 timer.evicted_count = bucket(len(to_evict), COUNT_BOUNDS)
 
     async def _evict_one_idle_conversation(self, conversation_id: UUID) -> None:
@@ -2143,10 +2140,8 @@ class ConversationService:
         event_service = event_services.pop(conversation_id, None)
         if event_service is None:
             return
-        # Preserve runtime-only state so rehydration is faithful:
-        # sync the catalog to the current stored (switch_acp_model /
-        # secret updates replace it) and hand back credential bindings
-        # (close() clears them).
+        # Preserve runtime-only state (catalog + credential bindings) for
+        # faithful rehydration; __aexit__ clears the bindings.
         record = self._conversation_records.get(conversation_id)
         if record is not None:
             record.stored = event_service.stored
@@ -2187,10 +2182,8 @@ class ConversationService:
             services = tuple(event_services.items())
 
             async def _close_event_service(event_service: EventService) -> None:
-                # A wedged close here is the original "stuck close() blocked
-                # everything" shape (#4514). Timing each conversation's teardown
-                # individually lets the blocked one surface a stuck signal even
-                # though the gather waits on all of them.
+                # Time each close individually so a wedged one surfaces as
+                # stuck despite the gather waiting on all of them.
                 async with timed_operation("conversation_close"):
                     await event_service.__aexit__(exc_type, exc_value, traceback)
 

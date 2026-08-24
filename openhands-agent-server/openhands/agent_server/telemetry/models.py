@@ -246,19 +246,14 @@ class RequestFailedProperties(_BaseProperties):
 
 
 class OperationTimingProperties(_BaseProperties):
-    """Per-operation latency, in raw milliseconds.
+    """Per-operation latency in raw milliseconds.
 
-    A deliberate, documented departure from the bucketed-magnitude rule
-    (see :class:`ConversationOutcomeProperties`). Per-operation *duration* is
-    allowlisted as raw ``int`` ms because a lone elapsed-time value carries no
-    re-identification surface; the same is **not** true of raw counts joined
-    with a timestamp, so this event intentionally carries no ``conversation_ref``,
-    no raw counts, and no high-cardinality dimensions. Operations with a
-    meaningful magnitude report it as a coarse :data:`Bucket` (e.g. how many
-    idle conversations an eviction pass closed), never as a raw count. The
-    ``stuck`` dimension distinguishes a deadlock (watchdog fired, no completion
-    event) from a merely slow operation (watchdog fired but the operation then
-    completed).
+    Durations are allowlisted raw: a lone elapsed-time value carries no
+    re-identification surface, unlike raw counts joined with a timestamp. This
+    event therefore carries no ``conversation_ref`` and reports magnitudes only
+    as coarse :data:`Bucket` values (e.g. ``evicted_count``), never raw counts.
+    ``stuck`` distinguishes a deadlock (watchdog fired, no completion event)
+    from a merely slow operation (watchdog fired, operation then completed).
     """
 
     kind: Literal["operation_timing"] = "operation_timing"

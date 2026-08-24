@@ -3017,7 +3017,7 @@ class TestConversationServiceDeleteConversation:
 
 
 class TestOperationTimingInstrumentation:
-    """Per-operation timing on the lifecycle hot paths (issue #4589)."""
+    """Per-operation timing on the lifecycle hot paths."""
 
     def _recording_timed_operation(self, events, default_budget_ms=None):
         def wrapped(operation, *, budget_ms=None, emit=None):  # noqa: ARG001
@@ -3064,7 +3064,7 @@ class TestOperationTimingInstrumentation:
     ):
         """A delete blocked on the lifecycle lock surfaces as stuck + no completion.
 
-        This is the wedge shape from #4514: one conversation's long-running
+        This is the wedge shape: one conversation's long-running
         operation holds the per-conversation lock, and the delete of that
         conversation must be *visible* (stuck signal) without the measurement
         site itself completing.
@@ -3168,7 +3168,7 @@ class TestOperationTimingInstrumentation:
     async def test_event_service_load_blocked_on_lock_emits_stuck(
         self, conversation_service, monkeypatch
     ):
-        """A hydration blocked on the lifecycle lock surfaces as stuck (#4514)."""
+        """A hydration blocked on the lifecycle lock surfaces as stuck."""
         events = []
         monkeypatch.setattr(
             "openhands.agent_server.conversation_service.timed_operation",
@@ -3243,7 +3243,7 @@ class TestOperationTimingInstrumentation:
     async def test_conversation_info_compose_slow_state_read_emits_stuck(
         self, conversation_service, monkeypatch
     ):
-        """A composition wedged on ``get_state`` surfaces as stuck (#4417)."""
+        """A composition wedged on ``get_state`` surfaces as stuck."""
         events = []
         monkeypatch.setattr(
             "openhands.agent_server.conversation_service.timed_operation",

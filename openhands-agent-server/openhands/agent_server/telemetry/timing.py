@@ -1,15 +1,10 @@
 """Wall-clock per-operation timing with an in-flight "stuck" watchdog.
 
-This is the measurement site for :class:`OperationTimingProperties`: wrap a
-coroutine body in :func:`timed_operation` and the elapsed wall-clock duration is
-emitted (a) when the operation completes and (b) as a ``stuck`` signal if the
-operation is still running once its budget elapses.
-
-The watchdog runs as a separate asyncio task and never blocks the measured
-operation, so a wedged operation is observable *without* needing the wedged
-site itself to make progress. Emission is best-effort and resolves the sink and
-factory lazily at emit time (see ``conversation_service._maybe_subscribe_telemetry``
-for the same convention), so the live consent decision is honored.
+Wrap a coroutine body in :func:`timed_operation` to emit elapsed wall-clock
+duration on completion, plus a ``stuck`` signal if the operation exceeds its
+budget. The watchdog runs as a separate task and never blocks the measured
+operation, so a wedged operation stays observable. Emission is best-effort and
+resolves the sink/factory lazily so the live consent decision is honored.
 """
 
 import asyncio
@@ -93,7 +88,7 @@ class OperationTimer:
         self._emit = emit
         self._started = time.monotonic()
         self.stuck = False
-        #: Optional bucketed magnitude the measured body attaches before exit.
+        # Bucketed magnitude attached by the measured body before exit.
         self.evicted_count: str | None = None
 
     @property
