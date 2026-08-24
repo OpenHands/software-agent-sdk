@@ -19,9 +19,13 @@ permissions:
 jobs:
     qa-changes:
         # Only run for same-repo PRs (secrets aren't available for forks).
+        # Skip Dependabot PRs: they use `pull_request` (not `pull_request_target`),
+        # so only Dependabot secrets are exposed and LLM_API_KEY is unavailable,
+        # which would otherwise hard-fail the job.
         # Trigger conditions mirror pr-review, but use the 'qa-this' label
         # and openhands-agent reviewer request.
         if: |
+            github.event.pull_request.user.login != 'dependabot[bot]' &&
             github.event.pull_request.head.repo.full_name == github.repository && (
                 (github.event.action == 'opened' && github.event.pull_request.draft == false && github.event.pull_request.author_association != 'FIRST_TIME_CONTRIBUTOR' && github.event.pull_request.author_association != 'NONE') ||
                 (github.event.action == 'ready_for_review' && github.event.pull_request.author_association != 'FIRST_TIME_CONTRIBUTOR' && github.event.pull_request.author_association != 'NONE') ||
