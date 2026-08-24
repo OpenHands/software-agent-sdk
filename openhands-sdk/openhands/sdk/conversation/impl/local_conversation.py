@@ -238,6 +238,7 @@ class LocalConversation(BaseConversation):
         prompt_cache_key: str | None = None,
         file_store: FileStore | None = None,
         mcp_tool_provider: MCPToolProvider | None = None,
+        profile_store_dir: str | Path | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -296,6 +297,8 @@ class LocalConversation(BaseConversation):
             file_store: Optional FileStore to use for conversation state and EventLog
                 persistence. If provided, this takes precedence over persistence_dir
                 for state and EventLog storage.
+            profile_store_dir: Optional directory containing saved LLM profiles.
+                Defaults to ``~/.openhands/profiles``.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -484,7 +487,7 @@ class LocalConversation(BaseConversation):
         # Agent initialization is deferred to _ensure_agent_ready() for lazy loading
         # This ensures plugins are loaded before agent initialization
         self.llm_registry = LLMRegistry()
-        self._profile_store = LLMProfileStore()
+        self._profile_store = LLMProfileStore(profile_store_dir)
         self._cipher = cipher
 
         # Seed agent_context.secrets into the registry for every agent (regular

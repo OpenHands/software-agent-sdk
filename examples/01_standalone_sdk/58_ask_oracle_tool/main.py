@@ -9,9 +9,14 @@ consults the ``oracle`` profile, and the agent uses the Oracle's answer to reply
 Usage:
     LLM_API_KEY=... LLM_BASE_URL=https://llm-proxy.app.all-hands.dev \
         uv run python examples/01_standalone_sdk/58_ask_oracle_tool/main.py
+
+Note:
+    The example saves the ``oracle`` profile in a temporary directory so it
+    does not modify the user's default profile store.
 """
 
 import os
+import tempfile
 
 from pydantic import SecretStr
 
@@ -20,7 +25,6 @@ from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.tools.ask_oracle import ORACLE_PROFILE_NAME
 
 
-PRIMARY_PROFILE = "example-primary"
 DEFAULT_BASE_URL = "https://llm-proxy.app.all-hands.dev"
 # The agent's primary model (follows the standard LLM_MODEL env like other
 # examples). The Oracle defaults to the same model; override ASK_ORACLE_MODEL to
@@ -34,32 +38,32 @@ api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
 base_url = os.getenv("LLM_BASE_URL", DEFAULT_BASE_URL)
 
-store = LLMProfileStore()
-store.save(
-    PRIMARY_PROFILE,
-    LLM(
+with tempfile.TemporaryDirectory() as profile_store_dir:
+    store = LLMProfileStore(profile_store_dir)
+    # The Oracle model is saved under the conventional profile name "oracle".
+    store.save(
+        ORACLE_PROFILE_NAME,
+        LLM(
+            model=ORACLE_MODEL,
+            api_key=SecretStr(api_key),
+            base_url=base_url,
+            usage_id="oracle",
+        ),
+        include_secrets=True,
+    )
+
+    primary_llm = LLM(
         model=PRIMARY_MODEL,
         api_key=SecretStr(api_key),
         base_url=base_url,
         usage_id="primary",
-    ),
-    include_secrets=True,
-)
-# The Oracle model is saved under the conventional profile name "oracle".
-store.save(
-    ORACLE_PROFILE_NAME,
-    LLM(
-        model=ORACLE_MODEL,
-        api_key=SecretStr(api_key),
-        base_url=base_url,
-        usage_id="oracle",
-    ),
-    include_secrets=True,
-)
-
-try:
-    agent = Agent(llm=store.load(PRIMARY_PROFILE), tools=[Tool(name="ask_oracle")])
-    conversation = LocalConversation(agent=agent, workspace=os.getcwd())
+    )
+    agent = Agent(llm=primary_llm, tools=[Tool(name="ask_oracle")])
+    conversation = LocalConversation(
+        agent=agent,
+        workspace=os.getcwd(),
+        profile_store_dir=profile_store_dir,
+    )
 
     print(f"Primary model: {conversation.agent.llm.model}")
     print(f"Oracle model:  {ORACLE_MODEL}")
@@ -72,6 +76,3 @@ try:
     combined = conversation.state.stats.get_combined_metrics()
     print(f"Total cost: ${combined.accumulated_cost:.6f}")
     print(f"EXAMPLE_COST: {combined.accumulated_cost}")
-finally:
-    store.delete(PRIMARY_PROFILE)
-    store.delete(ORACLE_PROFILE_NAME)
