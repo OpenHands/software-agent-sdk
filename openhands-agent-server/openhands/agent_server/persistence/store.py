@@ -553,7 +553,7 @@ class FileSecretsStore(SecretsStore):
         else:
             context = {"expose_secrets": "plaintext"}
             # Warn about plaintext secret storage (only if secrets exist)
-            if secrets.custom_secrets:
+            if secrets.has_any_secret:
                 if self.require_cipher:
                     raise MissingCipherError(
                         "Refusing to save secrets in plaintext: no cipher "

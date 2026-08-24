@@ -63,6 +63,44 @@ def test_settings_save_raises_for_critic_key_only_when_require_cipher(
         store.save(settings)
 
 
+def test_settings_save_raises_for_mcp_secret_when_require_cipher(persistence_dir):
+    """MCP server env/header secrets must be guarded too, not just llm.api_key."""
+    store = FileSettingsStore(persistence_dir=persistence_dir, require_cipher=True)
+    settings = PersistedSettings.model_validate(
+        {
+            "agent_settings": {
+                "mcp_config": {
+                    "mcpServers": {
+                        "github": {
+                            "command": "uvx",
+                            "args": ["mcp-server-github"],
+                            "env": {"GITHUB_TOKEN": "ghp-test-secret"},
+                        }
+                    }
+                }
+            }
+        }
+    )
+
+    with pytest.raises(MissingCipherError):
+        store.save(settings)
+
+
+def test_settings_save_raises_for_agent_context_secret_when_require_cipher(
+    persistence_dir,
+):
+    """agent_context.secrets values are plain str at rest (only secret-shaped at
+    serialize time), so a value-type walk alone would miss this -- must still
+    be caught."""
+    store = FileSettingsStore(persistence_dir=persistence_dir, require_cipher=True)
+    settings = PersistedSettings.model_validate(
+        {"agent_settings": {"agent_context": {"secrets": {"MY_TOKEN": "sk-ctx"}}}}
+    )
+
+    with pytest.raises(MissingCipherError):
+        store.save(settings)
+
+
 def test_secrets_save_raises_without_cipher_when_require_cipher(persistence_dir):
     store = FileSecretsStore(persistence_dir=persistence_dir, require_cipher=True)
 

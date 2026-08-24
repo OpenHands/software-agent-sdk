@@ -33,6 +33,38 @@ from openhands.sdk.settings import (
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
 
+class _SecretProbeCipher:
+    """Fake cipher that flags secret serialization without needing a real key.
+
+    Passed as ``context={"cipher": probe}`` this forces every secret field's
+    serializer down the "encrypted" branch (see ``resolve_expose_mode``),
+    reusing the real serialization pipeline to detect secret-bearing fields
+    instead of hand-walking the model for ``SecretStr`` instances. That
+    matters for fields like ``AgentContext.secrets``, whose bare-string
+    entries are plain ``str`` at rest and only become secret-shaped inside
+    their own field serializer at dump time -- a value-type walk can't see
+    that, but reusing the pipeline does.
+    """
+
+    def __init__(self) -> None:
+        self.found = False
+
+    def try_decrypt_str(self, raw: str) -> str | None:  # noqa: ARG002
+        return None
+
+    def encrypt(self, value: SecretStr) -> str:
+        if value.get_secret_value():
+            self.found = True
+        return ""
+
+
+def _contains_secret_value(model: BaseModel) -> bool:
+    """Check if serializing `model` would touch any secret-bearing field."""
+    probe = _SecretProbeCipher()
+    model.model_dump(mode="json", context={"cipher": probe})
+    return probe.found
+
+
 class SettingsUpdatePayload(TypedDict, total=False):
     """Typed payload for PersistedSettings.update() method.
 
@@ -182,22 +214,14 @@ class PersistedSettings(BaseModel):
 
     @property
     def has_any_secret(self) -> bool:
-        """Check if any persisted secret is configured (LLM key or critic key).
+        """Check if these settings contain any secret value anywhere.
 
-        Broader than ``llm_api_key_is_set``: ``verification.critic_api_key``
-        (OpenHands-agent settings only) is a separate secret field that can be
-        set even when the LLM key isn't.
+        Broader than ``llm_api_key_is_set``: walks the whole ``agent_settings``
+        tree (MCP server env/headers, ``critic_api_key``, provider creds,
+        ``agent_context.secrets``, ...) rather than checking a fixed field
+        list, so it stays correct as new secret-bearing fields are added.
         """
-        if self.llm_api_key_is_set:
-            return True
-        verification = getattr(self.agent_settings, "verification", None)
-        raw = verification.critic_api_key if verification is not None else None
-        if raw is None:
-            return False
-        secret_value = (
-            raw.get_secret_value() if isinstance(raw, SecretStr) else str(raw)
-        )
-        return bool(secret_value and secret_value.strip())
+        return _contains_secret_value(self.agent_settings)
 
     def update(
         self,
@@ -430,6 +454,11 @@ class Secrets(BaseModel):
     custom_secrets: dict[str, CustomSecret] = Field(default_factory=dict)
 
     model_config = ConfigDict(frozen=True)
+
+    @property
+    def has_any_secret(self) -> bool:
+        """Check if these secrets contain any non-empty value."""
+        return _contains_secret_value(self)
 
     def get_env_vars(self) -> dict[str, str]:
         """Get secrets as environment variables dict.
