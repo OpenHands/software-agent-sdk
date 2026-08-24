@@ -301,6 +301,14 @@ class ConversationState(OpenHandsModel):
         """
         return self._events.path_to_root(self._resolve_active_leaf(), limit=limit)
 
+    def _allowed_unmatched_action_ids(self, branch: Sequence[Event]) -> set[EventID]:
+        if (
+            self.execution_status
+            != ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+        ):
+            return set()
+        return {action.id for action in self.get_unmatched_actions(branch)}
+
     def _stamp_parent_id(self, event: Event) -> Event:
         """Return ``event`` with ``parent_id`` set to the active leaf if unset."""
         if event.parent_id is not None:
@@ -376,7 +384,11 @@ class ConversationState(OpenHandsModel):
 
             # Diverged branch (navigation/fork), first populate, or recovery
             # from the failure above → full rebuild from the active branch.
-            self._view = View.from_events(self._events.path_to_root(leaf))
+            branch = self._events.path_to_root(leaf)
+            self._view = View.from_events(
+                branch,
+                allowed_unmatched_action_ids=self._allowed_unmatched_action_ids(branch),
+            )
             self._view_branch_leaf = leaf
             return self._view
 
@@ -391,7 +403,10 @@ class ConversationState(OpenHandsModel):
         with self._view_lock:
             leaf = self._resolve_active_leaf()
             branch = self._events.path_to_root(leaf)
-            self._view = View.from_events(branch)
+            self._view = View.from_events(
+                branch,
+                allowed_unmatched_action_ids=self._allowed_unmatched_action_ids(branch),
+            )
             self._view_branch_leaf = leaf
 
     @property
