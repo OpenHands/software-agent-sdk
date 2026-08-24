@@ -62,6 +62,20 @@ def mock_llm() -> LLM:
     )
     mock_llm.acompletion = AsyncMock(return_value=mock_llm.completion.return_value)
     mock_llm.uses_responses_api = lambda: False
+    mock_llm.complete = MagicMock(
+        side_effect=lambda **kwargs: (
+            mock_llm.responses(**kwargs)
+            if mock_llm.uses_responses_api()
+            else mock_llm.completion(**kwargs)
+        )
+    )
+
+    async def acomplete(**kwargs: Any) -> LLMResponse:
+        if mock_llm.uses_responses_api():
+            return await mock_llm.aresponses(**kwargs)
+        return await mock_llm.acompletion(**kwargs)
+
+    mock_llm.acomplete = AsyncMock(side_effect=acomplete)
     mock_llm.requires_streaming = False
     mock_llm.format_messages_for_llm = lambda messages: messages
 
@@ -195,6 +209,9 @@ def test_condense_uses_responses_api_when_required(mock_llm: LLM) -> None:
     cast(Any, mock_llm.responses).return_value = cast(
         Any, mock_llm.completion
     ).return_value
+    cast(Any, mock_llm.aresponses).return_value = cast(
+        Any, mock_llm.acompletion
+    ).return_value
 
     view = View.from_events([message_event(f"Event {i}") for i in range(11)])
     result = condenser.condense(view)
@@ -203,6 +220,24 @@ def test_condense_uses_responses_api_when_required(mock_llm: LLM) -> None:
     assert result.summary == "Summary from responses"
     cast(MagicMock, mock_llm.responses).assert_called_once()
     cast(MagicMock, mock_llm.completion).assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_acondense_uses_responses_api_when_required(mock_llm: LLM) -> None:
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=3)
+    cast(Any, mock_llm).set_mock_response_content("Summary from responses")
+    mock_llm.uses_responses_api = lambda: True
+    cast(Any, mock_llm).aresponses = AsyncMock(
+        return_value=cast(Any, mock_llm).acompletion.return_value
+    )
+
+    view = View.from_events([message_event(f"Event {i}") for i in range(11)])
+    result = await condenser.acondense(view)
+
+    assert isinstance(result, Condensation)
+    assert result.summary == "Summary from responses"
+    cast(AsyncMock, mock_llm.aresponses).assert_awaited_once()
+    cast(AsyncMock, mock_llm.acompletion).assert_not_awaited()
 
 
 def test_get_condensation_with_previous_summary(mock_llm: LLM) -> None:
