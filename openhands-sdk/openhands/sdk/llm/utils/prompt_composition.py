@@ -105,6 +105,11 @@ def responses_payload_to_chat_messages(
     actually received (instructions + input items) while sharing the chat
     path's counting convention. Raises ValueError on unrecognized item types;
     callers treat any failure as "skip the composition record".
+
+    Buckets follow the wire, not the logical prompt: in subscription mode the
+    system prompt is folded into the first user message by the auth-layer
+    transform, so those tokens land in ``history_tokens`` or
+    ``latest_message_tokens`` rather than ``system_prompt_tokens``.
     """
     messages: list[dict[str, Any]] = []
     if instructions:
