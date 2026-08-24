@@ -851,7 +851,6 @@ def _get_cipher(config: Config | None = None) -> Cipher | None:
 
 
 def _get_require_cipher(config: Config | None = None) -> bool:
-    """Get require_secret_key from config."""
     if config is not None:
         return config.require_secret_key
     return False

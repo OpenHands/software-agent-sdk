@@ -66,6 +66,15 @@ def test_settings_save_without_secrets_does_not_raise_when_require_cipher(
     store.save(PersistedSettings())  # no api key set
 
 
+def test_secrets_save_without_secrets_does_not_raise_when_require_cipher(
+    persistence_dir,
+):
+    """No secrets present -> nothing to protect, no cipher needed."""
+    store = FileSecretsStore(persistence_dir=persistence_dir, require_cipher=True)
+
+    store.save(Secrets())  # empty custom_secrets
+
+
 def test_settings_save_with_cipher_succeeds_when_require_cipher(
     persistence_dir, cipher
 ):
@@ -100,3 +109,13 @@ def test_settings_save_without_cipher_stores_plaintext_by_default(persistence_di
 
     raw = (persistence_dir / "settings.json").read_text()
     assert "sk-test-secret" in raw
+
+
+def test_secrets_save_without_cipher_stores_plaintext_by_default(persistence_dir):
+    """require_cipher defaults to False -> unchanged backward-compatible behavior."""
+    store = FileSecretsStore(persistence_dir=persistence_dir)
+
+    store.save(_secrets_with_custom_secret())  # does not raise
+
+    raw = (persistence_dir / "secrets.json").read_text()
+    assert "sk-test" in raw
