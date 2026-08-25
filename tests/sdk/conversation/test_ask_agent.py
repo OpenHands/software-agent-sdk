@@ -433,6 +433,72 @@ def test_ask_agent_with_existing_events_and_tool_calls(
     assert tool_msg.name == "terminal"
 
 
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_ask_agent_drops_in_flight_action_without_observation(
+    mock_completion, tmp_path, agent
+):
+    """ask_agent must not forward an ActionEvent whose observation hasn't landed.
+
+    The main agent can be mid-tool-call when ask_agent() runs on another thread,
+    leaving an ActionEvent in the cached view without its ObservationEvent.
+    Anthropic rejects a ``tool_use`` with no following ``tool_result``, so the
+    orphaned action must be dropped before the context is sent.
+    """
+    mock_completion.return_value = create_mock_llm_response("answer")
+
+    conv = Conversation(
+        agent=agent,
+        persistence_dir=str(tmp_path),
+        workspace=str(tmp_path),
+    )
+
+    conv.state.events.append(
+        SystemPromptEvent(
+            source="agent",
+            system_prompt=TextContent(text="You are a helpful assistant."),
+            tools=[],
+        )
+    )
+    conv.state.events.append(
+        MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user",
+                content=[TextContent(text="List the files")],
+            ),
+        )
+    )
+
+    # In-flight action with NO matching observation.
+    tool_call = MessageToolCall(
+        id="call_inflight",
+        name="terminal",
+        arguments=json.dumps({"command": "ls -la"}),
+        origin="completion",
+    )
+    conv.state.events.append(
+        ActionEvent(
+            source="agent",
+            thought=[TextContent(text="Listing files")],
+            action=MockAction(command="ls -la"),
+            tool_name="terminal",
+            tool_call_id="call_inflight",
+            tool_call=tool_call,
+            llm_response_id="response_1",
+        )
+    )
+
+    conv.ask_agent("What did you find?")
+
+    messages = mock_completion.call_args.kwargs["messages"]
+    assistant_tool_calls = [
+        m for m in messages if m.role == "assistant" and m.tool_calls
+    ]
+    assert assistant_tool_calls == [], (
+        "Orphaned tool_use must be dropped from the ask_agent context"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Exception handling tests
 # ---------------------------------------------------------------------------

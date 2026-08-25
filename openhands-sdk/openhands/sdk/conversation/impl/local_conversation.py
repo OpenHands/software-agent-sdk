@@ -2808,9 +2808,19 @@ class LocalConversation(BaseConversation):
             content=[TextContent(text=question_text)],
         )
 
-        messages = prepare_llm_messages(
-            self.state.view, additional_messages=[user_message]
-        )
+        # Build the ask-agent context from a fresh, property-enforced view of the
+        # active branch rather than the cached `state.view`. The cached view is
+        # maintained incrementally and skips `enforce_properties` on linear
+        # appends, so it can transiently contain an ActionEvent whose
+        # ObservationEvent has not landed yet (the main agent is still executing
+        # it). Anthropic rejects a `tool_use` with no following `tool_result`, so
+        # an in-flight tool call would make ask_agent fail with a 400. A fresh
+        # `View.from_events` re-runs property enforcement and drops the orphaned
+        # action before serialization.
+        from openhands.sdk.context.view import View
+
+        ask_view = View.from_events(self._state.active_branch())
+        messages = prepare_llm_messages(ask_view, additional_messages=[user_message])
 
         # Get or create the specialized ask-agent LLM
         try:
