@@ -294,10 +294,17 @@ _PROVIDER_CONFIG: dict[GitProvider, tuple[str, str]] = {
 }
 
 
-def _build_clone_url(url: str, provider: GitProvider, token: str | None) -> str:
+def _build_clone_url(
+    url: str,
+    provider: GitProvider,
+    token: str | None,
+    *,
+    explicit_provider: bool = False,
+) -> str:
     """Build authenticated clone URL based on the repository URL and provider.
 
-    Uses proper URL parsing to prevent token injection into malicious URLs.
+    The token is injected into the provider's public host, or into the URL's own
+    host when the caller set `provider` explicitly (self-hosted instances).
     """
     config = _PROVIDER_CONFIG.get(provider)
     if not config:
@@ -311,16 +318,21 @@ def _build_clone_url(url: str, provider: GitProvider, token: str | None) -> str:
     if is_short_format:
         return f"https://{auth_prefix}{base_url}/{url}.git"
 
-    # Handle full URLs - inject authentication only if hostname matches exactly
-    if token:
-        parsed = urllib.parse.urlparse(url)
-        if parsed.netloc.lower() == base_url:
-            # Replace only the first occurrence to prevent double injection
-            return url.replace(
-                f"https://{base_url}", f"https://{auth_prefix}{base_url}", 1
-            )
+    if not token:
+        return url
 
-    return url
+    parsed = urllib.parse.urlparse(url)
+    hostname = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" or parsed.username or not hostname:
+        return url
+    if hostname != base_url:
+        # An auto-detected provider is derived from the URL, so it cannot
+        # authorize another host - and never a lookalike of the public one.
+        if not explicit_provider or hostname.startswith(f"{base_url}."):
+            return url
+
+    netloc = hostname if parsed.port is None else f"{hostname}:{parsed.port}"
+    return urllib.parse.urlunparse(parsed._replace(netloc=f"{auth_prefix}{netloc}"))
 
 
 # Type for functions that fetch tokens by name (e.g., "github_token" -> token value)
@@ -367,7 +379,9 @@ def _clone_single_repo(repo: RepoSource, dest: Path, token: str | None) -> bool:
     """Clone a single repository. Returns True on success."""
     try:
         provider = repo.get_provider()
-        clone_url = _build_clone_url(repo.url, provider, token)
+        clone_url = _build_clone_url(
+            repo.url, provider, token, explicit_provider=repo.provider is not None
+        )
         provider_str = provider.value
     except ValueError:
         # No provider detected (e.g., file:// URLs) - use URL as-is

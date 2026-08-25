@@ -29,6 +29,7 @@ from openhands.agent_server.persistence.models import (
     Secrets,
 )
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.llm.provider_connection_store import ProviderConnectionStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles.agent_profile_store import AgentProfileStore
 from openhands.sdk.utils.cipher import Cipher
@@ -790,6 +791,7 @@ class FileWorkspacesStore(WorkspacesStore):
 
 _settings_store: FileSettingsStore | None = None
 _secrets_store: FileSecretsStore | None = None
+_provider_connections_store: ProviderConnectionStore | None = None
 _workspaces_store: FileWorkspacesStore | None = None
 _llm_profile_store: LLMProfileStore | None = None
 _agent_profile_store: AgentProfileStore | None = None
@@ -895,6 +897,27 @@ def get_secrets_store(config: Config | None = None) -> FileSecretsStore:
         return _secrets_store
 
 
+def get_provider_connections_store(
+    config: Config | None = None,  # noqa: ARG001
+) -> ProviderConnectionStore:
+    """Get the global provider connections store instance (thread-safe).
+
+    Stored at ``<dir>/provider-connections`` alongside ``profiles`` /
+    ``agent-profiles``. The store itself is cipher-agnostic; callers pass the
+    request cipher per call so keys are encrypted at rest.
+    """
+    global _provider_connections_store
+    if _provider_connections_store is not None:
+        return _provider_connections_store
+
+    with _store_lock:
+        if _provider_connections_store is None:
+            _provider_connections_store = ProviderConnectionStore(
+                base_dir=_get_profile_persistence_dir() / "provider-connections",
+            )
+        return _provider_connections_store
+
+
 def get_workspaces_store(config: Config | None = None) -> FileWorkspacesStore:
     """Get the global workspaces store instance (thread-safe).
 
@@ -927,10 +950,15 @@ def get_llm_profile_store() -> LLMProfileStore:
     if _llm_profile_store is not None:
         return _llm_profile_store
 
+    # Resolve the provider store first: it takes ``_store_lock`` itself, and
+    # ``_store_lock`` is non-reentrant, so calling it while already holding the
+    # lock below would deadlock.
+    provider_store = get_provider_connections_store()
     with _store_lock:
         if _llm_profile_store is None:
             _llm_profile_store = LLMProfileStore(
                 base_dir=_get_profile_persistence_dir() / "profiles",
+                provider_store=provider_store,
             )
         return _llm_profile_store
 
@@ -956,11 +984,12 @@ def get_agent_profile_store() -> AgentProfileStore:
 
 def reset_stores() -> None:
     """Reset global store instances (for testing)."""
-    global _settings_store, _secrets_store, _workspaces_store
-    global _llm_profile_store, _agent_profile_store
+    global _settings_store, _secrets_store, _provider_connections_store
+    global _workspaces_store, _llm_profile_store, _agent_profile_store
     with _store_lock:
         _settings_store = None
         _secrets_store = None
+        _provider_connections_store = None
         _workspaces_store = None
         _llm_profile_store = None
         _agent_profile_store = None

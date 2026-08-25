@@ -56,7 +56,13 @@ def factory() -> DiagnosticEventFactory:
     )
 
 
-def make_subscriber(sink, factory, user_id: str | None = "user-1"):
+def make_subscriber(
+    sink,
+    factory,
+    user_id: str | None = "user-1",
+    *,
+    is_automation: bool = False,
+):
     conversation_id = uuid.uuid4()
     return TelemetrySubscriber(
         conversation_id=conversation_id,
@@ -72,6 +78,7 @@ def make_subscriber(sink, factory, user_id: str | None = "user-1"):
             has_agent_profile=False,
             workspace_kind="localworkspace",
             confirmation_policy="neverconfirm",
+            is_automation=is_automation,
         ),
     )
 
@@ -85,6 +92,15 @@ async def test_emits_exactly_one_created_event(factory):
 
     sub.emit_started()
     assert sink.names == [m.EventName.CONVERSATION_CREATED]
+
+
+async def test_created_event_identifies_automation_conversations(factory):
+    sink = CollectingSink()
+    sub = make_subscriber(sink, factory, is_automation=True)
+
+    sub.emit_started()
+
+    assert sink.events[0].to_payload()["is_automation"] is True
 
 
 def test_started_is_only_emitted_for_genuinely_new_conversations():
@@ -601,3 +617,46 @@ def test_confirmation_policy_is_read_from_the_field_that_exists():
     fields = asdict(ctx)
     assert "unknown" not in fields.values()
     assert "secret-project" not in repr(fields)
+
+
+@pytest.mark.parametrize(
+    ("tags", "is_automation"),
+    [
+        ({"automationtrigger": "cron"}, True),
+        ({"automationid": "auto-1"}, True),
+        ({"automationrunid": "run-1"}, True),
+        ({"automationtrigger": ""}, False),
+        ({"automationname": "Nightly Audit"}, False),
+        ({"source": "automation"}, False),
+        ({}, False),
+    ],
+)
+def test_is_automation_is_derived_from_allowlisted_tags(tags, is_automation):
+    from openhands.agent_server.conversation_service import _build_telemetry_context
+    from openhands.agent_server.models import StoredConversation
+    from openhands.agent_server.telemetry.factory import (
+        DiagnosticEventFactory,
+        build_runtime_properties,
+    )
+    from openhands.sdk.agent import Agent
+    from openhands.sdk.llm import LLM
+    from openhands.sdk.workspace import LocalWorkspace
+
+    agent = Agent(llm=LLM(model="anthropic/claude-sonnet-5", usage_id="t"), tools=[])
+    stored = StoredConversation(
+        id=uuid.uuid4(),
+        workspace=LocalWorkspace(working_dir="/tmp"),
+        user_id="canvas-user-42",
+        tags=tags,
+    )
+
+    context = _build_telemetry_context(
+        stored,
+        DiagnosticEventFactory(
+            runtime=build_runtime_properties(deferred_init=False),
+            salt="s",
+        ),
+        agent=agent,
+    )
+
+    assert context.is_automation is is_automation

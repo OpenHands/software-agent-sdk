@@ -260,6 +260,57 @@ class TestHelperFunctions:
         )
         assert url == "https://github.com/owner/repo"
 
+    def test_build_clone_url_self_hosted_gitlab_with_explicit_provider(self):
+        """A self-hosted GitLab host gets the token when provider is explicit."""
+        url = _build_clone_url(
+            "https://gitlab.mycompany.com/owner/repo",
+            GitProvider.GITLAB,
+            "gltoken123",
+            explicit_provider=True,
+        )
+        assert url == "https://oauth2:gltoken123@gitlab.mycompany.com/owner/repo"
+
+    def test_build_clone_url_self_hosted_host_without_explicit_provider(self):
+        """An auto-detected provider must not inject a token into an unrelated host."""
+        url = _build_clone_url(
+            "https://gitlab.mycompany.com/owner/repo",
+            GitProvider.GITLAB,
+            "gltoken123",
+            explicit_provider=False,
+        )
+        assert url == "https://gitlab.mycompany.com/owner/repo"
+
+    @pytest.mark.parametrize("explicit_provider", [False, True])
+    def test_build_clone_url_lookalike_host_not_injected(self, explicit_provider):
+        """A lookalike of the public host never receives the token."""
+        url = _build_clone_url(
+            "https://github.com.evil.com/owner/repo",
+            GitProvider.GITHUB,
+            "ghtoken123",
+            explicit_provider=explicit_provider,
+        )
+        assert url == "https://github.com.evil.com/owner/repo"
+
+    def test_build_clone_url_self_hosted_host_is_normalized(self):
+        """Host case and non-default port survive token injection."""
+        url = _build_clone_url(
+            "https://GitLab.MyCompany.com:8443/owner/repo",
+            GitProvider.GITLAB,
+            "gltoken123",
+            explicit_provider=True,
+        )
+        assert url == "https://oauth2:gltoken123@gitlab.mycompany.com:8443/owner/repo"
+
+    def test_build_clone_url_existing_credentials_preserved(self):
+        """A URL that already carries credentials keeps its own."""
+        url = _build_clone_url(
+            "https://oauth2:embedded@gitlab.mycompany.com/owner/repo",
+            GitProvider.GITLAB,
+            "gltoken123",
+            explicit_provider=True,
+        )
+        assert url == "https://oauth2:embedded@gitlab.mycompany.com/owner/repo"
+
 
 class TestGetReposContext:
     """Tests for get_repos_context function."""
@@ -447,6 +498,30 @@ class TestCloneRepos:
             # Should have fetched github_token and gitlab_token
             assert "github_token" in fetched_tokens
             assert "gitlab_token" in fetched_tokens
+
+    @patch("subprocess.run")
+    def test_clone_self_hosted_gitlab_with_token(self, mock_run):
+        """A self-hosted GitLab instance clones with the token authenticated,
+        instead of silently sending an unauthenticated request."""
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+
+        def token_fetcher(name: str) -> str | None:
+            return "gltoken123" if name == "gitlab_token" else None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos = [
+                RepoSource(
+                    url="https://gitlab.mycompany.com/owner/repo",
+                    provider="gitlab",
+                )
+            ]
+            clone_repos(repos, Path(tmpdir), token_fetcher=token_fetcher)
+
+            call_args = mock_run.call_args[0][0]
+            assert any(
+                "oauth2:gltoken123@gitlab.mycompany.com" in str(arg)
+                for arg in call_args
+            )
 
     @patch("subprocess.run")
     def test_directory_name_collision(self, mock_run):

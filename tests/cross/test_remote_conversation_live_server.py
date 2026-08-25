@@ -164,6 +164,14 @@ def live_server_env(
             shutil.rmtree(cwd_conversations)
 
 
+def _assert_secret(value: "str | SecretStr", expected: str) -> None:
+    """Assert a SecretStr-or-str api_key matches the expected plaintext."""
+    if isinstance(value, SecretStr):
+        assert value.get_secret_value() == expected
+    else:
+        assert value == expected
+
+
 def test_health_endpoints_return_ok_json(server_env):
     with httpx.Client() as client:
         for endpoint in ("/alive", "/health"):
@@ -2131,6 +2139,77 @@ def test_remote_state_exposes_invoked_skills(
     assert obs_text.rstrip().endswith("relative to that directory.")
 
     conv.close()
+
+
+def test_workspace_default_llm_resolves_active_profile_despite_settings_drift(
+    tmp_path, monkeypatch
+):
+    """An unpinned automation gets the UI-advertised active named profile.
+
+    Reproduces the production drift through real HTTP endpoints: activate GLM,
+    then patch only legacy agent_settings.llm to keyless GPT while leaving the
+    active pointer untouched. RemoteWorkspace.get_llm() must resolve GLM and its
+    named-profile credential. Explicit profile selection remains an override.
+    """
+    with live_server_env(tmp_path, monkeypatch) as env:
+        with httpx.Client(base_url=env["host"], timeout=10.0) as client:
+            save_glm = client.post(
+                "/api/profiles/glm-default",
+                json={
+                    "llm": {
+                        "model": "openhands/glm-5.2",
+                        "api_key": "sk-glm-key",
+                    },
+                    "include_secrets": True,
+                },
+            )
+            assert save_glm.status_code == 201
+            assert client.post("/api/profiles/glm-default/activate").status_code == 200
+
+            save_explicit = client.post(
+                "/api/profiles/explicit-model",
+                json={
+                    "llm": {
+                        "model": "openrouter/explicit-model",
+                        "api_key": "sk-explicit-key",
+                    },
+                    "include_secrets": True,
+                },
+            )
+            assert save_explicit.status_code == 201
+
+            drift = client.patch(
+                "/api/settings",
+                json={
+                    "agent_settings_diff": {
+                        "llm": {"model": "gpt-5.5", "api_key": None}
+                    }
+                },
+            )
+            assert drift.status_code == 200
+
+            profiles = client.get("/api/profiles").json()
+            settings = client.get("/api/settings").json()
+            assert profiles["active_profile"] == "glm-default"
+            assert settings["active_profile"] == "glm-default"
+            assert settings["agent_settings"]["llm"]["model"] == "gpt-5.5"
+
+        workspace = RemoteWorkspace(
+            host=env["host"],
+            working_dir=str(env["workspace_path"]),
+        )
+        default_llm = workspace.get_llm()
+        assert default_llm.model == "openhands/glm-5.2"
+        assert default_llm.api_key is not None
+        _assert_secret(default_llm.api_key, "sk-glm-key")
+        assert default_llm.usage_id == "profile:glm-default"
+
+        # Mirrors an explicit AUTOMATION_MODEL/profile_name override.
+        explicit_llm = workspace.get_llm(profile_name="explicit-model")
+        assert explicit_llm.model == "openrouter/explicit-model"
+        assert explicit_llm.api_key is not None
+        _assert_secret(explicit_llm.api_key, "sk-explicit-key")
+        assert explicit_llm.usage_id == "profile:explicit-model"
 
 
 def test_settings_and_secrets_api_with_live_server(server_env):
