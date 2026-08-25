@@ -127,6 +127,8 @@ export type {
   CloudAppConversation,
   CloudBranchPage,
   CloudClientOptions,
+  CloudConversationObservabilityMetadata,
+  CloudConversationObservabilityMetadataValue,
   CloudConversationPage,
   CloudConversationStartRequest,
   CloudConversationStartTask,

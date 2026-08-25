@@ -164,6 +164,14 @@ export interface CloudSuggestedTask {
   task_type: string;
 }
 
+export type CloudConversationObservabilityMetadataValue =
+  string | number | boolean | string[] | number[] | boolean[];
+
+export type CloudConversationObservabilityMetadata = Record<
+  string,
+  CloudConversationObservabilityMetadataValue
+>;
+
 export interface CloudConversationStartRequest {
   conversation_id?: string | null;
   initial_message?: unknown;
@@ -179,6 +187,9 @@ export interface CloudConversationStartRequest {
   parent_conversation_id?: string | null;
   agent_type?: 'default' | 'plan';
   sandbox_id?: string | null;
+  observability_metadata?: CloudConversationObservabilityMetadata | null;
+  observability_tags?: string[] | null;
+  observability_span_name?: string | null;
   plugins?: unknown[] | null;
 }
 

@@ -212,6 +212,65 @@ describe('Auxiliary API clients', () => {
       });
     });
 
+    it('CloudClient forwards app-conversation observability fields', async () => {
+      global.fetch = jest.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            id: 'task-1',
+            created_by_user_id: null,
+            status: 'WORKING',
+            detail: null,
+            app_conversation_id: null,
+            agent_server_url: null,
+            request: {},
+            created_at: '2026-07-30T00:00:00Z',
+            updated_at: '2026-07-30T00:00:00Z',
+          }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      ) as typeof fetch;
+
+      const client = new CloudClient({
+        host: 'https://app.all-hands.dev',
+        apiKey: 'cloud-key',
+      });
+
+      await client.createConversation({
+        initial_message: null,
+        observability_span_name: 'mySpanName',
+        observability_tags: ['wb-rubric', 'recall'],
+        observability_metadata: {
+          evaluation: 'wb',
+          attempt: 1,
+          replay: false,
+        },
+      });
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://app.all-hands.dev/api/v1/app-conversations',
+        expect.objectContaining({
+          method: 'POST',
+          headers: expect.objectContaining({
+            Authorization: 'Bearer cloud-key',
+          }),
+        })
+      );
+      const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body as string);
+      expect(body).toMatchObject({
+        initial_message: null,
+        observability_span_name: 'mySpanName',
+        observability_tags: ['wb-rubric', 'recall'],
+        observability_metadata: {
+          evaluation: 'wb',
+          attempt: 1,
+          replay: false,
+        },
+      });
+    });
+
     it('exports cloud device-flow helpers from the clients entrypoint', () => {
       expect(isOpenHandsCloudHost('https://app.all-hands.dev')).toBe(true);
       expect(isOpenHandsCloudHost('https://all-hands.dev.evil.example')).toBe(false);
