@@ -14,6 +14,7 @@ from openhands.agent_server.env_parser import (
     get_env_parser,
     merge,
 )
+from openhands.agent_server.telemetry_types import DeploymentKind
 from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.utils.cipher import Cipher
 
@@ -106,9 +107,24 @@ class WebhookSpec(BaseModel):
         default=1000,
         ge=1,
         description=(
-            "Upper bound on the number of events buffered for delivery. When the "
-            "downstream is failing and events are re-queued for retry, the oldest "
+            "Upper bound on the number of events buffered for delivery. The oldest "
             "events are dropped past this bound to prevent unbounded memory growth."
+        ),
+    )
+    max_batch_bytes: int = Field(
+        default=5 * 1024 * 1024,
+        ge=1,
+        description=(
+            "Upper bound on the serialized size of each webhook request. A single "
+            "event larger than this limit is sent by itself."
+        ),
+    )
+    max_queue_bytes: int = Field(
+        default=50 * 1024 * 1024,
+        ge=1,
+        description=(
+            "Upper bound on the serialized size of events buffered for delivery. "
+            "The oldest events are dropped when the queue exceeds this bound."
         ),
     )
 
@@ -120,13 +136,19 @@ TelemetryExporterKind = Literal["none", "posthog", "http"]
 class TelemetrySpec(BaseModel):
     """Deployment-supplied product-analytics transport settings.
 
-    This carries *transport* only. Whether telemetry may be delivered is
-    resolved from consent (``misc_settings.telemetry.consent``, optionally
-    seeded or overridden by ``OH_TELEMETRY_CONSENT``) — there is no deployment
-    "mode" here, and nothing in the agent-server special-cases a hosted
-    deployment.
+    This carries transport plus the non-identifying deployment tag. Whether
+    telemetry may be delivered is resolved from consent
+    (``misc_settings.telemetry.consent``, optionally seeded or overridden by
+    ``OH_TELEMETRY_CONSENT``).
     """
 
+    deployment_kind: DeploymentKind = Field(
+        default="local",
+        description=(
+            "Deployment kind attached to diagnostic events. Use 'remote' for "
+            "hosted OpenHands and 'local' for self-hosted or developer runs."
+        ),
+    )
     exporter: TelemetryExporterKind = Field(
         default="none",
         description=(
@@ -237,6 +259,14 @@ class Config(BaseModel):
         default=Path("workspace/project"),
         description=(
             "Default workspace directory for conversations created by the server."
+        ),
+    )
+    conversation_worktree_root: Path = Field(
+        default=Path("/tmp/conversation-worktrees"),
+        description=(
+            "Root directory for conversation git worktrees. Each conversation gets a "
+            "subdirectory under this root when using git-backed workspaces with "
+            "worktree=True."
         ),
     )
     bash_events_dir: Path = Field(

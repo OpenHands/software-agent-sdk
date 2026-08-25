@@ -1,7 +1,5 @@
 """HTTP endpoints for managing named LLM configurations (profiles)."""
 
-from collections.abc import Iterator
-from contextlib import contextmanager
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Path, Request, status
@@ -13,15 +11,23 @@ from openhands.agent_server._secrets_exposure import (
     get_cipher,
     get_config,
     parse_expose_secrets_header,
+    store_errors,
     translate_missing_cipher,
 )
 from openhands.agent_server.persistence import (
     PersistedSettings,
     get_agent_profile_store,
     get_llm_profile_store,
+    get_provider_connections_store,
     get_settings_store,
 )
-from openhands.sdk.llm import LLM
+from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm.exceptions import (
+    LLMError,
+    LLMRateLimitError,
+    LLMServiceUnavailableError,
+    LLMTimeoutError,
+)
 from openhands.sdk.llm.llm_profile_store import (
     PROFILE_NAME_PATTERN,
     ProfileLimitExceeded,
@@ -32,6 +38,7 @@ from openhands.sdk.profiles import (
     delete_llm_profile,
     rename_llm_profile,
 )
+from openhands.sdk.utils.redact import redact_text_secrets
 
 
 logger = get_logger(__name__)
@@ -50,6 +57,8 @@ class ProfileInfo(BaseModel):
     name: str
     model: str | None = None
     base_url: str | None = None
+    provider_connection_id: str | None = None
+    provider_connection_broken: bool = False
     api_key_set: bool = False
 
 
@@ -88,27 +97,32 @@ class RenameProfileRequest(BaseModel):
     )
 
 
-@contextmanager
-def _store_errors() -> Iterator[None]:
-    """Map ``LLMProfileStore`` errors to HTTP responses."""
-    try:
-        yield
-    except TimeoutError:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Profile store is busy. Please retry.",
-        )
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
-
-
 def _has_api_key(llm: LLM) -> bool:
     if not isinstance(llm.api_key, SecretStr):
         return False
     return bool(llm.api_key.get_secret_value().strip())
+
+
+def _profile_api_key_set(request: Request, llm: LLM) -> bool:
+    """Effective key presence: the profile's own key, or its provider's.
+
+    A profile linked to a provider connection carries no inline key (cleared on
+    save), so its key presence lives on the connection.
+    """
+    if _has_api_key(llm):
+        return True
+    connection_id = llm.provider_connection_id
+    if not connection_id:
+        return False
+    config = get_config(request)
+    cipher = get_cipher(request)
+    # The provider store read can raise on a corrupted file; map it instead of
+    # letting it surface as an unhandled 500 on GET /profiles/{name}.
+    with store_errors():
+        connection = get_provider_connections_store(config).get(
+            connection_id, cipher=cipher
+        )
+    return connection is not None and connection.api_key_value() is not None
 
 
 def _set_active_profile_if_matches(
@@ -141,7 +155,7 @@ async def list_profiles(request: Request) -> ProfileListResponse:
     settings = settings_store.load() or PersistedSettings()
 
     store = get_llm_profile_store()
-    with _store_errors():
+    with store_errors():
         summaries = store.list_summaries()
 
     return ProfileListResponse(
@@ -164,8 +178,11 @@ async def get_profile(request: Request, name: ProfileName) -> ProfileDetailRespo
 
     store = get_llm_profile_store()
     try:
-        with _store_errors():
-            llm = store.load(name, cipher=cipher)
+        with store_errors():
+            # Display the profile exactly as stored: don't inject the linked
+            # provider's credentials, and don't fail a read when the reference
+            # dangles. Effective key presence is reported via ``api_key_set``.
+            llm = store.load(name, cipher=cipher, resolve_provider=False)
     except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -181,7 +198,7 @@ async def get_profile(request: Request, name: ProfileName) -> ProfileDetailRespo
         config["api_key"] = None
 
     return ProfileDetailResponse(
-        name=name, config=config, api_key_set=_has_api_key(llm)
+        name=name, config=config, api_key_set=_profile_api_key_set(request, llm)
     )
 
 
@@ -208,7 +225,7 @@ async def save_profile(
     llm = decrypt_incoming_llm_secrets(body.llm, cipher) if cipher else body.llm
     store = get_llm_profile_store()
     try:
-        with _store_errors():
+        with store_errors():
             store.save(
                 name,
                 llm,
@@ -229,6 +246,112 @@ async def save_profile(
     return ProfileMutationResponse(name=name, message=f"Profile '{name}' saved")
 
 
+class ValidateProfileRequest(BaseModel):
+    """Request body for LLM pre-flight validation.
+
+    Accepts an LLM config (same shape as ``SaveProfileRequest.llm``) so the
+    frontend can validate a draft *before* persisting it.
+    """
+
+    llm: LLM
+
+
+class ValidateProfileError(BaseModel):
+    """Structured error returned when validation fails."""
+
+    type: str
+    message: str
+
+
+class ValidateProfileResponse(BaseModel):
+    """Result of an LLM pre-flight check."""
+
+    valid: bool
+    error: ValidateProfileError | None = None
+
+
+# Errors that should NOT block saving — they are transient and unrelated to
+# the correctness of the configuration itself.
+_TRANSIENT_ERROR_TYPES = (LLMRateLimitError, LLMTimeoutError)
+
+
+@profiles_router.post(
+    "/{name}/validate",
+    response_model=ValidateProfileResponse,
+)
+async def validate_profile(
+    request: Request,
+    name: ProfileName,
+    body: ValidateProfileRequest,
+) -> ValidateProfileResponse:
+    """Pre-flight check: fire a minimal LLM completion to catch misconfigurations.
+
+    Instantiates the submitted LLM config and sends a 1-token completion to
+    surface errors like invalid model names, missing provider prefixes, bad
+    base URLs, and invalid API keys — *before* the profile is saved.
+
+    Transient errors (rate limits, timeouts) are treated as non-blocking: the
+    response is ``valid=True`` with no error, since those don't indicate a
+    misconfigured profile.
+    """
+    cipher = get_cipher(request)
+    llm = decrypt_incoming_llm_secrets(body.llm, cipher) if cipher else body.llm
+
+    messages = [
+        Message(
+            role="user",
+            content=[TextContent(text="ping")],
+        )
+    ]
+
+    try:
+        # Mirror the runtime dispatch (see ``amake_llm_completion``) and stay
+        # async so provider I/O doesn't pin the FastAPI event loop.
+        if llm.uses_responses_api():
+            await llm.aresponses(messages=messages, max_tokens=1)
+        else:
+            await llm.acompletion(messages=messages, max_tokens=1)
+    except _TRANSIENT_ERROR_TYPES as exc:
+        # Transient — don't block the save
+        logger.info(
+            f"Profile '{name}' pre-flight hit a transient error "
+            f"({type(exc).__name__}); not blocking save."
+        )
+        return ValidateProfileResponse(valid=True)
+    except (
+        # LLMServiceUnavailableError (provider 503) is intentionally treated as
+        # a blocking config error: at this layer a provider outage is
+        # indistinguishable from a wrong base URL, so we prefer a false
+        # negative over silently saving a misconfigured profile.
+        LLMServiceUnavailableError,
+        LLMError,
+    ) as exc:
+        error_type = type(exc).__name__
+        safe_msg = redact_text_secrets(exc.message)
+        logger.info(f"Profile '{name}' pre-flight failed: {error_type}: {safe_msg}")
+        return ValidateProfileResponse(
+            valid=False,
+            error=ValidateProfileError(
+                type=error_type,
+                message=safe_msg,
+            ),
+        )
+    except Exception as exc:
+        # Unknown errors — block the save and surface the raw message so the
+        # user can debug, but classify generically.
+        msg = redact_text_secrets(str(exc) or type(exc).__name__)
+        logger.info(f"Profile '{name}' pre-flight failed (unknown): {msg}")
+        return ValidateProfileResponse(
+            valid=False,
+            error=ValidateProfileError(
+                type=type(exc).__name__,
+                message=msg,
+            ),
+        )
+
+    return ValidateProfileResponse(valid=True)
+
+
 @profiles_router.delete("/{name}", response_model=ProfileMutationResponse)
 async def delete_profile(
     request: Request, name: ProfileName
@@ -241,7 +364,7 @@ async def delete_profile(
     store = get_llm_profile_store()
     agent_store = get_agent_profile_store()
     try:
-        with _store_errors():
+        with store_errors():
             delete_llm_profile(agent_store, store, name)
     except ProfileReferenced as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
@@ -269,7 +392,7 @@ async def rename_profile(
     store = get_llm_profile_store()
     agent_store = get_agent_profile_store()
     try:
-        with _store_errors():
+        with store_errors():
             rename_llm_profile(agent_store, store, name, body.new_name)
     except FileNotFoundError:
         raise HTTPException(
@@ -322,10 +445,15 @@ async def activate_profile(
     cipher = get_cipher(request)
     config = get_config(request)
 
-    # Load the profile
+    # Load the profile. ``load`` resolves any referenced provider connection
+    # (read-at-use), so the LLM applied to settings already carries the shared
+    # api_key / base_url; ``provider_connection_id`` is retained so a later
+    # rotation re-resolves on the next activation or launch.
     profile_store = get_llm_profile_store()
+    # A dangling provider_connection_id raises ProviderConnectionNotFound, which
+    # store_errors() maps to 422.
     try:
-        with _store_errors():
+        with store_errors():
             llm = profile_store.load(name, cipher=cipher)
     except FileNotFoundError:
         raise HTTPException(
@@ -333,7 +461,6 @@ async def activate_profile(
             detail=f"Profile '{name}' not found",
         )
 
-    # Apply the LLM config to settings and record active profile
     settings_store = get_settings_store(config)
 
     def apply_profile(settings: PersistedSettings) -> PersistedSettings:

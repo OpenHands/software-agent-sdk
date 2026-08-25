@@ -431,9 +431,21 @@ def test_get_llm_returns_configured_llm(monkeypatch):
         },
         "conversation_settings": {},
         "llm_api_key_is_set": True,
+        "active_profile": "default",
     }
     mock_response.raise_for_status = Mock()
-    mock_client.get.return_value = mock_response
+    profile_response = Mock()
+    profile_response.status_code = 200
+    profile_response.raise_for_status = Mock()
+    profile_response.json.return_value = {
+        "name": "default",
+        "config": {
+            "model": "gpt-4",
+            "api_key": "sk-test-key",
+            "base_url": "https://api.openai.com/v1",
+        },
+    }
+    mock_client.get.side_effect = [mock_response, profile_response]
     workspace._client = mock_client
 
     llm = workspace.get_llm()
@@ -448,12 +460,106 @@ def test_get_llm_returns_configured_llm(monkeypatch):
         assert llm.api_key == "sk-test-key"
     assert llm.base_url == "https://api.openai.com/v1"
 
-    # Verify API was called with correct headers
-    mock_client.get.assert_called_once()
-    call_args = mock_client.get.call_args
-    assert call_args[0][0] == "/api/settings"
-    assert call_args[1]["headers"]["X-Expose-Secrets"] == "plaintext"
-    assert call_args[1]["headers"]["X-Session-API-Key"] == "test-key"
+    assert [call.args[0] for call in mock_client.get.call_args_list] == [
+        "/api/settings",
+        "/api/profiles/default",
+    ]
+
+
+def test_get_llm_without_name_resolves_active_profile(monkeypatch):
+    """Default resolution honors active_profile, not stale agent settings."""
+    from pydantic import SecretStr
+
+    monkeypatch.setenv("ALLOW_SHORT_CONTEXT_WINDOWS", "true")
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    settings_response = Mock()
+    settings_response.json.return_value = {
+        "agent_settings": {
+            "llm": {"model": "gpt-5.5", "api_key": None},
+        },
+        "conversation_settings": {},
+        "llm_api_key_is_set": False,
+        "active_profile": "glm-default",
+    }
+    settings_response.raise_for_status = Mock()
+    profile_response = Mock()
+    profile_response.status_code = 200
+    profile_response.json.return_value = {
+        "name": "glm-default",
+        "config": {
+            "model": "openhands/glm-5.2",
+            "api_key": "sk-glm-key",
+            "usage_id": "default",
+        },
+        "api_key_set": True,
+    }
+    profile_response.raise_for_status = Mock()
+
+    client = MagicMock()
+    client.get.side_effect = [settings_response, profile_response]
+    workspace._client = client
+
+    llm = workspace.get_llm()
+
+    assert llm.model == "openhands/glm-5.2"
+    assert isinstance(llm.api_key, SecretStr)
+    assert llm.api_key.get_secret_value() == "sk-glm-key"
+    assert llm.usage_id == "profile:glm-default"
+    assert [call.args[0] for call in client.get.call_args_list] == [
+        "/api/settings",
+        "/api/profiles/glm-default",
+    ]
+
+
+@pytest.mark.parametrize("active_profile", [None, ""])
+def test_get_llm_without_active_profile_falls_back_to_legacy(
+    monkeypatch, active_profile
+):
+    """Falsy active_profile values use the legacy agent_settings.llm fallback."""
+    from pydantic import SecretStr
+
+    monkeypatch.setenv("ALLOW_SHORT_CONTEXT_WINDOWS", "true")
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    settings_response = Mock()
+    settings_response.json.return_value = {
+        "agent_settings": {
+            "llm": {"model": "gpt-4", "api_key": "sk-legacy"},
+        },
+        "conversation_settings": {},
+        "llm_api_key_is_set": True,
+        "active_profile": active_profile,
+    }
+    settings_response.raise_for_status = Mock()
+
+    client = MagicMock()
+    client.get.return_value = settings_response
+    workspace._client = client
+
+    llm = workspace.get_llm()
+
+    assert llm.model == "gpt-4"
+    assert isinstance(llm.api_key, SecretStr)
+    assert llm.api_key.get_secret_value() == "sk-legacy"
+
+    # Discovery avoids exposing legacy credentials; the fallback fetches them only
+    # when active_profile is absent.
+    assert [call.args[0] for call in client.get.call_args_list] == [
+        "/api/settings",
+        "/api/settings",
+    ]
+    assert client.get.call_args_list[0].kwargs["headers"] == {
+        "X-Session-API-Key": "test-key"
+    }
+    assert client.get.call_args_list[1].kwargs["headers"] == {
+        "X-Session-API-Key": "test-key",
+        "X-Expose-Secrets": "plaintext",
+    }
 
 
 def test_get_llm_with_kwargs_override(monkeypatch):
@@ -478,12 +584,23 @@ def test_get_llm_with_kwargs_override(monkeypatch):
         },
         "conversation_settings": {},
         "llm_api_key_is_set": True,
+        "active_profile": "default",
     }
     mock_response.raise_for_status = Mock()
-    mock_client.get.return_value = mock_response
+    profile_response = Mock()
+    profile_response.status_code = 200
+    profile_response.raise_for_status = Mock()
+    profile_response.json.return_value = {
+        "name": "default",
+        "config": {
+            "model": "gpt-3.5-turbo",
+            "api_key": "sk-persisted-key",
+        },
+    }
+    mock_client.get.side_effect = [mock_response, profile_response]
     workspace._client = mock_client
 
-    # Override model but use persisted API key
+    # Override model but use the active profile API key
     llm = workspace.get_llm(model="gpt-4o")
 
     assert llm.model == "gpt-4o"  # Overridden
@@ -1077,7 +1194,8 @@ def test_send_completion_callback_on_failure(monkeypatch):
         payload = mock_client.post.call_args.kwargs["json"]
         assert payload["status"] == "FAILED"
         assert payload["run_id"] == "run-99"
-        assert "script crashed" in payload["error"]
+        assert payload["error"]["detail"] == "script crashed"
+        assert payload["error"]["code"] == "RuntimeError"
 
 
 def test_send_completion_callback_no_op_without_url(monkeypatch):
@@ -1179,3 +1297,114 @@ def test_send_completion_callback_omits_conversation_id_when_not_registered(
 
         payload = mock_client.post.call_args.kwargs["json"]
         assert "conversation_id" not in payload
+
+
+def test_register_cost_stores_cost():
+    """Test register_cost stores the accumulated LLM cost."""
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
+
+    workspace.register_cost(0.4213)
+
+    assert workspace.accumulated_cost == 0.4213
+
+
+def test_send_completion_callback_includes_registered_cost(monkeypatch):
+    """Test _send_completion_callback reports a registered cost."""
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
+    workspace.register_cost(0.4213)
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        workspace._send_completion_callback(None, None)
+
+        payload = mock_client.post.call_args.kwargs["json"]
+        assert payload["cost"] == 0.4213
+
+
+def test_send_completion_callback_omits_cost_when_not_registered(monkeypatch):
+    """Test _send_completion_callback omits cost when none was registered."""
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        workspace._send_completion_callback(None, None)
+
+        payload = mock_client.post.call_args.kwargs["json"]
+        assert "cost" not in payload
+
+
+def test_send_completion_callback_serializes_conversation_error(monkeypatch):
+    """A ConversationRunError sends its authoritative ConversationErrorEvent."""
+    from openhands.sdk.conversation.exceptions import ConversationRunError
+    from openhands.sdk.event.conversation_error import ConversationErrorEvent
+
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
+    error = ConversationErrorEvent(
+        source="environment",
+        code="LLMAuthenticationError",
+        detail="invalid api key",
+    )
+    import uuid
+
+    exc = ConversationRunError(
+        uuid.uuid4(), RuntimeError("wrapper"), conversation_error=error
+    )
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        workspace._send_completion_callback(type(exc), exc)
+
+        payload = mock_client.post.call_args.kwargs["json"]
+        assert payload["error"] == error.model_dump(mode="json")
+        assert payload["error"]["classification"]["kind"] == "auth"
+
+
+def test_send_completion_callback_creates_fallback_error(monkeypatch):
+    """A non-conversation exception is converted to a classified error event."""
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        exc = ValueError("bad configuration")
+        workspace._send_completion_callback(type(exc), exc)
+
+        error = mock_client.post.call_args.kwargs["json"]["error"]
+        assert error["code"] == "ValueError"
+        assert error["detail"] == "bad configuration"
+        assert error["classification"]["kind"] == "unknown"

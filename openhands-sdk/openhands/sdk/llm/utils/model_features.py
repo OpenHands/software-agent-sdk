@@ -10,7 +10,7 @@ from litellm.utils import supports_vision as litellm_supports_vision
 from openhands.sdk.llm.utils.openhands_provider import OPENHANDS_PROVIDER_PREFIX
 
 
-def model_matches(model: str, patterns: Iterable[str]) -> bool:
+def model_matches(model: str | None, patterns: Iterable[str]) -> bool:
     """Return True if any pattern appears as a substring in the raw model name.
 
     Matching semantics:
@@ -24,7 +24,7 @@ def model_matches(model: str, patterns: Iterable[str]) -> bool:
     return False
 
 
-def apply_ordered_model_rules(model: str, rules: list[str]) -> bool:
+def apply_ordered_model_rules(model: str | None, rules: list[str]) -> bool:
     """Apply ordered include/exclude model rules to determine final support.
 
     Rules semantics:
@@ -87,6 +87,9 @@ def _normalize_model_for_litellm(model: str | None) -> str | None:
         if normalized.startswith(prefix):
             normalized = normalized.removeprefix(prefix)
             break
+
+    if normalized == "kimi-k3":
+        return "moonshot/kimi-k3"
 
     return normalized
 
@@ -217,14 +220,12 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
 ]
 
 # Match token -> canonical LiteLLM ID for vision metadata overrides.
-VISION_MODEL_OVERRIDES = {"kimi-k3": "moonshot/kimi-k3"}
+VISION_MODEL_OVERRIDES: dict[str, str] = {}
 
 
 @cache
 def _model_supports_vision(model: str | None) -> bool:
-    """Return whether LiteLLM or our override list marks the model as visual."""
-    if model and model_matches(model, VISION_MODEL_OVERRIDES.keys()):
-        return True
+    """Return whether LiteLLM marks the model as visual."""
     normalized = _normalize_model_for_litellm(model)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -278,7 +279,7 @@ def _resolved_bool(
 
 
 def _thinking_mode(
-    model: str,
+    model: str | None,
     model_info: Mapping[str, Any] | None,
     overrides: Mapping[str, Any] | None,
 ) -> Literal["adaptive", "manual", "none", "unknown"]:
@@ -302,7 +303,7 @@ def _thinking_mode(
 
 
 def _supports_explicit_prompt_cache(
-    model: str,
+    model: str | None,
     model_info: Mapping[str, Any] | None,
     overrides: Mapping[str, Any] | None,
 ) -> bool:
@@ -319,7 +320,7 @@ def _supports_explicit_prompt_cache(
         # This capability covers explicit cache_control, not implicit caching.
         if (
             provider == "anthropic"
-            or "claude" in model.lower()
+            or "claude" in (model or "").lower()
             or "claude" in registry_key
             or "anthropic" in registry_key
         ):
@@ -329,7 +330,7 @@ def _supports_explicit_prompt_cache(
 
 
 def _supports_responses_api(
-    model: str,
+    model: str | None,
     model_info: Mapping[str, Any] | None,
     overrides: Mapping[str, Any] | None,
 ) -> bool:
@@ -347,7 +348,7 @@ def _supports_responses_api(
 
 
 def get_features(
-    model: str,
+    model: str | None,
     model_info: Mapping[str, Any] | None = None,
     overrides: Mapping[str, Any] | None = None,
 ) -> ModelFeatures:
@@ -369,7 +370,6 @@ def get_features(
         supports_sampling_params = _optional_bool(
             model_info, "supports_sampling_params"
         )
-
     return ModelFeatures(
         supports_reasoning_effort=supports_reasoning_effort,
         thinking_mode=thinking_mode,

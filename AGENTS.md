@@ -25,6 +25,18 @@ strong bias toward simplicity and maintainable code.
   matters, and what to do instead.
 </ROLE>
 
+## Cross-Repository Boundaries
+
+This repository owns the Python SDK and Agent Server: agent and tool behavior, conversations, workspaces, events, and the canonical REST/WebSocket API. Related responsibilities live elsewhere:
+
+- [`OpenHands/OpenHands`](https://github.com/OpenHands/OpenHands) owns Agent Canvas UI, frontend state, backend selection, and local-stack orchestration.
+- [`OpenHands/typescript-client`](https://github.com/OpenHands/typescript-client) mirrors this repository's Agent Server API for browser-compatible TypeScript clients.
+- [`OpenHands/extensions`](https://github.com/OpenHands/extensions) owns reusable skills, plugins, automations, and integrations; [`OpenHands/automation`](https://github.com/OpenHands/automation) owns automation definitions, scheduling, webhooks, run history, dispatch, and sandbox lifecycle orchestration; this repository executes the dispatched conversations.
+
+The usual flow is SDK/Agent Server → OpenAPI contract → `typescript-client` → Agent Canvas. Implement backend behavior and endpoints here first, then update the typed client and downstream applications as needed. If a PR is opened in the wrong repository, explicitly recommend closing and moving it to the repository that owns the change rather than merging it here.
+
+All pull requests must comply with [`.agents/skills/custom-codereview-guide.md`](.agents/skills/custom-codereview-guide.md), in addition to the repository's contribution requirements and CI checks.
+
 ## Repository Memory
 - Async LLM completions propagate through the full call chain: `LLM.acompletion()`/`LLM.aresponses()` → `_atransport_call()` (litellm `acompletion`/`aresponses`) → `RetryMixin.retry_decorator()` (tenacity `retry`, which wraps coroutines natively — there is no separate async retry path) → condenser `acondense()` → `Agent.astep()` → `LocalConversation.arun()` → `EventService.run()`. Every async method has a sync counterpart; base classes provide default delegations to sync so custom subclasses work without changes. Token callbacks use `AnyTokenCallbackType` (union of sync/async) with `_invoke_token_callback()` for transparent dispatch.
 - `conversation.interrupt()` cancels in-flight `arun()` by cancelling the tracked `_arun_task`. `asyncio.CancelledError` propagates through all layers (LLM HTTP stream → agent step → conversation loop) without needing per-layer interrupt APIs, because LLM and Agent are frozen/stateless Pydantic models that may be shared across conversations. `arun()` catches `CancelledError`, sets status to `PAUSED`, and emits `InterruptEvent`. The agent-server exposes this via `EventService.interrupt()` → `ConversationService.interrupt_conversation()` → `POST /{conversation_id}/interrupt`.
@@ -283,6 +295,7 @@ gh run rerun <RUN_ID> --repo <OWNER>/<REPO> --failed
 - DON'T write TEST CLASSES unless absolutely necessary!
 - If you find yourself duplicating logics in preparing mocks, loading data etc, these logic should be fixtures in conftest.py!
 - Please test only the logic implemented in the current codebase. Do not test functionality (e.g., BaseModel.model_dumps()) that is not implemented in this repository.
+- Assert observable behavior rather than source text, static implementation lists, private helpers or state, generic framework behavior, exhaustive default/export mirrors, or mock wiring. Tests should survive behavior-preserving refactors.
 - For changes to prompt templates, tool descriptions, or agent decision logic, add the `integration-test` label to trigger integration tests and verify no unexpected impact on benchmark performance.
 
 # Stress Tests
@@ -327,7 +340,7 @@ Note: This is separate from `persistence_dir` which is used for conversation sta
 - Clean caches: `make clean`
 - Run SDK examples: see [openhands-sdk/openhands/sdk/AGENTS.md](openhands-sdk/openhands/sdk/AGENTS.md).
 - The example workflow runs `uv run pytest tests/examples/test_examples.py --run-examples`; each successful example must print an `EXAMPLE_COST: ...` line to stdout (use `EXAMPLE_COST: 0` for non-LLM examples).
-- Example scripts in `examples/` should use top-level code flow (e.g. `with` blocks, bare statements) rather than wrapping logic in a `def main()` function. The `def main` pattern creates unnecessary nesting that makes examples harder to read; keep the code flat and script-like.
+- Linear walkthroughs in `examples/` should use top-level code flow (e.g. `with` blocks, bare statements) rather than wrapping the whole example in `def main()`. CLI-style examples with argument-driven branches may use a `main()` entrypoint.
 - Conversation plugins passed via `plugins=[...]` are lazy-loaded on the first `send_message()` or `run()`, so example code should inspect plugin-added skills or `resolved_plugins` only after that first interaction.
 </QUICK_COMMANDS>
 
