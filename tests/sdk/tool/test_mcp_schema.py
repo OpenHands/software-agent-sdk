@@ -395,6 +395,10 @@ class TestCircularSchemaHandling:
         ({"type": "array", "items": True}, {"type": "array", "items": {}}),
         ({"type": "array", "items": False}, {"type": "array", "items": {"not": {}}}),
         ({"anyOf": [True, {"type": "null"}]}, {}),
+        # ``anyOf: [true, X]`` validates any instance, so it must not narrow to X.
+        ({"anyOf": [True, {"type": "string"}]}, {}),
+        # ``false`` never validates, so the concrete branch wins in any position.
+        ({"anyOf": [{"type": "string"}, False]}, {"type": "string"}),
         (
             {"type": "object", "properties": {"anything": True}},
             {"type": "object", "properties": {"anything": {}}},
@@ -454,3 +458,21 @@ def test_anyof_with_false_does_not_clobber_concrete_type():
     }
     result = _process_schema_node(schema, {})
     assert result["properties"]["value"] == {"type": "string"}
+
+
+@pytest.mark.parametrize(
+    "member",
+    [5, "str", None, [], 1.5],
+)
+def test_anyof_ignores_non_schema_members(member):
+    """Malformed ``anyOf`` members must be skipped, not crash the conversion.
+
+    ``inputSchema`` from a third-party MCP server is fed to
+    ``_process_schema_node`` verbatim, and the resulting exception escapes
+    ``LLM.get_token_count`` uncaught.  Anything that is not a schema (dict or
+    bool) is ignored rather than raising ``TypeError``/``AttributeError``.
+    """
+    assert _process_schema_node({"anyOf": [member]}, {}) == {}
+    assert _process_schema_node({"anyOf": [member, {"type": "string"}]}, {}) == {
+        "type": "string"
+    }
