@@ -56,8 +56,13 @@ def _chat_response(response_id: str = "resp-1") -> ModelResponse:
     )
 
 
-def _make_llm(model: str = "gpt-4o") -> LLM:
-    return LLM(model=model, api_key=SecretStr("test"), usage_id="test-llm")
+def _make_llm(model: str = "gpt-4o", enable_prompt_composition: bool = True) -> LLM:
+    return LLM(
+        model=model,
+        api_key=SecretStr("test"),
+        usage_id="test-llm",
+        enable_prompt_composition=enable_prompt_composition,
+    )
 
 
 def _sample_messages() -> list[Message]:
@@ -307,6 +312,7 @@ def test_mock_tools_does_not_double_count_tool_schemas():
         api_key=SecretStr("test"),
         usage_id="test-llm",
         native_tool_calling=False,
+        enable_prompt_composition=True,
     )
 
     with patch("openhands.sdk.llm.llm.litellm_completion", return_value=mock_response):
@@ -450,6 +456,7 @@ def test_responses_composition_records_subscription_shaped_payload():
         api_key=SecretStr("test"),
         usage_id="test-llm",
         reasoning_effort="high",
+        enable_prompt_composition=True,
     )
     llm._is_subscription = True
 
@@ -482,3 +489,49 @@ async def test_aresponses_records_prompt_composition():
     assert composition is not None
     assert composition.response_id == "r1"
     assert composition.tool_tokens > 0
+
+
+def test_completion_default_off_records_no_composition():
+    """With the flag at its default (off), no composition record is appended."""
+    llm = LLM(model="gpt-4o", api_key=SecretStr("test"), usage_id="test-llm")
+    assert llm.enable_prompt_composition is False
+
+    with patch(
+        "openhands.sdk.llm.llm.litellm_completion", return_value=_chat_response()
+    ):
+        llm.completion(messages=_sample_messages(), tools=list(_MockTool.create()))
+
+    assert llm.metrics.prompt_compositions == []
+    assert llm.metrics.latest_prompt_composition is None
+
+
+def test_completion_off_never_calls_token_counter():
+    """The off path must not pay any tokenization pass at all."""
+    llm = _make_llm(enable_prompt_composition=False)
+
+    with (
+        patch(
+            "openhands.sdk.llm.llm.litellm_completion",
+            return_value=_chat_response(),
+        ),
+        patch(
+            "openhands.sdk.llm.utils.prompt_composition.token_counter"
+        ) as counter_spy,
+    ):
+        llm.completion(messages=_sample_messages(), tools=list(_MockTool.create()))
+
+    counter_spy.assert_not_called()
+    assert llm.metrics.prompt_compositions == []
+
+
+def test_responses_default_off_records_no_composition():
+    llm = _make_llm("gpt-5-mini", enable_prompt_composition=False)
+
+    with patch(
+        "openhands.sdk.llm.llm.litellm_responses",
+        return_value=_responses_api_response(),
+    ):
+        llm.responses(_sample_messages(), tools=list(_MockTool.create()))
+
+    assert llm.metrics.prompt_compositions == []
+    assert llm.metrics.latest_prompt_composition is None

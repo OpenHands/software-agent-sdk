@@ -40,10 +40,12 @@ def compute_prompt_composition(
         no tokens at all (e.g. ``litellm.disable_token_counter``), since
         composition recording is best-effort.
 
-    Counting is always on by deliberate choice: cost scales linearly with
-    prompt size and stays small in absolute terms — measured ~31 ms for a
-    ~100K-token prompt and ~61 ms for ~190K tokens (gpt-4o tokenizer, 19
-    tools), versus ~10-20 ms on typical agent-step payloads.
+    Recording is opt-in: LLM call sites only invoke this when
+    ``LLM.enable_prompt_composition`` is True, so the counting cost is only
+    paid when explicitly enabled. Cost scales linearly with prompt size and
+    stays small in absolute terms — measured ~31 ms for a ~100K-token prompt
+    and ~61 ms for ~190K tokens (gpt-4o tokenizer, 19 tools), versus
+    ~10-20 ms on typical agent-step payloads.
     """
 
     def count(

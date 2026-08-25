@@ -523,6 +523,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         description="Whether to use native tool calling.",
         json_schema_extra=field_meta(),
     )
+    enable_prompt_composition: bool = Field(
+        default=False,
+        description=(
+            "Whether to record a per-call prompt token composition estimate "
+            "(system prompt, tool schemas, history, latest message) into "
+            "Metrics. Opt-in: when False (default), no tokenization pass runs "
+            "and no records are appended. Enable when troubleshooting a "
+            "prompt or running a tool-loading study."
+        ),
+        json_schema_extra=field_meta(),
+    )
     force_string_serializer: bool | None = Field(
         default=None,
         description=(
@@ -1363,9 +1374,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     ) -> PromptComposition | None:
         """Prompt composition for the chat path.
 
-        When tool schemas are mocked into the prompt text, they are already
-        inside the message buckets — don't count them twice.
+        Returns None without counting when ``enable_prompt_composition`` is
+        off. When tool schemas are mocked into the prompt text, they are
+        already inside the message buckets — don't count them twice.
         """
+        if not self.enable_prompt_composition:
+            return None
         return compute_prompt_composition(
             model=self.model,
             messages=formatted_messages,
@@ -1537,12 +1551,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     ) -> PromptComposition | None:
         """Best-effort prompt composition for the Responses path.
 
-        Counts the finalized payload (instructions + input items) so the
+        Returns None without counting when ``enable_prompt_composition`` is
+        off. Counts the finalized payload (instructions + input items) so the
         record reflects what the provider received. Tool schemas are counted
         from their OpenAI chat-format equivalent so ``tool_tokens`` stays
         comparable with the chat path. Any serialization or conversion
         failure yields None rather than breaking the real call.
         """
+        if not self.enable_prompt_composition:
+            return None
         try:
             chat_messages = responses_payload_to_chat_messages(
                 instructions, input_items
