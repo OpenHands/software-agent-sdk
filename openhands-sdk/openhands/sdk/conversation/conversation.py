@@ -16,6 +16,7 @@ from openhands.sdk.conversation.visualizer import (
     DefaultConversationVisualizer,
 )
 from openhands.sdk.hooks import HookConfig
+from openhands.sdk.io import FileStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.secret import SecretValue
@@ -82,6 +83,7 @@ class Conversation:
         ) = DefaultConversationVisualizer,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
         delete_on_close: bool = True,
+        file_store: FileStore | None = None,
         tags: dict[str, str] | None = None,
         user_id: str | None = None,
         client_tools: list[ClientToolSpec] | None = None,
@@ -140,6 +142,7 @@ class Conversation:
         ) = DefaultConversationVisualizer,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
         delete_on_close: bool = True,
+        file_store: FileStore | None = None,
         tags: dict[str, str] | None = None,
         user_id: str | None = None,
         client_tools: list[ClientToolSpec] | None = None,
@@ -153,10 +156,14 @@ class Conversation:
         )
 
         if isinstance(workspace, RemoteWorkspace):
-            # For RemoteConversation, persistence_dir should not be used.
+            # For RemoteConversation, persistence_dir and file_store should not be used.
             if persistence_dir is not None:
                 raise ValueError(
                     "persistence_dir should not be set when using RemoteConversation"
+                )
+            if file_store is not None:
+                raise ValueError(
+                    "file_store should not be set when using RemoteConversation"
                 )
 
             # Build effective tags by merging multiple sources:
@@ -226,6 +233,7 @@ class Conversation:
             persistence_dir=persistence_dir,
             secrets=secrets,
             delete_on_close=delete_on_close,
+            file_store=file_store,
             tags=tags,
             user_id=user_id,
             client_tools=client_tools,
