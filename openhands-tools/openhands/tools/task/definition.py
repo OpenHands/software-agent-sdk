@@ -55,14 +55,9 @@ class TaskAction(Action):
     llm_profile: str | None = Field(
         default=None,
         description=(
-            "Name of a saved LLM profile to run this subagent on, instead of "
-            "inheriting your current model. Use this for mixed-model workflows, "
-            "e.g. delegating implementation to a cheaper or faster profile while "
-            "you continue planning on your current model. This affects only the "
-            "delegated subagent — your own model is unchanged (use the switch_llm "
-            "tool to change your own model). If the chosen subagent_type's "
-            "definition pins its own model, that pin takes precedence and this "
-            "field is ignored."
+            "Saved LLM profile for this subagent. If omitted, the subagent "
+            "inherits the parent model. An agent definition with its own model "
+            "profile takes precedence."
         ),
     )
     resume: str | None = Field(

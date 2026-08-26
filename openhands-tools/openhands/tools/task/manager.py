@@ -48,10 +48,8 @@ logger = get_logger(__name__)
 _SUBAGENTS_DIR: Final[str] = "subagents"
 
 
-def _has_pinned_model(factory: "AgentFactory") -> bool:
-    """True when the definition pins its own model (``model:`` set, not
-    ``inherit``) — the factory then loads its own profile and any per-call
-    llm_profile override is ignored."""
+def _definition_has_model_profile(factory: "AgentFactory") -> bool:
+    """Return whether the agent definition selects its own model profile."""
     return bool(factory.definition.model) and factory.definition.model != "inherit"
 
 
@@ -83,8 +81,8 @@ class Task(BaseModel):
     llm_profile: str | None = Field(
         default=None,
         description="Effective LLM profile the task's worker runs on. Set at "
-        "creation from the per-call override (None when the definition pins "
-        "its own model); a bare resume keeps it, an explicit resume-time "
+        "creation from the per-call override (None when the agent definition "
+        "selects its own model); a bare resume keeps it, an explicit resume-time "
         "override replaces it.",
     )
     conversation: LocalConversation | None = Field(
@@ -238,10 +236,13 @@ class TaskManager:
                 )
 
             stored = self._tasks[resume]
-            effective_profile = (
+            requested_profile = (
                 llm_profile if llm_profile is not None else stored.llm_profile
             )
             factory = get_agent_factory(subagent_type)
+            effective_profile = (
+                None if _definition_has_model_profile(factory) else requested_profile
+            )
             worker_agent = self._get_sub_agent_from_factory(
                 factory, llm_profile=effective_profile
             )
@@ -327,10 +328,11 @@ class TaskManager:
                 conversation_id=conversation_id,
                 conversation=sub_conversation,
                 status=TaskStatus.RUNNING,
-                # Store the effective profile: under a pinned definition the
-                # override is ignored, so nothing is stored for a later bare
-                # resume to act on.
-                llm_profile=None if _has_pinned_model(factory) else llm_profile,
+                # An agent definition's model takes precedence over the
+                # per-call override, including on a later bare resume.
+                llm_profile=(
+                    None if _definition_has_model_profile(factory) else llm_profile
+                ),
             )
             return self._tasks[task_id]
 
@@ -409,13 +411,10 @@ class TaskManager:
         parent = self.parent_conversation
         parent_llm = parent.agent.llm
 
-        # A definition with a pinned model: loads its own profile inside
-        # factory_func, so the per-call override is skipped entirely (even an
-        # unknown name must not error).
-        pinned = _has_pinned_model(factory)
-        if llm_profile is not None and not pinned:
+        definition_has_model = _definition_has_model_profile(factory)
+        if llm_profile is not None and not definition_has_model:
             # Injected pre-factory so the factory derives the default condenser
-            # LLM from it (same semantics as a definition's model: pin).
+            # LLM from the selected profile.
             sub_agent_llm = parent.load_profile_llm(
                 llm_profile,
                 profile_store_dir=factory.definition.profile_store_dir,
@@ -428,6 +427,12 @@ class TaskManager:
             sub_agent_llm.reset_metrics()
 
         sub_agent = factory.factory_func(sub_agent_llm)
+
+        # Subscription-backed LLMs do not support the separate completion
+        # flow used by an LLM summarizing condenser. This matches top-level
+        # agent creation and profile switching behavior.
+        if sub_agent.llm.is_subscription:
+            sub_agent = sub_agent.model_copy(update={"condenser": None})
 
         # ensuring that the sub-agent LLM has stream deactivated
         sub_agent = sub_agent.model_copy(

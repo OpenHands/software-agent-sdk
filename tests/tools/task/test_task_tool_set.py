@@ -513,6 +513,28 @@ class TestTaskToolExamples:
         assert "- fast" in description
         assert "- slow" in description
 
+    def test_description_exposes_profile_names_only(self, tmp_path):
+        """Profile configuration and secrets are excluded from the description."""
+        store = LLMProfileStore()
+        store.save(
+            "safe-name",
+            LLM(
+                model="sentinel-private-model",
+                base_url="https://sentinel-private.example",
+                api_key=SecretStr("sentinel-private-key"),
+            ),
+            include_secrets=True,
+        )
+
+        description = TaskToolSet.create(
+            conv_state=None,  # type: ignore[arg-type]
+        )[0].description
+
+        assert "- safe-name" in description
+        assert "sentinel-private-model" not in description
+        assert "sentinel-private.example" not in description
+        assert "sentinel-private-key" not in description
+
     def test_description_without_profiles_omits_section(self, tmp_path):
         """With no saved profiles, the llm_profile section is omitted entirely
         rather than rendering an incoherent "one of these: none" list."""
