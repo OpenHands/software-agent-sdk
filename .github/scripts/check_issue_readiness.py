@@ -37,10 +37,12 @@ from pathlib import Path
 BUG_LABEL = "bug"
 ENHANCEMENT_LABEL = "enhancement"
 
-# Issue-form fields render as `### Label` h3 headings. Match case-insensitively
-# and tolerate trailing whitespace/colons. `^###\s+` is specific enough because
-# h1/h2 are not produced by issue forms.
-HEADING_RE = re.compile(r"(?m)^###\s+(.+?)\s*$")
+# Issue-form fields render as `### Label` h3 headings, but free-form issues
+# (and issues edited by agents) commonly use `##` h2 headings. Match any
+# heading level of two or more hashes case-insensitively and tolerate trailing
+# whitespace/colons, so `##` and `###` sections are treated equivalently. A
+# bare `#` (single-hash title) is deliberately not matched.
+HEADING_RE = re.compile(r"(?m)^#{2,}\s+(.+?)\s*$")
 
 # `_No response_` is what GitHub writes for an empty optional form field.
 NO_RESPONSE = "_No response_"
