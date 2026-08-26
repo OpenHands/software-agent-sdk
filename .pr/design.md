@@ -12,18 +12,14 @@ while the parent keeps its current model.
 
 `TaskAction` gains an optional `llm_profile` field naming a saved LLM profile.
 
-The precedence is:
+An inherited agent uses the task call's `llm_profile` when supplied and otherwise
+uses the parent model. Supplying `llm_profile` for an agent definition that already
+selects a model is a configuration conflict and fails explicitly; neither choice
+is silently discarded.
 
-1. an agent definition with its own model profile;
-2. the task call's `llm_profile`;
-3. the parent model, inherited by default.
-
-An agent definition's model is resolved before the per-call override. Therefore
-an ignored override is never loaded or validated. For resumable tasks, a bare
-resume retains the task's effective per-call profile; an explicit profile on a
-resume replaces it. Resuming through an agent definition that supplies its own
-model clears any previously stored per-call profile, so that ignored value
-cannot affect a later resume.
+For resumable tasks, a bare resume retains the task's effective per-call profile;
+an explicit profile on a resume replaces it. Resume remains scoped to the current
+in-memory `TaskManager` lifecycle.
 
 Unknown profiles fail loudly and become an error `TaskObservation`. The task is
 not partially registered and the worker never silently falls back to the parent
@@ -88,17 +84,15 @@ The task tool description lists saved profile names using the same public
 It exposes names only: profile model IDs, provider URLs, API keys, and persisted
 JSON are not included. When no profiles exist, the section is omitted.
 
-The list is a creation-time snapshot of the default profile store. A file-based
-agent may specify a custom `profile_store_dir`, so its resolvable profile set can
-differ from the advertised default list. This pre-existing multi-store discovery
-limitation is not expanded into a new cross-store API in this change.
+The list is a creation-time snapshot of the default profile store. When any
+registered agent specifies a custom `profile_store_dir`, the task tool omits the
+list rather than advertising names from a store that the selected agent may not
+use.
 
 ## Persistence and compatibility
 
-`Task.llm_profile` stores the effective per-call profile for resume. An agent
-definition that supplies its own model stores `None` because the request override
-was ignored. Existing task calls omit the optional field and continue inheriting
-the parent model.
+`Task.llm_profile` stores the effective per-call profile for resume. Existing task
+calls omit the optional field and continue inheriting the parent model.
 
 The additive action field has the repository's normal version-skew caveat: an old
 SDK that forbids unknown action fields cannot deserialize a new event containing
@@ -116,14 +110,16 @@ Focused tests cover:
 - subscription workers retain their supported LLM-backed condenser;
 - custom profile directories;
 - native missing-profile errors with no partial task state;
-- definition model precedence, including an invalid ignored override;
+- explicit conflicts between definition-owned models and per-call profiles;
 - bare-resume retention and explicit resume replacement;
-- definition-owned models discard ignored profiles during resume;
+- a clear missing-profile failure when a stored profile is removed before resume;
 - inherited behavior when no override is supplied;
 - pre-factory injection and `stream=False` worker behavior;
 - profile names present while model IDs, provider URLs, and API keys remain absent
   from the tool description;
 - omission of the profile section when no profiles exist.
+- omission of default-store profile names when a registered agent uses a custom
+  profile store.
 
 Current verification on the rebased branch:
 
@@ -140,5 +136,4 @@ Current verification on the rebased branch:
 - enabling parallel task execution by default;
 - adding frontend worker-model reporting;
 - changing definition-level profile loading;
-- reconciling default-store advertising with every custom agent store;
 - changing the conversation-spawn workflow.

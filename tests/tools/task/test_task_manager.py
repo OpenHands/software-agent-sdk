@@ -591,12 +591,8 @@ class TestTaskManagerLLMProfile:
         assert "fast" in str(excinfo.value)  # available profiles are listed
         assert len(manager._tasks) == 0
 
-    def test_definition_model_beats_llm_profile(self, tmp_path):
-        """A definition's model fully ignores a per-call ``llm_profile``.
-
-        Even a name absent from the store must not raise, and the ignored value
-        is not stored for a later bare resume.
-        """
+    def test_definition_model_conflicts_with_llm_profile(self, tmp_path):
+        """A definition-owned model must not silently ignore ``llm_profile``."""
         from openhands.sdk.subagent.registry import agent_definition_to_factory
 
         agent_def = AgentDefinition(
@@ -615,15 +611,14 @@ class TestTaskManagerLLMProfile:
         manager, _ = _manager_with_parent(tmp_path)
         _make_profile_store(tmp_path, {"pinned": "pinned-model"})
 
-        task = manager._create_task(
-            subagent_type="pinned_agent",
-            description=None,
-            llm_profile="typo-does-not-exist",
-        )
+        with pytest.raises(ValueError, match="already selects model profile 'pinned'"):
+            manager._create_task(
+                subagent_type="pinned_agent",
+                description=None,
+                llm_profile="typo-does-not-exist",
+            )
 
-        assert task.llm_profile is None
-        assert task.conversation is not None
-        assert task.conversation.agent.llm.model == "pinned-model"
+        assert len(manager._tasks) == 0
 
     def test_subscription_profile_keeps_worker_condenser(self, tmp_path):
         """Subscription workers retain the factory's supported condenser."""
@@ -667,8 +662,48 @@ class TestTaskManagerLLMProfile:
         assert resumed.conversation.agent.llm.model == "fast-model"
         assert resumed.conversation.agent.llm.stream is False
 
-    def test_resume_definition_model_discards_ignored_profile(self, tmp_path):
-        """A definition-owned model must not preserve an ignored override."""
+    def test_resume_definition_model_conflicts_with_llm_profile(self, tmp_path):
+        """Resume reports a definition/profile conflict without mutating state."""
+        from openhands.sdk.subagent.registry import agent_definition_to_factory
+
+        manager, _ = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+        _make_profile_store(
+            tmp_path,
+            {"fast": "fast-model", "pinned": "pinned-model"},
+        )
+        task = manager._create_task(
+            subagent_type="general-purpose",
+            description=None,
+            llm_profile="fast",
+        )
+        manager._evict_task(task)
+
+        agent_def = AgentDefinition(
+            name="pinned_agent",
+            description="Agent with its own model profile",
+            model="pinned",
+            tools=["terminal", "file_editor", "task_tracker"],
+            system_prompt="You are pinned.",
+        )
+        register_agent(
+            name="pinned_agent",
+            factory_func=agent_definition_to_factory(agent_def),
+            description=agent_def,
+        )
+
+        with pytest.raises(ValueError, match="already selects model profile 'pinned'"):
+            manager._resume_task(
+                resume=task.id,
+                subagent_type="pinned_agent",
+                llm_profile="ignored-missing-profile",
+            )
+
+        assert manager._tasks[task.id].llm_profile == "fast"
+        assert manager._tasks[task.id].conversation is None
+
+    def test_resume_definition_model_discards_stored_profile(self, tmp_path):
+        """A pinned definition replaces a stored inherited-model profile."""
         from openhands.sdk.subagent.registry import agent_definition_to_factory
 
         manager, _ = _manager_with_parent(tmp_path)
@@ -700,21 +735,11 @@ class TestTaskManagerLLMProfile:
         resumed = manager._resume_task(
             resume=task.id,
             subagent_type="pinned_agent",
-            llm_profile="ignored-missing-profile",
         )
 
         assert resumed.llm_profile is None
         assert resumed.conversation is not None
         assert resumed.conversation.agent.llm.model == "pinned-model"
-
-        manager._evict_task(resumed)
-        inherited_again = manager._resume_task(
-            resume=task.id,
-            subagent_type="general-purpose",
-        )
-        assert inherited_again.llm_profile is None
-        assert inherited_again.conversation is not None
-        assert inherited_again.conversation.agent.llm.model == "gpt-4o"
 
     def test_resume_without_profile_keeps_original(self, tmp_path):
         """A bare resume keeps the profile the task was created with."""
@@ -735,6 +760,27 @@ class TestTaskManagerLLMProfile:
         assert resumed.llm_profile == "fast"
         assert resumed.conversation is not None
         assert resumed.conversation.agent.llm.model == "fast-model"
+
+    def test_resume_after_profile_removed_returns_clear_error(self, tmp_path):
+        """A bare resume fails clearly if its stored profile was removed."""
+        manager, _ = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+        store = _make_profile_store(tmp_path, {"fast": "fast-model"})
+
+        task = manager._create_task(
+            subagent_type="general-purpose", description=None, llm_profile="fast"
+        )
+        manager._evict_task(task)
+        store.delete("fast")
+
+        with pytest.raises(FileNotFoundError, match="Profile `fast` not found"):
+            manager._resume_task(
+                resume=task.id,
+                subagent_type="general-purpose",
+            )
+
+        assert manager._tasks[task.id].llm_profile == "fast"
+        assert manager._tasks[task.id].conversation is None
 
     def test_resume_with_explicit_profile_overrides_stored(self, tmp_path):
         """An explicit resume-time profile replaces the stored one for later

@@ -9,6 +9,7 @@ from openhands.sdk.event.llm_convertible.observation import ObservationEvent
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.subagent.registry import _reset_registry_for_tests, register_agent
+from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.testing import TestLLM
 from openhands.tools.task import TaskToolSet
 from openhands.tools.task.definition import TASK_TOOL_EXAMPLES, TaskObservation
@@ -548,6 +549,31 @@ class TestTaskToolExamples:
         description = tools[0].description
         assert "llm_profile" not in description
         assert "saved LLM profiles" not in description
+
+    def test_description_omits_profiles_for_custom_store_agent(self, tmp_path):
+        """Do not advertise default-store names when an agent resolves elsewhere."""
+        agent_def = AgentDefinition(
+            name="custom_store_agent",
+            description="Agent backed by a custom profile store",
+            model="inherit",
+            profile_store_dir=str(tmp_path / "custom-profiles"),
+        )
+        register_agent(
+            name=agent_def.name,
+            factory_func=lambda llm: Agent(llm=llm, tools=[]),
+            description=agent_def,
+        )
+
+        with patch(
+            "openhands.tools.task.definition.get_llm_profile_names",
+            return_value=["default-only"],
+        ):
+            description = TaskToolSet.create(
+                conv_state=None,  # type: ignore[arg-type]
+            )[0].description
+
+        assert "default-only" not in description
+        assert "llm_profile" not in description
 
     def test_only_registered_examples_included(self, tmp_path):
         """Only examples for registered agents appear; others are excluded."""

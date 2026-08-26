@@ -56,8 +56,8 @@ class TaskAction(Action):
         default=None,
         description=(
             "Saved LLM profile for this subagent. If omitted, the subagent "
-            "inherits the parent model. An agent definition with its own model "
-            "profile takes precedence."
+            "inherits the parent model. Do not supply this when the selected "
+            "agent definition already specifies a model profile."
         ),
     )
     resume: str | None = Field(
@@ -247,7 +247,11 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
 
         agent_types_info = get_factory_info()
 
-        profile_names = get_llm_profile_names()
+        agent_definitions = get_registered_agent_definitions()
+        has_custom_profile_store = any(
+            definition.profile_store_dir is not None for definition in agent_definitions
+        )
+        profile_names = [] if has_custom_profile_store else get_llm_profile_names()
         llm_profiles_section = ""
         if profile_names:
             llm_profiles_section = (
@@ -258,7 +262,7 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
                 "your own model is unchanged.\n\n"
             )
 
-        registered = {d.name for d in get_registered_agent_definitions()}
+        registered = {definition.name for definition in agent_definitions}
         task_tool_examples = "\n".join(
             ex for name, ex in TASK_TOOL_EXAMPLES.items() if name in registered
         )

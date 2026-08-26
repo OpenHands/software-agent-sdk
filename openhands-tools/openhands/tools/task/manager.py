@@ -80,10 +80,8 @@ class Task(BaseModel):
     error: str | None = Field(default=None, description="Error if task failed.")
     llm_profile: str | None = Field(
         default=None,
-        description="Effective LLM profile the task's worker runs on. Set at "
-        "creation from the per-call override (None when the agent definition "
-        "selects its own model); a bare resume keeps it, an explicit resume-time "
-        "override replaces it.",
+        description="Effective per-call LLM profile the task's worker runs on. "
+        "A bare resume keeps it; an explicit resume-time override replaces it.",
     )
     conversation: LocalConversation | None = Field(
         default=None,
@@ -191,8 +189,8 @@ class TaskManager:
             description: Short label for the task.
             conversation: Parent conversation (set on first call).
             llm_profile: Optional saved LLM profile to run the sub-agent on
-                instead of inheriting the parent's model. A ``model:`` pin in
-                the sub-agent definition takes precedence over this. On resume,
+                instead of inheriting the parent's model. This conflicts with
+                a ``model:`` pin in the sub-agent definition. On resume,
                 omitting it keeps the profile the task was created with;
                 passing one explicitly switches the resumed worker to it.
 
@@ -225,8 +223,10 @@ class TaskManager:
     ) -> Task:
         """Resume a sub-agent task.
 
-        A None llm_profile keeps the profile the task was created with; an
-        explicit one overrides it (and becomes the task's new profile).
+        A None llm_profile keeps the profile the task was created with when the
+        selected definition inherits its model. Definitions that pin a model
+        discard the stored profile. An explicit profile overrides the stored
+        one, but conflicts with a definition-pinned model.
         """
         with self._tasks_lock:
             if resume not in self._tasks:
@@ -236,15 +236,12 @@ class TaskManager:
                 )
 
             stored = self._tasks[resume]
-            requested_profile = (
-                llm_profile if llm_profile is not None else stored.llm_profile
-            )
             factory = get_agent_factory(subagent_type)
-            effective_profile = (
-                None if _definition_has_model_profile(factory) else requested_profile
-            )
+            requested_profile = llm_profile
+            if requested_profile is None and not _definition_has_model_profile(factory):
+                requested_profile = stored.llm_profile
             worker_agent = self._get_sub_agent_from_factory(
-                factory, llm_profile=effective_profile
+                factory, llm_profile=requested_profile
             )
             conversation_id = self._tasks[resume].conversation_id
             with detached_delegate_context() as link:
@@ -270,7 +267,7 @@ class TaskManager:
                 update={
                     "conversation": conversation,
                     "status": TaskStatus.RUNNING,
-                    "llm_profile": effective_profile,
+                    "llm_profile": requested_profile,
                 }
             )
 
@@ -328,11 +325,7 @@ class TaskManager:
                 conversation_id=conversation_id,
                 conversation=sub_conversation,
                 status=TaskStatus.RUNNING,
-                # An agent definition's model takes precedence over the
-                # per-call override, including on a later bare resume.
-                llm_profile=(
-                    None if _definition_has_model_profile(factory) else llm_profile
-                ),
+                llm_profile=llm_profile,
             )
             return self._tasks[task_id]
 
@@ -412,7 +405,14 @@ class TaskManager:
         parent_llm = parent.agent.llm
 
         definition_has_model = _definition_has_model_profile(factory)
-        if llm_profile is not None and not definition_has_model:
+        if llm_profile is not None and definition_has_model:
+            raise ValueError(
+                f"Agent '{factory.definition.name}' already selects model profile "
+                f"'{factory.definition.model}'; remove llm_profile or choose an "
+                "agent definition that inherits the parent model."
+            )
+
+        if llm_profile is not None:
             # Injected pre-factory so the factory derives the default condenser
             # LLM from the selected profile.
             sub_agent_llm = parent.load_profile_llm(
