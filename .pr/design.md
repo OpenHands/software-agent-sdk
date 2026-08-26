@@ -71,9 +71,9 @@ The selected LLM is injected before `factory_func` runs. This matters because a
 factory may derive a default condenser from its input LLM; swapping afterward
 would leave the condenser on the parent model.
 
-Subscription-backed LLMs are the exception: their worker condenser is disabled,
-matching top-level agent creation and profile switching, because the separate
-LLM completion used for summarization is unsupported on that path.
+Subscription-backed LLMs retain the factory-created condenser. Subscription
+completion dispatch supports condenser calls, matching top-level agent creation
+and profile switching.
 
 The loaded LLM gets a fresh metrics object before factory construction. It is
 never registered in the parent's `llm_registry`. The worker conversation tracks
@@ -113,7 +113,7 @@ Focused tests cover:
 - independent worker metrics and `task:<id>` merge-back;
 - encrypted-secret loading through the conversation cipher;
 - persisted subscription restoration;
-- subscription workers do not receive an LLM-backed condenser;
+- subscription workers retain their supported LLM-backed condenser;
 - custom profile directories;
 - native missing-profile errors with no partial task state;
 - definition model precedence, including an invalid ignored override;

@@ -7,6 +7,7 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent
+from openhands.sdk.context.condenser import LLMSummarizingCondenser
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
@@ -624,8 +625,8 @@ class TestTaskManagerLLMProfile:
         assert task.conversation is not None
         assert task.conversation.agent.llm.model == "pinned-model"
 
-    def test_subscription_profile_disables_worker_condenser(self, tmp_path):
-        """Subscription workers must not receive an LLM-backed condenser."""
+    def test_subscription_profile_keeps_worker_condenser(self, tmp_path):
+        """Subscription workers retain the factory's supported condenser."""
         manager, parent = _manager_with_parent(tmp_path)
         register_builtins_agents()
         subscription_llm = _make_llm()
@@ -640,7 +641,9 @@ class TestTaskManagerLLMProfile:
 
         assert task.conversation is not None
         assert task.conversation.agent.llm.is_subscription is True
-        assert task.conversation.agent.condenser is None
+        condenser = task.conversation.agent.condenser
+        assert isinstance(condenser, LLMSummarizingCondenser)
+        assert condenser.llm.is_subscription is True
 
     def test_resume_with_llm_profile(self, tmp_path):
         """Resuming with llm_profile rebuilds the worker on that profile."""

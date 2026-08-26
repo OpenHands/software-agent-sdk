@@ -428,12 +428,6 @@ class TaskManager:
 
         sub_agent = factory.factory_func(sub_agent_llm)
 
-        # Subscription-backed LLMs do not support the separate completion
-        # flow used by an LLM summarizing condenser. This matches top-level
-        # agent creation and profile switching behavior.
-        if sub_agent.llm.is_subscription:
-            sub_agent = sub_agent.model_copy(update={"condenser": None})
-
         # ensuring that the sub-agent LLM has stream deactivated
         sub_agent = sub_agent.model_copy(
             update={"llm": sub_agent.llm.model_copy(update={"stream": False})}
