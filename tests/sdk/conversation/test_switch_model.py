@@ -629,14 +629,15 @@ def test_load_profile_llm_decrypts_with_cipher(tmp_path, monkeypatch):
 
     assert isinstance(llm.api_key, SecretStr)
     assert llm.api_key.get_secret_value() == "plaintext-secret"
+    assert conv.agent.llm.model == "default-model"
     with pytest.raises(KeyError):
         conv.llm_registry.get(llm.usage_id)
 
 
 def test_load_profile_llm_unknown_lists_available(profile_store):
-    """Unknown profile raises ValueError listing what the same store has."""
+    """Unknown profile uses the store's native error and lists its profiles."""
     conv = _make_conversation()
-    with pytest.raises(ValueError, match="not found") as excinfo:
+    with pytest.raises(FileNotFoundError, match="not found") as excinfo:
         conv.load_profile_llm("missing")
     assert "fast" in str(excinfo.value)
 
@@ -655,8 +656,43 @@ def test_load_profile_llm_custom_store_dir(tmp_path, monkeypatch):
     llm = conv.load_profile_llm("custom", profile_store_dir=str(custom_dir))
     assert llm.model == "custom-model"
 
-    with pytest.raises(ValueError, match="not found"):
+    with pytest.raises(FileNotFoundError, match="not found"):
         conv.load_profile_llm("custom")
+
+
+def test_load_profile_llm_restores_subscription_profile(tmp_path, monkeypatch):
+    """Persisted subscription profiles are restored during the store load."""
+    profile_dir = tmp_path / "profiles"
+    monkeypatch.setattr(llm_profile_store, "_DEFAULT_PROFILE_DIR", profile_dir)
+    store = LLMProfileStore(base_dir=profile_dir)
+    store.save(
+        "subscription",
+        LLM(
+            model="gpt-5.2-codex",
+            usage_id="subscription",
+            auth_type="subscription",
+            subscription_vendor="openai",
+        ),
+    )
+
+    restored: list[LLM] = []
+
+    def _restore_subscription(llm: LLM) -> LLM:
+        restored.append(llm)
+        return llm.model_copy(update={"model": "runtime-subscription-model"})
+
+    monkeypatch.setattr(
+        "openhands.sdk.llm.auth.openai.create_subscription_llm_from_config",
+        _restore_subscription,
+    )
+
+    conv = _make_conversation()
+    llm = conv.load_profile_llm("subscription")
+
+    assert len(restored) == 1
+    assert restored[0].auth_type == "subscription"
+    assert llm.model == "runtime-subscription-model"
+    assert conv.agent.llm.model == "default-model"
 
 
 def test_switch_profile_delegates_to_switch_llm(profile_store, monkeypatch):

@@ -1698,7 +1698,7 @@ class LocalConversation(BaseConversation):
         try:
             cached = self.llm_registry.get(usage_id)
         except KeyError:
-            loaded = self._profile_store.load(profile_name, cipher=self._cipher)
+            loaded = self.load_profile_llm(profile_name)
             cached = loaded.model_copy(update={"usage_id": usage_id})
         self.switch_llm(cached)
 
@@ -1713,7 +1713,7 @@ class LocalConversation(BaseConversation):
         try:
             return self.llm_registry.get(usage_id)
         except KeyError:
-            loaded = self._profile_store.load(profile_name, cipher=self._cipher)
+            loaded = self.load_profile_llm(profile_name)
             llm = loaded.model_copy(update={"usage_id": usage_id})
             llm = create_subscription_llm_from_config(llm)
             self.llm_registry.add(llm)
@@ -1725,11 +1725,10 @@ class LocalConversation(BaseConversation):
     ) -> LLM:
         """Load a saved profile LLM without registering or activating it.
 
-        Unlike :meth:`get_or_create_profile_llm`, the returned LLM is not added
-        to ``llm_registry`` and no subscription transforms are applied, so the
-        caller owns metrics attribution (e.g. per-subagent-task accounting).
-        Secrets are decrypted with the conversation's cipher, matching
-        :meth:`switch_profile`.
+        The returned LLM is not added to ``llm_registry`` or made active, so the
+        caller owns its lifecycle and metrics attribution. Persisted subscription
+        profiles are restored by :class:`LLMProfileStore` during the load.
+        Secrets are decrypted with the conversation's cipher.
 
         Args:
             profile_name: Name of a profile previously saved via
@@ -1738,21 +1737,15 @@ class LocalConversation(BaseConversation):
                 None, the conversation's default store is used.
 
         Raises:
-            ValueError: If the profile does not exist in the store.
+            FileNotFoundError: If the profile does not exist.
+            ValueError: If the profile is corrupted or invalid.
         """
         store = (
             self._profile_store
             if profile_store_dir is None
             else LLMProfileStore(profile_store_dir)
         )
-        name = profile_name.removesuffix(".json")
-        available = [n.removesuffix(".json") for n in store.list()]
-        if name not in available:
-            raise ValueError(
-                f"Profile '{profile_name}' not found in profile store.\n"
-                f"Available profiles: {available}"
-            )
-        return store.load(name, cipher=self._cipher)
+        return store.load(profile_name, cipher=self._cipher)
 
     def switch_acp_model(self, model: str) -> None:
         """Switch the model on an ACP conversation.
