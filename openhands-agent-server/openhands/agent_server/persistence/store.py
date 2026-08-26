@@ -33,7 +33,6 @@ from openhands.sdk.llm.provider_connection_store import ProviderConnectionStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles.agent_profile_store import AgentProfileStore
 from openhands.sdk.utils.cipher import Cipher
-from openhands.sdk.utils.pydantic_secrets import MissingCipherError
 
 
 # fcntl is Unix-only; on Windows, use msvcrt for file locking
@@ -308,14 +307,12 @@ class FileSettingsStore(SettingsStore):
         persistence_dir: Path | str,
         cipher: Cipher | None = None,
         filename: str = "settings.json",
-        require_cipher: bool = False,
     ):
         # Validate filename to prevent path traversal and injection attacks
         _validate_filename(filename)
         self.persistence_dir = Path(persistence_dir)
         self.cipher = cipher
         self.filename = filename
-        self.require_cipher = require_cipher
         self._path = self.persistence_dir / filename
         self._lock_path = self.persistence_dir / ".settings.lock"
 
@@ -377,12 +374,6 @@ class FileSettingsStore(SettingsStore):
             context = {"expose_secrets": "plaintext"}
             # Warn about plaintext secret storage (only if secrets exist)
             if settings.has_any_secret:
-                if self.require_cipher:
-                    raise MissingCipherError(
-                        "Refusing to save settings with secrets in plaintext: "
-                        "no cipher configured. Set OH_SECRET_KEY, or disable "
-                        "require_secret_key to allow plaintext storage."
-                    )
                 logger.warning(
                     "Saving settings with secrets in PLAINTEXT (no cipher configured). "
                     "Configure OH_SECRET_KEY for production deployments."
@@ -454,14 +445,12 @@ class FileSecretsStore(SecretsStore):
         persistence_dir: Path | str,
         cipher: Cipher | None = None,
         filename: str = "secrets.json",
-        require_cipher: bool = False,
     ):
         # Use same validation as FileSettingsStore
         _validate_filename(filename)
         self.persistence_dir = Path(persistence_dir)
         self.cipher = cipher
         self.filename = filename
-        self.require_cipher = require_cipher
         self._path = self.persistence_dir / filename
         self._lock_path = self.persistence_dir / ".secrets.lock"
 
@@ -554,12 +543,6 @@ class FileSecretsStore(SecretsStore):
             context = {"expose_secrets": "plaintext"}
             # Warn about plaintext secret storage (only if secrets exist)
             if secrets.has_any_secret:
-                if self.require_cipher:
-                    raise MissingCipherError(
-                        "Refusing to save secrets in plaintext: no cipher "
-                        "configured. Set OH_SECRET_KEY, or disable "
-                        "require_secret_key to allow plaintext storage."
-                    )
                 logger.warning(
                     "Saving secrets in PLAINTEXT (no cipher configured). "
                     "Configure OH_SECRET_KEY for production deployments."
@@ -850,12 +833,6 @@ def _get_cipher(config: Config | None = None) -> Cipher | None:
     return None
 
 
-def _get_require_cipher(config: Config | None = None) -> bool:
-    if config is not None:
-        return config.require_secret_key
-    return False
-
-
 def get_settings_store(config: Config | None = None) -> FileSettingsStore:
     """Get the global settings store instance (thread-safe).
 
@@ -884,7 +861,6 @@ def get_settings_store(config: Config | None = None) -> FileSettingsStore:
             _settings_store = FileSettingsStore(
                 persistence_dir=_get_profile_persistence_dir(),
                 cipher=_get_cipher(config),
-                require_cipher=_get_require_cipher(config),
             )
         return _settings_store
 
@@ -917,7 +893,6 @@ def get_secrets_store(config: Config | None = None) -> FileSecretsStore:
             _secrets_store = FileSecretsStore(
                 persistence_dir=_get_profile_persistence_dir(),
                 cipher=_get_cipher(config),
-                require_cipher=_get_require_cipher(config),
             )
         return _secrets_store
 

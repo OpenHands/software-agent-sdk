@@ -343,16 +343,6 @@ class Config(BaseModel):
             "be restored between restarts."
         ),
     )
-    require_secret_key: bool = Field(
-        default=False,
-        description=(
-            "When True, refuse to persist settings/secrets in plaintext when "
-            "OH_SECRET_KEY is not configured — raises instead of silently "
-            "falling back to unencrypted storage. Off by default to preserve "
-            "the zero-config self-hosted/OSS path; multi-tenant deployments "
-            "should set this."
-        ),
-    )
     web_url: str | None = Field(
         default_factory=_default_web_url,
         description=(
