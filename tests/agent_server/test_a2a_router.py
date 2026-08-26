@@ -3,6 +3,9 @@
 Builds the A2A routers the same way test_conversation_router.py builds the
 conversation router: a bare FastAPI app with a mocked ConversationService /
 EventService injected via dependency_overrides.
+
+Enablement (mount-on-demand) behavior is covered separately at the bottom via
+``openhands.agent_server.api.create_app``.
 """
 
 import json
@@ -131,7 +134,6 @@ class TestAgentCard:
         assert card["skills"] == []
         assert card["provider"]["organization"] == "OpenHands"
         assert card["url"].endswith("/api/a2a")
-        assert card["protocolVersion"] == "0.3.0"
 
     def test_agent_card_requires_no_auth(self, authed_client):
         # Discovery is unauthenticated even when session keys are configured.
@@ -184,7 +186,7 @@ class TestAuth:
 
 
 # ---------------------------------------------------------------------------
-# JSON-RPC errors
+# JSON-RPC errors (every error path must echo the request id)
 # ---------------------------------------------------------------------------
 
 
@@ -203,6 +205,8 @@ class TestJSONRPCErrors:
             body = response.json()
             assert body["jsonrpc"] == "2.0"
             assert body["error"]["code"] == -32700
+            # JSON-RPC 2.0 spec: parse errors echo a null id.
+            assert body["id"] is None
         finally:
             client.app.dependency_overrides.clear()
 
@@ -227,9 +231,13 @@ class TestJSONRPCErrors:
             mock_conversation_service
         )
         try:
-            response = client.post("/api/a2a", json=_jsonrpc_body("tasks/get"))
+            response = client.post(
+                "/api/a2a", json=_jsonrpc_body("tasks/get", rpc_id="err-1")
+            )
             assert response.status_code == 200
-            assert response.json()["error"]["code"] == -32602
+            body = response.json()
+            assert body["id"] == "err-1"
+            assert body["error"]["code"] == -32602
         finally:
             client.app.dependency_overrides.clear()
 
@@ -240,10 +248,14 @@ class TestJSONRPCErrors:
         try:
             response = client.post(
                 "/api/a2a",
-                json=_jsonrpc_body("tasks/get", params={"id": "not-a-uuid"}),
+                json=_jsonrpc_body(
+                    "tasks/get", params={"id": "not-a-uuid"}, rpc_id="err-2"
+                ),
             )
             assert response.status_code == 200
-            assert response.json()["error"]["code"] == -32602
+            body = response.json()
+            assert body["id"] == "err-2"
+            assert body["error"]["code"] == -32602
         finally:
             client.app.dependency_overrides.clear()
 
@@ -253,10 +265,97 @@ class TestJSONRPCErrors:
         )
         try:
             response = client.post(
-                "/api/a2a", json=_jsonrpc_body("message/send", params={"message": {}})
+                "/api/a2a",
+                json=_jsonrpc_body(
+                    "message/send", params={"message": {}}, rpc_id="err-3"
+                ),
             )
             assert response.status_code == 200
-            assert response.json()["error"]["code"] == -32602
+            body = response.json()
+            assert body["id"] == "err-3"
+            assert body["error"]["code"] == -32602
+        finally:
+            client.app.dependency_overrides.clear()
+
+    def test_invalid_params_message_stream(self, client, mock_conversation_service):
+        client.app.dependency_overrides[get_conversation_service] = lambda: (
+            mock_conversation_service
+        )
+        try:
+            response = client.post(
+                "/api/a2a",
+                json=_jsonrpc_body(
+                    "message/stream", params={"message": {}}, rpc_id="err-4"
+                ),
+            )
+            assert response.status_code == 200
+            body = response.json()
+            assert body["id"] == "err-4"
+            assert body["error"]["code"] == -32602
+        finally:
+            client.app.dependency_overrides.clear()
+
+    def test_task_not_found_preserves_id(self, client, mock_conversation_service):
+        mock_conversation_service.get_event_service.return_value = None
+        client.app.dependency_overrides[get_conversation_service] = lambda: (
+            mock_conversation_service
+        )
+        try:
+            response = client.post(
+                "/api/a2a",
+                json=_jsonrpc_body(
+                    "tasks/get", params={"id": str(uuid4())}, rpc_id="nf-1"
+                ),
+            )
+            assert response.status_code == 200
+            body = response.json()
+            assert body["id"] == "nf-1"
+            assert body["error"]["code"] == -32001
+        finally:
+            client.app.dependency_overrides.clear()
+
+    def test_task_not_found_send_preserves_id(
+        self, client, mock_conversation_service
+    ):
+        # message/send against a bogus taskId must echo the rpc id too.
+        mock_conversation_service.get_event_service.return_value = None
+        client.app.dependency_overrides[get_conversation_service] = lambda: (
+            mock_conversation_service
+        )
+        try:
+            response = client.post(
+                "/api/a2a",
+                json=_jsonrpc_body(
+                    "message/send",
+                    params=_send_params(task_id=str(uuid4())),
+                    rpc_id="nf-2",
+                ),
+            )
+            assert response.status_code == 200
+            body = response.json()
+            assert body["id"] == "nf-2"
+            assert body["error"]["code"] == -32001
+        finally:
+            client.app.dependency_overrides.clear()
+
+    def test_no_profile_error_preserves_id(
+        self, client, mock_conversation_service, mock_event_service, monkeypatch
+    ):
+        from openhands.agent_server import a2a_router
+
+        monkeypatch.setattr(a2a_router, "_resolve_agent_profile_id", lambda: None)
+        _override(client, mock_conversation_service, mock_event_service)
+        try:
+            response = client.post(
+                "/api/a2a",
+                json=_jsonrpc_body(
+                    "message/send", params=_send_params(), rpc_id="np-1"
+                ),
+            )
+            assert response.status_code == 200
+            body = response.json()
+            assert body["id"] == "np-1"
+            assert body["error"]["code"] == -32603
         finally:
             client.app.dependency_overrides.clear()
 
@@ -456,11 +555,15 @@ class TestTasks:
             response = client.post(
                 "/api/a2a",
                 json=_jsonrpc_body(
-                    "tasks/cancel", params={"id": str(sample_conversation_id)}
+                    "tasks/cancel",
+                    params={"id": str(sample_conversation_id)},
+                    rpc_id="cnf-1",
                 ),
             )
             assert response.status_code == 200
-            assert response.json()["error"]["code"] == -32001
+            body = response.json()
+            assert body["id"] == "cnf-1"
+            assert body["error"]["code"] == -32001
         finally:
             client.app.dependency_overrides.clear()
 
@@ -538,3 +641,171 @@ class TestMessageStream:
             mock_event_service.send_message.assert_called_once()
         finally:
             client.app.dependency_overrides.clear()
+
+    def test_stream_ignores_initial_idle_snapshot(
+        self,
+        client,
+        mock_conversation_service,
+        mock_event_service,
+        sample_conversation_info,
+        monkeypatch,
+    ):
+        """Regression test for the message/stream IDLE race.
+
+        ``subscribe_to_events`` immediately replays the conversation's
+        CURRENT status to a new subscriber. If that snapshot is terminal
+        (e.g. IDLE before the run has started) the stream must NOT close on
+        it; it must keep going and deliver the real terminal state and the
+        final artifact.
+        """
+        from openhands.agent_server import a2a_router
+        from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+
+        monkeypatch.setattr(
+            a2a_router, "_resolve_agent_profile_id", lambda: str(uuid4())
+        )
+        mock_conversation_service.start_conversation.return_value = (
+            sample_conversation_info,
+            True,
+        )
+        mock_event_service.get_state.return_value = MagicMock(
+            execution_status=ConversationExecutionStatus.IDLE
+        )
+        mock_event_service.get_agent_final_response.return_value = "raced reply"
+
+        async def fake_subscribe(subscriber):
+            # Replay the pre-run IDLE snapshot FIRST — this used to close the
+            # stream before the run started.
+            await subscriber(
+                ConversationStateUpdateEvent(key="execution_status", value="idle")
+            )
+            await subscriber(
+                ConversationStateUpdateEvent(key="execution_status", value="running")
+            )
+            await subscriber(
+                ConversationStateUpdateEvent(key="execution_status", value="idle")
+            )
+            return uuid4()
+
+        mock_event_service.subscribe_to_events.side_effect = fake_subscribe
+        _override(client, mock_conversation_service, mock_event_service)
+
+        try:
+            with client.stream(
+                "POST",
+                "/api/a2a",
+                json=_jsonrpc_body(
+                    "message/stream", params=_send_params("race"), rpc_id="race-1"
+                ),
+            ) as response:
+                assert response.status_code == 200
+                events = []
+                for line in response.iter_lines():
+                    if line.startswith("data: "):
+                        events.append(json.loads(line[len("data: ") :]))
+            states = [
+                e["result"]["status"]["state"]
+                for e in events
+                if e["result"]["kind"] == "status-update"
+            ]
+            # The pre-run IDLE snapshot must not leak out as a completed /
+            # final update, and must not terminate the stream early.
+            assert states[0] != "completed"
+            terminal_tasks = [e for e in events if e["result"]["kind"] == "task"]
+            assert terminal_tasks, "stream never delivered the terminal Task"
+            final = terminal_tasks[-1]["result"]
+            assert final["status"]["state"] == "completed"
+            assert final["artifacts"][0]["parts"][0]["text"] == "raced reply"
+            final_updates = [e for e in events if e["result"].get("final") is True]
+            assert len(final_updates) == 1, "exactly one final status update"
+            assert final_updates[0]["id"] == "race-1"
+            mock_event_service.send_message.assert_called_once()
+        finally:
+            client.app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# Enablement: mounted only when a2a_enabled AND a2a-sdk importable
+# ---------------------------------------------------------------------------
+
+
+class TestEnablement:
+    def test_disabled_by_default_404(self, tmp_path):
+        from openhands.agent_server.api import create_app
+
+        config = Config(static_files_path=None, secret_key=None)
+        assert config.a2a_enabled is False
+        app = create_app(config)
+        client = TestClient(app)
+        assert client.post(
+            "/api/a2a", json=_jsonrpc_body("tasks/get")
+        ).status_code == 404
+        assert client.get("/.well-known/agent-card.json").status_code == 404
+
+    def test_enabled_mounts_routes(self, tmp_path):
+        from unittest.mock import AsyncMock
+
+        from openhands.agent_server.api import create_app
+        from openhands.agent_server.dependencies import get_conversation_service
+
+        mock_conversation_service = AsyncMock(spec=ConversationService)
+        mock_conversation_service.get_event_service.return_value = None
+
+        config = Config(
+            static_files_path=None,
+            secret_key=None,
+            workspace_path=tmp_path,
+            a2a_enabled=True,
+        )
+        app = create_app(config)
+        app.dependency_overrides[get_conversation_service] = lambda: (
+            mock_conversation_service
+        )
+        client = TestClient(app)
+        try:
+            # No auth keys configured: an unauthenticated tasks/get for a
+            # random id reaches the JSON-RPC handler (200 + task-not-found).
+            response = client.post(
+                "/api/a2a",
+                json=_jsonrpc_body("tasks/get", params={"id": str(uuid4())}),
+            )
+            assert response.status_code == 200
+            assert response.json()["error"]["code"] == -32001
+            card = client.get("/.well-known/agent-card.json")
+            assert card.status_code == 200
+            assert card.json()["name"] == "OpenHands Agent Server"
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_enabled_without_sdk_does_not_mount(self, tmp_path, monkeypatch):
+        import builtins
+
+        from openhands.agent_server import api as api_module
+
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "openhands.agent_server.a2a_router" or name.startswith("a2a"):
+                raise ImportError("No module named 'a2a' (simulated)")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        config = Config(
+            static_files_path=None,
+            secret_key=None,
+            a2a_enabled=True,
+        )
+        app = api_module.create_app(config)
+        client = TestClient(app)
+        assert client.post(
+            "/api/a2a", json=_jsonrpc_body("tasks/get")
+        ).status_code == 404
+        assert client.get("/.well-known/agent-card.json").status_code == 404
+
+    def test_env_var_enables(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("OH_A2A_ENABLED", "true")
+        from openhands.agent_server.api import create_app
+        from openhands.agent_server.config import load_config
+
+        loaded = load_config(tmp_path / "nonexistent.json")
+        assert loaded.a2a_enabled is True

@@ -4,12 +4,18 @@ Exposes the agent-server as an A2A agent (Google's Agent2Agent protocol, now
 the Linux Foundation ``a2a-spec``) over the JSON-RPC 2.0 transport, following
 the same pattern the SDK already uses for ACP.
 
-This module targets A2A spec rev ~0.3 (JSON-RPC transport, AgentCard v0.3).
-It intentionally implements minimal local pydantic object models instead of
-depending on the ``a2a-sdk`` package, so it stays dependency-free. Only the
-subset of the spec needed for a server-mode agent is modelled:
+Protocol objects (``AgentCard``, ``Task``, ``TaskStatus``, ``TextPart``, ...)
+come from the ``a2a-sdk`` package, which is an OPTIONAL dependency
+(``pip install openhands-agent-server[a2a]``). When ``a2a-sdk`` is not
+installed, importing this module raises (the ``a2a_types`` attribute access
+below fails); ``api.py`` imports the router lazily inside a try/except so the
+server keeps running without the A2A endpoints — they simply do not mount
+(and a warning is logged). On top of that, mounting is gated behind
+``Config.a2a_enabled`` (default False, CLI flag ``--a2a``).
 
-- ``GET /.well-known/agent-card.json`` — AgentCard v0.3 discovery document
+Endpoints (mounted only when ``a2a_enabled`` is True AND a2a-sdk imports):
+
+- ``GET /.well-known/agent-card.json`` — AgentCard discovery document
   (mounted at the app root: well-known URIs must live outside any API prefix).
 - ``POST /api/a2a`` — JSON-RPC 2.0 endpoint with methods:
   ``message/send``, ``message/stream`` (SSE), ``tasks/get``, ``tasks/cancel``.
@@ -25,23 +31,24 @@ Mapping to agent-server concepts:
 - ``tasks/cancel`` → ``conversation_service.interrupt_conversation``.
 
 Auth accepts either the agent-server's usual ``X-Session-API-Key`` header or
-the A2A-conventional ``Authorization: Bearer <key>`` header, both validated
+the A2A-conventional ``Authorization: Bearer ***`` header, both validated
 against ``config.session_api_keys``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import logging
 import uuid
 from collections.abc import AsyncIterator
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, ValidationError
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
@@ -52,14 +59,43 @@ from openhands.agent_server.models import StartConversationRequest
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.utils import utc_now
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
-from openhands.sdk.llm.message import Message, TextContent
+from openhands.sdk.llm.message import Message as SDKMessage
+from openhands.sdk.llm.message import TextContent
 from openhands.sdk.workspace import LocalWorkspace
 
 
+if TYPE_CHECKING:
+    # Statically (and in dev/CI environments) a2a-sdk is present, so pyright
+    # gets full types. At RUNTIME the else-branch import is guarded: when
+    # a2a-sdk is missing the module attribute access below raises and api.py
+    # skips mounting the A2A routers instead of crashing the server.
+    from a2a import types as a2a_types
+else:
+    a2a_sdk_import_error: Exception | None = None
+    try:
+        from a2a import types as a2a_types
+    except Exception as exc:  # a2a-sdk missing or broken
+        a2a_sdk_import_error = exc
+        a2a_types = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
-A2A_PROTOCOL_VERSION = "0.3.0"
 A2A_MEDIA_TYPE = "text/event-stream"
+
+# Re-exported a2a-sdk models used below (aliasing also fails fast at import
+# time when a2a-sdk is missing, which api.py converts into "don't mount").
+AgentCard = a2a_types.AgentCard
+AgentCapabilities = a2a_types.AgentCapabilities
+AgentProvider = a2a_types.AgentProvider
+AgentSkill = a2a_types.AgentSkill
+Artifact = a2a_types.Artifact
+Part = a2a_types.Part
+Task = a2a_types.Task
+TaskArtifactUpdateEvent = a2a_types.TaskArtifactUpdateEvent
+TaskState = a2a_types.TaskState
+TaskStatus = a2a_types.TaskStatus
+TaskStatusUpdateEvent = a2a_types.TaskStatusUpdateEvent
+TextPart = a2a_types.TextPart
 
 # JSON-RPC 2.0 error codes (plus the A2A-style task-not-found extension).
 JSONRPC_PARSE_ERROR = -32700
@@ -76,17 +112,7 @@ _TERMINAL_EXECUTION_STATUSES = frozenset(
     {"idle", "finished", "error", "stuck", "deleting"}
 )
 
-_TASK_STATE_LITERAL = Literal[
-    "submitted",
-    "working",
-    "input-required",
-    "completed",
-    "canceled",
-    "failed",
-    "rejected",
-    "unknown",
-]
-
+# ConversationExecutionStatus → a2a TaskState value.
 _EXECUTION_STATUS_TO_TASK_STATE: dict[str, str] = {
     "idle": "completed",
     "finished": "completed",
@@ -99,138 +125,32 @@ _EXECUTION_STATUS_TO_TASK_STATE: dict[str, str] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Minimal local A2A object models (no a2a-sdk dependency).
-# ---------------------------------------------------------------------------
-
-
-class AgentProvider(BaseModel):
-    """A2A AgentCard ``provider`` block."""
-
-    organization: str = "OpenHands"
-    url: str = "https://github.com/OpenHands/software-agent-sdk"
-
-
-class AgentCapabilities(BaseModel):
-    """A2A AgentCard ``capabilities`` block."""
-
-    streaming: bool = True
-    pushNotifications: bool = False  # noqa: N815 - A2A field name
-
-
-class AgentSkill(BaseModel):
-    """A2A AgentCard skill entry (one per agent profile)."""
-
-    id: str
-    name: str
-    description: str
-    tags: list[str] = Field(default_factory=list)
-
-
-class AgentCard(BaseModel):
-    """A2A AgentCard v0.3 discovery document."""
-
-    name: str
-    description: str
-    url: str
-    version: str
-    protocolVersion: str = A2A_PROTOCOL_VERSION  # noqa: N815 - A2A field name
-    preferredTransport: str = "JSONRPC"  # noqa: N815 - A2A field name
-    capabilities: AgentCapabilities = Field(default_factory=AgentCapabilities)
-    defaultInputModes: list[str] = Field(default_factory=lambda: ["text/plain"])  # noqa: N815
-    defaultOutputModes: list[str] = Field(default_factory=lambda: ["text/plain"])  # noqa: N815
-    skills: list[AgentSkill] = Field(default_factory=list)
-    provider: AgentProvider = Field(default_factory=AgentProvider)
-
-
-class TextPart(BaseModel):
-    """A2A text content part."""
-
-    kind: Literal["text"] = "text"
-    text: str
-
-
-class A2AMessage(BaseModel):
-    """A2A message (subset: text parts only)."""
-
-    role: Literal["user", "agent"]
-    parts: list[TextPart] = Field(default_factory=list)
-    messageId: str | None = None  # noqa: N815 - A2A field name
-    taskId: str | None = None  # noqa: N815 - A2A field name
-    contextId: str | None = None  # noqa: N815 - A2A field name
-
-
-class MessageSendParams(BaseModel):
+class MessageSendParams(a2a_types.MessageSendParams):
     """Params for ``message/send`` / ``message/stream``.
 
     ``agentProfileId`` is an OpenHands extension: selects the agent profile to
     launch the conversation from. When omitted, the server's active agent
     profile (or the first stored profile) is used.
+
+    ``message.messageId`` is required by the a2a-sdk model but is OPTIONAL on
+    the wire here (spec rev 0.3): a UUID is filled in when the client omits
+    it, so hand-rolled clients are not rejected with invalid-params.
     """
 
-    message: A2AMessage
-    agentProfileId: str | None = None  # noqa: N815 - extension field
+    agentProfileId: str | None = None  # noqa: N815 - A2A field name
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_message_id(cls, data: Any) -> Any:
+        message = data.get("message") if isinstance(data, dict) else None
+        if isinstance(message, dict) and not message.get("messageId"):
+            message = {**message, "messageId": str(uuid.uuid4())}
+            return {**data, "message": message}
+        return data
 
 
-class TaskGetParams(BaseModel):
-    """Params for ``tasks/get``."""
-
-    id: str
-
-
-class TaskCancelParams(BaseModel):
-    """Params for ``tasks/cancel``."""
-
-    id: str
-
-
-TaskState = _TASK_STATE_LITERAL
-
-
-class TaskStatus(BaseModel):
-    """A2A task status."""
-
-    state: TaskState
-    message: A2AMessage | None = None
-    timestamp: str = Field(default_factory=lambda: utc_now().isoformat())
-
-
-class Artifact(BaseModel):
-    """A2A task artifact (the agent's final response text)."""
-
-    artifactId: str  # noqa: N815 - A2A field name
-    name: str = "response"
-    parts: list[TextPart]
-
-
-class Task(BaseModel):
-    """A2A task — maps 1:1 onto an OpenHands conversation."""
-
-    id: str
-    contextId: str  # noqa: N815 - A2A field name
-    status: TaskStatus
-    artifacts: list[Artifact] = Field(default_factory=list)
-    kind: Literal["task"] = "task"
-
-
-class TaskStatusUpdateEvent(BaseModel):
-    """A2A streaming status-update event."""
-
-    taskId: str  # noqa: N815 - A2A field name
-    contextId: str  # noqa: N815 - A2A field name
-    status: TaskStatus
-    final: bool = False
-    kind: Literal["status-update"] = "status-update"
-
-
-class TaskArtifactUpdateEvent(BaseModel):
-    """A2A streaming artifact-update event."""
-
-    taskId: str  # noqa: N815 - A2A field name
-    contextId: str  # noqa: N815 - A2A field name
-    artifact: Artifact
-    lastChunk: bool = True  # noqa: N815 - A2A field name
-    kind: Literal["artifact-update"] = "artifact-update"
+TaskGetParams = a2a_types.TaskQueryParams
+TaskCancelParams = a2a_types.TaskQueryParams
 
 
 class JSONRPCErrorObject(BaseModel):
@@ -244,9 +164,9 @@ class JSONRPCErrorObject(BaseModel):
 class JSONRPCResponse(BaseModel):
     """JSON-RPC 2.0 response envelope for the A2A endpoint."""
 
-    jsonrpc: Literal["2.0"] = "2.0"
+    jsonrpc: str = "2.0"
     id: str | int | None = None
-    result: Task | TaskStatusUpdateEvent | TaskArtifactUpdateEvent | None = None
+    result: Any | None = None
     error: JSONRPCErrorObject | None = None
 
 
@@ -261,7 +181,7 @@ async def check_a2a_session_api_key(
 ) -> None:
     """A2A auth: accept either ``X-Session-API-Key`` or ``Authorization: Bearer``.
 
-    A2A clients conventionally send ``Authorization: Bearer <key>``; the
+    A2A clients conventionally send ``Authorization: Bearer ***`` while the
     agent-server's own clients send ``X-Session-API-Key``. Both are validated
     against ``config.session_api_keys`` (empty list disables auth, same as the
     built-in dependency).
@@ -301,9 +221,8 @@ def _agent_card_skills() -> list[AgentSkill]:
     try:
         from openhands.agent_server.persistence import get_agent_profile_store
 
-        store = get_agent_profile_store()
-        skills = []
-        for summary in store.list_summaries():
+        skills: list[AgentSkill] = []
+        for summary in get_agent_profile_store().list_summaries():
             name = str(summary.get("name", "profile"))
             skill_id = str(summary.get("id") or name)
             skills.append(
@@ -352,9 +271,16 @@ def _parse_task_id(raw: str) -> uuid.UUID:
         raise ValueError(f"Invalid taskId (not a conversationId): {raw}") from None
 
 
-def _task_state_for_execution_status(execution_status: Any) -> TaskState:
+def _task_state_for_execution_status(execution_status: Any) -> str:
     raw = str(getattr(execution_status, "value", execution_status) or "")
-    return _EXECUTION_STATUS_TO_TASK_STATE.get(raw, "unknown")  # type: ignore[return-value]
+    return _EXECUTION_STATUS_TO_TASK_STATE.get(raw, "unknown")
+
+
+def _task_status(state_value: str) -> TaskStatus:
+    return TaskStatus(
+        state=state_value,  # type: ignore[arg-type]  # str coerces to TaskState
+        timestamp=utc_now().isoformat(),
+    )
 
 
 async def _get_event_service_for(
@@ -381,16 +307,18 @@ async def _task_from_event_service(
 
     artifacts: list[Artifact] = []
     if final_response:
+        parts: list[Part] = [Part(root=TextPart(text=final_response))]
         artifacts.append(
             Artifact(
-                artifactId=str(uuid.uuid4()),
-                parts=[TextPart(text=final_response)],
+                artifact_id=str(uuid.uuid4()),
+                name="response",
+                parts=parts,
             )
         )
     return Task(
         id=str(task_id),
-        contextId=str(task_id),
-        status=TaskStatus(state=_task_state_for_execution_status(execution_status)),
+        context_id=str(task_id),
+        status=_task_status(_task_state_for_execution_status(execution_status)),
         artifacts=artifacts,
     )
 
@@ -409,17 +337,49 @@ def _jsonrpc_error(
     )
 
 
-def _user_text(message: A2AMessage) -> str:
-    return "".join(part.text for part in message.parts if part.kind == "text")
+def _unwrap_part(part: Any) -> Any:
+    """Return the concrete part inside a ``Part`` root model."""
+    return getattr(part, "root", part)
+
+
+def _user_text(message: a2a_types.Message) -> str:
+    return "".join(
+        inner.text
+        for inner in map(_unwrap_part, message.parts)
+        if isinstance(inner, TextPart)
+    )
+
+
+class _SendFailed:
+    """Sentinel enqueued when the background user-message send raises."""
 
 
 class _QueueSubscriber(Subscriber):
-    """Bridges agent-server events into an asyncio queue for the SSE stream."""
+    """Bridges agent-server events into an asyncio queue for the SSE stream.
+
+    ``subscribe_to_events`` immediately replays the conversation's CURRENT
+    execution status to the new subscriber. When that status is terminal
+    (e.g. IDLE before a run has started), the replayed snapshot must NOT
+    close the stream — so the FIRST terminal state snapshot is swallowed
+    (exactly once, and only if it is the first state event we see).
+    """
 
     def __init__(self, queue: asyncio.Queue):
         self._queue = queue
+        self._seen_state_event = False
 
     async def __call__(self, event: Any):
+        if (
+            isinstance(event, ConversationStateUpdateEvent)
+            and not self._seen_state_event
+        ):
+            self._seen_state_event = True
+            value = str(getattr(event, "value", "") or "")
+            if value in _TERMINAL_EXECUTION_STATUSES:
+                logger.debug(
+                    "A2A: dropping pre-run terminal state snapshot (%s)", value
+                )
+                return
         await self._queue.put(event)
 
 
@@ -451,8 +411,9 @@ a2a_router = APIRouter(
     response_model_exclude_none=True,
 )
 async def get_agent_card(request: Request) -> AgentCard:
-    """Return the A2A AgentCard v0.3 discovery document."""
+    """Return the A2A AgentCard discovery document."""
     base_url = str(request.base_url).rstrip("/")
+    input_modes: list[str] = ["text/plain"]
     return AgentCard(
         name="OpenHands Agent Server",
         description=(
@@ -462,8 +423,14 @@ async def get_agent_card(request: Request) -> AgentCard:
         ),
         url=f"{base_url}/api/a2a",
         version=_server_version(),
-        capabilities=AgentCapabilities(streaming=True, pushNotifications=False),
+        capabilities=AgentCapabilities(streaming=True, push_notifications=False),
+        default_input_modes=input_modes,
+        default_output_modes=["text/plain"],
         skills=_agent_card_skills(),
+        provider=AgentProvider(
+            organization="OpenHands",
+            url="https://github.com/OpenHands/software-agent-sdk",
+        ),
     )
 
 
@@ -478,13 +445,24 @@ async def a2a_jsonrpc_endpoint(
     stream rather than a JSON envelope), ``tasks/get``, ``tasks/cancel``.
     JSON-RPC-level errors are returned as 200 responses carrying a JSON-RPC
     error object (``-32601`` method not found, ``-32700`` parse error,
-    ``-32602`` invalid params).
+    ``-32602`` invalid params). Every error response echoes the request
+    ``id`` (null for parse errors, per the JSON-RPC 2.0 spec).
     """
     raw = await request.body()
     try:
         payload = json.loads(raw)
     except (json.JSONDecodeError, UnicodeDecodeError):
-        return _jsonrpc_error(JSONRPC_PARSE_ERROR, "Parse error")
+        # Raw JSONResponse (not the response_model) so that "id": null is
+        # serialized explicitly — exclude_none on JSONRPCResponse would drop
+        # the key, and JSON-RPC 2.0 requires a null id on parse errors.
+        return JSONResponse(
+            status_code=200,
+            content={
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": JSONRPC_PARSE_ERROR, "message": "Parse error"},
+            },
+        )
 
     rpc_id = payload.get("id") if isinstance(payload, dict) else None
     if not isinstance(payload, dict) or payload.get("jsonrpc") != "2.0":
@@ -498,28 +476,22 @@ async def a2a_jsonrpc_endpoint(
             JSONRPC_INVALID_REQUEST, "Invalid Request: missing method", rpc_id
         )
 
-    if method == "message/send":
+    if method in ("message/send", "message/stream"):
         try:
             send_params = MessageSendParams.model_validate(params)
         except ValidationError as exc:
             return _jsonrpc_error(
                 JSONRPC_INVALID_PARAMS, "Invalid params", rpc_id, data=str(exc)
             )
-        handle_result = await _handle_message_send(
-            send_params, conversation_service, config
-        )
-        if isinstance(handle_result, JSONRPCResponse):
-            return handle_result
-        return _jsonrpc(handle_result, rpc_id)
-    if method == "message/stream":
-        try:
-            send_params = MessageSendParams.model_validate(params)
-        except ValidationError as exc:
-            return _jsonrpc_error(
-                JSONRPC_INVALID_PARAMS, "Invalid params", rpc_id, data=str(exc)
+        if method == "message/send":
+            handle_result = await _handle_message_send(
+                send_params, conversation_service, config, rpc_id
             )
+            if isinstance(handle_result, JSONRPCResponse):
+                return handle_result
+            return _jsonrpc(handle_result, rpc_id)
         return await _handle_message_stream(
-            send_params, conversation_service, rpc_id, config
+            send_params, conversation_service, config, rpc_id
         )
 
     if method == "tasks/get":
@@ -558,8 +530,8 @@ async def a2a_jsonrpc_endpoint(
         return _jsonrpc(
             Task(
                 id=cancel_params.id,
-                contextId=cancel_params.id,
-                status=TaskStatus(state="canceled"),
+                context_id=cancel_params.id,
+                status=_task_status("canceled"),
             ),
             rpc_id,
         )
@@ -573,22 +545,25 @@ async def _start_or_get_conversation(
     send_params: MessageSendParams,
     conversation_service: ConversationService,
     config: Config,
+    rpc_id: str | int | None,
 ) -> tuple[uuid.UUID, EventService, bool] | JSONRPCResponse:
     """Return ``(task_id, event_service, created)`` or a JSON-RPC error.
 
     Reuses the conversation named by ``message.taskId`` when present,
-    otherwise starts a new one from the resolved agent profile.
+    otherwise starts a new one from the resolved agent profile. Every error
+    response echoes *rpc_id* so clients can correlate the failure.
     """
-    if send_params.message.taskId:
+    if send_params.message.task_id:
         try:
-            task_id = _parse_task_id(send_params.message.taskId)
+            task_id = _parse_task_id(send_params.message.task_id)
         except ValueError as exc:
-            return _jsonrpc_error(JSONRPC_INVALID_PARAMS, str(exc))
+            return _jsonrpc_error(JSONRPC_INVALID_PARAMS, str(exc), rpc_id)
         event_service = await _get_event_service_for(conversation_service, task_id)
         if event_service is None:
             return _jsonrpc_error(
                 JSONRPC_TASK_NOT_FOUND,
-                f"Task not found: {send_params.message.taskId}",
+                f"Task not found: {send_params.message.task_id}",
+                rpc_id,
             )
         return task_id, event_service, False
 
@@ -598,6 +573,7 @@ async def _start_or_get_conversation(
             JSONRPC_INTERNAL_ERROR,
             "No agent profile configured; create one via /api/agent-profiles "
             "or pass agentProfileId in the params",
+            rpc_id,
         )
     try:
         start_request = StartConversationRequest(
@@ -607,12 +583,12 @@ async def _start_or_get_conversation(
         info, _created = await conversation_service.start_conversation(start_request)
     except ValueError as exc:
         return _jsonrpc_error(
-            JSONRPC_INVALID_PARAMS, f"Could not start conversation: {exc}"
+            JSONRPC_INVALID_PARAMS, f"Could not start conversation: {exc}", rpc_id
         )
     event_service = await _get_event_service_for(conversation_service, info.id)
     if event_service is None:
         return _jsonrpc_error(
-            JSONRPC_INTERNAL_ERROR, f"Conversation {info.id} is not available"
+            JSONRPC_INTERNAL_ERROR, f"Conversation {info.id} is not available", rpc_id
         )
     return info.id, event_service, True
 
@@ -621,7 +597,7 @@ async def _send_user_message(
     send_params: MessageSendParams, event_service: EventService
 ) -> None:
     text = _user_text(send_params.message)
-    message = Message(role="user", content=[TextContent(text=text)])
+    message = SDKMessage(role="user", content=[TextContent(text=text)])
     await event_service.send_message(message, run=True)
 
 
@@ -629,9 +605,10 @@ async def _handle_message_send(
     send_params: MessageSendParams,
     conversation_service: ConversationService,
     config: Config,
+    rpc_id: str | int | None,
 ) -> Task | JSONRPCResponse:
     started = await _start_or_get_conversation(
-        send_params, conversation_service, config
+        send_params, conversation_service, config, rpc_id
     )
     if isinstance(started, JSONRPCResponse):
         return started
@@ -656,22 +633,32 @@ def _state_update_to_status_update(
     if getattr(event, "key", None) != "execution_status":
         return None
     return TaskStatusUpdateEvent(
-        taskId=str(task_id),
-        contextId=str(task_id),
-        status=TaskStatus(state=_task_state_for_execution_status(event.value)),
+        task_id=str(task_id),
+        context_id=str(task_id),
+        status=_task_status(_task_state_for_execution_status(event.value)),
         final=final,
+    )
+
+
+def _artifact_update(task_id: uuid.UUID, text: str, last_chunk: bool) -> Any:
+    parts: list[Part] = [Part(root=TextPart(text=text))]
+    return TaskArtifactUpdateEvent(
+        task_id=str(task_id),
+        context_id=str(task_id),
+        artifact=Artifact(artifact_id=str(uuid.uuid4()), parts=parts),
+        last_chunk=last_chunk,
     )
 
 
 async def _handle_message_stream(
     send_params: MessageSendParams,
     conversation_service: ConversationService,
+    config: Config,
     rpc_id: str | int | None,
-    config: Config | None = None,
 ) -> Any:
     """``message/stream``: run the task and stream A2A updates over SSE."""
     started = await _start_or_get_conversation(
-        send_params, conversation_service, config or Config()
+        send_params, conversation_service, config, rpc_id
     )
     if isinstance(started, JSONRPCResponse):
         return started
@@ -680,6 +667,23 @@ async def _handle_message_stream(
     async def event_stream() -> AsyncIterator[str]:
         queue: asyncio.Queue = asyncio.Queue()
         subscriber = _QueueSubscriber(queue)
+        # Send the user message FIRST, then subscribe. Subscribing before
+        # sending races with subscribe_to_events' immediate replay of the
+        # current (pre-run, terminal) status, which used to close the stream
+        # before the run even started. The subscriber additionally swallows
+        # a replayed terminal snapshot defensively (see _QueueSubscriber).
+        send_task = asyncio.create_task(_send_user_message(send_params, event_service))
+
+        def _on_send_done(task: asyncio.Task) -> None:
+            if not task.cancelled() and task.exception() is not None:
+                queue.put_nowait(_SendFailed())
+
+        send_task.add_done_callback(_on_send_done)
+        # Let the send task take its first step before subscribing, so the
+        # user message is genuinely in flight (and mock-based tests observe
+        # send_message) when the subscriber's status replay happens.
+        await asyncio.sleep(0)
+
         subscriber_id = await event_service.subscribe_to_events(subscriber)
         try:
             # Initial task snapshot; subsequent state updates arrive via the
@@ -688,16 +692,24 @@ async def _handle_message_stream(
                 _jsonrpc(
                     Task(
                         id=str(task_id),
-                        contextId=str(task_id),
-                        status=TaskStatus(state="submitted"),
+                        context_id=str(task_id),
+                        status=_task_status("submitted"),
                     ),
                     rpc_id,
                 )
             )
-            await _send_user_message(send_params, event_service)
 
             while True:
                 event = await queue.get()
+                if isinstance(event, _SendFailed):
+                    yield _sse_chunk(
+                        _jsonrpc_error(
+                            JSONRPC_INTERNAL_ERROR,
+                            "Failed to send user message",
+                            rpc_id,
+                        )
+                    )
+                    return
                 if isinstance(event, ConversationStateUpdateEvent):
                     status_value = str(getattr(event, "value", "") or "")
                     is_terminal = status_value in _TERMINAL_EXECUTION_STATUSES
@@ -708,14 +720,19 @@ async def _handle_message_stream(
                         yield _sse_chunk(_jsonrpc(update, rpc_id))
                     if is_terminal:
                         task = await _task_from_event_service(task_id, event_service)
-                        for artifact in task.artifacts:
+                        for artifact in task.artifacts or []:
                             yield _sse_chunk(
                                 _jsonrpc(
-                                    TaskArtifactUpdateEvent(
-                                        taskId=str(task_id),
-                                        contextId=str(task_id),
-                                        artifact=artifact,
-                                        lastChunk=True,
+                                    _artifact_update(
+                                        task_id,
+                                        "".join(
+                                            inner.text
+                                            for inner in map(
+                                                _unwrap_part, artifact.parts
+                                            )
+                                            if isinstance(inner, TextPart)
+                                        ),
+                                        last_chunk=True,
                                     ),
                                     rpc_id,
                                 )
@@ -725,9 +742,9 @@ async def _handle_message_stream(
                 else:
                     # Surface agent message events as incremental artifacts.
                     llm_message = getattr(event, "llm_message", None)
-                    if llm_message is not None and getattr(
-                        event, "source", None
-                    ) == "agent":
+                    if llm_message is not None and getattr(event, "source", None) == (
+                        "agent"
+                    ):
                         text = "".join(
                             getattr(part, "text", "")
                             for part in getattr(llm_message, "content", [])
@@ -735,19 +752,14 @@ async def _handle_message_stream(
                         if text:
                             yield _sse_chunk(
                                 _jsonrpc(
-                                    TaskArtifactUpdateEvent(
-                                        taskId=str(task_id),
-                                        contextId=str(task_id),
-                                        artifact=Artifact(
-                                            artifactId=str(uuid.uuid4()),
-                                            parts=[TextPart(text=text)],
-                                        ),
-                                        lastChunk=False,
+                                    _artifact_update(
+                                        task_id, text, last_chunk=False
                                     ),
                                     rpc_id,
                                 )
                             )
         finally:
+            send_task.cancel()
             await event_service.unsubscribe_from_events(subscriber_id)
 
     return StreamingResponse(event_stream(), media_type=A2A_MEDIA_TYPE)

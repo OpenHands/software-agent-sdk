@@ -17,10 +17,6 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 
-from openhands.agent_server.a2a_router import (
-    a2a_agent_card_router,
-    a2a_router,
-)
 from openhands.agent_server.agent_profiles_router import agent_profiles_router
 from openhands.agent_server.auth_router import auth_router
 from openhands.agent_server.bash_router import bash_router
@@ -407,6 +403,33 @@ def _find_http_exception(exc: BaseExceptionGroup) -> HTTPException | None:
     return None
 
 
+def _load_a2a_routers(config: Config):
+    """Return the A2A routers, or None when they must not mount.
+
+    Mounting requires BOTH explicit enablement (``config.a2a_enabled``,
+    default False — set via OH_A2A_ENABLED or --a2a) AND the optional
+    a2a-sdk dependency being importable (the 'a2a' extra). Anything else
+    logs and returns None so the server runs without the A2A endpoints.
+    """
+    if not config.a2a_enabled:
+        return None
+    try:
+        from openhands.agent_server.a2a_router import (
+            a2a_agent_card_router,
+            a2a_router,
+        )
+    except Exception as exc:
+        logger.warning(
+            "a2a_enabled is True but the a2a-sdk dependency is not importable "
+            "(%s). Install the 'a2a' extra (pip install "
+            "openhands-agent-server[a2a]) to expose the A2A endpoints; "
+            "they will NOT be mounted.",
+            exc,
+        )
+        return None
+    return a2a_router, a2a_agent_card_router
+
+
 def _add_api_routes(app: FastAPI) -> None:
     """Add all API routes to the FastAPI application."""
     app.include_router(server_details_router)
@@ -456,15 +479,20 @@ def _add_api_routes(app: FastAPI) -> None:
     # /api/auth/* mints workspace cookies and requires the header to bootstrap,
     # so it lives under the header-only auth group.
     api_router.include_router(auth_router)
-    # A2A JSON-RPC endpoint. Mounted with its own dependencies (not the
-    # header-only group above) because A2A clients authenticate with the
+    # A2A JSON-RPC endpoint, OFF BY DEFAULT: mounts only when
+    # config.a2a_enabled is True AND the optional a2a-sdk dependency
+    # ('a2a' extra) is importable. Mounted with its own dependencies (not
+    # the header-only group above) because A2A clients authenticate with the
     # standard Authorization header rather than ``X-Session-API-Key``; the
     # A2A auth dependency accepts either.
-    api_router.include_router(a2a_router)
-    app.include_router(api_router)
+    a2a_routers = _load_a2a_routers(app.state.config)
+    if a2a_routers is not None:
+        a2a_router, a2a_agent_card_router = a2a_routers
+        api_router.include_router(a2a_router)
+        # A2A discovery: well-known URIs live at the app root, outside /api.
+        app.include_router(a2a_agent_card_router)
 
-    # A2A discovery: well-known URIs must live at the app root, outside /api.
-    app.include_router(a2a_agent_card_router)
+    app.include_router(api_router)
 
     app.include_router(openai_router, dependencies=[Depends(check_openai_api_key)])
 

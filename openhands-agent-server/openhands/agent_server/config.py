@@ -322,6 +322,16 @@ class Config(BaseModel):
         default=False,
         description="Whether to enable VNC desktop functionality",
     )
+    a2a_enabled: bool = Field(
+        default=False,
+        description=(
+            "Expose the A2A (Agent2Agent) protocol endpoints "
+            "(POST /api/a2a JSON-RPC + /.well-known/agent-card.json). "
+            "Disabled by default; additionally requires the optional "
+            "'a2a' extra (a2a-sdk) to be installed — without it the routes "
+            "do not mount. Set via OH_A2A_ENABLED or the --a2a CLI flag."
+        ),
+    )
     preload_tools: bool = Field(
         default=True,
         description="Whether to preload tools",
