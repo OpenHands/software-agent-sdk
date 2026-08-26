@@ -99,12 +99,12 @@ FROM python:3.13-bookworm AS acp-providers
 # parent, mirroring /agent-server's own top-level placement in the builder
 # stage above.
 ENV ACP_NODE_DIR=/acp-node
-ENV ACP_WRAPPER_DIR=/opt/acp-wrappers
 RUN set -eux; \
     apt-get -o Acquire::Retries=5 update; \
     apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
         ca-certificates curl xz-utils; \
     rm -rf /var/lib/apt/lists/*; \
+    ACP_WRAPPER_DIR=/opt/acp-wrappers; \
     mkdir -p "$ACP_NODE_DIR" "$ACP_WRAPPER_DIR"; \
     ARCH=$(uname -m); \
     case "$ARCH" in \
