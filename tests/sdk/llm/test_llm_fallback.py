@@ -15,12 +15,16 @@ from litellm.types.utils import (
 )
 from pydantic import SecretStr
 
+from openhands.sdk.agent import Agent
+from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.llm import LLM, FallbackStrategy, Message, TextContent
 from openhands.sdk.llm.exceptions import (
     LLMContextWindowExceedError,
     LLMServiceUnavailableError,
 )
 from openhands.sdk.llm.llm import LLMCallContext
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.utils.cipher import Cipher
 
 
 def _get_mock_response(content: str = "ok", model: str = "gpt-4o") -> ModelResponse:
@@ -284,8 +288,6 @@ def test_responses_non_transient_skips_fallback(mock_resp):
 @patch("openhands.sdk.llm.llm.litellm_completion")
 def test_fallback_profiles_resolved_via_store(mock_comp, tmp_path):
     """Verify that fallback profile names are resolved through LLMProfileStore."""
-    from openhands.sdk.llm.llm_profile_store import LLMProfileStore
-
     primary_error = APIConnectionError(
         message="down", llm_provider="openai", model="gpt-4o"
     )
@@ -311,6 +313,49 @@ def test_fallback_profiles_resolved_via_store(mock_comp, tmp_path):
     content = resp.message.content[0]
     assert isinstance(content, TextContent)
     assert content.text == "from store"
+
+
+def test_conversation_cipher_decrypts_fallback_profile(tmp_path):
+    """A conversation's cipher must reach lazy fallback profile loading."""
+    cipher = Cipher("server-secret-key")
+    profile_dir = tmp_path / "profiles"
+    store = LLMProfileStore(base_dir=profile_dir)
+    store.save(
+        "encrypted-fallback",
+        LLM(
+            model="fallback-model",
+            api_key=SecretStr("sk-fallback"),
+            usage_id="fallback-model",
+        ),
+        include_secrets=True,
+        cipher=cipher,
+    )
+
+    strategy = FallbackStrategy(
+        fallback_llms=["encrypted-fallback"],
+        profile_store_dir=profile_dir,
+    )
+    unresolved = next(strategy._iter_fallbacks())
+    assert unresolved.api_key is not None
+    assert unresolved.api_key.get_secret_value().startswith("gAAAAA")
+
+    conversation = LocalConversation(
+        agent=Agent(
+            llm=_get_llm("primary-model", fallback_strategy=strategy),
+            tools=[],
+        ),
+        workspace=tmp_path / "workspace",
+        cipher=cipher,
+    )
+
+    try:
+        resolved_strategy = conversation.agent.llm.fallback_strategy
+        assert resolved_strategy is not None
+        fallback = next(resolved_strategy._iter_fallbacks())
+        assert fallback.api_key is not None
+        assert fallback.api_key.get_secret_value() == "sk-fallback"
+    finally:
+        conversation.close()
 
 
 # =========================================================================
