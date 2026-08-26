@@ -291,6 +291,11 @@ _AUTH_METHOD_ENV_MAP: dict[str, str] = {
 _GEMINI_OAUTH_PATH = Path(".gemini") / "oauth_creds.json"
 
 
+def _env_has_nonempty(env: dict[str, str], name: str) -> bool:
+    """True when *name* is set to a non-whitespace value."""
+    return bool(env.get(name, "").strip())
+
+
 def _select_auth_method(
     auth_methods: list[Any],
     env: dict[str, str],
@@ -301,14 +306,21 @@ def _select_auth_method(
     supported credential source is available (the server may not require auth).
 
     File-backed subscription / SA logins are checked first so they take
-    precedence over explicit API keys, which serve as the fallback:
+    precedence over explicit API keys, which serve as the fallback — except
+    gemini-cli personal OAuth, which is ranked *below* ``GEMINI_API_KEY``.
+    Google retired consumer-tier ``oauth-personal`` on 2026-06-18, so a stale
+    ``~/.gemini/oauth_creds.json`` from ``gemini login`` must not outrank a
+    working API key (#4629).
 
     - ``chat-gpt`` (codex-acp) — ``$CODEX_HOME/auth.json`` or
       ``~/.codex/auth.json``
     - ``vertex-ai`` (gemini-cli) — service-account JSON at
       ``GOOGLE_APPLICATION_CREDENTIALS`` (the deployable Gemini path; preferred
       over personal OAuth, which is host-bound and undeployable)
-    - ``oauth-personal`` (gemini-cli) — ``~/.gemini/oauth_creds.json``
+    - ``gemini-api-key`` — non-empty ``GEMINI_API_KEY``
+    - ``oauth-personal`` (gemini-cli) — ``~/.gemini/oauth_creds.json`` (fallback
+      when no API key / Vertex SA is present; still used by Gemini Code Assist
+      Standard/Enterprise)
 
     In a server image the interactive-login files are absent, so the API-key
     fallback (e.g. ``GEMINI_API_KEY``) is used instead.
@@ -321,6 +333,10 @@ def _select_auth_method(
     gac = env.get("GOOGLE_APPLICATION_CREDENTIALS")
     if "vertex-ai" in method_ids and gac and Path(gac).is_file():
         return "vertex-ai"
+    # GEMINI_API_KEY outranks leftover personal OAuth. Empty/whitespace values
+    # must not count as a credential (``"VAR" in env`` is true for "").
+    if "gemini-api-key" in method_ids and _env_has_nonempty(env, "GEMINI_API_KEY"):
+        return "gemini-api-key"
     if "oauth-personal" in method_ids and (Path.home() / _GEMINI_OAUTH_PATH).is_file():
         return "oauth-personal"
     # The maintained Codex ACP adapter exposes one API-key method and reads
@@ -331,7 +347,7 @@ def _select_auth_method(
         return "api-key"
     # Fall back to explicit API key env vars.
     for method_id, env_var in _AUTH_METHOD_ENV_MAP.items():
-        if method_id in method_ids and env_var in env:
+        if method_id in method_ids and _env_has_nonempty(env, env_var):
             return method_id
     return None
 
@@ -349,6 +365,22 @@ def _auth_selection_failure_reason(auth_methods: list[Any], env: dict[str, str])
         env.get(name) for name in ("CODEX_API_KEY", "OPENAI_API_KEY")
     ):
         reasons.append("CODEX_API_KEY and OPENAI_API_KEY are unset")
+    if "oauth-personal" in method_ids or "gemini-api-key" in method_ids:
+        oauth_path = Path.home() / _GEMINI_OAUTH_PATH
+        if oauth_path.is_file() and not _env_has_nonempty(env, "GEMINI_API_KEY"):
+            reasons.append(
+                "gemini-cli oauth-personal login is retired for consumer Google "
+                "AI tiers; set GEMINI_API_KEY or GOOGLE_APPLICATION_CREDENTIALS"
+            )
+        elif not _env_has_nonempty(env, "GEMINI_API_KEY"):
+            reasons.append(
+                "GEMINI_API_KEY is unset and gemini-cli consumer OAuth "
+                "(oauth-personal) is retired"
+            )
+    if "vertex-ai" in method_ids:
+        gac = env.get("GOOGLE_APPLICATION_CREDENTIALS")
+        if not gac or not Path(gac).is_file():
+            reasons.append("GOOGLE_APPLICATION_CREDENTIALS is missing or not a file")
     return "; ".join(reasons) or "no supported credential source is available"
 
 

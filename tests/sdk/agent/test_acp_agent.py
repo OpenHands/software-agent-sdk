@@ -4877,8 +4877,13 @@ class TestSelectAuthMethod:
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
             assert _select_auth_method(methods, {}) == "oauth-personal"
 
-    def test_gemini_oauth_preferred_over_api_key(self, tmp_path):
-        """OAuth login takes precedence over GEMINI_API_KEY (mirrors chatgpt)."""
+    def test_gemini_api_key_preferred_over_oauth(self, tmp_path):
+        """A working GEMINI_API_KEY outranks leftover oauth_creds.json.
+
+        Consumer-tier gemini-cli OAuth was retired on 2026-06-18 (#4629).
+        The previous ranking encoded in this test (oauth-personal first)
+        caused a stale ~/.gemini/oauth_creds.json to hide a valid API key.
+        """
         methods = [
             self._make_auth_method("oauth-personal"),
             self._make_auth_method("gemini-api-key"),
@@ -4889,7 +4894,37 @@ class TestSelectAuthMethod:
 
         env = {"GEMINI_API_KEY": "g-test"}
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
-            assert _select_auth_method(methods, env) == "oauth-personal"
+            assert _select_auth_method(methods, env) == "gemini-api-key"
+
+    def test_empty_gemini_api_key_does_not_outrank_oauth(self, tmp_path):
+        """An empty or whitespace GEMINI_API_KEY is not a credential, so a
+        present oauth_creds.json is still used as the fallback."""
+        methods = [
+            self._make_auth_method("oauth-personal"),
+            self._make_auth_method("gemini-api-key"),
+        ]
+        gem_dir = tmp_path / ".gemini"
+        gem_dir.mkdir()
+        (gem_dir / "oauth_creds.json").write_text("{}", encoding="utf-8")
+
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            assert (
+                _select_auth_method(methods, {"GEMINI_API_KEY": ""}) == "oauth-personal"
+            )
+            assert (
+                _select_auth_method(methods, {"GEMINI_API_KEY": "   "})
+                == "oauth-personal"
+            )
+
+    def test_empty_gemini_api_key_does_not_count_as_present(self, tmp_path):
+        """``GEMINI_API_KEY=""`` in the environment is not a usable key."""
+        methods = [
+            self._make_auth_method("oauth-personal"),
+            self._make_auth_method("gemini-api-key"),
+        ]
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            assert _select_auth_method(methods, {"GEMINI_API_KEY": ""}) is None
+            assert _select_auth_method(methods, {"GEMINI_API_KEY": "  "}) is None
 
     def test_gemini_api_key_fallback_when_no_oauth_file(self, tmp_path):
         """Falls back to GEMINI_API_KEY when oauth-personal is offered but the
@@ -4910,6 +4945,19 @@ class TestSelectAuthMethod:
         ]
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
             assert _select_auth_method(methods, {}) is None
+
+    def test_gemini_failure_reason_names_retired_oauth(self, tmp_path):
+        """When no usable Gemini credential exists, the warning names the
+        retired oauth-personal login instead of a generic fallback."""
+        methods = [
+            self._make_auth_method("oauth-personal"),
+            self._make_auth_method("gemini-api-key"),
+        ]
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            reason = _auth_selection_failure_reason(methods, {})
+        assert "GEMINI_API_KEY is unset" in reason
+        assert "oauth-personal" in reason
+        assert "retired" in reason
 
     def test_empty_auth_methods(self):
         assert _select_auth_method([], {}) is None
