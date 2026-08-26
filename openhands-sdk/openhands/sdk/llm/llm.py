@@ -714,7 +714,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
 
         model_val = d.get("model")
-        if not model_val:
+        if isinstance(model_val, str):
+            stripped = model_val.strip()
+            # Whitespace-only values, and provider-only IDs like "openai/" or
+            # "openhands/", parse through LiteLLM to an empty model name and
+            # 400 upstream. Reject them the same way as a missing model.
+            if not stripped or stripped.endswith("/"):
+                raise ValueError("model must be specified in LLM")
+        elif not model_val:
             raise ValueError("model must be specified in LLM")
 
         # Azure default version
