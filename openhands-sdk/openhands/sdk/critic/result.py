@@ -15,7 +15,10 @@ class CriticResult(BaseModel):
         ge=0.0,
         le=1.0,
     )
-    message: str | None = Field(description="An optional message explaining the score.")
+    message: str | None = Field(
+        default=None,
+        description="An optional message explaining the score.",
+    )
     metadata: dict[str, Any] | None = Field(
         default=None,
         description=(

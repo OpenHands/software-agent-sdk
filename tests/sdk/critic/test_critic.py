@@ -53,6 +53,35 @@ def test_critic_result_validation():
         CriticResult(score=1.1, message="Above max")
 
 
+def test_critic_result_message_defaults_to_none():
+    """message is optional; omitting it must yield None, not a required-field error.
+
+    Regression: the event store persists events with ``model_dump_json(
+    exclude_none=True)``, which drops ``message: null``.  On resume the event is
+    validated from ``{"score": 1.0}``; if ``message`` is a required field that
+    reload fails (``critic_result.message Field required``) and the session
+    cannot be resumed.
+    """
+    # Direct construction without message.
+    result = CriticResult(score=1.0)
+    assert result.message is None
+
+    # Round-trip through the exact persistence shape: exclude_none drops the
+    # null message, then validation must accept the message-less payload.
+    dumped = result.model_dump_json(exclude_none=True)
+    assert json.loads(dumped) == {"score": 1.0}
+    reloaded = CriticResult.model_validate_json(dumped)
+    assert reloaded.score == 1.0
+    assert reloaded.message is None
+
+    # A non-null message still round-trips unchanged.
+    msg = CriticResult(score=0.0, message="blocker")
+    assert json.loads(msg.model_dump_json(exclude_none=True))["message"] == "blocker"
+    assert CriticResult.model_validate_json(
+        msg.model_dump_json(exclude_none=True)
+    ).message == "blocker"
+
+
 def test_pass_critic_always_succeeds():
     """Test that PassCritic always returns success."""
     critic = PassCritic()
