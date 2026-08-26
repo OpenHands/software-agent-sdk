@@ -1,0 +1,32 @@
+{
+  "validated_git_sha": "6753afc5898c367955b2f984687784f59d70a004",
+  "validated_at": "2026-08-26T22:22:49Z",
+  "pre_commit": {
+    "command": "uv run pre-commit run --files .pr/ask_oracle_live_validation.py",
+    "result": "passed"
+  },
+  "targeted_tests": {
+    "command": "uv run pytest tests/tools/ask_oracle/test_ask_oracle.py tests/sdk/conversation/test_switch_model.py -k 'ask_oracle or switch_profile_uses_custom_profile_store'",
+    "result": "8 passed, 24 deselected"
+  },
+  "live_validation": {
+    "command": "LLM_API_KEY=... LLM_BASE_URL=https://llm-proxy.eval.all-hands.dev ASK_ORACLE_PRIMARY_MODEL=openai/gpt-5.1 ASK_ORACLE_MODEL=openai/gpt-5-mini uv run python .pr/ask_oracle_live_validation.py",
+    "result": "passed",
+    "result_file": ".pr/ask_oracle_live_validation.json",
+    "checks_passed": 8,
+    "checks_failed": 0
+  },
+  "example_harness": {
+    "command": "LLM_API_KEY=... LLM_BASE_URL=https://llm-proxy.eval.all-hands.dev LLM_MODEL=openai/gpt-5.1 ASK_ORACLE_MODEL=openai/gpt-5-mini uv run pytest tests/examples/test_examples.py --run-examples -k 58_ask_oracle_tool",
+    "result": "1 passed, 69 deselected",
+    "duration_seconds": 46.00011245906353,
+    "reported_cost": 0.01895175
+  },
+  "github_ci_before_artifact_only_commit": {
+    "successful": 36,
+    "failed": 0,
+    "pending": 0,
+    "skipped": 2,
+    "integration_test_label_present": true
+  }
+}
