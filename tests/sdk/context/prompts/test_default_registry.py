@@ -26,6 +26,7 @@ from openhands.sdk.context.prompts.presets import create_registry
 from openhands.sdk.context.prompts.section import Platform, PromptContext
 from openhands.sdk.context.prompts.sections.dynamic import (
     AvailableSkillsSection,
+    CustomGpgSigningSection,
     CustomSecretsSection,
     CustomSuffixSection,
     DateTimeSection,
@@ -290,6 +291,38 @@ def test_custom_secrets_section() -> None:
         section.render(PromptContext(secret_infos=(("API_KEY", "prod key"),))) or ""
     )
     assert "* **$API_KEY** - prod key" in described
+
+
+def test_custom_gpg_signing_section() -> None:
+    section = CustomGpgSigningSection()
+    # Guard is False without a GPG secret (e.g. only a GitHub token registered).
+    assert section.guard(PromptContext()) is False
+    assert section.guard(PromptContext(secret_infos=(("GITHUB_TOKEN", None),))) is False
+    # Guard is True when a GPG_KEY secret is registered, and render emits the
+    # signed-commit instructions referencing that secret name.
+    assert (
+        section.guard(PromptContext(secret_infos=(("GPG_KEY", "signing key"),))) is True
+    )
+    out = (
+        section.render(PromptContext(secret_infos=(("GPG_KEY", "signing key"),))) or ""
+    )
+    assert out.startswith("<GPG_SIGNING>") and out.endswith("</GPG_SIGNING>")
+    assert "$GPG_KEY" in out
+    assert "gpg --import" in out
+    assert "commit.gpgsign true" in out
+    assert "user.signingkey" in out
+    # The override of the pre-set git identity (email must match key UID for
+    # GitHub "Verified") must be called out explicitly.
+    assert "override" in out.lower()
+    assert "user.email" in out
+    # Case-insensitive name match: GPG_PRIVATE_KEY also triggers the section.
+    assert (
+        section.guard(PromptContext(secret_infos=(("gpg_private_key", None),))) is True
+    )
+    out2 = (
+        section.render(PromptContext(secret_infos=(("gpg_private_key", None),))) or ""
+    )
+    assert "$gpg_private_key" in out2
 
 
 def test_dynamic_sections_render_into_dynamic_block() -> None:
