@@ -22,7 +22,7 @@ from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent, LocalConversation, Tool
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
-from openhands.tools.ask_oracle import ORACLE_PROFILE_NAME
+from openhands.tools.ask_oracle import ORACLE_PROFILE_NAME, AskOracleTool
 
 
 DEFAULT_BASE_URL = "https://llm-proxy.app.all-hands.dev"
@@ -40,7 +40,6 @@ base_url = os.getenv("LLM_BASE_URL", DEFAULT_BASE_URL)
 
 with tempfile.TemporaryDirectory() as profile_store_dir:
     store = LLMProfileStore(profile_store_dir)
-    # The Oracle model is saved under the conventional profile name "oracle".
     store.save(
         ORACLE_PROFILE_NAME,
         LLM(
@@ -58,7 +57,7 @@ with tempfile.TemporaryDirectory() as profile_store_dir:
         base_url=base_url,
         usage_id="primary",
     )
-    agent = Agent(llm=primary_llm, tools=[Tool(name="ask_oracle")])
+    agent = Agent(llm=primary_llm, tools=[Tool(name=AskOracleTool.name)])
     conversation = LocalConversation(
         agent=agent,
         workspace=os.getcwd(),
@@ -73,6 +72,6 @@ with tempfile.TemporaryDirectory() as profile_store_dir:
     )
     conversation.run()
 
-    combined = conversation.state.stats.get_combined_metrics()
-    print(f"Total cost: ${combined.accumulated_cost:.6f}")
-    print(f"EXAMPLE_COST: {combined.accumulated_cost}")
+    cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
+    print(f"Total cost: ${cost:.6f}")
+    print(f"EXAMPLE_COST: {cost}")
