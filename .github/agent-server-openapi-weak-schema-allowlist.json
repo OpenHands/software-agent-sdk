@@ -78,6 +78,12 @@
     "owner": "OpenHands OSS"
   },
   {
+    "pointer": "/components/schemas/AskOracleTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands"
+  },
+  {
     "pointer": "/components/schemas/BrowserClickTool/properties/meta/anyOf/0/additionalProperties",
     "kind": "unrestricted-additional-properties",
     "reason": "Tool metadata is intentionally extensible across tool providers.",

@@ -52,13 +52,14 @@ def profile_store(tmp_path, monkeypatch):
     return store
 
 
-def _make_conversation() -> LocalConversation:
+def _make_conversation(profile_store_dir: Path | None = None) -> LocalConversation:
     return LocalConversation(
         agent=Agent(
             llm=_make_llm("default-model", "test-llm"),
             tools=[],
         ),
         workspace=Path.cwd(),
+        profile_store_dir=profile_store_dir,
     )
 
 
@@ -265,6 +266,17 @@ def test_switch_profile(profile_store):
     assert conv.agent.llm.model == "fast-model"
     conv.switch_profile("slow")
     assert conv.agent.llm.model == "slow-model"
+
+
+def test_switch_profile_uses_custom_profile_store(tmp_path: Path) -> None:
+    profile_dir = tmp_path / "profiles"
+    store = LLMProfileStore(profile_dir)
+    store.save("fast", _make_llm("fast-model", "fast"))
+
+    conv = _make_conversation(profile_store_dir=profile_dir)
+    conv.switch_profile("fast")
+
+    assert conv.agent.llm.model == "fast-model"
 
 
 def test_switch_profile_updates_state(profile_store):
