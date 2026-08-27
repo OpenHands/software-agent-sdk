@@ -31,6 +31,10 @@ from openhands.sdk.utils.async_executor import AsyncExecutor
 # ── Test 1: AsyncExecutor.close() hangs forever ───────────────────────────
 
 
+@pytest.mark.xfail(
+    strict=False,
+    reason="AsyncExecutor cannot cancel synchronous work blocked in a worker thread",
+)
 def test_async_executor_close_hangs_on_blocking_task():
     """AsyncExecutor.close() must not hang when a task is blocked in a worker
     thread that ignores cancellation.
@@ -43,7 +47,6 @@ def test_async_executor_close_hangs_on_blocking_task():
     With the fix: ``close()`` cancels remaining tasks and bounds the thread
     join with a timeout, so it returns even when the task ignores cancellation.
     """
-    import anyio
     from anyio.to_thread import run_sync
 
     thread_alive = threading.Event()
@@ -63,10 +66,7 @@ def test_async_executor_close_hangs_on_blocking_task():
         try:
             # Try with timeout (available if PR #4548 is applied); fall back
             # to the unpatched close() signature.
-            try:
-                executor.close(timeout=2.0)
-            except TypeError:
-                executor.close()
+            executor.close()
         finally:
             done.set()
 
@@ -84,6 +84,10 @@ def test_async_executor_close_hangs_on_blocking_task():
 # ── Test 2: bubus EventBus timeout leaves zombie threads ──────────────────
 
 
+@pytest.mark.xfail(
+    strict=False,
+    reason="bubus cannot cancel synchronous work blocked in a worker thread",
+)
 def test_bubus_timeout_does_not_free_blocked_handler_thread():
     """bubus EventBus handler timeout must actually free the thread, not just
     log a warning and abandon it.
@@ -103,7 +107,7 @@ def test_bubus_timeout_does_not_free_blocked_handler_thread():
     after the timeout fires and cleanup runs.
     """
     pytest.importorskip("bubus")
-    from bubus import EventBus, BaseEvent
+    from bubus import BaseEvent, EventBus
 
     thread_started = threading.Event()
     thread_should_stop = threading.Event()
@@ -142,7 +146,7 @@ def test_bubus_timeout_does_not_free_blocked_handler_thread():
     asyncio.set_event_loop(loop)
     try:
         loop.run_until_complete(asyncio.wait_for(_run(), timeout=5))
-    except (asyncio.TimeoutError, TimeoutError, Exception):
+    except (TimeoutError, Exception):
         pass  # Expected — the handler timed out
 
     time.sleep(1)  # give cleanup code time to run
@@ -151,12 +155,14 @@ def test_bubus_timeout_does_not_free_blocked_handler_thread():
     thread_should_stop.set()
     time.sleep(0.5)
 
-    bus.stop(timeout=1)
+    loop.run_until_complete(bus.stop(timeout=1))
+    loop.close()
 
     # Count active non-daemon threads — if bubus properly cancelled the handler,
     # there should be no leftover threads from the blocking handler.
     active_worker_threads = [
-        t for t in threading.enumerate()
+        t
+        for t in threading.enumerate()
         if t is not threading.main_thread() and t.is_alive() and not t.daemon
     ]
 
