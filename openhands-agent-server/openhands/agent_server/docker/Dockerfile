@@ -79,6 +79,58 @@ RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
 RUN test -x /agent-server/dist/openhands-agent-server
 
 ####################################################################################
+# ACP providers (parent-independent)
+#
+# Built from a fixed base rather than ${BASE_IMAGE} so that COPY --from=acp-providers
+# below produces the exact same compressed layer for every base-image-minimal build,
+# regardless of which BASE_IMAGE it lands on. This is what lets the ~600MB provider
+# payload be shared across per-instance evaluation image builds instead of being
+# reinstalled (and re-uploaded) once per instance.
+#
+# Failures here are fatal: there is no per-BASE_IMAGE fallback for a broken build of
+# the shared payload itself (see the compatibility probe in base-image-minimal for
+# the per-target-image fallback).
+####################################################################################
+FROM python:3.13-bookworm AS acp-providers
+# A fresh top-level path, not nested under a directory (e.g. /opt) that base
+# images commonly already populate (SWE-bench images ship /opt/miniconda3):
+# COPY --from=<stage> only produces a byte-identical layer across different
+# BASE_IMAGE parents when the destination itself doesn't already exist in the
+# parent, mirroring /agent-server's own top-level placement in the builder
+# stage above.
+ENV ACP_NODE_DIR=/acp-node
+RUN set -eux; \
+    apt-get -o Acquire::Retries=5 update; \
+    apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+        ca-certificates curl xz-utils; \
+    rm -rf /var/lib/apt/lists/*; \
+    ACP_WRAPPER_DIR=/opt/acp-wrappers; \
+    mkdir -p "$ACP_NODE_DIR" "$ACP_WRAPPER_DIR"; \
+    ARCH=$(uname -m); \
+    case "$ARCH" in \
+      x86_64|amd64) NARCH=x64; NODE_SHA256=69b09dba5c8dcb05c4e4273a4340db1005abeafe3927efda2bc5b249e80437ec;; \
+      aarch64|arm64) NARCH=arm64; NODE_SHA256=08bfbf538bad0e8cbb0269f0173cca28d705874a67a22f60b57d99dc99e30050;; \
+      *) echo "Unsupported architecture for ACP providers: '$ARCH'" >&2; exit 1;; \
+    esac; \
+    NODE_TARBALL="/tmp/node-v22.14.0-linux-${NARCH}.tar.xz"; \
+    curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused \
+        "https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-${NARCH}.tar.xz" -o "$NODE_TARBALL"; \
+    echo "$NODE_SHA256  $NODE_TARBALL" | sha256sum -c -; \
+    tar -xJ --strip-components=1 -C "$ACP_NODE_DIR" -f "$NODE_TARBALL"; \
+    rm -f "$NODE_TARBALL"; \
+    "$ACP_NODE_DIR/bin/node" --version; \
+    PATH="$ACP_NODE_DIR/bin:$PATH" "$ACP_NODE_DIR/bin/npm" install -g \
+        @agentclientprotocol/claude-agent-acp@0.63.0 \
+        @agentclientprotocol/codex-acp@1.1.7 \
+        @google/gemini-cli@0.46.0; \
+    for bin in claude-agent-acp codex-acp gemini; do \
+      printf '#!/bin/sh\nPATH="%s/bin:$PATH" exec "%s/bin/%s" "$@"\n' \
+        "$ACP_NODE_DIR" "$ACP_NODE_DIR" "$bin" \
+        > "$ACP_WRAPPER_DIR/$bin"; \
+      chmod +x "$ACP_WRAPPER_DIR/$bin"; \
+    done
+
+####################################################################################
 # Base image (minimal)
 # It includes only basic packages and the UV runtime.
 # No Docker, no VNC, no Desktop, no VSCode Web.
@@ -150,61 +202,31 @@ RUN set -eux; \
     mkdir -p /workspace/project; \
     chown -R "${USERNAME}:${USERNAME}" /workspace
 
-# Pre-install ACP servers for ACPAgent support (Claude Code, Codex, Gemini CLI)
-# Install Node.js 22 to a dedicated prefix so ACP packages get a modern runtime
+# Install ACP servers for ACPAgent support (Claude Code, Codex, Gemini CLI).
+# The payload itself (Node.js 22 + the ACP npm packages, under $ACP_NODE_DIR) is
+# built once in the acp-providers stage above, independent of BASE_IMAGE, and
+# copied in here so the layer is byte-identical across every base image it lands
+# on. Only the compatibility probe below runs against the real BASE_IMAGE.
+#
+# Node.js 22 lives at a dedicated prefix so ACP packages get a modern runtime
 # WITHOUT overwriting the repo-specific Node.js that test suites depend on.
 # SWE-bench images ship NVM/apt-managed Node 8-14 which cannot run ACP packages.
-#
-# This step is best-effort: SWE-Bench Pro base images come from many distros
-# and some have an old glibc (or use musl) that cannot run the upstream Node
-# 22 glibc tarball. When that happens we leave $ACP_NODE_DIR empty and skip
-# ACP setup so the rest of the build (and non-ACP agents) still work.
-ENV ACP_NODE_DIR=/opt/acp-node
-RUN set -ux; \
-    mkdir -p "$ACP_NODE_DIR"; \
-    ARCH=$(uname -m); \
-    NARCH=""; \
-    NODE_SHA256=""; \
-    case "$ARCH" in \
-      x86_64|amd64) NARCH=x64; NODE_SHA256=69b09dba5c8dcb05c4e4273a4340db1005abeafe3927efda2bc5b249e80437ec;; \
-      aarch64|arm64) NARCH=arm64; NODE_SHA256=08bfbf538bad0e8cbb0269f0173cca28d705874a67a22f60b57d99dc99e30050;; \
-    esac; \
-    NODE_TARBALL=""; \
-    if [ -z "$NARCH" ]; then \
-      echo "Skipping ACP Node install: unsupported architecture '$ARCH'" >&2; \
-    else \
-      NODE_TARBALL="/tmp/node-v22.14.0-linux-${NARCH}.tar.xz"; \
-      if curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused "https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-${NARCH}.tar.xz" -o "$NODE_TARBALL" \
-         && echo "$NODE_SHA256  $NODE_TARBALL" | sha256sum -c - \
-         && tar -xJ --strip-components=1 -C "$ACP_NODE_DIR" -f "$NODE_TARBALL" \
-         && "$ACP_NODE_DIR/bin/node" --version; then \
-        PATH="$ACP_NODE_DIR/bin:$PATH"; \
-        if "$ACP_NODE_DIR/bin/npm" install -g \
-            @agentclientprotocol/claude-agent-acp@0.63.0 \
-            @agentclientprotocol/codex-acp@1.1.7 \
-            @google/gemini-cli@0.46.0; then \
-          # Create wrappers in /usr/local/bin that prepend ACP's Node 22 to PATH.
-          # This ensures the ACP binary's #!/usr/bin/env node shebang resolves
-          # to Node 22, while the repo's own node (NVM/system) stays untouched
-          # for tests.
-          for bin in claude-agent-acp codex-acp gemini; do \
-            if [ -e "$ACP_NODE_DIR/bin/$bin" ]; then \
-              printf '#!/bin/sh\nPATH="%s/bin:$PATH" exec "%s/bin/%s" "$@"\n' \
-                "$ACP_NODE_DIR" "$ACP_NODE_DIR" "$bin" \
-                > /usr/local/bin/"$bin"; \
-              chmod +x /usr/local/bin/"$bin"; \
-            fi; \
-          done; \
-        else \
-          echo "Warning: ACP npm install failed; ACP agents will not be available on this image" >&2; \
-          rm -rf "$ACP_NODE_DIR"/*; \
-        fi; \
-      else \
-        echo "Warning: ACP Node 22 runtime is not compatible with this base image (likely older glibc or musl libc); ACP agents will not be available" >&2; \
-        rm -rf "$ACP_NODE_DIR"/*; \
-      fi; \
-    fi; \
-    rm -f "$NODE_TARBALL" 2>/dev/null || true
+ENV ACP_NODE_DIR=/acp-node
+COPY --from=acp-providers /acp-node /acp-node
+COPY --from=acp-providers /opt/acp-wrappers/. /usr/local/bin/
+
+# This probe is best-effort: SWE-Bench Pro base images come from many distros
+# and some have an old glibc (or use musl) that cannot run the upstream Node 22
+# glibc build. The payload above was built and sha256-verified against a fixed,
+# glibc-modern stage, so a failure here means "incompatible with this specific
+# BASE_IMAGE", not "the ACP install failed". When that happens we remove the
+# copied payload and wrappers so the rest of the build (and non-ACP agents)
+# still work, rather than leaving binaries in place that cannot execute.
+RUN if ! "$ACP_NODE_DIR/bin/node" --version >/dev/null 2>&1; then \
+      echo "Warning: ACP Node 22 runtime is not compatible with this base image (likely older glibc or musl libc); ACP agents will not be available" >&2; \
+      rm -rf "$ACP_NODE_DIR"/*; \
+      rm -f /usr/local/bin/claude-agent-acp /usr/local/bin/codex-acp /usr/local/bin/gemini; \
+    fi
 
 # Configure Claude Code managed settings for headless operation:
 # Allow all tool permissions (no human in the loop to approve).
