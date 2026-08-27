@@ -1,0 +1,29 @@
+{
+  "test_run_id": "compliance_20260803_174247",
+  "timestamp": "2026-08-03T17:42:50.878383",
+  "elapsed_time": 3.227339029312134,
+  "patterns_tested": 1,
+  "models_tested": [
+    "claude-sonnet-4-5"
+  ],
+  "results": [
+    {
+      "pattern_name": "unmatched_tool_use",
+      "pattern_description": "\nSends a conversation where an assistant message contains a tool_use (tool_calls),\nbut no tool_result (tool message) follows before the next user message.\n\nThis pattern can occur when:\n- ObservationEvent is delayed or lost\n- User message arrives before observation is recorded\n- Event sync issues during conversation resume\n",
+      "results": [
+        {
+          "pattern_name": "unmatched_tool_use",
+          "model": "litellm_proxy/claude-sonnet-4-5-20250929",
+          "model_id": "claude-sonnet-4-5",
+          "provider": "anthropic",
+          "response_type": "rejected",
+          "error_message": "litellm.BadRequestError: Error code: 400 - {'error': {'message': 'litellm.BadRequestError: AnthropicException - {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"messages.2: `tool_use` ids were found without `tool_result` blocks immediately after: call_abc123. Each `tool_use` block must have a corresponding `tool_result` block in the next message.\"},\"request_id\":\"req_011Cdg54AuBvBCByRgYJSPR1\"}No fallback model group found for original model_group=claude-sonnet-4-5-20250929. Fallbacks=[{\\'minimax-m2.5\\': [\\'minimax-m2.5-api\\']}]. Received Model Group=claude-sonnet-4-5-20250929\\nAvailable Model Group Fallbacks=None\\nError doing the fallback: litellm.BadRequestError: AnthropicException - {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"messages.2: `tool_use` ids were found without `tool_result` blocks immediately after: call_abc123. Each `tool_use` block must have a corresponding `tool_result` block in the next message.\"},\"request_id\":\"req_011Cdg54AuBvBCByRgYJSPR1\"}No fallback model group found for original model_group=claude-sonnet-4-5-20250929. Fallbacks=[{\\'minimax-m2.5\\': [\\'minimax-m2.5-api\\']}]', 'type': None, 'param': None, 'code': '400'}}",
+          "error_type": "LLMMalformedConversationHistoryError",
+          "http_status": null,
+          "raw_response": null,
+          "notes": null
+        }
+      ]
+    }
+  ]
+}
