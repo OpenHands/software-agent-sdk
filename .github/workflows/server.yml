@@ -22,6 +22,10 @@ on:
                 description: Target platforms
                 type: string
                 default: linux/amd64,linux/arm64
+            install_acp_providers:
+                description: Comma-separated ACP provider keys to bake into the image
+                type: string
+                default: claude-code,codex,gemini-cli
 
 permissions:
     contents: read
@@ -317,6 +321,7 @@ jobs:
         env:
             IMAGE: ${{ inputs.image != '' && inputs.image || 'ghcr.io/openhands/agent-server' }}
             BASE_IMAGE: ${{ inputs.base_image != '' && inputs.base_image || matrix.base_image }}
+            INSTALL_ACP_PROVIDERS: ${{ inputs.install_acp_providers != '' && inputs.install_acp_providers || 'claude-code,codex,gemini-cli' }}
             CUSTOM_TAGS: ${{ matrix.variant }}
             VARIANT: ${{ matrix.variant }}
             ARCH: ${{ matrix.arch }}
@@ -402,6 +407,7 @@ jobs:
                       BASE_IMAGE=${{ env.BASE_IMAGE }}
                       OPENHANDS_BUILD_GIT_SHA=${{ env.SDK_SHA }}
                       OPENHANDS_BUILD_GIT_REF=${{ env.SDK_REF }}
+                      INSTALL_ACP_PROVIDERS=${{ env.INSTALL_ACP_PROVIDERS }}
 
             - name: Cleanup build context
               if: always()

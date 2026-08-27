@@ -13,6 +13,12 @@ ARG PORT=8000
 # to bundle google-cloud-aiplatform so the resulting binary supports
 # `vertex_ai/*` partner models (MiniMax, Qwen, Kimi MaaS endpoints).
 ARG ENABLE_VERTEX=0
+# Comma-separated ACP provider keys (see ACP_PROVIDERS in
+# openhands-sdk/openhands/sdk/settings/acp_providers.py) to bake into the
+# acp-providers stage below. The default reproduces the full provider set
+# shipped today; an unknown key fails the build rather than silently
+# installing nothing.
+ARG INSTALL_ACP_PROVIDERS=claude-code,codex,gemini-cli
 
 ####################################################################################
 # Builder (source mode)
@@ -92,6 +98,7 @@ RUN test -x /agent-server/dist/openhands-agent-server
 # the per-target-image fallback).
 ####################################################################################
 FROM python:3.13-bookworm AS acp-providers
+ARG INSTALL_ACP_PROVIDERS
 # A fresh top-level path, not nested under a directory (e.g. /opt) that base
 # images commonly already populate (SWE-bench images ship /opt/miniconda3):
 # COPY --from=<stage> only produces a byte-identical layer across different
@@ -100,12 +107,30 @@ FROM python:3.13-bookworm AS acp-providers
 # stage above.
 ENV ACP_NODE_DIR=/acp-node
 RUN set -eux; \
+    ACP_WRAPPER_DIR=/opt/acp-wrappers; \
+    mkdir -p "$ACP_NODE_DIR" "$ACP_WRAPPER_DIR"; \
+    PACKAGES=""; \
+    WRAPPER_BINS=""; \
+    for provider in $(echo "$INSTALL_ACP_PROVIDERS" | tr ',' ' '); do \
+      case "$provider" in \
+        claude-code) PACKAGES="$PACKAGES @agentclientprotocol/claude-agent-acp@0.63.0"; \
+          WRAPPER_BINS="$WRAPPER_BINS claude-agent-acp";; \
+        codex) PACKAGES="$PACKAGES @agentclientprotocol/codex-acp@1.1.7"; \
+          WRAPPER_BINS="$WRAPPER_BINS codex-acp";; \
+        gemini-cli) PACKAGES="$PACKAGES @google/gemini-cli@0.46.0"; \
+          WRAPPER_BINS="$WRAPPER_BINS gemini";; \
+        *) echo "Unknown ACP provider '$provider' in INSTALL_ACP_PROVIDERS" \
+             "(expected one of: claude-code, codex, gemini-cli)" >&2; exit 1;; \
+      esac; \
+    done; \
+    if [ -z "$PACKAGES" ]; then \
+      echo "INSTALL_ACP_PROVIDERS is empty; no ACP providers will be installed"; \
+      exit 0; \
+    fi; \
     apt-get -o Acquire::Retries=5 update; \
     apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
         ca-certificates curl xz-utils; \
     rm -rf /var/lib/apt/lists/*; \
-    ACP_WRAPPER_DIR=/opt/acp-wrappers; \
-    mkdir -p "$ACP_NODE_DIR" "$ACP_WRAPPER_DIR"; \
     ARCH=$(uname -m); \
     case "$ARCH" in \
       x86_64|amd64) NARCH=x64; NODE_SHA256=69b09dba5c8dcb05c4e4273a4340db1005abeafe3927efda2bc5b249e80437ec;; \
@@ -119,11 +144,8 @@ RUN set -eux; \
     tar -xJ --strip-components=1 -C "$ACP_NODE_DIR" -f "$NODE_TARBALL"; \
     rm -f "$NODE_TARBALL"; \
     "$ACP_NODE_DIR/bin/node" --version; \
-    PATH="$ACP_NODE_DIR/bin:$PATH" "$ACP_NODE_DIR/bin/npm" install -g \
-        @agentclientprotocol/claude-agent-acp@0.63.0 \
-        @agentclientprotocol/codex-acp@1.1.7 \
-        @google/gemini-cli@0.46.0; \
-    for bin in claude-agent-acp codex-acp gemini; do \
+    PATH="$ACP_NODE_DIR/bin:$PATH" "$ACP_NODE_DIR/bin/npm" install -g $PACKAGES; \
+    for bin in $WRAPPER_BINS; do \
       printf '#!/bin/sh\nPATH="%s/bin:$PATH" exec "%s/bin/%s" "$@"\n' \
         "$ACP_NODE_DIR" "$ACP_NODE_DIR" "$bin" \
         > "$ACP_WRAPPER_DIR/$bin"; \
