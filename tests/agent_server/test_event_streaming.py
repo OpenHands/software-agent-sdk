@@ -33,7 +33,22 @@ def _make_chunk(
 
 
 class _CollectorSubscriber(Subscriber):
-    """Subscriber that collects events for assertions."""
+    """Subscriber that opts into deltas and collects events for assertions."""
+
+    receives_streaming_deltas = True
+
+    def __init__(self):
+        self.events: list[Event] = []
+
+    async def __call__(self, event: Event):
+        self.events.append(event)
+
+    async def close(self):
+        pass
+
+
+class _PlainSubscriber(Subscriber):
+    """Subscriber that keeps the default: it must never observe a delta."""
 
     def __init__(self):
         self.events: list[Event] = []
@@ -292,3 +307,26 @@ async def test_multiple_chunks_produce_multiple_events(event_service, tmp_path):
     delta_events = [e for e in collector.events if isinstance(e, StreamingDeltaEvent)]
     assert len(delta_events) == 4
     assert [e.content for e in delta_events] == words
+
+
+@pytest.mark.asyncio
+async def test_deltas_only_reach_subscribers_that_opted_in(event_service, tmp_path):
+    """Deltas are transport-only, so the bus must not fan them out by default.
+
+    ``StreamingDeltaEvent`` is published straight to the shared ``PubSub``, which
+    used to notify every subscriber with no kind filter. That handed token-rate
+    traffic to consumers sized for conversation events -- webhooks POSTed each
+    delta and telemetry counted it. Delivery is opt-in so a subscriber added
+    later cannot inherit the behaviour by accident.
+    """
+    streaming = _CollectorSubscriber()
+    plain = _PlainSubscriber()
+    event_service._pub_sub.subscribe(streaming)
+    event_service._pub_sub.subscribe(plain)
+
+    callback = await _start_and_capture_callback(event_service, tmp_path)
+    callback(_make_chunk(content="Hello"))
+    await asyncio.sleep(0.05)
+
+    assert [e for e in streaming.events if isinstance(e, StreamingDeltaEvent)]
+    assert not [e for e in plain.events if isinstance(e, StreamingDeltaEvent)]

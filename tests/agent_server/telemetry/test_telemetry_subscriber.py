@@ -13,7 +13,11 @@ from openhands.agent_server.telemetry.subscriber import (
     ConversationTelemetryContext,
     TelemetrySubscriber,
 )
-from openhands.sdk.event import AgentErrorEvent, ConversationStateUpdateEvent
+from openhands.sdk.event import (
+    AgentErrorEvent,
+    ConversationStateUpdateEvent,
+    StreamingDeltaEvent,
+)
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
 
@@ -660,3 +664,22 @@ def test_is_automation_is_derived_from_allowlisted_tags(tags, is_automation):
     )
 
     assert context.is_automation is is_automation
+
+
+async def test_event_count_ignores_streaming_deltas(factory):
+    """``event_count_bucket`` must mean the same thing with streaming on or off.
+
+    The counter is incremented for every event the subscriber sees, and the
+    subscriber shares the bus that carries token deltas -- so the bucket used to
+    scale with model verbosity rather than conversation activity, making a
+    streamed and a non-streamed conversation incomparable.
+    """
+    sink = CollectingSink()
+    sub = make_subscriber(sink, factory)
+    pub_sub: PubSub = PubSub()
+    pub_sub.subscribe(sub)
+
+    for _ in range(50):
+        await pub_sub(StreamingDeltaEvent(content="tok"))
+
+    assert sub._event_count == 0

@@ -23,8 +23,10 @@ from openhands.agent_server.conversation_service import (
 )
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import StoredConversation
+from openhands.agent_server.pub_sub import PubSub
 from openhands.agent_server.utils import utc_now
-from openhands.sdk import LLM, Agent
+from openhands.sdk import LLM, Agent, Event
+from openhands.sdk.event import StreamingDeltaEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm.message import Message, TextContent
 from openhands.sdk.workspace import LocalWorkspace
@@ -1557,3 +1559,34 @@ async def test_webhook_subscribe_errors_surface(tmp_path, monkeypatch):
                 usage_id="webhook-error",
                 initial_text=None,
             )
+
+
+@pytest.mark.asyncio
+async def test_streaming_deltas_never_reach_webhook(
+    mock_event_service, webhook_spec, sample_conversation_id
+):
+    """A streamed response must not add a single POST over a non-streamed one.
+
+    Webhooks subscribe to the same bus that carries ``StreamingDeltaEvent``, so
+    before delivery became opt-in every token was enqueued and shipped -- a
+    continuous POST loop for the duration of each streamed response, carrying
+    unmasked model text to a configured endpoint.
+    """
+    subscriber = WebhookSubscriber(
+        conversation_id=sample_conversation_id,
+        service=mock_event_service,
+        spec=webhook_spec,
+    )
+    pub_sub: PubSub[Event] = PubSub()
+    pub_sub.subscribe(subscriber)
+
+    with patch.object(subscriber, "_post_events", new_callable=AsyncMock) as post:
+        # Comfortably past event_buffer_size: a filter that only trimmed the
+        # batch would still flush here.
+        for _ in range(webhook_spec.event_buffer_size + 2):
+            await pub_sub(StreamingDeltaEvent(content="tok"))
+
+        assert subscriber.queue == []
+        post.assert_not_called()
+
+    subscriber._cancel_flush_timer()

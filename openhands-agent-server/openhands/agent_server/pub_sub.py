@@ -1,9 +1,10 @@
 import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TypeVar
+from typing import ClassVar, TypeVar
 from uuid import UUID, uuid4
 
+from openhands.sdk.event import StreamingDeltaEvent
 from openhands.sdk.logger import get_logger
 
 
@@ -13,6 +14,13 @@ T = TypeVar("T")
 
 
 class Subscriber[T](ABC):
+    # Streaming deltas arrive at token rate and are transport-only: they are
+    # published straight to the bus and never persisted to
+    # ConversationState.events. Consumers sized for conversation events opt in
+    # explicitly, so a subscriber added later cannot inherit that traffic --
+    # and the content it carries -- by default.
+    receives_streaming_deltas: ClassVar[bool] = False
+
     @abstractmethod
     async def __call__(self, event: T):
         """Invoke this subscriber"""
@@ -83,10 +91,17 @@ class PubSub[T]:
         Subscribers are notified concurrently so a slow client cannot
         block delivery to others.  Each callback runs in its own
         error-handling wrapper to preserve fault isolation.
+        Streaming deltas go only to subscribers that set
+        ``receives_streaming_deltas``; see :class:`Subscriber`.
         Args:
             event: The event to pass to all callbacks
         """
-        subscribers = list(self._subscribers.items())
+        is_delta = isinstance(event, StreamingDeltaEvent)
+        subscribers = [
+            (subscriber_id, subscriber)
+            for subscriber_id, subscriber in self._subscribers.items()
+            if subscriber.receives_streaming_deltas or not is_delta
+        ]
         if not subscribers:
             return
 
