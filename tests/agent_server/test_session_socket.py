@@ -1,0 +1,239 @@
+"""Semantics of the session socket: framing, the replay boundary, backpressure.
+
+These cover four of the six streaming behaviours that have no test today:
+delta suppression on the durable channel, replay-vs-live interleave, the
+publisher never blocking on a wedged connection, and lossless resume.
+"""
+
+import asyncio
+import json
+
+import pytest
+
+from openhands.agent_server.session_protocol import MAX_FRAME_BYTES
+from openhands.agent_server.session_socket import (
+    _ConnectionWriter,
+    _read_page,
+    _replay,
+    _SessionSubscriber,
+)
+from openhands.sdk import Message, TextContent
+from openhands.sdk.event import MessageEvent, StreamingDeltaEvent
+from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+
+
+def _msg(text: str) -> MessageEvent:
+    return MessageEvent(
+        source="user",
+        llm_message=Message(role="user", content=[TextContent(text=text)]),
+    )
+
+
+class _FakeWebSocket:
+    """Records what actually reached the wire, and can be made to hang."""
+
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+        self.gate: asyncio.Event | None = None
+
+    async def send_text(self, payload: str) -> None:
+        if self.gate is not None:
+            await self.gate.wait()
+        self.sent.append(payload)
+
+    def frames(self) -> list[dict]:
+        return [json.loads(p) for p in self.sent]
+
+
+class _FakeEventLog:
+    """Enough EventLog for framing: index by id, read by index, length."""
+
+    def __init__(self) -> None:
+        self._events: list = []
+        self._by_id: dict[str, int] = {}
+
+    def add(self, event) -> int:
+        idx = len(self._events)
+        self._events.append(event)
+        self._by_id[event.id] = idx
+        return idx
+
+    def get_index(self, event_id: str) -> int:
+        try:
+            return self._by_id[event_id]
+        except KeyError:
+            raise KeyError(f"Unknown event_id: {event_id}")
+
+    def __getitem__(self, idx: int):
+        return self._events[idx]
+
+    def __len__(self) -> int:
+        return len(self._events)
+
+
+async def _drain(writer: _ConnectionWriter) -> None:
+    """Let the single writer task flush whatever has been admitted."""
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_durable_frame_carries_seq_and_untouched_event():
+    ws, log = _FakeWebSocket(), _FakeEventLog()
+    event = _msg("hello")
+    log.add(event)
+
+    writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
+    writer.start()
+    sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
+    sub.go_live(None)
+    await sub(event)
+    await _drain(writer)
+    await writer.aclose()
+
+    (frame,) = ws.frames()
+    assert frame["type"] == "durable"
+    assert frame["seq"] == 0
+    # The payload is exactly what the legacy endpoint sends. Event is unchanged.
+    assert frame["event"] == event.model_dump(mode="json", exclude_none=True)
+
+
+@pytest.mark.asyncio
+async def test_deltas_never_reach_the_durable_channel():
+    """The bug that put token deltas on webhooks and telemetry, structurally."""
+    ws, log = _FakeWebSocket(), _FakeEventLog()
+    writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
+    writer.start()
+    sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
+    sub.go_live(None)
+
+    await sub(StreamingDeltaEvent(content="tok"))
+    await sub(StreamingDeltaEvent(reasoning_content="think"))
+    await _drain(writer)
+    await writer.aclose()
+
+    assert ws.frames() == []
+
+
+@pytest.mark.asyncio
+async def test_unpersisted_event_is_transient_and_carries_no_seq():
+    ws, log = _FakeWebSocket(), _FakeEventLog()
+    writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
+    writer.start()
+    sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
+    sub.go_live(None)
+
+    await sub(ConversationStateUpdateEvent(key="execution_status", value="idle"))
+    await _drain(writer)
+    await writer.aclose()
+
+    (frame,) = ws.frames()
+    assert frame["type"] == "transient"
+    assert "seq" not in frame
+
+
+@pytest.mark.asyncio
+async def test_replay_and_live_do_not_interleave_or_duplicate():
+    """The seam: subscribe (buffering) -> read mark -> replay -> flush.
+
+    An event that lands *during* replay must arrive exactly once, after the
+    history, and an event already on disk must not be sent twice.
+    """
+    ws, log = _FakeWebSocket(), _FakeEventLog()
+    history = [_msg(f"h{i}") for i in range(3)]
+    for e in history:
+        log.add(e)
+
+    writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
+    writer.start()
+    sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
+
+    # Subscriber is registered and buffering; mark is read after that.
+    through_seq = len(log) - 1
+
+    # Two events arrive while replay is in flight: one already on disk (the
+    # race the seq filter exists for) and one genuinely new.
+    await sub(history[2])
+    live = _msg("live")
+    log.add(live)
+    await sub(live)
+
+    assert await _replay(log, 0, through_seq + 1, writer)  # type: ignore[arg-type]
+    sub.go_live(through_seq)
+    await _drain(writer)
+    await writer.aclose()
+
+    frames = ws.frames()
+    assert [f["seq"] for f in frames] == [0, 1, 2, 3], "no gaps, no duplicates"
+    assert [f["event"]["id"] for f in frames] == [e.id for e in [*history, live]]
+
+
+@pytest.mark.asyncio
+async def test_wedged_connection_drops_instead_of_blocking_the_publisher():
+    """Admission is synchronous: a stuck socket must never stall the caller.
+
+    This is the behaviour the legacy endpoint gets wrong — its subscriber
+    awaits websocket.send_json directly, so one wedged client stalls the
+    PubSub gather and with it the publisher.
+    """
+    ws, log = _FakeWebSocket(), _FakeEventLog()
+    ws.gate = asyncio.Event()  # socket accepts nothing until released
+
+    writer = _ConnectionWriter(ws, max_pending_bytes=4096)  # type: ignore[arg-type]
+    writer.start()
+    sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
+    sub.go_live(None)
+
+    # Publish far more than the budget, and time the publisher.
+    started = asyncio.get_running_loop().time()
+    for i in range(500):
+        event = _msg(f"m{i}" * 50)
+        log.add(event)
+        await sub(event)
+    elapsed = asyncio.get_running_loop().time() - started
+
+    assert elapsed < 0.5, "publisher blocked on a wedged consumer"
+    assert writer.closed, "over-budget connection should be dropped"
+    assert writer.drop_reason == "slow_consumer"
+
+    ws.gate.set()
+    await writer.aclose()
+
+
+@pytest.mark.asyncio
+async def test_oversized_frame_drops_the_connection_not_the_event():
+    """Durable must survive a reconnect, so an unsendable frame kills the
+    connection and the client resumes from its cursor."""
+    ws, log = _FakeWebSocket(), _FakeEventLog()
+    writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
+    writer.start()
+    sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
+    sub.go_live(None)
+
+    huge = _msg("x" * (MAX_FRAME_BYTES + 1))
+    log.add(huge)
+    await sub(huge)
+    await _drain(writer)
+
+    assert writer.closed
+    assert writer.drop_reason == "frame_too_large"
+    assert ws.frames() == []
+    await writer.aclose()
+
+
+def test_replay_skips_unreadable_events_instead_of_failing():
+    class _Corrupt(_FakeEventLog):
+        def __getitem__(self, idx: int):
+            if idx == 1:
+                raise FileNotFoundError("half-written")
+            return super().__getitem__(idx)
+
+    log = _Corrupt()
+    for i in range(3):
+        log.add(_msg(f"e{i}"))
+
+    page = _read_page(log, 0, 3)  # type: ignore[arg-type]
+    assert [seq for seq, _ in page] == [0, 2]
