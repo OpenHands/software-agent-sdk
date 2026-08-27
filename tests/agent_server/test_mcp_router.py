@@ -10,6 +10,7 @@ from collections.abc import Generator
 from types import SimpleNamespace
 
 import anyio
+import mcp
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
@@ -409,6 +410,45 @@ def test_mcp_test_remote_unreachable(client: TestClient):
     body = response.json()
     assert body["ok"] is False
     assert body["error_kind"] in {"connection", "timeout"}
+
+
+def test_mcp_test_mcp_sdk_error_maps_to_connection_failure(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    """An ``mcp.McpError`` (e.g. Streamable HTTP "Session terminated") should
+    be reported as a connection failure, not as an unexpected error.
+
+    The ``mcp`` SDK raises ``McpError`` for transport-level failures such as a
+    server returning 404 for a request carrying an established session id
+    (surfaced as code 32600 "Session terminated"). These are ordinary
+    connection failures and should not fall through to ``error_kind="unknown"``.
+    """
+
+    def fake_create_mcp_tools(config, timeout=30.0, **kwargs):
+        raise mcp.McpError(mcp.ErrorData(code=32600, message="Session terminated"))
+
+    monkeypatch.setattr(
+        "openhands.agent_server.mcp_router.create_mcp_tools",
+        fake_create_mcp_tools,
+    )
+
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "name": "gitlab",
+            "server": {
+                "transport": "http",
+                "url": "https://gitlab.com/api/v4/mcp",
+            },
+            "timeout": 5.0,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error_kind"] == "connection"
+    assert "Session terminated" in body["error"]
 
 
 # ---------------------------------------------------------------------------

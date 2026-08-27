@@ -28,6 +28,7 @@ from urllib.parse import urlparse
 
 import anyio
 import httpx
+import mcp
 import mcp.types
 from fastapi import APIRouter, HTTPException, Request
 from fastmcp.client.auth.oauth import ClientNotFoundError, OAuth
@@ -611,6 +612,18 @@ def _probe_mcp_server(
         # denied") because the wrapper alone isn't useful.
         cause = exc.__cause__ or exc.__context__
         detail = str(cause) if cause else str(exc) or "Failed to connect to MCP server"
+        logger.info(
+            "MCP test connection failed for server %r: %s", request.name, detail
+        )
+        return MCPTestFailure(error=detail, error_kind="connection")
+    except mcp.McpError as exc:
+        # The ``mcp`` SDK raises ``McpError`` for transport-level failures that
+        # aren't OpenHands' own ``MCPError`` -- e.g. a Streamable HTTP server
+        # returning 404 for a request carrying an established session id, which
+        # the SDK surfaces as code 32600 "Session terminated". These are
+        # connection failures, not unexpected bugs, so classify them as such
+        # instead of leaking the raw type name through error_kind="unknown".
+        detail = str(exc) or "Failed to connect to MCP server"
         logger.info(
             "MCP test connection failed for server %r: %s", request.name, detail
         )
