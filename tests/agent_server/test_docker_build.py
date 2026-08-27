@@ -655,6 +655,40 @@ def test_build_passes_install_acp_providers_build_arg(
     assert f"INSTALL_ACP_PROVIDERS={install_acp_providers}" in cmd
 
 
+@pytest.mark.parametrize(
+    "env_value,expected",
+    [
+        (None, "claude-code,codex,gemini-cli"),
+        ("", ""),
+        ("codex", "codex"),
+    ],
+)
+def test_main_resolves_install_acp_providers_from_env(
+    monkeypatch, env_value: str | None, expected: str
+):
+    """Test that an explicit empty $INSTALL_ACP_PROVIDERS survives as empty,
+    rather than being coerced back to the default like an unset var would be.
+    """
+    from openhands.agent_server.docker import build as build_module
+
+    if env_value is None:
+        monkeypatch.delenv("INSTALL_ACP_PROVIDERS", raising=False)
+    else:
+        monkeypatch.setenv("INSTALL_ACP_PROVIDERS", env_value)
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+
+    captured = {}
+
+    def fake_build(opts):
+        captured["opts"] = opts
+        return []
+
+    monkeypatch.setattr(build_module, "build", fake_build)
+    build_module.main(["--load"])
+
+    assert captured["opts"].install_acp_providers == expected
+
+
 def test_build_with_prebuilt_sdist_preserves_tags_and_docker_args(tmp_path: Path):
     from openhands.agent_server.docker.build import (
         BuildOptions,

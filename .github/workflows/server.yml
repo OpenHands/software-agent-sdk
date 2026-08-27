@@ -321,7 +321,11 @@ jobs:
         env:
             IMAGE: ${{ inputs.image != '' && inputs.image || 'ghcr.io/openhands/agent-server' }}
             BASE_IMAGE: ${{ inputs.base_image != '' && inputs.base_image || matrix.base_image }}
-            INSTALL_ACP_PROVIDERS: ${{ inputs.install_acp_providers != '' && inputs.install_acp_providers || 'claude-code,codex,gemini-cli' }}
+            # github.event_name (not a blank-string check): a manual dispatch
+            # can legitimately pass an empty install_acp_providers ("install
+            # none"), which must be distinguishable from "no dispatch input at
+            # all" on push/pull_request events.
+            INSTALL_ACP_PROVIDERS: ${{ github.event_name == 'workflow_dispatch' && inputs.install_acp_providers || 'claude-code,codex,gemini-cli' }}
             CUSTOM_TAGS: ${{ matrix.variant }}
             VARIANT: ${{ matrix.variant }}
             ARCH: ${{ matrix.arch }}

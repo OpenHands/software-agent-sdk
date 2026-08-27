@@ -1077,10 +1077,12 @@ def main(argv: list[str]) -> int:
     )
     parser.add_argument(
         "--install-acp-providers",
-        default=_env("INSTALL_ACP_PROVIDERS", "claude-code,codex,gemini-cli"),
+        # os.environ.get, not _env(): an explicit empty string here means
+        # "install none" and must survive, but _env() treats blank as unset.
+        default=os.environ.get("INSTALL_ACP_PROVIDERS", "claude-code,codex,gemini-cli"),
         help=(
             "Comma-separated ACP provider keys to bake into the image "
-            "(default from $INSTALL_ACP_PROVIDERS)."
+            "(default from $INSTALL_ACP_PROVIDERS; empty string installs none)."
         ),
     )
 
