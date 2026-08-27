@@ -47,17 +47,10 @@ class _CollectorSubscriber(Subscriber):
         pass
 
 
-class _PlainSubscriber(Subscriber):
-    """Subscriber that keeps the default: it must never observe a delta."""
+class _PlainSubscriber(_CollectorSubscriber):
+    """Collector that keeps the default: it must never observe a delta."""
 
-    def __init__(self):
-        self.events: list[Event] = []
-
-    async def __call__(self, event: Event):
-        self.events.append(event)
-
-    async def close(self):
-        pass
+    receives_streaming_deltas = False
 
 
 @pytest.fixture
@@ -311,14 +304,7 @@ async def test_multiple_chunks_produce_multiple_events(event_service, tmp_path):
 
 @pytest.mark.asyncio
 async def test_deltas_only_reach_subscribers_that_opted_in(event_service, tmp_path):
-    """Deltas are transport-only, so the bus must not fan them out by default.
-
-    ``StreamingDeltaEvent`` is published straight to the shared ``PubSub``, which
-    used to notify every subscriber with no kind filter. That handed token-rate
-    traffic to consumers sized for conversation events -- webhooks POSTed each
-    delta and telemetry counted it. Delivery is opt-in so a subscriber added
-    later cannot inherit the behaviour by accident.
-    """
+    """Deltas reach only subscribers that opted in, never the rest of the bus."""
     streaming = _CollectorSubscriber()
     plain = _PlainSubscriber()
     event_service._pub_sub.subscribe(streaming)

@@ -667,13 +667,7 @@ def test_is_automation_is_derived_from_allowlisted_tags(tags, is_automation):
 
 
 async def test_event_count_ignores_streaming_deltas(factory):
-    """``event_count_bucket`` must mean the same thing with streaming on or off.
-
-    The counter is incremented for every event the subscriber sees, and the
-    subscriber shares the bus that carries token deltas -- so the bucket used to
-    scale with model verbosity rather than conversation activity, making a
-    streamed and a non-streamed conversation incomparable.
-    """
+    """Deltas must not inflate event_count_bucket (regression for #4673)."""
     sink = CollectingSink()
     sub = make_subscriber(sink, factory)
     pub_sub: PubSub = PubSub()

@@ -539,8 +539,7 @@ def _is_websocket_connected(websocket: WebSocket) -> bool:
 class _WebSocketSubscriber(Subscriber):
     """WebSocket subscriber for conversation events."""
 
-    # The live socket is what token streaming is for: this is the one consumer
-    # that wants deltas.
+    # The live socket is what token streaming is for.
     receives_streaming_deltas = True
 
     websocket: WebSocket
