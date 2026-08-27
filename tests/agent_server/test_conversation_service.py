@@ -663,7 +663,7 @@ async def test_conversation_read_completes_while_another_conversation_starts(
                 )
             finally:
                 release_start.set()
-                await starting
+                await asyncio.wait_for(starting, timeout=5)
 
 
 @pytest.mark.asyncio
