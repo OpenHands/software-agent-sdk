@@ -121,6 +121,15 @@ INIT_STATE_PREFIX_SCAN_WINDOW = 3
 
 
 def _latest_user_message_contains_image(messages: list[Message]) -> bool:
+    """Return whether the latest user message contains an image.
+
+    Args:
+        messages: Messages ordered from oldest to newest.
+
+    Returns:
+        ``True`` when the latest message with the ``user`` role contains an
+        image; otherwise, ``False``.
+    """
     for message in reversed(messages):
         if message.role == "user":
             return message.contains_image
@@ -128,6 +137,15 @@ def _latest_user_message_contains_image(messages: list[Message]) -> bool:
 
 
 def _non_multimodal_image_message(model: str) -> Message:
+    """Create an assistant message explaining that a model cannot analyze images.
+
+    Args:
+        model: Identifier of the selected model to include in the explanation.
+
+    Returns:
+        An assistant ``Message`` that asks the user to switch to a multimodal
+        model.
+    """
     return Message(
         role="assistant",
         content=[
@@ -145,6 +163,21 @@ def _non_multimodal_image_message(model: str) -> Message:
 def _replace_latest_user_images_with_references(
     messages: list[Message],
 ) -> list[Message]:
+    """Replace images in the latest user message with vision-tool references.
+
+    The latest user message containing an image is copied with each image URL
+    replaced by a text reference to the corresponding zero-based image index.
+    Other content and messages are preserved, allowing a text-only model to
+    request image inspection through the ``inspect_image_with_vision`` tool.
+
+    Args:
+        messages: Messages that may contain image content.
+
+    Returns:
+        A shallow copy of ``messages`` with the latest qualifying user message
+        rewritten. If no qualifying message exists, the copied list is
+        unchanged.
+    """
     rewritten = list(messages)
     for index in range(len(rewritten) - 1, -1, -1):
         message = rewritten[index]
