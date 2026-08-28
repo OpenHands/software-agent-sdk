@@ -759,6 +759,14 @@ async def run_response(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Streaming responses are not supported yet",
         )
+    if request.store:
+        # `store=True` promises server-side persistence retrievable through
+        # GET /v1/responses/{id}, which this gateway does not provide. Rejecting
+        # it is safer than silently returning a response no client can fetch.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Persistent response storage (store=True) is not supported yet",
+        )
 
     conversation_id = (
         _conversation_id_from_response_id(request.previous_response_id)

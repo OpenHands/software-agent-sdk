@@ -982,6 +982,20 @@ def test_openai_chat_completions_gateway_over_real_server(
                     "Streaming responses are not supported yet"
                 )
 
+                store_response = client.post(
+                    f"{env['host']}/v1/responses",
+                    json={
+                        "model": "openhands_smoke",
+                        "input": "This must not run as a stored response.",
+                        "store": True,
+                    },
+                    timeout=2.0,
+                )
+                assert store_response.status_code == 400
+                assert store_response.json()["detail"] == (
+                    "Persistent response storage (store=True) is not supported yet"
+                )
+
 
 def test_openai_gateway_replays_frozen_llm_fixtures(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
