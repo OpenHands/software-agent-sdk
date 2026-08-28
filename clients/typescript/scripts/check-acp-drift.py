@@ -40,7 +40,9 @@ def _dump_json(obj) -> str:
 
 def main() -> int:
     try:
-        from openhands.sdk.settings.acp_providers import ACP_PROVIDERS  # type: ignore[import-not-found]
+        from openhands.sdk.settings.acp_providers import (
+            ACP_PROVIDERS,  # type: ignore[import-not-found]
+        )
     except ImportError as exc:
         print(
             "ERROR: cannot import openhands-sdk. "
@@ -60,7 +62,9 @@ def main() -> int:
 
     if ts_text == py_text:
         n = len(ts_data) if isinstance(ts_data, dict) else 0
-        print(f"OK: src/models/acp-providers.json matches openhands-sdk ({n} providers).")
+        print(
+            f"OK: src/models/acp-providers.json matches openhands-sdk ({n} providers)."
+        )
         return 0
 
     print(

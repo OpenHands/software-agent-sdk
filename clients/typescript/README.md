@@ -20,7 +20,7 @@ This client is **fully browser-compatible** and works without Node.js dependenci
 
 ## Installation
 
-This package is published to GitHub Packages. You can install it either from GitHub Packages or directly from this repository.
+This package is published to npm and GitHub Packages from the `clients/typescript` directory of the OpenHands Software Agent SDK repository.
 
 ### Option 1: Configure .npmrc
 
@@ -41,14 +41,6 @@ npm install @openhands/typescript-client
 ```bash
 npm install @openhands/typescript-client --registry=https://npm.pkg.github.com
 ```
-
-### Option 3: Install directly from the GitHub repository
-
-```bash
-npm install github:OpenHands/typescript-client
-```
-
-This git-based install runs the package `prepare` script during installation so the published `dist/` entrypoints and subpath exports are built automatically.
 
 ## Agent Server API contract
 
@@ -78,9 +70,9 @@ issue. Ordinary client PRs never generate from the moving SDK branch.
 
 ## Repository boundaries
 
-This repository owns the browser-compatible typed client for the OpenHands Agent Server API. [`OpenHands/software-agent-sdk`](https://github.com/OpenHands/software-agent-sdk) owns the canonical API implementation, Agent Server, and agent behavior; [`OpenHands/OpenHands`](https://github.com/OpenHands/OpenHands) consumes this client for Agent Canvas UI; and [`OpenHands/extensions`](https://github.com/OpenHands/extensions) owns reusable skills, plugins, automations, and integrations; [`OpenHands/automation`](https://github.com/OpenHands/automation) owns scheduling, webhooks, run history, and dispatching.
+The `clients/typescript` package in this repository owns the browser-compatible typed client for the OpenHands Agent Server API. The Python packages and Agent Server in this repository own the canonical API implementation and agent behavior; [`OpenHands/OpenHands`](https://github.com/OpenHands/OpenHands) consumes this client for Agent Canvas UI; and [`OpenHands/extensions`](https://github.com/OpenHands/extensions) owns reusable skills, plugins, automations, and integrations; [`OpenHands/automation`](https://github.com/OpenHands/automation) owns scheduling, webhooks, run history, and dispatching.
 
-The normal flow is SDK/Agent Server → OpenAPI contract → this client → Agent Canvas. Add typed endpoint access here, backend behavior in the SDK, UI in Canvas, and automation lifecycle behavior in `automation`. A PR opened in the wrong repository should be closed and moved to the repository that owns the change.
+The normal flow is SDK/Agent Server → OpenAPI contract → this client → Agent Canvas. Add typed endpoint access under `clients/typescript`, backend behavior in the Python SDK or Agent Server packages, UI in Canvas, and automation lifecycle behavior in `automation`.
 
 ## Quick Start
 

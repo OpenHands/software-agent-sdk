@@ -69,8 +69,7 @@
     "test:integration:verbose": "jest --config jest.integration.config.cjs --verbose",
     "test:integration:deterministic": "jest --config jest.integration.config.cjs --runInBand --testPathPatterns=\"deterministic-api.integration.test.ts|bash.integration.test.ts\"",
     "test:integration:llm": "jest --config jest.integration.config.cjs --runInBand --testPathIgnorePatterns=\"deterministic-api.integration.test.ts|bash.integration.test.ts\"",
-    "test:git-dependency": "node ./scripts/smoke-test-git-dependency.mjs",
-    "test:all": "npm run test && npm run test:integration && npm run test:git-dependency",
+    "test:all": "npm run test && npm run test:integration",
     "audit:endpoints": "node ./scripts/endpoint-audit.mjs",
     "dev": "tsc --watch",
     "clean": "rimraf dist",
@@ -113,6 +112,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/OpenHands/typescript-client.git"
-  }
+    "url": "https://github.com/OpenHands/software-agent-sdk.git",
+    "directory": "clients/typescript"
+  },
+  "bugs": {
+    "url": "https://github.com/OpenHands/software-agent-sdk/issues"
+  },
+  "homepage": "https://github.com/OpenHands/software-agent-sdk/tree/main/clients/typescript#readme"
 }

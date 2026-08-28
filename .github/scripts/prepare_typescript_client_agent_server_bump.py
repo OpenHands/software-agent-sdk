@@ -22,7 +22,6 @@ IMAGE_RE = re.compile(
 )
 VERSION_MIRRORS = (
     Path("package.json"),
-    Path(".github/workflows/integration-tests.yml"),
     Path("AGENTS.md"),
     Path("README.md"),
 )

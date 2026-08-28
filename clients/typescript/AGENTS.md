@@ -1,4 +1,4 @@
-# Agent Server TypeScript Client
+# Agent Server TypeScript Client (`clients/typescript`)
 
 ## General Purpose
 
@@ -8,9 +8,9 @@ The client is designed to mirror the structure and functionality of the Python S
 
 ## Cross-Repository Boundaries
 
-This repository owns the browser-compatible TypeScript client for the OpenHands Agent Server API. The canonical API implementation and behavior belong to [`OpenHands/software-agent-sdk`](https://github.com/OpenHands/software-agent-sdk); [`OpenHands/OpenHands`](https://github.com/OpenHands/OpenHands) consumes this client for Agent Canvas UI; and [`OpenHands/extensions`](https://github.com/OpenHands/extensions) owns reusable skills, plugins, automations, and integrations; [`OpenHands/automation`](https://github.com/OpenHands/automation) owns scheduling, webhooks, run history, and dispatching.
+This directory owns the browser-compatible TypeScript client for the OpenHands Agent Server API. The canonical API implementation and behavior live in the Python SDK and Agent Server packages in this repository; [`OpenHands/OpenHands`](https://github.com/OpenHands/OpenHands) consumes this client for Agent Canvas UI; and [`OpenHands/extensions`](https://github.com/OpenHands/extensions) owns reusable skills, plugins, automations, and integrations; [`OpenHands/automation`](https://github.com/OpenHands/automation) owns scheduling, webhooks, run history, and dispatching.
 
-The normal flow is SDK/Agent Server → OpenAPI contract → this client → Agent Canvas. Keep backend behavior and endpoints in the SDK, typed API access here, UI in Agent Canvas, and automation lifecycle behavior in `automation`. If a PR is opened in the wrong repository, explicitly recommend closing and moving it to the owning repository rather than merging it here.
+The normal flow is SDK/Agent Server → OpenAPI contract → this client → Agent Canvas. Keep backend behavior and endpoints in the Python SDK or Agent Server packages, typed API access in this directory, UI in Agent Canvas, and automation lifecycle behavior in `automation`.
 
 All pull requests must follow the repository's contribution and applicable code-review guidance.
 

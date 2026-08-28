@@ -1,11 +1,13 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
-  "include-component-in-tag": false,
   "draft-pull-request": true,
   "packages": {
-    ".": {
+    "clients/typescript": {
       "release-type": "node",
-      "changelog-type": "github",
+      "component": "typescript-client",
+      "include-component-in-tag": true,
+      "include-v-in-tag": true,
+      "changelog-type": "github-scoped",
       "skip-changelog": true
     }
   }
