@@ -2,7 +2,7 @@
 import operator
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, nullcontext
-from typing import SupportsIndex, overload
+from typing import Final, SupportsIndex, overload
 
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.persistence_const import (
@@ -22,12 +22,9 @@ logger = get_logger(__name__)
 LOCK_FILE_NAME = ".eventlog.lock"
 LOCK_TIMEOUT_SECONDS = 30
 
-# Sidecar marker whose *name* carries the event count the log had when it was
-# last written. Detecting another writer by reading a fixed-name counter file
-# would not work: ``FileStore.read`` is cached and a second process would keep
-# serving its own stale value. ``FileStore.exists`` always hits the backend, so
-# putting the count in the name keeps the check O(1) and cache-free.
-LENGTH_MARKER_PATTERN = ".eventlog-len-{length}.marker"
+# Sidecar marker naming the log's event count, so a writer can check it with one
+# ``exists()``. The count lives in the name because ``FileStore.read`` is cached.
+LENGTH_MARKER_PATTERN: Final[str] = ".eventlog-len-{length}.marker"
 
 # ROOT_PARENT_ID now lives in event.types (single source of truth); it is used
 # below in _effective_parent_id and re-exported here so existing
@@ -200,9 +197,7 @@ class EventLog(EventsListBase):
 
         try:
             with self._fs.lock(self._lock_path, timeout=LOCK_TIMEOUT_SECONDS):
-                # Sync with disk in case another writer appended while we waited.
-                # The marker answers "nobody has appended since we last did" in
-                # one stat; only when it cannot, pay for the full listing.
+                # Sync with disk only if the marker cannot rule out another writer
                 if not self._marker_matches_length():
                     disk_length = self._count_events_on_disk()
                     if disk_length > self._length:
@@ -250,10 +245,8 @@ class EventLog(EventsListBase):
     def _marker_matches_length(self) -> bool:
         """Whether the marker proves no one has appended since we last did.
 
-        ``False`` is not proof of divergence -- a log written before this
-        marker existed has none either, and so does one whose writer died
-        mid-update. Callers must fall back to the exact count, which keeps
-        this an optimization rather than a change of behavior.
+        ``False`` is not proof of divergence, so callers must fall back to the
+        exact count.
         """
         try:
             return bool(self._fs.exists(self._marker_path(self._length)))
@@ -264,9 +257,8 @@ class EventLog(EventsListBase):
     def _advance_length_marker(self, previous_length: int) -> None:
         """Move the marker from ``previous_length`` to the current length.
 
-        The old marker goes first on purpose: interrupted between the two
-        calls, the log is left with no marker at all, which costs every writer
-        one full listing instead of letting a stale marker claim to be current.
+        Deleting first is deliberate: an interrupted update leaves no marker
+        rather than a stale one claiming to be current.
         """
         try:
             self._fs.delete(self._marker_path(previous_length))
