@@ -23,7 +23,10 @@ from openhands.sdk.llm.exceptions import (
     LLMServiceUnavailableError,
 )
 from openhands.sdk.llm.llm import LLMCallContext
-from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.llm.llm_profile_store import (
+    LLMProfileStore,
+    ProfileDecryptionError,
+)
 from openhands.sdk.utils.cipher import Cipher
 
 
@@ -348,8 +351,25 @@ def test_fallback_profile_uses_bound_cipher(tmp_path):
         fallback_llms=["encrypted-fallback"],
         profile_store_dir=tmp_path,
     )
-    with pytest.raises(ValueError, match="encrypted-fallback"):
+    with pytest.raises(ProfileDecryptionError, match="encrypted-fallback"):
         list(unbound_strategy._iter_fallbacks())
+
+
+def test_fallback_skips_profile_with_missing_provider_connection(tmp_path):
+    store = LLMProfileStore(base_dir=tmp_path)
+    store.save(
+        "missing-connection",
+        LLM(model="gpt-4o-mini", provider_connection_id="deleted"),
+    )
+    store.save("working", _get_llm("fallback-model"), include_secrets=True)
+    strategy = FallbackStrategy(
+        fallback_llms=["missing-connection", "working"],
+        profile_store_dir=tmp_path,
+    )
+
+    [fallback] = list(strategy._iter_fallbacks())
+
+    assert fallback.model == "fallback-model"
 
 
 # =========================================================================

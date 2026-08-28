@@ -77,6 +77,7 @@ def test_register_builtins_agents_registers_expected_factories(
         factory = get_agent_factory(name)
         agent = factory.factory_func(llm)
         assert isinstance(agent, Agent)
+        assert agent.llm is llm
         agent_tool_names[name] = [t.name for t in agent.tools]
 
     assert len(agent_tool_names) == len(expected_agents)

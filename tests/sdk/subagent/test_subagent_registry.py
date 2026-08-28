@@ -8,7 +8,10 @@ from pydantic import SecretStr
 from openhands.sdk import LLM, Agent
 from openhands.sdk.context.condenser import LLMSummarizingCondenser, NoOpCondenser
 from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
-from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.llm.llm_profile_store import (
+    LLMProfileStore,
+    ProfileDecryptionError,
+)
 from openhands.sdk.mcp.config import MCPServer, dump_mcp_config
 from openhands.sdk.subagent.registry import (
     _reset_registry_for_tests,
@@ -624,14 +627,22 @@ def test_register_file_agents_forwards_cipher_to_factory(tmp_path: Path) -> None
 
 
 @pytest.mark.parametrize("cipher", [None, Cipher("wrong-secret")])
-def test_agent_definition_to_factory_rejects_undecrypted_profile(
+@pytest.mark.parametrize(
+    "secret_field",
+    ["api_key", "aws_access_key_id", "aws_secret_access_key", "aws_session_token"],
+)
+def test_agent_definition_to_factory_rejects_undecrypted_secret(
     tmp_path: Path,
     cipher: Cipher | None,
+    secret_field: str,
 ) -> None:
     store = LLMProfileStore(base_dir=tmp_path)
+    profile = LLM.model_validate(
+        {"model": "gpt-4o-mini", secret_field: "profile-secret"}
+    )
     store.save(
         "encrypted-profile",
-        LLM(model="gpt-4o-mini", api_key=SecretStr("profile-key")),
+        profile,
         include_secrets=True,
         cipher=Cipher("right-secret"),
     )
@@ -641,7 +652,9 @@ def test_agent_definition_to_factory_rejects_undecrypted_profile(
         profile_store_dir=str(tmp_path),
     )
 
-    with pytest.raises(ValueError, match="encrypted-profile"):
+    with pytest.raises(
+        ProfileDecryptionError, match=rf"{secret_field}.*encrypted-profile"
+    ):
         agent_definition_to_factory(agent_def, cipher=cipher)(_make_test_llm())
 
 

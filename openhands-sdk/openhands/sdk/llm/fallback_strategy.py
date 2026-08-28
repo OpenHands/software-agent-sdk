@@ -15,7 +15,10 @@ from litellm.exceptions import (
 from pydantic import BaseModel, Field, PrivateAttr
 
 from openhands.sdk.llm.exceptions import LLMNoResponseError
-from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.llm.llm_profile_store import (
+    LLMProfileStore,
+    ProfileDecryptionError,
+)
 from openhands.sdk.logger import get_logger
 
 
@@ -151,7 +154,9 @@ class FallbackStrategy(BaseModel):
                 )
                 self._resolved.append(fb)
                 yield fb
-            except FileNotFoundError as exc:
+            except ProfileDecryptionError:
+                raise
+            except (FileNotFoundError, ValueError) as exc:
                 logger.error(
                     "[Fallback Strategy] Failed to load "
                     f"fallback profile '{name}': {exc}"

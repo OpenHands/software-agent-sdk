@@ -133,7 +133,9 @@ def register_agent_if_absent(
     no-ops when an agent with *name* is already registered, instead of
     raising `ValueError`.  This is used by file-based and plugin-based
     agent loading to gracefully skip conflicts with programmatically
-    registered agents.
+    registered agents. Because the first registration wins, values captured
+    by ``factory_func`` (including a profile cipher) are pinned by the first
+    caller for that name.
 
     See `register_agent` for full parameter documentation.
 
