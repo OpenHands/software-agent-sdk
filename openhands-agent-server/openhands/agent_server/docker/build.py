@@ -859,9 +859,14 @@ def build_with_telemetry(opts: BuildOptions) -> BuildResult:
 
     telemetry = BuildTelemetry()
     build_context_started = time.monotonic()
-    # Base-image targets don't need SDK source (no COPY from build context),
-    # so use an empty temp dir instead of running the expensive uv build --sdist.
-    is_base_only = opts.target in ("base-image-minimal", "base-image")
+    # Only base-image-minimal has zero context dependency (no COPY from the
+    # build context, direct or transitive). base-image is NOT eligible for
+    # this fast path even though it looked context-free at a glance: it pulls
+    # in the `builder` stage (for VSCode extensions), and `builder` itself
+    # COPYs the real SDK source from context — plus base-image's own
+    # wallpaper.svg bind mount. Both need the real context, same as
+    # binary/source.
+    is_base_only = opts.target == "base-image-minimal"
     if is_base_only:
         ctx = Path(tempfile.mkdtemp(prefix="agent-base-ctx-"))
         shutil.copy2(dockerfile_path, ctx / "Dockerfile")

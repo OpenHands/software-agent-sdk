@@ -806,6 +806,66 @@ def test_main_resolves_install_capabilities_from_env(
     assert captured["opts"].install_capabilities == expected
 
 
+@pytest.mark.parametrize(
+    "target,expect_real_context",
+    [
+        ("base-image-minimal", False),
+        ("base-image", True),
+        ("binary", True),
+    ],
+)
+def test_base_image_target_uses_real_build_context(
+    tmp_path: Path, target: str, expect_real_context: bool
+):
+    """Regression test: only base-image-minimal has zero build-context
+    dependency. base-image transitively depends on the `builder` stage (for
+    VSCode extensions) and has its own wallpaper.svg bind mount, both of
+    which need the real context — the empty-context fast path silently broke
+    `--target base-image` (pre-existing, not specific to INSTALL_CAPABILITIES).
+    """
+    from openhands.agent_server.docker.build import (
+        BuildOptions,
+        _default_sdk_project_root,
+        build,
+    )
+
+    ctx = tmp_path / "ctx"
+    ctx.mkdir()
+
+    def fake_run(cmd, cwd=None):
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+    opts = BuildOptions(
+        base_image="python:3.12",
+        custom_tags="python",
+        target=target,  # type: ignore
+        git_sha="abc1234567890",
+        git_ref="refs/heads/main",
+        push=False,
+        sdk_project_root=_default_sdk_project_root(),
+    )
+
+    with (
+        patch(
+            "openhands.agent_server.docker.build._make_build_context",
+            return_value=ctx,
+        ) as mock_make_context,
+        patch("openhands.agent_server.docker.build._run", side_effect=fake_run),
+        patch(
+            "openhands.agent_server.docker.build._active_buildx_driver",
+            return_value="docker-container",
+        ),
+        patch(
+            "openhands.agent_server.docker.build._default_local_cache_dir",
+            return_value=tmp_path / "cache",
+        ),
+        patch("openhands.agent_server.docker.build.shutil.rmtree"),
+    ):
+        build(opts)
+
+    assert mock_make_context.called == expect_real_context
+
+
 def test_build_with_prebuilt_sdist_preserves_tags_and_docker_args(tmp_path: Path):
     from openhands.agent_server.docker.build import (
         BuildOptions,
