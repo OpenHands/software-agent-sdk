@@ -7,6 +7,16 @@ from openai.types.chat import ChatCompletion, ChatCompletionChunk
 from openai.types.chat.chat_completion import Choice
 from openai.types.chat.chat_completion_chunk import Choice as ChunkChoice, ChoiceDelta
 from openai.types.chat.chat_completion_message import ChatCompletionMessage
+from openai.types.responses import (
+    Response,
+    ResponseOutputMessage,
+    ResponseOutputText,
+    ResponseUsage,
+)
+from openai.types.responses.response_usage import (
+    InputTokensDetails,
+    OutputTokensDetails,
+)
 from pydantic import BaseModel, ConfigDict
 
 
@@ -18,6 +28,12 @@ OpenAIChatCompletionResponse = ChatCompletion
 OpenAIModel = Model
 OpenAIResponseMessage = ChatCompletionMessage
 OpenAIUsage = CompletionUsage
+OpenAIResponse = Response
+OpenAIResponseOutputMessage = ResponseOutputMessage
+OpenAIResponseOutputText = ResponseOutputText
+OpenAIResponseUsage = ResponseUsage
+OpenAIResponseInputTokensDetails = InputTokensDetails
+OpenAIResponseOutputTokensDetails = OutputTokensDetails
 
 
 class OpenAIImageURL(BaseModel):
@@ -50,6 +66,33 @@ class OpenAIChatCompletionRequest(BaseModel):
     messages: list[OpenAIChatMessage]
     stream: bool = False
     stream_options: OpenAIStreamOptions | None = None
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class OpenAIResponseInputContentPart(BaseModel):
+    type: str
+    text: str | None = None
+    image_url: str | None = None
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class OpenAIResponseInputMessage(BaseModel):
+    role: Literal["system", "developer", "user", "assistant"]
+    content: str | list[OpenAIResponseInputContentPart]
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class OpenAIResponseRequest(BaseModel):
+    model: str
+    input: str | list[OpenAIResponseInputMessage]
+    instructions: str | None = None
+    previous_response_id: str | None = None
+    store: bool = False
+    stream: bool = False
+    metadata: dict[str, str] | None = None
 
     model_config = ConfigDict(extra="ignore")
 

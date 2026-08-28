@@ -23,7 +23,7 @@ from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelRespons
 from pydantic import SecretStr
 
 from openhands.agent_server.__main__ import preload_modules
-from openhands.sdk import LLM, Agent, AgentContext, Conversation
+from openhands.sdk import LLM, Agent, AgentContext, Conversation, Message, TextContent
 from openhands.sdk.conversation import RemoteConversation
 from openhands.sdk.event import (
     ActionEvent,
@@ -226,8 +226,10 @@ def authenticated_server_env(
 
 
 @pytest.fixture
-def patched_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+def patched_llm(monkeypatch: pytest.MonkeyPatch) -> list[list[Message]]:
     """Patch LLM.completion to a deterministic assistant message response."""
+
+    calls: list[list[Message]] = []
 
     def fake_completion(
         self,
@@ -237,7 +239,8 @@ def patched_llm(monkeypatch: pytest.MonkeyPatch) -> None:
         **kwargs,
     ):  # type: ignore[no-untyped-def]
         from openhands.sdk.llm.llm_response import LLMResponse
-        from openhands.sdk.llm.message import Message
+
+        calls.append(messages)
 
         # Create a minimal ModelResponse with a single assistant message
         litellm_msg = LiteLLMMessage.model_validate(
@@ -279,6 +282,7 @@ def patched_llm(monkeypatch: pytest.MonkeyPatch) -> None:
         return fake_completion(self, messages, tools, **kwargs)
 
     monkeypatch.setattr(LLM, "acompletion", fake_acompletion, raising=True)
+    return calls
 
 
 def test_remote_conversation_websocket_first_message_auth(
@@ -836,6 +840,15 @@ def test_openai_chat_completions_gateway_over_real_server(
                 assert responses_result.usage.input_tokens == 7
                 assert responses_result.usage.output_tokens == 5
                 assert responses_result.usage.total_tokens == 12
+                response_user_text = "\n".join(
+                    part.text
+                    for message in patched_llm[-1]
+                    if message.role == "user"
+                    for part in message.content
+                    if isinstance(part, TextContent)
+                )
+                assert "Answer briefly." in response_user_text
+                assert "Say hello through Responses." in response_user_text
 
                 responses_conversation_id = raw_response.headers[
                     "X-OpenHands-ServerConversation-ID"
@@ -845,6 +858,7 @@ def test_openai_chat_completions_gateway_over_real_server(
                 continued_raw_response = (
                     openai_client.responses.with_raw_response.create(
                         model="openhands_smoke",
+                        instructions="Answer even more briefly.",
                         input=[
                             {
                                 "role": "user",
@@ -864,15 +878,44 @@ def test_openai_chat_completions_gateway_over_real_server(
                 assert continued_result.id != responses_result.id
                 assert continued_result.previous_response_id == responses_result.id
                 assert continued_result.output_text == "Hello from patched LLM"
+                assert continued_result.usage is not None
+                assert continued_result.usage.input_tokens == 7
+                assert continued_result.usage.output_tokens == 5
+                assert continued_result.usage.total_tokens == 12
                 assert (
                     continued_raw_response.headers["X-OpenHands-ServerConversation-ID"]
                     == responses_conversation_id
                 )
+                continued_user_text = "\n".join(
+                    part.text
+                    for message in patched_llm[-1]
+                    if message.role == "user"
+                    for part in message.content
+                    if isinstance(part, TextContent)
+                )
+                assert "Answer even more briefly." in continued_user_text
+                assert "Say hello again." in continued_user_text
 
                 second_stateless_response = (
                     openai_client.responses.with_raw_response.create(
                         model="openhands_smoke",
-                        input="Start another stateless agent run.",
+                        input=[
+                            {"role": "user", "content": "First question."},
+                            {
+                                "id": "msg_prior",
+                                "type": "message",
+                                "role": "assistant",
+                                "status": "completed",
+                                "content": [
+                                    {
+                                        "type": "output_text",
+                                        "text": "Prior answer.",
+                                        "annotations": [],
+                                    }
+                                ],
+                            },
+                            {"role": "user", "content": "Follow up."},
+                        ],
                         store=False,
                     )
                 )
@@ -882,6 +925,18 @@ def test_openai_chat_completions_gateway_over_real_server(
                     ]
                     != responses_conversation_id
                 )
+                stateless_history_text = "\n".join(
+                    part.text
+                    for message in patched_llm[-1]
+                    if message.role == "user"
+                    for part in message.content
+                    if isinstance(part, TextContent)
+                )
+                assert '<message role="user">' in stateless_history_text
+                assert '<message role="assistant">' in stateless_history_text
+                assert "First question." in stateless_history_text
+                assert "Prior answer." in stateless_history_text
+                assert "Follow up." in stateless_history_text
 
                 invalid_previous_response = client.post(
                     f"{env['host']}/v1/responses",
@@ -896,6 +951,35 @@ def test_openai_chat_completions_gateway_over_real_server(
                 assert invalid_previous_response.status_code == 400
                 assert invalid_previous_response.json()["detail"] == (
                     "Invalid previous_response_id"
+                )
+
+                missing_previous_response = client.post(
+                    f"{env['host']}/v1/responses",
+                    json={
+                        "model": "openhands_smoke",
+                        "input": "This must not start a new conversation.",
+                        "previous_response_id": f"resp_40{'0' * 30}_{'1' * 32}",
+                        "store": False,
+                    },
+                    timeout=2.0,
+                )
+                assert missing_previous_response.status_code == 404
+                assert missing_previous_response.json()["detail"] == (
+                    "Previous response conversation not found"
+                )
+
+                streaming_response = client.post(
+                    f"{env['host']}/v1/responses",
+                    json={
+                        "model": "openhands_smoke",
+                        "input": "This must not run as a buffered stream.",
+                        "stream": True,
+                    },
+                    timeout=2.0,
+                )
+                assert streaming_response.status_code == 400
+                assert streaming_response.json()["detail"] == (
+                    "Streaming responses are not supported yet"
                 )
 
 
