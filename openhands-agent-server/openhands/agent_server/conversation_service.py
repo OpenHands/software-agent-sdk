@@ -2508,11 +2508,16 @@ class _DeltaSubscriber(Subscriber[StreamingDeltaEvent]):
     """
 
     service: EventService
-    _last_beat: float = 0.0
+    # None, not 0.0: ``monotonic()`` counts from an arbitrary origin (uptime on
+    # Linux), so a zero baseline would swallow the first beat on a fresh boot.
+    _last_beat: float | None = None
 
     async def __call__(self, _event: StreamingDeltaEvent):
         now = time.monotonic()
-        if now - self._last_beat < DELTA_HEARTBEAT_INTERVAL_SECONDS:
+        if (
+            self._last_beat is not None
+            and now - self._last_beat < DELTA_HEARTBEAT_INTERVAL_SECONDS
+        ):
             return
         self._last_beat = now
         self.service.touch()

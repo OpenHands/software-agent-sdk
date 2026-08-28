@@ -1070,12 +1070,14 @@ class RemoteConversation(BaseConversation):
         self.delete_on_close = delete_on_close
 
     def _on_delta(self, delta: StreamingDeltaEvent) -> None:
-        """Fan a decoded delta out to the delta callbacks, isolating failures."""
+        """Fan a decoded delta out to the delta callbacks.
+
+        Mirrors ``compose_callbacks`` for durable events: no per-callback
+        isolation, because the websocket receive loop already logs and
+        continues on any callback failure.
+        """
         for callback in self._delta_callbacks:
-            try:
-                callback(delta)
-            except Exception:
-                logger.exception("delta_callback_error", stack_info=True)
+            callback(delta)
 
     def _create_llm_completion_log_callback(self) -> ConversationCallbackType:
         """Create a callback that writes LLM completion logs to client filesystem."""

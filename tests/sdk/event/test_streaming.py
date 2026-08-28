@@ -1,6 +1,7 @@
 """Tests for the StreamingDeltaEvent model."""
 
 import pytest
+from pydantic import ValidationError
 
 from openhands.sdk.event import Event, StreamingDeltaEvent
 
@@ -55,6 +56,14 @@ def test_streaming_delta_event_wire_frame_is_unchanged():
     assert frame["content"] == "hel"
     assert frame["id"] == event.id
     assert frame["timestamp"] == event.timestamp
+
+
+def test_streaming_delta_event_is_frozen():
+    """One instance fans out to several subscribers, so it stays immutable —
+    as it was while it inherited ``Event``."""
+    delta = StreamingDeltaEvent(content="x")
+    with pytest.raises(ValidationError):
+        delta.content = "mutated"
 
 
 def test_streaming_delta_event_tolerates_additive_fields():

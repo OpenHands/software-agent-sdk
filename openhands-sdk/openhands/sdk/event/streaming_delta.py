@@ -1,7 +1,8 @@
 import uuid
 from datetime import datetime
+from typing import ClassVar
 
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from openhands.sdk.event.types import EventID, SourceType
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
@@ -21,6 +22,11 @@ class StreamingDeltaEvent(DiscriminatedUnionMixin):
     ``timestamp`` and ``source`` are re-declared here because browser clients
     require them on every frame.
     """
+
+    # Frozen, as it was under ``Event``: one delta instance fans out to several
+    # subscribers concurrently. ``extra`` is deliberately left at the default,
+    # so stream identity can be added later without breaking older clients.
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
 
     id: EventID = Field(
         default_factory=lambda: str(uuid.uuid4()),
