@@ -719,7 +719,6 @@ class RemoteConversation(BaseConversation):
         plugins: list | None = None,
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
-        delta_callbacks: list[ConversationDeltaCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
         stuck_detection_thresholds: (
@@ -737,6 +736,9 @@ class RemoteConversation(BaseConversation):
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
+        # Appended rather than grouped with ``callbacks``: inserting a
+        # parameter mid-signature would move every positional after it.
+        delta_callbacks: list[ConversationDeltaCallbackType] | None = None,
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
@@ -748,9 +750,6 @@ class RemoteConversation(BaseConversation):
                     is a PluginSource specifying source, ref, and repo_path.
             conversation_id: Optional existing conversation id to attach to
             callbacks: Optional callbacks to receive events (not yet streamed)
-            delta_callbacks: Optional callbacks to receive streaming token deltas.
-                    Deltas are transient and are not Events, so they never reach
-                    ``callbacks``.
             max_iteration_per_run: Max iterations configured on server
             stuck_detection: Whether to enable stuck detection on server
             stuck_detection_thresholds: Optional configuration for stuck detection
@@ -777,6 +776,9 @@ class RemoteConversation(BaseConversation):
             observability_tags: Optional root span tags for observability backends.
             observability_span_name: Optional child span name for observability
                       backends. The root span remains named "conversation".
+            delta_callbacks: Optional callbacks to receive streaming token deltas.
+                      Deltas are transient and are not Events, so they never
+                      reach ``callbacks``.
         """
         super().__init__()  # Initialize base class with span tracking
         self.agent = agent
