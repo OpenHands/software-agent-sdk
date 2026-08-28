@@ -14,10 +14,10 @@ from unittest.mock import patch
 
 import pytest
 
-from openhands.agent_server.config import Config
+from openhands.agent_server.config import ACPSkillSourcing, Config
 from openhands.agent_server.conversation_service import _apply_acp_skill_sourcing
 from openhands.sdk import LLM, Agent, Conversation
-from openhands.sdk.agent import ACPAgent
+from openhands.sdk.agent import ACPAgent, AgentBase
 from openhands.sdk.context import AgentContext
 from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.settings.model import validate_agent_settings
@@ -63,7 +63,7 @@ def _workspace(root: Path) -> Path:
     return project
 
 
-def _installed_suffix(agent: ACPAgent, project: Path) -> str:
+def _installed_suffix(agent: AgentBase, project: Path) -> str:
     """The suffix ``init_state`` renders into the ACP subprocess's prompt.
 
     Only the subprocess spawn is stubbed; the render is the production one.
@@ -99,7 +99,7 @@ def test_openhands_agent_keeps_load_project_skills() -> None:
 
 @pytest.mark.parametrize("sourcing", ["native", "openhands_managed"])
 def test_repo_context_never_reaches_the_acp_prompt(
-    tmp_path: Path, sourcing: str
+    tmp_path: Path, sourcing: ACPSkillSourcing
 ) -> None:
     project = _workspace(tmp_path)
     agent = _apply_acp_skill_sourcing(
