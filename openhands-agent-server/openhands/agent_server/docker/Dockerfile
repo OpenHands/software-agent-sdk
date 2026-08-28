@@ -266,6 +266,9 @@ ENV LC_ALL=C.UTF-8
 ENV LANG=C.UTF-8
 ENV OH_ENABLE_VNC=false
 ENV LOG_JSON=true
+# The ACP CLIs run without the user's host home here, so OpenHands supplies the
+# managed skill catalog they cannot read for themselves (#4019).
+ENV OH_ACP_SKILL_SOURCING=openhands_managed
 EXPOSE ${PORT}
 
 ####################################################################################
@@ -378,6 +381,9 @@ USER ${USERNAME}
 WORKDIR /
 ENV OH_ENABLE_VNC=false
 ENV LOG_JSON=true
+# The ACP CLIs run without the user's host home here, so OpenHands supplies the
+# managed skill catalog they cannot read for themselves (#4019).
+ENV OH_ACP_SKILL_SOURCING=openhands_managed
 EXPOSE ${PORT} ${NOVNC_PORT}
 
 
