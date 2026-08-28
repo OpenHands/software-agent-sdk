@@ -689,6 +689,123 @@ def test_main_resolves_install_acp_providers_from_env(
     assert captured["opts"].install_acp_providers == expected
 
 
+def test_install_capabilities_defaults_to_full_capability_set():
+    """Test that the default reproduces today's full base-image contents."""
+    from openhands.agent_server.docker.build import BuildOptions
+
+    opts = BuildOptions()
+    assert opts.install_capabilities == "vscode,browser,desktop"
+
+
+def test_install_capabilities_rejects_unknown_capability():
+    """Test that an unknown capability key fails fast with a clear message."""
+    from pydantic import ValidationError
+
+    from openhands.agent_server.docker.build import BuildOptions
+
+    with pytest.raises(ValidationError, match="Unknown capability.*bogus"):
+        BuildOptions(install_capabilities="vscode,bogus")
+
+
+def test_install_capabilities_accepts_empty_list():
+    """Test that an empty capability list is valid (installs none)."""
+    from openhands.agent_server.docker.build import BuildOptions
+
+    opts = BuildOptions(install_capabilities="")
+    assert opts.install_capabilities == ""
+
+
+@pytest.mark.parametrize(
+    "install_capabilities",
+    ["vscode,browser,desktop", "vscode,browser", ""],
+)
+def test_build_passes_install_capabilities_build_arg(
+    tmp_path: Path, install_capabilities: str
+):
+    """Test that build() forwards install_capabilities as a --build-arg."""
+    from openhands.agent_server.docker.build import (
+        BuildOptions,
+        _default_sdk_project_root,
+        build,
+    )
+
+    ctx = tmp_path / "ctx"
+    ctx.mkdir()
+    docker_calls: list[tuple[list[str], str | None]] = []
+
+    def fake_run(cmd: list[str], cwd: str | None = None):
+        if cmd[:3] != ["docker", "buildx", "build"]:
+            raise AssertionError(f"unexpected command: {cmd}")
+        docker_calls.append((cmd, cwd))
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+    opts = BuildOptions(
+        base_image="python:3.12",
+        custom_tags="python",
+        git_sha="abc1234567890",
+        git_ref="refs/heads/main",
+        push=False,
+        sdk_project_root=_default_sdk_project_root(),
+        install_capabilities=install_capabilities,
+    )
+
+    with (
+        patch(
+            "openhands.agent_server.docker.build._make_build_context",
+            return_value=ctx,
+        ),
+        patch("openhands.agent_server.docker.build._run", side_effect=fake_run),
+        patch(
+            "openhands.agent_server.docker.build._active_buildx_driver",
+            return_value="docker-container",
+        ),
+        patch(
+            "openhands.agent_server.docker.build._default_local_cache_dir",
+            return_value=tmp_path / "cache",
+        ),
+        patch("openhands.agent_server.docker.build.shutil.rmtree"),
+    ):
+        build(opts)
+
+    assert len(docker_calls) == 1
+    cmd = docker_calls[0][0]
+    assert f"INSTALL_CAPABILITIES={install_capabilities}" in cmd
+
+
+@pytest.mark.parametrize(
+    "env_value,expected",
+    [
+        (None, "vscode,browser,desktop"),
+        ("", ""),
+        ("vscode", "vscode"),
+    ],
+)
+def test_main_resolves_install_capabilities_from_env(
+    monkeypatch, env_value: str | None, expected: str
+):
+    """Test that an explicit empty $INSTALL_CAPABILITIES survives as empty,
+    rather than being coerced back to the default like an unset var would be.
+    """
+    from openhands.agent_server.docker import build as build_module
+
+    if env_value is None:
+        monkeypatch.delenv("INSTALL_CAPABILITIES", raising=False)
+    else:
+        monkeypatch.setenv("INSTALL_CAPABILITIES", env_value)
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+
+    captured = {}
+
+    def fake_build(opts):
+        captured["opts"] = opts
+        return []
+
+    monkeypatch.setattr(build_module, "build", fake_build)
+    build_module.main(["--load"])
+
+    assert captured["opts"].install_capabilities == expected
+
+
 def test_build_with_prebuilt_sdist_preserves_tags_and_docker_args(tmp_path: Path):
     from openhands.agent_server.docker.build import (
         BuildOptions,

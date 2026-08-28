@@ -34,6 +34,22 @@ def test_server_workflow_contains_install_acp_providers_expression() -> None:
     ) in workflow_text
 
 
+def test_server_workflow_contains_install_capabilities_expression() -> None:
+    """Regression guard for the exact wording of the INSTALL_CAPABILITIES env
+    line. This only proves the known-good string is present, not that it
+    evaluates correctly in GitHub Actions — see
+    test_and_or_shape_preserves_falsy_last_operand for the semantic proof
+    (the shape is identical to INSTALL_ACP_PROVIDERS, just a different
+    default/input pair).
+    """
+    workflow_text = SERVER_WORKFLOW.read_text(encoding="utf-8")
+
+    assert (
+        "INSTALL_CAPABILITIES: ${{ github.event_name != 'workflow_dispatch' "
+        "&& 'vscode,browser,desktop' || inputs.install_capabilities }}"
+    ) in workflow_text
+
+
 def test_and_or_shape_preserves_falsy_last_operand() -> None:
     """GitHub Actions' `&&`/`||` share Python's `and`/`or` short-circuit
     value-return semantics (return an operand, not a coerced bool), so this
