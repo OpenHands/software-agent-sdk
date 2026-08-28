@@ -344,6 +344,13 @@ def test_fallback_profile_uses_bound_cipher(tmp_path):
     assert isinstance(fallback.api_key, SecretStr)
     assert fallback.api_key.get_secret_value() == "k"
 
+    unbound_strategy = FallbackStrategy(
+        fallback_llms=["encrypted-fallback"],
+        profile_store_dir=tmp_path,
+    )
+    with pytest.raises(ValueError, match="encrypted-fallback"):
+        list(unbound_strategy._iter_fallbacks())
+
 
 # =========================================================================
 # Async error-handling parity tests (acompletion / aresponses)

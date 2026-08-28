@@ -151,7 +151,7 @@ class FallbackStrategy(BaseModel):
                 )
                 self._resolved.append(fb)
                 yield fb
-            except (FileNotFoundError, ValueError) as exc:
+            except FileNotFoundError as exc:
                 logger.error(
                     "[Fallback Strategy] Failed to load "
                     f"fallback profile '{name}': {exc}"

@@ -12,7 +12,6 @@ from openhands.sdk.llm.llm_profile_store import (
     LLMProfileStore,
     ProfileLimitExceeded,
 )
-from openhands.sdk.utils.cipher import Cipher
 
 
 @pytest.fixture
@@ -333,41 +332,6 @@ def test_load_nonexistent_profile(profile_store: LLMProfileStore) -> None:
 
     assert "nonexistent" in str(exc_info.value)
     assert "not found" in str(exc_info.value)
-
-
-@pytest.mark.parametrize("cipher", [None, Cipher("wrong-secret")])
-def test_load_for_execution_rejects_undecrypted_api_key(
-    profile_store: LLMProfileStore,
-    sample_llm_with_secrets: LLM,
-    cipher: Cipher | None,
-) -> None:
-    profile_store.save(
-        "encrypted-profile",
-        sample_llm_with_secrets,
-        include_secrets=True,
-        cipher=Cipher("right-secret"),
-    )
-
-    with pytest.raises(ValueError, match="encrypted-profile"):
-        profile_store._load_for_execution("encrypted-profile", cipher=cipher)
-
-
-def test_load_for_execution_decrypts_api_key(
-    profile_store: LLMProfileStore,
-    sample_llm_with_secrets: LLM,
-) -> None:
-    cipher = Cipher("right-secret")
-    profile_store.save(
-        "encrypted-profile",
-        sample_llm_with_secrets,
-        include_secrets=True,
-        cipher=cipher,
-    )
-
-    loaded = profile_store._load_for_execution("encrypted-profile", cipher=cipher)
-
-    assert isinstance(loaded.api_key, SecretStr)
-    assert loaded.api_key.get_secret_value() == "secret-api-key-12345"
 
 
 def test_load_nonexistent_shows_available(

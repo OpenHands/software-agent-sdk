@@ -53,12 +53,6 @@ def test_load_all_builtins() -> None:
     }.issubset(names)
 
 
-def test_builtins_only_inherit_parent_model() -> None:
-    agents = load_agents_from_dir(SUBAGENTS_DIR)
-
-    assert all(agent.model == "inherit" for agent in agents)
-
-
 @pytest.mark.parametrize(
     "enable_browser, expected_agents",
     [

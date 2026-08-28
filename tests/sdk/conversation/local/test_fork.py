@@ -73,15 +73,6 @@ class ForkCopyNonPicklableTool(
 
 def test_fork_creates_new_id():
     """Forked conversation must have a distinct ID."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        src = Conversation(agent=_agent(), persistence_dir=tmpdir, workspace=tmpdir)
-        fork = src.fork()
-
-        assert fork.id != src.id
-        assert isinstance(fork.id, uuid.UUID)
-
-
-def test_fork_inherits_cipher():
     cipher = Cipher("test-secret")
     with tempfile.TemporaryDirectory() as tmpdir:
         src = LocalConversation(
@@ -92,6 +83,8 @@ def test_fork_inherits_cipher():
         )
         fork = src.fork()
 
+        assert fork.id != src.id
+        assert isinstance(fork.id, uuid.UUID)
         assert fork._cipher is cipher
 
 
