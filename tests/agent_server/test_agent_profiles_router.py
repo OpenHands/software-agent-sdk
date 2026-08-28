@@ -530,6 +530,21 @@ def test_save_extra_field_returns_422(client):
     assert response.status_code == 422
 
 
+def test_save_unversioned_body_upgrades_legacy_acp_command_string(client):
+    response = client.post(
+        "/api/agent-profiles/legacy-acp",
+        json={
+            "agent_kind": "acp",
+            "acp_server": "custom",
+            "acp_command": "cmd /c claude-agent-acp",
+        },
+    )
+    assert response.status_code == 201
+
+    profile = client.get("/api/agent-profiles/legacy-acp").json()["profile"]
+    assert profile["acp_command"] == ["cmd", "/c", "claude-agent-acp"]
+
+
 def test_save_invalid_name_returns_422(client):
     response = client.post(
         "/api/agent-profiles/.hidden",

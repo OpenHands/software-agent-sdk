@@ -7,6 +7,7 @@ distinction. Adds the profile-specific contract: secret-free at rest.
 """
 
 import json
+import shlex
 from uuid import UUID, uuid4
 
 import pytest
@@ -119,7 +120,7 @@ def test_acp_profile_round_trips() -> None:
         acp_model="gpt-5.5/medium",
         acp_session_mode="full-access",
         acp_prompt_timeout=600.0,
-        acp_command="codex-acp",
+        acp_command=["codex-acp"],
         acp_args=["--flag"],
         mcp_server_refs=None,
     )
@@ -130,7 +131,7 @@ def test_acp_profile_round_trips() -> None:
     assert reloaded.agent_kind == "acp"
     assert reloaded.acp_server == "codex"
     assert reloaded.acp_model == "gpt-5.5/medium"
-    assert reloaded.acp_command == "codex-acp"
+    assert reloaded.acp_command == ["codex-acp"]
     assert reloaded.acp_args == ["--flag"]
     assert reloaded.mcp_server_refs is None
 
@@ -349,6 +350,62 @@ def test_v1_explicit_empty_tools_remain_empty(payload: dict[str, object]) -> Non
     )
     assert isinstance(profile, OpenHandsAgentProfile)
     assert profile.tools == []
+
+
+def _v2_acp_payload(command: object) -> dict[str, object]:
+    return {
+        "schema_version": 2,
+        "agent_kind": "acp",
+        "name": "acp",
+        "acp_server": "custom",
+        "acp_command": command,
+    }
+
+
+_WIN_COMMAND = [r"C:\Program Files\nodejs\node.exe", r"C:\Users\me\dist\index.js"]
+
+
+@pytest.mark.parametrize(
+    ("stored", "expected"),
+    [
+        ("codex-acp --foo bar", ["codex-acp", "--foo", "bar"]),
+        (
+            shlex.join(["/opt/my acp/bin/server", "--flag", "a b"]),
+            ["/opt/my acp/bin/server", "--flag", "a b"],
+        ),
+        ("unterminated 'quote", ["unterminated", "'quote"]),
+        (None, None),
+        ("", None),
+    ],
+)
+def test_v2_acp_command_migrates_to_token_list(stored, expected) -> None:
+    profile = validate_agent_profile(_v2_acp_payload(stored))
+    assert isinstance(profile, ACPAgentProfile)
+    assert profile.schema_version == AGENT_PROFILE_SCHEMA_VERSION
+    assert profile.acp_command == expected
+
+
+@pytest.mark.parametrize(
+    ("stored", "expected"),
+    [
+        ("cmd /c claude-agent-acp", ["cmd", "/c", "claude-agent-acp"]),
+        (_WIN_COMMAND, _WIN_COMMAND),
+    ],
+)
+def test_unversioned_payload_still_migrates(stored, expected) -> None:
+    payload = _v2_acp_payload(stored)
+    del payload["schema_version"]
+    profile = validate_agent_profile(payload)
+    assert isinstance(profile, ACPAgentProfile)
+    assert profile.acp_command == expected
+    assert profile.schema_version == AGENT_PROFILE_SCHEMA_VERSION
+
+
+def test_windows_path_command_survives_round_trip() -> None:
+    profile = ACPAgentProfile(name="acp", acp_server="custom", acp_command=_WIN_COMMAND)
+    reloaded = validate_agent_profile(profile.model_dump(mode="json"))
+    assert isinstance(reloaded, ACPAgentProfile)
+    assert reloaded.acp_command == _WIN_COMMAND
 
 
 def test_rejects_newer_schema_version() -> None:

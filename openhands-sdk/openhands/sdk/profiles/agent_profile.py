@@ -9,6 +9,7 @@ See epic #3713 for the resolution model.
 
 from __future__ import annotations
 
+import shlex
 from collections.abc import Callable, Mapping
 from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
@@ -33,7 +34,8 @@ from openhands.sdk.settings.model import (
 from openhands.sdk.tool import Tool
 
 
-AGENT_PROFILE_SCHEMA_VERSION = 2
+AGENT_PROFILE_SCHEMA_VERSION = 3
+_UNVERSIONED_AGENT_PROFILE_SCHEMA_VERSION = 2
 
 
 class ProfileVerificationSettings(BaseModel):
@@ -264,11 +266,12 @@ class ACPAgentProfile(AgentProfileBase):
             "initialize/authenticate, and new_session()/load_session()."
         ),
     )
-    acp_command: str | None = Field(
+    acp_command: list[str] | None = Field(
         default=None,
         description=(
-            "Optional explicit command to launch the ACP subprocess. Leave "
-            "blank to use the default for ``acp_server``."
+            "Optional explicit command to launch the ACP subprocess, as an "
+            "argv token list (e.g. ``['npx', '-y', 'some-acp@1.2.3']``). Leave "
+            "unset to use the default for ``acp_server``."
         ),
     )
     acp_args: list[str] | None = Field(
@@ -341,8 +344,21 @@ def _migrate_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
     return migrated
 
 
+def _migrate_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
+    command = payload.get("acp_command")
+    if isinstance(command, str):
+        try:
+            tokens = shlex.split(command)
+        except ValueError:
+            tokens = command.split()
+        payload["acp_command"] = tokens or None
+    payload["schema_version"] = 3
+    return payload
+
+
 _AGENT_PROFILE_MIGRATIONS: dict[int, PersistedProfileMigrator] = {
     1: _migrate_v1_to_v2,
+    2: _migrate_v2_to_v3,
 }
 
 
@@ -351,8 +367,8 @@ def _apply_persisted_migrations(payload: dict[str, Any]) -> dict[str, Any]:
     migrated = dict(payload)
     version_raw = migrated.get("schema_version")
     if version_raw is None:
-        migrated["schema_version"] = AGENT_PROFILE_SCHEMA_VERSION
-        version = AGENT_PROFILE_SCHEMA_VERSION
+        version = _UNVERSIONED_AGENT_PROFILE_SCHEMA_VERSION
+        migrated["schema_version"] = version
     elif isinstance(version_raw, int) and not isinstance(version_raw, bool):
         version = version_raw
     else:
