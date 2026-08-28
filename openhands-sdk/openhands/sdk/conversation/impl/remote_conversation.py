@@ -31,6 +31,7 @@ from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.title_utils import generate_conversation_title
 from openhands.sdk.conversation.types import (
     ConversationCallbackType,
+    ConversationDeltaCallbackType,
     ConversationID,
     StuckDetectionThresholds,
     TraceMetadataValue,
@@ -47,6 +48,7 @@ from openhands.sdk.event.conversation_state import (
     ConversationStateUpdateEvent,
 )
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
+from openhands.sdk.event.streaming_delta import StreamingDeltaEvent
 from openhands.sdk.event.types import EventID
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM, Message, TextContent
@@ -67,6 +69,9 @@ LEGACY_CONVERSATIONS_PATH = "/api/conversations"
 FATAL_WS_CLOSE_CODES = frozenset({4001, 4004})
 _WEBSOCKET_AUTH_TYPE: Final = "auth"
 _WEBSOCKET_SESSION_API_KEY_FIELD: Final = "session_api_key"
+# Deltas are not Events, so their frames must be recognised before the
+# durable decode: Event.model_validate would reject the kind outright.
+_STREAMING_DELTA_KIND: Final = StreamingDeltaEvent.__name__
 
 
 def _agent_kind_mismatch_message(conversation_id: ConversationID) -> str:
@@ -131,6 +136,7 @@ class WebSocketCallbackClient:
     host: str
     conversation_id: str
     callback: ConversationCallbackType
+    delta_callback: ConversationDeltaCallbackType | None
     on_reconnect: Callable[[], object] | None
     api_key: str | None
     _thread: threading.Thread | None
@@ -144,10 +150,12 @@ class WebSocketCallbackClient:
         callback: ConversationCallbackType,
         api_key: str | None = None,
         on_reconnect: Callable[[], object] | None = None,
+        delta_callback: ConversationDeltaCallbackType | None = None,
     ):
         self.host = host
         self.conversation_id = conversation_id
         self.callback = callback
+        self.delta_callback = delta_callback
         self.api_key = api_key
         self.on_reconnect = on_reconnect
         self._thread = None
@@ -236,7 +244,14 @@ class WebSocketCallbackClient:
                         if self._stop.is_set():
                             break
                         try:
-                            event = Event.model_validate(json.loads(message))
+                            data = json.loads(message)
+                            if data.get("kind") == _STREAMING_DELTA_KIND:
+                                if self.delta_callback is not None:
+                                    self.delta_callback(
+                                        StreamingDeltaEvent.model_validate(data)
+                                    )
+                                continue
+                            event = Event.model_validate(data)
 
                             # Set ready on first ConversationStateUpdateEvent
                             # The server sends this immediately after subscription
@@ -686,6 +701,7 @@ class RemoteConversation(BaseConversation):
     _ws_client: "WebSocketCallbackClient | None"
     agent: AgentBase
     _callbacks: list[ConversationCallbackType]
+    _delta_callbacks: list[ConversationDeltaCallbackType]
     max_iteration_per_run: int
     workspace: RemoteWorkspace
     _client: httpx.Client
@@ -703,6 +719,7 @@ class RemoteConversation(BaseConversation):
         plugins: list | None = None,
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
+        delta_callbacks: list[ConversationDeltaCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
         stuck_detection_thresholds: (
@@ -731,6 +748,9 @@ class RemoteConversation(BaseConversation):
                     is a PluginSource specifying source, ref, and repo_path.
             conversation_id: Optional existing conversation id to attach to
             callbacks: Optional callbacks to receive events (not yet streamed)
+            delta_callbacks: Optional callbacks to receive streaming token deltas.
+                    Deltas are transient and are not Events, so they never reach
+                    ``callbacks``.
             max_iteration_per_run: Max iterations configured on server
             stuck_detection: Whether to enable stuck detection on server
             stuck_detection_thresholds: Optional configuration for stuck detection
@@ -761,6 +781,7 @@ class RemoteConversation(BaseConversation):
         super().__init__()  # Initialize base class with span tracking
         self.agent = agent
         self._callbacks = callbacks or []
+        self._delta_callbacks = delta_callbacks or []
         self.max_iteration_per_run = max_iteration_per_run
         self.workspace = workspace
         self._client = workspace.client
@@ -989,6 +1010,7 @@ class RemoteConversation(BaseConversation):
             callback=composed_callback,
             api_key=self.workspace.api_key,
             on_reconnect=self._state.events.reconcile,
+            delta_callback=self._on_delta if self._delta_callbacks else None,
         )
         self._ws_client.start()
 
@@ -1044,6 +1066,14 @@ class RemoteConversation(BaseConversation):
         # All hooks (including SessionStart/SessionEnd) are executed server-side.
         # hook_config is sent in the creation payload.
         self.delete_on_close = delete_on_close
+
+    def _on_delta(self, delta: StreamingDeltaEvent) -> None:
+        """Fan a decoded delta out to the delta callbacks, isolating failures."""
+        for callback in self._delta_callbacks:
+            try:
+                callback(delta)
+            except Exception:
+                logger.exception("delta_callback_error", stack_info=True)
 
     def _create_llm_completion_log_callback(self) -> ConversationCallbackType:
         """Create a callback that writes LLM completion logs to client filesystem."""

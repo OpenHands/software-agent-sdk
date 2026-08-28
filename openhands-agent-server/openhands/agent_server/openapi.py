@@ -125,6 +125,17 @@ def _add_canonical_contract_components(document: dict[str, Any]) -> None:
                 {**copy.deepcopy(patch_schema), "title": "AgentSettingsPatch"},
             )
 
+    # StreamingDeltaEvent is delivered over the events websocket, never by a
+    # REST route, so nothing in `paths` references it and pruning drops it.
+    # It is still part of the published contract every live client decodes,
+    # so name it here for the generated clients.
+    from openhands.sdk.event import StreamingDeltaEvent
+
+    schemas.setdefault(
+        "StreamingDeltaEvent",
+        StreamingDeltaEvent.model_json_schema(mode="serialization"),
+    )
+
     document["components"]["schemas"] = {
         name: schemas[name] for name in sorted(schemas)
     }

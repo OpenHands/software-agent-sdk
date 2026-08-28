@@ -6,11 +6,18 @@ from typing import Annotated, Any
 from pydantic import BaseModel, BeforeValidator, Field
 
 from openhands.sdk.event.base import Event
+from openhands.sdk.event.streaming_delta import StreamingDeltaEvent
 from openhands.sdk.llm.streaming import TokenCallbackType
 
 
 ConversationCallbackType = Callable[[Event], None]
 """Type alias for event callback functions."""
+
+ConversationDeltaCallbackType = Callable[[StreamingDeltaEvent], None]
+"""Callback type invoked for streaming deltas received from an agent server.
+
+Deltas are not ``Event``s and never reach ``ConversationCallbackType``.
+"""
 
 ConversationTokenCallbackType = TokenCallbackType
 """Callback type invoked for streaming LLM deltas."""

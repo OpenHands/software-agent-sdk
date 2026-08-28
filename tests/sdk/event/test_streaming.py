@@ -2,7 +2,7 @@
 
 import pytest
 
-from openhands.sdk.event import StreamingDeltaEvent
+from openhands.sdk.event import Event, StreamingDeltaEvent
 
 
 @pytest.mark.parametrize(
@@ -35,3 +35,32 @@ def test_streaming_delta_event_json_round_trip():
     dumped = event.model_dump(mode="json")
     assert dumped["content"] == "hi"
     assert dumped["reasoning_content"] == "hmm"
+
+
+def test_streaming_delta_event_is_not_an_event():
+    """Deltas are not durable events, so they cannot ride the durable bus."""
+    assert not isinstance(StreamingDeltaEvent(content="x"), Event)
+    assert not issubclass(StreamingDeltaEvent, Event)
+
+
+def test_streaming_delta_event_wire_frame_is_unchanged():
+    """The socket frame must stay byte-identical: browser clients match on
+    ``kind`` and require ``id``, ``timestamp`` and a known ``source``."""
+    event = StreamingDeltaEvent(content="hel")
+    frame = event.model_dump(mode="json", exclude_none=True)
+
+    assert set(frame) == {"id", "timestamp", "source", "content", "kind"}
+    assert frame["kind"] == "StreamingDeltaEvent"
+    assert frame["source"] == "agent"
+    assert frame["content"] == "hel"
+    assert frame["id"] == event.id
+    assert frame["timestamp"] == event.timestamp
+
+
+def test_streaming_delta_event_tolerates_additive_fields():
+    """Unlike ``Event`` (extra="forbid"), a delta can gain stream identity
+    without breaking clients on an older schema."""
+    delta = StreamingDeltaEvent.model_validate(
+        {"content": "x", "item_id": "abc", "order": 3}
+    )
+    assert delta.content == "x"

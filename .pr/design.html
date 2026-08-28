@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Unparenting the Delta — streaming step 1b</title>
+<style>
+:root{
+  --ground:#F8F7FB; --surface:#FFFFFF; --surface-2:#F1EFF7;
+  --ink:#1A1830; --ink-2:#413D5C; --muted:#6B6880;
+  --line:#DEDAE9; --line-2:#C9C3DC;
+  --accent:#4B3FBE; --accent-soft:#EDEAFB;
+  --ok:#2E6B52; --ok-soft:#E4F0EA;
+  --warn:#A8481F; --warn-soft:#F9EAE2;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --ground:#14131E; --surface:#1C1A29; --surface-2:#232134;
+    --ink:#E8E6F2; --ink-2:#B9B4CE; --muted:#8C88A3;
+    --line:#2E2B41; --line-2:#403C58;
+    --accent:#9A8FF0; --accent-soft:#262240;
+    --ok:#63B48C; --ok-soft:#1B2C25;
+    --warn:#E08A5C; --warn-soft:#2E1F17;
+  }
+}
+*{box-sizing:border-box}
+body{
+  background:var(--ground); color:var(--ink);
+  font:16px/1.62 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  margin:0; padding:0 24px 96px; -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:900px;margin:0 auto}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+header{padding:64px 0 32px;border-bottom:1px solid var(--line);margin-bottom:40px}
+.eyebrow{font-family:ui-monospace,monospace;font-size:11.5px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--accent);margin:0 0 16px}
+h1{font-size:2.4rem;line-height:1.1;letter-spacing:-.02em;margin:0 0 16px;font-weight:650}
+.standfirst{font-size:1.12rem;color:var(--ink-2);max-width:62ch;margin:0 0 22px}
+.meta{display:flex;flex-wrap:wrap;gap:4px 22px;font-family:ui-monospace,monospace;
+  font-size:12px;color:var(--muted)}
+.meta b{font-weight:600;color:var(--ink-2)}
+h2{font-size:1.35rem;margin:52px 0 6px;letter-spacing:-.01em;font-weight:650}
+h2 .num{font-family:ui-monospace,monospace;font-size:.7em;color:var(--accent);
+  margin-right:10px;vertical-align:.12em}
+.lede{color:var(--muted);margin:0 0 22px;max-width:64ch}
+p{max-width:68ch}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+@media (max-width:720px){.cols{grid-template-columns:1fr}}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:6px;
+  padding:16px 18px}
+.card h3{margin:0 0 10px;font-size:12px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--muted);font-family:ui-monospace,monospace;font-weight:600}
+pre{margin:0;overflow-x:auto;font-size:12.5px;line-height:1.62;color:var(--ink-2)}
+.del{color:var(--warn)}
+.add{color:var(--ok)}
+.note{background:var(--ok-soft);border:1px solid var(--ok);border-radius:4px;
+  padding:14px 16px;margin:20px 0;font-size:14.5px;color:var(--ink)}
+.note b{color:var(--ok)}
+.trap{background:var(--warn-soft);border-left:3px solid var(--warn);border-radius:0 4px 4px 0;
+  padding:12px 16px;margin:12px 0;font-size:14.5px}
+.trap b{color:var(--warn)}
+table{border-collapse:collapse;width:100%;font-size:14px;margin:16px 0}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
+  font-family:ui-monospace,monospace;font-weight:600}
+td code{font-size:12.5px;background:var(--surface-2);padding:1px 5px;border-radius:3px}
+.tag{display:inline-block;font-family:ui-monospace,monospace;font-size:10.5px;
+  letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border-radius:3px;font-weight:600}
+.tag.add{background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok)}
+.tag.brk{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn)}
+.tag.same{background:var(--surface-2);color:var(--muted);border:1px solid var(--line-2)}
+figure{margin:24px 0}
+figcaption{font-size:13px;color:var(--muted);margin-top:10px}
+svg{max-width:100%;height:auto;display:block}
+.scroll{overflow-x:auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <p class="eyebrow">software-agent-sdk · streaming epic · step 1b</p>
+  <h1>Unparenting the Delta</h1>
+  <p class="standfirst"><code>StreamingDeltaEvent</code> stops subclassing <code>Event</code> and gets
+  its own fan-out. The bytes on the wire do not change, so no deployed client breaks.</p>
+  <p class="meta">
+    <span><b>Issue</b> #4696</span>
+    <span><b>Epic</b> #4671</span>
+    <span><b>Also fixes</b> #4695</span>
+    <span><b>Removes the flag from</b> #4689</span>
+  </p>
+</header>
+
+<h2><span class="num">01</span>The shape change</h2>
+<p class="lede">One file, one base class, two fields promoted from inherited to explicit.</p>
+
+<div class="cols">
+  <div class="card">
+    <h3>Before</h3>
+<pre><span class="del">class StreamingDeltaEvent(Event):</span>
+    <span class="del"># id, timestamp, parent_id inherited</span>
+    <span class="del"># model_config: extra="forbid", frozen</span>
+    source: SourceType = "agent"
+    content: str | None = None
+    reasoning_content: str | None = None</pre>
+  </div>
+  <div class="card">
+    <h3>After</h3>
+<pre><span class="add">class StreamingDeltaEvent(DiscriminatedUnionMixin):</span>
+    <span class="add">id: EventID = Field(default_factory=…)</span>
+    <span class="add">timestamp: str = Field(default_factory=…)</span>
+    source: SourceType = "agent"
+    content: str | None = None
+    reasoning_content: str | None = None
+    <span class="add"># no parent_id — a delta has no tree</span></pre>
+  </div>
+</div>
+
+<p>This is not a novel shape. <code>BashEventBase</code> is already a plain
+<code>DiscriminatedUnionMixin</code> with its own <code>id</code> and <code>timestamp</code>, its own
+pub/sub instance, its own subscriber class and its own socket endpoint. A delta is the same kind of
+object, and now it is modelled as one.</p>
+
+<h2><span class="num">02</span>The wire is byte-identical</h2>
+<p class="lede"><code>kind</code> is derived from the class name, so keeping the name and re-declaring
+<code>source</code> reproduces today's frame field for field.</p>
+
+<div class="card">
+  <h3>Frame sent by <code>_send_event</code> (mode="json", exclude_none=True)</h3>
+<pre>{"content": "Hello",
+ "id": "747b8244-c15a-4de9-a7f8-db9b1bd5d382",
+ "kind": "StreamingDeltaEvent",
+ "source": "agent",
+ "timestamp": "2026-08-28T14:15:54.447318"}</pre>
+</div>
+
+<div class="note"><b>Verified end to end.</b> Captured from a real streamed run against a real
+agent-server over the real events websocket, on this branch. <code>parent_id</code> was always
+<code>None</code> and always dropped by <code>exclude_none</code>, so removing it changes nothing that
+ever left the process.</div>
+
+<h2><span class="num">03</span>The fan-out split</h2>
+<p class="lede">A non-<code>Event</code> cannot be published to a <code>PubSub[Event]</code>, and
+pyright runs in pre-commit. The reparenting is what forces the split.</p>
+
+<figure>
+<svg viewBox="0 0 860 300" role="img" aria-label="Before and after fan-out diagrams">
+  <defs>
+    <marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="currentColor"/>
+    </marker>
+  </defs>
+  <g font-family="ui-monospace,monospace" font-size="11.5" fill="currentColor">
+
+    <text x="0" y="14" font-size="11" letter-spacing="1.4" opacity=".62">BEFORE — ONE BUS, ONE FLAG</text>
+    <rect x="0" y="30" width="118" height="30" rx="4" fill="none" stroke="currentColor" opacity=".55"/>
+    <text x="12" y="49">token callback</text>
+    <rect x="0" y="74" width="118" height="30" rx="4" fill="none" stroke="currentColor" opacity=".55"/>
+    <text x="12" y="93">durable events</text>
+    <path d="M120,45 L184,58" stroke="currentColor" fill="none" opacity=".55" marker-end="url(#a)"/>
+    <path d="M120,89 L184,72" stroke="currentColor" fill="none" opacity=".55" marker-end="url(#a)"/>
+    <rect x="188" y="50" width="150" height="30" rx="4" fill="none" stroke="currentColor"/>
+    <text x="198" y="69">PubSub[Event]</text>
+    <text x="198" y="96" font-size="10.5" opacity=".7">+ receives_streaming_deltas</text>
+    <path d="M340,65 L404,42" stroke="currentColor" fill="none" opacity=".55" marker-end="url(#a)"/>
+    <path d="M340,65 L404,65" stroke="currentColor" fill="none" opacity=".55" marker-end="url(#a)"/>
+    <path d="M340,65 L404,88" stroke="currentColor" fill="none" opacity=".55" marker-end="url(#a)"/>
+    <path d="M340,65 L404,111" stroke="currentColor" fill="none" opacity=".55" marker-end="url(#a)"/>
+    <text x="412" y="46">websocket   <tspan opacity=".7">(opts in)</tspan></text>
+    <text x="412" y="69">webhook     <tspan opacity=".7">(must remember not to)</tspan></text>
+    <text x="412" y="92">telemetry   <tspan opacity=".7">(must remember not to)</tspan></text>
+    <text x="412" y="115">idle timer  <tspan opacity=".7">(forgot → #4695)</tspan></text>
+
+    <line x1="0" y1="150" x2="860" y2="150" stroke="currentColor" opacity=".2"/>
+
+    <text x="0" y="180" font-size="11" letter-spacing="1.4" opacity=".62">AFTER — TWO BUSES, NO FLAG</text>
+    <rect x="0" y="196" width="118" height="30" rx="4" fill="none" stroke="currentColor" opacity=".55"/>
+    <text x="12" y="215">token callback</text>
+    <rect x="0" y="240" width="118" height="30" rx="4" fill="none" stroke="currentColor" opacity=".55"/>
+    <text x="12" y="259">durable events</text>
+    <path d="M120,211 L184,211" stroke="currentColor" fill="none" opacity=".55" marker-end="url(#a)"/>
+    <path d="M120,255 L184,255" stroke="currentColor" fill="none" opacity=".55" marker-end="url(#a)"/>
+    <rect x="188" y="196" width="180" height="30" rx="4" fill="none" stroke="currentColor"/>
+    <text x="198" y="215">PubSub[StreamingDelta…]</text>
+    <rect x="188" y="240" width="180" height="30" rx="4" fill="none" stroke="currentColor"/>
+    <text x="198" y="259">PubSub[Event]</text>
+    <path d="M370,206 L434,196" stroke="currentColor" fill="none" opacity=".55" marker-end="url(#a)"/>
+    <path d="M370,216 L434,219" stroke="currentColor" fill="none" opacity=".55" marker-end="url(#a)"/>
+    <path d="M370,250 L434,242" stroke="currentColor" fill="none" opacity=".55" marker-end="url(#a)"/>
+    <path d="M370,260 L434,265" stroke="currentColor" fill="none" opacity=".55" marker-end="url(#a)"/>
+    <path d="M370,262 L434,288" stroke="currentColor" fill="none" opacity=".55" marker-end="url(#a)"/>
+    <text x="442" y="200">websocket delta subscriber</text>
+    <text x="442" y="223">idle-timer heartbeat <tspan opacity=".7">(throttled 30 s)</tspan></text>
+    <text x="442" y="246">websocket event subscriber</text>
+    <text x="442" y="269">webhook</text>
+    <text x="442" y="292">telemetry</text>
+  </g>
+</svg>
+<figcaption>The webhook and telemetry subscribers are not filtered out of the delta stream. They are
+registered on a different object, so there is no path between them.</figcaption>
+</figure>
+
+<h2><span class="num">04</span>Interface changes</h2>
+
+<div class="scroll">
+<table>
+  <tr><th>Surface</th><th>Change</th><th>Impact</th></tr>
+  <tr>
+    <td><code>StreamingDeltaEvent</code> wire frame</td>
+    <td>None. Same <code>kind</code>, same fields, same values.</td>
+    <td><span class="tag same">unchanged</span></td>
+  </tr>
+  <tr>
+    <td><code>isinstance(delta, Event)</code></td>
+    <td><code>True</code> → <code>False</code></td>
+    <td><span class="tag brk">breaking</span></td>
+  </tr>
+  <tr>
+    <td><code>Event</code></td>
+    <td>Untouched. Same class, same <code>extra="forbid"</code>, same bytes on disk.</td>
+    <td><span class="tag same">unchanged</span></td>
+  </tr>
+  <tr>
+    <td><code>Subscriber.receives_streaming_deltas</code></td>
+    <td>Removed. It was the interim filter from #4689 and is now dead.</td>
+    <td><span class="tag brk">breaking</span></td>
+  </tr>
+  <tr>
+    <td><code>EventService.subscribe_to_deltas</code> / <code>unsubscribe_from_deltas</code></td>
+    <td>New, mirroring the durable pair.</td>
+    <td><span class="tag add">additive</span></td>
+  </tr>
+  <tr>
+    <td><code>RemoteConversation(delta_callbacks=…)</code></td>
+    <td>New. Deltas no longer reach <code>callbacks</code>, which keeps its
+        <code>Callable[[Event], None]</code> signature honest.</td>
+    <td><span class="tag add">additive</span></td>
+  </tr>
+  <tr>
+    <td>Exported OpenAPI</td>
+    <td><code>StreamingDeltaEvent</code> leaves the <code>Event</code> union (18 members, was 19)
+        and is kept as a standalone named schema.</td>
+    <td><span class="tag brk">breaking</span></td>
+  </tr>
+</table>
+</div>
+
+<h2><span class="num">05</span>Traps, and what handles each</h2>
+<p class="lede">Each of these was found by running the code, not by reading it.</p>
+
+<div class="trap"><b>Dropping <code>source</code> makes the browser discard every delta.</b>
+The canvas guard <code>isBaseEvent</code> requires <code>id</code>, <code>timestamp</code> and a
+<code>source</code> from a fixed set. A delta missing any of them fails the guard, never reaches the
+batcher, and streaming stops with no error anywhere. All three stay, declared explicitly, and a test
+asserts the exact frame key set.</div>
+
+<div class="trap"><b>Renaming the class breaks the browser too.</b>
+<code>kind</code> is <code>self.__class__.__name__</code> and the canvas compares it to the literal
+string <code>"StreamingDeltaEvent"</code>. The name stays, however redundant the <code>Event</code>
+suffix now reads.</div>
+
+<div class="trap"><b>The Python client must decode deltas before <code>Event</code>.</b>
+<code>Event.model_validate</code> now raises <em>Unknown kind</em> on a delta frame. The call site
+catches and logs, so the failure would be a log line per token and silently lost streaming, not a
+crash. <code>WebSocketCallbackClient</code> branches on <code>kind</code> first.</div>
+
+<div class="trap"><b>The delta bus must keep resetting the runtime idle timer.</b>
+Deltas had quietly become the keepalive for the standard streaming path: the subscriber that calls
+<code>update_last_execution_time()</code> fires on every event, and the runtime-api reaps a pod whose
+<code>idle_time</code> passes roughly twenty minutes. #4689 stopped that without meaning to (#4695).
+A throttled heartbeat subscriber now lives on the delta bus.</div>
+
+<h2><span class="num">06</span>Version skew</h2>
+<div class="scroll">
+<table>
+  <tr><th>Client</th><th>Against a new server</th><th>Why</th></tr>
+  <tr><td>Browser / canvas</td><td>Unaffected</td>
+      <td>Its guards are string and structural checks, and the frame is identical.</td></tr>
+  <tr><td>TypeScript client</td><td>Unaffected</td>
+      <td>Types are compile-time only. The schema stays named, so regeneration is cosmetic.</td></tr>
+  <tr><td>Older Python SDK</td><td>Unaffected</td>
+      <td><code>kind</code> resolves against the client's own class registry, which still lists the
+          delta under <code>Event</code>.</td></tr>
+  <tr><td>New Python SDK</td><td>Decodes deltas on a separate callback</td>
+      <td>Ships in the same release as the server change.</td></tr>
+</table>
+</div>
+
+<h2><span class="num">07</span>Evidence</h2>
+<p class="lede">Both scripts run a real server or a real service, not mocks of one.</p>
+
+<div class="cols">
+  <div class="card">
+    <h3>Streamed run — real server, socket, webhook</h3>
+<pre>tokens the LLM streamed     : 5
+deltas at delta_callbacks   : 6
+delta text reassembled      : 'Hello, streamed world!'
+deltas at durable callbacks : 0
+durable events at callbacks : 10
+webhook POSTs               : 11
+deltas POSTed to webhook    : 0</pre>
+  </div>
+  <div class="card">
+    <h3>Idle heartbeat during a stream</h3>
+<pre>on origin/main
+  tree has a delta bus          : False
+  idle timer reset by the delta : <span class="del">False</span>
+
+on this branch
+  tree has a delta bus          : True
+  idle timer reset by the delta : <span class="add">True</span></pre>
+  </div>
+</div>
+
+<h2><span class="num">08</span>What this does not do</h2>
+<p>It does not touch <code>Event</code>, the event log, or the socket endpoint. Deleting
+<code>StreamingDeltaEvent</code> and its bus outright is step 7 (#4683), which depends on the canvas
+turn model landing first. Regenerating <code>typescript-client</code> is a follow-up PR in that repo;
+the schema is still exported under its own name, so the generated type survives and only its
+membership in the <code>Event</code> union changes.</p>
+
+</div>
+</body>
+</html>

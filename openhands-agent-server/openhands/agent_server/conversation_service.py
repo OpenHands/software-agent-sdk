@@ -3,6 +3,7 @@ import importlib
 import json
 import logging
 import os
+import time
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
@@ -62,7 +63,7 @@ from openhands.sdk.conversation.title_utils import (
     generate_title_from_message,
 )
 from openhands.sdk.credential import CredentialBindingError, VersionedCredentialBinding
-from openhands.sdk.event import MessageEvent
+from openhands.sdk.event import MessageEvent, StreamingDeltaEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
@@ -2340,6 +2341,9 @@ class ConversationService:
             await event_service.subscribe_to_events(
                 _EventSubscriber(service=event_service)
             )
+            await event_service.subscribe_to_deltas(
+                _DeltaSubscriber(service=event_service)
+            )
             if stored.autotitle and stored.title is None:
                 await event_service.subscribe_to_events(
                     AutoTitleSubscriber(service=event_service)
@@ -2487,6 +2491,32 @@ def _build_telemetry_context(
         ),
         is_automation=is_automation,
     )
+
+
+# Deltas arrive at token rate; the heartbeat only has to beat faster than the
+# runtime-api's ~20 minute idle eviction. Matches the ACP bridge's throttle.
+DELTA_HEARTBEAT_INTERVAL_SECONDS = 30.0
+
+
+@dataclass
+class _DeltaSubscriber(Subscriber[StreamingDeltaEvent]):
+    """Keep the idle timers alive while a stream is in flight.
+
+    A long stream can run for minutes without producing a durable event, so
+    without this the runtime-api sees a growing idle_time and reaps the pod
+    mid-answer.
+    """
+
+    service: EventService
+    _last_beat: float = 0.0
+
+    async def __call__(self, _event: StreamingDeltaEvent):
+        now = time.monotonic()
+        if now - self._last_beat < DELTA_HEARTBEAT_INTERVAL_SECONDS:
+            return
+        self._last_beat = now
+        self.service.touch()
+        update_last_execution_time()
 
 
 @dataclass

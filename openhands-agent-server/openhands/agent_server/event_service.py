@@ -133,6 +133,16 @@ class EventService:
     _pub_sub: PubSub[Event] = field(
         default_factory=lambda: PubSub[Event](max_subscribers=50), init=False
     )
+    # Deltas are transient and arrive at token rate, so they get their own
+    # fan-out. Nothing on the durable bus can observe them.
+    #
+    # Uncapped on purpose: every delta subscriber is either internal or paired
+    # with a durable one, so the limit above already bounds this bus. Capping
+    # it separately would let a connection be accepted on one bus and refused
+    # on the other.
+    _delta_pub_sub: PubSub[StreamingDeltaEvent] = field(
+        default_factory=lambda: PubSub[StreamingDeltaEvent](), init=False
+    )
     _run_task: asyncio.Task | None = field(default=None, init=False)
     # Set when a send_message(run=True) is rejected because a run is still
     # wrapping up; consumed by _run_and_publish to re-run the stranded message.
@@ -844,6 +854,15 @@ class EventService:
     async def unsubscribe_from_events(self, subscriber_id: UUID) -> bool:
         return self._pub_sub.unsubscribe(subscriber_id)
 
+    async def subscribe_to_deltas(
+        self, subscriber: Subscriber[StreamingDeltaEvent]
+    ) -> UUID:
+        """Subscribe to streaming deltas. There is no state to push on connect."""
+        return self._delta_pub_sub.subscribe(subscriber)
+
+    async def unsubscribe_from_deltas(self, subscriber_id: UUID) -> bool:
+        return self._delta_pub_sub.unsubscribe(subscriber_id)
+
     def _emit_event_from_thread(self, event: Event) -> None:
         """Helper to safely emit events from non-async contexts (e.g., callbacks).
 
@@ -1043,8 +1062,8 @@ class EventService:
             content: str | None = None,
             reasoning_content: str | None = None,
         ) -> None:
-            # Published directly to _pub_sub (not via _callback_wrapper) so
-            # deltas reach subscribers but are NOT persisted to
+            # Published to the delta bus (not via _callback_wrapper) so deltas
+            # reach live clients but are NOT persisted to
             # ConversationState.events. See StreamingDeltaEvent docstring.
             if not self._main_loop or not self._main_loop.is_running():
                 return
@@ -1058,7 +1077,9 @@ class EventService:
                 reasoning_content=reasoning_content,
             )
             with suppress(RuntimeError):  # main loop already closed during teardown
-                asyncio.run_coroutine_threadsafe(self._pub_sub(event), self._main_loop)
+                asyncio.run_coroutine_threadsafe(
+                    self._delta_pub_sub(event), self._main_loop
+                )
 
         def _token_streaming_callback(chunk: LLMStreamChunk | str) -> None:
             if isinstance(chunk, str):
@@ -1759,6 +1780,7 @@ class EventService:
             self._run_task = None
 
         await self._pub_sub.close()
+        await self._delta_pub_sub.close()
         if self._conversation:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._conversation.close)
