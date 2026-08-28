@@ -552,11 +552,7 @@ class _WebSocketSubscriber(Subscriber):
 
 @dataclass
 class _DeltaWebSocketSubscriber(Subscriber[StreamingDeltaEvent]):
-    """WebSocket subscriber for streaming deltas.
-
-    Same socket, separate bus: the live client is the only consumer token
-    streaming is for.
-    """
+    """WebSocket subscriber for streaming deltas. Same socket, separate bus."""
 
     websocket: WebSocket
 

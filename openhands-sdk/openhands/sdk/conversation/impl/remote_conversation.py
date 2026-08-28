@@ -69,8 +69,7 @@ LEGACY_CONVERSATIONS_PATH = "/api/conversations"
 FATAL_WS_CLOSE_CODES = frozenset({4001, 4004})
 _WEBSOCKET_AUTH_TYPE: Final = "auth"
 _WEBSOCKET_SESSION_API_KEY_FIELD: Final = "session_api_key"
-# Deltas are not Events, so their frames must be recognised before the
-# durable decode: Event.model_validate would reject the kind outright.
+# Matched before the durable decode: Event.model_validate rejects this kind.
 _STREAMING_DELTA_KIND: Final = StreamingDeltaEvent.__name__
 
 
@@ -736,8 +735,8 @@ class RemoteConversation(BaseConversation):
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
-        # Appended rather than grouped with ``callbacks``: inserting a
-        # parameter mid-signature would move every positional after it.
+        # Appended, not grouped with ``callbacks``: a mid-signature insert
+        # would move every positional after it (the API breakage check).
         delta_callbacks: list[ConversationDeltaCallbackType] | None = None,
         **_: object,
     ) -> None:
@@ -776,9 +775,8 @@ class RemoteConversation(BaseConversation):
             observability_tags: Optional root span tags for observability backends.
             observability_span_name: Optional child span name for observability
                       backends. The root span remains named "conversation".
-            delta_callbacks: Optional callbacks to receive streaming token deltas.
-                      Deltas are transient and are not Events, so they never
-                      reach ``callbacks``.
+            delta_callbacks: Optional callbacks for streaming token deltas.
+                      Deltas are not Events and never reach ``callbacks``.
         """
         super().__init__()  # Initialize base class with span tracking
         self.agent = agent
@@ -1070,12 +1068,7 @@ class RemoteConversation(BaseConversation):
         self.delete_on_close = delete_on_close
 
     def _on_delta(self, delta: StreamingDeltaEvent) -> None:
-        """Fan a decoded delta out to the delta callbacks.
-
-        Mirrors ``compose_callbacks`` for durable events: no per-callback
-        isolation, because the websocket receive loop already logs and
-        continues on any callback failure.
-        """
+        """Fan a decoded delta out, like compose_callbacks does for events."""
         for callback in self._delta_callbacks:
             callback(delta)
 

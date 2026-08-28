@@ -2493,23 +2493,18 @@ def _build_telemetry_context(
     )
 
 
-# Deltas arrive at token rate; the heartbeat only has to beat faster than the
-# runtime-api's ~20 minute idle eviction. Matches the ACP bridge's throttle.
+# Deltas arrive at token rate; this only has to beat the runtime-api's
+# ~20 minute idle eviction.
 DELTA_HEARTBEAT_INTERVAL_SECONDS = 30.0
 
 
 @dataclass
 class _DeltaSubscriber(Subscriber[StreamingDeltaEvent]):
-    """Keep the idle timers alive while a stream is in flight.
-
-    A long stream can run for minutes without producing a durable event, so
-    without this the runtime-api sees a growing idle_time and reaps the pod
-    mid-answer.
-    """
+    """Keep the idle timers alive during a stream that emits no durable event."""
 
     service: EventService
-    # None, not 0.0: ``monotonic()`` counts from an arbitrary origin (uptime on
-    # Linux), so a zero baseline would swallow the first beat on a fresh boot.
+    # None, not 0.0: monotonic() counts from an arbitrary origin, so a zero
+    # baseline would swallow the first beat on a freshly booted host.
     _last_beat: float | None = None
 
     async def __call__(self, _event: StreamingDeltaEvent):

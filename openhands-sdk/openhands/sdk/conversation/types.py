@@ -14,10 +14,7 @@ ConversationCallbackType = Callable[[Event], None]
 """Type alias for event callback functions."""
 
 ConversationDeltaCallbackType = Callable[[StreamingDeltaEvent], None]
-"""Callback type invoked for streaming deltas received from an agent server.
-
-Deltas are not ``Event``s and never reach ``ConversationCallbackType``.
-"""
+"""Callback type invoked for streaming deltas from an agent server."""
 
 ConversationTokenCallbackType = TokenCallbackType
 """Callback type invoked for streaming LLM deltas."""

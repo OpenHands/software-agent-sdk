@@ -396,8 +396,7 @@ def test_websocket_client_calls_on_reconnect_after_subscription_restored():
 
 
 def test_websocket_client_routes_deltas_away_from_event_callback():
-    """Deltas are not Events: they must not go through Event.model_validate,
-    and they must not reach the durable callback."""
+    """A delta must bypass Event.model_validate and the durable callback."""
     events = []
     deltas = []
 
@@ -437,7 +436,7 @@ def test_websocket_client_routes_deltas_away_from_event_callback():
 
 
 def test_websocket_client_drops_deltas_without_a_delta_callback():
-    """A client that asked for no deltas still decodes the durable stream."""
+    """A client that wants no deltas still decodes the durable stream."""
     events = []
 
     def callback(event):

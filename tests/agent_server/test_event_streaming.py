@@ -35,7 +35,7 @@ def _make_chunk(
 
 
 class _CollectorSubscriber(Subscriber):
-    """Subscriber that collects whatever bus it is attached to."""
+    """Collects whatever bus it is attached to."""
 
     def __init__(self):
         self.events: list[Event | StreamingDeltaEvent] = []
@@ -298,7 +298,7 @@ async def test_multiple_chunks_produce_multiple_events(event_service, tmp_path):
 
 @pytest.mark.asyncio
 async def test_deltas_never_reach_the_durable_bus(event_service, tmp_path):
-    """Deltas reach the delta bus only. Durable subscribers cannot see them."""
+    """Durable subscribers must never see a delta."""
     streaming = _CollectorSubscriber()
     durable = _CollectorSubscriber()
     event_service._delta_pub_sub.subscribe(streaming)
@@ -314,7 +314,7 @@ async def test_deltas_never_reach_the_durable_bus(event_service, tmp_path):
 
 @pytest.mark.asyncio
 async def test_deltas_reset_the_idle_timer(event_service):
-    """A long stream with no durable events must keep the pod alive (#4695)."""
+    """A stream with no durable events must still keep the pod alive (#4695)."""
     subscriber = conversation_service._DeltaSubscriber(service=event_service)
     event_service._delta_pub_sub.subscribe(subscriber)
     event_service._last_active_monotonic = time.monotonic() - 600

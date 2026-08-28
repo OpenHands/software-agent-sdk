@@ -1564,11 +1564,7 @@ async def test_webhook_subscribe_errors_surface(tmp_path, monkeypatch):
 async def test_streaming_deltas_never_reach_webhook(
     mock_event_service, webhook_spec, sample_conversation_id
 ):
-    """No StreamingDeltaEvent is enqueued or POSTed (regression for #4672).
-
-    Webhooks register on the durable bus; deltas are published on a separate
-    one, so there is no path between them.
-    """
+    """Webhooks register on the durable bus, deltas go elsewhere (#4672)."""
     subscriber = WebhookSubscriber(
         conversation_id=sample_conversation_id,
         service=mock_event_service,

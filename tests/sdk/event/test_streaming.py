@@ -39,14 +39,13 @@ def test_streaming_delta_event_json_round_trip():
 
 
 def test_streaming_delta_event_is_not_an_event():
-    """Deltas are not durable events, so they cannot ride the durable bus."""
+    """A delta must not be an Event, or it rides the durable bus again."""
     assert not isinstance(StreamingDeltaEvent(content="x"), Event)
     assert not issubclass(StreamingDeltaEvent, Event)
 
 
 def test_streaming_delta_event_wire_frame_is_unchanged():
-    """The socket frame must stay byte-identical: browser clients match on
-    ``kind`` and require ``id``, ``timestamp`` and a known ``source``."""
+    """Browser clients match on kind and require id, timestamp and source."""
     event = StreamingDeltaEvent(content="hel")
     frame = event.model_dump(mode="json", exclude_none=True)
 
@@ -59,16 +58,14 @@ def test_streaming_delta_event_wire_frame_is_unchanged():
 
 
 def test_streaming_delta_event_is_frozen():
-    """One instance fans out to several subscribers, so it stays immutable —
-    as it was while it inherited ``Event``."""
+    """One instance fans out to several subscribers, so it stays immutable."""
     delta = StreamingDeltaEvent(content="x")
     with pytest.raises(ValidationError):
         delta.content = "mutated"
 
 
 def test_streaming_delta_event_tolerates_additive_fields():
-    """Unlike ``Event`` (extra="forbid"), a delta can gain stream identity
-    without breaking clients on an older schema."""
+    """Unlike Event, a delta can gain fields without breaking older clients."""
     delta = StreamingDeltaEvent.model_validate(
         {"content": "x", "item_id": "abc", "order": 3}
     )

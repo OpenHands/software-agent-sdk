@@ -133,13 +133,9 @@ class EventService:
     _pub_sub: PubSub[Event] = field(
         default_factory=lambda: PubSub[Event](max_subscribers=50), init=False
     )
-    # Deltas are transient and arrive at token rate, so they get their own
-    # fan-out. Nothing on the durable bus can observe them.
-    #
-    # Uncapped on purpose: every delta subscriber is either internal or paired
-    # with a durable one, so the limit above already bounds this bus. Capping
-    # it separately would let a connection be accepted on one bus and refused
-    # on the other.
+    # Uncapped: every delta subscriber is internal or paired with a durable
+    # one, so the limit above already bounds this bus. A separate cap could
+    # accept a connection on one bus and refuse it on the other.
     _delta_pub_sub: PubSub[StreamingDeltaEvent] = field(
         default_factory=lambda: PubSub[StreamingDeltaEvent](), init=False
     )
@@ -857,7 +853,7 @@ class EventService:
     async def subscribe_to_deltas(
         self, subscriber: Subscriber[StreamingDeltaEvent]
     ) -> UUID:
-        """Subscribe to streaming deltas. There is no state to push on connect."""
+        """Subscribe to streaming deltas. No state is pushed on connect."""
         return self._delta_pub_sub.subscribe(subscriber)
 
     async def unsubscribe_from_deltas(self, subscriber_id: UUID) -> bool:
@@ -1062,9 +1058,8 @@ class EventService:
             content: str | None = None,
             reasoning_content: str | None = None,
         ) -> None:
-            # Published to the delta bus (not via _callback_wrapper) so deltas
-            # reach live clients but are NOT persisted to
-            # ConversationState.events. See StreamingDeltaEvent docstring.
+            # Straight to the delta bus, not via _callback_wrapper, so deltas
+            # are never persisted to ConversationState.events.
             if not self._main_loop or not self._main_loop.is_running():
                 return
             # Use `is not None` rather than truthiness: some providers
