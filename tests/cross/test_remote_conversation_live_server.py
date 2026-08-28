@@ -820,6 +820,84 @@ def test_openai_chat_completions_gateway_over_real_server(
                 assert streamed_text == "Hello from patched LLM"
                 assert usage_chunks == []
 
+                raw_response = openai_client.responses.with_raw_response.create(
+                    model="openhands_smoke",
+                    instructions="Answer briefly.",
+                    input="Say hello through Responses.",
+                    store=False,
+                )
+                responses_result = raw_response.parse()
+                assert responses_result.object == "response"
+                assert responses_result.status == "completed"
+                assert responses_result.model == "openhands_smoke"
+                assert responses_result.output_text == "Hello from patched LLM"
+                assert responses_result.previous_response_id is None
+                assert responses_result.usage is not None
+                assert responses_result.usage.input_tokens == 7
+                assert responses_result.usage.output_tokens == 5
+                assert responses_result.usage.total_tokens == 12
+
+                responses_conversation_id = raw_response.headers[
+                    "X-OpenHands-ServerConversation-ID"
+                ]
+                UUID(responses_conversation_id)
+
+                continued_raw_response = (
+                    openai_client.responses.with_raw_response.create(
+                        model="openhands_smoke",
+                        input=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "input_text",
+                                        "text": "Say hello again.",
+                                    }
+                                ],
+                            }
+                        ],
+                        previous_response_id=responses_result.id,
+                        store=False,
+                    )
+                )
+                continued_result = continued_raw_response.parse()
+                assert continued_result.id != responses_result.id
+                assert continued_result.previous_response_id == responses_result.id
+                assert continued_result.output_text == "Hello from patched LLM"
+                assert (
+                    continued_raw_response.headers["X-OpenHands-ServerConversation-ID"]
+                    == responses_conversation_id
+                )
+
+                second_stateless_response = (
+                    openai_client.responses.with_raw_response.create(
+                        model="openhands_smoke",
+                        input="Start another stateless agent run.",
+                        store=False,
+                    )
+                )
+                assert (
+                    second_stateless_response.headers[
+                        "X-OpenHands-ServerConversation-ID"
+                    ]
+                    != responses_conversation_id
+                )
+
+                invalid_previous_response = client.post(
+                    f"{env['host']}/v1/responses",
+                    json={
+                        "model": "openhands_smoke",
+                        "input": "This must not run.",
+                        "previous_response_id": "resp_invalid",
+                        "store": False,
+                    },
+                    timeout=2.0,
+                )
+                assert invalid_previous_response.status_code == 400
+                assert invalid_previous_response.json()["detail"] == (
+                    "Invalid previous_response_id"
+                )
+
 
 def test_openai_gateway_replays_frozen_llm_fixtures(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
