@@ -1,0 +1,22 @@
+name: release
+
+# release-please caller (OpenHands/release-actions). On push to main, maintains a
+# "release PR" that, on merge, bumps package.json + tags vX.Y.Z + creates the
+# Release; that release drives the publish workflows via `release: published`.
+# Config: release-please-config.json, .release-please-manifest.json, .github/release.yml.
+on:
+  push:
+    branches:
+      - main
+      - 'release/**'   # maintenance branches; the release is scoped to this branch
+
+jobs:
+  release-please:
+    permissions:
+      contents: write
+      pull-requests: write
+    # Required, not an optimization: release-please needs the org App token
+    # (RELEASE_APP_ID / RELEASE_APP_PRIVATE_KEY) so the release it creates fires
+    # `release: published` — a GITHUB_TOKEN release would be suppressed.
+    secrets: inherit
+    uses: OpenHands/release-actions/.github/workflows/release-please.yml@main
