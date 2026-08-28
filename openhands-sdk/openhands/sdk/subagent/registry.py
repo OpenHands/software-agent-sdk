@@ -229,7 +229,7 @@ def agent_definition_to_factory(
                     f"Available profiles: {available_profiles}"
                 )
 
-            llm = store.load(profile_name, cipher=cipher)
+            llm = store._load_for_execution(profile_name, cipher=cipher)
 
         # the system prompt of the subagent is added as a suffix of the
         # main system prompt
@@ -303,6 +303,10 @@ def register_file_agents(
 
     Does not overwrite agents already registered programmatically or by plugins.
 
+    Args:
+        work_dir: Project directory used to discover agent definitions.
+        cipher: Cipher for decrypting secrets in selected LLM profiles.
+
     Returns:
         List of agent names that were actually registered.
     """
@@ -362,6 +366,7 @@ def register_plugin_agents(
         agents: Agent definitions collected from loaded plugins.
         work_dir: Project directory for resolving skill names in agent
             definitions. If None, only user-level skills are searched.
+        cipher: Cipher for decrypting secrets in selected LLM profiles.
 
     Returns:
         List of agent names that were actually registered.

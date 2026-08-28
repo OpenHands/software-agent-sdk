@@ -11,11 +11,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from filelock import FileLock, Timeout
+from pydantic import SecretStr
 
 from openhands.sdk.llm.utils.openhands_provider import (
     canonicalize_openhands_llm_payload,
 )
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
 
@@ -357,6 +359,37 @@ class LLMProfileStore:
 
             updates["api_key"] = SecretStr(api_key)
         return llm.model_copy(update=updates)
+
+    def _load_for_execution(
+        self,
+        name: str,
+        *,
+        cipher: Cipher | None = None,
+    ) -> LLM:
+        """Load a profile and reject an unavailable encrypted API key."""
+        llm = self.load(name, cipher=cipher)
+        profile_name = name.removesuffix(".json")
+        stored_api_key = next(
+            (
+                summary["api_key_set"]
+                for summary in self.list_summaries()
+                if summary["name"] == profile_name
+            ),
+            False,
+        )
+        loaded_api_key = (
+            llm.api_key.get_secret_value()
+            if isinstance(llm.api_key, SecretStr)
+            else llm.api_key
+        )
+        if stored_api_key and (
+            loaded_api_key is None or loaded_api_key.startswith(FERNET_TOKEN_PREFIX)
+        ):
+            raise ValueError(
+                f"Could not decrypt API key for profile '{profile_name}'. "
+                "Use the cipher that encrypted the profile."
+            )
+        return llm
 
     def delete(self, name: str) -> None:
         """Delete an existing profile.

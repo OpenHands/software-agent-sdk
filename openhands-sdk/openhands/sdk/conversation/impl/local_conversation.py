@@ -406,6 +406,7 @@ class LocalConversation(BaseConversation):
             if recovered_specs:
                 register_client_tools(recovered_specs)
         self.agent = agent
+        self._cipher = cipher
 
         self._bind_conversation_context(self.agent.llm)
 
@@ -486,8 +487,6 @@ class LocalConversation(BaseConversation):
         # This ensures plugins are loaded before agent initialization
         self.llm_registry = LLMRegistry()
         self._profile_store = LLMProfileStore(profile_store_dir)
-        self._cipher = cipher
-
         # Seed agent_context.secrets into the registry for every agent (regular
         # and ACP), covering callers that skip create_request() — canvas /
         # TypeScript, or the server-side agent_settings -> create_agent fold.
@@ -835,6 +834,7 @@ class LocalConversation(BaseConversation):
                 stuck_detection=self._stuck_detector is not None,
                 visualizer=type(self._visualizer) if self._visualizer else None,
                 delete_on_close=self.delete_on_close,
+                cipher=self._cipher,
                 tags=tags,
             )
 
@@ -1605,6 +1605,8 @@ class LocalConversation(BaseConversation):
         See #3443 for background.
         """
         llm._call_context = self.get_llm_call_context()
+        if llm.fallback_strategy is not None:
+            llm.fallback_strategy._bind_cipher(self._cipher)
 
     def _condenser_for_switched_llm(
         self,

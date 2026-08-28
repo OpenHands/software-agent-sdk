@@ -614,6 +614,59 @@ def test_agent_definition_to_factory_decrypts_model_profile(tmp_path: Path) -> N
     assert agent.llm.api_key.get_secret_value() == "profile-key"
 
 
+def test_register_file_agents_forwards_cipher_to_factory(tmp_path: Path) -> None:
+    cipher = Cipher("test-secret")
+    profile_dir = tmp_path / "profiles"
+    store = LLMProfileStore(base_dir=profile_dir)
+    store.save(
+        "encrypted-profile",
+        LLM(model="gpt-4o-mini", api_key=SecretStr("profile-key")),
+        include_secrets=True,
+        cipher=cipher,
+    )
+    agents_dir = tmp_path / ".agents" / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "encrypted-agent.md").write_text(
+        "---\n"
+        "name: encrypted-agent\n"
+        "model: encrypted-profile\n"
+        f"profile_store_dir: {profile_dir}\n"
+        "---\n"
+    )
+
+    with patch(
+        "openhands.sdk.subagent.load.Path.home", return_value=tmp_path / "no_user"
+    ):
+        register_file_agents(tmp_path, cipher=cipher)
+
+    agent = get_agent_factory("encrypted-agent").factory_func(_make_test_llm())
+
+    assert isinstance(agent.llm.api_key, SecretStr)
+    assert agent.llm.api_key.get_secret_value() == "profile-key"
+
+
+@pytest.mark.parametrize("cipher", [None, Cipher("wrong-secret")])
+def test_agent_definition_to_factory_rejects_undecrypted_profile(
+    tmp_path: Path,
+    cipher: Cipher | None,
+) -> None:
+    store = LLMProfileStore(base_dir=tmp_path)
+    store.save(
+        "encrypted-profile",
+        LLM(model="gpt-4o-mini", api_key=SecretStr("profile-key")),
+        include_secrets=True,
+        cipher=Cipher("right-secret"),
+    )
+    agent_def = AgentDefinition(
+        name="encrypted-profile-agent",
+        model="encrypted-profile",
+        profile_store_dir=str(tmp_path),
+    )
+
+    with pytest.raises(ValueError, match="encrypted-profile"):
+        agent_definition_to_factory(agent_def, cipher=cipher)(_make_test_llm())
+
+
 def test_agent_definition_to_factory_profile_store_dir(tmp_path: Path) -> None:
     """profile_store_dir on AgentDefinition is used by the factory."""
     store = LLMProfileStore(base_dir=tmp_path)

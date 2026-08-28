@@ -15,12 +15,16 @@ from litellm.types.utils import (
 )
 from pydantic import SecretStr
 
+from openhands.sdk import Agent
+from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.llm import LLM, FallbackStrategy, Message, TextContent
 from openhands.sdk.llm.exceptions import (
     LLMContextWindowExceedError,
     LLMServiceUnavailableError,
 )
 from openhands.sdk.llm.llm import LLMCallContext
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.utils.cipher import Cipher
 
 
 def _get_mock_response(content: str = "ok", model: str = "gpt-4o") -> ModelResponse:
@@ -311,6 +315,34 @@ def test_fallback_profiles_resolved_via_store(mock_comp, tmp_path):
     content = resp.message.content[0]
     assert isinstance(content, TextContent)
     assert content.text == "from store"
+
+
+def test_fallback_profile_uses_bound_cipher(tmp_path):
+    cipher = Cipher("test-secret")
+    store = LLMProfileStore(base_dir=tmp_path)
+    store.save(
+        "encrypted-fallback",
+        _get_llm("fallback-model"),
+        include_secrets=True,
+        cipher=cipher,
+    )
+    strategy = FallbackStrategy(
+        fallback_llms=["encrypted-fallback"],
+        profile_store_dir=tmp_path,
+    )
+
+    conversation = LocalConversation(
+        agent=Agent(llm=_get_llm("primary", fallback_strategy=strategy), tools=[]),
+        workspace=tmp_path,
+        cipher=cipher,
+        visualizer=None,
+    )
+    bound_strategy = conversation.agent.llm.fallback_strategy
+    assert bound_strategy is not None
+    [fallback] = list(bound_strategy._iter_fallbacks())
+
+    assert isinstance(fallback.api_key, SecretStr)
+    assert fallback.api_key.get_secret_value() == "k"
 
 
 # =========================================================================
