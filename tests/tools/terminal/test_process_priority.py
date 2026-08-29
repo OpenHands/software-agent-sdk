@@ -47,7 +47,7 @@ def test_linux_priority_falls_back_when_nice_is_unavailable(monkeypatch) -> None
     assert process_priority.get_process_priority_prefix() == ()
 
 
-@pytest.mark.parametrize("system", ["Darwin", "Linux"])
+@pytest.mark.parametrize("system", ["Darwin", "Linux", "Windows"])
 def test_none_setting_disables_process_priority_policy(
     monkeypatch: pytest.MonkeyPatch,
     system: str,
@@ -56,6 +56,7 @@ def test_none_setting_disables_process_priority_policy(
     monkeypatch.setattr(process_priority.shutil, "which", lambda _: "/usr/bin/nice")
     env = {process_priority.TERMINAL_PROCESS_PRIORITY_ENV: "none"}
 
+    assert not process_priority.should_lower_process_priority(env)
     assert process_priority.get_process_priority_prefix(env) == ()
 
 
