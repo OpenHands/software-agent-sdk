@@ -53,6 +53,26 @@ def test_extract_sections_splits_on_headings():
     assert sections["beta"] == "\nmore\n"
 
 
+def test_extract_sections_splits_on_h2_headings():
+    sections = extract_sections("## Alpha\n\ntext\n\n## Beta\n\nmore\n")
+    assert sections["alpha"] == "\ntext\n\n"
+    assert sections["beta"] == "\nmore\n"
+
+
+def test_enhancement_h2_headings_passes():
+    body = ENHANCEMENT_READY.replace("### ", "## ")
+    result = evaluate_readiness(body, ["enhancement"])
+    assert result.ready is True
+    assert result.reasons == []
+
+
+def test_bug_h2_headings_passes():
+    body = BUG_READY.replace("### ", "## ")
+    result = evaluate_readiness(body, ["bug"])
+    assert result.ready is True
+    assert result.reasons == []
+
+
 def test_enhancement_ready_passes():
     result = evaluate_readiness(ENHANCEMENT_READY, ["enhancement"])
     assert result.ready is True

@@ -100,8 +100,18 @@ def test_reconciliation_targets_replaced_agent(tmp_path: Path) -> None:
 
     client._tools_reconciled_callback(cast(MCPClient, client), [replacement])
 
-    assert set(conversation.agent.tools_map) == {"replacement"}
-    assert set(old_agent.tools_map) == {"initial"}
+    updated_mcp_tools = {
+        name
+        for name, tool in conversation.agent.tools_map.items()
+        if isinstance(tool, MCPToolDefinition)
+    }
+    old_mcp_tools = {
+        name
+        for name, tool in old_agent.tools_map.items()
+        if isinstance(tool, MCPToolDefinition)
+    }
+    assert updated_mcp_tools == {"replacement"}
+    assert old_mcp_tools == {"initial"}
     conversation.close()
 
 

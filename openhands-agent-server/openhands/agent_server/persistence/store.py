@@ -373,7 +373,7 @@ class FileSettingsStore(SettingsStore):
         else:
             context = {"expose_secrets": "plaintext"}
             # Warn about plaintext secret storage (only if secrets exist)
-            if settings.llm_api_key_is_set:
+            if settings.has_any_secret:
                 logger.warning(
                     "Saving settings with secrets in PLAINTEXT (no cipher configured). "
                     "Configure OH_SECRET_KEY for production deployments."
@@ -542,7 +542,7 @@ class FileSecretsStore(SecretsStore):
         else:
             context = {"expose_secrets": "plaintext"}
             # Warn about plaintext secret storage (only if secrets exist)
-            if secrets.custom_secrets:
+            if secrets.has_any_secret:
                 logger.warning(
                     "Saving secrets in PLAINTEXT (no cipher configured). "
                     "Configure OH_SECRET_KEY for production deployments."

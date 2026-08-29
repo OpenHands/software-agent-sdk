@@ -12,6 +12,7 @@ from openhands.sdk.event import ActionEvent, Event
 from openhands.sdk.llm import MessageToolCall
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.tool import MCPToolDefinition
+from openhands.sdk.tool import registry
 from openhands.sdk.tool.builtins.finish import (
     FinishAction,
     FinishObservation,
@@ -74,6 +75,22 @@ def test_finish_tool_without_schema_is_unchanged():
     assert tool.response_schema is None
     schema = tool._get_tool_schema()
     assert set(schema["properties"]) == {"message", "summary"}
+
+
+def test_builtin_finish_tool_spec_resolves_without_registry_entry(monkeypatch):
+    response_schema = TaskResult.model_json_schema()
+    monkeypatch.delitem(registry._REG, FinishTool.__name__, raising=False)
+    monkeypatch.delitem(registry._USABILITY_REG, FinishTool.__name__, raising=False)
+
+    [tool] = resolve_tool(
+        Tool(name=FinishTool.__name__, params={"response_schema": response_schema}),
+        conv_state=MagicMock(),
+    )
+
+    assert isinstance(tool, FinishTool)
+    assert tool.name == "finish"
+    assert tool.response_schema == response_schema
+    assert "success" in tool._get_tool_schema()["properties"]
 
 
 def test_response_schema_extends_action_schema():
