@@ -378,6 +378,22 @@ _GEMINI_FILE_SECRETS: tuple[ACPFileSecretSpec, ...] = (
 )
 
 
+# Model ids accepted by ``kimi acp`` (Kimi Code CLI). Mirrors the ``model``
+# configOptions select reported at ``session/new`` on the pinned CLI version
+# (Kimi Code CLI 0.39.1): the bare ``kimi-code/*`` entries are the models
+# available to a Kimi account login. A custom ``acp_model`` outside this list
+# (e.g. a third-party provider alias) is still allowed; the CLI validates the
+# selection against its live select at session creation.
+_KIMI_MODELS: tuple[ACPModelOption, ...] = (
+    ACPModelOption(id="kimi-code/kimi-for-coding", label="K2.7 Coding"),
+    ACPModelOption(
+        id="kimi-code/kimi-for-coding-highspeed", label="K2.7 Coding Highspeed"
+    ),
+    ACPModelOption(id="kimi-code/k3", label="K3"),
+    ACPModelOption(id="kimi-code/k3-256k", label="K3-256k"),
+)
+
+
 # Pinned npm versions for the built-in ACP launchers. Keep in sync with the
 # `npm install -g` line in
 # openhands-agent-server/openhands/agent_server/docker/Dockerfile — a bump must
@@ -393,6 +409,7 @@ _GEMINI_FILE_SECRETS: tuple[ACPFileSecretSpec, ...] = (
 CLAUDE_AGENT_ACP_VERSION = "0.63.0"
 CODEX_ACP_VERSION = "1.1.7"
 GEMINI_CLI_VERSION = "0.46.0"
+KIMI_CODE_VERSION = "0.39.1"
 
 
 ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
@@ -479,6 +496,38 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             # Gemini CLI has no dedicated config-dir var; it hard-codes
             # ``~/.gemini`` (ignoring XDG), so only HOME relocates its state.
             data_dir_env_var="HOME",
+        ),
+        "kimi-code": ACPProviderInfo(
+            key="kimi-code",
+            display_name="Kimi Code",
+            # The scoped package is the official one; the unscoped npm package
+            # ``kimi-code`` is an unrelated third-party tool that also ships a
+            # ``kimi`` bin, so the launch command must use the full scope.
+            default_command=(
+                "npx",
+                "-y",
+                f"@moonshot-ai/kimi-code@{KIMI_CODE_VERSION}",
+                "acp",
+            ),
+            api_key_env_var="KIMI_API_KEY",
+            base_url_env_var="KIMI_BASE_URL",
+            # Verified against Kimi Code CLI 0.39.1: ``session/set_mode``
+            # accepts ``auto``/``yolo``/``default``/``plan``. ``yolo``
+            # auto-approves tool calls while still allowing question
+            # elicitation; ``auto`` would suppress questions entirely.
+            default_session_mode="yolo",
+            # ``kimi acp`` reports ``agentInfo.name = "Kimi Code CLI"``.
+            agent_name_patterns=("kimi",),
+            supports_set_session_model=True,
+            supports_runtime_model_switch=True,
+            session_meta_key=None,
+            available_models=_KIMI_MODELS,
+            default_model="kimi-code/kimi-for-coding",
+            # The CLI's ACP binary is just ``kimi`` (the ``acp`` subcommand is
+            # a trailing arg, preserved by resolve_acp_command on rewrite).
+            binary_name="kimi",
+            # ``KIMI_CODE_HOME`` relocates the ``~/.kimi-code`` data root.
+            data_dir_env_var="KIMI_CODE_HOME",
         ),
     }
 )

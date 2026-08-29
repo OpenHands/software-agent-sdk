@@ -19,7 +19,7 @@ from openhands.sdk.settings.acp_providers import (
 
 class TestACPProviderInfo:
     def test_known_providers_are_registered(self):
-        assert set(ACP_PROVIDERS) == {"claude-code", "codex", "gemini-cli"}
+        assert set(ACP_PROVIDERS) == {"claude-code", "codex", "gemini-cli", "kimi-code"}
 
     def test_all_entries_are_acp_provider_info(self):
         for info in ACP_PROVIDERS.values():
@@ -92,6 +92,35 @@ class TestACPProviderInfo:
         # Gemini CLI has no dedicated config-dir var, so only HOME relocates it.
         assert info.data_dir_env_var == "HOME"
 
+    def test_kimi_code_metadata(self):
+        info = ACP_PROVIDERS["kimi-code"]
+        assert info.key == "kimi-code"
+        assert info.display_name == "Kimi Code"
+        # Scoped package only: the unscoped npm ``kimi-code`` is a third-party
+        # tool that also ships a ``kimi`` bin.
+        assert info.default_command[0] == "npx"
+        assert "@moonshot-ai/kimi-code@" in info.default_command[2]
+        assert info.default_command[3] == "acp"
+        assert info.api_key_env_var == "KIMI_API_KEY"
+        assert info.base_url_env_var == "KIMI_BASE_URL"
+        assert info.default_session_mode == "yolo"
+        assert "kimi" in info.agent_name_patterns
+        assert info.supports_set_session_model is True
+        assert info.supports_runtime_model_switch is True
+        assert info.session_meta_key is None
+        assert info.default_model == "kimi-code/kimi-for-coding"
+        models = {model.id: model.label for model in info.available_models}
+        assert models["kimi-code/kimi-for-coding"] == "K2.7 Coding"
+        assert models["kimi-code/kimi-for-coding-highspeed"] == "K2.7 Coding Highspeed"
+        assert models["kimi-code/k3"] == "K3"
+        assert models["kimi-code/k3-256k"] == "K3-256k"
+        # The CLI's ACP binary is just ``kimi``; ``acp`` is a trailing arg.
+        assert info.binary_name == "kimi"
+        assert info.data_dir_env_var == "KIMI_CODE_HOME"
+        # Subscription credentials live under ~/.kimi-code/credentials/ in a
+        # nested layout the file-secret spec cannot express yet.
+        assert info.file_secrets == ()
+
     def test_provider_info_is_frozen(self):
         info = ACP_PROVIDERS["claude-code"]
         with pytest.raises((AttributeError, TypeError)):
@@ -111,7 +140,7 @@ class TestACPProviderInfo:
 
 class TestGetACPProvider:
     def test_returns_info_for_known_keys(self):
-        for key in ("claude-code", "codex", "gemini-cli"):
+        for key in ("claude-code", "codex", "gemini-cli", "kimi-code"):
             result = get_acp_provider(key)
             assert result is not None
             assert result.key == key
@@ -138,6 +167,12 @@ class TestDetectACPProviderByAgentName:
         info = detect_acp_provider_by_agent_name("gemini-cli 0.38.0")
         assert info is not None
         assert info.key == "gemini-cli"
+
+    def test_detects_kimi_code_by_agent_name(self):
+        # ``kimi acp`` reports agentInfo.name "Kimi Code CLI".
+        info = detect_acp_provider_by_agent_name("Kimi Code CLI")
+        assert info is not None
+        assert info.key == "kimi-code"
 
     def test_case_insensitive_detection(self):
         assert detect_acp_provider_by_agent_name("CLAUDE-AGENT-ACP") is not None
@@ -170,6 +205,16 @@ class TestDetectACPProviderByCommand:
         )
         assert info is not None
         assert info.key == "codex"
+
+    def test_detects_kimi_code_by_command(self):
+        info = detect_acp_provider_by_command(
+            ["npx", "-y", "@moonshot-ai/kimi-code@0.39.1", "acp"]
+        )
+        assert info is not None
+        assert info.key == "kimi-code"
+        info = detect_acp_provider_by_command(["/opt/acp-wrappers/kimi", "acp"])
+        assert info is not None
+        assert info.key == "kimi-code"
 
     def test_returns_none_for_custom_command(self):
         assert detect_acp_provider_by_command(["my-custom-acp", "serve"]) is None

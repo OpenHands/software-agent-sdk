@@ -119,8 +119,10 @@ RUN set -eux; \
           WRAPPER_BINS="$WRAPPER_BINS codex-acp";; \
         gemini-cli) PACKAGES="$PACKAGES @google/gemini-cli@0.46.0"; \
           WRAPPER_BINS="$WRAPPER_BINS gemini";; \
+        kimi-code) PACKAGES="$PACKAGES @moonshot-ai/kimi-code@0.39.1"; \
+          WRAPPER_BINS="$WRAPPER_BINS kimi";; \
         *) echo "Unknown ACP provider '$provider' in INSTALL_ACP_PROVIDERS" \
-             "(expected one of: claude-code, codex, gemini-cli)" >&2; exit 1;; \
+             "(expected one of: claude-code, codex, gemini-cli, kimi-code)" >&2; exit 1;; \
       esac; \
     done; \
     if [ -z "$PACKAGES" ]; then \
