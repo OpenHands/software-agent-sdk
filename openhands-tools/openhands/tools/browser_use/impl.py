@@ -13,6 +13,7 @@ import threading
 from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, TypeVar
+from uuid import uuid4
 
 
 if TYPE_CHECKING:
@@ -356,6 +357,9 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                 "allowed_domains": allowed_domains or [],
                 "executable_path": executable_path,
                 "chromium_sandbox": not running_as_root,
+                "user_data_dir": str(
+                    Path.home() / ".config" / "browseruse" / "profiles" / uuid4().hex
+                ),
                 **config,
             }
 
@@ -692,6 +696,14 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             except Exception as e:
                 logger.warning(f"Error during browser cleanup: {e}")
             finally:
+                # Remove the browser profile directory to avoid disk accumulation.
+                # browser_use doesn't clean up the user_data_dir on shutdown.
+                user_data_dir = self._config.get("user_data_dir")
+                if user_data_dir and "browseruse/profiles/" in user_data_dir:
+                    try:
+                        shutil.rmtree(user_data_dir, ignore_errors=True)
+                    except Exception:
+                        pass
                 try:
                     # Always close the async executor
                     self._async_executor.close()

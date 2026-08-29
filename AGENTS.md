@@ -25,6 +25,18 @@ strong bias toward simplicity and maintainable code.
   matters, and what to do instead.
 </ROLE>
 
+## Cross-Repository Boundaries
+
+This repository owns the Python SDK and Agent Server: agent and tool behavior, conversations, workspaces, events, and the canonical REST/WebSocket API. Related responsibilities live elsewhere:
+
+- [`OpenHands/OpenHands`](https://github.com/OpenHands/OpenHands) owns Agent Canvas UI, frontend state, backend selection, and local-stack orchestration.
+- [`OpenHands/typescript-client`](https://github.com/OpenHands/typescript-client) mirrors this repository's Agent Server API for browser-compatible TypeScript clients.
+- [`OpenHands/extensions`](https://github.com/OpenHands/extensions) owns reusable skills, plugins, automations, and integrations; [`OpenHands/automation`](https://github.com/OpenHands/automation) owns automation definitions, scheduling, webhooks, run history, dispatch, and sandbox lifecycle orchestration; this repository executes the dispatched conversations.
+
+The usual flow is SDK/Agent Server → OpenAPI contract → `typescript-client` → Agent Canvas. Implement backend behavior and endpoints here first, then update the typed client and downstream applications as needed. If a PR is opened in the wrong repository, explicitly recommend closing and moving it to the repository that owns the change rather than merging it here.
+
+All pull requests must comply with [`.agents/skills/custom-codereview-guide.md`](.agents/skills/custom-codereview-guide.md), in addition to the repository's contribution requirements and CI checks.
+
 ## Repository Memory
 - Async LLM completions propagate through the full call chain: `LLM.acompletion()`/`LLM.aresponses()` → `_atransport_call()` (litellm `acompletion`/`aresponses`) → `RetryMixin.retry_decorator()` (tenacity `retry`, which wraps coroutines natively — there is no separate async retry path) → condenser `acondense()` → `Agent.astep()` → `LocalConversation.arun()` → `EventService.run()`. Every async method has a sync counterpart; base classes provide default delegations to sync so custom subclasses work without changes. Token callbacks use `AnyTokenCallbackType` (union of sync/async) with `_invoke_token_callback()` for transparent dispatch.
 - `conversation.interrupt()` cancels in-flight `arun()` by cancelling the tracked `_arun_task`. `asyncio.CancelledError` propagates through all layers (LLM HTTP stream → agent step → conversation loop) without needing per-layer interrupt APIs, because LLM and Agent are frozen/stateless Pydantic models that may be shared across conversations. `arun()` catches `CancelledError`, sets status to `PAUSED`, and emits `InterruptEvent`. The agent-server exposes this via `EventService.interrupt()` → `ConversationService.interrupt_conversation()` → `POST /{conversation_id}/interrupt`.
@@ -67,6 +79,7 @@ strong bias toward simplicity and maintainable code.
 - Keep path helpers split by purpose: `is_absolute_path_source()` is for cross-platform source/wire syntax detection, while local filesystem writes/validation (for example, the file editor) should use host-native absolute-path semantics so POSIX does not silently accept Windows drive paths as creatable files.
 - Tool availability filtering belongs in `openhands-sdk/openhands/sdk/tool/registry.py` via `list_usable_tools()`, which preserves registration order and defaults tools to usable unless they expose an `is_usable()` callable. Environment-specific checks like Chromium detection should live on the concrete tool class (`BrowserToolSet.is_usable()`), while agent-server surfaces such as `/server_info` should consume the registry helper rather than re-implement per-tool filtering.
 - Pydantic secret field helpers live in `openhands-sdk/openhands/sdk/utils/pydantic_secrets.py`. `serialize_secret()` handles serialization (cipher / `expose_secrets` / default Pydantic masking); `validate_secret()` handles deserialization (cipher decryption, redacted/empty → `None`); `is_redacted_secret()` checks for the sentinel; `REDACTED_SECRET_VALUE` is the canonical sentinel string. For `dict[str, str]` fields whose values are all secrets, wrap each value in `SecretStr` and call `serialize_secret` per value (see `LookupSecret._serialize_secrets`). Do not hand-roll redaction logic in field serializers.
+- Agent-server persistence detects whether settings or secret payloads contain values by exercising the real Pydantic secret-serialization pipeline with `_SecretProbeCipher` (`persistence/models.py`). Do not replace this with a hardcoded field list or a recursive `SecretStr` walk: fields such as `AgentContext.secrets` store plain strings and only become secret-bearing inside their serializers.
 
 - `LookupSecret` normalizes hostless URLs against `OH_INTERNAL_SERVER_URL` (set by `openhands-agent-server.__main__` from the bound host/port, rewriting wildcard binds to loopback) and otherwise falls back to `http://127.0.0.1:8000`, so relative secret URLs can safely target the current agent-server instance.
 

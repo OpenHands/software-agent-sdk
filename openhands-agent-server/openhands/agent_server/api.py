@@ -21,6 +21,7 @@ from openhands.agent_server.agent_profiles_router import agent_profiles_router
 from openhands.agent_server.auth_router import auth_router
 from openhands.agent_server.bash_router import bash_router
 from openhands.agent_server.bash_service import get_default_bash_event_service
+from openhands.agent_server.canvas_extensions_router import canvas_extensions_router
 from openhands.agent_server.config import (
     Config,
     get_default_config,
@@ -441,6 +442,7 @@ def _add_api_routes(app: FastAPI) -> None:
     api_router.include_router(skills_router)
     api_router.include_router(sub_agents_router)
     api_router.include_router(plugins_router)
+    api_router.include_router(canvas_extensions_router)
     api_router.include_router(hooks_router)
     api_router.include_router(llm_router)
     api_router.include_router(provider_connections_router)

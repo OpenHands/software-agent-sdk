@@ -31,6 +31,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, field_validator
 
 from openhands.sdk.logger import IN_CI, get_logger, rolling_log_view
+from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
 from openhands.sdk.workspace import PlatformType, TargetType
 
 
@@ -433,6 +434,27 @@ class BuildOptions(BaseModel):
             "(e.g., at each release)."
         ),
     )
+    install_acp_providers: str = Field(
+        default="claude-code,codex,gemini-cli",
+        description=(
+            "Comma-separated ACP provider keys (see ACP_PROVIDERS in "
+            "openhands-sdk/openhands/sdk/settings/acp_providers.py) to bake "
+            "into the image. Empty string installs none."
+        ),
+    )
+
+    @field_validator("install_acp_providers")
+    @classmethod
+    def _valid_install_acp_providers(cls, v: str) -> str:
+        unknown = [
+            p for p in (t.strip() for t in v.split(",")) if p and p not in ACP_PROVIDERS
+        ]
+        if unknown:
+            raise ValueError(
+                f"Unknown ACP provider(s) in install_acp_providers: "
+                f"{', '.join(unknown)}. Valid keys: {', '.join(ACP_PROVIDERS)}"
+            )
+        return v
 
     @property
     def short_sha(self) -> str:
@@ -834,6 +856,8 @@ def build_with_telemetry(opts: BuildOptions) -> BuildResult:
         f"OPENHANDS_BUILD_GIT_SHA={opts.git_sha}",
         "--build-arg",
         f"OPENHANDS_BUILD_GIT_REF={opts.git_ref}",
+        "--build-arg",
+        f"INSTALL_ACP_PROVIDERS={opts.install_acp_providers}",
     ]
     if push:
         args += ["--platform", ",".join(opts.platforms), "--push"]
@@ -1051,6 +1075,16 @@ def main(argv: list[str]) -> int:
             "as v1 and v1.2) in output. Should only be used for release builds."
         ),
     )
+    parser.add_argument(
+        "--install-acp-providers",
+        # os.environ.get, not _env(): an explicit empty string here means
+        # "install none" and must survive, but _env() treats blank as unset.
+        default=os.environ.get("INSTALL_ACP_PROVIDERS", "claude-code,codex,gemini-cli"),
+        help=(
+            "Comma-separated ACP provider keys to bake into the image "
+            "(default from $INSTALL_ACP_PROVIDERS; empty string installs none)."
+        ),
+    )
 
     args = parser.parse_args(argv)
 
@@ -1080,6 +1114,7 @@ def main(argv: list[str]) -> int:
             prebuilt_sdist=args.prebuilt_sdist,
             arch=args.arch or None,
             include_versioned_tag=args.versioned_tag,
+            install_acp_providers=args.install_acp_providers,
         )
 
         # If running in GitHub Actions, write outputs directly to GITHUB_OUTPUT
@@ -1128,6 +1163,7 @@ def main(argv: list[str]) -> int:
         prebuilt_sdist=args.prebuilt_sdist,
         arch=args.arch or None,
         include_versioned_tag=args.versioned_tag,
+        install_acp_providers=args.install_acp_providers,
     )
     tags = build(opts)
 
