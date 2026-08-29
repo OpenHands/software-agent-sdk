@@ -202,7 +202,6 @@ class LocalConversation(BaseConversation):
     _resolved_plugins: list[ResolvedPluginSource] | None
     _plugins_loaded: bool
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
-    _subscription_disabled_condenser: Any | None
     _mcp_tool_provider: MCPToolProvider
     _llm_call_context: LLMCallContext
 
@@ -240,6 +239,7 @@ class LocalConversation(BaseConversation):
         file_store: FileStore | None = None,
         mcp_tool_provider: MCPToolProvider | None = None,
         _parent_llm_call_context: LLMCallContext | None = None,
+        profile_store_dir: str | Path | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -300,6 +300,8 @@ class LocalConversation(BaseConversation):
                 for state and EventLog storage.
             _parent_llm_call_context: Runtime LLM context inherited by an internal
                 child conversation. Conversation-local identity is always replaced.
+            profile_store_dir: Optional directory containing saved LLM profiles.
+                Defaults to ``~/.openhands/profiles``.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -317,7 +319,6 @@ class LocalConversation(BaseConversation):
         self._plugins_loaded = False
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
-        self._subscription_disabled_condenser = None
         self._mcp_tool_provider = mcp_tool_provider or DefaultMCPToolProvider()
 
         # Create-or-resume: factory inspects BASE_STATE to decide
@@ -491,7 +492,7 @@ class LocalConversation(BaseConversation):
         # Agent initialization is deferred to _ensure_agent_ready() for lazy loading
         # This ensures plugins are loaded before agent initialization
         self.llm_registry = LLMRegistry()
-        self._profile_store = LLMProfileStore()
+        self._profile_store = LLMProfileStore(profile_store_dir)
         self._cipher = cipher
 
         # Seed agent_context.secrets into the registry for every agent (regular
@@ -1648,21 +1649,10 @@ class LocalConversation(BaseConversation):
         lock = contextlib.nullcontext() if skip_lock else self._state
         with lock:
             update: dict[str, object] = {"llm": new_llm}
-            if new_llm.is_subscription:
-                if self.agent.condenser is not None:
-                    self._subscription_disabled_condenser = self.agent.condenser
-                update["condenser"] = None
-            elif (
-                self.agent.condenser is None
-                and self._subscription_disabled_condenser is not None
-            ):
-                update["condenser"] = self._subscription_disabled_condenser
-                self._subscription_disabled_condenser = None
-            else:
-                update["condenser"] = self._condenser_for_switched_llm(
-                    self.agent.llm,
-                    new_llm,
-                )
+            update["condenser"] = self._condenser_for_switched_llm(
+                self.agent.llm,
+                new_llm,
+            )
             self.agent = self.agent.model_copy(update=update)
             self._state.agent = self.agent
             # Invalidate the cached ask-agent LLM so it re-clones.
@@ -1824,7 +1814,6 @@ class LocalConversation(BaseConversation):
                     ConversationExecutionStatus.IDLE
                 )  # new message resets terminal states
 
-            # TODO: We should add test cases for all these scenarios
             activated_skill_names: list[str] = []
             extended_content: list[TextContent] = []
 

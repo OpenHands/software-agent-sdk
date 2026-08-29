@@ -14,6 +14,7 @@ from openhands.agent_server.config import Config
 from openhands.agent_server.persistence import reset_stores
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.llm.provider_connection_store import ProviderConnectionStore
 from openhands.sdk.profiles import AgentProfileStore, OpenHandsAgentProfile
 
 
@@ -57,16 +58,45 @@ def client(temp_profiles_dir, temp_agent_profiles_dir, temp_settings_dir, monkey
     config = Config(static_files_path=None, session_api_keys=[], secret_key=None)
     app = create_app(config)
 
-    # Patch both stores to use temp directories (AgentProfileStore is hit by the
-    # FK guard on delete/rename).
+    # Patch stores to use temp directories (AgentProfileStore is hit by the
+    # FK guard on delete/rename). The LLM profile store is wired to a shared
+    # provider-connection store so ``load`` resolves provider references, and
+    # the router's own ``get_provider_connections_store`` returns the same
+    # instance so CRUD and resolution see one file.
+    provider_store = ProviderConnectionStore(
+        base_dir=temp_profiles_dir.parent / "provider-connections"
+    )
+
+    def make_llm_store():
+        return LLMProfileStore(
+            base_dir=temp_profiles_dir, provider_store=provider_store
+        )
+
     with (
         patch(
             "openhands.agent_server.profiles_router.get_llm_profile_store",
-            lambda: LLMProfileStore(base_dir=temp_profiles_dir),
+            make_llm_store,
         ),
         patch(
             "openhands.agent_server.profiles_router.get_agent_profile_store",
             lambda: AgentProfileStore(base_dir=temp_agent_profiles_dir),
+        ),
+        patch(
+            "openhands.agent_server.profiles_router.get_provider_connections_store",
+            lambda config=None: provider_store,
+        ),
+        patch(
+            "openhands.agent_server.settings_router.get_llm_profile_store",
+            make_llm_store,
+        ),
+        patch(
+            "openhands.agent_server.provider_connections_router.get_llm_profile_store",
+            make_llm_store,
+        ),
+        patch(
+            "openhands.agent_server.provider_connections_router."
+            "get_provider_connections_store",
+            lambda config=None: provider_store,
         ),
     ):
         yield TestClient(app)
@@ -168,6 +198,308 @@ def test_list_profiles_returns_saved_profiles(client, store):
 
 
 # ── Get Profile ────────────────────────────────────────────────────────────
+
+
+def test_provider_connection_key_shared_by_linked_profiles(client):
+    """Profiles stay runnable, while provider fields are shared by reference."""
+    connection = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic Work",
+            "provider": "anthropic",
+            "api_key": "sk-ant-old",
+            "base_url": "https://api.anthropic.com",
+        },
+    )
+    assert connection.status_code == 201
+    connection_body = connection.json()
+    connection_id = connection_body["id"]
+    assert connection_body["api_key_set"] is True
+    assert "api_key" not in connection_body
+    assert "secret_name" not in connection_body
+
+    for name, model in {
+        "sonnet-4": "anthropic/claude-sonnet-4",
+        "sonnet-5": "anthropic/claude-sonnet-5",
+    }.items():
+        response = client.post(
+            f"/api/profiles/{name}",
+            json={
+                "llm": {
+                    "model": model,
+                    "provider_connection_id": connection_id,
+                },
+                "include_secrets": False,
+            },
+        )
+        assert response.status_code == 201
+
+    profiles = client.get("/api/profiles").json()["profiles"]
+    linked = {p["name"]: p for p in profiles}
+    assert linked["sonnet-4"]["provider_connection_id"] == connection_id
+    assert linked["sonnet-4"]["api_key_set"] is True
+    assert linked["sonnet-5"]["api_key_set"] is True
+
+    detail = client.get("/api/profiles/sonnet-4").json()
+    assert detail["config"]["api_key"] is None
+    assert detail["api_key_set"] is True
+
+    activated = client.post("/api/profiles/sonnet-4/activate")
+    assert activated.status_code == 200
+    settings = client.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()
+    llm = settings["agent_settings"]["llm"]
+    assert llm["model"] == "anthropic/claude-sonnet-4"
+    assert llm["api_key"] == "sk-ant-old"
+    assert llm["base_url"] == "https://api.anthropic.com"
+
+    delete = client.delete(f"/api/llm/provider-connections/{connection_id}")
+    assert delete.status_code == 409
+    assert "referenced by LLM profile" in delete.json()["detail"]
+
+    # Rotate the shared key. Read-at-use: active settings keep the previously
+    # resolved key until the profile is activated again (nothing is auto-copied).
+    rotated = client.patch(
+        f"/api/llm/provider-connections/{connection_id}",
+        json={"api_key": "sk-ant-new"},
+    )
+    assert rotated.status_code == 200
+    settings = client.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()
+    assert settings["agent_settings"]["llm"]["api_key"] == "sk-ant-old"
+
+    # Re-activating re-resolves the connection and applies the rotated key.
+    activated = client.post("/api/profiles/sonnet-4/activate")
+    assert activated.status_code == 200
+    settings = client.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()
+    assert settings["agent_settings"]["llm"]["api_key"] == "sk-ant-new"
+
+    activated = client.post("/api/profiles/sonnet-5/activate")
+    assert activated.status_code == 200
+    settings = client.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()
+    llm = settings["agent_settings"]["llm"]
+    assert llm["model"] == "anthropic/claude-sonnet-5"
+    assert llm["api_key"] == "sk-ant-new"
+
+
+def test_settings_active_profile_resolves_provider_connection(client):
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "OpenAI",
+            "provider": "openai",
+            "api_key": "sk-openai-provider",
+        },
+    ).json()["id"]
+    client.post(
+        "/api/profiles/gpt-provider",
+        json={
+            "llm": {
+                "model": "openai/gpt-5.5",
+                "provider_connection_id": connection_id,
+            },
+            "include_secrets": False,
+        },
+    )
+
+    response = client.patch("/api/settings", json={"active_profile": "gpt-provider"})
+
+    assert response.status_code == 200
+    settings = client.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()
+    llm = settings["agent_settings"]["llm"]
+    assert llm["model"] == "openai/gpt-5.5"
+    assert llm["api_key"] == "sk-openai-provider"
+
+
+def test_provider_connection_delete_rejects_active_settings_reference(client):
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic Work",
+            "provider": "anthropic",
+            "api_key": "sk-ant-old",
+        },
+    ).json()["id"]
+    client.post(
+        "/api/profiles/temporary-provider-profile",
+        json={
+            "llm": {
+                "model": "anthropic/claude-sonnet-4",
+                "provider_connection_id": connection_id,
+            },
+            "include_secrets": False,
+        },
+    )
+    assert (
+        client.post("/api/profiles/temporary-provider-profile/activate").status_code
+        == 200
+    )
+    assert client.delete("/api/profiles/temporary-provider-profile").status_code == 200
+
+    delete = client.delete(f"/api/llm/provider-connections/{connection_id}")
+
+    assert delete.status_code == 409
+    assert "referenced by the active agent settings" in delete.json()["detail"]
+    settings = client.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()
+    assert settings["agent_settings"]["llm"]["api_key"] == "sk-ant-old"
+
+
+def test_provider_connection_rotation_not_copied_into_active_settings(client):
+    """Read-at-use: rotating a key does not rewrite the resolved active settings.
+
+    The active ``agent_settings.llm`` keeps the key resolved at activation time
+    until the profile is activated again — nothing is auto-copied on rotation.
+    """
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic Work",
+            "provider": "anthropic",
+            "api_key": "sk-ant-old",
+        },
+    ).json()["id"]
+    client.post(
+        "/api/profiles/provider-profile",
+        json={
+            "llm": {
+                "model": "anthropic/claude-sonnet-4",
+                "provider_connection_id": connection_id,
+            },
+            "include_secrets": False,
+        },
+    )
+    assert client.post("/api/profiles/provider-profile/activate").status_code == 200
+
+    rotated = client.patch(
+        f"/api/llm/provider-connections/{connection_id}",
+        json={"api_key": "sk-ant-new"},
+    )
+    assert rotated.status_code == 200
+
+    # Active settings still hold the key resolved at activation.
+    settings = client.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()
+    assert settings["agent_settings"]["llm"]["api_key"] == "sk-ant-old"
+
+    # Re-activating re-resolves and picks up the rotated key.
+    assert client.post("/api/profiles/provider-profile/activate").status_code == 200
+    settings = client.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()
+    assert settings["agent_settings"]["llm"]["api_key"] == "sk-ant-new"
+
+
+def test_provider_connection_base_url_authoritative_on_activation(client):
+    """A connection's ``base_url`` wins on activation, including when cleared."""
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Proxy",
+            "provider": "custom",
+            "api_key": "sk-provider",
+            "base_url": "https://old.example",
+        },
+    ).json()["id"]
+    client.post(
+        "/api/profiles/provider-profile",
+        json={
+            "llm": {
+                "model": "openai/gpt-5.5",
+                "base_url": "https://profile.example",
+                "provider_connection_id": connection_id,
+            },
+            "include_secrets": False,
+        },
+    )
+    assert client.post("/api/profiles/provider-profile/activate").status_code == 200
+    settings = client.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()
+    # Connection base_url wins over the profile's own.
+    assert settings["agent_settings"]["llm"]["base_url"] == "https://old.example"
+
+    updated = client.patch(
+        f"/api/llm/provider-connections/{connection_id}",
+        json={"base_url": None},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["base_url"] is None
+
+    # base_url is authoritative including None: re-activation clears it.
+    assert client.post("/api/profiles/provider-profile/activate").status_code == 200
+    settings = client.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()
+    assert settings["agent_settings"]["llm"]["base_url"] is None
+
+
+def test_activate_profile_with_dangling_provider_connection_fails(client):
+    """A profile whose connection no longer exists fails loudly on activation."""
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic Work",
+            "provider": "anthropic",
+            "api_key": "sk-ant-old",
+        },
+    ).json()["id"]
+    client.post(
+        "/api/profiles/provider-profile",
+        json={
+            "llm": {
+                "model": "anthropic/claude-sonnet-4",
+                "provider_connection_id": connection_id,
+            },
+            "include_secrets": False,
+        },
+    )
+    # Drop the profile so the connection is unreferenced and can be deleted,
+    # then re-create the profile to leave a dangling provider reference.
+    assert client.delete("/api/profiles/provider-profile").status_code == 200
+    assert (
+        client.delete(f"/api/llm/provider-connections/{connection_id}").status_code
+        == 200
+    )
+    client.post(
+        "/api/profiles/provider-profile",
+        json={
+            "llm": {
+                "model": "anthropic/claude-sonnet-4",
+                "provider_connection_id": connection_id,
+            },
+            "include_secrets": False,
+        },
+    )
+
+    activated = client.post("/api/profiles/provider-profile/activate")
+
+    assert activated.status_code == 422
+    assert connection_id in activated.json()["detail"]
+
+
+def test_provider_connection_rejects_extra_headers(client):
+    response = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Proxy",
+            "provider": "custom",
+            "api_key": "sk-provider",
+            "extra_headers": {"Authorization": "Bearer proxy-secret"},
+        },
+    )
+
+    assert response.status_code == 422
 
 
 def test_get_profile_returns_config(client, store):
@@ -538,7 +870,7 @@ def test_get_profile_timeout_returns_503(client, store, monkeypatch):
     """Get endpoint surfaces TimeoutError as 503."""
     store.save("present", LLM(model="gpt-4o"))
 
-    def boom(self, name, *, cipher=None):
+    def boom(self, name, *, cipher=None, resolve_provider=True):
         raise TimeoutError("locked")
 
     monkeypatch.setattr(LLMProfileStore, "load", boom)
@@ -1248,6 +1580,162 @@ def test_list_profiles_no_auto_create_after_deleting_active_profile(client, stor
     body = response.json()
     assert body["profiles"] == []
     assert body["active_profile"] is None
+
+
+def test_patch_provider_connection_rejects_clearing_api_key(client):
+    """PATCH api_key: null is a 422, not a silently-ignored no-op."""
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic",
+            "provider": "anthropic",
+            "api_key": "sk-ant-old",
+        },
+    ).json()["id"]
+
+    cleared = client.patch(
+        f"/api/llm/provider-connections/{connection_id}",
+        json={"api_key": None},
+    )
+    assert cleared.status_code == 422
+    assert "api_key cannot be cleared" in cleared.json()["detail"]
+
+    # The stored key is untouched: a linked profile still resolves it.
+    client.post(
+        "/api/profiles/linked",
+        json={
+            "llm": {
+                "model": "anthropic/claude-sonnet-4",
+                "provider_connection_id": connection_id,
+            },
+            "include_secrets": False,
+        },
+    )
+    assert client.get("/api/profiles/linked").json()["api_key_set"] is True
+
+
+def test_get_profile_maps_corrupted_provider_file(client, temp_profiles_dir):
+    """A corrupted provider file yields a mapped 4xx, not an unhandled 500.
+
+    ``_profile_api_key_set`` reads the provider store while rendering a linked
+    profile; that read must go through ``store_errors()`` so a corrupt file
+    does not escape as a 500 on GET /profiles/{name}.
+    """
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic",
+            "provider": "anthropic",
+            "api_key": "sk-ant-old",
+        },
+    ).json()["id"]
+    client.post(
+        "/api/profiles/linked",
+        json={
+            "llm": {
+                "model": "anthropic/claude-sonnet-4",
+                "provider_connection_id": connection_id,
+            },
+            "include_secrets": False,
+        },
+    )
+
+    provider_file = (
+        temp_profiles_dir.parent / "provider-connections" / "provider_connections.json"
+    )
+    provider_file.write_text("{ not valid json", encoding="utf-8")
+
+    response = client.get("/api/profiles/linked")
+
+    assert response.status_code == 400
+    assert response.status_code != 500
+
+
+def test_patch_provider_connection_rejects_null_display_name(client):
+    """Fix: PATCH display_name=null must return 422, not persist null."""
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic",
+            "provider": "anthropic",
+            "api_key": "sk-ant",
+        },
+    ).json()["id"]
+
+    response = client.patch(
+        f"/api/llm/provider-connections/{connection_id}",
+        json={"display_name": None},
+    )
+    assert response.status_code == 422
+
+    # The connection must be intact after the rejected PATCH.
+    conn = client.get("/api/llm/provider-connections").json()[0]
+    assert conn["display_name"] == "Anthropic"
+
+
+def test_patch_provider_connection_rejects_null_provider(client):
+    """Fix: PATCH provider=null must return 422."""
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic",
+            "provider": "anthropic",
+            "api_key": "sk-ant",
+        },
+    ).json()["id"]
+
+    response = client.patch(
+        f"/api/llm/provider-connections/{connection_id}",
+        json={"provider": None},
+    )
+    assert response.status_code == 422
+
+
+def test_list_provider_connections_maps_corrupted_file(client, temp_profiles_dir):
+    """GET provider-connections maps a corrupted file to 400, not 500."""
+    client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic",
+            "provider": "anthropic",
+            "api_key": "sk-ant",
+        },
+    )
+
+    provider_file = (
+        temp_profiles_dir.parent / "provider-connections" / "provider_connections.json"
+    )
+    provider_file.write_text("{ not valid json", encoding="utf-8")
+
+    response = client.get("/api/llm/provider-connections")
+
+    assert response.status_code == 400
+    assert response.status_code != 500
+
+
+def test_patch_provider_connection_maps_corrupted_file(client, temp_profiles_dir):
+    """PATCH provider-connections maps a corrupted file to 400, not 500."""
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic",
+            "provider": "anthropic",
+            "api_key": "sk-ant",
+        },
+    ).json()["id"]
+
+    provider_file = (
+        temp_profiles_dir.parent / "provider-connections" / "provider_connections.json"
+    )
+    provider_file.write_text("{ not valid json", encoding="utf-8")
+
+    response = client.patch(
+        f"/api/llm/provider-connections/{connection_id}",
+        json={"display_name": "Renamed"},
+    )
+
+    assert response.status_code == 400
+    assert response.status_code != 500
 
 
 # ── Pre-flight validation: POST /api/profiles/{name}/validate ────────────────

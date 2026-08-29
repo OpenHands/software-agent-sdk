@@ -1,6 +1,6 @@
 """Utility functions for generating conversation titles."""
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.base import Event
@@ -66,6 +66,7 @@ def generate_title_with_llm(
     max_length: int = 50,
     *,
     call_context: LLMCallContext | None = None,
+    on_error: Callable[[Exception], None] | None = None,
 ) -> str | None:
     """Generate a conversation title using LLM.
 
@@ -73,6 +74,9 @@ def generate_title_with_llm(
         message: The first user message to generate title from.
         llm: The LLM to use for title generation.
         max_length: Maximum length of the generated title.
+        on_error: Optional callback invoked with the exception when the LLM
+            call fails. Title generation still falls back (returns None); the
+            callback lets callers surface the otherwise-swallowed error.
 
     Returns:
         Generated title, or None if LLM fails or returns empty response.
@@ -149,6 +153,10 @@ def generate_title_with_llm(
 
     except Exception as e:
         logger.warning(f"Error generating conversation title with LLM: {e}")
+        # Non-fatal (we fall back to truncation), but let callers surface the
+        # otherwise-invisible LLM error to the UI (issue #16686).
+        if on_error is not None:
+            on_error(e)
         return None
 
 
@@ -174,6 +182,7 @@ def generate_title_from_message(
     max_length: int = 50,
     *,
     call_context: LLMCallContext | None = None,
+    on_error: Callable[[Exception], None] | None = None,
 ) -> str:
     """Generate a title from an already-extracted user message."""
     # Skip the ACP sentinel LLM — it has no credentials and cannot be
@@ -187,6 +196,7 @@ def generate_title_from_message(
             llm_to_use,
             max_length,
             call_context=call_context,
+            on_error=on_error,
         )
         if llm_title:
             return llm_title
@@ -200,6 +210,7 @@ def generate_conversation_title(
     max_length: int = 50,
     *,
     call_context: LLMCallContext | None = None,
+    on_error: Callable[[Exception], None] | None = None,
 ) -> str:
     """Generate a title for a conversation based on the first user message.
 
@@ -230,4 +241,5 @@ def generate_conversation_title(
         llm,
         max_length,
         call_context=call_context,
+        on_error=on_error,
     )
