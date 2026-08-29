@@ -64,4 +64,9 @@ jobs:
                       const { postEndpointAuditReport } = require(
                         './.github/scripts/post-typescript-endpoint-audit-report.cjs'
                       );
-                      await postEndpointAuditReport({ github, context, core });
+                      await postEndpointAuditReport({
+                        github,
+                        context,
+                        core,
+                        reportPath: 'clients/typescript/.audit/endpoint-audit.json',
+                      });

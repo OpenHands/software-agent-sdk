@@ -6,11 +6,12 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const AUDIT_SCRIPT = path.join(REPO_ROOT, 'scripts/endpoint-audit.mjs');
+const CLIENT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const MONOREPO_ROOT = path.resolve(CLIENT_ROOT, '../..');
+const AUDIT_SCRIPT = path.join(CLIENT_ROOT, 'scripts/endpoint-audit.mjs');
 const require = createRequire(import.meta.url);
 const { postEndpointAuditReport, renderEndpointAuditReport } = require(
-  path.join(REPO_ROOT, '.github/scripts/post-endpoint-audit-report.cjs')
+  path.join(MONOREPO_ROOT, '.github/scripts/post-typescript-endpoint-audit-report.cjs')
 );
 const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'endpoint-audit-'));
 
