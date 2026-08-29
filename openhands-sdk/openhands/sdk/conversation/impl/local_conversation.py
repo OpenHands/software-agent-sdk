@@ -238,8 +238,8 @@ class LocalConversation(BaseConversation):
         prompt_cache_key: str | None = None,
         file_store: FileStore | None = None,
         mcp_tool_provider: MCPToolProvider | None = None,
-        _parent_llm_call_context: LLMCallContext | None = None,
         profile_store_dir: str | Path | None = None,
+        _parent_llm_call_context: LLMCallContext | None = None,
         **_: object,
     ):
         """Initialize the conversation.
