@@ -567,9 +567,16 @@ class HookExecutor:
                 try:
                     output_data = json.loads(result.stdout)
                     if isinstance(output_data, dict):
-                        # Parse decision
-                        if "decision" in output_data:
-                            decision_str = output_data["decision"].lower()
+                        # Parse decision. A JSON null -- or any other
+                        # non-string -- means the hook expressed no decision.
+                        # Calling .lower() on it raised, and since only
+                        # JSONDecodeError is caught below the AttributeError
+                        # escaped to the outer handler, which discarded the
+                        # captured result and reported a synthetic exit -1 for
+                        # a subprocess that had exited 0.
+                        decision_value = output_data.get("decision")
+                        if isinstance(decision_value, str):
+                            decision_str = decision_value.lower()
                             if decision_str == "allow":
                                 hook_result.decision = HookDecision.ALLOW
                             elif decision_str == "deny":
