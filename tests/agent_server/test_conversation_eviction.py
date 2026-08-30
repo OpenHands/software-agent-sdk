@@ -5,11 +5,13 @@ import time
 
 import pytest
 
+from openhands.agent_server import server_details_router
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.models import StartConversationRequest
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.sdk import LLM, Agent, Event
 from openhands.sdk.credential import ResolvedCredential
+from openhands.sdk.event import StreamingDeltaEvent
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -259,3 +261,37 @@ async def test_eviction_preserves_reassigned_stored_metadata(tmp_path):
         rehydrated = await service.get_event_service(conversation_id)
         assert rehydrated is not None
         assert rehydrated.stored.title == "new-title"
+
+
+@pytest.mark.asyncio
+async def test_streaming_delta_refreshes_idle_clock(tmp_path):
+    """A streaming delta must count as activity for idle eviction and the runtime clock.
+
+    Regression for #4689: streaming deltas were filtered out of every
+    non-websocket subscriber, which silently detached ``_EventSubscriber`` — the
+    internal activity heartbeat — from the token stream. Without this, a
+    long-running streaming generation never refreshes ``_last_event_time`` and
+    the runtime-api can kill the pod mid-generation (~20 min idle timeout).
+    """
+    conversations_dir = tmp_path / "conversations"
+    request = _make_request(tmp_path / "workspace")
+
+    async with ConversationService(
+        conversations_dir=conversations_dir,
+        conversation_idle_ttl_seconds=1800,
+    ) as service:
+        info, _ = await service.start_conversation(request)
+        conversation_id = info.id
+        assert service._event_services is not None
+        event_service = service._event_services[conversation_id]
+
+        # Age both idle clocks well past the TTL.
+        event_service._last_active_monotonic = time.monotonic() - 10_000
+        server_details_router._last_event_time = time.time() - 10_000
+
+        await event_service._pub_sub(StreamingDeltaEvent(content="tok"))
+
+        # The delta must reset the conversation idle-eviction clock...
+        assert event_service.idle_seconds() < 1800
+        # ...and the runtime-api idle clock that keeps the pod alive.
+        assert time.time() - server_details_router._last_event_time < 1800
