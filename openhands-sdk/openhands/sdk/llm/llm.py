@@ -1856,9 +1856,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     if stream_callback is not None and delta_chunk is not None:
                         stream_callback(delta_chunk)
 
-                completed_response = getattr(
-                    ret, "completed_response", completed_response
-                )
+                # Keep the completion the stream yielded. A wrapper may also
+                # carry a `completed_response` attribute that is still None
+                # after iteration, and getattr's default does not apply when the
+                # attribute exists, so reading it back unconditionally discards
+                # a valid event and the call then raises LLMNoResponseError.
+                wrapper_completed = getattr(ret, "completed_response", None)
+                if wrapper_completed is not None:
+                    completed_response = wrapper_completed
                 return self._finalize_stream_response(
                     completed_response, collected_output_items
                 )
@@ -2033,9 +2038,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         if stream_cb is not None and delta_chunk is not None:
                             await _invoke_token_callback(stream_cb, delta_chunk)
 
-                completed_response = getattr(
-                    ret, "completed_response", completed_response
-                )
+                # Keep the completion the stream yielded. A wrapper may also
+                # carry a `completed_response` attribute that is still None
+                # after iteration, and getattr's default does not apply when the
+                # attribute exists, so reading it back unconditionally discards
+                # a valid event and the call then raises LLMNoResponseError.
+                wrapper_completed = getattr(ret, "completed_response", None)
+                if wrapper_completed is not None:
+                    completed_response = wrapper_completed
                 return self._finalize_stream_response(
                     completed_response, collected_output_items
                 )
