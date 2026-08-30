@@ -284,3 +284,40 @@ class TestRedactTextSecretsDictKeys:
     def test_non_sensitive_entries_unchanged(self):
         text = "{'name': 'alice', 'path': '/tmp/x'}"
         assert redact_text_secrets(text) == text
+
+
+class TestRedactTextSecretsApiKeyAssignments:
+    """`api_key = '...'` is the same secret as `api_key='...'`.
+
+    Regression tests for https://github.com/OpenHands/software-agent-sdk/issues/4765
+    """
+
+    def test_redacts_single_quoted_value_with_spaces_around_equals(self):
+        text = "prefix api_key = 'secret_value_12345' suffix"
+
+        assert redact_text_secrets(text) == "prefix api_key = '<redacted>' suffix"
+
+    def test_redacts_double_quoted_value_with_spaces_around_equals(self):
+        text = 'prefix api_key = "secret_value_12345" suffix'
+
+        assert redact_text_secrets(text) == 'prefix api_key = "<redacted>" suffix'
+
+    def test_keeps_the_original_spacing(self):
+        text = "api_key  =\t'secret_value_12345' tail"
+
+        assert redact_text_secrets(text) == "api_key  =\t'<redacted>' tail"
+
+    def test_still_redacts_the_form_without_spaces(self):
+        text = "prefix api_key='secret_value_12345' suffix"
+
+        assert redact_text_secrets(text) == "prefix api_key='<redacted>' suffix"
+
+    def test_does_not_reach_across_a_newline_for_a_quote(self):
+        """Horizontal whitespace only: an assignment does not span lines.
+
+        Allowing any whitespace would let a bare `api_key` mention swallow the
+        next line's quoted text, redacting something that is not the value.
+        """
+        text = "api_key\nnot_a_value = 'keep-me'"
+
+        assert redact_text_secrets(text) == text
