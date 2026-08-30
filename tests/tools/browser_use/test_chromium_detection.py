@@ -22,6 +22,7 @@ class TestChromiumDetection:
         """Test detection of system-installed Chromium binary."""
         executor = BrowserToolExecutor.__new__(BrowserToolExecutor)
         with (
+            patch("openhands.tools.browser_use.impl.sys.platform", "linux"),
             patch.object(Path, "exists", return_value=False),
             patch("shutil.which", return_value="/usr/bin/chromium"),
         ):
@@ -32,6 +33,7 @@ class TestChromiumDetection:
         """Test that Chromium detection is memoized across repeated calls."""
         executor = BrowserToolExecutor.__new__(BrowserToolExecutor)
         with (
+            patch("openhands.tools.browser_use.impl.sys.platform", "linux"),
             patch.object(Path, "exists", return_value=False),
             patch("shutil.which", return_value="/usr/bin/chromium") as mock_which,
         ):
@@ -130,6 +132,10 @@ class TestChromiumDetection:
             patch("shutil.which", return_value=None),
             patch("os.environ.get", side_effect=mock_environ_get),
             patch.object(Path, "exists", mock_exists),
+            patch(
+                "openhands.tools.browser_use.impl._is_browser_executable",
+                side_effect=lambda path, _platform=None: str(path) == str(edge_path),
+            ),
         ):
             result = executor.check_chromium_available()
             assert result == str(edge_path)
@@ -207,6 +213,11 @@ class TestChromiumDetection:
             patch("os.environ.get", side_effect=mock_environ_get),
             patch.object(Path, "exists", mock_exists),
             patch.object(Path, "glob") as mock_glob,
+            patch(
+                "openhands.tools.browser_use.impl._is_browser_executable",
+                side_effect=lambda path, _platform=None: str(path)
+                == str(mock_chrome_path),
+            ),
         ):
             mock_glob.return_value = [mock_chromium_dir]
 

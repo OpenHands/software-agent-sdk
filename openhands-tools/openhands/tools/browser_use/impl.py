@@ -150,16 +150,19 @@ def _standard_chromium_paths(platform: str | None = None) -> list[Path]:
 def _playwright_hermetic_cache_dirs() -> list[Path]:
     try:
         spec = importlib.util.find_spec("playwright")
-    except (ImportError, ValueError):
+    except (ImportError, OSError, RuntimeError, ValueError):
         return []
 
     if spec is None or spec.submodule_search_locations is None:
         return []
 
-    return [
-        Path(package_root) / "driver" / "package" / ".local-browsers"
-        for package_root in spec.submodule_search_locations
-    ]
+    try:
+        return [
+            Path(package_root) / "driver" / "package" / ".local-browsers"
+            for package_root in spec.submodule_search_locations
+        ]
+    except (OSError, TypeError, ValueError):
+        return []
 
 
 def _playwright_cache_dirs(platform: str | None = None) -> list[Path]:
@@ -179,7 +182,7 @@ def _playwright_cache_dirs(platform: str | None = None) -> list[Path]:
                                 / cache_path
                             )
                         )
-                except (OSError, RuntimeError):
+                except (OSError, RuntimeError, ValueError):
                     return []
                 return [cache_path]
             if local_app_data := os.environ.get("LOCALAPPDATA"):
@@ -231,10 +234,17 @@ def _playwright_chromium_paths(
 
 
 def _playwright_build_sort_key(chromium_dir: Path) -> tuple[int, str]:
-    build = chromium_dir.name.rpartition("-")[2]
+    prefix, separator, build = chromium_dir.name.rpartition("-")
     try:
-        build_number = int(build) if build.isdigit() else -1
-    except ValueError:
+        build_number = (
+            int(build)
+            if separator
+            and not prefix.endswith("-")
+            and build.isascii()
+            and build.isdigit()
+            else -1
+        )
+    except (OverflowError, ValueError):
         build_number = -1
     return build_number, str(chromium_dir).casefold()
 
@@ -256,7 +266,7 @@ def _playwright_chromium_install_paths(
                 ]
             else:
                 cache_chromium_dirs = list(playwright_cache.glob("chromium-*"))
-        except OSError:
+        except (OSError, RuntimeError, ValueError):
             if current_platform != "win32":
                 raise
             continue
@@ -286,7 +296,7 @@ def _is_browser_executable(path: Path, platform: str | None = None) -> bool:
                 return False
             executable.seek(pe_header_offset)
             return executable.read(4) == b"PE\x00\x00"
-    except OSError:
+    except (OSError, ValueError):
         if current_platform != "win32":
             raise
         return False
