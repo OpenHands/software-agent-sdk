@@ -13,6 +13,7 @@ from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.request import (  # re-export for backward compat
     ACPEnabledAgent as ACPEnabledAgent,
+    ConversationConfig as ConversationConfig,
     SendMessageRequest as SendMessageRequest,
     StartConversationRequest as StartConversationRequest,
 )
@@ -73,15 +74,17 @@ class EventSortOrder(StrEnum):
     TIMESTAMP_DESC = "TIMESTAMP_DESC"
 
 
-class StoredConversation(StartConversationRequest):
+class StoredConversation(ConversationConfig):
     """Stored details about a conversation.
 
-    Extends StartConversationRequest with server-assigned fields.
+    Extends :class:`ConversationConfig` (the agent-less shared config) with
+    server-assigned fields. It deliberately does NOT carry the ``agent``: the
+    single source of truth for the agent / runtime state is
+    ``ConversationState`` persisted to ``base_state.json``. Because
+    ``StoredConversation`` is not a ``StartConversationRequest``, the agent
+    cannot silently re-appear in ``meta.json``.
     """
 
-    # agent_profile_id is resolved into launched_agent_profile at creation; exclude from
-    # the persistence payload so it does not re-appear in meta.json.
-    agent_profile_id: UUID | None = Field(default=None, exclude=True)
     required_runtime_credential_bindings: set[str] = Field(default_factory=set)
 
     id: OpenHandsUUID

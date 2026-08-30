@@ -86,7 +86,10 @@ class LLMSummarizingCondenser(RollingCondenser):
         # streaming LLM requires. Disable streaming once so every summary path
         # is covered. model_copy is non-mutating and shares usage_id/metrics,
         # so summary tokens stay attributed to the conversation.
-        if self.llm.stream:
+        # Providers that require streaming are exempt: the Codex API requires
+        # stream=True, and the responses() method drains the stream internally
+        # without an on_token callback.
+        if self.llm.stream and not self.llm.requires_streaming:
             self.llm = self.llm.model_copy(update={"stream": False})
         return self
 
@@ -222,8 +225,11 @@ class LLMSummarizingCondenser(RollingCondenser):
 
         # Do not pass extra_body explicitly. The LLM handles forwarding
         # litellm_extra_body only when it is non-empty.
+        from openhands.sdk.agent.utils import make_llm_completion
+
         try:
-            llm_response = self.llm.completion(
+            llm_response = make_llm_completion(
+                llm=self.llm,
                 messages=messages,
             )
         except Exception as e:
@@ -417,8 +423,13 @@ class LLMSummarizingCondenser(RollingCondenser):
         )
 
         messages = [Message(role="user", content=[TextContent(text=prompt)])]
+        from openhands.sdk.agent.utils import amake_llm_completion
+
         try:
-            llm_response = await self.llm.acompletion(messages=messages)
+            llm_response = await amake_llm_completion(
+                llm=self.llm,
+                messages=messages,
+            )
         except Exception as e:
             raise NoCondensationAvailableException(
                 f"Summarization LLM call failed: {e}"

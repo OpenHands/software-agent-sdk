@@ -202,12 +202,11 @@ class LocalConversation(BaseConversation):
     _resolved_plugins: list[ResolvedPluginSource] | None
     _plugins_loaded: bool
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
-    _subscription_disabled_condenser: Any | None
     _mcp_tool_provider: MCPToolProvider
 
     def __init__(
         self,
-        agent: AgentBase,
+        agent: AgentBase | None,
         workspace: str | Path | LocalWorkspace,
         plugins: list[PluginSource] | None = None,
         persistence_dir: str | Path | None = None,
@@ -238,6 +237,7 @@ class LocalConversation(BaseConversation):
         prompt_cache_key: str | None = None,
         file_store: FileStore | None = None,
         mcp_tool_provider: MCPToolProvider | None = None,
+        profile_store_dir: str | Path | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -296,6 +296,8 @@ class LocalConversation(BaseConversation):
             file_store: Optional FileStore to use for conversation state and EventLog
                 persistence. If provided, this takes precedence over persistence_dir
                 for state and EventLog storage.
+            profile_store_dir: Optional directory containing saved LLM profiles.
+                Defaults to ``~/.openhands/profiles``.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -314,7 +316,6 @@ class LocalConversation(BaseConversation):
         self._plugins_loaded = False
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
-        self._subscription_disabled_condenser = None
         self._mcp_tool_provider = mcp_tool_provider or DefaultMCPToolProvider()
 
         # Create-or-resume: factory inspects BASE_STATE to decide
@@ -327,12 +328,31 @@ class LocalConversation(BaseConversation):
         # or, when resuming a persisted conversation without re-supplying them,
         # from the persisted agent's tool specs — mirroring the server resume
         # path so a fresh process can re-register the dynamic tools.
+        # Client tools are injected into the caller-supplied agent. When
+        # ``agent`` is None the agent is resumed from base_state.json (which
+        # already carries its persisted tool specs), so there is nothing to
+        # inject here — but the ``ClientTool`` classes still need re-registering
+        # from those persisted specs (done below, after the agent is loaded).
         resolved_client_tools = list(client_tools or [])
-        if not resolved_client_tools and persistence_dir is not None:
+        if agent is None and resolved_client_tools:
+            # On resume the client tools are recovered from the persisted agent
+            # (see below), so caller-supplied ``client_tools`` cannot be injected
+            # into a caller-supplied agent — warn rather than drop them silently.
+            logger.warning(
+                "client_tools were passed with agent=None (resume); the "
+                "caller-supplied specs are not re-injected — the conversation's "
+                "client tools are recovered from the persisted agent in "
+                "base_state.json instead, so they remain executable."
+            )
+        if (
+            agent is not None
+            and not resolved_client_tools
+            and persistence_dir is not None
+        ):
             resolved_client_tools = self._recover_persisted_client_tools(
                 persistence_dir, desired_id
             )
-        if resolved_client_tools:
+        if agent is not None and resolved_client_tools:
             from openhands.sdk.tool.client_tool import register_client_tools
 
             client_tool_specs = register_client_tools(resolved_client_tools)
@@ -342,8 +362,6 @@ class LocalConversation(BaseConversation):
             ]
             if new_tools:
                 agent = agent.model_copy(update={"tools": [*agent.tools, *new_tools]})
-
-        self.agent = agent
         if isinstance(workspace, (str, Path)):
             # LocalWorkspace accepts both str and Path via BeforeValidator
             workspace = LocalWorkspace(working_dir=workspace)
@@ -367,6 +385,27 @@ class LocalConversation(BaseConversation):
             cipher=cipher,
             tags=tags,
         )
+        # base_state.json is the source of truth for the agent. On resume with
+        # ``agent=None`` the state holds the persisted agent; adopt it here so
+        # ``self.agent`` and ``self._state.agent`` are the same object.
+        if agent is None:
+            agent = self._state.agent
+            # The persisted agent carries client-tool ``Tool`` specs, but in a
+            # fresh process the ``ClientTool`` *classes* are absent from the
+            # global registry. Re-register them from the persisted specs so
+            # client tools stay executable on this resume path (the agent-server
+            # also does this via ``stored.client_tools``; this covers direct SDK
+            # ``LocalConversation(agent=None)`` resume). ``register_client_tools``
+            # is idempotent, so a double-register is harmless.
+            from openhands.sdk.tool.client_tool import (
+                extract_client_tool_specs,
+                register_client_tools,
+            )
+
+            recovered_specs = extract_client_tool_specs(agent.tools)
+            if recovered_specs:
+                register_client_tools(recovered_specs)
+        self.agent = agent
 
         self._bind_conversation_context(self.agent.llm)
 
@@ -446,7 +485,7 @@ class LocalConversation(BaseConversation):
         # Agent initialization is deferred to _ensure_agent_ready() for lazy loading
         # This ensures plugins are loaded before agent initialization
         self.llm_registry = LLMRegistry()
-        self._profile_store = LLMProfileStore()
+        self._profile_store = LLMProfileStore(profile_store_dir)
         self._cipher = cipher
 
         # Seed agent_context.secrets into the registry for every agent (regular
@@ -1621,21 +1660,10 @@ class LocalConversation(BaseConversation):
         lock = contextlib.nullcontext() if skip_lock else self._state
         with lock:
             update: dict[str, object] = {"llm": new_llm}
-            if new_llm.is_subscription:
-                if self.agent.condenser is not None:
-                    self._subscription_disabled_condenser = self.agent.condenser
-                update["condenser"] = None
-            elif (
-                self.agent.condenser is None
-                and self._subscription_disabled_condenser is not None
-            ):
-                update["condenser"] = self._subscription_disabled_condenser
-                self._subscription_disabled_condenser = None
-            else:
-                update["condenser"] = self._condenser_for_switched_llm(
-                    self.agent.llm,
-                    new_llm,
-                )
+            update["condenser"] = self._condenser_for_switched_llm(
+                self.agent.llm,
+                new_llm,
+            )
             self.agent = self.agent.model_copy(update=update)
             self._state.agent = self.agent
             self._bind_conversation_context(new_llm)
@@ -1799,7 +1827,6 @@ class LocalConversation(BaseConversation):
                     ConversationExecutionStatus.IDLE
                 )  # new message resets terminal states
 
-            # TODO: We should add test cases for all these scenarios
             activated_skill_names: list[str] = []
             extended_content: list[TextContent] = []
 
@@ -2503,6 +2530,23 @@ class LocalConversation(BaseConversation):
         with self._state:
             self._state.confirmation_policy = policy
         logger.info(f"Confirmation policy set to: {policy}")
+
+    def set_token_callbacks(
+        self, token_callbacks: list[ConversationTokenCallbackType] | None
+    ) -> None:
+        """Replace the token-streaming callbacks after construction.
+
+        On resume the agent is unknown at construction time (it is loaded from
+        ``base_state.json``), so a caller may only learn whether the resolved
+        agent can emit token deltas afterwards. Use this to enable or disable
+        token streaming at that point. Passing ``None`` or an empty list
+        disables it.
+        """
+        self._on_token = (
+            BaseConversation.compose_callbacks(token_callbacks)
+            if token_callbacks
+            else None
+        )
 
     def reject_pending_actions(self, reason: str = "User rejected the action") -> None:
         """Reject all pending actions from the agent.

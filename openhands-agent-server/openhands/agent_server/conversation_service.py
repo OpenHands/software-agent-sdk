@@ -5,16 +5,17 @@ import logging
 import os
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
+from weakref import WeakValueDictionary
 
 import httpx
 from pydantic import BaseModel
 
-from openhands.agent_server.config import Config, WebhookSpec
+from openhands.agent_server.config import ACPSkillSourcing, Config, WebhookSpec
 from openhands.agent_server.conversation_lease import (
     DEFAULT_LEASE_TTL_SECONDS,
     ConversationLeaseHeldError,
@@ -76,6 +77,9 @@ from openhands.sdk.workspace import LocalWorkspace
 if TYPE_CHECKING:
     from openhands.sdk.mcp.config import MCPServer
     from openhands.sdk.subagent.schema import AgentDefinition
+
+
+_AUTOMATION_TAG_KEYS = ("automationtrigger", "automationid", "automationrunid")
 
 
 class CredentialBindingActivationRequired(RuntimeError):
@@ -286,11 +290,53 @@ def _same_workspace(a: LocalWorkspace, b: LocalWorkspace) -> bool:
     return Path(a.working_dir).resolve() == Path(b.working_dir).resolve()
 
 
+def _apply_acp_skill_sourcing(
+    agent: "AgentBase", sourcing: ACPSkillSourcing
+) -> "AgentBase":
+    """Strip OpenHands-managed skills from an ACP agent under ``native`` sourcing.
+
+    A host-local ACP CLI reads the user's own skills from its home directory, so
+    a second, OpenHands-managed set injected into its prompt is at best noise —
+    and the catalog listing tells it to call ``invoke_skill``, a tool no ACP
+    agent has. Container runtimes set ``openhands_managed`` because that home
+    configuration is absent there. Project skills are excluded either way, by
+    ``ACPAgent`` itself (#4019).
+
+    A caller that sends ``agent`` / ``agent_settings`` puts its own skills on the
+    context, so the strip happens here rather than at profile resolution.
+    """
+    if sourcing != "native" or not isinstance(agent, ACPAgent):
+        return agent
+    context = agent.agent_context
+    if context is None:
+        return agent
+    if not (
+        context.skills
+        or context.load_user_skills
+        or context.load_public_skills
+        or context.registered_marketplaces
+    ):
+        return agent
+    return agent.model_copy(
+        update={
+            "agent_context": context.model_copy(
+                update={
+                    "skills": [],
+                    "load_user_skills": False,
+                    "load_public_skills": False,
+                    "registered_marketplaces": [],
+                }
+            )
+        }
+    )
+
+
 def _resolve_agent_from_profile(
     profile_id: "UUID",
     cipher: "Cipher | None",
     mcp_config: "dict[str, MCPServer]",
     load_memory: bool = False,
+    acp_skill_sourcing: ACPSkillSourcing = "native",
 ) -> "tuple[AgentBase, LaunchedAgentProfile]":
     """Load and resolve an agent profile by id, returning the built agent + provenance.
 
@@ -306,6 +352,9 @@ def _resolve_agent_from_profile(
             has no ``agent_context`` field, so the preference cannot ride the
             profile — it is stamped onto the resolved agent below, else a
             profile-launched conversation would silently ignore the setting.
+        acp_skill_sourcing: This deployment's ACP skill policy
+            (``Config.acp_skill_sourcing``).  Decides whether an ACP profile is
+            resolved with the server's managed skill catalog or with none.
 
     Raises:
         ProfileNotFound: No stored profile has ``profile_id``.
@@ -336,11 +385,15 @@ def _resolve_agent_from_profile(
         ) from exc
 
     # OpenHands profiles get the discovered catalog minus their ``disabled_skills``
-    # deny-list; ACP profiles carry no user/public skills so discovery is skipped.
-    # A genuine discovery failure fails the launch loudly rather than silently
-    # producing a zero-skill agent.
+    # deny-list. An ACP profile gets it only where the CLI cannot reach the user's
+    # own configuration (``openhands_managed``); under ``native`` it sources its
+    # own skills and OpenHands injects none (#4019). A genuine discovery failure
+    # fails the launch loudly rather than silently producing a zero-skill agent.
     available_skills = None
-    if profile.agent_kind == "openhands":
+    wants_skills = profile.agent_kind == "openhands" or (
+        acp_skill_sourcing == "openhands_managed"
+    )
+    if wants_skills:
         try:
             available_skills = discover_profile_skills()
         except Exception as exc:
@@ -637,11 +690,20 @@ class ConversationService:
     conversation_worktree_root: Path = field(
         default=Path("/tmp/conversation-worktrees")
     )
+    acp_skill_sourcing: ACPSkillSourcing = "native"
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_records: dict[UUID, _ConversationRecord] = field(
         default_factory=dict, init=False
     )
     _lifecycle_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+    _lifecycle_condition: asyncio.Condition = field(
+        default_factory=asyncio.Condition, init=False
+    )
+    _active_lifecycle_operations: int = field(default=0, init=False)
+    _exclusive_lifecycle_pending: bool = field(default=False, init=False)
+    _conversation_locks: WeakValueDictionary[UUID, asyncio.Lock] = field(
+        default_factory=WeakValueDictionary, init=False
+    )
     _conversation_webhook_subscribers: list["ConversationWebhookSubscriber"] = field(
         default_factory=list, init=False
     )
@@ -715,6 +777,16 @@ class ConversationService:
             base_state_file.read_text(), context=context
         )
 
+    def _agent_from_base_state(self, conversation_id: UUID) -> AgentBase | None:
+        """Return the persisted agent from ``base_state.json`` (its single source
+        of truth), or ``None`` if there is no persisted state yet.
+
+        Used by cold-path checks (e.g. codex-agent detection) that used to read
+        the agent from ``meta.json`` before the agent was removed from it.
+        """
+        state = self._load_persisted_state_sync(conversation_id)
+        return state.agent if state is not None else None
+
     def _children_index(self) -> dict[UUID, list[UUID]]:
         """Reverse map parent_id -> child ids; rebuilt per call because the
         catalog is mutated from several places and a cache could go stale."""
@@ -738,7 +810,7 @@ class ConversationService:
         secret_name: str,
         binding: VersionedCredentialBinding,
     ) -> None:
-        async with self._lifecycle_lock:
+        async with self._conversation_lifecycle(conversation_id):
             event_services = self._event_services
             event_service = (
                 event_services.get(conversation_id)
@@ -757,7 +829,7 @@ class ConversationService:
             )
 
     async def prepare_for_sandbox_pause(self) -> None:
-        async with self._lifecycle_lock:
+        async with self._exclusive_lifecycle():
             event_services = self._event_services
             if event_services is None:
                 raise ValueError("inactive_service")
@@ -802,11 +874,19 @@ class ConversationService:
     async def _resolve_credential_bindings(
         self,
         stored: StoredConversation,
+        agent: AgentBase | None = None,
     ) -> dict[str, VersionedCredentialBinding]:
+        # The agent no longer lives on ``stored`` (meta.json). Callers pass the
+        # agent explicitly (the new-conversation request agent, or the live
+        # agent); otherwise fall back to the persisted base_state.json agent.
+        # Read it off the event loop — it does blocking file I/O, mirroring the
+        # ``_load_persisted_state_sync`` usage elsewhere.
+        if agent is None:
+            agent = await asyncio.to_thread(self._agent_from_base_state, stored.id)
         bindings = self._credential_bindings.pop(stored.id, {})
         if (
             CODEX_AUTH_SECRET_NAME not in bindings
-            and self._is_codex_agent(stored.agent)
+            and self._is_codex_agent(agent)
             and await self._has_local_codex_credential()
         ):
             assert self.secrets_store is not None
@@ -1026,10 +1106,56 @@ class ConversationService:
                 context=f"resuming conversation {stored.id}",
             )
 
+    def _get_conversation_lock(self, conversation_id: UUID) -> asyncio.Lock:
+        lock = self._conversation_locks.get(conversation_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._conversation_locks[conversation_id] = lock
+        return lock
+
+    @asynccontextmanager
+    async def _conversation_lifecycle(self, conversation_id: UUID):
+        async with self._lifecycle_condition:
+            await self._lifecycle_condition.wait_for(
+                lambda: not self._exclusive_lifecycle_pending
+            )
+            self._active_lifecycle_operations += 1
+        try:
+            async with self._get_conversation_lock(conversation_id):
+                yield
+        finally:
+            async with self._lifecycle_condition:
+                self._active_lifecycle_operations -= 1
+                if self._active_lifecycle_operations == 0:
+                    self._lifecycle_condition.notify_all()
+
+    @asynccontextmanager
+    async def _exclusive_lifecycle(self):
+        async with self._lifecycle_lock:
+            try:
+                async with self._lifecycle_condition:
+                    self._exclusive_lifecycle_pending = True
+                    await self._lifecycle_condition.wait_for(
+                        lambda: self._active_lifecycle_operations == 0
+                    )
+                yield
+            finally:
+                async with self._lifecycle_condition:
+                    self._exclusive_lifecycle_pending = False
+                    self._lifecycle_condition.notify_all()
+
     async def _get_or_load_event_service(
         self, conversation_id: UUID
     ) -> EventService | None:
-        async with self._lifecycle_lock:
+        event_services = self._event_services
+        if event_services is None:
+            raise ValueError("inactive_service")
+        if (
+            conversation_id not in event_services
+            and conversation_id not in self._conversation_records
+        ):
+            return None
+        async with self._conversation_lifecycle(conversation_id):
             return await self._get_or_load_event_service_locked(conversation_id)
 
     async def _get_or_load_event_service_locked(
@@ -1037,6 +1163,7 @@ class ConversationService:
         conversation_id: UUID,
         *,
         require_runtime_bindings: bool = True,
+        agent: AgentBase | None = None,
     ) -> EventService | None:
         event_services = self._event_services
         if event_services is None:
@@ -1063,7 +1190,7 @@ class ConversationService:
 
         await asyncio.to_thread(self._prepare_persisted_runtime, record.stored)
         try:
-            return await self._start_event_service(record.stored)
+            return await self._start_event_service(record.stored, agent=agent)
         except ConversationLeaseHeldError as exc:
             logger.debug(
                 "Skipping active conversation %s owned by %s until %s",
@@ -1296,19 +1423,25 @@ class ConversationService:
         if existing_record is not None or (
             existing_event_service is not None and existing_event_service.is_open()
         ):
-            async with self._lifecycle_lock:
+            async with self._conversation_lifecycle(conversation_id):
                 existing_event_service = self._event_services.get(conversation_id)
                 if (
                     existing_event_service is not None
                     and existing_event_service.is_open()
                 ):
+                    # ``is_open()`` above guarantees a live conversation, so the
+                    # public getter never raises here.
+                    existing_agent = existing_event_service.get_conversation().agent
                     if (
-                        self._is_codex_agent(existing_event_service.stored.agent)
+                        self._is_codex_agent(existing_agent)
                         and CODEX_AUTH_SECRET_NAME
                         not in existing_event_service.credential_bindings
                     ):
+                        # Reuse the live agent we already resolved above instead
+                        # of letting _resolve_credential_bindings fall back to a
+                        # synchronous base_state.json read.
                         late_bindings = await self._resolve_credential_bindings(
-                            existing_event_service.stored
+                            existing_event_service.stored, agent=existing_agent
                         )
                         try:
                             for secret_name, binding in late_bindings.items():
@@ -1354,9 +1487,13 @@ class ConversationService:
                     raise ValueError(
                         f"Persisted conversation {conversation_id} has no record"
                     )
-                managed_codex_credential = self._is_codex_agent(
-                    existing_record.stored.agent
-                ) and (
+                # Read base_state.json off the event loop, matching the
+                # asyncio.to_thread pattern used for the same read elsewhere
+                # (_resolve_credential_bindings, _conversation_info).
+                reattach_agent = await asyncio.to_thread(
+                    self._agent_from_base_state, conversation_id
+                )
+                managed_codex_credential = self._is_codex_agent(reattach_agent) and (
                     CODEX_AUTH_SECRET_NAME
                     in self._credential_bindings.get(conversation_id, {})
                     or await self._has_local_codex_credential()
@@ -1377,8 +1514,10 @@ class ConversationService:
                             }
                         )
                     try:
+                        # Reuse the agent we already parsed from base_state.json
+                        # above so the load path doesn't read and parse it again.
                         event_service = await self._get_or_load_event_service_locked(
-                            conversation_id
+                            conversation_id, agent=reattach_agent
                         )
                     finally:
                         if injected_fallback:
@@ -1444,8 +1583,17 @@ class ConversationService:
                 self.cipher,
                 mcp_config,
                 load_memory=bool(stored_context and stored_context.load_memory),
+                acp_skill_sourcing=self.acp_skill_sourcing,
             )
             request = request.model_copy(update={"agent": resolved_agent})
+
+        request = request.model_copy(
+            update={
+                "agent": _apply_acp_skill_sourcing(
+                    request.agent, self.acp_skill_sourcing
+                )
+            }
+        )
 
         additions = request.agent_launch_additions
         suffix = (
@@ -1546,6 +1694,17 @@ class ConversationService:
             exclude={"agent_profile_id", "agent_launch_additions"},
         )
 
+        # The agent is persisted to base_state.json (not meta.json), so it must
+        # not be splatted into StoredConversation (which no longer carries the
+        # agent). Pull it out explicitly rather than relying on Pydantic's
+        # ``extra="ignore"`` to drop it silently. The serialized payload is kept
+        # for the secrets_encrypted path, which re-validates it with the cipher.
+        agent_payload = request_data.pop("agent", None)
+
+        # The agent is passed to _start_event_service separately. Default to
+        # request.agent.
+        new_agent: AgentBase = request.agent
+
         # If secrets_encrypted=True, the agent's secrets (e.g., LLM api_key) are
         # cipher-encrypted and need decryption during model validation. Pass the
         # cipher in the validation context so validate_secret() can decrypt them.
@@ -1567,15 +1726,26 @@ class ConversationService:
                 },
                 context={"cipher": self.cipher},
             )
+            # Decrypt the agent's secrets too (it no longer rides on `stored`).
+            # Re-validate the serialized agent with the cipher context so
+            # validate_secret() decrypts LLM api_key, MCP env, etc.
+            agent_cls = type(request.agent)
+            new_agent = agent_cls.model_validate(
+                agent_payload, context={"cipher": self.cipher}
+            )
         else:
             stored = StoredConversation(
                 id=conversation_id,
                 launched_agent_profile=launched_agent_profile,
                 **request_data,
             )
-        async with self._lifecycle_lock:
+        async with self._conversation_lifecycle(conversation_id):
+            # New conversation: the agent is written to base_state.json (its
+            # single source of truth), not to meta.json. Pass it explicitly.
+            # ``new_agent`` is ``request.agent`` (decrypted when the request was
+            # secrets_encrypted).
             event_service = await self._start_event_service(
-                stored, is_new_conversation=True
+                stored, is_new_conversation=True, agent=new_agent
             )
         initial_message = request.initial_message
         if initial_message:
@@ -1627,10 +1797,15 @@ class ConversationService:
         return bool(await self._get_or_load_event_service(conversation_id))
 
     async def delete_conversation(self, conversation_id: UUID) -> bool:
-        async with self._lifecycle_lock:
-            event_services = self._event_services
-            if event_services is None:
-                raise ValueError("inactive_service")
+        event_services = self._event_services
+        if event_services is None:
+            raise ValueError("inactive_service")
+        if (
+            conversation_id not in event_services
+            and conversation_id not in self._conversation_records
+        ):
+            return False
+        async with self._conversation_lifecycle(conversation_id):
             event_service = await self._get_or_load_event_service_locked(
                 conversation_id,
                 require_runtime_bindings=False,
@@ -1833,9 +2008,12 @@ class ConversationService:
         # fork-specific fields. Without this, e.g. a fork of a client-tool
         # conversation would lose ``client_tools`` in meta.json and be unable
         # to re-register its tools after a server restart.
+        # Note: the agent is NOT stored in meta.json (StoredConversation) — the
+        # fork's agent is already persisted to the fork's base_state.json by
+        # ``source_conversation.fork`` above. It is passed to
+        # ``_start_event_service`` via ``agent=`` for the new-conversation path.
         fork_overrides: dict[str, Any] = {
             "id": fork_conv_id,
-            "agent": fork_agent,
             "workspace": fork_workspace,
             "title": title,
             "created_at": utc_now(),
@@ -1852,9 +2030,9 @@ class ConversationService:
         # directory so we don't leave stale state on disk.
         fork_dir = self.conversations_dir / fork_conv_id.hex
         try:
-            async with self._lifecycle_lock:
+            async with self._conversation_lifecycle(fork_conv_id):
                 fork_event_service = await self._start_event_service(
-                    fork_stored, is_new_conversation=True
+                    fork_stored, is_new_conversation=True, agent=fork_agent
                 )
         except Exception:
             safe_rmtree(fork_dir)
@@ -1977,7 +2155,7 @@ class ConversationService:
 
         Running or externally-subscribed conversations are skipped.
         """
-        async with self._lifecycle_lock:
+        async with self._exclusive_lifecycle():
             event_services = self._event_services
             if event_services is None:
                 return
@@ -2033,7 +2211,7 @@ class ConversationService:
                 await self._lease_renewal_task
             self._lease_renewal_task = None
 
-        async with self._lifecycle_lock:
+        async with self._exclusive_lifecycle():
             event_services = self._event_services
             if event_services is None:
                 return
@@ -2119,19 +2297,30 @@ class ConversationService:
             lease_ttl_seconds=config.lease_ttl_seconds,
             conversation_idle_ttl_seconds=config.conversation_idle_ttl_seconds,
             conversation_worktree_root=config.conversation_worktree_root,
+            acp_skill_sourcing=config.acp_skill_sourcing,
         )
 
     async def _start_event_service(
-        self, stored: StoredConversation, *, is_new_conversation: bool = False
+        self,
+        stored: StoredConversation,
+        *,
+        is_new_conversation: bool = False,
+        agent: AgentBase | None = None,
     ) -> EventService:
         event_services = self._event_services
         if event_services is None:
             raise ValueError("inactive_service")
 
-        credential_bindings = await self._resolve_credential_bindings(stored)
+        # ``agent`` is supplied for a NEW conversation (meta.json no longer
+        # carries it). On resume it is ``None`` and both the credential check
+        # and EventService read the agent from base_state.json.
+        credential_bindings = await self._resolve_credential_bindings(
+            stored, agent=agent
+        )
         event_service = EventService(
             stored=stored,
             conversations_dir=self.conversations_dir,
+            agent=agent,
             cipher=self.cipher,
             mcp_tool_provider=self.mcp_tool_provider,
             credential_bindings=credential_bindings,
@@ -2237,11 +2426,15 @@ class ConversationService:
             if factory is None:
                 return
 
+            live_conversation = event_service._conversation
+            live_agent = (
+                live_conversation.agent if live_conversation is not None else None
+            )
             subscriber = TelemetrySubscriber(
                 conversation_id=stored.id,
                 sink=sink,
                 factory=factory,
-                context=_build_telemetry_context(stored, factory),
+                context=_build_telemetry_context(stored, factory, agent=live_agent),
             )
             await event_service.subscribe_to_events(subscriber)
             if is_new_conversation:
@@ -2251,14 +2444,24 @@ class ConversationService:
 
 
 def _build_telemetry_context(
-    stored: StoredConversation, factory: DiagnosticEventFactory
+    stored: StoredConversation,
+    factory: DiagnosticEventFactory,
+    agent: AgentBase | None = None,
 ) -> ConversationTelemetryContext:
     """Reduce a stored conversation to its sanitized telemetry facts.
 
     Every read is defensive: a shape change upstream should degrade a property
     to ``unknown``, never raise into conversation startup.
+
+    The agent is no longer stored on meta.json; callers pass the live/persisted
+    agent explicitly. When ``agent`` is ``None`` (no live conversation), the
+    agent-derived fields simply degrade to ``unknown``.
     """
-    agent = getattr(stored, "agent", None)
+    tags = getattr(stored, "tags", None)
+    is_automation = isinstance(tags, dict) and any(
+        bool(tags.get(key)) for key in _AUTOMATION_TAG_KEYS
+    )
+
     llm = getattr(agent, "llm", None)
 
     workspace = getattr(stored, "workspace", None)
@@ -2282,6 +2485,7 @@ def _build_telemetry_context(
         confirmation_policy=safe_token(
             type(getattr(stored, "confirmation_policy", None)).__name__.lower()
         ),
+        is_automation=is_automation,
     )
 
 
@@ -2304,7 +2508,7 @@ class _EventSubscriber(Subscriber):
 
 @observe(
     name="conversation.generate_title",
-    ignore_inputs=["conversation", "llm"],
+    ignore_inputs=["conversation", "llm", "on_error"],
     metadata={OPERATION_METADATA_KEY: "title_generation"},
 )
 def _generate_title_traced(
@@ -2314,8 +2518,9 @@ def _generate_title_traced(
     message: str,
     llm: LLM | None,
     max_length: int,
+    on_error: Callable[[Exception], None] | None = None,
 ) -> str:
-    return generate_title_from_message(message, llm, max_length)
+    return generate_title_from_message(message, llm, max_length, on_error=on_error)
 
 
 @dataclass
@@ -2345,6 +2550,11 @@ class AutoTitleSubscriber(Subscriber):
         if title_llm is None:
             title_llm = conversation.agent.llm if conversation else None
 
+        # Surface an LLM failure during auto-titling to the UI (issue #16686);
+        # generation itself stays non-fatal and falls back to truncation.
+        def _on_title_error(exc: Exception) -> None:
+            self.service._publish_error_event_sync(exc)
+
         async def _generate_and_save() -> None:
             try:
                 loop = asyncio.get_running_loop()
@@ -2355,6 +2565,7 @@ class AutoTitleSubscriber(Subscriber):
                     message_text,
                     title_llm,
                     50,
+                    _on_title_error,
                 )
                 if title and self.service.stored.title is None:
                     self.service.stored.title = title

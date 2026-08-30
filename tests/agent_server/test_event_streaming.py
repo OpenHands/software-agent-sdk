@@ -33,7 +33,9 @@ def _make_chunk(
 
 
 class _CollectorSubscriber(Subscriber):
-    """Subscriber that collects events for assertions."""
+    """Subscriber that opts into deltas and collects events for assertions."""
+
+    receives_streaming_deltas = True
 
     def __init__(self):
         self.events: list[Event] = []
@@ -45,6 +47,12 @@ class _CollectorSubscriber(Subscriber):
         pass
 
 
+class _PlainSubscriber(_CollectorSubscriber):
+    """Collector that keeps the default: it must never observe a delta."""
+
+    receives_streaming_deltas = False
+
+
 @pytest.fixture
 def event_service(tmp_path):
     with patch("openhands.sdk.llm.utils.model_info.httpx.get") as mock_get:
@@ -52,16 +60,16 @@ def event_service(tmp_path):
         service = EventService(
             stored=StoredConversation(
                 id=uuid4(),
-                agent=Agent(
-                    llm=LLM(
-                        usage_id="test-llm",
-                        model="test-model",
-                        api_key=SecretStr("test-key"),
-                        stream=True,
-                    ),
-                    tools=[],
-                ),
                 workspace=LocalWorkspace(working_dir=str(tmp_path / "workspace")),
+            ),
+            agent=Agent(
+                llm=LLM(
+                    usage_id="test-llm",
+                    model="test-model",
+                    api_key=SecretStr("test-key"),
+                    stream=True,
+                ),
+                tools=[],
             ),
             conversations_dir=tmp_path / "conversations",
         )
@@ -192,16 +200,16 @@ async def test_token_callbacks_not_wired_when_stream_disabled(tmp_path):
         service = EventService(
             stored=StoredConversation(
                 id=uuid4(),
-                agent=Agent(
-                    llm=LLM(
-                        usage_id="test-llm",
-                        model="test-model",
-                        api_key=SecretStr("test-key"),
-                        stream=False,
-                    ),
-                    tools=[],
-                ),
                 workspace=LocalWorkspace(working_dir=str(tmp_path / "workspace")),
+            ),
+            agent=Agent(
+                llm=LLM(
+                    usage_id="test-llm",
+                    model="test-model",
+                    api_key=SecretStr("test-key"),
+                    stream=False,
+                ),
+                tools=[],
             ),
             conversations_dir=tmp_path / "conversations",
         )
@@ -224,9 +232,9 @@ async def test_acp_agents_wire_token_callback_without_llm_streaming(tmp_path):
     service = EventService(
         stored=StoredConversation(
             id=uuid4(),
-            agent=ACPAgent(acp_command=["echo", "test"]),
             workspace=LocalWorkspace(working_dir=str(tmp_path / "workspace")),
         ),
+        agent=ACPAgent(acp_command=["echo", "test"]),
         conversations_dir=tmp_path / "conversations",
     )
     (tmp_path / "workspace").mkdir(exist_ok=True)
@@ -248,9 +256,9 @@ async def test_acp_string_token_callback_publishes_delta(tmp_path):
     service = EventService(
         stored=StoredConversation(
             id=uuid4(),
-            agent=ACPAgent(acp_command=["echo", "test"]),
             workspace=LocalWorkspace(working_dir=str(tmp_path / "workspace")),
         ),
+        agent=ACPAgent(acp_command=["echo", "test"]),
         conversations_dir=tmp_path / "conversations",
     )
     collector = _CollectorSubscriber()
@@ -292,3 +300,19 @@ async def test_multiple_chunks_produce_multiple_events(event_service, tmp_path):
     delta_events = [e for e in collector.events if isinstance(e, StreamingDeltaEvent)]
     assert len(delta_events) == 4
     assert [e.content for e in delta_events] == words
+
+
+@pytest.mark.asyncio
+async def test_deltas_only_reach_subscribers_that_opted_in(event_service, tmp_path):
+    """Deltas reach only subscribers that opted in, never the rest of the bus."""
+    streaming = _CollectorSubscriber()
+    plain = _PlainSubscriber()
+    event_service._pub_sub.subscribe(streaming)
+    event_service._pub_sub.subscribe(plain)
+
+    callback = await _start_and_capture_callback(event_service, tmp_path)
+    callback(_make_chunk(content="Hello"))
+    await asyncio.sleep(0.05)
+
+    assert [e for e in streaming.events if isinstance(e, StreamingDeltaEvent)]
+    assert not [e for e in plain.events if isinstance(e, StreamingDeltaEvent)]

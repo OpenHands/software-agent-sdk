@@ -21,6 +21,7 @@ from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
 if TYPE_CHECKING:
     from openhands.sdk.llm.llm import LLM
+    from openhands.sdk.llm.provider_connection_store import ProviderConnectionStore
     from openhands.sdk.utils.cipher import Cipher
 
 _DEFAULT_PROFILE_DIR: Final[Path] = Path.home() / ".openhands" / "profiles"
@@ -37,6 +38,17 @@ logger = get_logger(__name__)
 
 class ProfileLimitExceeded(Exception):
     """Raised when saving would exceed the configured profile limit."""
+
+
+def _api_key_present(llm: LLM) -> bool:
+    """True when ``llm`` carries a non-empty, non-redacted API key."""
+    from pydantic import SecretStr
+
+    api_key = llm.api_key
+    if api_key is None:
+        return False
+    value = api_key.get_secret_value() if isinstance(api_key, SecretStr) else api_key
+    return bool(value.strip()) and value != REDACTED_SECRET_VALUE
 
 
 @runtime_checkable
@@ -69,18 +81,49 @@ class LLMProfileMutator(Protocol):
 class LLMProfileStore:
     """Standalone utility for persisting LLM configurations."""
 
-    def __init__(self, base_dir: Path | str | None = None) -> None:
+    def __init__(
+        self,
+        base_dir: Path | str | None = None,
+        *,
+        provider_store: ProviderConnectionStore | None = None,
+    ) -> None:
         """Initialize the profile store.
 
         Args:
             base_dir: Path to the directory where the profiles are stored.
                 If `None` is provided, the default directory is used, i.e.,
                 `~/.openhands/profiles`.
+            provider_store: Store of shared provider connections used to
+                resolve a profile's ``provider_connection_id`` at load time.
+                When `None` (the default), a :class:`ProviderConnectionStore`
+                is created in a ``provider-connections`` directory *sibling to*
+                ``base_dir`` so that every ``LLMProfileStore`` — including
+                custom-directory and bare standalone SDK instances — resolves
+                connections from the same location it reads profiles from. Pass
+                an explicit store to use an unrelated directory (e.g. the
+                agent-server's config-scoped directory) or a test double.
         """
         self.base_dir = Path(base_dir) if base_dir is not None else _DEFAULT_PROFILE_DIR
         # ensure directory existence
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self._file_lock = FileLock(self.base_dir / ".profiles.lock")
+        if provider_store is None:
+            from openhands.sdk.llm.provider_connection_store import (
+                ProviderConnectionStore,
+            )
+
+            # Derive the connections directory from base_dir rather than $HOME,
+            # so a custom-directory profile store reads its linked credentials
+            # from the same location it reads profiles from. For the default
+            # ~/.openhands/profiles this resolves to ~/.openhands/provider-
+            # connections, matching ProviderConnectionStore's own default.
+            self._provider_store: ProviderConnectionStore | None = (
+                ProviderConnectionStore(
+                    base_dir=self.base_dir.parent / "provider-connections"
+                )
+            )
+        else:
+            self._provider_store = provider_store
 
     @contextmanager
     def _acquire_lock(self, timeout: float = _LOCK_TIMEOUT_SECONDS) -> Iterator[None]:
@@ -177,6 +220,13 @@ class LLMProfileStore:
                     f"[Profile Store] Profile `{name}` already exists. Overwriting."
                 )
 
+            # Rule 5c: a profile that references a provider connection owns no
+            # inline credentials — the connection is the single source of truth,
+            # so clear any api_key / base_url before persisting to avoid a stale
+            # copy that could later disagree with the connection.
+            if llm.provider_connection_id:
+                llm = llm.model_copy(update={"api_key": None, "base_url": None})
+
             context: dict[str, Any] = {}
             if include_secrets:
                 if cipher:
@@ -199,20 +249,34 @@ class LLMProfileStore:
                 raise
             logger.info(f"[Profile Store] Saved profile `{name}` at {profile_path}")
 
-    def load(self, name: str, *, cipher: Cipher | None = None) -> LLM:
+    def load(
+        self,
+        name: str,
+        *,
+        cipher: Cipher | None = None,
+        resolve_provider: bool = True,
+    ) -> LLM:
         """Load an LLM instance from the given profile name.
 
         Args:
             name: Name of the profile to load.
             cipher: Optional cipher for decrypting secrets stored at rest.
                 When provided, encrypted secrets are decrypted during load.
+            resolve_provider: When True (default) and the profile references a
+                provider connection, its shared ``api_key`` / ``base_url`` are
+                applied to the returned LLM (read-at-use). Set False to inspect
+                the profile as stored without touching the provider store — used
+                by display paths so a dangling reference never fails a read.
 
         Returns:
-            An LLM instance constructed from the profile configuration.
+            An LLM instance constructed from the profile configuration, with
+            provider-connection credentials applied when ``resolve_provider``.
 
         Raises:
             FileNotFoundError: If the profile name does not exist.
             ValueError: If the profile file is corrupted or invalid.
+            ProviderConnectionNotFound: If the profile references a provider
+                connection that no longer exists and carries no inline key.
             TimeoutError: If the lock cannot be acquired.
         """
         profile_path = self._get_profile_path(name)
@@ -236,7 +300,63 @@ class LLMProfileStore:
                 raise ValueError(f"Failed to load profile `{name}`: {e}") from e
 
             logger.info(f"[Profile Store] Loaded profile `{name}` from {profile_path}")
-            return llm_instance
+
+        if resolve_provider:
+            llm_instance = self._resolve_provider_connection(
+                name, llm_instance, cipher=cipher
+            )
+        return llm_instance
+
+    def _resolve_provider_connection(
+        self, profile_name: str, llm: LLM, *, cipher: Cipher | None
+    ) -> LLM:
+        """Apply a referenced provider connection's credentials to ``llm``.
+
+        Rules:
+        - no ``provider_connection_id`` -> unchanged (byte-identical old path).
+        - no provider store configured -> unchanged (inert field).
+        - connection found -> its ``api_key`` / ``base_url`` win (``base_url``
+          is applied as-is, including ``None``).
+        - connection missing -> raise :class:`ProviderConnectionNotFound`.
+
+        The inline-key fallback below is not a recovery path for the usual
+        "linked profile, connection later deleted" case: :meth:`save` strips
+        inline creds from any linked profile, so on disk there is no inline key
+        to fall back to and this raises. It only applies to an LLM whose
+        ``provider_connection_id`` was set without going through :meth:`save`
+        (e.g. constructed in memory).
+        """
+        connection_id = llm.provider_connection_id
+        if not connection_id or self._provider_store is None:
+            return llm
+
+        from openhands.sdk.llm.provider_connection_store import (
+            ProviderConnectionNotFound,
+        )
+
+        connection = self._provider_store.get(connection_id, cipher=cipher)
+        if connection is None:
+            if _api_key_present(llm):
+                logger.warning(
+                    "[Profile Store] Profile %r references missing provider "
+                    "connection %r; falling back to the profile's inline key.",
+                    profile_name,
+                    connection_id,
+                )
+                return llm
+            raise ProviderConnectionNotFound(
+                f"Profile {profile_name!r} references provider connection "
+                f"{connection_id!r}, which does not exist. Update the profile or "
+                "recreate the connection."
+            )
+
+        updates: dict[str, Any] = {"base_url": connection.base_url}
+        api_key = connection.api_key_value()
+        if api_key is not None:
+            from pydantic import SecretStr
+
+            updates["api_key"] = SecretStr(api_key)
+        return llm.model_copy(update=updates)
 
     def delete(self, name: str) -> None:
         """Delete an existing profile.
@@ -285,6 +405,10 @@ class LLMProfileStore:
         Reads JSON directly to avoid ``LLM._set_env_side_effects`` mutating
         ``os.environ``. Files with invalid names, corrupted JSON, or non-dict
         top-level values are skipped with a warning.
+
+        A linked provider connection's key presence is read without a cipher:
+        this method only reports whether a key is set, never its plaintext, so
+        an encrypted-at-rest key still reads as present without decryption.
         """
         summaries: list[dict[str, Any]] = []
         with self._acquire_lock():
@@ -314,11 +438,24 @@ class LLMProfileStore:
                     and bool(api_key.strip())
                     and api_key != REDACTED_SECRET_VALUE
                 )
+                connection_id = data.get("provider_connection_id")
+                # A profile linked to a provider connection carries no inline
+                # key (cleared on save), so its effective key presence lives on
+                # the connection.
+                provider_connection_broken = False
+                if isinstance(connection_id, str) and self._provider_store is not None:
+                    connection = self._provider_store.get(connection_id)
+                    if connection is None:
+                        provider_connection_broken = True
+                    elif not api_key_set:
+                        api_key_set = connection.api_key_value() is not None
                 summaries.append(
                     {
                         "name": name,
                         "model": data.get("model"),
                         "base_url": data.get("base_url"),
+                        "provider_connection_id": connection_id,
+                        "provider_connection_broken": provider_connection_broken,
                         "api_key_set": api_key_set,
                     }
                 )

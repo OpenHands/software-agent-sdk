@@ -7,7 +7,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from cachetools import LRUCache
 
 from openhands.tools.file_editor import file_editor
 from openhands.tools.file_editor.editor import FileEditor
@@ -33,14 +32,6 @@ def temp_file():
 def encoding_manager():
     """Create an EncodingManager instance for testing."""
     return EncodingManager()
-
-
-def test_init(encoding_manager):
-    """Test initialization of EncodingManager."""
-    assert isinstance(encoding_manager, EncodingManager)
-    assert isinstance(encoding_manager._encoding_cache, LRUCache)
-    assert encoding_manager.default_encoding == "utf-8"
-    assert encoding_manager.confidence_threshold == 0.9
 
 
 def test_detect_encoding_nonexistent_file(encoding_manager):

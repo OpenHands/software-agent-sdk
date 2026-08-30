@@ -10,6 +10,7 @@ from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
+from openhands.sdk.conversation.title_utils import generate_title_with_llm
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm import LLM, LLMResponse, Message, MetricsSnapshot, TextContent
 
@@ -122,6 +123,22 @@ def test_generate_title_llm_error_fallback(mock_completion):
 
     # Verify fallback title was generated
     assert title == "Fix the bug in my application"
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_generate_title_with_llm_invokes_on_error(mock_completion):
+    """generate_title_with_llm reports the swallowed LLM error via on_error
+    (the opt-in seam used to surface it to clients — issue #16686) while still
+    returning None so callers fall back to truncation."""
+    custom_llm = LLM(model="gpt-4o-mini", api_key=SecretStr("key"), usage_id="err")
+    mock_completion.side_effect = Exception("model does not exist")
+
+    seen: list[Exception] = []
+    result = generate_title_with_llm("Fix the bug", custom_llm, on_error=seen.append)
+
+    assert result is None
+    assert len(seen) == 1
+    assert str(seen[0]) == "model does not exist"
 
 
 @patch("openhands.sdk.llm.llm.LLM.completion")

@@ -18,26 +18,31 @@ METADATA_ATTRIBUTE_PREFIX = "lmnr.association.properties.metadata."
 
 
 def _record_observe_kwargs(unbound_method: Any) -> dict[str, Any]:
-    """Trigger the lazy ``observe`` build on a method and return the observe kwargs."""
+    """Return the ``observe`` kwargs declared on a lazily decorated method."""
     recorded: dict[str, Any] = {}
 
     def recorder(**kwargs: Any):
         recorded.update(kwargs)
-        # Identity: leaves the decorated function's cached wrapper equivalent to
-        # the undecorated function for the rest of the process.
         return lambda func: func
 
-    with (
-        patch("lmnr.observe", recorder),
-        patch(
+    with patch("lmnr.observe", recorder):
+        code = getattr(unbound_method, "__code__", None)
+        closure = getattr(unbound_method, "__closure__", None)
+        if code is not None and closure is not None:
+            freevars = dict(zip(code.co_freevars, closure, strict=False))
+            build_wrapped_cell = freevars.get("_build_wrapped")
+            if build_wrapped_cell is not None:
+                build_wrapped_cell.cell_contents(lambda: None)
+                return recorded
+
+        with patch(
             "openhands.sdk.observability.laminar.should_enable_observability",
             return_value=True,
-        ),
-    ):
-        try:
-            unbound_method(object())
-        except Exception:
-            pass
+        ):
+            try:
+                unbound_method(object())
+            except Exception:
+                pass
 
     return recorded
 
