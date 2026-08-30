@@ -1,5 +1,7 @@
 """Tests for browser tool executor initialization and timeout handling."""
 
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -302,3 +304,49 @@ class TestUniqueUserDataDir:
             executor = BrowserToolExecutor(user_data_dir=custom_dir)
 
             assert executor._config["user_data_dir"] == custom_dir
+
+    def test_close_preserves_explicit_user_data_dir(self):
+        """A caller-supplied user_data_dir (cookies/logins) must survive close().
+
+        PR #4602 deletes the profile dir on close() whenever the path contains
+        "browseruse/profiles/". An explicit user_data_dir that happens to contain
+        that substring (a legitimately persisted browser profile) was silently
+        rmtree'd, destroying user data.
+        """
+        mock_server = MagicMock()
+        mock_async_executor = MagicMock()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_dir = Path(tmp) / "browseruse" / "profiles" / "my-own-profile"
+            profile_dir.mkdir(parents=True)
+            marker = profile_dir / "precious-cookie.txt"
+            marker.write_text("user data that must survive")
+
+            with (
+                patch.object(
+                    BrowserToolExecutor,
+                    "_ensure_chromium_available",
+                    return_value="/usr/bin/chromium",
+                ),
+                patch(
+                    "openhands.tools.browser_use.impl.CustomBrowserUseServer",
+                    return_value=mock_server,
+                ),
+                patch(
+                    "openhands.tools.browser_use.impl.AsyncExecutor",
+                    return_value=mock_async_executor,
+                ),
+                patch(
+                    "openhands.tools.browser_use.impl.os.getuid",
+                    return_value=1000,
+                    create=True,
+                ),
+            ):
+                executor = BrowserToolExecutor(user_data_dir=str(profile_dir))
+                executor._server = mock_server
+                executor._async_executor = mock_async_executor
+                executor.close()
+
+            assert marker.exists(), (
+                "close() must not delete a caller-supplied user_data_dir"
+            )

@@ -250,6 +250,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     _cleanup_initiated: bool
     _close_lock: threading.Lock
     _action_timeout_seconds: float
+    _owns_user_data_dir: bool
 
     @staticmethod
     @functools.cache
@@ -323,6 +324,9 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         """
 
         self._close_lock = threading.Lock()
+        # Only profiles we created ourselves are removed on close(); a
+        # caller-supplied user_data_dir (cookies/logins) must survive.
+        self._owns_user_data_dir = False
 
         def init_logic():
             nonlocal headless
@@ -352,6 +356,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                     "(required for root). This reduces security isolation."
                 )
 
+            self._owns_user_data_dir = "user_data_dir" not in config
             self._config = {
                 "headless": headless,
                 "allowed_domains": allowed_domains or [],
@@ -698,8 +703,14 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             finally:
                 # Remove the browser profile directory to avoid disk accumulation.
                 # browser_use doesn't clean up the user_data_dir on shutdown.
+                # Only remove directories we generated ourselves; a caller-supplied
+                # user_data_dir may hold persistent state (cookies, logins).
                 user_data_dir = self._config.get("user_data_dir")
-                if user_data_dir and "browseruse/profiles/" in user_data_dir:
+                if (
+                    getattr(self, "_owns_user_data_dir", False)
+                    and user_data_dir
+                    and "browseruse/profiles/" in user_data_dir
+                ):
                     try:
                         shutil.rmtree(user_data_dir, ignore_errors=True)
                     except Exception:
