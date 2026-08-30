@@ -112,3 +112,54 @@ def test_create_with_relative_path_raises_value_error():
             ValueError, match="plan_path must be an absolute path, got: relative"
         ):
             PlanningFileEditorTool.create(conv_state, plan_path=relative_path)
+
+
+def test_planning_edit_preserves_inherited_observation_fields():
+    """The planning observation must carry the base editor's diff state.
+
+    PlanningFileEditorObservation inherits FileEditorObservation, whose
+    prev_exist / old_content / new_content drive the structured edit state and
+    the diff view. Rebuilding the observation from a hand-maintained field list
+    dropped them silently.
+    """
+    from openhands.tools.planning_file_editor.impl import PlanningFileEditorExecutor
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        plan_path = str(Path(temp_dir) / "PLAN.md")
+        Path(plan_path).write_text("# Plan\nold line\n")
+
+        executor = PlanningFileEditorExecutor(
+            workspace_root=temp_dir, plan_path=plan_path
+        )
+        observation = executor(
+            PlanningFileEditorAction(
+                command="str_replace",
+                path=plan_path,
+                old_str="old line",
+                new_str="new line",
+            )
+        )
+
+        assert observation.old_content == "# Plan\nold line\n"
+        assert observation.new_content == "# Plan\nnew line\n"
+        assert observation.prev_exist is True
+
+
+def test_planning_observation_keeps_its_own_kind():
+    """Carrying the base fields across must not turn it into the base type."""
+    from openhands.tools.planning_file_editor.definition import (
+        PlanningFileEditorObservation,
+    )
+    from openhands.tools.planning_file_editor.impl import PlanningFileEditorExecutor
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        plan_path = str(Path(temp_dir) / "PLAN.md")
+        Path(plan_path).write_text("# Plan\n")
+
+        executor = PlanningFileEditorExecutor(
+            workspace_root=temp_dir, plan_path=plan_path
+        )
+        observation = executor(PlanningFileEditorAction(command="view", path=plan_path))
+
+        assert isinstance(observation, PlanningFileEditorObservation)
+        assert observation.kind == "PlanningFileEditorObservation"
