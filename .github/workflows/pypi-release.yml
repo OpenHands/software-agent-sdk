@@ -67,6 +67,14 @@ jobs:
                     openhands-agent-server
                   )
 
+                  expected_version="${VERSION}"
+                  actual_version=$(python3 -c \
+                    'import json; print(json.load(open("clients/typescript/package.json"))["version"])')
+                  if [ "$actual_version" != "$expected_version" ]; then
+                    echo "❌ TypeScript client version $actual_version does not match release version $expected_version"
+                    exit 1
+                  fi
+
                   echo "🚀 Building and publishing all packages..."
                   for PKG in "${PACKAGES[@]}"; do
                     echo "===== $PKG ====="
