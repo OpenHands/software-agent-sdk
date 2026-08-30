@@ -1,0 +1,122 @@
+{
+  "name": "@openhands/typescript-client",
+  "version": "1.39.0",
+  "description": "TypeScript client for OpenHands Agent Server",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./clients": {
+      "types": "./dist/clients.d.ts",
+      "import": "./dist/clients.js",
+      "default": "./dist/clients.js"
+    },
+    "./client/http-client": {
+      "types": "./dist/client/http-client.d.ts",
+      "import": "./dist/client/http-client.js",
+      "default": "./dist/client/http-client.js"
+    },
+    "./client/device-flow-client": {
+      "types": "./dist/client/device-flow-client.d.ts",
+      "import": "./dist/client/device-flow-client.js",
+      "default": "./dist/client/device-flow-client.js"
+    },
+    "./events/remote-events-list": {
+      "types": "./dist/events/remote-events-list.d.ts",
+      "import": "./dist/events/remote-events-list.js",
+      "default": "./dist/events/remote-events-list.js"
+    },
+    "./workspace/remote-workspace": {
+      "types": "./dist/workspace/remote-workspace.d.ts",
+      "import": "./dist/workspace/remote-workspace.js",
+      "default": "./dist/workspace/remote-workspace.js"
+    }
+  },
+  "overrides": {
+    "eslint": {
+      "minimatch": {
+        ".": "^10.2.1",
+        "brace-expansion": "^5.0.6"
+      }
+    }
+  },
+  "config": {
+    "agentServerImage": "ghcr.io/openhands/agent-server:1.44.0-python"
+  },
+  "scripts": {
+    "build": "tsc && node ./scripts/copy-json-assets.mjs && node ./scripts/rewrite-relative-imports.mjs",
+    "generate:agent-server-api": "node ./scripts/generate-agent-server-api.mjs",
+    "check:agent-server-api": "node ./scripts/check-agent-server-api.mjs",
+    "summarize:agent-server-api": "node ./scripts/summarize-agent-server-api.mjs",
+    "test:agent-server-api-tooling": "node ./scripts/test-agent-server-api-tooling.mjs",
+    "test:endpoint-audit-tooling": "node ./scripts/test-endpoint-audit.mjs",
+    "check:public-type-budget": "npm run build --silent && node ./scripts/check-public-type-budget.mjs",
+    "test:public-type-budget": "node ./scripts/check-public-type-budget.mjs --self-test",
+    "lint": "eslint src/**/*.ts",
+    "lint:fix": "eslint src/**/*.ts --fix",
+    "format": "prettier --write \"src/**/*.ts\" \"examples/**/*.ts\" \"scripts/**/*.mjs\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"examples/**/*.ts\" \"scripts/**/*.mjs\"",
+    "test": "jest --config jest.config.cjs",
+    "test:watch": "jest --config jest.config.cjs --watch",
+    "test:coverage": "jest --config jest.config.cjs --coverage",
+    "test:integration": "jest --config jest.integration.config.cjs",
+    "test:integration:verbose": "jest --config jest.integration.config.cjs --verbose",
+    "test:integration:deterministic": "jest --config jest.integration.config.cjs --runInBand --testPathPatterns=\"deterministic-api.integration.test.ts|bash.integration.test.ts\"",
+    "test:integration:llm": "jest --config jest.integration.config.cjs --runInBand --testPathIgnorePatterns=\"deterministic-api.integration.test.ts|bash.integration.test.ts\"",
+    "test:all": "npm run test && npm run test:integration",
+    "audit:endpoints": "node ./scripts/endpoint-audit.mjs",
+    "dev": "tsc --watch",
+    "clean": "rimraf dist",
+    "prepare": "npm run clean && npm run build",
+    "prepublishOnly": "npm test"
+  },
+  "keywords": [
+    "openhands",
+    "agent",
+    "typescript",
+    "client",
+    "sdk"
+  ],
+  "author": "OpenHands Team",
+  "license": "MIT",
+  "dependencies": {
+    "@openrouter/sdk": "^1.2.11",
+    "ws": "^8.20.0"
+  },
+  "devDependencies": {
+    "@babel/preset-env": "^7.29.5",
+    "@eslint/js": "^10.0.1",
+    "@hey-api/openapi-ts": "0.99.0",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^26.1.0",
+    "@types/ws": "^8.5.8",
+    "@typescript-eslint/eslint-plugin": "^8.59.2",
+    "@typescript-eslint/parser": "^8.59.2",
+    "eslint": "^10.4.0",
+    "globals": "^17.6.0",
+    "jest": "^30.4.2",
+    "prettier": "^3.8.3",
+    "rimraf": "^6.1.3",
+    "ts-jest": "^29.4.9",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.59.3"
+  },
+  "files": [
+    "dist/**/*"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/OpenHands/software-agent-sdk.git",
+    "directory": "clients/typescript"
+  },
+  "bugs": {
+    "url": "https://github.com/OpenHands/software-agent-sdk/issues"
+  },
+  "homepage": "https://github.com/OpenHands/software-agent-sdk/tree/main/clients/typescript#readme"
+}
