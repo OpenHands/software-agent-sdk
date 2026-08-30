@@ -9,12 +9,12 @@ import json
 import logging
 import os
 import shutil
-import subprocess
 import sys
 import threading
 from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, TypeVar
+from uuid import uuid4
 
 
 if TYPE_CHECKING:
@@ -22,7 +22,6 @@ if TYPE_CHECKING:
 
 from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.tool import ToolExecutor
-from openhands.sdk.utils import sanitized_env
 from openhands.sdk.utils.async_executor import AsyncExecutor
 from openhands.tools.browser_use.definition import (
     BROWSER_RECORDING_OUTPUT_DIR,
@@ -108,8 +107,8 @@ def _current_platform(platform: str | None = None) -> str:
 
 def _windows_browser_install_paths() -> list[Path]:
     roots = [
-        os.environ.get("PROGRAMFILES", "C:\\Program Files"),
-        os.environ.get("PROGRAMFILES(X86)", "C:\\Program Files (x86)"),
+        os.environ.get("PROGRAMFILES") or "C:\\Program Files",
+        os.environ.get("PROGRAMFILES(X86)") or "C:\\Program Files (x86)",
         os.environ.get("LOCALAPPDATA"),
     ]
     browsers = [
@@ -120,7 +119,7 @@ def _windows_browser_install_paths() -> list[Path]:
 
     paths: list[Path] = []
     for root in roots:
-        if root is None:
+        if not root:
             continue
         for parts in browsers:
             paths.append(Path(root).joinpath(*parts))
@@ -169,12 +168,26 @@ def _playwright_cache_dirs(platform: str | None = None) -> list[Path]:
             return [Path.home() / "Library" / "Caches" / "ms-playwright"]
         case "win32":
             if configured_path := os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
-                if configured_path != "0":
-                    return [Path(configured_path).expanduser()]
-                return _playwright_hermetic_cache_dirs()
+                if configured_path == "0":
+                    return _playwright_hermetic_cache_dirs()
+                try:
+                    cache_path = Path(configured_path).expanduser()
+                    if not cache_path.is_absolute():
+                        cache_path = Path(
+                            os.path.abspath(
+                                Path(os.environ.get("INIT_CWD") or os.getcwd())
+                                / cache_path
+                            )
+                        )
+                except (OSError, RuntimeError):
+                    return []
+                return [cache_path]
             if local_app_data := os.environ.get("LOCALAPPDATA"):
                 return [Path(local_app_data) / "ms-playwright"]
-            return [Path.home() / "AppData" / "Local" / "ms-playwright"]
+            try:
+                return [Path.home() / "AppData" / "Local" / "ms-playwright"]
+            except RuntimeError:
+                return []
         case _:
             return [Path.home() / ".cache" / "ms-playwright"]
 
@@ -218,12 +231,12 @@ def _playwright_chromium_paths(
 
 
 def _playwright_build_sort_key(chromium_dir: Path) -> tuple[int, str]:
-    build = chromium_dir.name.removeprefix("chromium-")
+    build = chromium_dir.name.rpartition("-")[2]
     try:
         build_number = int(build) if build.isdigit() else -1
     except ValueError:
         build_number = -1
-    return build_number, chromium_dir.name
+    return build_number, str(chromium_dir).casefold()
 
 
 def _playwright_chromium_install_paths(
@@ -231,19 +244,27 @@ def _playwright_chromium_install_paths(
 ) -> list[Path]:
     current_platform = _current_platform(platform)
     paths: list[Path] = []
+    chromium_dirs: list[Path] = []
     for playwright_cache in _playwright_cache_dirs(current_platform):
         try:
             if not playwright_cache.exists():
                 continue
-            chromium_dirs = list(playwright_cache.glob("chromium-*"))
+            if current_platform == "win32":
+                cache_chromium_dirs = [
+                    *playwright_cache.glob("chromium-[0-9]*"),
+                    *playwright_cache.glob("chromium_win*_special-[0-9]*"),
+                ]
+            else:
+                cache_chromium_dirs = list(playwright_cache.glob("chromium-*"))
         except OSError:
             if current_platform != "win32":
                 raise
             continue
-        if current_platform == "win32":
-            chromium_dirs.sort(key=_playwright_build_sort_key, reverse=True)
-        for chromium_dir in chromium_dirs:
-            paths.extend(_playwright_chromium_paths(chromium_dir, current_platform))
+        chromium_dirs.extend(cache_chromium_dirs)
+    if current_platform == "win32":
+        chromium_dirs.sort(key=_playwright_build_sort_key, reverse=True)
+    for chromium_dir in chromium_dirs:
+        paths.extend(_playwright_chromium_paths(chromium_dir, current_platform))
     return paths
 
 
@@ -254,7 +275,17 @@ def _is_browser_executable(path: Path, platform: str | None = None) -> bool:
             return False
         if current_platform != "win32":
             return True
-        return path.is_file() and os.access(path, os.X_OK)
+        if not path.is_file() or not os.access(path, os.X_OK):
+            return False
+        with path.open("rb") as executable:
+            if executable.read(2) != b"MZ":
+                return False
+            executable.seek(0x3C)
+            pe_header_offset = int.from_bytes(executable.read(4), "little")
+            if pe_header_offset < 0x40:
+                return False
+            executable.seek(pe_header_offset)
+            return executable.read(4) == b"PE\x00\x00"
     except OSError:
         if current_platform != "win32":
             raise
@@ -287,34 +318,6 @@ def _format_browser_operation_error(
     else:
         error_detail = error.__class__.__name__
     return f"Browser operation failed: {error_detail}"
-
-
-def _install_chromium() -> bool:
-    """Attempt to install Chromium via uvx playwright install."""
-    try:
-        # Check if uvx is available
-        if not shutil.which("uvx"):
-            logger.warning("uvx not found - cannot auto-install Chromium")
-            return False
-
-        logger.info("Attempting to install Chromium via uvx...")
-        result = subprocess.run(
-            ["uvx", "playwright", "install", "chromium", "--with-deps", "--no-shell"],
-            capture_output=True,
-            text=True,
-            timeout=300,  # 5 minutes timeout for installation
-            env=sanitized_env(),
-        )
-
-        if result.returncode == 0:
-            logger.info("Chromium installation completed successfully")
-            return True
-        else:
-            logger.error(f"Chromium installation failed: {result.stderr}")
-            return False
-    except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
-        logger.error(f"Error during Chromium installation: {e}")
-        return False
 
 
 def _get_chromium_error_message() -> str:
@@ -367,7 +370,10 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         # Fallback: check PATH for any chromium-based binary
         for binary in _path_binary_candidates():
             if path := shutil.which(binary):
-                return path
+                if current_platform != "win32" or _is_browser_executable(
+                    Path(path), current_platform
+                ):
+                    return path
 
         return None
 
@@ -451,6 +457,9 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                 "allowed_domains": allowed_domains or [],
                 "executable_path": executable_path,
                 "chromium_sandbox": not running_as_root,
+                "user_data_dir": str(
+                    Path.home() / ".config" / "browseruse" / "profiles" / uuid4().hex
+                ),
                 **config,
             }
 
@@ -787,6 +796,14 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             except Exception as e:
                 logger.warning(f"Error during browser cleanup: {e}")
             finally:
+                # Remove the browser profile directory to avoid disk accumulation.
+                # browser_use doesn't clean up the user_data_dir on shutdown.
+                user_data_dir = self._config.get("user_data_dir")
+                if user_data_dir and "browseruse/profiles/" in user_data_dir:
+                    try:
+                        shutil.rmtree(user_data_dir, ignore_errors=True)
+                    except Exception:
+                        pass
                 try:
                     # Always close the async executor
                     self._async_executor.close()

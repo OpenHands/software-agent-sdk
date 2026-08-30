@@ -108,6 +108,7 @@ class MemorySection(_StaticTextSection):
     _AGENTS_MD_GUIDANCE = """\
 * Use `AGENTS.md` under the repository root as your persistent memory for repository-specific knowledge and context.
 * Add important insights, patterns, and learnings to this file to improve future task performance.
+* When asked to find a previous local OpenHands conversation, search the workspace's `workspace/conversations/` directory for its event history.
 * This repository skill is automatically loaded for every conversation and helps maintain context across sessions.
 * For more information about skills, see: https://docs.openhands.dev/overview/skills"""
 

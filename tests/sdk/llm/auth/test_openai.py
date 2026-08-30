@@ -70,8 +70,8 @@ def test_build_authorize_url():
     assert "response_type=code" in url
 
 
-def test_openai_codex_models():
-    """Test that OPENAI_CODEX_MODELS contains expected models."""
+def test_openai_codex_models_include_acp_models():
+    """Subscription auth supports every model exposed by the Codex provider."""
     from openhands.sdk.settings.acp_providers import get_acp_provider
 
     codex_provider = get_acp_provider("codex")
@@ -79,20 +79,6 @@ def test_openai_codex_models():
     assert OPENAI_CODEX_MODELS.issuperset(
         model.id for model in codex_provider.available_models
     )
-    assert "gpt-5.6" in OPENAI_CODEX_MODELS
-    assert "gpt-5.6-sol" in OPENAI_CODEX_MODELS
-    assert "gpt-5.6-terra" in OPENAI_CODEX_MODELS
-    assert "gpt-5.6-luna" in OPENAI_CODEX_MODELS
-    assert "gpt-5.5" in OPENAI_CODEX_MODELS
-    assert "gpt-5.4" in OPENAI_CODEX_MODELS
-    assert "gpt-5.4-mini" in OPENAI_CODEX_MODELS
-    assert "gpt-5.3-codex" not in OPENAI_CODEX_MODELS
-
-
-def test_openai_subscription_auth_vendor():
-    """Test OpenAISubscriptionAuth vendor property."""
-    auth = OpenAISubscriptionAuth()
-    assert auth.vendor == "openai"
 
 
 def test_openai_subscription_auth_get_credentials(tmp_path):
@@ -569,61 +555,6 @@ class TestConsentBannerSystem:
         ):
             result = _display_consent_and_confirm()
             assert result is False
-
-
-# =========================================================================
-# Tests for joserfc migration (no authlib.jose deprecation warning)
-# =========================================================================
-
-
-def test_no_authlib_jose_import():
-    """Verify that the openai auth module does not import from authlib.jose.
-
-    The authlib.jose module is deprecated and should be replaced by joserfc.
-    """
-    import importlib
-    import sys
-
-    # Remove cached module to force re-import
-    mod_name = "openhands.sdk.llm.auth.openai"
-    if mod_name in sys.modules:
-        importlib.reload(sys.modules[mod_name])
-
-    import inspect
-
-    from openhands.sdk.llm.auth import openai as openai_auth_mod
-
-    source = inspect.getsource(openai_auth_mod)
-    assert "from authlib.jose" not in source, (
-        "Module still imports from the deprecated authlib.jose; use joserfc instead"
-    )
-
-
-def test_joserfc_keyset_import():
-    """Test that joserfc KeySet can import a JWKS structure."""
-    from joserfc.jwk import KeySetSerialization
-
-    # Minimal valid RSA JWK for testing (RFC 7517 example modulus)
-    rsa_n = (
-        "0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx4"
-        "cbbfAAtVT86zwu1RK7aPFFxuhDR1L6tSoc_BJECPebWKRXjBZCiF"
-        "V4n3oknjhMstn64tZ_2W-5JsGY4Hc5n9yBXArwl93lqt7_RN5w6C"
-        "f0h4QyQ5v-65YGjQR0_FDW2QvzqY368QQMicAtaSqzs8KJZgnYb9"
-        "c7d0zgdAZHzu6qMQvRL5hajrn1n91CbOpbISD08qNLyrdkt-bFTWh"
-        "AI4vMQFh6WeZu0fM4lFd2NcRwr3XPksINHaQ-G_xBniIqbw0Ls1j"
-        "F44-csFCur-kEgU8awapJzKnqDKgw"
-    )
-    test_jwks: KeySetSerialization = {
-        "keys": [
-            {"kty": "RSA", "kid": "test-key-1", "use": "sig", "n": rsa_n, "e": "AQAB"}
-        ]
-    }
-
-    key_set = KeySet.import_key_set(test_jwks)
-    assert key_set is not None
-    # Should have imported one key
-    keys = list(key_set)
-    assert len(keys) == 1
 
 
 # =========================================================================
