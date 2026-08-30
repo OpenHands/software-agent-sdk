@@ -344,6 +344,45 @@ class ExecutableTool(Protocol):
         ...
 
 
+def mask_observation_secrets(
+    observation: Observation, conversation: "LocalConversation | None"
+) -> Observation:
+    """Replace registered secret values in an observation's text content.
+
+    Every tool that declares an executor returns through
+    :meth:`ToolDefinition.__call__`, so masking here covers the whole tool
+    surface rather than the tools that remembered to call the registry. A tool
+    added later is covered without touching it.
+
+    Observations are immutable once built, so a masked one is a copy; an
+    observation with nothing to mask is returned unchanged.
+    """
+    if conversation is None:
+        return observation
+
+    state = getattr(conversation, "state", None)
+    registry = getattr(state, "secret_registry", None)
+    if registry is None:
+        return observation
+
+    masked_content = []
+    changed = False
+    for block in observation.content:
+        text = getattr(block, "text", None)
+        if not text:
+            masked_content.append(block)
+            continue
+        masked_text = registry.mask_secrets_in_output(text)
+        if masked_text != text:
+            block = block.model_copy(update={"text": masked_text})
+            changed = True
+        masked_content.append(block)
+
+    if not changed:
+        return observation
+    return observation.model_copy(update={"content": masked_content})
+
+
 class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
     """Base class for all tool implementations.
 
@@ -621,19 +660,23 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         # Coerce output only if we declared a model; else wrap in base Observation
         if self.observation_type:
             if isinstance(result, self.observation_type):
-                return result
-            return self.observation_type.model_validate(result)
+                observation = result
+            else:
+                observation = self.observation_type.model_validate(result)
         else:
             # When no output schema is defined, wrap the result in Observation
             if isinstance(result, Observation):
-                return result
+                observation = result
             elif isinstance(result, BaseModel):
-                return Observation.model_validate(result.model_dump())
+                observation = Observation.model_validate(result.model_dump())
             elif isinstance(result, dict):
-                return Observation.model_validate(result)
-            raise TypeError(
-                "Output must be dict or BaseModel when no output schema is defined"
-            )
+                observation = Observation.model_validate(result)
+            else:
+                raise TypeError(
+                    "Output must be dict or BaseModel when no output schema is defined"
+                )
+
+        return mask_observation_secrets(observation, conversation)
 
     async def acall(
         self, action: ActionT, conversation: "LocalConversation | None" = None
