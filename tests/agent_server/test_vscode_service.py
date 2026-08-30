@@ -199,6 +199,66 @@ def test_get_vscode_url_with_custom_port():
     assert url == "http://localhost:9001/?tkn=test-token-456&folder=workspace"
 
 
+def test_get_vscode_url_includes_server_base_path():
+    """Test that a configured server_base_path appears in the URL.
+
+    The base path is passed to openvscode-server as ``--server-base-path``, so
+    the server only answers under that prefix — a root URL would not resolve.
+    """
+    service = VSCodeService(port=19000, server_base_path="/vscode")
+    service.connection_token = "test-token-789"
+
+    assert (
+        service.get_vscode_url()
+        == "http://localhost:19000/vscode/?tkn=test-token-789&folder=workspace"
+    )
+
+
+def test_get_vscode_url_base_path_with_caller_supplied_base_url():
+    """Test that the base path is appended to a caller-supplied base_url.
+
+    Callers behind a reverse proxy pass their own public origin; they still
+    cannot know the server's base path, so it must be applied here. Base paths
+    are normalized so '/vscode', 'vscode' and a trailing-slash base_url all
+    produce the same single-slash URL.
+    """
+    service = VSCodeService(port=19000, server_base_path="vscode")
+    service.connection_token = "test-token-789"
+
+    expected = "https://example.com/vscode/?tkn=test-token-789&folder=%2Fsrv%2Fwork"
+    assert (
+        service.get_vscode_url(
+            base_url="https://example.com", workspace_dir="%2Fsrv%2Fwork"
+        )
+        == expected
+    )
+    assert (
+        service.get_vscode_url(
+            base_url="https://example.com/", workspace_dir="%2Fsrv%2Fwork"
+        )
+        == expected
+    )
+
+
+def test_get_vscode_url_without_base_path_is_unchanged():
+    """Test that URLs are byte-identical when no base path is configured.
+
+    Downstream clients (OpenHands-CLI, app-server, Enterprise) that do not set
+    ``vscode_base_path`` must see exactly the previous output.
+    """
+    service = VSCodeService(port=8001)
+    service.connection_token = "test-token-000"
+
+    assert (
+        service.get_vscode_url()
+        == "http://localhost:8001/?tkn=test-token-000&folder=workspace"
+    )
+    assert (
+        service.get_vscode_url(base_url="http://example.com:9000")
+        == "http://example.com:9000/?tkn=test-token-000&folder=workspace"
+    )
+
+
 def test_is_running_false(vscode_service):
     """Test is_running when no process."""
     assert not vscode_service.is_running()

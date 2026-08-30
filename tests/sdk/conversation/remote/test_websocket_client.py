@@ -131,9 +131,38 @@ def test_websocket_client_callback_invocation(mock_event):
     assert callback_events[0].id == mock_event.id
 
 
-def test_websocket_client_url_encodes_api_key():
-    """Test that API key special characters are URL-encoded in the WebSocket URL."""
+@pytest.mark.parametrize(
+    ("api_key", "expected_messages"),
+    [
+        pytest.param(
+            "sk-oh-" + "a" * 64,
+            [
+                json.dumps(
+                    {
+                        "type": "auth",
+                        "session_api_key": "sk-oh-" + "a" * 64,
+                    }
+                )
+            ],
+            id="with-api-key",
+        ),
+        pytest.param(None, [], id="without-api-key"),
+    ],
+)
+def test_websocket_client_authenticates_outside_url(api_key, expected_messages):
     captured_urls = []
+    sent_messages = []
+
+    class _MockWebSocket:
+        async def send(self, message):
+            sent_messages.append(message)
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            client._stop.set()
+            raise StopAsyncIteration
 
     class _MockAsyncContextManager:
         def __init__(self, url):
@@ -141,11 +170,7 @@ def test_websocket_client_url_encodes_api_key():
 
         async def __aenter__(self):
             captured_urls.append(self.url)
-            raise websockets.exceptions.ConnectionClosed(
-                rcvd=websockets.frames.Close(4001, "test"),
-                sent=websockets.frames.Close(4001, "test"),
-                rcvd_then_sent=False,
-            )
+            return _MockWebSocket()
 
         async def __aexit__(self, exc_type, exc, tb):
             return False
@@ -158,7 +183,7 @@ def test_websocket_client_url_encodes_api_key():
         host="http://localhost:8000",
         conversation_id="test-conv-id",
         callback=lambda event: None,
-        api_key="1+FYh/SRE=ds 8Q",
+        api_key=api_key,
     )
 
     with patch(
@@ -168,7 +193,8 @@ def test_websocket_client_url_encodes_api_key():
         asyncio.run(client._client_loop())
 
     assert len(captured_urls) == 1
-    assert "session_api_key=1%2BFYh%2FSRE%3Dds%208Q" in captured_urls[0]
+    assert captured_urls[0] == ("ws://localhost:8000/sockets/events/test-conv-id")
+    assert sent_messages == expected_messages
 
 
 def _state_update_payload(event_id: str) -> str:
@@ -193,9 +219,13 @@ def _connection_closed(code: int) -> websockets.exceptions.ConnectionClosed:
 
 
 class _MockWebSocket:
-    def __init__(self, messages, close_code: int):
+    def __init__(self, messages, close_code: int, sent_messages=None):
         self._messages = list(messages)
         self._close_code = close_code
+        self._sent_messages = sent_messages if sent_messages is not None else []
+
+    async def send(self, message):
+        self._sent_messages.append(message)
 
     def __aiter__(self):
         return self
@@ -221,6 +251,8 @@ def test_websocket_client_retries_after_retryable_connection_closed():
     """Test that transient WebSocket closures reconnect instead of exiting."""
     connect_calls = 0
     callback_events = []
+    sent_per_connection = []
+    retry_delays = []
 
     def callback(event):
         callback_events.append(event)
@@ -231,10 +263,13 @@ def test_websocket_client_retries_after_retryable_connection_closed():
         def __call__(self, url, *args, **kwargs):
             nonlocal connect_calls
             connect_calls += 1
+            sent_messages = []
+            sent_per_connection.append(sent_messages)
             return _MockWebSocketContext(
                 _MockWebSocket(
                     [_state_update_payload(f"state-{connect_calls}")],
                     close_code=1000,
+                    sent_messages=sent_messages,
                 )
             )
 
@@ -242,9 +277,11 @@ def test_websocket_client_retries_after_retryable_connection_closed():
         host="http://localhost:8000",
         conversation_id="test-conv-id",
         callback=callback,
+        api_key="sk-oh-" + "b" * 64,
     )
 
     async def no_sleep(delay):
+        retry_delays.append(delay)
         return None
 
     client._sleep_before_retry = no_sleep
@@ -257,6 +294,14 @@ def test_websocket_client_retries_after_retryable_connection_closed():
 
     assert connect_calls == 2
     assert [event.id for event in callback_events] == ["state-1", "state-2"]
+    expected_auth = json.dumps(
+        {
+            "type": "auth",
+            "session_api_key": client.api_key,
+        }
+    )
+    assert sent_per_connection == [[expected_auth], [expected_auth]]
+    assert retry_delays == [1.0, 1.0]
 
 
 @pytest.mark.parametrize("close_code", [4001, 4004])

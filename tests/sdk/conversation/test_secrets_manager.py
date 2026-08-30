@@ -2,7 +2,10 @@
 
 from pydantic import SecretStr
 
-from openhands.sdk.conversation.secret_registry import SecretRegistry
+from openhands.sdk.conversation.secret_registry import (
+    FAILED_LOOKUP_RETRY_SECONDS,
+    SecretRegistry,
+)
 from openhands.sdk.secret import SecretSource, StaticSecret
 
 
@@ -25,6 +28,23 @@ class MyFailingTokenSource(SecretSource):
 class MyWorkingTokenSource(SecretSource):
     def get_value(self):
         return "working-value"
+
+
+class MyCountingFailingSource(SecretSource):
+    attempts: int = 0
+
+    def get_value(self):
+        type(self).attempts += 1
+        raise OSError("Secret retrieval failed")
+
+
+class MyRecoveringSource(SecretSource):
+    fail: bool = True
+
+    def get_value(self):
+        if type(self).fail:
+            raise OSError("Secret retrieval failed")
+        return "recovered-value"
 
 
 def test_update_secrets_with_static_values():
@@ -337,3 +357,97 @@ def test_get_secret_value_missing_not_tracked():
     result = secret_registry.get_secret_value("NONEXISTENT")
     assert result is None
     assert "NONEXISTENT" not in secret_registry._exported_values
+
+
+def test_track_exported_values_drops_empty_values():
+    """Empty values must not enter _exported_values (they would poison masking)."""
+    secret_registry = SecretRegistry()
+    secret_registry.track_exported_values({"REAL": "secret", "EMPTY": ""})
+
+    assert "EMPTY" not in secret_registry._exported_values
+    assert secret_registry._exported_values["REAL"] == "secret"
+
+
+def test_mask_secrets_in_output_ignores_empty_value():
+    """An empty exported value must not splice the placeholder between chars."""
+    secret_registry = SecretRegistry()
+    secret_registry._exported_values["EMPTY"] = ""
+
+    assert secret_registry.mask_secrets_in_output("hello") == "hello"
+
+
+def test_mask_secrets_without_name_reference_in_command():
+    """A secret value is masked even if no command ever referenced its name."""
+    token = "github_pat_REALSECRETVALUE123"
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets({"github_token": token})
+
+    # The name-scan exports nothing: the command does not mention the name.
+    assert secret_registry.get_secrets_as_env_vars("git remote -v") == {}
+
+    output = f"origin\thttps://{token}@github.com/repo/test.git (fetch)"
+    masked = secret_registry.mask_secrets_in_output(output)
+    assert token not in masked
+    assert masked == "origin\thttps://<secret-hidden>@github.com/repo/test.git (fetch)"
+
+
+def test_mask_secrets_survives_serialization_round_trip():
+    """Masking survives a resume: _exported_values is not serialized."""
+    token = "github_pat_REALSECRETVALUE123"
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets({"github_token": token})
+
+    restored = SecretRegistry.model_validate_json(
+        secret_registry.model_dump_json(context={"expose_secrets": True})
+    )
+    assert restored._exported_values == {}
+
+    output = f"origin\thttps://{token}@github.com/repo/test.git (fetch)"
+    assert token not in restored.mask_secrets_in_output(output)
+
+
+def test_mask_secrets_tolerates_failing_source():
+    """A source that fails to resolve is skipped; other secrets still mask."""
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets(
+        {
+            "FAILING_SECRET": MyFailingTokenSource(),
+            "WORKING_SECRET": MyWorkingTokenSource(),
+        }
+    )
+
+    masked = secret_registry.mask_secrets_in_output("leak: working-value")
+    assert masked == "leak: <secret-hidden>"
+
+
+def test_mask_secrets_backs_off_failing_source():
+    """A failing source is retried once per window, not on every mask call."""
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets({"FAILING_SECRET": MyCountingFailingSource()})
+
+    MyCountingFailingSource.attempts = 0
+    for _ in range(25):
+        secret_registry.mask_secrets_in_output("unrelated output")
+    assert MyCountingFailingSource.attempts == 1
+
+    # Window elapsed: retried again.
+    secret_registry._failed_lookups["FAILING_SECRET"] -= FAILED_LOOKUP_RETRY_SECONDS
+    secret_registry.mask_secrets_in_output("unrelated output")
+    assert MyCountingFailingSource.attempts == 2
+
+
+def test_mask_secrets_retries_until_source_succeeds():
+    """Back-off does not permanently disable masking for a recovered source."""
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets({"FLAKY": MyRecoveringSource()})
+
+    MyRecoveringSource.fail = True
+    assert secret_registry.mask_secrets_in_output("leak: recovered-value") == (
+        "leak: recovered-value"
+    )
+
+    MyRecoveringSource.fail = False
+    secret_registry._failed_lookups["FLAKY"] -= FAILED_LOOKUP_RETRY_SECONDS
+    assert secret_registry.mask_secrets_in_output("leak: recovered-value") == (
+        "leak: <secret-hidden>"
+    )

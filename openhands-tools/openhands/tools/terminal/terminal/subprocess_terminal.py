@@ -249,7 +249,7 @@ class SubprocessTerminal(TerminalInterface):
         if self._pty_master_fd is None:
             raise RuntimeError("PTY terminal is not initialized")
         try:
-            logger.debug(f"Wrote to subprocess PTY: {data!r}")
+            logger.debug("Wrote to subprocess PTY (byte_count=%s)", len(data))
             os.write(self._pty_master_fd, data)
         except Exception as e:
             logger.error(f"Failed to write to PTY: {e}", exc_info=True)
@@ -465,7 +465,7 @@ class SubprocessTerminal(TerminalInterface):
             content = "".join(self.output_buffer)
             lines = content.split("\n")
             content = "\n".join(lines).replace("\r", "")
-            logger.debug(f"Read from subprocess PTY: {content!r}")
+            logger.debug("Read from subprocess PTY (content_length=%s)", len(content))
             return content
 
     def clear_screen(self) -> None:

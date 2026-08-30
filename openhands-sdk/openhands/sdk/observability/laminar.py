@@ -32,6 +32,10 @@ _OBSERVABILITY_ENV_KEYS: Final[tuple[str, ...]] = (
 )
 
 
+OPERATION_METADATA_KEY: Final[str] = "openhands.operation"
+"""Metadata key naming the side-utility operation a span subtree belongs to."""
+
+
 def _get_int_env(key: str) -> int | None:
     """Read an environment variable as an optional int."""
     val = get_env(key)
@@ -129,7 +133,6 @@ def observe[**P, R](
     metadata: dict[str, Any] | None = None,
     tags: list[str] | None = None,
     preserve_global_context: bool = False,
-    rollout_entrypoint: bool = False,
     **kwargs: dict[str, Any],
 ) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """Lazy-resolving observe decorator.
@@ -155,7 +158,6 @@ def observe[**P, R](
             metadata=metadata,
             tags=tags,
             preserve_global_context=preserve_global_context,
-            rollout_entrypoint=rollout_entrypoint,
             **kwargs,
         )(func)
 
@@ -197,6 +199,30 @@ def observe[**P, R](
         return sync_wrapper
 
     return decorator
+
+
+# Keep owner first so observe can restore its conversation root span.
+def _return_tool_result(owner: object, tool_input: Any, tool_output: Any) -> Any:
+    _ = owner, tool_input
+    return tool_output
+
+
+def record_tool_result(
+    owner: object,
+    *,
+    name: str,
+    tool_call_id: str,
+    tool_input: Any,
+    tool_output: Any,
+) -> None:
+    if not should_enable_observability():
+        return
+    observe(
+        name=name,
+        span_type="TOOL",
+        ignore_inputs=["owner", "tool_output"],
+        metadata={"tool_call_id": tool_call_id},
+    )(_return_tool_result)(owner, tool_input, tool_output)
 
 
 def should_enable_observability() -> bool:
@@ -360,6 +386,75 @@ def start_child_span(
                     Laminar.set_span_tags(tags)
     except Exception:
         logger.debug("Failed to create observability child span", exc_info=True)
+
+
+# Trace-metadata key set by software-agent-sdk#4010 on the parent's `task`
+# TOOL span; copied onto a detached delegate trace when present so the
+# originating tool call is visible from the delegate's trace alone.
+_TOOL_CALL_ID_META_KEY: Final[str] = "tool_call_id"
+
+
+@contextlib.contextmanager
+def detached_delegate_context() -> Iterator[dict[str, TraceMetadataValue]]:
+    """Clear the ambient span so a conversation constructed inside this block
+    starts a genuinely new Laminar trace, instead of ``RootSpan`` silently
+    joining whatever span is currently active.
+
+    ``Laminar.start_span`` without an explicit ``context=`` parents onto the
+    ambient span — its "isolated context" helper just returns whatever is
+    current. Laminar tracks that "current" span via its OWN isolated
+    ``ContextVar`` (``lmnr...tracing.context._ISOLATED_RUNTIME_CONTEXT``),
+    separate from the standard ``opentelemetry.context`` one, so attaching an
+    empty/no-parent context through the standard API (as ``RootSpan`` does
+    for cross-thread re-attachment) has no effect here — ``Laminar.use_span``
+    is the one call that updates both. Pushing ``INVALID_SPAN`` through it is
+    what actually severs the link, so a sub-agent conversation constructed
+    synchronously inside its parent's ``task`` TOOL span (see TaskManager)
+    starts its own trace instead of inheriting the parent's
+    (software-agent-sdk#4365).
+
+    Yields trace-metadata linking the delegate back to the severed parent
+    span (``delegate.parent_trace_id``/``delegate.parent_span_id``, plus a
+    best-effort ``tool_call_id`` copied from the parent's TOOL span) for the
+    caller to merge into the delegate's ``observability_metadata``. Yields an
+    empty dict if there is no active span, or if observability is disabled.
+    """
+    if not should_enable_observability():
+        yield {}
+        return
+    try:
+        from lmnr import Laminar
+        from opentelemetry import trace as otel_trace
+
+        parent = Laminar.get_laminar_span_context()
+    except Exception:
+        logger.debug("Failed to capture parent span for delegate", exc_info=True)
+        yield {}
+        return
+
+    link: dict[str, TraceMetadataValue] = {}
+    if parent is not None:
+        link["delegate.parent_trace_id"] = str(parent.trace_id)
+        link["delegate.parent_span_id"] = str(parent.span_id)
+        tool_call_id = (parent.metadata or {}).get(_TOOL_CALL_ID_META_KEY)
+        if tool_call_id:
+            link[_TOOL_CALL_ID_META_KEY] = tool_call_id
+
+    # Only guard *entering* Laminar.use_span (a caller exception raised
+    # inside the ``with`` block below must propagate normally, not be
+    # swallowed here).
+    with contextlib.ExitStack() as stack:
+        try:
+            stack.enter_context(
+                Laminar.use_span(
+                    otel_trace.INVALID_SPAN,
+                    record_exception=False,
+                    set_status_on_exception=False,
+                )
+            )
+        except Exception:
+            logger.debug("Failed to detach ambient span for delegate", exc_info=True)
+        yield link
 
 
 @contextlib.contextmanager

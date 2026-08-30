@@ -394,44 +394,6 @@ class TestSearchEventsEndpoint:
             client.app.dependency_overrides.clear()
 
     @pytest.mark.asyncio
-    async def test_search_events_uses_compat_transport_payload(
-        self, client, sample_conversation_id, mock_event_service
-    ):
-        """Event search should be parseable by older RemoteConversation clients."""
-        client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
-
-        try:
-            mock_event_service.search_events = AsyncMock(
-                return_value={
-                    "items": [
-                        {
-                            "kind": "SystemPromptEvent",
-                            "id": "system_event",
-                            "parent_id": "parent_event",
-                            "system_prompt": {"type": "text", "text": "system"},
-                            "tools": [
-                                {"kind": "FinishTool"},
-                                {"kind": "VisionInspectTool"},
-                            ],
-                        }
-                    ],
-                    "next_page_id": None,
-                }
-            )
-
-            response = client.get(
-                f"/api/conversations/{sample_conversation_id}/events/search"
-            )
-
-            assert response.status_code == 200
-            data = response.json()
-            assert "parent_id" not in data["items"][0]
-            assert [tool["kind"] for tool in data["items"][0]["tools"]] == [
-                "FinishTool"
-            ]
-        finally:
-            client.app.dependency_overrides.clear()
-
     @pytest.mark.asyncio
     async def test_search_events_with_timezone_aware_datetime(
         self, client, sample_conversation_id, mock_event_service

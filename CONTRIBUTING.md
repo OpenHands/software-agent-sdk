@@ -68,6 +68,37 @@ This file is mostly about principles. For the mechanics, please see:
 - `examples/01_standalone_sdk/41_task_tool_set.py` for delegating work to registered subagents with resume support
 - `examples/01_standalone_sdk/42_file_based_subagents.py` for programmatic `AgentDefinition` registration
 
+## Design doc for non-trivial PRs
+
+For a non-trivial PR — a new or changed public API (Python or the agent-server REST/WebSocket
+surface), a new subsystem, a behavior change in the agent loop, or a migration — a reviewer
+often has to reconstruct the design from the diff alone. That is slow, and it is where the
+compatibility risks we care about hide. You are encouraged (though not required) to add a short design
+doc so reviewers grasp the proposal at a glance.
+
+The convention:
+
+1. Write a **self-contained HTML** page (inline CSS/SVG, opens by double-click) that covers the
+   code/API design and a **before/after** of your change, grounded to the actual code. Show the
+   interface before and after when you touch one — signatures, schemas, or event shapes — and
+   state the compatibility impact (additive, breaking, or behind a flag).
+2. Commit it under the temporary **`.pr/`** directory, e.g. `.pr/design.html`. This directory is
+   for PR-only artifacts and is **removed automatically** by `.github/workflows/pr-artifacts.yml`:
+   same-repository PRs are cleaned up when the PR is approved, and fork PRs are cleaned up
+   automatically from the base branch right after merge — either way it does not persist in `main`.
+3. Link it near the top of the PR description via htmlpreview, pointing at the fork and branch the
+   PR is opened from so it renders before the PR is merged:
+
+   ```
+   https://htmlpreview.github.io/?https://github.com/<your-fork>/<repo>/blob/<your-branch>/.pr/design.html
+   ```
+
+Skip this for trivial PRs (a typo, a one-line guard, a dependency bump, a small bug fix) — there, a design doc is
+just noise.
+
+The `pr-design-doc` skill in the [OpenHands extensions](https://github.com/OpenHands/extensions)
+repo can generate the page for you.
+
 ## Questions / discussion
 
 Join us on Slack: https://openhands.dev/joinslack

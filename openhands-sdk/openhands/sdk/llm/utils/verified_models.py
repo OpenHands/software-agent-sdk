@@ -33,6 +33,7 @@ VERIFIED_ANTHROPIC_MODELS = [
     "claude-opus-4-6",
     "claude-opus-4-7",
     "claude-opus-4-8",
+    "claude-opus-5",
     "claude-fable-5",
     "claude-sonnet-5",
     "claude-sonnet-4-5",
@@ -68,12 +69,15 @@ VERIFIED_DEEPSEEK_MODELS = [
     "deepseek-chat",
     "deepseek-v3.2-reasoner",
     "deepseek-v4-pro",
+    "deepseek-v4-flash",
 ]
 
 VERIFIED_MOONSHOT_MODELS = [
+    "kimi-k3",
     "kimi-k2-thinking",
     "kimi-k2.5",
     "kimi-k2.6",
+    "kimi-for-coding",
 ]
 
 VERIFIED_MINIMAX_MODELS = [
@@ -107,6 +111,7 @@ VERIFIED_OPENHANDS_MODELS = [
     "claude-opus-4-6",
     "claude-opus-4-7",
     "claude-opus-4-8",
+    "claude-opus-5",
     "claude-fable-5",
     "claude-sonnet-5",
     "claude-sonnet-4-5",
@@ -127,6 +132,8 @@ VERIFIED_OPENHANDS_MODELS = [
     "deepseek-chat",
     "deepseek-v3.2-reasoner",
     "deepseek-v4-pro",
+    "deepseek-v4-flash",
+    "kimi-k3",
     "kimi-k2-thinking",
     "kimi-k2.6",
     "kimi-k2.5",

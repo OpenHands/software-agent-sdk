@@ -57,6 +57,7 @@ def live_server_env(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     import_modules: str | None = None,
+    session_api_keys: list[str] | None = None,
 ) -> Generator[dict]:
     """Launch a real FastAPI server backed by temp workspace and conversations.
 
@@ -97,7 +98,7 @@ def live_server_env(
     )
 
     cfg = {
-        "session_api_keys": [],  # disable auth for tests
+        "session_api_keys": session_api_keys or [],
         "conversations_path": str(conversations_path),
         "workspace_path": str(workspace_path),
     }
@@ -163,6 +164,14 @@ def live_server_env(
             shutil.rmtree(cwd_conversations)
 
 
+def _assert_secret(value: "str | SecretStr", expected: str) -> None:
+    """Assert a SecretStr-or-str api_key matches the expected plaintext."""
+    if isinstance(value, SecretStr):
+        assert value.get_secret_value() == expected
+    else:
+        assert value == expected
+
+
 def test_health_endpoints_return_ok_json(server_env):
     with httpx.Client() as client:
         for endpoint in ("/alive", "/health"):
@@ -171,9 +180,48 @@ def test_health_endpoints_return_ok_json(server_env):
             assert response.json() == {"status": "ok"}
 
 
+def test_prepare_for_sandbox_pause_drains_conversations(server_env):
+    agent = Agent(
+        llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
+        tools=[],
+    )
+    payload = {
+        "agent": agent.model_dump(mode="json", context={"expose_secrets": True}),
+        "workspace": {"working_dir": "/tmp/workspace/project"},
+    }
+    with httpx.Client(base_url=server_env["host"]) as client:
+        start = client.post("/api/conversations", json=payload, timeout=10.0)
+        start.raise_for_status()
+        conversation_id = UUID(start.json()["id"])
+        assert conversation_id in server_env["conversation_service"]._event_services
+
+        response = client.post(
+            "/api/conversations/prepare-for-sandbox-pause",
+            timeout=10.0,
+        )
+
+    assert response.status_code == 204
+    assert conversation_id not in server_env["conversation_service"]._event_services
+    assert conversation_id in server_env["conversation_service"]._conversation_records
+
+
 @pytest.fixture
 def server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[dict]:
     with live_server_env(tmp_path, monkeypatch) as env:
+        yield env
+
+
+@pytest.fixture
+def authenticated_server_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Generator[dict]:
+    api_key = "test-websocket-auth-key"
+    with live_server_env(
+        tmp_path,
+        monkeypatch,
+        session_api_keys=[api_key],
+    ) as env:
+        env["api_key"] = api_key
         yield env
 
 
@@ -231,6 +279,28 @@ def patched_llm(monkeypatch: pytest.MonkeyPatch) -> None:
         return fake_completion(self, messages, tools, **kwargs)
 
     monkeypatch.setattr(LLM, "acompletion", fake_acompletion, raising=True)
+
+
+def test_remote_conversation_websocket_first_message_auth(
+    authenticated_server_env,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("OPENHANDS_REMOTE_WS_READY_TIMEOUT", "2")
+    agent = Agent(
+        llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
+        tools=[],
+    )
+    workspace = RemoteWorkspace(
+        host=authenticated_server_env["host"],
+        working_dir="/tmp/workspace/project",
+        api_key=authenticated_server_env["api_key"],
+    )
+
+    conversation: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+    try:
+        assert conversation.id
+    finally:
+        conversation.close()
 
 
 def test_preloaded_custom_tool_resolves_in_live_server(
@@ -383,11 +453,24 @@ def test_websocket_attach_wait_does_not_block_ready_endpoint(server_env):
     lock_acquired = threading.Event()
     release_state_lock = threading.Event()
     snapshot_started = threading.Event()
+    conversation_info_started = threading.Event()
     original_snapshot = event_service._create_state_update_event_sync
+
+    from openhands.agent_server import (
+        conversation_service as conversation_service_module,
+    )
+
+    original_compose_info_sync = (
+        conversation_service_module._compose_conversation_info_sync
+    )
 
     def traced_snapshot() -> ConversationStateUpdateEvent:
         snapshot_started.set()
         return original_snapshot()
+
+    def traced_compose_info_sync(*args, **kwargs):
+        conversation_info_started.set()
+        return original_compose_info_sync(*args, **kwargs)
 
     def hold_state_lock() -> None:
         assert event_service._conversation is not None
@@ -409,6 +492,9 @@ def test_websocket_attach_wait_does_not_block_ready_endpoint(server_env):
             attach_error.append(exc)
 
     event_service._create_state_update_event_sync = traced_snapshot
+    conversation_service_module._compose_conversation_info_sync = (
+        traced_compose_info_sync
+    )
 
     try:
         lock_thread = threading.Thread(target=hold_state_lock, daemon=True)
@@ -420,11 +506,16 @@ def test_websocket_attach_wait_does_not_block_ready_endpoint(server_env):
 
         attach_thread = threading.Thread(target=attach_conversation, daemon=True)
         attach_thread.start()
-        assert snapshot_started.wait(timeout=5.0), (
-            "The websocket attach never reached the initial state snapshot"
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not (
+            conversation_info_started.is_set() or snapshot_started.is_set()
+        ):
+            time.sleep(0.01)
+        assert conversation_info_started.is_set() or snapshot_started.is_set(), (
+            "The conversation attach never reached a state snapshot"
         )
         assert attach_thread.is_alive(), (
-            "Expected websocket attach to still be waiting on the state lock"
+            "Expected conversation attach to still be waiting on the state lock"
         )
 
         ready_started = time.monotonic()
@@ -435,11 +526,14 @@ def test_websocket_attach_wait_does_not_block_ready_endpoint(server_env):
         assert ready_response.status_code == 200
         assert ready_response.json() == {"status": "ready"}
         assert ready_elapsed < 0.5, (
-            f"/ready took {ready_elapsed:.3f}s while websocket attach was waiting "
+            f"/ready took {ready_elapsed:.3f}s while conversation attach was waiting "
             "for the conversation state lock"
         )
     finally:
         event_service._create_state_update_event_sync = original_snapshot
+        conversation_service_module._compose_conversation_info_sync = (
+            original_compose_info_sync
+        )
         release_state_lock.set()
         if lock_thread is not None:
             lock_thread.join(timeout=2.0)
@@ -2047,12 +2141,84 @@ def test_remote_state_exposes_invoked_skills(
     conv.close()
 
 
+def test_workspace_default_llm_resolves_active_profile_despite_settings_drift(
+    tmp_path, monkeypatch
+):
+    """An unpinned automation gets the UI-advertised active named profile.
+
+    Reproduces the production drift through real HTTP endpoints: activate GLM,
+    then patch only legacy agent_settings.llm to keyless GPT while leaving the
+    active pointer untouched. RemoteWorkspace.get_llm() must resolve GLM and its
+    named-profile credential. Explicit profile selection remains an override.
+    """
+    with live_server_env(tmp_path, monkeypatch) as env:
+        with httpx.Client(base_url=env["host"], timeout=10.0) as client:
+            save_glm = client.post(
+                "/api/profiles/glm-default",
+                json={
+                    "llm": {
+                        "model": "openhands/glm-5.2",
+                        "api_key": "sk-glm-key",
+                    },
+                    "include_secrets": True,
+                },
+            )
+            assert save_glm.status_code == 201
+            assert client.post("/api/profiles/glm-default/activate").status_code == 200
+
+            save_explicit = client.post(
+                "/api/profiles/explicit-model",
+                json={
+                    "llm": {
+                        "model": "openrouter/explicit-model",
+                        "api_key": "sk-explicit-key",
+                    },
+                    "include_secrets": True,
+                },
+            )
+            assert save_explicit.status_code == 201
+
+            drift = client.patch(
+                "/api/settings",
+                json={
+                    "agent_settings_diff": {
+                        "llm": {"model": "gpt-5.5", "api_key": None}
+                    }
+                },
+            )
+            assert drift.status_code == 200
+
+            profiles = client.get("/api/profiles").json()
+            settings = client.get("/api/settings").json()
+            assert profiles["active_profile"] == "glm-default"
+            assert settings["active_profile"] == "glm-default"
+            assert settings["agent_settings"]["llm"]["model"] == "gpt-5.5"
+
+        workspace = RemoteWorkspace(
+            host=env["host"],
+            working_dir=str(env["workspace_path"]),
+        )
+        default_llm = workspace.get_llm()
+        assert default_llm.model == "openhands/glm-5.2"
+        assert default_llm.api_key is not None
+        _assert_secret(default_llm.api_key, "sk-glm-key")
+        assert default_llm.usage_id == "profile:glm-default"
+
+        # Mirrors an explicit AUTOMATION_MODEL/profile_name override.
+        explicit_llm = workspace.get_llm(profile_name="explicit-model")
+        assert explicit_llm.model == "openrouter/explicit-model"
+        assert explicit_llm.api_key is not None
+        _assert_secret(explicit_llm.api_key, "sk-explicit-key")
+        assert explicit_llm.usage_id == "profile:explicit-model"
+
+
 def test_settings_and_secrets_api_with_live_server(server_env):
     """End-to-end test for settings and secrets API endpoints.
 
     Validates the full REST API for settings and secrets management
     through the live agent-server, including:
     - GET/PATCH settings
+    - POST/PATCH/DELETE MCP servers
     - GET/PUT/DELETE secrets
     - Secret name validation
     - Encryption/decryption round-trip
@@ -2075,6 +2241,26 @@ def test_settings_and_secrets_api_with_live_server(server_env):
         assert patch_resp.status_code == 200
         patched = patch_resp.json()
         assert patched["agent_settings"]["llm"]["model"] == "gpt-4o"
+
+        create_mcp_resp = client.post(
+            "/api/settings/mcp/docs",
+            json={"transport": "http", "url": "https://docs.example/mcp"},
+        )
+        assert create_mcp_resp.status_code == 201
+
+        patch_mcp_resp = client.patch(
+            "/api/settings/mcp/docs",
+            json={"description": "Documentation"},
+        )
+        assert patch_mcp_resp.status_code == 200
+        assert (
+            patch_mcp_resp.json()["agent_settings"]["mcp_config"]["docs"]["description"]
+            == "Documentation"
+        )
+
+        delete_mcp_resp = client.delete("/api/settings/mcp/docs")
+        assert delete_mcp_resp.status_code == 200
+        assert "docs" not in delete_mcp_resp.json()["agent_settings"]["mcp_config"]
 
         # ── Test secrets CRUD endpoints ────────────────────────────────────
         # List secrets (should be empty initially)

@@ -24,7 +24,11 @@ from openhands.sdk.mcp.config import (
     MCPOAuthTokenStorageField,
     MCPServer,
 )
-from openhands.sdk.mcp.utils import create_mcp_tools
+from openhands.sdk.mcp.utils import (
+    ToolsChangedCallback,
+    ToolsReconciledCallback,
+    create_mcp_tools,
+)
 
 
 logger = get_logger(__name__)
@@ -329,12 +333,19 @@ class SettingsBackedMCPToolProvider:
     """Create MCP tools with FastMCP OAuth state persisted in settings."""
 
     def create_tools(
-        self, mcp_config: dict[str, MCPServer], timeout: float = 30.0
+        self,
+        mcp_config: dict[str, MCPServer],
+        timeout: float = 30.0,
+        *,
+        on_tools_changed: ToolsChangedCallback | None = None,
+        on_tools_reconciled: ToolsReconciledCallback | None = None,
     ) -> MCPClient:
         return create_mcp_tools(
             mcp_config,
             timeout,
             mcp_oauth_token_storage=MCPSettingsOAuthTokenStore(),
+            on_tools_changed=on_tools_changed,
+            on_tools_reconciled=on_tools_reconciled,
         )
 
 

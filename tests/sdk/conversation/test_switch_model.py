@@ -52,13 +52,14 @@ def profile_store(tmp_path, monkeypatch):
     return store
 
 
-def _make_conversation() -> LocalConversation:
+def _make_conversation(profile_store_dir: Path | None = None) -> LocalConversation:
     return LocalConversation(
         agent=Agent(
             llm=_make_llm("default-model", "test-llm"),
             tools=[],
         ),
         workspace=Path.cwd(),
+        profile_store_dir=profile_store_dir,
     )
 
 
@@ -213,6 +214,16 @@ def test_switch_acp_model_disarms_discarded_agent_finalizer(tmp_path):
     conv, old_agent = _make_acp_conversation(tmp_path)
     live_conn = old_agent._conn
     live_executor = old_agent._executor
+    lifecycle = MagicMock()
+    lifecycle.path = tmp_path / "auth.json"
+    lifecycle.may_have_changed = True
+    old_agent._file_credential_lifecycles["CODEX_AUTH_JSON"] = lifecycle
+    credential_lock = old_agent._file_credential_lock
+    client = MagicMock()
+    old_agent._client = client
+    old_agent._bind_file_credential_masking()
+    old_agent._register_atexit_cleanup()
+    old_cleanup = old_agent._atexit_callback
 
     conv.switch_acp_model("model-b")
 
@@ -221,6 +232,11 @@ def test_switch_acp_model_disarms_discarded_agent_finalizer(tmp_path):
     assert isinstance(switched, ACPAgent)
     assert switched._conn is live_conn
     assert switched._executor is live_executor
+    assert switched._file_credential_lifecycles == {"CODEX_AUTH_JSON": lifecycle}
+    assert switched._file_credential_lock is credential_lock
+    assert old_agent._atexit_callback is None
+    assert switched._atexit_callback is not None
+    assert switched._atexit_callback is not old_cleanup
 
     # ...and the discarded agent's finalizer was disarmed (marked closed)
     # WITHOUT clearing its runtime references — an in-flight ask_agent()/fork
@@ -228,6 +244,10 @@ def test_switch_acp_model_disarms_discarded_agent_finalizer(tmp_path):
     assert old_agent._closed is True
     assert old_agent._conn is live_conn
     assert old_agent._executor is live_executor
+    assert old_agent._file_credential_lifecycles == {}
+    lifecycle.track_current.reset_mock()
+    client.before_mask()
+    lifecycle.track_current.assert_called_once_with()
 
     # Simulating GC (__del__ -> close()) on the disarmed old agent is a no-op:
     # the copy's shared connection/executor are left intact.
@@ -235,6 +255,8 @@ def test_switch_acp_model_disarms_discarded_agent_finalizer(tmp_path):
     old_agent.close()
     live_executor.run_async.assert_not_called()
     live_executor.close.assert_not_called()
+    switched.release_runtime()
+    assert switched._atexit_callback is None
 
 
 def test_switch_profile(profile_store):
@@ -244,6 +266,17 @@ def test_switch_profile(profile_store):
     assert conv.agent.llm.model == "fast-model"
     conv.switch_profile("slow")
     assert conv.agent.llm.model == "slow-model"
+
+
+def test_switch_profile_uses_custom_profile_store(tmp_path: Path) -> None:
+    profile_dir = tmp_path / "profiles"
+    store = LLMProfileStore(profile_dir)
+    store.save("fast", _make_llm("fast-model", "fast"))
+
+    conv = _make_conversation(profile_store_dir=profile_dir)
+    conv.switch_profile("fast")
+
+    assert conv.agent.llm.model == "fast-model"
 
 
 def test_switch_profile_updates_state(profile_store):
@@ -671,7 +704,7 @@ def test_switch_llm_tool_during_arun_does_not_deadlock(profile_store, tmp_path):
     assert conv.agent.llm.model == "fast-model"
 
 
-def test_switch_llm_to_subscription_profile_disables_condenser(
+def test_switch_llm_to_subscription_profile_keeps_condenser(
     monkeypatch, empty_profile_store
 ):
     import openhands.sdk.conversation.impl.local_conversation as local_conversation
@@ -694,7 +727,7 @@ def test_switch_llm_to_subscription_profile_disables_condenser(
     def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
         runtime = llm.model_copy()
         if llm.auth_type == "subscription":
-            runtime._is_subscription = True
+            runtime.is_subscription = True
         return runtime
 
     monkeypatch.setattr(
@@ -713,8 +746,10 @@ def test_switch_llm_to_subscription_profile_disables_condenser(
     )
 
     assert conv.agent.llm.is_subscription
-    assert conv.agent.condenser is None
-    assert conv.state.agent.condenser is None
+    # Condenser must NOT be disabled for subscription LLMs — the condenser's
+    # own LLM config differs from the agent's, so it is preserved as-is.
+    assert conv.agent.condenser is condenser
+    assert conv.state.agent.condenser is condenser
 
     conv.switch_llm(_make_llm("regular-model", "regular"))
 

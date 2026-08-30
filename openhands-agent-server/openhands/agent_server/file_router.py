@@ -25,6 +25,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
+from openhands.agent_server._secret_redaction import redacted_file_bytes
 from openhands.agent_server.config import get_default_config
 from openhands.agent_server.models import Success
 from openhands.agent_server.server_details_router import update_last_execution_time
@@ -139,12 +140,23 @@ async def _download_file(path: str) -> FileResponse:
 
 
 def _create_zip_from_directory(source_dir: Path, output_path: Path) -> None:
-    """Create a zip archive for source_dir using only Python stdlib APIs."""
+    """Create a zip archive for source_dir using only Python stdlib APIs.
+
+    Secret-bearing fields (LLM/AWS credentials) in the persisted JSON payloads
+    are redacted on the way into the archive so a downloaded trajectory never
+    leaks API keys — see ``redacted_file_bytes``.
+    """
     try:
         with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as archive:
             archive.write(source_dir, source_dir.name)
             for path in sorted(source_dir.rglob("*")):
-                archive.write(path, path.relative_to(source_dir.parent))
+                arcname = str(path.relative_to(source_dir.parent))
+                if path.is_file():
+                    redacted = redacted_file_bytes(path)
+                    if redacted is not None:
+                        archive.writestr(arcname, redacted)
+                        continue
+                archive.write(path, arcname)
     except Exception:
         output_path.unlink(missing_ok=True)
         raise
@@ -649,6 +661,52 @@ async def download_file_query(
 ) -> FileResponse:
     """Download a file from the workspace using query parameter (preferred method)."""
     return await _download_file(path)
+
+
+@file_router.post("/create_directory")
+async def create_directory(
+    path: Annotated[str, Query(description="Absolute directory path to create")],
+) -> Success:
+    """Create a directory in the workspace, including any missing parents.
+
+    Idempotent: an existing directory succeeds and its contents are left
+    untouched. Creating over an existing file, or under a path whose parent is
+    a file, is a client error (400) rather than a server fault.
+    """
+    update_last_execution_time()
+    logger.info(f"Creating directory: {path}")
+
+    target_path = Path(path)
+    if not target_path.is_absolute():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Path must be absolute",
+        )
+
+    try:
+        await asyncio.to_thread(lambda: target_path.mkdir(parents=True, exist_ok=True))
+    except (FileExistsError, NotADirectoryError):
+        # mkdir(exist_ok=True) still raises when the final component exists as a
+        # non-directory; NotADirectoryError covers a parent component being a
+        # file. Both are the caller's path being wrong, not a server fault.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Path exists and is not a directory",
+        )
+    except PermissionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Permission denied: {e}",
+        )
+    except Exception as e:
+        logger.error(f"Failed to create directory {path}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create directory: {str(e)}",
+        )
+
+    logger.info(f"Created directory {target_path}")
+    return Success()
 
 
 def _list_home_favorites(

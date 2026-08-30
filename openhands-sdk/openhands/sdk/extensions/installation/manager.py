@@ -115,6 +115,7 @@ class InstallationManager[T: ExtensionProtocol]:
             extension,
             source=source,
             install_path=install_path,
+            requested_ref=ref,
             resolved_ref=resolved_ref,
             repo_path=repo_path,
         )

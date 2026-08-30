@@ -583,6 +583,102 @@ def test_root_span_sets_trace_metadata_and_tags():
         )
 
 
+def test_detached_delegate_context_severs_ambient_span_and_links_parent():
+    """A span created inside the context manager must not join whatever span
+    is currently active — and the yielded link must identify the severed
+    parent (trace_id, span_id, tool_call_id), so the two traces stay
+    correlatable (software-agent-sdk#4365).
+
+    Only ``Laminar.get_laminar_span_context`` is mocked (not the whole
+    ``Laminar`` class): ``detached_delegate_context`` must sever the ambient
+    span via lmnr's OWN isolated context tracking, not just the standard
+    ``opentelemetry.context`` one (they are separate — see the docstring on
+    ``detached_delegate_context``), so this needs the real
+    ``Laminar.use_span`` to run. Laminar is never initialized here, so it
+    falls back to plain ``opentelemetry.trace.use_span`` internally, which is
+    enough to prove severance against a raw OTel tracer.
+    """
+    from types import SimpleNamespace
+
+    from lmnr import Laminar
+    from opentelemetry import trace as trace_api
+    from opentelemetry.sdk.trace import TracerProvider
+
+    from openhands.sdk.observability import laminar as lam
+
+    parent_ctx = SimpleNamespace(
+        trace_id="11111111-1111-1111-1111-111111111111",
+        span_id="22222222-2222-2222-2222-222222222222",
+        metadata={"tool_call_id": "call_abc123"},
+    )
+
+    tracer = TracerProvider().get_tracer("test")
+    outer_span = tracer.start_span("outer")
+
+    with patch.object(Laminar, "get_laminar_span_context", return_value=parent_ctx):
+        lam._observability_enabled = True
+        with trace_api.use_span(outer_span, end_on_exit=False):
+            with lam.detached_delegate_context() as link:
+                inner_span = tracer.start_span("inner")
+
+        assert (
+            inner_span.get_span_context().trace_id
+            != outer_span.get_span_context().trace_id
+        )
+        assert link == {
+            "delegate.parent_trace_id": str(parent_ctx.trace_id),
+            "delegate.parent_span_id": str(parent_ctx.span_id),
+            "tool_call_id": "call_abc123",
+        }
+
+
+def test_detached_delegate_context_restores_ambient_span_after_exit():
+    """Code after the ``with`` block must see the original span again."""
+    from lmnr import Laminar
+    from opentelemetry import trace as trace_api
+    from opentelemetry.sdk.trace import TracerProvider
+
+    from openhands.sdk.observability import laminar as lam
+
+    tracer = TracerProvider().get_tracer("test")
+    outer_span = tracer.start_span("outer")
+
+    with patch.object(Laminar, "get_laminar_span_context", return_value=None):
+        lam._observability_enabled = True
+
+        with trace_api.use_span(outer_span, end_on_exit=False):
+            with lam.detached_delegate_context():
+                pass
+            assert trace_api.get_current_span() is outer_span
+
+
+def test_detached_delegate_context_without_ambient_parent():
+    """No active span to sever must not crash and must yield an empty link."""
+    from lmnr import Laminar
+
+    from openhands.sdk.observability import laminar as lam
+
+    with patch.object(Laminar, "get_laminar_span_context", return_value=None):
+        lam._observability_enabled = True
+
+        with lam.detached_delegate_context() as link:
+            assert link == {}
+
+
+def test_detached_delegate_context_noop_when_observability_disabled():
+    """When observability is off, the context manager must be a pure no-op."""
+    from openhands.sdk.observability import laminar as lam
+
+    with patch("lmnr.Laminar") as mock_laminar:
+        mock_laminar.is_initialized.return_value = False
+        lam._observability_enabled = False
+
+        with lam.detached_delegate_context() as link:
+            assert link == {}
+
+        mock_laminar.get_laminar_span_context.assert_not_called()
+
+
 def test_deprecated_shims_are_removed():
     """The legacy global-stack API (deprecated 1.22.0) was removed in 1.27.0."""
     from openhands.sdk.observability import laminar as lam

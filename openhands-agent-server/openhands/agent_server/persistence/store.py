@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets as secrets_module
 import stat
 import sys
 import threading
@@ -28,6 +29,7 @@ from openhands.agent_server.persistence.models import (
     Secrets,
 )
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.llm.provider_connection_store import ProviderConnectionStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles.agent_profile_store import AgentProfileStore
 from openhands.sdk.utils.cipher import Cipher
@@ -371,7 +373,7 @@ class FileSettingsStore(SettingsStore):
         else:
             context = {"expose_secrets": "plaintext"}
             # Warn about plaintext secret storage (only if secrets exist)
-            if settings.llm_api_key_is_set:
+            if settings.has_any_secret:
                 logger.warning(
                     "Saving settings with secrets in PLAINTEXT (no cipher configured). "
                     "Configure OH_SECRET_KEY for production deployments."
@@ -492,21 +494,46 @@ class FileSecretsStore(SecretsStore):
             return None
 
     def save(self, secrets: Secrets) -> None:
-        """Save secrets to file atomically with secure permissions.
+        """Save secrets while preserving credential generations."""
+        with _file_lock(self._lock_path):
+            current = self.load()
+            if current is None:
+                if self._path.exists():
+                    raise RuntimeError(
+                        f"Cannot load secrets from {self._path}. "
+                        "Refusing to overwrite existing data."
+                    )
+                current = Secrets()
 
-        If a cipher is provided, secrets are encrypted via Pydantic's
-        serialization context. The cipher is passed to model_dump which
-        flows through to field serializers using serialize_secret().
+            versions = self._load_versions()
+            current_secrets = current.custom_secrets
+            replacement_secrets = secrets.custom_secrets
+            versioned_names = set(versions)
 
-        Warning:
-            This method does NOT acquire a file lock. For concurrent-safe
-            updates, use :meth:`set_secret` or :meth:`delete_secret` which
-            wrap save() with file locking. Direct calls to save() from
-            multiple processes may cause lost updates.
+            for name in list(versions):
+                replacement = replacement_secrets.get(name)
+                if replacement is None or replacement.secret is None:
+                    versions.pop(name, None)
 
-        Warning:
-            If no cipher is provided, secrets are stored in plaintext.
-        """
+            for name, replacement in replacement_secrets.items():
+                if name not in versioned_names or replacement.secret is None:
+                    continue
+                previous = current_secrets.get(name)
+                previous_value = (
+                    previous.secret.get_secret_value()
+                    if previous is not None and previous.secret is not None
+                    else None
+                )
+                if previous_value != replacement.secret.get_secret_value():
+                    versions[name] = secrets_module.token_urlsafe(24)
+
+            self._save_with_versions(secrets, versions)
+
+    def _save_with_versions(
+        self,
+        secrets: Secrets,
+        versions: dict[str, str],
+    ) -> None:
         _ensure_secure_directory(self.persistence_dir)
 
         # Pass cipher in context for automatic encryption of all secret fields
@@ -515,16 +542,34 @@ class FileSecretsStore(SecretsStore):
         else:
             context = {"expose_secrets": "plaintext"}
             # Warn about plaintext secret storage (only if secrets exist)
-            if secrets.custom_secrets:
+            if secrets.has_any_secret:
                 logger.warning(
                     "Saving secrets in PLAINTEXT (no cipher configured). "
                     "Configure OH_SECRET_KEY for production deployments."
                 )
 
         data = secrets.model_dump(mode="json", context=context)
+        if versions:
+            data["_credential_versions"] = versions
 
         _atomic_write_json(self._path, data)
         logger.debug(f"Secrets saved to {self._path}")
+
+    def _load_versions(self) -> dict[str, str]:
+        if not self._path.exists():
+            return {}
+        try:
+            data = json.loads(self._path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        versions = data.get("_credential_versions") if isinstance(data, dict) else None
+        if not isinstance(versions, dict):
+            return {}
+        return {
+            name: version
+            for name, version in versions.items()
+            if isinstance(name, str) and isinstance(version, str) and version
+        }
 
     def get_secret(self, name: str) -> str | None:
         """Get a single secret value by name.
@@ -569,8 +614,10 @@ class FileSecretsStore(SecretsStore):
                 description=description,
             )
 
-            # Save with frozen model copy
-            self.save(Secrets(custom_secrets=new_secrets))
+            versions = self._load_versions()
+            if name in versions:
+                versions[name] = secrets_module.token_urlsafe(24)
+            self._save_with_versions(Secrets(custom_secrets=new_secrets), versions)
 
     def delete_secret(self, name: str) -> bool:
         """Delete a secret with file locking. Returns True if it existed.
@@ -596,8 +643,64 @@ class FileSecretsStore(SecretsStore):
                 return False
 
             new_secrets = {k: v for k, v in secrets.custom_secrets.items() if k != name}
-            self.save(Secrets(custom_secrets=new_secrets))
+            versions = self._load_versions()
+            versions.pop(name, None)
+            self._save_with_versions(Secrets(custom_secrets=new_secrets), versions)
             return True
+
+    def load_versioned_secret(self, name: str) -> tuple[str, str]:
+        with _file_lock(self._lock_path):
+            secrets = self.load()
+            if secrets is None:
+                if self._path.exists():
+                    raise RuntimeError(
+                        f"Cannot load secrets from {self._path}. "
+                        "File may be corrupted or encrypted with a different key. "
+                        "Refusing to modify to prevent data loss."
+                    )
+                raise KeyError(name)
+
+            current = secrets.custom_secrets.get(name)
+            if current is None or current.secret is None:
+                raise KeyError(name)
+            versions = self._load_versions()
+            version = versions.get(name)
+            if version is None:
+                version = secrets_module.token_urlsafe(24)
+                versions[name] = version
+                self._save_with_versions(secrets, versions)
+            return current.secret.get_secret_value(), version
+
+    def replace_versioned_secret(
+        self,
+        name: str,
+        expected_version: str,
+        value: str,
+    ) -> str:
+        with _file_lock(self._lock_path):
+            secrets = self.load()
+            if secrets is None:
+                if self._path.exists():
+                    raise RuntimeError(
+                        f"Cannot load secrets from {self._path}. "
+                        "File may be corrupted or encrypted with a different key. "
+                        "Refusing to modify to prevent data loss."
+                    )
+                raise KeyError(name)
+
+            current = secrets.custom_secrets.get(name)
+            if current is None or current.secret is None:
+                raise KeyError(name)
+            versions = self._load_versions()
+            if versions.get(name) != expected_version:
+                raise ValueError("credential_version_conflict")
+
+            new_secrets = dict(secrets.custom_secrets)
+            new_secrets[name] = current.model_copy(update={"secret": SecretStr(value)})
+            successor = secrets_module.token_urlsafe(24)
+            versions[name] = successor
+            self._save_with_versions(Secrets(custom_secrets=new_secrets), versions)
+            return successor
 
 
 class WorkspacesStore(ABC):
@@ -688,6 +791,7 @@ class FileWorkspacesStore(WorkspacesStore):
 
 _settings_store: FileSettingsStore | None = None
 _secrets_store: FileSecretsStore | None = None
+_provider_connections_store: ProviderConnectionStore | None = None
 _workspaces_store: FileWorkspacesStore | None = None
 _llm_profile_store: LLMProfileStore | None = None
 _agent_profile_store: AgentProfileStore | None = None
@@ -755,7 +859,7 @@ def get_settings_store(config: Config | None = None) -> FileSettingsStore:
         # Double-check after acquiring lock
         if _settings_store is None:
             _settings_store = FileSettingsStore(
-                persistence_dir=_get_persistence_dir(config),
+                persistence_dir=_get_profile_persistence_dir(),
                 cipher=_get_cipher(config),
             )
         return _settings_store
@@ -787,10 +891,31 @@ def get_secrets_store(config: Config | None = None) -> FileSecretsStore:
         # Double-check after acquiring lock
         if _secrets_store is None:
             _secrets_store = FileSecretsStore(
-                persistence_dir=_get_persistence_dir(config),
+                persistence_dir=_get_profile_persistence_dir(),
                 cipher=_get_cipher(config),
             )
         return _secrets_store
+
+
+def get_provider_connections_store(
+    config: Config | None = None,  # noqa: ARG001
+) -> ProviderConnectionStore:
+    """Get the global provider connections store instance (thread-safe).
+
+    Stored at ``<dir>/provider-connections`` alongside ``profiles`` /
+    ``agent-profiles``. The store itself is cipher-agnostic; callers pass the
+    request cipher per call so keys are encrypted at rest.
+    """
+    global _provider_connections_store
+    if _provider_connections_store is not None:
+        return _provider_connections_store
+
+    with _store_lock:
+        if _provider_connections_store is None:
+            _provider_connections_store = ProviderConnectionStore(
+                base_dir=_get_profile_persistence_dir() / "provider-connections",
+            )
+        return _provider_connections_store
 
 
 def get_workspaces_store(config: Config | None = None) -> FileWorkspacesStore:
@@ -825,10 +950,15 @@ def get_llm_profile_store() -> LLMProfileStore:
     if _llm_profile_store is not None:
         return _llm_profile_store
 
+    # Resolve the provider store first: it takes ``_store_lock`` itself, and
+    # ``_store_lock`` is non-reentrant, so calling it while already holding the
+    # lock below would deadlock.
+    provider_store = get_provider_connections_store()
     with _store_lock:
         if _llm_profile_store is None:
             _llm_profile_store = LLMProfileStore(
                 base_dir=_get_profile_persistence_dir() / "profiles",
+                provider_store=provider_store,
             )
         return _llm_profile_store
 
@@ -854,11 +984,12 @@ def get_agent_profile_store() -> AgentProfileStore:
 
 def reset_stores() -> None:
     """Reset global store instances (for testing)."""
-    global _settings_store, _secrets_store, _workspaces_store
-    global _llm_profile_store, _agent_profile_store
+    global _settings_store, _secrets_store, _provider_connections_store
+    global _workspaces_store, _llm_profile_store, _agent_profile_store
     with _store_lock:
         _settings_store = None
         _secrets_store = None
+        _provider_connections_store = None
         _workspaces_store = None
         _llm_profile_store = None
         _agent_profile_store = None

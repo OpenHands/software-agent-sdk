@@ -2,6 +2,7 @@
 
 from openhands.sdk.utils.redact import (
     SENSITIVE_URL_PARAMS,
+    redact_text_secrets,
     redact_url_credentials,
     redact_url_credentials_in_text,
     redact_url_params,
@@ -251,3 +252,35 @@ class TestRedactUrlCredentialsInText:
         """For a bare whole-URL string both helpers agree."""
         url = "https://oauth2:SECRET@gitlab.com/org/repo.git"
         assert redact_url_credentials_in_text(url) == redact_url_credentials(url)
+
+
+# ---------------------------------------------------------------------------
+# redact_text_secrets
+# ---------------------------------------------------------------------------
+
+
+class TestRedactTextSecretsDictKeys:
+    """Dict-entry redaction is case-insensitive, like is_secret_key.
+
+    Regression tests for https://github.com/OpenHands/software-agent-sdk/issues/4505
+    """
+
+    def test_redacts_lowercase_and_mixed_case_dict_keys(self):
+        text = (
+            "{'api_key': 's3cr3t', \"token\": \"tok-XYZ\", "
+            "'UserPassword': 'p@ssw0rd', 'normal': 'keep-me'}"
+        )
+        assert redact_text_secrets(text) == (
+            "{'api_key': '<redacted>', \"token\": \"<redacted>\", "
+            "'UserPassword': '<redacted>', 'normal': 'keep-me'}"
+        )
+
+    def test_uppercase_dict_keys_still_redacted(self):
+        text = "{'API_KEY': 'abc', \"MY_SECRET\": \"def\"}"
+        assert redact_text_secrets(text) == (
+            "{'API_KEY': '<redacted>', \"MY_SECRET\": \"<redacted>\"}"
+        )
+
+    def test_non_sensitive_entries_unchanged(self):
+        text = "{'name': 'alice', 'path': '/tmp/x'}"
+        assert redact_text_secrets(text) == text

@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from openhands.sdk.marketplace import Marketplace, MarketplaceRegistration
 from openhands.sdk.skills import (
     Skill,
     disable_skill,
@@ -22,6 +23,7 @@ from openhands.sdk.skills import (
     install_skills_from_marketplace,
     list_installed_skills,
     load_installed_skills,
+    load_marketplace_standalone_skills,
     uninstall_skill,
     update_skill,
 )
@@ -317,3 +319,64 @@ class TestInstallSkillsFromMarketplace:
         )
         names = {s.name for s in installed}
         assert names == {"standalone", "from-plugin"}
+
+
+class TestLoadMarketplaceStandaloneSkills:
+    """The shared helper used by both marketplace auto-load paths."""
+
+    @staticmethod
+    def _marketplace(tmp_path: Path) -> Path:
+        marketplace_dir = _create_marketplace(
+            tmp_path,
+            skills=[
+                {"name": "greet", "source": "./skills/greet"},
+                {"name": "commit", "source": "./skills/commit"},
+            ],
+        )
+        for name in ("greet", "commit"):
+            skill_dir = marketplace_dir / "skills" / name
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {name}\n---\n# {name}"
+            )
+        return marketplace_dir
+
+    def test_loads_all_when_auto_load_true(self, tmp_path: Path) -> None:
+        d = self._marketplace(tmp_path)
+        skills = load_marketplace_standalone_skills(
+            Marketplace.load(d),
+            d,
+            MarketplaceRegistration(name="m", source=str(d), auto_load=True),
+        )
+        assert {s.name for s in skills} == {"greet", "commit"}
+
+    def test_selects_listed_names(self, tmp_path: Path) -> None:
+        d = self._marketplace(tmp_path)
+        skills = load_marketplace_standalone_skills(
+            Marketplace.load(d),
+            d,
+            MarketplaceRegistration(name="m", source=str(d), auto_load=["greet"]),
+        )
+        assert [s.name for s in skills] == ["greet"]
+
+    def test_empty_when_not_auto_load(self, tmp_path: Path) -> None:
+        d = self._marketplace(tmp_path)
+        skills = load_marketplace_standalone_skills(
+            Marketplace.load(d),
+            d,
+            MarketplaceRegistration(name="m", source=str(d)),
+        )
+        assert skills == []
+
+    def test_missing_skill_md_is_skipped_not_raised(self, tmp_path: Path) -> None:
+        # Skill entry points at a dir with no SKILL.md -> warn-and-skip.
+        d = _create_marketplace(
+            tmp_path, skills=[{"name": "broken", "source": "./skills/broken"}]
+        )
+        (d / "skills" / "broken").mkdir(parents=True)
+        skills = load_marketplace_standalone_skills(
+            Marketplace.load(d),
+            d,
+            MarketplaceRegistration(name="m", source=str(d), auto_load=True),
+        )
+        assert skills == []

@@ -9,6 +9,12 @@ triggers:
 
 You are an expert code reviewer for the **OpenHands/software-agent-sdk** repository. This skill provides repo-specific review guidelines. Be direct but constructive.
 
+## Repository Boundaries
+
+This repository owns the Python SDK and Agent Server: agent/tool behavior, conversations, workspaces, events, and the canonical REST/WebSocket API. [`OpenHands/typescript-client`](https://github.com/OpenHands/typescript-client) mirrors the API for browser-compatible clients, [`OpenHands/OpenHands`](https://github.com/OpenHands/OpenHands) owns Agent Canvas, and [`OpenHands/extensions`](https://github.com/OpenHands/extensions) owns reusable skills, plugins, automations, and integrations; [`OpenHands/automation`](https://github.com/OpenHands/automation) owns scheduling, webhooks, run history, dispatch, and sandbox orchestration.
+
+The normal flow is SDK/Agent Server → OpenAPI contract → `typescript-client` → Agent Canvas. Review whether each change is in the repository that owns it. If a PR is opened in the wrong repository, explicitly recommend that it may need to be closed and moved to the owning repository instead of merged here.
+
 ## Review Decisions
 
 You have permission to **APPROVE** or **COMMENT** on PRs. Do not use REQUEST_CHANGES.

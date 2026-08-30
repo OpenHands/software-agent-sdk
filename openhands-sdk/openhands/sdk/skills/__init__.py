@@ -50,6 +50,7 @@ from openhands.sdk.skills.installed import (
     install_skills_from_marketplace,
     list_installed_skills,
     load_installed_skills,
+    load_marketplace_standalone_skills,
     uninstall_skill,
     update_skill,
 )
@@ -103,6 +104,7 @@ __all__ = [
     "InstalledSkillInfo",
     "install_skill",
     "install_skills_from_marketplace",
+    "load_marketplace_standalone_skills",
     "uninstall_skill",
     "list_installed_skills",
     "load_installed_skills",

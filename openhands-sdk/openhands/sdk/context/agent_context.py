@@ -23,6 +23,7 @@ from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
 from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.secret import SecretSource, SecretValue
+from openhands.sdk.settings.metadata import SettingProminence, field_meta
 from openhands.sdk.skills import (
     Skill,
     SkillKnowledge,
@@ -136,6 +137,34 @@ class AgentContext(BaseModel):
             "skills on a name conflict), resolved project skills are "
             "authoritative: a project skill overrides a same-named skill already "
             "present in `skills`."
+        ),
+        json_schema_extra={"acp_compatible": True},
+    )
+    load_memory: bool = Field(
+        default=False,
+        description=(
+            "Whether to load persistent agent memory (MEMORY.md indexes under "
+            "~/.openhands/memory/ and <workspace>/.openhands/memory/) into the "
+            "system prompt. Like load_project_skills, this flag is not "
+            "resolved by AgentContext itself (the workspace path is unknown "
+            "at validation time); LocalConversation resolves it lazily on the "
+            "first send_message() / run() and stores the result in "
+            "memory_context."
+        ),
+        json_schema_extra={
+            "acp_compatible": True,
+            **field_meta(SettingProminence.MAJOR, label="Persistent memory"),
+        },
+    )
+    memory_context: str | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Resolved memory-index text rendered into the <MEMORY_CONTEXT> "
+            "prompt block. Populated via model_copy by LocalConversation when "
+            "load_memory is set; excluded from serialization because it is "
+            "re-resolved from disk each session and must not bloat persisted "
+            "conversation state."
         ),
         json_schema_extra={"acp_compatible": True},
     )
@@ -357,6 +386,7 @@ class AgentContext(BaseModel):
             repo_skills=tuple((s.name, s.content) for s in data.repo_skills),
             available_skills_prompt=data.available_skills_prompt or None,
             custom_suffix=self.system_message_suffix or None,
+            memory_context=self.memory_context or None,
             secret_infos=tuple(
                 (info["name"] or "", info["description"]) for info in data.secret_infos
             ),

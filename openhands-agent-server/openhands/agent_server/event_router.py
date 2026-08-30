@@ -16,7 +16,6 @@ from fastapi import (
 from starlette.responses import JSONResponse
 
 from openhands.agent_server.dependencies import get_event_service
-from openhands.agent_server.event_compat import event_transport_dump
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
@@ -126,7 +125,12 @@ async def search_conversation_events(
         next_page_id = page.next_page_id
     return JSONResponse(
         {
-            "items": [event_transport_dump(event) for event in items],
+            "items": [
+                dict(event)
+                if isinstance(event, dict)
+                else event.model_dump(mode="json", exclude_none=True)
+                for event in items
+            ],
             "next_page_id": next_page_id,
         }
     )

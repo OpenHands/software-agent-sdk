@@ -87,8 +87,12 @@ class DockerWorkspace(RemoteWorkspace):
         description="Port to bind the container to. If None, finds available port.",
     )
     forward_env: list[str] = Field(
-        default_factory=lambda: ["DEBUG"],
-        description="Environment variables to forward to the container.",
+        default_factory=lambda: ["DEBUG", "SESSION_API_KEY", "OH_SESSION_API_KEYS_0"],
+        description=(
+            "Environment variables to forward to the container. The session "
+            "API key variables are forwarded so the sandboxed agent server can "
+            "authenticate network-bound requests when it binds 0.0.0.0."
+        ),
     )
     volumes: list[str] = Field(
         default_factory=list,

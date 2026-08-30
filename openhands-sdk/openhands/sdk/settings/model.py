@@ -12,6 +12,7 @@ from typing import (
     Any,
     ClassVar,
     Literal,
+    Self,
     TypeVar,
     get_args,
     get_origin,
@@ -196,6 +197,7 @@ class LLMSummarizingCondenserSettings(CondenserSettings):
             "Discriminator for the condenser settings union. ``'llm_summarizing'`` "
             "selects the default LLM summarizing condenser."
         ),
+        json_schema_extra={SETTINGS_METADATA_KEY: SettingsFieldMetadata().model_dump()},
     )
     max_tokens: int | None = Field(
         default=None,
@@ -282,6 +284,13 @@ class LLMSummarizingCondenserSettings(CondenserSettings):
             exclude={"enabled", "condenser_kind"},
             exclude_none=True,
         )
+        # If the user didn't explicitly configure a condenser token limit, inherit
+        # the agent LLM's effective max input tokens so condensation can be
+        # triggered by token count, not just event count.
+        if "max_tokens" not in self.model_fields_set:
+            effective_max_input_tokens = llm.effective_max_input_tokens
+            if effective_max_input_tokens is not None:
+                condenser_kwargs["max_tokens"] = effective_max_input_tokens
         return LLMSummarizingCondenser(llm=condenser_llm, **condenser_kwargs)
 
 
@@ -295,6 +304,7 @@ class NoOpCondenserSettings(CondenserSettings):
             "Discriminator for the condenser settings union. ``'no_op'`` selects "
             "a condenser that leaves conversation views unchanged."
         ),
+        json_schema_extra={SETTINGS_METADATA_KEY: SettingsFieldMetadata().model_dump()},
     )
 
     def build_condenser(self, llm: LLM) -> CondenserBase | None:  # noqa: ARG002
@@ -460,17 +470,18 @@ def _default_llm_settings() -> LLM:
 
 _RequestT = TypeVar("_RequestT")
 
-AGENT_SETTINGS_SCHEMA_VERSION = 4
+AGENT_SETTINGS_SCHEMA_VERSION = 5
 CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 
 
 class AgentSettingsBase(BaseModel):
     """Shared base for all agent-settings variants.
 
-    Provides the three pieces common to every variant:
+    Provides the pieces common to every variant:
 
     - :attr:`schema_version` — used for persisted-payload migrations.
     - :meth:`export_schema` — structured field description for UIs.
+    - :meth:`from_persisted` — load persisted settings through migrations.
     - :meth:`create_agent` — canonical construction path; concrete subclasses
       must override this.
 
@@ -489,6 +500,51 @@ class AgentSettingsBase(BaseModel):
     def export_schema(cls) -> SettingsSchema:
         """Export a structured schema describing configurable settings."""
         return export_settings_schema(cls)
+
+    @classmethod
+    def from_persisted(
+        cls,
+        data: Any,
+        *,
+        context: Mapping[str, Any] | None = None,
+    ) -> Self:
+        """Load persisted agent settings into this concrete variant.
+
+        Applies registered schema migrations, then validates the migrated
+        payload against ``cls`` directly. This method is intended for concrete
+        subclasses; callers that want union dispatch across settings variants
+        should use :func:`validate_agent_settings`. Current-schema payloads
+        with the deprecated ``agent_kind='llm'`` discriminator are rejected by
+        :meth:`OpenHandsAgentSettings.from_persisted`.
+
+        When loading an encrypted persisted mapping, pass the same validation
+        context used to write it (for example ``{"cipher": cipher}``) so
+        secret-bearing fields can be decrypted. An already-validated instance
+        of this concrete variant is returned unchanged, preserving its secrets
+        without a lossy serialization round trip.
+
+        Returns:
+            An instance of ``cls``.
+
+        Raises:
+            TypeError: If *data* is not a mapping/BaseModel or has a
+                non-integer ``schema_version``.
+            ValueError: If ``schema_version`` is negative, newer than
+                supported, or cannot be migrated.
+            pydantic.ValidationError: If the migrated payload is invalid for
+                ``cls``.
+        """
+        if isinstance(data, cls):
+            return data
+        if isinstance(data, BaseModel):
+            data = data.model_dump(mode="json", context={"expose_secrets": "plaintext"})
+        payload = _apply_persisted_migrations(
+            data,
+            current_version=AGENT_SETTINGS_SCHEMA_VERSION,
+            migrations=_AGENT_SETTINGS_MIGRATIONS,
+            payload_name="AgentSettings",
+        )
+        return cls.model_validate(payload, context=context)
 
     def create_agent(self) -> AgentBase:
         """Build an agent from these settings.
@@ -613,6 +669,17 @@ def _migrate_agent_settings_v3_to_v4(payload: dict[str, Any]) -> dict[str, Any]:
     if isinstance(llm, dict):
         migrated["llm"] = canonicalize_openhands_llm_payload(llm)
     migrated["schema_version"] = 4
+    return migrated
+
+
+def _migrate_agent_settings_v4_to_v5(payload: dict[str, Any]) -> dict[str, Any]:
+    """Persist MCP settings in the SDK-native server map/auth shape."""
+
+    migrated = dict(payload)
+    mcp_config = migrated.get("mcp_config")
+    if isinstance(mcp_config, Mapping):
+        migrated["mcp_config"] = _migrate_mcp_config_to_server_map(mcp_config)
+    migrated["schema_version"] = 5
     return migrated
 
 
@@ -897,16 +964,6 @@ def _migrate_mcp_config_to_server_map(
     }
 
 
-def _normalize_mcp_config_field(mcp_config: Any) -> Any:
-    """Accept legacy ``mcpServers`` wrappers without a settings schema bump."""
-
-    if mcp_config in (None, {}):
-        return {}
-    if isinstance(mcp_config, Mapping):
-        return _migrate_mcp_config_to_server_map(mcp_config)
-    return mcp_config
-
-
 def _migrate_conversation_settings_v0_to_v1(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
@@ -920,6 +977,7 @@ _AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     1: _migrate_agent_settings_v1_to_v2,
     2: _migrate_agent_settings_v2_to_v3,
     3: _migrate_agent_settings_v3_to_v4,
+    4: _migrate_agent_settings_v4_to_v5,
 }
 _CONVERSATION_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     0: _migrate_conversation_settings_v0_to_v1,
@@ -1264,6 +1322,13 @@ class OpenHandsAgentSettings(AgentSettingsBase):
     agent_context: AgentContext = Field(
         default_factory=AgentContext,
         description="Context for the agent (skills, secrets, message suffixes).",
+        json_schema_extra={
+            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
+                key="agent_context",
+                label="Memory",
+                variant="openhands",
+            ).model_dump()
+        },
     )
     condenser: CondenserSettingsConfig = Field(
         default_factory=LLMSummarizingCondenserSettings,
@@ -1295,11 +1360,6 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             return LLMSummarizingCondenserSettings.model_validate(value.model_dump())
         return value
 
-    @field_validator("mcp_config", mode="before")
-    @classmethod
-    def _normalize_mcp_config(cls, value: Any) -> Any:
-        return _normalize_mcp_config_field(value)
-
     def create_agent(self) -> Agent:
         """Build an :class:`Agent` purely from these settings.
 
@@ -1329,7 +1389,7 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             include_default_tools.append(SwitchLLMTool.__name__)
 
         llm = create_subscription_llm_from_config(self.llm)
-        condenser = None if llm.is_subscription else self.build_condenser(llm)
+        condenser = self.build_condenser(llm)
         return Agent(
             llm=llm,
             tools=tools,
@@ -1534,6 +1594,28 @@ class ACPAgentSettings(AgentSettingsBase):
             ).model_dump(),
         },
     )
+    acp_startup_timeout: float = Field(
+        default=90.0,
+        gt=0,
+        description=(
+            "Timeout (seconds) for ACP server startup: spawning the "
+            "subprocess, the initialize/authenticate handshake, and "
+            "new_session()/load_session(). A hard deadline, unlike "
+            "acp_prompt_timeout, since startup has no intermediate progress "
+            "signal to reset it against."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="ACP startup timeout (seconds)",
+                prominence=SettingProminence.MINOR,
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
+                key="acp",
+                label="ACP (Agent Client Protocol)",
+                variant="acp",
+            ).model_dump(),
+        },
+    )
     mcp_config: dict[str, MCPServer] = Field(
         default_factory=dict,
         description=(
@@ -1552,11 +1634,6 @@ class ACPAgentSettings(AgentSettingsBase):
             ).model_dump(),
         },
     )
-
-    @field_validator("mcp_config", mode="before")
-    @classmethod
-    def _normalize_mcp_config(cls, value: Any) -> Any:
-        return _normalize_mcp_config_field(value)
 
     # Programmatic / downstream-facing knob, deliberately NOT surfaced in the
     # settings-form UI (no SETTINGS_METADATA_KEY): the deploying application sets
@@ -1775,6 +1852,7 @@ class ACPAgentSettings(AgentSettingsBase):
             acp_model=self.acp_model,
             acp_session_mode=self.acp_session_mode,
             acp_prompt_timeout=self.acp_prompt_timeout,
+            acp_startup_timeout=self.acp_startup_timeout,
             acp_isolate_data_dir=self.acp_isolate_data_dir,
             acp_file_secrets=list(self.acp_file_secrets),
             agent_context=self.agent_context,
@@ -2069,6 +2147,9 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                 for nested_key, nested_field in nested_model.model_fields.items():
                     if nested_field.exclude:
                         continue
+                    metadata = settings_metadata(nested_field)
+                    if metadata is None:
+                        continue
                     existing_field = seen_nested_fields.get(nested_key)
                     if existing_field is not None:
                         existing_choice_values = {
@@ -2079,7 +2160,6 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                                 existing_field.choices.append(choice)
                                 existing_choice_values.add(choice.value)
                         continue
-                    metadata = settings_metadata(nested_field)
                     default_value = None
                     if isinstance(section_default, BaseModel) and hasattr(
                         section_default, nested_key
@@ -2089,7 +2169,7 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                         key=f"{explicit_section_metadata.key}.{nested_key}",
                         label=(
                             metadata.label
-                            if metadata is not None and metadata.label is not None
+                            if metadata.label is not None
                             else _humanize_name(nested_key)
                         ),
                         description=nested_field.description,
@@ -2097,26 +2177,17 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                         section_label=section.label,
                         value_type=_infer_value_type(nested_field.annotation),
                         default=_normalize_default(default_value),
-                        prominence=(
-                            metadata.prominence
-                            if metadata is not None
-                            else SettingProminence.MINOR
-                        ),
+                        prominence=metadata.prominence,
                         depends_on=[
                             f"{explicit_section_metadata.key}.{dependency}"
-                            for dependency in (
-                                metadata.depends_on if metadata is not None else ()
-                            )
+                            for dependency in metadata.depends_on
                         ],
                         secret=_contains_secret(nested_field.annotation),
                         choices=_extract_choices(nested_field.annotation),
                         # Field-level variant falls back to the enclosing
                         # section's variant — nested fields inherit their
                         # parent section's variant by default.
-                        variant=(
-                            (metadata.variant if metadata is not None else None)
-                            or section.variant
-                        ),
+                        variant=metadata.variant or section.variant,
                     )
                     seen_nested_fields[nested_key] = field_schema
                     section.fields.append(field_schema)

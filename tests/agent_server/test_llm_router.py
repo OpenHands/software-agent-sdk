@@ -117,6 +117,12 @@ def test_verified_models_endpoint_integration(client):
     assert "openai" in data["models"]
     assert "anthropic" in data["models"]
     assert "gpt-5.6" in data["models"]["openai"]
+    assert "claude-opus-5" in data["models"]["anthropic"]
+    assert "deepseek-v4-flash" in data["models"]["deepseek"]
+    assert "kimi-k3" in data["models"]["moonshot"]
+    assert "claude-opus-5" in data["models"]["openhands"]
+    assert "deepseek-v4-flash" in data["models"]["openhands"]
+    assert "kimi-k3" in data["models"]["openhands"]
 
 
 def test_openai_subscription_models_endpoint_integration(client):

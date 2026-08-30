@@ -266,18 +266,22 @@ def test_cache_reuses_result_across_calls():
     assert call_counter["n"] == 1
 
 
-def test_model_features_marks_kimi_k2_6():
-    assert get_features("moonshot/kimi-k2.6").requires_inline_image_data is True
-    # The substring matcher also catches the same model when wrapped by the
-    # litellm_proxy prefix — that is the path used in production runs.
-    assert (
-        get_features("litellm_proxy/moonshot/kimi-k2.6").requires_inline_image_data
-        is True
-    )
+@pytest.mark.parametrize(
+    "model",
+    [
+        "moonshot/kimi-k2.6",
+        "litellm_proxy/moonshot/kimi-k2.6",
+        "moonshot/kimi-k3",
+        "litellm_proxy/moonshot/kimi-k3",
+        "openhands/kimi-k3",
+    ],
+)
+def test_model_features_marks_models_requiring_inline_images(model: str):
+    assert get_features(model).requires_inline_image_data is True
 
 
 def test_model_features_does_not_mark_other_moonshot_models():
-    # Only kimi-k2.6 is in the list today; sibling Kimi releases must not
+    # Only specific provider/model routes are listed; sibling Kimi releases must not
     # be flagged so they continue to behave like before.
     assert get_features("moonshot/kimi-k2.5").requires_inline_image_data is False
     assert get_features("moonshot/kimi-k2-thinking").requires_inline_image_data is False
@@ -345,6 +349,37 @@ def test_llm_kimi_k2_6_auto_inlines_without_override():
         item for item in formatted[0]["content"] if item.get("type") == "image_url"
     ]
     assert image_blocks[0]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "moonshot/kimi-k3",
+        "litellm_proxy/moonshot/kimi-k3",
+        "openhands/kimi-k3",
+    ],
+)
+def test_llm_kimi_k3_auto_inlines_http_url(model: str):
+    """K3 vision requests download public URLs before serialization."""
+    url = "https://example.com/x.png"
+    llm = LLM(
+        model=model,
+        api_key=SecretStr("test-key"),
+        usage_id="test",
+    )
+    message = Message(
+        role="user",
+        content=[ImageContent(image_urls=[url])],
+    )
+
+    with _stub_get(url):
+        formatted = llm.format_messages_for_llm([message])
+
+    image_blocks = [
+        item for item in formatted[0]["content"] if item.get("type") == "image_url"
+    ]
+    expected = "data:image/png;base64," + base64.b64encode(_TINY_PNG).decode("ascii")
+    assert image_blocks[0]["image_url"]["url"] == expected
 
 
 def test_llm_inline_image_urls_false_disables_capability_default():

@@ -99,7 +99,6 @@ jobs:
                   - [ ] Behavior tests pass (tagged with `behavior-test`)
                   - [ ] Example tests pass (tagged with `test-examples`)
                   - [ ] Security scan passes (tagged with `security-scan`)
-                  - [ ] Evaluation on OpenHands Index
                   - [ ] Confirm any `release-note-required` PRs are accurately called out in the final release notes
 
                   ### What happens on merge

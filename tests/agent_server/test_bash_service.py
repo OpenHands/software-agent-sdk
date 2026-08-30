@@ -2,11 +2,13 @@
 
 import asyncio
 import contextlib
+import logging
 import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import UUID
+from unittest.mock import AsyncMock, patch
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -16,7 +18,7 @@ from fastapi import FastAPI
 from openhands.agent_server import bash_router as bash_router_module
 from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import Config
-from openhands.agent_server.models import BashCommand
+from openhands.agent_server.models import BashCommand, BashEventSortOrder, BashOutput
 from openhands.agent_server.server_details_router import (
     mark_initialization_complete,
     server_details_router,
@@ -49,12 +51,17 @@ async def test_bash_timeout_runs_sigterm_trap(
     client: httpx.AsyncClient,
     bash_service: BashEventService,
     tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ):
     marker = tmp_path / "cleanup_ran"
+    secret = "ghp_" + "a" * 36
+    caplog.set_level(logging.DEBUG)
     resp = await client.post(
         "/api/bash/start_bash_command",
         json={
-            "command": f"trap 'touch {marker}; exit 0' TERM; sleep 30",
+            "command": (
+                f"LEAK_TEST={secret}; trap 'touch {marker}; exit 0' TERM; sleep 30"
+            ),
             "timeout": 1,
         },
     )
@@ -80,6 +87,142 @@ async def test_bash_timeout_runs_sigterm_trap(
 
     await asyncio.sleep(0.2)  # let the trap's filesystem write land
     assert marker.exists(), "SIGTERM trap did not run; cleanup skipped."
+    assert "Command timed out" in caplog.text
+    assert secret not in caplog.text
+
+
+async def test_bash_execution_error_log_omits_command(
+    bash_service: BashEventService,
+    caplog: pytest.LogCaptureFixture,
+):
+    secret = "ghp_" + "e" * 36
+    caplog.set_level(logging.DEBUG)
+    command = BashCommand(command=f"printf '{secret}'")
+    failure = RuntimeError(f"failed to start command containing {secret}")
+
+    with patch(
+        "openhands.agent_server.bash_service.asyncio.create_subprocess_shell",
+        new=AsyncMock(side_effect=failure),
+    ):
+        await bash_service._execute_bash_command(command)
+
+    assert "Error executing bash command" in caplog.text
+    assert secret not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# search_bash_events
+# ---------------------------------------------------------------------------
+
+
+async def test_search_bash_events_filters_and_paginates(tmp_path: Path):
+    service = BashEventService(bash_events_dir=tmp_path / "bash_events")
+    command_id = uuid4()
+    other_command_id = uuid4()
+
+    command = BashCommand(command="echo target", id=command_id, timestamp=_OLD)
+    output_0 = BashOutput(
+        command_id=command_id,
+        order=0,
+        stdout="first",
+        timestamp=_OLD.replace(microsecond=1),
+    )
+    output_1 = BashOutput(
+        command_id=command_id,
+        order=1,
+        stdout="second",
+        timestamp=_OLD.replace(microsecond=2),
+    )
+    other_output = BashOutput(
+        command_id=other_command_id,
+        order=0,
+        stdout="other",
+        timestamp=_OLD.replace(microsecond=3),
+    )
+    for event in (command, output_0, output_1, other_output):
+        service._save_event_to_file(event)
+
+    first_page = await service.search_bash_events(
+        kind__eq="BashOutput",
+        command_id__eq=command_id,
+        sort_order=BashEventSortOrder.TIMESTAMP,
+        limit=1,
+    )
+    assert [event.id for event in first_page.items] == [output_0.id]
+    assert first_page.next_page_id is not None
+
+    second_page = await service.search_bash_events(
+        kind__eq="BashOutput",
+        command_id__eq=command_id,
+        sort_order=BashEventSortOrder.TIMESTAMP,
+        page_id=first_page.next_page_id,
+        limit=10,
+    )
+    assert [event.id for event in second_page.items] == [output_1.id]
+    assert second_page.next_page_id is None
+
+
+async def test_search_bash_events_runs_blocking_scan_off_event_loop(
+    tmp_path: Path,
+):
+    service = BashEventService(bash_events_dir=tmp_path / "bash_events")
+    service._save_event_to_file(BashCommand(command="echo ok"))
+
+    with patch(
+        "openhands.agent_server.bash_service.asyncio.to_thread",
+        wraps=asyncio.to_thread,
+    ) as to_thread:
+        page = await service.search_bash_events(limit=10)
+
+    assert len(page.items) == 1
+    assert to_thread.call_count == 1
+    assert to_thread.call_args.args[0] == service._search_bash_events_sync
+
+
+async def test_get_bash_event_runs_blocking_scan_off_event_loop(tmp_path: Path):
+    service = BashEventService(bash_events_dir=tmp_path / "bash_events")
+    command = BashCommand(command="echo ok")
+    service._save_event_to_file(command)
+
+    with patch(
+        "openhands.agent_server.bash_service.asyncio.to_thread",
+        wraps=asyncio.to_thread,
+    ) as to_thread:
+        event = await service.get_bash_event(command.id.hex)
+
+    assert event is not None
+    assert event.id == command.id
+    assert to_thread.call_count == 1
+    assert to_thread.call_args.args[0] == service._get_bash_event_sync
+
+
+async def test_concurrent_searches_serialize_filesystem_scans(tmp_path: Path):
+    service = BashEventService(bash_events_dir=tmp_path / "bash_events")
+    service._save_event_to_file(BashCommand(command="echo ok"))
+
+    active = 0
+    max_active = 0
+    original_search = service._search_bash_events_sync
+
+    def tracked_search(*args):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        try:
+            # Keep the worker occupied long enough for all concurrent callers
+            # to queue on the async semaphore.
+            time.sleep(0.02)
+            return original_search(*args)
+        finally:
+            active -= 1
+
+    with patch.object(service, "_search_bash_events_sync", tracked_search):
+        pages = await asyncio.gather(
+            *(service.search_bash_events(limit=10) for _ in range(8))
+        )
+
+    assert all(len(page.items) == 1 for page in pages)
+    assert max_active == 1
 
 
 # ---------------------------------------------------------------------------

@@ -17,6 +17,7 @@ def _ae(tool_name: str = "tool", action_id: str | None = None) -> ActionEvent:
     ae.tool_name = tool_name
     ae.id = action_id or str(id(ae))
     ae.tool_call_id = f"tc-{ae.id}"
+    ae.action = MagicMock()
     return ae  # type: ignore[return-value]
 
 
@@ -56,7 +57,7 @@ def _make_executor(side_effect: Any = None) -> Any:
         executor.execute_batch = side_effect
     else:
         executor.execute_batch = (
-            lambda actions, runner, tools=None, cancel_token=None: [
+            lambda actions, runner, tools=None, cancel_token=None, span_owner=None: [
                 runner(a) for a in actions
             ]
         )
@@ -144,7 +145,7 @@ def test_emit_results_in_order():
         results_by_id={"1": [o1], "2": [o2a, o2b]},
     )
     emitted: list[Any] = []
-    batch.emit(emitted.append)
+    batch.emit(MagicMock(), emitted.append)
     assert emitted == [o1, o2a, o2b]
 
 
@@ -158,7 +159,7 @@ def test_emit_blocked_produces_rejection():
         results_by_id={"2": [o2]},
     )
     emitted: list[Any] = []
-    batch.emit(emitted.append)
+    batch.emit(MagicMock(), emitted.append)
 
     assert len(emitted) == 2
     assert isinstance(emitted[0], UserRejectObservation)

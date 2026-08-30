@@ -9,7 +9,7 @@ Contains:
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING
 
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import MessageEvent
@@ -82,55 +82,11 @@ def classify_response(message: Message) -> LLMResponseType:
 # ---------------------------------------------------------------------------
 
 
-@runtime_checkable
-class _AgentProtocol(Protocol):
-    """Subset of ``Agent`` that ``ResponseDispatchMixin`` depends on."""
-
-    critic: CriticBase | None
-
-    def _get_action_event(
-        self,
-        tool_call: MessageToolCall,
-        conversation: LocalConversation,
-        llm_response_id: str,
-        on_event: ConversationCallbackType,
-        security_analyzer: SecurityAnalyzerBase | None = None,
-        thought: list[TextContent] | None = None,
-        reasoning_content: str | None = None,
-        thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] | None = None,
-        responses_reasoning_item: ReasoningItemModel | None = None,
-    ) -> ActionEvent | None: ...
-
-    def _execute_actions(
-        self,
-        conversation: LocalConversation,
-        action_events: list[ActionEvent],
-        on_event: ConversationCallbackType,
-    ) -> None: ...
-
-    def _requires_user_confirmation(
-        self,
-        state: ConversationState,
-        action_events: list[ActionEvent],
-    ) -> bool: ...
-
-    def _maybe_emit_vllm_tokens(
-        self,
-        llm_response: LLMResponse,
-        on_event: ConversationCallbackType,
-    ) -> None: ...
-
-    def _evaluate_with_critic(
-        self,
-        conversation: LocalConversation,
-        event: ActionEvent | MessageEvent,
-    ) -> CriticResult | None: ...
-
-
 class ResponseDispatchMixin:
     """Handler methods for each ``LLMResponseType``. Mixed into ``Agent``.
 
-    Expects the host class to satisfy :class:`_AgentProtocol`.
+    Expects the host class (``Agent``) to provide the members declared in the
+    ``TYPE_CHECKING`` block below.
     """
 
     # Declared for pyright — the actual implementations live on Agent.
@@ -340,15 +296,15 @@ class ResponseDispatchMixin:
     def _send_corrective_nudge(self, on_event: ConversationCallbackType) -> None:
         """Inject corrective feedback when no tool call and no content.
 
-        Prevents the monologue stuck-detector from firing when the model
-        simply forgot to emit a function call.
+        The model still receives this as a user-role message, but the event
+        source marks that it came from the framework rather than the human.
         """
         logger.warning(
             "LLM response contained no tool call and no content"
             " - sending corrective feedback"
         )
         nudge = MessageEvent(
-            source="user",
+            source="environment",
             llm_message=Message(
                 role="user",
                 content=[

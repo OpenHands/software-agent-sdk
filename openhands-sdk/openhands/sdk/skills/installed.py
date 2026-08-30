@@ -7,6 +7,7 @@ All heavy lifting is delegated to ``InstallationManager``.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from openhands.sdk.extensions.installation import (
     InstallationInfo,
@@ -18,6 +19,10 @@ from openhands.sdk.skills.exceptions import SkillValidationError
 from openhands.sdk.skills.skill import Skill
 from openhands.sdk.skills.utils import find_skill_md
 from openhands.sdk.utils.path import to_posix_path
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.marketplace import Marketplace, MarketplaceRegistration
 
 
 logger = get_logger(__name__)
@@ -38,12 +43,50 @@ def get_installed_skills_dir() -> Path:
 # ---------------------------------------------------------------------------
 
 
-def _load_skill_from_dir(skill_root: Path) -> Skill:
+def _load_skill_from_dir(skill_root: Path, strict: bool = True) -> Skill:
     """Load a skill from its root directory."""
     skill_md = find_skill_md(skill_root)
     if not skill_md:
         raise SkillValidationError(f"Skill directory is missing SKILL.md: {skill_root}")
-    return Skill.load(skill_md, strict=True)
+    return Skill.load(skill_md, strict=strict)
+
+
+def load_marketplace_standalone_skills(
+    marketplace: Marketplace,
+    marketplace_path: Path,
+    registration: MarketplaceRegistration,
+) -> list[Skill]:
+    """Load a marketplace's auto-loadable standalone skills.
+
+    Mirrors the plugin auto-load path for ``marketplace.skills``: each skill the
+    registration auto-loads is resolved (relative to the marketplace repo, or a
+    remote source) and loaded. Unresolvable sources and skills missing SKILL.md
+    are skipped with a warning so one bad entry never blocks the rest.
+    """
+    from openhands.sdk.plugin import resolve_source_path
+
+    skills: list[Skill] = []
+    for entry in marketplace.skills:
+        if not registration.auto_loads_skill(entry.name):
+            continue
+        skill_dir = resolve_source_path(entry.source, base_path=marketplace_path)
+        if skill_dir is None:
+            logger.warning(
+                "Skill '%s' from marketplace '%s' could not be resolved; skipping",
+                entry.name,
+                registration.name,
+            )
+            continue
+        try:
+            skills.append(_load_skill_from_dir(skill_dir, strict=False))
+        except Exception:
+            logger.warning(
+                "Failed to load skill '%s' from marketplace '%s'",
+                entry.name,
+                registration.name,
+                exc_info=True,
+            )
+    return skills
 
 
 class SkillInstallationInterface(InstallationInterface[Skill]):

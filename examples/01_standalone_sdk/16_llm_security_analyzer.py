@@ -29,8 +29,13 @@ signal.signal(signal.SIGINT, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt(
 def _print_blocked_actions(pending_actions) -> None:
     print(f"\n🔒 Security analyzer blocked {len(pending_actions)} high-risk action(s):")
     for i, action in enumerate(pending_actions, start=1):
+        # Prefer the LLM-provided natural-language summary as the headline,
+        # keeping the raw action snippet as secondary detail so users can
+        # still see exactly what will run before approving.
+        headline = action.summary or "(no summary provided)"
         snippet = str(action.action)[:100].replace("\n", " ")
-        print(f"  {i}. {action.tool_name}: {snippet}...")
+        print(f"  {i}. [{action.tool_name}] {headline}")
+        print(f"     {snippet}...")
 
 
 def confirm_high_risk_in_console(pending_actions) -> bool:

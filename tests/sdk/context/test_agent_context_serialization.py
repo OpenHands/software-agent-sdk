@@ -85,6 +85,22 @@ def test_agent_context_serialization_roundtrip():
     assert deserialized_from_json.model_dump() == serialized
 
 
+def test_memory_context_excluded_from_serialization():
+    """memory_context is runtime-resolved state and must not be persisted."""
+    context = AgentContext(load_memory=True).model_copy(
+        update={"memory_context": "- remembered fact"}
+    )
+
+    serialized = context.model_dump()
+    assert serialized["load_memory"] is True
+    assert "memory_context" not in serialized
+    assert "memory_context" not in context.model_dump_json()
+
+    restored = AgentContext.model_validate(serialized)
+    assert restored.load_memory is True
+    assert restored.memory_context is None
+
+
 def test_agent_context_secrets_round_trip_through_cipher_context():
     """``AgentContext.secrets`` raw-string values must round-trip cleanly
     when re-validated with a cipher.

@@ -292,6 +292,10 @@ class TestMainCheckBrowserOrdering:
 
     def test_main_sets_internal_server_url(self, monkeypatch):
         monkeypatch.delenv("OH_INTERNAL_SERVER_URL", raising=False)
+        # An explicit wildcard bind requires auth to be enabled; set a key so
+        # the bind-host guard allows 0.0.0.0 and we still exercise the wildcard
+        # → loopback rewrite for the internal server URL.
+        monkeypatch.setenv("SESSION_API_KEY", "test-key-for-internal-url")
 
         with (
             patch("sys.argv", ["prog", "--host", "0.0.0.0", "--port", "4321"]),
@@ -307,3 +311,173 @@ class TestMainCheckBrowserOrdering:
 
         assert exc_info.value.code == 0
         assert os.environ["OH_INTERNAL_SERVER_URL"] == "http://127.0.0.1:4321"
+
+
+class TestMainBindHostGuard:
+    """The agent server must not bind all interfaces without authentication."""
+
+    def _no_key_env(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("SESSION_API_KEY", raising=False)
+        monkeypatch.delenv("OH_SESSION_API_KEYS_0", raising=False)
+        cfg = tmp_path / "empty_config.json"
+        cfg.write_text("{}")
+        monkeypatch.setenv("OPENHANDS_AGENT_SERVER_CONFIG_PATH", str(cfg))
+
+    def test_default_host_is_loopback_without_key(self, monkeypatch, tmp_path):
+        """With no session API key, the default bind host is 127.0.0.1."""
+        self._no_key_env(monkeypatch, tmp_path)
+        captured: dict = {}
+
+        def capture_config(app, *, host, **kwargs):
+            captured["host"] = host
+            return MagicMock()
+
+        with (
+            patch("sys.argv", ["prog", "--port", "4321"]),
+            patch("openhands.agent_server.__main__.preload_modules"),
+            patch("openhands.agent_server.__main__._setup_crash_diagnostics"),
+            patch("openhands.agent_server.__main__.LoggingServer") as mock_server,
+            patch("openhands.agent_server.__main__.Config", side_effect=capture_config),
+        ):
+            mock_server.return_value.run.side_effect = SystemExit(0)
+            from openhands.agent_server.__main__ import main
+
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+
+        assert exc_info.value.code == 0
+        assert captured["host"] == "127.0.0.1"
+
+    def test_default_host_is_wildcard_with_key(self, monkeypatch, tmp_path):
+        """With a session API key configured, the default bind host is 0.0.0.0."""
+        self._no_key_env(monkeypatch, tmp_path)
+        monkeypatch.setenv("SESSION_API_KEY", "test-secret-123")
+        captured: dict = {}
+
+        def capture_config(app, *, host, **kwargs):
+            captured["host"] = host
+            return MagicMock()
+
+        with (
+            patch("sys.argv", ["prog", "--port", "4321"]),
+            patch("openhands.agent_server.__main__.preload_modules"),
+            patch("openhands.agent_server.__main__._setup_crash_diagnostics"),
+            patch("openhands.agent_server.__main__.LoggingServer") as mock_server,
+            patch("openhands.agent_server.__main__.Config", side_effect=capture_config),
+        ):
+            mock_server.return_value.run.side_effect = SystemExit(0)
+            from openhands.agent_server.__main__ import main
+
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+
+        assert exc_info.value.code == 0
+        assert captured["host"] == "0.0.0.0"
+
+    @pytest.mark.parametrize("wildcard", ["0.0.0.0", "::", "[::]"])
+    def test_explicit_wildcard_warns_without_key(
+        self, monkeypatch, tmp_path, wildcard, caplog
+    ):
+        """An explicit --host <wildcard> without a key is allowed but warned."""
+        self._no_key_env(monkeypatch, tmp_path)
+        captured: dict = {}
+
+        def capture_config(app, *, host, **kwargs):
+            captured["host"] = host
+            return MagicMock()
+
+        with (
+            patch("sys.argv", ["prog", "--host", wildcard, "--port", "4321"]),
+            patch("openhands.agent_server.__main__.preload_modules"),
+            patch("openhands.agent_server.__main__._setup_crash_diagnostics"),
+            patch("openhands.agent_server.__main__.Config", side_effect=capture_config),
+            patch("openhands.agent_server.__main__.LoggingServer") as mock_server,
+            caplog.at_level(logging.WARNING, logger="openhands.agent_server.__main__"),
+        ):
+            mock_server.return_value.run.side_effect = SystemExit(0)
+            from openhands.agent_server.__main__ import main
+
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+
+        # Allowed (operator's explicit choice) but warned.
+        assert exc_info.value.code == 0
+        assert captured["host"] == wildcard
+        assert any("without a session API key" in r.message for r in caplog.records)
+
+    def test_explicit_wildcard_allowed_with_key(self, monkeypatch, tmp_path):
+        """An explicit --host 0.0.0.0 with a key is allowed."""
+        self._no_key_env(monkeypatch, tmp_path)
+        monkeypatch.setenv("SESSION_API_KEY", "test-secret-123")
+        captured: dict = {}
+
+        def capture_config(app, *, host, **kwargs):
+            captured["host"] = host
+            return MagicMock()
+
+        with (
+            patch("sys.argv", ["prog", "--host", "0.0.0.0", "--port", "4321"]),
+            patch("openhands.agent_server.__main__.preload_modules"),
+            patch("openhands.agent_server.__main__._setup_crash_diagnostics"),
+            patch("openhands.agent_server.__main__.LoggingServer") as mock_server,
+            patch("openhands.agent_server.__main__.Config", side_effect=capture_config),
+        ):
+            mock_server.return_value.run.side_effect = SystemExit(0)
+            from openhands.agent_server.__main__ import main
+
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+
+        assert exc_info.value.code == 0
+        assert captured["host"] == "0.0.0.0"
+
+    def test_explicit_loopback_allowed_without_key(self, monkeypatch, tmp_path):
+        """An explicit --host 127.0.0.1 without a key is allowed."""
+        self._no_key_env(monkeypatch, tmp_path)
+        captured: dict = {}
+
+        def capture_config(app, *, host, **kwargs):
+            captured["host"] = host
+            return MagicMock()
+
+        with (
+            patch("sys.argv", ["prog", "--host", "127.0.0.1", "--port", "4321"]),
+            patch("openhands.agent_server.__main__.preload_modules"),
+            patch("openhands.agent_server.__main__._setup_crash_diagnostics"),
+            patch("openhands.agent_server.__main__.LoggingServer") as mock_server,
+            patch("openhands.agent_server.__main__.Config", side_effect=capture_config),
+        ):
+            mock_server.return_value.run.side_effect = SystemExit(0)
+            from openhands.agent_server.__main__ import main
+
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+
+        assert exc_info.value.code == 0
+        assert captured["host"] == "127.0.0.1"
+
+
+def test_auth_enabled_reads_config_keys(monkeypatch, tmp_path):
+    from openhands.agent_server.__main__ import _auth_enabled
+
+    cfg = tmp_path / "config.json"
+    monkeypatch.delenv("SESSION_API_KEY", raising=False)
+    monkeypatch.delenv("OH_SESSION_API_KEYS_0", raising=False)
+    monkeypatch.setenv("OPENHANDS_AGENT_SERVER_CONFIG_PATH", str(cfg))
+
+    cfg.write_text("{}")
+    assert _auth_enabled() is False
+
+    cfg.write_text('{"session_api_keys": ["abc"]}')
+    assert _auth_enabled() is True
+
+
+def test_auth_enabled_reads_env_key(monkeypatch, tmp_path):
+    from openhands.agent_server.__main__ import _auth_enabled
+
+    cfg = tmp_path / "config.json"
+    cfg.write_text("{}")
+    monkeypatch.setenv("OPENHANDS_AGENT_SERVER_CONFIG_PATH", str(cfg))
+    monkeypatch.delenv("OH_SESSION_API_KEYS_0", raising=False)
+    monkeypatch.setenv("SESSION_API_KEY", "from-env")
+    assert _auth_enabled() is True

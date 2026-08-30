@@ -99,13 +99,6 @@ class _RemoteMCPServerSpec(BaseModel):
     type: Literal["http", "shttp", "streamable-http", "sse"]
     url: str = Field(..., min_length=1)
     headers: dict[str, str] = Field(default_factory=dict)
-    api_key: str | None = Field(
-        default=None,
-        description=(
-            "Deprecated bearer token. Prefer auth.strategy='bearer'. If provided "
-            "without auth, sent as 'Authorization: Bearer <token>'."
-        ),
-    )
     auth: MCPAuthCredential | None = None
     timeout: float | None = None
     sse_read_timeout: float | None = None
@@ -113,15 +106,6 @@ class _RemoteMCPServerSpec(BaseModel):
 
     @model_validator(mode="after")
     def _reject_ambiguous_auth(self) -> _RemoteMCPServerSpec:
-        if self.api_key is not None and self.auth is not None:
-            raise ValueError("api_key cannot be combined with auth.")
-        if self.api_key is not None and any(
-            name.lower() == "authorization" for name in self.headers
-        ):
-            raise ValueError(
-                "api_key cannot be combined with an explicit top-level "
-                "'Authorization' header; use auth.strategy='header' instead."
-            )
         if self.auth is not None and any(
             name.lower() == "authorization" for name in self.headers
         ):
@@ -143,8 +127,6 @@ class _RemoteMCPServerSpec(BaseModel):
         }
         if self.auth is not None:
             data["auth"] = self.auth
-        elif self.api_key is not None:
-            data["auth"] = {"strategy": "bearer", "value": self.api_key}
         return MCPServer.model_validate(data)
 
 
@@ -266,6 +248,7 @@ class MCPTestSuccess(BaseModel):
     )
     resolved_mcp_servers: list[dict[str, Any]] | None = Field(
         default=None,
+        deprecated=True,
         description=(
             "Deprecated compatibility field for older clients that expected "
             "resolved MCP server metadata in test responses."
@@ -296,7 +279,10 @@ class MCPTestFailure(BaseModel):
     )
 
 
-MCPTestResponse = MCPTestSuccess | MCPTestFailure
+MCPTestResponse = Annotated[
+    MCPTestSuccess | MCPTestFailure,
+    Field(discriminator="ok"),
+]
 
 
 class MCPOAuthStartResponse(BaseModel):

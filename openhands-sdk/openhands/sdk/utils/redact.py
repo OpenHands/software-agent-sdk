@@ -302,16 +302,18 @@ def redact_text_secrets(text: str) -> str:
     text = re.sub(r"api_key='[^']*'", "api_key='<redacted>'", text)
     text = re.sub(r'api_key="[^"]*"', 'api_key="<redacted>"', text)
 
-    # Dict entries with sensitive key names
+    # Dict entries with sensitive key names (case-insensitive, like is_secret_key)
     text = re.sub(
         r"('[A-Z_]*(?:KEY|SECRET|TOKEN|PASSWORD)[A-Z_]*':\s*')[^']*(')",
         r"\g<1><redacted>\2",
         text,
+        flags=re.IGNORECASE,
     )
     text = re.sub(
         r'("[A-Z_]*(?:KEY|SECRET|TOKEN|PASSWORD)[A-Z_]*":\s*")[^"]*(")',
         r"\g<1><redacted>\2",
         text,
+        flags=re.IGNORECASE,
     )
 
     # URL query params
