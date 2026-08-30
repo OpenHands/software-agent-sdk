@@ -4,6 +4,8 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
+from openhands.workspace.cloud.workspace import AGENT_SERVER
+
 
 # =============================================================================
 # Fixtures
@@ -233,10 +235,44 @@ def test_cloud_workspace_resume_calls_resume_sandbox(mock_cloud_workspace):
     """Test that resume() calls _resume_sandbox()."""
     workspace = mock_cloud_workspace
 
+    def ready():
+        # The real _wait_until_sandbox_ready refreshes these from the sandbox.
+        workspace._session_api_key = "session-key"
+        workspace._exposed_urls = [
+            {"name": AGENT_SERVER, "url": "https://agent-server.example.com"}
+        ]
+
     with patch.object(workspace, "_resume_sandbox") as mock_resume:
-        with patch.object(workspace, "_wait_until_sandbox_ready"):
+        with patch.object(workspace, "_wait_until_sandbox_ready", side_effect=ready):
             workspace.resume()
             mock_resume.assert_called_once()
+
+
+def test_cloud_workspace_resume_repoints_client_at_refreshed_connection(
+    mock_cloud_workspace,
+):
+    """A resumed sandbox can come back on a new URL with a rotated key.
+
+    The readiness poll re-reads both, but they only take effect once resume
+    pushes them onto host/api_key and drops the cached client. Without that the
+    workspace keeps talking to the previous endpoint with the previous key.
+    """
+    workspace = mock_cloud_workspace
+
+    def ready():
+        workspace._session_api_key = "rotated-key"
+        workspace._exposed_urls = [
+            {"name": AGENT_SERVER, "url": "https://agent-server-2.example.com/"}
+        ]
+
+    with patch.object(workspace, "_resume_sandbox"):
+        with patch.object(workspace, "_wait_until_sandbox_ready", side_effect=ready):
+            with patch.object(type(workspace), "reset_client") as mock_reset:
+                workspace.resume()
+
+    assert workspace.host == "https://agent-server-2.example.com"
+    assert workspace.api_key == "rotated-key"
+    mock_reset.assert_called_once()
 
 
 def test_cloud_workspace_resume_raises_if_no_sandbox():
