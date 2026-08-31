@@ -40,7 +40,7 @@
   "codex": {
     "key": "codex",
     "display_name": "Codex",
-    "default_command": ["npx", "-y", "@agentclientprotocol/codex-acp@1.1.7"],
+    "default_command": ["npx", "-y", "@agentclientprotocol/codex-acp@1.6.2"],
     "api_key_env_var": "OPENAI_API_KEY",
     "base_url_env_var": "OPENAI_BASE_URL",
     "default_session_mode": "agent-full-access",
