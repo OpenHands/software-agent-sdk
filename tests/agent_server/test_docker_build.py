@@ -819,9 +819,9 @@ def test_base_image_target_uses_real_build_context(
 ):
     """Regression test: only base-image-minimal has zero build-context
     dependency. base-image transitively depends on the `builder` stage (for
-    VSCode extensions) and has its own wallpaper.svg bind mount, both of
-    which need the real context — the empty-context fast path silently broke
-    `--target base-image` (pre-existing, not specific to INSTALL_CAPABILITIES).
+    VSCode extensions), which needs the real context — the empty-context
+    fast path silently broke `--target base-image` (pre-existing, not
+    specific to INSTALL_CAPABILITIES).
     """
     from openhands.agent_server.docker.build import (
         BuildOptions,

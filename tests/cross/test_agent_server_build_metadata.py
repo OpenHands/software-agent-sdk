@@ -46,7 +46,7 @@ def test_server_workflow_contains_install_capabilities_expression() -> None:
 
     assert (
         "INSTALL_CAPABILITIES: ${{ github.event_name != 'workflow_dispatch' "
-        "&& 'vscode,browser,desktop,docker' || inputs.install_capabilities }}"
+        "&& 'vscode,browser,docker' || inputs.install_capabilities }}"
     ) in workflow_text
 
 

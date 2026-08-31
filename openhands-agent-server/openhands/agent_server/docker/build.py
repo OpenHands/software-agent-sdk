@@ -863,12 +863,11 @@ def build_with_telemetry(opts: BuildOptions) -> BuildResult:
     # build context, direct or transitive). base-image is NOT eligible for
     # this fast path even though it looked context-free at a glance: it pulls
     # in the `builder` stage (for VSCode extensions), and `builder` itself
-    # COPYs the real SDK source from context — plus base-image's own
-    # wallpaper.svg bind mount. Both need the real context, same as
-    # binary/source. This dependency is unconditional at the Dockerfile
-    # level, so excluding vscode from INSTALL_CAPABILITIES shrinks the
-    # resulting image but not this build-context cost or the `builder`
-    # stage's own build time (a full SDK venv sync).
+    # COPYs the real SDK source from context. This dependency is
+    # unconditional at the Dockerfile level, so excluding vscode from
+    # INSTALL_CAPABILITIES shrinks the resulting image but not this
+    # build-context cost or the `builder` stage's own build time (a full SDK
+    # venv sync).
     is_base_only = opts.target == "base-image-minimal"
     if is_base_only:
         ctx = Path(tempfile.mkdtemp(prefix="agent-base-ctx-"))
