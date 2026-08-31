@@ -78,6 +78,8 @@ def find_version_changes(repo_root: Path, base_ref: str) -> list[VersionChange]:
     candidates = _base_ref_candidates(base_ref)
 
     for package, package_file in PACKAGE_FILES.items():
+        if package == "typescript-client":
+            continue
         current_version = _read_current_version(repo_root, package_file)
         previous_error: SystemExit | None = None
         previous_version: str | None = None
