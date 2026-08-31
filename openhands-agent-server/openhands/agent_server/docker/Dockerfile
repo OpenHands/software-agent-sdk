@@ -310,6 +310,11 @@ ENV EDITOR=code \
     OPENVSCODE_SERVER_ROOT=/openhands/.openvscode-server
 ARG RELEASE_TAG="openvscode-server-v1.98.2"
 ARG RELEASE_ORG="gitpod-io"
+# The --mount=from=builder below is unconditional at the Dockerfile level, so
+# BuildKit still builds the full `builder` stage (the entire SDK venv) even
+# when `vscode` is excluded from INSTALL_CAPABILITIES — the case check inside
+# this RUN only decides what lands in THIS image, not what gets built as a
+# dependency. Excluding vscode shrinks the result, not the build time.
 RUN --mount=type=bind,from=builder,source=/agent-server/openhands-agent-server/openhands/agent_server/vscode_extensions,target=/tmp/vscode_extensions \
     set -eux; \
     case ",$INSTALL_CAPABILITIES," in \
