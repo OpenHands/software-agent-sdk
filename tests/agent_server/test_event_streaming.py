@@ -352,12 +352,17 @@ async def test_deltas_keep_idle_time_below_the_threshold(
 
 @pytest.mark.asyncio
 async def test_delta_idle_signal_is_throttled(event_service, tmp_path, monkeypatch):
-    """Only the first delta of an interval touches the idle timer."""
+    """The first delta touches the idle timer; the rest of the interval does not."""
     callback = await _start_and_capture_callback(event_service, tmp_path)
-    callback(_make_chunk(content="first"))
 
     stale = time.time() - 2 * ACTIVITY_SIGNAL_INTERVAL
     monkeypatch.setattr(server_details_router, "_last_event_time", stale)
-    callback(_make_chunk(content="second"))
 
+    # A service that has never signalled must not throttle its own first
+    # delta, however long the process clock has been running.
+    callback(_make_chunk(content="first"))
+    assert server_details_router._last_event_time > stale
+
+    monkeypatch.setattr(server_details_router, "_last_event_time", stale)
+    callback(_make_chunk(content="second"))
     assert server_details_router._last_event_time == stale

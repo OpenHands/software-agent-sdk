@@ -160,8 +160,8 @@ class EventService:
     _goal_loop_outcome: GoalOutcome | None = field(default=None, init=False)
     # Monotonic clock of the last activity, used for idle eviction.
     _last_active_monotonic: float = field(default_factory=time.monotonic, init=False)
-    # Monotonic clock of the last throttled streaming heartbeat (0 = never).
-    _last_stream_activity_signal: float = field(default=0.0, init=False)
+    # Monotonic clock of the last throttled streaming heartbeat.
+    _last_stream_activity_signal: float = field(default=float("-inf"), init=False)
     # Subscribers attached at startup; later ones (e.g. websockets) are external.
     _internal_subscriber_ids: set[UUID] = field(default_factory=set, init=False)
 
@@ -914,19 +914,12 @@ class EventService:
             agent._on_activity = update_last_execution_time
 
     def _signal_stream_activity(self) -> None:
-        """Keep the idle timer fresh while a completion streams (throttled).
+        """Refresh the runtime idle timer while a completion streams.
 
-        Same concern as _setup_acp_activity_heartbeat above, for the standard
-        streaming path: deltas are published straight to _pub_sub and never
-        persisted, so the durable-event path that normally calls
-        update_last_execution_time() (_EventSubscriber) stays silent for the
-        whole of a long completion and the runtime-api reaps the pod.
-
-        Signalled by the producer rather than by a subscriber, so a delta
-        still refreshes the timer once deltas stop travelling on the shared
-        event bus. Throttled to ACTIVITY_SIGNAL_INTERVAL like the ACP
-        bridge's _maybe_signal_activity: token rate is far too chatty for a
-        per-delta call.
+        Deltas are never persisted, so the durable-event path that calls
+        update_last_execution_time() is silent for the length of a stream.
+        Signalled from the producer so it survives deltas leaving the shared
+        bus; throttled like the ACP bridge's _maybe_signal_activity.
         """
         now = time.monotonic()
         if now - self._last_stream_activity_signal < ACTIVITY_SIGNAL_INTERVAL:

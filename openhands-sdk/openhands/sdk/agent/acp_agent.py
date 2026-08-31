@@ -244,7 +244,7 @@ _STREAM_READER_LIMIT: int = 100 * 1024 * 1024  # 100 MiB
 # Throttled to avoid excessive calls while still keeping the idle timer
 # well below the ~20 min runtime-api kill threshold.  Shared with the
 # agent-server's streaming-delta heartbeat so both paths keep the same pace.
-ACTIVITY_SIGNAL_INTERVAL: float = 30.0
+ACTIVITY_SIGNAL_INTERVAL: Final[float] = 30.0
 
 # ACP tool-call statuses that represent a terminal outcome.  Non-terminal
 # statuses (``pending``, ``in_progress``) mean the call is still in flight
