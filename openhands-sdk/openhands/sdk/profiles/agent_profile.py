@@ -224,9 +224,9 @@ class ACPAgentProfile(AgentProfileBase):
         ),
     )
     # No skill-selection field: ACP agents own their tooling and prompt
-    # construction, so no user/public discovered skills are injected. (Only
-    # repo-scoped project skills reach an ACP agent, via the resolver's
-    # ``load_project_skills`` — see #4019 for whether even those should.)
+    # construction. Project skills never reach one (the CLI reads the repo
+    # itself, #4019); whether any managed skill does is a deployment choice the
+    # caller expresses through ``resolve_agent_profile``'s ``available_skills``.
     acp_server: ACPServerKind = Field(
         default="claude-code",
         description=(
