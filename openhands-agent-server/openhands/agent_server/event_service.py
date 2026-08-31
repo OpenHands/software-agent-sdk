@@ -23,8 +23,10 @@ from openhands.agent_server.models import (
     StoredConversation,
 )
 from openhands.agent_server.pub_sub import PubSub, Subscriber
+from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.sdk import LLM, AgentBase, Event, Message, TextContent, get_logger
 from openhands.sdk.agent import ACPAgent
+from openhands.sdk.agent.acp_agent import ACTIVITY_SIGNAL_INTERVAL
 from openhands.sdk.agent.acp_file_credentials import (
     CODEX_AUTH_SECRET_NAME,
     is_valid_codex_auth,
@@ -158,6 +160,8 @@ class EventService:
     _goal_loop_outcome: GoalOutcome | None = field(default=None, init=False)
     # Monotonic clock of the last activity, used for idle eviction.
     _last_active_monotonic: float = field(default_factory=time.monotonic, init=False)
+    # Monotonic clock of the last throttled streaming heartbeat (0 = never).
+    _last_stream_activity_signal: float = field(default=0.0, init=False)
     # Subscribers attached at startup; later ones (e.g. websockets) are external.
     _internal_subscriber_ids: set[UUID] = field(default_factory=set, init=False)
 
@@ -907,11 +911,28 @@ class EventService:
         from openhands.sdk.agent import ACPAgent
 
         if isinstance(agent, ACPAgent):
-            from openhands.agent_server.server_details_router import (
-                update_last_execution_time,
-            )
-
             agent._on_activity = update_last_execution_time
+
+    def _signal_stream_activity(self) -> None:
+        """Keep the idle timer fresh while a completion streams (throttled).
+
+        Same concern as _setup_acp_activity_heartbeat above, for the standard
+        streaming path: deltas are published straight to _pub_sub and never
+        persisted, so the durable-event path that normally calls
+        update_last_execution_time() (_EventSubscriber) stays silent for the
+        whole of a long completion and the runtime-api reaps the pod.
+
+        Signalled by the producer rather than by a subscriber, so a delta
+        still refreshes the timer once deltas stop travelling on the shared
+        event bus. Throttled to ACTIVITY_SIGNAL_INTERVAL like the ACP
+        bridge's _maybe_signal_activity: token rate is far too chatty for a
+        per-delta call.
+        """
+        now = time.monotonic()
+        if now - self._last_stream_activity_signal < ACTIVITY_SIGNAL_INTERVAL:
+            return
+        self._last_stream_activity_signal = now
+        update_last_execution_time()
 
     def _setup_stats_streaming(self, agent: AgentBase) -> None:
         """Configure stats update callbacks to stream stats changes via events."""
@@ -1057,6 +1078,7 @@ class EventService:
                 content=content,
                 reasoning_content=reasoning_content,
             )
+            self._signal_stream_activity()
             with suppress(RuntimeError):  # main loop already closed during teardown
                 asyncio.run_coroutine_threadsafe(self._pub_sub(event), self._main_loop)
 
