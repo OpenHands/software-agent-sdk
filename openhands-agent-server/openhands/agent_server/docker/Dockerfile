@@ -24,7 +24,7 @@ ARG INSTALL_ACP_PROVIDERS=claude-code,codex,gemini-cli
 # contents; an unknown key fails the build. The GitHub CLI is expected to
 # join this list later (see OpenHands/software-agent-sdk#4645) — the parsing
 # below is written so that's a one-case addition, not a signature change.
-ARG INSTALL_CAPABILITIES=vscode,browser,desktop,docker
+ARG INSTALL_CAPABILITIES=vscode,browser,docker
 
 ####################################################################################
 # Builder (source mode)
@@ -161,7 +161,7 @@ RUN set -eux; \
 ####################################################################################
 # Base image (minimal)
 # It includes only basic packages and the UV runtime.
-# No Docker, no VNC, no Desktop, no VSCode Web.
+# No Docker, no browser, no VSCode Web.
 # Suitable for running in headless/evaluation mode.
 ####################################################################################
 FROM ${BASE_IMAGE} AS base-image-minimal
@@ -270,7 +270,6 @@ WORKDIR /
 # Locale settings required for libtmux to work with PyInstaller builds
 ENV LC_ALL=C.UTF-8
 ENV LANG=C.UTF-8
-ENV OH_ENABLE_VNC=false
 ENV LOG_JSON=true
 # The ACP CLIs run without the user's host home here, so OpenHands supplies the
 # managed skill catalog they cannot read for themselves (#4019).
@@ -279,7 +278,7 @@ EXPOSE ${PORT}
 
 ####################################################################################
 # Base image (full)
-# It includes additional Docker, VNC, Desktop, and VSCode Web.
+# It includes additional Docker, browser, and VSCode Web.
 ####################################################################################
 FROM base-image-minimal AS base-image
 ARG USERNAME
@@ -293,9 +292,9 @@ USER root
 RUN set -eux; \
     for capability in $(echo "$INSTALL_CAPABILITIES" | tr ',' ' '); do \
       case "$capability" in \
-        vscode|browser|desktop|docker) ;; \
+        vscode|browser|docker) ;; \
         *) echo "Unknown capability '$capability' in INSTALL_CAPABILITIES" \
-             "(expected one of: vscode, browser, desktop, docker)" >&2; exit 1;; \
+             "(expected one of: vscode, browser, docker)" >&2; exit 1;; \
       esac; \
     done
 
@@ -408,60 +407,36 @@ RUN set -eux; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*
 
-# --- VNC + Desktop + noVNC ---
-# `desktop` (tigervnc/xfce4/dbus-x11/novnc/websockify) and `browser`
-# (chromium) are independently selectable: BrowserToolSet needs Chromium but
-# not the desktop stack, so bundling them forced every browser consumer to
-# also carry XFCE/VNC/noVNC. See OpenHands/software-agent-sdk#4645.
-ENV NOVNC_WEB=/usr/share/novnc \
-    NOVNC_PORT=8002 \
-    DISPLAY=:1 \
-    VNC_GEOMETRY=1280x800 \
-    CHROME_BIN=/usr/bin/chromium \
+# --- Browser ---
+# Chromium for BrowserToolSet. Selected by the `browser` capability.
+ENV CHROME_BIN=/usr/bin/chromium \
     PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
     CHROMIUM_FLAGS="--no-sandbox --disable-dev-shm-usage --disable-gpu"
 
-# NOVNC_WEB/CHROME_BIN/PUPPETEER_EXECUTABLE_PATH above are declared
-# unconditionally regardless of which capabilities are selected. Nothing in
-# this repo trusts them as an availability signal — browser_use's chromium
-# detection (openhands-tools/openhands/tools/browser_use/impl.py) does its
-# own filesystem probe of standard install paths — so when `desktop`/
-# `browser` is excluded these simply point at paths that don't exist,
-# rather than causing a false "available" signal downstream.
-RUN --mount=type=bind,source=openhands-agent-server/openhands/agent_server/docker/wallpaper.svg,target=/tmp/wallpaper.svg \
-    set -eux; \
-    WANT_DESKTOP=0; \
-    WANT_BROWSER=0; \
-    case ",$INSTALL_CAPABILITIES," in *,desktop,*) WANT_DESKTOP=1;; esac; \
-    case ",$INSTALL_CAPABILITIES," in *,browser,*) WANT_BROWSER=1;; esac; \
-    PACKAGES=""; \
-    if [ "$WANT_DESKTOP" = "1" ]; then \
-      PACKAGES="$PACKAGES tigervnc-standalone-server xfce4 dbus-x11 novnc websockify"; \
-    fi; \
-    if [ "$WANT_BROWSER" = "1" ]; then \
-      PACKAGES="$PACKAGES $(if grep -q "ubuntu" /etc/os-release; then echo "chromium-browser"; else echo "chromium"; fi)"; \
-    fi; \
-    if [ -n "$PACKAGES" ]; then \
-      apt-get update; \
-      apt-get install -y --no-install-recommends $PACKAGES; \
-      apt-get clean; rm -rf /var/lib/apt/lists/*; \
-    fi; \
-    if [ "$WANT_DESKTOP" = "1" ]; then \
-      chown -R ${USERNAME}:${USERNAME} ${NOVNC_WEB}; \
-      # Override default XFCE wallpaper
-      mkdir -p /usr/share/backgrounds/xfce; \
-      cp /tmp/wallpaper.svg /usr/share/backgrounds/xfce/xfce-shapes.svg; \
-      chown ${USERNAME}:${USERNAME} /usr/share/backgrounds/xfce/xfce-shapes.svg; \
-    fi
+# CHROME_BIN/PUPPETEER_EXECUTABLE_PATH above are declared unconditionally
+# regardless of which capabilities are selected. Nothing in this repo trusts
+# them as an availability signal — browser_use's chromium detection
+# (openhands-tools/openhands/tools/browser_use/impl.py) does its own filesystem
+# probe of standard install paths — so when `browser` is excluded these simply
+# point at a path that doesn't exist, rather than causing a false "available"
+# signal downstream.
+RUN set -eux; \
+    case ",$INSTALL_CAPABILITIES," in \
+      *,browser,*) \
+        apt-get update; \
+        apt-get install -y --no-install-recommends \
+          "$(if grep -q "ubuntu" /etc/os-release; then echo "chromium-browser"; else echo "chromium"; fi)"; \
+        apt-get clean; rm -rf /var/lib/apt/lists/*; \
+        ;; \
+    esac
 
 USER ${USERNAME}
 WORKDIR /
-ENV OH_ENABLE_VNC=false
 ENV LOG_JSON=true
 # The ACP CLIs run without the user's host home here, so OpenHands supplies the
 # managed skill catalog they cannot read for themselves (#4019).
 ENV OH_ACP_SKILL_SOURCING=openhands_managed
-EXPOSE ${PORT} ${NOVNC_PORT}
+EXPOSE ${PORT}
 
 
 ####################################################################################

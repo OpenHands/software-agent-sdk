@@ -694,7 +694,7 @@ def test_install_capabilities_defaults_to_full_capability_set():
     from openhands.agent_server.docker.build import BuildOptions
 
     opts = BuildOptions()
-    assert opts.install_capabilities == "vscode,browser,desktop,docker"
+    assert opts.install_capabilities == "vscode,browser,docker"
 
 
 def test_install_capabilities_rejects_unknown_capability():
@@ -717,7 +717,7 @@ def test_install_capabilities_accepts_empty_list():
 
 @pytest.mark.parametrize(
     "install_capabilities",
-    ["vscode,browser,desktop,docker", "vscode,browser", "docker", ""],
+    ["vscode,browser,docker", "vscode,browser", "docker", ""],
 )
 def test_build_passes_install_capabilities_build_arg(
     tmp_path: Path, install_capabilities: str
@@ -775,7 +775,7 @@ def test_build_passes_install_capabilities_build_arg(
 @pytest.mark.parametrize(
     "env_value,expected",
     [
-        (None, "vscode,browser,desktop,docker"),
+        (None, "vscode,browser,docker"),
         ("", ""),
         ("vscode", "vscode"),
     ],

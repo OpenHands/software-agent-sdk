@@ -29,7 +29,7 @@ on:
             install_capabilities:
                 description: Comma-separated capability keys to bake into the image
                 type: string
-                default: vscode,browser,desktop,docker
+                default: vscode,browser,docker
 
 permissions:
     contents: read
@@ -333,7 +333,7 @@ jobs:
             INSTALL_ACP_PROVIDERS: ${{ github.event_name != 'workflow_dispatch' && 'claude-code,codex,gemini-cli' || inputs.install_acp_providers }}
             # Same last-operand reasoning as INSTALL_ACP_PROVIDERS above: an
             # explicit "" dispatch input ("install none") must survive.
-            INSTALL_CAPABILITIES: ${{ github.event_name != 'workflow_dispatch' && 'vscode,browser,desktop,docker' || inputs.install_capabilities }}
+            INSTALL_CAPABILITIES: ${{ github.event_name != 'workflow_dispatch' && 'vscode,browser,docker' || inputs.install_capabilities }}
             CUSTOM_TAGS: ${{ matrix.variant }}
             VARIANT: ${{ matrix.variant }}
             ARCH: ${{ matrix.arch }}
