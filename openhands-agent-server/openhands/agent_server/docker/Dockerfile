@@ -21,11 +21,10 @@ ARG ENABLE_VERTEX=0
 ARG INSTALL_ACP_PROVIDERS=claude-code,codex,gemini-cli
 # Comma-separated capability keys to include in the `base-image` stage below
 # (`base-image-minimal` is unaffected). The default reproduces today's full
-# contents; an unknown key fails the build. Docker-in-Docker and the GitHub
-# CLI are expected to join this list later (see
-# OpenHands/software-agent-sdk#4645) — the parsing below is written so that's
-# a one-case addition, not a signature change.
-ARG INSTALL_CAPABILITIES=vscode,browser,desktop
+# contents; an unknown key fails the build. The GitHub CLI is expected to
+# join this list later (see OpenHands/software-agent-sdk#4645) — the parsing
+# below is written so that's a one-case addition, not a signature change.
+ARG INSTALL_CAPABILITIES=vscode,browser,desktop,docker
 
 ####################################################################################
 # Builder (source mode)
@@ -294,9 +293,9 @@ USER root
 RUN set -eux; \
     for capability in $(echo "$INSTALL_CAPABILITIES" | tr ',' ' '); do \
       case "$capability" in \
-        vscode|browser|desktop) ;; \
+        vscode|browser|desktop|docker) ;; \
         *) echo "Unknown capability '$capability' in INSTALL_CAPABILITIES" \
-             "(expected one of: vscode, browser, desktop)" >&2; exit 1;; \
+             "(expected one of: vscode, browser, desktop, docker)" >&2; exit 1;; \
       esac; \
     done
 
@@ -351,6 +350,11 @@ RUN --mount=type=bind,from=builder,source=/agent-server/openhands-agent-server/o
 
 # --- Docker ---
 RUN set -eux; \
+    case ",$INSTALL_CAPABILITIES," in \
+      *,docker,*) ;; \
+      *) echo "INSTALL_CAPABILITIES excludes docker; skipping Docker Engine"; exit 0;; \
+    esac; \
+    \
     # Determine OS type and install Docker accordingly
     if grep -q "ubuntu" /etc/os-release; then \
         # Handle Ubuntu
@@ -369,10 +373,10 @@ RUN set -eux; \
     apt-get update; \
     apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; \
     apt-get clean; \
-    rm -rf /var/lib/apt/lists/*
-
-# Configure Docker daemon with MTU 1450 to prevent packet fragmentation issues
-RUN mkdir -p /etc/docker && \
+    rm -rf /var/lib/apt/lists/*; \
+    \
+    # Configure Docker daemon with MTU 1450 to prevent packet fragmentation issues
+    mkdir -p /etc/docker; \
     echo '{"mtu": 1450}' > /etc/docker/daemon.json
 
 # --- GitHub CLI ---

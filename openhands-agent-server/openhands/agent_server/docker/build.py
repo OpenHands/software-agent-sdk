@@ -50,7 +50,7 @@ VALID_TARGETS = {
 # (the `base-image` stage's VSCode Web and VNC/Desktop/Browser blocks). Kept
 # local to this module since, unlike ACP_PROVIDERS, no other repo/runtime
 # code needs this set.
-AGENT_SERVER_CAPABILITIES = ("vscode", "browser", "desktop")
+AGENT_SERVER_CAPABILITIES = ("vscode", "browser", "desktop", "docker")
 _BUILDKIT_STEP_RE = re.compile(r"^#(?P<step>\d+)\s+(?P<message>.+)$")
 _BUILDKIT_DONE_RE = re.compile(r"^DONE\s+(?P<seconds>\d+(?:\.\d+)?)s$")
 _BUILDKIT_INLINE_DONE_RE = re.compile(
@@ -462,11 +462,11 @@ class BuildOptions(BaseModel):
         return v
 
     install_capabilities: str = Field(
-        default="vscode,browser,desktop",
+        default="vscode,browser,desktop,docker",
         description=(
             "Comma-separated capability keys to bake into the `base-image` "
-            "stage (VSCode Web, browser, desktop/VNC). Empty string installs "
-            "none."
+            "stage (VSCode Web, browser, desktop/VNC, Docker Engine). Empty "
+            "string installs none."
         ),
     )
 
@@ -1126,7 +1126,7 @@ def main(argv: list[str]) -> int:
         "--install-capabilities",
         # os.environ.get, not _env(): an explicit empty string here means
         # "install none" and must survive, but _env() treats blank as unset.
-        default=os.environ.get("INSTALL_CAPABILITIES", "vscode,browser,desktop"),
+        default=os.environ.get("INSTALL_CAPABILITIES", "vscode,browser,desktop,docker"),
         help=(
             "Comma-separated capability keys to bake into the image "
             "(default from $INSTALL_CAPABILITIES; empty string installs none)."
