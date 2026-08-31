@@ -153,6 +153,8 @@ def test_observe_preserves_async_signature():
     [
         ("true", True),
         ("1", True),
+        ("YeS", True),
+        ("ON", True),
         ("false", False),
         ("0", False),
         (None, False),

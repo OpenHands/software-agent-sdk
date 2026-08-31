@@ -48,18 +48,6 @@ def _get_int_env(key: str) -> int | None:
     return None
 
 
-def _get_bool_env(key: str) -> bool:
-    """Read an environment variable as a boolean.
-
-    Returns True if the value is 'true', '1', 'yes', 'on' (case-insensitive).
-    Returns False otherwise.
-    """
-    val = get_env(key)
-    if val is None:
-        return False
-    return val.lower() in ("true", "1", "yes", "on")
-
-
 def maybe_init_laminar():
     """Initialize Laminar if the environment variables are set.
 
@@ -98,7 +86,12 @@ def maybe_init_laminar():
         return
 
     base_url = get_env("LMNR_BASE_URL") or None
-    force_http = _get_bool_env("LMNR_FORCE_HTTP")
+    force_http = (get_env("LMNR_FORCE_HTTP") or "").lower() in (
+        "true",
+        "1",
+        "yes",
+        "on",
+    )
 
     if _is_otel_backend_laminar():
         Laminar.initialize(
