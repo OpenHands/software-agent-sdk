@@ -1,11 +1,16 @@
-"""Client-side estimation of per-call prompt token composition."""
+"""Client-side estimation of per-call prompt token composition.
+
+Offline analysis utility: it tokenizes logged request payloads after a run
+(see ``scripts/prompt_composition_report.py``); nothing here runs on the
+LLM call path.
+"""
 
 from typing import Any
 
 from litellm import ChatCompletionToolParam
 from litellm.utils import token_counter
+from pydantic import BaseModel, Field
 
-from openhands.sdk.llm.utils.metrics import PromptComposition
 from openhands.sdk.logger import get_logger
 
 
@@ -18,6 +23,46 @@ logger = get_logger(__name__)
 _TOOLS_PROBE_MESSAGES: list[dict[str, Any]] = [{"role": "user", "content": ""}]
 
 
+class PromptComposition(BaseModel):
+    """Per-call decomposition of prompt tokens by component.
+
+    Counts are client-side estimates computed offline from the logged
+    request payload; the provider-reported ``TokenUsage`` remains
+    authoritative. Each component is counted independently, so per-message
+    framing overhead is included in every bucket and the components do not
+    necessarily sum exactly to the provider-reported ``prompt_tokens``.
+    Tool schema counts follow litellm's ``token_counter`` serialization
+    convention for tools, which can differ from the provider's wire-format
+    tokenization. The composition always uses litellm's generic counter so
+    numbers stay comparable across models.
+    """
+
+    model: str = Field(default="")
+    system_prompt_tokens: int = Field(
+        default=0, ge=0, description="Estimated tokens in system messages"
+    )
+    tool_schema_tokens: int = Field(
+        default=0, ge=0, description="Estimated tokens in tool schemas"
+    )
+    history_tokens: int = Field(
+        default=0,
+        ge=0,
+        description="Estimated tokens in conversation history (all non-system "
+        "messages except the latest one)",
+    )
+    latest_message_tokens: int = Field(
+        default=0,
+        ge=0,
+        description="Estimated tokens in the latest observation/user message",
+    )
+    is_estimate: bool = Field(
+        default=True,
+        description="True when counts are client-side estimates rather than "
+        "provider-reported usage",
+    )
+    response_id: str = Field(default="")
+
+
 def compute_prompt_composition(
     *,
     model: str,
@@ -25,7 +70,7 @@ def compute_prompt_composition(
     tools: list[ChatCompletionToolParam] | None = None,
     custom_tokenizer: Any = None,
 ) -> PromptComposition | None:
-    """Estimate prompt tokens per component for a single LLM call.
+    """Estimate prompt tokens per component for a single logged LLM call.
 
     Args:
         model: Model name used to pick the tokenizer.
@@ -38,14 +83,12 @@ def compute_prompt_composition(
     Returns:
         A PromptComposition snapshot, or None when counting fails or returns
         no tokens at all (e.g. ``litellm.disable_token_counter``), since
-        composition recording is best-effort.
+        composition analysis is best-effort.
 
-    Recording is opt-in: LLM call sites only invoke this when
-    ``LLM.enable_prompt_composition`` is True, so the counting cost is only
-    paid when explicitly enabled. Cost scales linearly with prompt size and
-    stays small in absolute terms — measured ~31 ms for a ~100K-token prompt
-    and ~61 ms for ~190K tokens (gpt-4o tokenizer, 19 tools), versus
-    ~10-20 ms on typical agent-step payloads.
+    Cost scales linearly with prompt size and stays small in absolute terms —
+    measured ~31 ms for a ~100K-token prompt and ~61 ms for ~190K tokens
+    (gpt-4o tokenizer, 19 tools), versus ~10-20 ms on typical agent-step
+    payloads.
     """
 
     def count(
@@ -66,15 +109,15 @@ def compute_prompt_composition(
     conversation = [m for m in messages if m.get("role") != "system"]
 
     try:
-        tool_tokens = 0
+        tool_schema_tokens = 0
         if tools:
-            tool_tokens = count(_TOOLS_PROBE_MESSAGES, tools) - count(
+            tool_schema_tokens = count(_TOOLS_PROBE_MESSAGES, tools) - count(
                 _TOOLS_PROBE_MESSAGES, None
             )
         composition = PromptComposition(
             model=model,
             system_prompt_tokens=count(system_messages, None) if system_messages else 0,
-            tool_tokens=tool_tokens,
+            tool_schema_tokens=tool_schema_tokens,
             history_tokens=count(conversation[:-1], None)
             if len(conversation) > 1
             else 0,
@@ -86,7 +129,7 @@ def compute_prompt_composition(
 
     if (messages or tools) and not (
         composition.system_prompt_tokens
-        + composition.tool_tokens
+        + composition.tool_schema_tokens
         + composition.history_tokens
         + composition.latest_message_tokens
     ):
@@ -103,10 +146,10 @@ def responses_payload_to_chat_messages(
 ) -> list[dict[str, Any]]:
     """Convert a finalized Responses API payload into chat-format dicts.
 
-    Used so prompt composition on the Responses path counts what the provider
-    actually received (instructions + input items) while sharing the chat
-    path's counting convention. Raises ValueError on unrecognized item types;
-    callers treat any failure as "skip the composition record".
+    Used so offline prompt composition on the Responses path counts what the
+    provider actually received (instructions + input items) while sharing the
+    chat path's counting convention. Raises ValueError on unrecognized item
+    types; callers treat any failure as "skip the composition record".
 
     Buckets follow the wire, not the logical prompt: in subscription mode the
     system prompt is folded into the first user message by the auth-layer

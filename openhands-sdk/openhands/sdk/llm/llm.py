@@ -117,16 +117,12 @@ from openhands.sdk.llm.utils.image_inline import (
 )
 from openhands.sdk.llm.utils.image_resize import maybe_resize_messages_for_provider
 from openhands.sdk.llm.utils.litellm_provider import LLMProvider
-from openhands.sdk.llm.utils.metrics import Metrics, PromptComposition
+from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.llm.utils.model_features import ModelFeatures, get_features
 from openhands.sdk.llm.utils.openhands_provider import (
     LiteLLMCallKwargs,
     canonicalize_openhands_llm_payload,
     litellm_call_kwargs,
-)
-from openhands.sdk.llm.utils.prompt_composition import (
-    compute_prompt_composition,
-    responses_payload_to_chat_messages,
 )
 from openhands.sdk.llm.utils.retry_mixin import RetryMixin
 from openhands.sdk.llm.utils.telemetry import Telemetry
@@ -521,17 +517,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     native_tool_calling: bool = Field(
         default=True,
         description="Whether to use native tool calling.",
-        json_schema_extra=field_meta(),
-    )
-    enable_prompt_composition: bool = Field(
-        default=False,
-        description=(
-            "Whether to record a per-call prompt token composition estimate "
-            "(system prompt, tool schemas, history, latest message) into "
-            "Metrics. Opt-in: when False (default), no tokenization pass runs "
-            "and no records are appended. Enable when troubleshooting a "
-            "prompt or running a tool-loading study."
-        ),
         json_schema_extra=field_meta(),
     )
     force_string_serializer: bool | None = Field(
@@ -1218,24 +1203,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
              telemetry_ctx)
         """
         formatted_messages = self.format_messages_for_llm(messages)
-        formatted_messages, cc_tools, use_mock_tools, call_kwargs, telemetry_ctx = (
-            self._finalize_completion_params(
-                formatted_messages,
-                tools,
-                add_security_risk_prediction,
-                kwargs,
-                call_context=call_context,
-            )
-        )
-        telemetry_ctx["prompt_composition"] = self._chat_prompt_composition(
-            formatted_messages, cc_tools, use_mock_tools
-        )
-        return (
+        return self._finalize_completion_params(
             formatted_messages,
-            cc_tools,
-            use_mock_tools,
-            call_kwargs,
-            telemetry_ctx,
+            tools,
+            add_security_risk_prediction,
+            kwargs,
+            call_context=call_context,
         )
 
     async def _aprepare_completion_params(
@@ -1256,31 +1229,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         Uses :meth:`aformat_messages_for_llm` so the (potentially blocking)
         image-inlining pass is offloaded to a worker thread instead of running
-        on the event loop; prompt composition counting is likewise offloaded
-        via :func:`asyncio.to_thread`.
+        on the event loop.
         """
         formatted_messages = await self.aformat_messages_for_llm(messages)
-        formatted_messages, cc_tools, use_mock_tools, call_kwargs, telemetry_ctx = (
-            self._finalize_completion_params(
-                formatted_messages,
-                tools,
-                add_security_risk_prediction,
-                kwargs,
-                call_context=call_context,
-            )
-        )
-        telemetry_ctx["prompt_composition"] = await asyncio.to_thread(
-            self._chat_prompt_composition,
+        return self._finalize_completion_params(
             formatted_messages,
-            cc_tools,
-            use_mock_tools,
-        )
-        return (
-            formatted_messages,
-            cc_tools,
-            use_mock_tools,
-            call_kwargs,
-            telemetry_ctx,
+            tools,
+            add_security_risk_prediction,
+            kwargs,
+            call_context=call_context,
         )
 
     def _finalize_completion_params(
@@ -1355,7 +1312,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # logging is disabled.
         telemetry = self.telemetry
         telemetry_ctx: dict[str, Any] = {
-            "context_window": self.effective_max_input_tokens or 0,
+            "context_window": self.effective_max_input_tokens or 0
         }
         if telemetry.log_enabled:
             telemetry_ctx.update(
@@ -1374,27 +1331,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             use_mock_tools,
             call_kwargs,
             telemetry_ctx,
-        )
-
-    def _chat_prompt_composition(
-        self,
-        formatted_messages: list[dict[str, Any]],
-        cc_tools: list[ChatCompletionToolParam],
-        use_mock_tools: bool,
-    ) -> PromptComposition | None:
-        """Prompt composition for the chat path.
-
-        Returns None without counting when ``enable_prompt_composition`` is
-        off. When tool schemas are mocked into the prompt text, they are
-        already inside the message buckets — don't count them twice.
-        """
-        if not self.enable_prompt_composition:
-            return None
-        return compute_prompt_composition(
-            model=self.model,
-            messages=formatted_messages,
-            tools=None if use_mock_tools else cc_tools or None,
-            custom_tokenizer=self._tokenizer,
         )
 
     def _prepare_responses_params(
@@ -1420,13 +1356,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
              telemetry_ctx)
         """
         instructions, input_items = self.format_messages_for_responses(messages)
-        (
-            instructions,
-            input_items,
-            resp_tools,
-            call_kwargs,
-            telemetry_ctx,
-        ) = self._finalize_responses_params(
+        return self._finalize_responses_params(
             instructions,
             input_items,
             tools,
@@ -1436,10 +1366,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             kwargs,
             call_context=call_context,
         )
-        telemetry_ctx["prompt_composition"] = self._responses_prompt_composition(
-            instructions, input_items, tools, add_security_risk_prediction
-        )
-        return instructions, input_items, resp_tools, call_kwargs, telemetry_ctx
 
     async def _aprepare_responses_params(
         self,
@@ -1460,17 +1386,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """Async variant of :meth:`_prepare_responses_params`.
 
         Uses :meth:`aformat_messages_for_responses` so the image-inlining
-        pass runs off the event loop; prompt composition counting is likewise
-        offloaded via :func:`asyncio.to_thread`.
+        pass runs off the event loop.
         """
         instructions, input_items = await self.aformat_messages_for_responses(messages)
-        (
-            instructions,
-            input_items,
-            resp_tools,
-            call_kwargs,
-            telemetry_ctx,
-        ) = self._finalize_responses_params(
+        return self._finalize_responses_params(
             instructions,
             input_items,
             tools,
@@ -1480,14 +1399,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             kwargs,
             call_context=call_context,
         )
-        telemetry_ctx["prompt_composition"] = await asyncio.to_thread(
-            self._responses_prompt_composition,
-            instructions,
-            input_items,
-            tools,
-            add_security_risk_prediction,
-        )
-        return instructions, input_items, resp_tools, call_kwargs, telemetry_ctx
 
     def _finalize_responses_params(
         self,
@@ -1537,7 +1448,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # logging is disabled.
         telemetry = self.telemetry
         telemetry_ctx: dict[str, Any] = {
-            "context_window": self.effective_max_input_tokens or 0,
+            "context_window": self.effective_max_input_tokens or 0
         }
         if telemetry.log_enabled:
             telemetry_ctx.update(
@@ -1551,50 +1462,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
 
         return instructions, input_items, resp_tools, call_kwargs, telemetry_ctx
-
-    def _responses_prompt_composition(
-        self,
-        instructions: str | None,
-        input_items: list[dict[str, Any]],
-        tools: Sequence[ToolDefinition] | None,
-        add_security_risk_prediction: bool,
-    ) -> PromptComposition | None:
-        """Best-effort prompt composition for the Responses path.
-
-        Returns None without counting when ``enable_prompt_composition`` is
-        off. Counts the finalized payload (instructions + input items) so the
-        record reflects what the provider received. Tool schemas are counted
-        from their OpenAI chat-format equivalent so ``tool_tokens`` stays
-        comparable with the chat path. Any serialization or conversion
-        failure yields None rather than breaking the real call.
-        """
-        if not self.enable_prompt_composition:
-            return None
-        try:
-            chat_messages = responses_payload_to_chat_messages(
-                instructions, input_items
-            )
-            cc_tools = (
-                [
-                    t.to_openai_tool(
-                        add_security_risk_prediction=add_security_risk_prediction,
-                    )
-                    for t in tools
-                ]
-                if tools
-                else None
-            )
-        except Exception:
-            logger.debug(
-                "Responses prompt composition skipped for %s", self.model, exc_info=True
-            )
-            return None
-        return compute_prompt_composition(
-            model=self.model,
-            messages=chat_messages,
-            tools=cc_tools,
-            custom_tokenizer=self._tokenizer,
-        )
 
     def _validate_chat_response(
         self,
