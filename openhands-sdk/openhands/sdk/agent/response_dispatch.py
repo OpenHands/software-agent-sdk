@@ -297,27 +297,12 @@ class ResponseDispatchMixin:
     def _mask_secrets(message: Message, conversation: LocalConversation) -> Message:
         """Return ``message`` with registered secret values masked in its text.
 
-        Tool output is masked by its executor, but nothing masked the model's
-        own words: a secret the model echoed back was persisted verbatim into
-        the durable ``MessageEvent`` — the copy that is stored, replayed to the
-        LLM, rendered, exported and POSTed to webhooks.
-
-        Masking here rather than per response type covers every non-tool-call
-        response, because both ``_handle_content_response`` and
-        ``_handle_no_content_response`` build their event through
-        ``_emit_message_event``, on the sync and async paths alike.
-        ``reasoning_content`` is masked too — it is the only text a
-        reasoning-only response carries, so leaving it out would make this a
-        no-op for exactly one of the two callers.
-
-        ``thinking_blocks`` and ``responses_reasoning_item`` are deliberately
-        left untouched: they are signed provider payloads, and rewriting them
-        invalidates the signature the next request replays.
+        ``thinking_blocks`` and ``responses_reasoning_item`` are left alone:
+        they are signed provider payloads, and rewriting them invalidates the
+        signature replayed on the next request.
         """
-        registry = conversation.state.secret_registry
-        if not registry.secret_sources:
-            return message
-        mask = registry.mask_secrets_in_output
+        mask = conversation.state.secret_registry.mask_secrets_in_output
+        reasoning = message.reasoning_content
         return message.model_copy(
             update={
                 "content": [
@@ -326,11 +311,7 @@ class ResponseDispatchMixin:
                     else part
                     for part in message.content
                 ],
-                "reasoning_content": (
-                    mask(message.reasoning_content)
-                    if message.reasoning_content
-                    else message.reasoning_content
-                ),
+                "reasoning_content": mask(reasoning) if reasoning else reasoning,
             }
         )
 

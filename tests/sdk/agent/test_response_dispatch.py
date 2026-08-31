@@ -1,5 +1,6 @@
 """Unit tests for LLM response classification and dispatch."""
 
+from collections.abc import Callable
 from unittest.mock import MagicMock
 
 import pytest
@@ -201,6 +202,7 @@ def _run_single_step(
     seed_events: list[Event] | None = None,
     record_emitted_events_in_state: bool = False,
     secrets: dict[str, str] | None = None,
+    prepare: Callable[[LocalConversation], None] | None = None,
 ) -> tuple[list[Event], LocalConversation]:
     """Run one agent step with a canned LLM response."""
     from pydantic import PrivateAttr
@@ -226,6 +228,8 @@ def _run_single_step(
     if seed_events is not None:
         for event in seed_events:
             conversation.state.append_event(event)
+    if prepare is not None:
+        prepare(conversation)
 
     events: list[Event] = []
 
@@ -402,11 +406,6 @@ def test_batch_action_events_are_emitted_consecutively():
     assert action_events[0].thought and not action_events[1].thought
 
 
-# ---------------------------------------------------------------------------
-# Secret masking on the model's own output (issue #4678)
-# ---------------------------------------------------------------------------
-
-
 def _agent_message_text(events: list[Event]) -> str:
     """Text of the single agent MessageEvent emitted by a step."""
     msg_event = next(
@@ -453,7 +452,7 @@ def test_content_response_masks_secret_joined_from_stream_chunks():
 
 
 def test_content_response_without_secrets_is_left_alone():
-    """An empty registry short-circuits: the message is passed through as-is."""
+    """With nothing registered, the message text is passed through unchanged."""
     msg = Message(role="assistant", content=[TextContent(text="nothing to hide")])
     events, _ = _run_single_step(_make_llm_response(msg))
 
@@ -475,3 +474,32 @@ def test_reasoning_only_response_masks_registered_secret():
         e for e in events if isinstance(e, MessageEvent) and e.source == "agent"
     )
     assert msg_event.llm_message.reasoning_content == "the value is <secret-hidden> now"
+
+
+def test_content_response_masks_value_dropped_from_secret_sources():
+    """Masking follows the tracked values, not the registry's source list.
+
+    ``EventService.activate_credential_binding`` pops a name from
+    ``secret_sources`` while the resolved value stays tracked for masking, so
+    keying off ``secret_sources`` would leak a live credential here.
+    """
+
+    def drop_source(convo: LocalConversation) -> None:
+        registry = convo.state.secret_registry
+        registry.get_secret_value("TOKEN")  # resolve -> tracked for masking
+        with convo.state:
+            convo.state.secret_registry = registry.model_copy(
+                update={"secret_sources": {}}
+            )
+
+    msg = Message(
+        role="assistant", content=[TextContent(text="the value is supersecret now")]
+    )
+    events, convo = _run_single_step(
+        _make_llm_response(msg),
+        secrets={"TOKEN": "supersecret"},
+        prepare=drop_source,
+    )
+
+    assert not convo.state.secret_registry.secret_sources
+    assert _agent_message_text(events) == "the value is <secret-hidden> now"
