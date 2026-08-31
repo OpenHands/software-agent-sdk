@@ -121,7 +121,7 @@ RUN set -eux; \
       case "$provider" in \
         claude-code) PACKAGES="$PACKAGES @agentclientprotocol/claude-agent-acp@0.63.0"; \
           WRAPPER_BINS="$WRAPPER_BINS claude-agent-acp";; \
-        codex) PACKAGES="$PACKAGES @agentclientprotocol/codex-acp@1.6.2"; \
+        codex) PACKAGES="$PACKAGES @agentclientprotocol/codex-acp@1.7.0"; \
           WRAPPER_BINS="$WRAPPER_BINS codex-acp";; \
         gemini-cli) PACKAGES="$PACKAGES @google/gemini-cli@0.46.0"; \
           WRAPPER_BINS="$WRAPPER_BINS gemini";; \
