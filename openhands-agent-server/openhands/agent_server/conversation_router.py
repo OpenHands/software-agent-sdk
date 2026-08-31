@@ -27,8 +27,10 @@ from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.models import (
     INCLUDE_SKILLS_PARAM_TITLE,
     AgentResponseResult,
+    ArchiveConversationRequest,
     AskAgentRequest,
     AskAgentResponse,
+    ConversationArchiveFilter,
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
@@ -105,14 +107,23 @@ async def search_conversations(
         Query(title="Sort order for conversations"),
     ] = ConversationSortOrder.CREATED_AT_DESC,
     include_skills: Annotated[bool, Query(title=INCLUDE_SKILLS_PARAM_TITLE)] = False,
+    archive_filter: Annotated[
+        ConversationArchiveFilter,
+        Query(title="Filter conversations by archive state"),
+    ] = ConversationArchiveFilter.ACTIVE,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> ConversationPage:
     """Search / List conversations"""
     assert limit > 0
     assert limit <= 100
-    page = await conversation_service.search_conversations(
-        page_id, limit, status, sort_order
-    )
+    if archive_filter == ConversationArchiveFilter.ACTIVE:
+        page = await conversation_service.search_conversations(
+            page_id, limit, status, sort_order
+        )
+    else:
+        page = await conversation_service.search_conversations(
+            page_id, limit, status, sort_order, archive_filter
+        )
     if not include_skills:
         # ``model_copy`` rather than in-place mutation so we never
         # write back into whatever the upstream service handed us
@@ -134,10 +145,17 @@ async def count_conversations(
         ConversationExecutionStatus | None,
         Query(title="Optional filter by conversation execution status"),
     ] = None,
+    archive_filter: Annotated[
+        ConversationArchiveFilter,
+        Query(title="Filter conversations by archive state"),
+    ] = ConversationArchiveFilter.ACTIVE,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> int:
     """Count conversations matching the given filters"""
-    count = await conversation_service.count_conversations(status)
+    if archive_filter == ConversationArchiveFilter.ACTIVE:
+        count = await conversation_service.count_conversations(status)
+    else:
+        count = await conversation_service.count_conversations(status, archive_filter)
     return count
 
 
@@ -264,6 +282,39 @@ async def interrupt_conversation(
     interrupted = await conversation_service.interrupt_conversation(conversation_id)
     if not interrupted:
         raise HTTPException(status.HTTP_400_BAD_REQUEST)
+    return Success()
+
+
+@conversation_router.post(
+    "/{conversation_id}/archive", responses={404: {"description": "Item not found"}}
+)
+async def archive_conversation(
+    conversation_id: UUID,
+    _request: ArchiveConversationRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Reversibly hide a conversation after explicit confirmation."""
+    archived = await conversation_service.set_conversation_archived(
+        conversation_id, archived=True
+    )
+    if not archived:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    return Success()
+
+
+@conversation_router.post(
+    "/{conversation_id}/unarchive", responses={404: {"description": "Item not found"}}
+)
+async def unarchive_conversation(
+    conversation_id: UUID,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Restore an archived conversation to normal listings."""
+    unarchived = await conversation_service.set_conversation_archived(
+        conversation_id, archived=False
+    )
+    if not unarchived:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
     return Success()
 
 

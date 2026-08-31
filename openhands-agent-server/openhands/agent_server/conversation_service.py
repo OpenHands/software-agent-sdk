@@ -26,6 +26,7 @@ from openhands.agent_server.event_service import (
     _without_agent_context_secret,
 )
 from openhands.agent_server.models import (
+    ConversationArchiveFilter,
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
@@ -71,6 +72,7 @@ from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
 from openhands.sdk.tool import BROWSER_TOOL_NAME, Tool, is_tool_usable
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.files import atomic_write_text
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -527,6 +529,7 @@ def _compose_conversation_info(
         supports_runtime_model_switch=supports_runtime_model_switch,
         client_tools=stored.client_tools,
         launched_agent_profile=stored.launched_agent_profile,
+        archived_at=stored.archived_at,
     )
 
 
@@ -627,6 +630,7 @@ def _stored_metadata_signature(stored: StoredConversation) -> int:
             "parent_conversation_id",
             "client_tools",
             "launched_agent_profile",
+            "archived_at",
         },
     )
     return hash(json.dumps(metadata, sort_keys=True, default=str))
@@ -1230,12 +1234,14 @@ class ConversationService:
         limit: int = 100,
         execution_status: ConversationExecutionStatus | None = None,
         sort_order: ConversationSortOrder = ConversationSortOrder.CREATED_AT_DESC,
+        archive_filter: ConversationArchiveFilter = ConversationArchiveFilter.ACTIVE,
     ) -> ConversationPage:
         items, next_page_id = await self._search_conversations(
             page_id=page_id,
             limit=limit,
             execution_status=execution_status,
             sort_order=sort_order,
+            archive_filter=archive_filter,
         )
         return ConversationPage(
             items=items,
@@ -1248,12 +1254,14 @@ class ConversationService:
         limit: int = 100,
         execution_status: ConversationExecutionStatus | None = None,
         sort_order: ConversationSortOrder = ConversationSortOrder.CREATED_AT_DESC,
+        archive_filter: ConversationArchiveFilter = ConversationArchiveFilter.ACTIVE,
     ) -> ConversationPage:
         items, next_page_id = await self._search_conversations(
             page_id=page_id,
             limit=limit,
             execution_status=execution_status,
             sort_order=sort_order,
+            archive_filter=archive_filter,
         )
         return ConversationPage(
             items=items,
@@ -1266,6 +1274,7 @@ class ConversationService:
         limit: int,
         execution_status: ConversationExecutionStatus | None,
         sort_order: ConversationSortOrder,
+        archive_filter: ConversationArchiveFilter,
     ) -> tuple[list[ConversationInfo], str | None]:
         if self._event_services is None:
             raise ValueError("inactive_service")
@@ -1281,7 +1290,18 @@ class ConversationService:
         records = [
             (conversation_id, record)
             for conversation_id, record in self._conversation_records.items()
-            if execution_status is None or record.execution_status == execution_status
+            if (execution_status is None or record.execution_status == execution_status)
+            and (
+                archive_filter == ConversationArchiveFilter.ALL
+                or (
+                    archive_filter == ConversationArchiveFilter.ARCHIVED
+                    and record.stored.archived_at is not None
+                )
+                or (
+                    archive_filter == ConversationArchiveFilter.ACTIVE
+                    and record.stored.archived_at is None
+                )
+            )
         ]
         if sort_order in (
             ConversationSortOrder.CREATED_AT,
@@ -1322,26 +1342,39 @@ class ConversationService:
     async def count_conversations(
         self,
         execution_status: ConversationExecutionStatus | None = None,
+        archive_filter: ConversationArchiveFilter = ConversationArchiveFilter.ACTIVE,
     ) -> int:
-        return await self._count_conversations(execution_status=execution_status)
+        return await self._count_conversations(
+            execution_status=execution_status, archive_filter=archive_filter
+        )
 
     async def _count_conversations(
         self,
         execution_status: ConversationExecutionStatus | None,
+        archive_filter: ConversationArchiveFilter,
     ) -> int:
         """Count conversations matching the given filters."""
         if self._event_services is None:
             raise ValueError("inactive_service")
         await self._reconcile_active_records()
 
-        if execution_status is None:
-            return len(self._conversation_records)
-
-        await self._refresh_execution_statuses()
+        if execution_status is not None:
+            await self._refresh_execution_statuses()
         return sum(
             1
             for record in self._conversation_records.values()
-            if record.execution_status == execution_status
+            if (execution_status is None or record.execution_status == execution_status)
+            and (
+                archive_filter == ConversationArchiveFilter.ALL
+                or (
+                    archive_filter == ConversationArchiveFilter.ARCHIVED
+                    and record.stored.archived_at is not None
+                )
+                or (
+                    archive_filter == ConversationArchiveFilter.ACTIVE
+                    and record.stored.archived_at is None
+                )
+            )
         )
 
     async def batch_get_conversations(
@@ -1795,6 +1828,53 @@ class ConversationService:
 
     async def resume_conversation(self, conversation_id: UUID) -> bool:
         return bool(await self._get_or_load_event_service(conversation_id))
+
+    async def set_conversation_archived(
+        self, conversation_id: UUID, *, archived: bool
+    ) -> bool:
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        async with self._conversation_lifecycle(conversation_id):
+            record = self._conversation_records.get(conversation_id)
+            event_service = self._event_services.get(conversation_id)
+            if record is None and event_service is None:
+                return False
+
+            stored = (
+                event_service.stored if event_service is not None else record.stored
+            )
+            if (stored.archived_at is not None) == archived:
+                return True
+
+            previous_archived_at = stored.archived_at
+            stored.archived_at = utc_now() if archived else None
+            try:
+                if event_service is not None:
+                    await event_service.save_meta()
+                else:
+                    context = {"cipher": self.cipher}
+                    meta_file = (
+                        self.conversations_dir / conversation_id.hex / "meta.json"
+                    )
+                    await asyncio.to_thread(
+                        atomic_write_text,
+                        meta_file,
+                        stored.model_dump_json(context=context),
+                    )
+            except Exception:
+                stored.archived_at = previous_archived_at
+                raise
+
+            if record is not None:
+                record.stored = stored
+                record.cached_info = None
+                record.stored_signature = None
+            logger.info(
+                "%s conversation %s",
+                "Archived" if archived else "Unarchived",
+                conversation_id,
+            )
+            return True
 
     async def delete_conversation(self, conversation_id: UUID) -> bool:
         event_services = self._event_services

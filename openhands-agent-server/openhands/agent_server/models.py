@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC
 from datetime import datetime
 from enum import Enum, StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator
@@ -67,6 +67,14 @@ class ConversationSortOrder(StrEnum):
     UPDATED_AT_DESC = "UPDATED_AT_DESC"
 
 
+class ConversationArchiveFilter(StrEnum):
+    """Select conversations by archive state."""
+
+    ACTIVE = "ACTIVE"
+    ARCHIVED = "ARCHIVED"
+    ALL = "ALL"
+
+
 class EventSortOrder(StrEnum):
     """Enum for event sorting options."""
 
@@ -94,6 +102,10 @@ class StoredConversation(ConversationConfig):
     metrics: MetricsSnapshot | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+    archived_at: datetime | None = Field(
+        default=None,
+        description="When this conversation was archived; null while active",
+    )
     forked_from_conversation_id: OpenHandsUUID | None = Field(
         default=None,
         description=(
@@ -149,6 +161,9 @@ class _ConversationInfoBase(BaseModel):
     )
     execution_status: ConversationExecutionStatus = Field(
         default=ConversationExecutionStatus.IDLE
+    )
+    archived_at: datetime | None = Field(
+        default=None, description="When this conversation was archived"
     )
     confirmation_policy: ConfirmationPolicyBase = Field(default=NeverConfirm())
     security_analyzer: SecurityAnalyzerBase | None = Field(
@@ -465,6 +480,14 @@ class SetSecurityAnalyzerRequest(BaseModel):
 
     security_analyzer: SecurityAnalyzerBase | None = Field(
         description="The security analyzer to set"
+    )
+
+
+class ArchiveConversationRequest(BaseModel):
+    """Explicit confirmation required before hiding a conversation."""
+
+    confirmed: Literal[True] = Field(
+        description="Must be true to confirm this reversible archive operation"
     )
 
 
