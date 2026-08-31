@@ -84,7 +84,6 @@ export interface SkillsRequest {
   load_org?: boolean;
   marketplace_path?: string | null;
   project_dir?: string | null;
-  org_config?: OrgConfig | null;
   sandbox_config?: SandboxConfig | null;
 }
 
