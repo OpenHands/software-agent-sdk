@@ -22,6 +22,7 @@ from openhands.sdk.llm import (
     ThinkingBlock,
 )
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot, TokenUsage
+from openhands.sdk.testing import TestLLM
 from openhands.sdk.tool import Action, Observation
 
 
@@ -200,6 +201,7 @@ def _run_single_step(
     *,
     seed_events: list[Event] | None = None,
     record_emitted_events_in_state: bool = False,
+    content_response_policy: str = "finish",
 ) -> tuple[list[Event], LocalConversation]:
     """Run one agent step with a canned LLM response."""
     from pydantic import PrivateAttr
@@ -217,7 +219,7 @@ def _run_single_step(
             return self._response
 
     llm = SingleShotLLM(llm_response)
-    agent = Agent(llm=llm, tools=[])
+    agent = Agent(llm=llm, tools=[], content_response_policy=content_response_policy)
     conversation = Conversation(agent=agent)
     conversation._ensure_agent_ready()
     if seed_events is not None:
@@ -285,6 +287,105 @@ def test_content_response_sets_finished():
     assert convo.state.execution_status == ConversationExecutionStatus.FINISHED
     assert len(msg_events) == 1
     assert msg_events[0].source == "agent"
+
+
+def test_content_response_default_policy_is_finish():
+    """The default policy is unchanged: content still finishes the conversation."""
+    assert (
+        Agent(llm=LLM(model="test-model"), tools=[]).content_response_policy == "finish"
+    )
+
+
+def test_content_response_nudge_policy_continues_loop():
+    """content_response_policy="nudge": prose without a tool call does not finish.
+
+    The agent message is preserved, a corrective nudge follows, and the
+    conversation stays runnable (regression for #3992: weaker/local models
+    narrating a step in prose were silently treated as finished mid-task).
+    """
+    msg = Message(
+        role="assistant",
+        content=[TextContent(text="Let me now check the config before I proceed.")],
+    )
+    events, convo = _run_single_step(
+        _make_llm_response(msg), content_response_policy="nudge"
+    )
+    msg_events = [e for e in events if isinstance(e, MessageEvent)]
+
+    assert convo.state.execution_status != ConversationExecutionStatus.FINISHED
+    assert len(msg_events) == 2
+    assert msg_events[0].source == "agent"  # the prose is not dropped
+    assert msg_events[1].source == "environment"  # framework feedback, not a human turn
+    assert msg_events[1].llm_message.role == "user"  # but the model still reads it
+    nudge_content = msg_events[1].llm_message.content[0]
+    assert isinstance(nudge_content, TextContent)
+    assert "finish" in nudge_content.text  # points at the explicit completion path
+
+
+def test_finish_tool_still_finishes_under_nudge_policy():
+    """Explicit completion via the finish tool works under the nudge policy."""
+    tool_call = MessageToolCall(
+        id="tc-finish",
+        name="finish",
+        arguments='{"message": "All done"}',
+        origin="completion",
+    )
+    msg = Message(role="assistant", tool_calls=[tool_call])
+    _, convo = _run_single_step(
+        _make_llm_response(msg), content_response_policy="nudge"
+    )
+    assert convo.state.execution_status == ConversationExecutionStatus.FINISHED
+
+
+def test_nudge_policy_repeated_prose_reaches_stuck_before_max_iteration():
+    """Regression for the #3997 review: the nudge policy must not run away.
+
+    A model that keeps returning prose without a tool call must be caught by the
+    conversation-level stuck detector, NOT run to ``max_iteration_per_run``. The
+    corrective nudge is emitted with ``source="environment"`` so it does not reset
+    the human-turn boundary the ``StuckDetector`` uses; the repeated agent messages
+    then register as monologue and trip stuck detection. A one-step test cannot
+    catch this control-flow failure, so this drives the real multi-step loop.
+    """
+    # Many more prose responses than the monologue threshold (3), far fewer than
+    # the default max_iteration_per_run (500). An unbounded loop would consume all
+    # of these; the fix must stop it after only a handful.
+    prose = [
+        Message(
+            role="assistant",
+            content=[TextContent(text=f"Let me keep thinking about step {i}.")],
+        )
+        for i in range(30)
+    ]
+    agent = Agent(
+        llm=TestLLM.from_messages(prose),
+        tools=[],
+        content_response_policy="nudge",
+    )
+    conversation = Conversation(agent=agent)
+    conversation.send_message(
+        Message(role="user", content=[TextContent(text="Do the task.")])
+    )
+    conversation.run()
+
+    # Stuck detection fired instead of running away to max_iteration_per_run.
+    assert conversation.state.execution_status == ConversationExecutionStatus.STUCK
+    # And it fired quickly — a few agent turns, nowhere near 500 or the 30 scripted
+    # responses (the monologue threshold is 3).
+    agent_msgs = [
+        e
+        for e in conversation.state.events
+        if isinstance(e, MessageEvent) and e.source == "agent"
+    ]
+    assert len(agent_msgs) < 10
+    # The synthetic nudges were NOT recorded as real user turns (the whole point):
+    # only the original task counts as a user message.
+    user_msgs = [
+        e
+        for e in conversation.state.events
+        if isinstance(e, MessageEvent) and e.source == "user"
+    ]
+    assert len(user_msgs) == 1
 
 
 def test_empty_response_sends_nudge():
