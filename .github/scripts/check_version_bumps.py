@@ -94,8 +94,6 @@ def find_version_changes(repo_root: Path, base_ref: str) -> list[VersionChange]:
                 previous_error = exc
 
         if previous_version is None:
-            if package_file == PACKAGE_FILES["typescript-client"]:
-                continue
             assert previous_error is not None
             raise previous_error
 
