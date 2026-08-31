@@ -95,6 +95,17 @@ function renderEndpointAuditReport(report) {
   ].join('\n');
 }
 
+// A pull_request raised from a fork runs with a read-only GITHUB_TOKEN, so
+// `pull-requests: write` cannot be honoured and the comment POST comes back
+// 403 "Resource not accessible by integration". Push events have no PR at all
+// (context.issue.number is undefined), and the same guard covers them.
+function canCommentOnPullRequest(context) {
+  if (!context || context.eventName !== 'pull_request') return false;
+  const head = context.payload?.pull_request?.head;
+  if (!head?.repo?.full_name) return false;
+  return head.repo.full_name === `${context.repo.owner}/${context.repo.repo}`;
+}
+
 async function postEndpointAuditReport({ github, context, core, reportPath = REPORT_PATH }) {
   if (!fs.existsSync(reportPath)) {
     core.warning(`No audit report at ${reportPath}; skipping PR comment.`);
@@ -102,6 +113,21 @@ async function postEndpointAuditReport({ github, context, core, reportPath = REP
   }
 
   const body = renderEndpointAuditReport(JSON.parse(fs.readFileSync(reportPath, 'utf8')));
+
+  // The job summary is the one surface every run can write, so the report
+  // reaches a reviewer even when the comment is unavailable.
+  if (core?.summary) {
+    await core.summary.addRaw(body).write();
+  }
+
+  if (!canCommentOnPullRequest(context)) {
+    core.info(
+      'Skipping the PR comment: this run is a push or a fork pull_request, ' +
+        'whose token cannot write comments. The report is in the job summary.'
+    );
+    return;
+  }
+
   const { owner, repo } = context.repo;
   const issue_number = context.issue.number;
   const comments = await github.paginate(github.rest.issues.listComments, {
@@ -118,4 +144,4 @@ async function postEndpointAuditReport({ github, context, core, reportPath = REP
   }
 }
 
-module.exports = { postEndpointAuditReport, renderEndpointAuditReport };
+module.exports = { canCommentOnPullRequest, postEndpointAuditReport, renderEndpointAuditReport };

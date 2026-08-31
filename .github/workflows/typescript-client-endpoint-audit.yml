@@ -4,12 +4,12 @@ name: TypeScript client endpoint audit
 on:
     push:
         branches: [main]
-  # Required for the "Comment audit report on PR" step: it is gated on
-  # github.event_name == 'pull_request' and relies on the PR context
-  # (context.issue.number), neither of which exists on a push event.
     pull_request:
 
-# Needed so the audit can post its report as a comment on the PR.
+# pull-requests: write lets same-repo PR runs post the report as a comment.
+# Fork pull_request runs get a read-only token regardless, so they and push
+# runs publish the report to the job summary instead (see
+# canCommentOnPullRequest in .github/scripts/post-typescript-endpoint-audit-report.cjs).
 permissions:
     contents: read
     pull-requests: write
@@ -53,11 +53,13 @@ jobs:
           # .audit/ is a dot-directory; upload-artifact@v4 skips hidden paths by default.
                   include-hidden-files: true
 
-      # Post the report as a single, self-updating comment on the PR. Runs even
-      # when the audit gate fails (the report is written before the gate), so
-      # reviewers see the mismatches that failed the check.
-            - name: Comment audit report on PR
-              if: always() && github.event_name == 'pull_request'
+      # Publish the report. It always lands in the job summary, and additionally
+      # as a single self-updating PR comment when the run's token can write one
+      # (same-repo pull requests). Runs even when the audit gate fails (the
+      # report is written before the gate), so reviewers see the mismatches that
+      # failed the check.
+            - name: Publish audit report
+              if: always()
               uses: actions/github-script@v7
               with:
                   script: |
