@@ -39,6 +39,9 @@
     }
   },
   "overrides": {
+    "ts-jest": {
+      "@babel/core": "$@babel/core"
+    },
     "eslint": {
       "minimatch": {
         ".": "^10.2.1",
@@ -90,6 +93,7 @@
     "ws": "^8.20.0"
   },
   "devDependencies": {
+    "@babel/core": "^8.0.1",
     "@babel/preset-env": "^8.0.2",
     "@eslint/js": "^10.0.1",
     "@hey-api/openapi-ts": "0.99.0",
