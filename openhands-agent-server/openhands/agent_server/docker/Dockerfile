@@ -310,13 +310,13 @@ ENV EDITOR=code \
     OPENVSCODE_SERVER_ROOT=/openhands/.openvscode-server
 ARG RELEASE_TAG="openvscode-server-v1.98.2"
 ARG RELEASE_ORG="gitpod-io"
-# The --mount=from=builder below is unconditional at the Dockerfile level, so
-# BuildKit still builds the full `builder` stage (the entire SDK venv) even
-# when `vscode` is excluded from INSTALL_CAPABILITIES — the case check inside
-# this RUN only decides what lands in THIS image, not what gets built as a
-# dependency. Excluding vscode shrinks the result, not the build time.
-RUN --mount=type=bind,from=builder,source=/agent-server/openhands-agent-server/openhands/agent_server/vscode_extensions,target=/tmp/vscode_extensions \
-    set -eux; \
+# The --mount=from=builder on the extensions RUN below is unconditional at
+# the Dockerfile level, so BuildKit still builds the full `builder` stage
+# (the entire SDK venv) even when `vscode` is excluded from
+# INSTALL_CAPABILITIES — the case check inside each RUN only decides what
+# lands in THIS image, not what gets built as a dependency. Excluding vscode
+# shrinks the result, not the build time.
+RUN set -eux; \
     case ",$INSTALL_CAPABILITIES," in \
       *,vscode,*) ;; \
       *) echo "INSTALL_CAPABILITIES excludes vscode; skipping OpenVSCode Server"; exit 0;; \
@@ -343,15 +343,26 @@ RUN --mount=type=bind,from=builder,source=/agent-server/openhands-agent-server/o
     cp ${OPENVSCODE_SERVER_ROOT}/bin/remote-cli/openvscode-server ${OPENVSCODE_SERVER_ROOT}/bin/remote-cli/code; \
     rm -f ${RELEASE_TAG}-linux-${arch}.tar.gz; \
     \
-    # Include VSCode extensions alongside the server. Trailing slashes matter:
-    # OpenVSCode Server's tarball already ships its own extensions/ dir, so a
-    # bare `cp -r src dst` would nest src under the existing dst instead of
-    # merging into it the way `COPY` does.
-    mkdir -p ${OPENVSCODE_SERVER_ROOT}/extensions; \
-    cp -r /tmp/vscode_extensions/. ${OPENVSCODE_SERVER_ROOT}/extensions/; \
-    \
     # Set proper ownership
     chown -R ${USERNAME}:${USERNAME} ${OPENVSCODE_SERVER_ROOT}
+
+# Kept as its own RUN, separate from the tarball download above: extensions
+# are actively-edited local source (unlike the pinned release tarball), so
+# splitting them keeps an extension-only change from invalidating the ~100MB
+# download's cache layer.
+RUN --mount=type=bind,from=builder,source=/agent-server/openhands-agent-server/openhands/agent_server/vscode_extensions,target=/tmp/vscode_extensions \
+    set -eux; \
+    case ",$INSTALL_CAPABILITIES," in \
+      *,vscode,*) ;; \
+      *) exit 0;; \
+    esac; \
+    \
+    # Trailing slashes matter: OpenVSCode Server's tarball already ships its
+    # own extensions/ dir, so a bare `cp -r src dst` would nest src under the
+    # existing dst instead of merging into it the way `COPY` does.
+    mkdir -p ${OPENVSCODE_SERVER_ROOT}/extensions; \
+    cp -r /tmp/vscode_extensions/. ${OPENVSCODE_SERVER_ROOT}/extensions/; \
+    chown -R ${USERNAME}:${USERNAME} ${OPENVSCODE_SERVER_ROOT}/extensions
 
 # --- Docker ---
 RUN set -eux; \
