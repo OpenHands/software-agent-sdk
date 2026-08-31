@@ -21,22 +21,29 @@ FAILED_LOOKUP_RETRY_SECONDS: Final[float] = 60.0
 
 def _mask_value(value: Any, mask: Callable[[str], str]) -> Any:
     """Recursively mask every ``str`` reachable from ``value``."""
-    if isinstance(value, Enum):
-        # A str-subclass enum is a str, but masking it would downgrade the
-        # member to a plain str and break the field's serialization. Its
-        # vocabulary is fixed, so it can never hold a secret anyway.
-        return value
-    if isinstance(value, str):
-        return mask(value)
-    if isinstance(value, BaseModel):
-        return _mask_model(value, mask)
-    if isinstance(value, list):
-        return [_mask_value(item, mask) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_mask_value(item, mask) for item in value)
-    if isinstance(value, dict):
-        return {key: _mask_value(item, mask) for key, item in value.items()}
-    return value
+    match value:
+        case Enum():
+            # A str-subclass enum is a str, but masking it would downgrade the
+            # member to a plain str and break the field's serialization. Its
+            # vocabulary is fixed, so it can never hold a secret anyway.
+            return value
+        case str():
+            return mask(value)
+        case BaseModel():
+            return _mask_model(value, mask)
+        case list():
+            return [_mask_value(item, mask) for item in value]
+        case tuple():
+            items = [_mask_value(item, mask) for item in value]
+            # Rebuild a NamedTuple through its own constructor; tuple(items)
+            # would downgrade it the same way masking an Enum member does.
+            return type(value)(*items) if hasattr(value, "_fields") else tuple(items)
+        case set() | frozenset():
+            return type(value)(_mask_value(item, mask) for item in value)
+        case dict():
+            return {key: _mask_value(item, mask) for key, item in value.items()}
+        case _:
+            return value
 
 
 def _mask_model[ModelT: BaseModel](model: ModelT, mask: Callable[[str], str]) -> ModelT:
