@@ -22,6 +22,14 @@ on:
                 description: Target platforms
                 type: string
                 default: linux/amd64,linux/arm64
+            install_acp_providers:
+                description: Comma-separated ACP provider keys to bake into the image
+                type: string
+                default: claude-code,codex,gemini-cli
+            install_capabilities:
+                description: Comma-separated capability keys to bake into the image
+                type: string
+                default: vscode,browser,docker
 
 permissions:
     contents: read
@@ -317,6 +325,15 @@ jobs:
         env:
             IMAGE: ${{ inputs.image != '' && inputs.image || 'ghcr.io/openhands/agent-server' }}
             BASE_IMAGE: ${{ inputs.base_image != '' && inputs.base_image || matrix.base_image }}
+            # The maybe-empty value (inputs.install_acp_providers) must be the
+            # LAST operand: GitHub Actions' `A && B || C` collapses to C
+            # whenever B is falsy, so an explicit "" dispatch input ("install
+            # none") would silently fall through to the default if it sat in
+            # B's position instead.
+            INSTALL_ACP_PROVIDERS: ${{ github.event_name != 'workflow_dispatch' && 'claude-code,codex,gemini-cli' || inputs.install_acp_providers }}
+            # Same last-operand reasoning as INSTALL_ACP_PROVIDERS above: an
+            # explicit "" dispatch input ("install none") must survive.
+            INSTALL_CAPABILITIES: ${{ github.event_name != 'workflow_dispatch' && 'vscode,browser,docker' || inputs.install_capabilities }}
             CUSTOM_TAGS: ${{ matrix.variant }}
             VARIANT: ${{ matrix.variant }}
             ARCH: ${{ matrix.arch }}
@@ -402,6 +419,8 @@ jobs:
                       BASE_IMAGE=${{ env.BASE_IMAGE }}
                       OPENHANDS_BUILD_GIT_SHA=${{ env.SDK_SHA }}
                       OPENHANDS_BUILD_GIT_REF=${{ env.SDK_REF }}
+                      INSTALL_ACP_PROVIDERS=${{ env.INSTALL_ACP_PROVIDERS }}
+                      INSTALL_CAPABILITIES=${{ env.INSTALL_CAPABILITIES }}
 
             - name: Cleanup build context
               if: always()

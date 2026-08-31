@@ -15,7 +15,8 @@ env:
 jobs:
     print-parameters:
         if: >
-            github.event_name == 'release' ||
+            (github.event_name == 'release' &&
+             startsWith(github.event.release.tag_name, 'v')) ||
             (github.event_name == 'pull_request_target' &&
              (github.event.label.name == 'run-eval-1' ||
               github.event.label.name == 'run-eval-50' ||

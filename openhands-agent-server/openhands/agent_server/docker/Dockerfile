@@ -13,6 +13,18 @@ ARG PORT=8000
 # to bundle google-cloud-aiplatform so the resulting binary supports
 # `vertex_ai/*` partner models (MiniMax, Qwen, Kimi MaaS endpoints).
 ARG ENABLE_VERTEX=0
+# Comma-separated ACP provider keys (see ACP_PROVIDERS in
+# openhands-sdk/openhands/sdk/settings/acp_providers.py) to bake into the
+# acp-providers stage below. The default reproduces the full provider set
+# shipped today; an unknown key fails the build rather than silently
+# installing nothing.
+ARG INSTALL_ACP_PROVIDERS=claude-code,codex,gemini-cli
+# Comma-separated capability keys to include in the `base-image` stage below
+# (`base-image-minimal` is unaffected). The default reproduces today's full
+# contents; an unknown key fails the build. The GitHub CLI is expected to
+# join this list later (see OpenHands/software-agent-sdk#4645) — the parsing
+# below is written so that's a one-case addition, not a signature change.
+ARG INSTALL_CAPABILITIES=vscode,browser,docker
 
 ####################################################################################
 # Builder (source mode)
@@ -92,6 +104,7 @@ RUN test -x /agent-server/dist/openhands-agent-server
 # the per-target-image fallback).
 ####################################################################################
 FROM python:3.13-bookworm AS acp-providers
+ARG INSTALL_ACP_PROVIDERS
 # A fresh top-level path, not nested under a directory (e.g. /opt) that base
 # images commonly already populate (SWE-bench images ship /opt/miniconda3):
 # COPY --from=<stage> only produces a byte-identical layer across different
@@ -100,12 +113,30 @@ FROM python:3.13-bookworm AS acp-providers
 # stage above.
 ENV ACP_NODE_DIR=/acp-node
 RUN set -eux; \
+    ACP_WRAPPER_DIR=/opt/acp-wrappers; \
+    mkdir -p "$ACP_NODE_DIR" "$ACP_WRAPPER_DIR"; \
+    PACKAGES=""; \
+    WRAPPER_BINS=""; \
+    for provider in $(echo "$INSTALL_ACP_PROVIDERS" | tr ',' ' '); do \
+      case "$provider" in \
+        claude-code) PACKAGES="$PACKAGES @agentclientprotocol/claude-agent-acp@0.63.0"; \
+          WRAPPER_BINS="$WRAPPER_BINS claude-agent-acp";; \
+        codex) PACKAGES="$PACKAGES @agentclientprotocol/codex-acp@1.1.7"; \
+          WRAPPER_BINS="$WRAPPER_BINS codex-acp";; \
+        gemini-cli) PACKAGES="$PACKAGES @google/gemini-cli@0.46.0"; \
+          WRAPPER_BINS="$WRAPPER_BINS gemini";; \
+        *) echo "Unknown ACP provider '$provider' in INSTALL_ACP_PROVIDERS" \
+             "(expected one of: claude-code, codex, gemini-cli)" >&2; exit 1;; \
+      esac; \
+    done; \
+    if [ -z "$PACKAGES" ]; then \
+      echo "INSTALL_ACP_PROVIDERS is empty; no ACP providers will be installed"; \
+      exit 0; \
+    fi; \
     apt-get -o Acquire::Retries=5 update; \
     apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
         ca-certificates curl xz-utils; \
     rm -rf /var/lib/apt/lists/*; \
-    ACP_WRAPPER_DIR=/opt/acp-wrappers; \
-    mkdir -p "$ACP_NODE_DIR" "$ACP_WRAPPER_DIR"; \
     ARCH=$(uname -m); \
     case "$ARCH" in \
       x86_64|amd64) NARCH=x64; NODE_SHA256=69b09dba5c8dcb05c4e4273a4340db1005abeafe3927efda2bc5b249e80437ec;; \
@@ -119,11 +150,8 @@ RUN set -eux; \
     tar -xJ --strip-components=1 -C "$ACP_NODE_DIR" -f "$NODE_TARBALL"; \
     rm -f "$NODE_TARBALL"; \
     "$ACP_NODE_DIR/bin/node" --version; \
-    PATH="$ACP_NODE_DIR/bin:$PATH" "$ACP_NODE_DIR/bin/npm" install -g \
-        @agentclientprotocol/claude-agent-acp@0.63.0 \
-        @agentclientprotocol/codex-acp@1.1.7 \
-        @google/gemini-cli@0.46.0; \
-    for bin in claude-agent-acp codex-acp gemini; do \
+    PATH="$ACP_NODE_DIR/bin:$PATH" "$ACP_NODE_DIR/bin/npm" install -g $PACKAGES; \
+    for bin in $WRAPPER_BINS; do \
       printf '#!/bin/sh\nPATH="%s/bin:$PATH" exec "%s/bin/%s" "$@"\n' \
         "$ACP_NODE_DIR" "$ACP_NODE_DIR" "$bin" \
         > "$ACP_WRAPPER_DIR/$bin"; \
@@ -133,7 +161,7 @@ RUN set -eux; \
 ####################################################################################
 # Base image (minimal)
 # It includes only basic packages and the UV runtime.
-# No Docker, no VNC, no Desktop, no VSCode Web.
+# No Docker, no browser, no VSCode Web.
 # Suitable for running in headless/evaluation mode.
 ####################################################################################
 FROM ${BASE_IMAGE} AS base-image-minimal
@@ -242,26 +270,57 @@ WORKDIR /
 # Locale settings required for libtmux to work with PyInstaller builds
 ENV LC_ALL=C.UTF-8
 ENV LANG=C.UTF-8
-ENV OH_ENABLE_VNC=false
 ENV LOG_JSON=true
+# The ACP CLIs run without the user's host home here, so OpenHands supplies the
+# managed skill catalog they cannot read for themselves (#4019).
+ENV OH_ACP_SKILL_SOURCING=openhands_managed
 EXPOSE ${PORT}
 
 ####################################################################################
 # Base image (full)
-# It includes additional Docker, VNC, Desktop, and VSCode Web.
+# It includes additional Docker, browser, and VSCode Web.
 ####################################################################################
 FROM base-image-minimal AS base-image
 ARG USERNAME
+ARG INSTALL_CAPABILITIES
 
 USER root
+
+# Fail fast on a typo'd capability name before spending any time on the
+# installs below (each block only checks for ITS OWN keyword's presence, so
+# an unrecognized one would otherwise be silently ignored rather than erroring).
+RUN set -eux; \
+    for capability in $(echo "$INSTALL_CAPABILITIES" | tr ',' ' '); do \
+      case "$capability" in \
+        vscode|browser|docker) ;; \
+        *) echo "Unknown capability '$capability' in INSTALL_CAPABILITIES" \
+             "(expected one of: vscode, browser, docker)" >&2; exit 1;; \
+      esac; \
+    done
+
 # --- VSCode Web ---
+# EDITOR/VISUAL/GIT_EDITOR/OPENVSCODE_SERVER_ROOT are declared unconditionally:
+# nothing execs `code` unless VSCode Web itself is running, so a dangling
+# path when `vscode` is excluded is harmless (same reasoning as CHROME_BIN
+# below, applied to VSCode).
 ENV EDITOR=code \
     VISUAL=code \
     GIT_EDITOR="code --wait" \
     OPENVSCODE_SERVER_ROOT=/openhands/.openvscode-server
 ARG RELEASE_TAG="openvscode-server-v1.98.2"
 ARG RELEASE_ORG="gitpod-io"
+# The --mount=from=builder on the extensions RUN below is unconditional at
+# the Dockerfile level, so BuildKit still builds the full `builder` stage
+# (the entire SDK venv) even when `vscode` is excluded from
+# INSTALL_CAPABILITIES — the case check inside each RUN only decides what
+# lands in THIS image, not what gets built as a dependency. Excluding vscode
+# shrinks the result, not the build time.
 RUN set -eux; \
+    case ",$INSTALL_CAPABILITIES," in \
+      *,vscode,*) ;; \
+      *) echo "INSTALL_CAPABILITIES excludes vscode; skipping OpenVSCode Server"; exit 0;; \
+    esac; \
+    \
     # Create necessary directories
     mkdir -p $(dirname ${OPENVSCODE_SERVER_ROOT}); \
     \
@@ -286,13 +345,31 @@ RUN set -eux; \
     # Set proper ownership
     chown -R ${USERNAME}:${USERNAME} ${OPENVSCODE_SERVER_ROOT}
 
-
-# Include VSCode extensions alongside the server so targets inheriting base-image
-# implicitly get the extensions; minimal images (without VSCode) won't.
-COPY --chown=${USERNAME}:${USERNAME} --from=builder /agent-server/openhands-agent-server/openhands/agent_server/vscode_extensions ${OPENVSCODE_SERVER_ROOT}/extensions
+# Kept as its own RUN, separate from the tarball download above: extensions
+# are actively-edited local source (unlike the pinned release tarball), so
+# splitting them keeps an extension-only change from invalidating the ~100MB
+# download's cache layer.
+RUN --mount=type=bind,from=builder,source=/agent-server/openhands-agent-server/openhands/agent_server/vscode_extensions,target=/tmp/vscode_extensions \
+    set -eux; \
+    case ",$INSTALL_CAPABILITIES," in \
+      *,vscode,*) ;; \
+      *) exit 0;; \
+    esac; \
+    \
+    # Trailing slashes matter: OpenVSCode Server's tarball already ships its
+    # own extensions/ dir, so a bare `cp -r src dst` would nest src under the
+    # existing dst instead of merging into it the way `COPY` does.
+    mkdir -p ${OPENVSCODE_SERVER_ROOT}/extensions; \
+    cp -r /tmp/vscode_extensions/. ${OPENVSCODE_SERVER_ROOT}/extensions/; \
+    chown -R ${USERNAME}:${USERNAME} ${OPENVSCODE_SERVER_ROOT}/extensions
 
 # --- Docker ---
 RUN set -eux; \
+    case ",$INSTALL_CAPABILITIES," in \
+      *,docker,*) ;; \
+      *) echo "INSTALL_CAPABILITIES excludes docker; skipping Docker Engine"; exit 0;; \
+    esac; \
+    \
     # Determine OS type and install Docker accordingly
     if grep -q "ubuntu" /etc/os-release; then \
         # Handle Ubuntu
@@ -311,10 +388,10 @@ RUN set -eux; \
     apt-get update; \
     apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; \
     apt-get clean; \
-    rm -rf /var/lib/apt/lists/*
-
-# Configure Docker daemon with MTU 1450 to prevent packet fragmentation issues
-RUN mkdir -p /etc/docker && \
+    rm -rf /var/lib/apt/lists/*; \
+    \
+    # Configure Docker daemon with MTU 1450 to prevent packet fragmentation issues
+    mkdir -p /etc/docker; \
     echo '{"mtu": 1450}' > /etc/docker/daemon.json
 
 # --- GitHub CLI ---
@@ -330,33 +407,36 @@ RUN set -eux; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*
 
-# --- VNC + Desktop + noVNC ---
-RUN set -eux; \
-  apt-get update; \
-  apt-get install -y --no-install-recommends \
-    # GUI bits (remove entirely if headless)
-    tigervnc-standalone-server xfce4 dbus-x11 novnc websockify \
-    # Browser
-    $(if grep -q "ubuntu" /etc/os-release; then echo "chromium-browser"; else echo "chromium"; fi); \
-  apt-get clean; rm -rf /var/lib/apt/lists/*
-
-ENV NOVNC_WEB=/usr/share/novnc \
-    NOVNC_PORT=8002 \
-    DISPLAY=:1 \
-    VNC_GEOMETRY=1280x800 \
-    CHROME_BIN=/usr/bin/chromium \
+# --- Browser ---
+# Chromium for BrowserToolSet. Selected by the `browser` capability.
+ENV CHROME_BIN=/usr/bin/chromium \
     PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
     CHROMIUM_FLAGS="--no-sandbox --disable-dev-shm-usage --disable-gpu"
 
-RUN chown -R ${USERNAME}:${USERNAME} ${NOVNC_WEB}
-# Override default XFCE wallpaper
-COPY --chown=${USERNAME}:${USERNAME} openhands-agent-server/openhands/agent_server/docker/wallpaper.svg /usr/share/backgrounds/xfce/xfce-shapes.svg
+# CHROME_BIN/PUPPETEER_EXECUTABLE_PATH above are declared unconditionally
+# regardless of which capabilities are selected. Nothing in this repo trusts
+# them as an availability signal — browser_use's chromium detection
+# (openhands-tools/openhands/tools/browser_use/impl.py) does its own filesystem
+# probe of standard install paths — so when `browser` is excluded these simply
+# point at a path that doesn't exist, rather than causing a false "available"
+# signal downstream.
+RUN set -eux; \
+    case ",$INSTALL_CAPABILITIES," in \
+      *,browser,*) \
+        apt-get update; \
+        apt-get install -y --no-install-recommends \
+          "$(if grep -q "ubuntu" /etc/os-release; then echo "chromium-browser"; else echo "chromium"; fi)"; \
+        apt-get clean; rm -rf /var/lib/apt/lists/*; \
+        ;; \
+    esac
 
 USER ${USERNAME}
 WORKDIR /
-ENV OH_ENABLE_VNC=false
 ENV LOG_JSON=true
-EXPOSE ${PORT} ${NOVNC_PORT}
+# The ACP CLIs run without the user's host home here, so OpenHands supplies the
+# managed skill catalog they cannot read for themselves (#4019).
+ENV OH_ACP_SKILL_SOURCING=openhands_managed
+EXPOSE ${PORT}
 
 
 ####################################################################################
