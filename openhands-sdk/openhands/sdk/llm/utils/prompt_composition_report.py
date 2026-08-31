@@ -49,12 +49,32 @@ def iter_log_files(root: Path) -> list[Path]:
     return sorted(root.glob("*/*.json"))
 
 
-def _is_openai_tool_schema(tool: Any) -> bool:
-    return (
-        isinstance(tool, dict)
-        and tool.get("type") == "function"
-        and isinstance(tool.get("function"), dict)
-    )
+def _normalize_logged_tools(logged_tools: list[Any]) -> list[Any] | None:
+    """Normalize logged tool schemas to OpenAI chat format for token counting.
+
+    Completion logs carry the finalized schemas as sent: OpenAI chat format
+    (``{"type": "function", "function": {...}}``) on the chat path, Responses
+    ToolParam (schema fields at the top level) on the Responses path. Returns
+    None when the entries are not recognizable tool schemas — logs written
+    before the schemas were logged in finalized form serialize tools as
+    ToolDefinition dumps (name/description only, no parameter schemas).
+    """
+    normalized: list[Any] = []
+    for tool in logged_tools:
+        if not isinstance(tool, dict) or tool.get("type") != "function":
+            return None
+        if isinstance(tool.get("function"), dict):
+            normalized.append(tool)
+        elif "name" in tool:
+            normalized.append(
+                {
+                    "type": "function",
+                    "function": {k: v for k, v in tool.items() if k != "type"},
+                }
+            )
+        else:
+            return None
+    return normalized
 
 
 def _log_model(data: dict[str, Any], source: str) -> str:
@@ -101,13 +121,13 @@ def call_record_from_log(data: Any, source: str) -> dict[str, Any] | None:
     tool_schema_counted = True
     logged_tools = data.get("tools")
     if not schemas_in_prompt and isinstance(logged_tools, list) and logged_tools:
-        if all(_is_openai_tool_schema(t) for t in logged_tools):
-            tools = logged_tools
+        normalized_tools = _normalize_logged_tools(logged_tools)
+        if normalized_tools is not None:
+            tools = normalized_tools
         else:
-            # Completion logs serialize tools as ToolDefinition dumps
-            # (name/description only, no parameter schemas), so the tool
-            # bucket cannot be reconstructed from them; mark the row
-            # rather than reporting a silently wrong count.
+            # ToolDefinition dumps carry no parameter schemas, so the tool
+            # bucket cannot be reconstructed from them; mark the row rather
+            # than reporting a silently wrong count.
             tool_schema_counted = False
 
     composition = compute_prompt_composition(

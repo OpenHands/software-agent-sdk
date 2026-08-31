@@ -269,6 +269,19 @@ _TOOL_DEFINITION_DUMP = {
     "title": "test_tool",
 }
 
+# Responses ToolParam as logged on the Responses path: schema fields at the
+# top level, no nested "function" key.
+_RESPONSES_TOOL = {
+    "type": "function",
+    "name": "test_tool",
+    "description": "A test tool",
+    "parameters": {
+        "type": "object",
+        "properties": {"param": {"type": "string"}},
+        "required": ["param"],
+    },
+}
+
 
 def _chat_log(
     response_id: str,
@@ -351,7 +364,7 @@ def test_report_ingests_responses_log(tmp_path):
                     "output": "done " * 30,
                 },
             ],
-            "tools": [_OPENAI_TOOL],
+            "tools": [_RESPONSES_TOOL],
             "kwargs": {},
             "response": {"id": "resp-1", "model": "gpt-5-mini"},
             "usage_summary": {
