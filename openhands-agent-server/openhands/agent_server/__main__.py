@@ -256,7 +256,22 @@ def main() -> None:
         ),
     )
 
+    parser.add_argument(
+        "--a2a",
+        dest="a2a",
+        default=False,
+        action="store_true",
+        help=(
+            "Enable the A2A (Agent2Agent) protocol endpoints "
+            "(POST /api/a2a + /.well-known/agent-card.json). Disabled by "
+            "default; also requires the optional 'a2a' extra (a2a-sdk). "
+            "Equivalent to setting OH_A2A_ENABLED=true."
+        ),
+    )
     args = parser.parse_args()
+
+    if args.a2a:
+        os.environ["OH_A2A_ENABLED"] = "true"
 
     # Handle browser check (should run without importing user modules)
     if args.check_browser:

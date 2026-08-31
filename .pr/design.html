@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>A2A server-mode — design</title>
+<style>body{font-family:system-ui,sans-serif;max-width:860px;margin:2rem auto;padding:0 1rem;line-height:1.5}h1{font-size:1.5rem}h2{margin-top:2rem;font-size:1.15rem}table{border-collapse:collapse;width:100%;margin:1rem 0}td,th{border:1px solid #ccc;padding:.4rem .6rem;text-align:left;font-size:.9rem}code,pre{background:#f4f4f4;padding:.1rem .3rem;font-size:.85rem}pre{padding:.8rem;overflow-x:auto}</style></head><body>
+<h1>A2A server-mode support — design</h1>
+<p>PR #4590 · implements <a href="https://github.com/OpenHands/software-agent-sdk/issues/1060">#1060</a> · Agent Card v0.3 + JSON-RPC 2.0 transport (Linux Foundation a2a-spec)</p>
+
+<h2>Goal</h2>
+<p>Expose agent-server as a discoverable, addressable A2A agent: any A2A client can fetch the Agent Card, send a task, stream updates, and fetch artifacts — with zero new dependencies and zero changes to existing REST surface.</p>
+
+<h2>Object model</h2>
+<p>A2A objects (AgentCard, Task, TaskStatus, TextPart, JSON-RPC envelope) are minimal local pydantic models in <code>a2a_router.py</code>. No <code>a2a-sdk</code> dependency; the module docstring pins the targeted spec revision so a future swap to the SDK (or optional extra) is mechanical.</p>
+
+<h2>Endpoint mapping</h2>
+<table><tr><th>A2A</th><th>agent-server internals</th></tr>
+<tr><td><code>GET /.well-known/agent-card.json</code></td><td>Server config + <code>agent_profiles_router</code> metadata → Agent Card v0.3 (capabilities: streaming)</td></tr>
+<tr><td><code>message/send</code></td><td><code>conversation_service.start_conversation()</code> → <code>event_service.send_message(Message(role='user'), run=True)</code>; taskId = conversationId</td></tr>
+<tr><td><code>message/stream</code></td><td>Same as send, then SSE via <code>subscribe_to_events()</code> → <code>unsubscribe_from_events()</code> on terminal state</td></tr>
+<tr><td><code>tasks/get</code></td><td>Execution status + <code>get_agent_final_response()</code> → TaskStatus + text artifact</td></tr>
+<tr><td><code>tasks/cancel</code></td><td>Conversation interrupt/pause</td></tr></table>
+
+<h2>Before / after</h2>
+<p><b>Before:</b> agent-server reachable only via its native REST/WebSocket API; A2A clients (Hermes, Google ADK, LangGraph, etc.) cannot discover or drive it.</p>
+<p><b>After:</b> Agent Card advertises the server on any A2A mesh; the standard JSON-RPC lifecycle works end-to-end:
+<pre>$ curl -s http://localhost:8000/.well-known/agent-card.json | jq .name
+"openhands-agent-server"
+$ curl -s -X POST http://localhost:8000/api/a2a -H "Authorization: Bearer $KEY" \\
+    -d '{"jsonrpc":"2.0","id":1,"method":"message/send","params":{...}}'
+{"jsonrpc":"2.0","id":1,"result":{"kind":"task","id":"&lt;conversationId&gt;","status":{"state":"submitted"},...}}</pre></p>
+
+<h2>SSE event sequence (message/stream)</h2>
+<pre>data: {"kind":"task", ...snapshot...}        # initial task snapshot
+data: {"kind":"status-update", ...}          # working / input-required
+data: {"kind":"task", ...with artifacts...}   # final state + artifact, then close</pre>
+
+<h2>Auth</h2>
+<p>Single dependency accepts either header — <code>X-Session-API-Key</code> (existing convention) or <code>Authorization: Bearer &lt;key&gt;</code> (A2A convention) — both validated against <code>config.session_api_keys</code>. The Agent Card endpoint is unauthenticated (discovery).
+
+<h2>REST compatibility</h2>
+<p>Additive only: one new router file + a 12-line mount in <code>api.py</code> (root well-known route + <code>/api/a2a</code> under the existing api_router). No existing router, model, or contract is modified; OpenAPI quality gate unchanged (97 allowlisted weak locations).</p>
+
+<h2>Open question</h2>
+<p>Keep zero-dependency pydantic models, or adopt <code>a2a-sdk</code> (possibly as an optional extra <code>[a2a]</code>)? Implementer leans zero-dep core; maintainer guidance requested in #1060.</p>
+</body></html>
