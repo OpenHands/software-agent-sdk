@@ -65,5 +65,8 @@ class TaskExecutor(ToolExecutor):
                 is_error=True,
             )
 
+    def interrupt(self) -> None:
+        self._manager.interrupt_running_tasks()
+
     def close(self) -> None:
         self._manager.close()

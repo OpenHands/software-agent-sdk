@@ -1,14 +1,19 @@
 import json
+import threading
+import time
+import uuid
+from unittest.mock import MagicMock
 
 from openhands.sdk import Agent, Conversation, LocalConversation, Tool
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.event.llm_convertible.observation import ObservationEvent
+from openhands.sdk.event.llm_convertible import ActionEvent, ObservationEvent
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.subagent.registry import _reset_registry_for_tests, register_agent
 from openhands.sdk.testing import TestLLM
 from openhands.tools.task import TaskToolSet
 from openhands.tools.task.definition import TASK_TOOL_EXAMPLES, TaskObservation
-from openhands.tools.task.manager import TaskStatus
+from openhands.tools.task.impl import TaskExecutor
+from openhands.tools.task.manager import Task, TaskManager, TaskStatus
 
 
 def _task_tool_call(
@@ -408,3 +413,91 @@ class TestTaskToolExamples:
         description = tools[0].description
         assert TASK_TOOL_EXAMPLES[included_name].strip() in description
         assert TASK_TOOL_EXAMPLES[excluded_name].strip() not in description
+
+    def test_blocking_task_pulses_parent_activity(self, tmp_path):
+        """Parent activity heartbeats fire while TaskExecutor is blocked."""
+        release = threading.Event()
+        saw_task_action = threading.Event()
+        activity_pulses: list[float] = []
+        parent_event_kinds: list[str] = []
+        kinds_lock = threading.Lock()
+
+        class SlowTestLLM(TestLLM):
+            def completion(self, *args, **kwargs):
+                assert release.wait(timeout=10), "release not signaled"
+                return super().completion(*args, **kwargs)
+
+        def on_parent_event(event) -> None:
+            with kinds_lock:
+                parent_event_kinds.append(type(event).__name__)
+            if isinstance(event, ActionEvent) and event.tool_name == "task":
+                saw_task_action.set()
+
+        parent_llm = TestLLM.from_messages(
+            [
+                _task_tool_call(
+                    "call_1",
+                    prompt="Find the files tab component",
+                    subagent_type="slow_explorer",
+                    description="code explore",
+                ),
+                _text_message("Exploration finished."),
+            ]
+        )
+        sub_llm = SlowTestLLM.from_messages(
+            [Message(role="assistant", content=[TextContent(text="Found files tab.")])]
+        )
+        _register_simple_agent("slow_explorer", sub_llm)
+
+        agent = Agent(llm=parent_llm, tools=[Tool(name=TaskToolSet.name)])
+        conversation = Conversation(
+            agent=agent,
+            workspace=str(tmp_path),
+            visualizer=None,
+            callbacks=[on_parent_event],
+        )
+        conversation.set_on_activity(
+            lambda: activity_pulses.append(time.monotonic())
+        )
+
+        def run_parent() -> None:
+            conversation.send_message("Explore the files tab")
+            conversation.run()
+
+        worker = threading.Thread(target=run_parent, daemon=True)
+        worker.start()
+
+        assert saw_task_action.wait(timeout=10), "parent never emitted task ActionEvent"
+
+        deadline = time.time() + 5
+        while time.time() < deadline and not activity_pulses:
+            time.sleep(0.05)
+        assert activity_pulses, "expected parent activity pulse during blocking task"
+
+        with kinds_lock:
+            assert ObservationEvent.__name__ not in parent_event_kinds
+
+        release.set()
+        worker.join(timeout=10)
+        assert not worker.is_alive(), "parent conversation hung after subagent released"
+
+        with kinds_lock:
+            assert ObservationEvent.__name__ in parent_event_kinds
+
+    def test_task_executor_interrupt_propagates_to_running_subagent(self):
+        manager = TaskManager()
+        parent = MagicMock()
+        manager.attach_parent(parent)
+
+        sub_conversation = MagicMock()
+        task = Task.model_construct(
+            id="task_1",
+            status=TaskStatus.RUNNING,
+            conversation_id=uuid.uuid4(),
+            conversation=sub_conversation,
+        )
+        with manager._tasks_lock:
+            manager._tasks[task.id] = task
+
+        TaskExecutor(manager).interrupt()
+        sub_conversation.interrupt.assert_called_once()
