@@ -134,8 +134,7 @@ class EventService:
         default_factory=lambda: PubSub[Event](max_subscribers=50), init=False
     )
     # Uncapped: every delta subscriber is internal or paired with a durable
-    # one, so the limit above already bounds this bus. A separate cap could
-    # accept a connection on one bus and refuse it on the other.
+    # one, so the cap above already bounds this bus.
     _delta_pub_sub: PubSub[StreamingDeltaEvent] = field(
         default_factory=lambda: PubSub[StreamingDeltaEvent](), init=False
     )

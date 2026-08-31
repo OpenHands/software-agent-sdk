@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 from uuid import UUID, uuid4
 from weakref import WeakValueDictionary
 
@@ -2495,7 +2495,7 @@ def _build_telemetry_context(
 
 # Deltas arrive at token rate; this only has to beat the runtime-api's
 # ~20 minute idle eviction.
-DELTA_HEARTBEAT_INTERVAL_SECONDS = 30.0
+DELTA_HEARTBEAT_INTERVAL_SECONDS: Final[float] = 30.0
 
 
 @dataclass

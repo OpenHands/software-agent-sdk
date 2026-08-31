@@ -550,7 +550,7 @@ class _WebSocketSubscriber(Subscriber):
         await _send_event(event, self.websocket)
 
 
-@dataclass
+@dataclass(slots=True, frozen=True)
 class _DeltaWebSocketSubscriber(Subscriber[StreamingDeltaEvent]):
     """WebSocket subscriber for streaming deltas. Same socket, separate bus."""
 

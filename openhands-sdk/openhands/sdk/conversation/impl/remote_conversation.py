@@ -67,10 +67,10 @@ logger = get_logger(__name__)
 
 LEGACY_CONVERSATIONS_PATH = "/api/conversations"
 FATAL_WS_CLOSE_CODES = frozenset({4001, 4004})
-_WEBSOCKET_AUTH_TYPE: Final = "auth"
-_WEBSOCKET_SESSION_API_KEY_FIELD: Final = "session_api_key"
+_WEBSOCKET_AUTH_TYPE: Final[str] = "auth"
+_WEBSOCKET_SESSION_API_KEY_FIELD: Final[str] = "session_api_key"
 # Matched before the durable decode: Event.model_validate rejects this kind.
-_STREAMING_DELTA_KIND: Final = StreamingDeltaEvent.__name__
+_STREAMING_DELTA_KIND: Final[str] = StreamingDeltaEvent.__name__
 
 
 def _agent_kind_mismatch_message(conversation_id: ConversationID) -> str:

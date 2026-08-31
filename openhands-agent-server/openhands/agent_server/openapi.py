@@ -7,6 +7,8 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+from openhands.sdk.event import StreamingDeltaEvent
+
 
 PUBLIC_REST_PATH_PREFIX = "/api/"
 SCHEMA_REF_PREFIX = "#/components/schemas/"
@@ -127,8 +129,6 @@ def _add_canonical_contract_components(document: dict[str, Any]) -> None:
 
     # Websocket-only, so no REST path references it and pruning would drop it.
     # Generated clients still need the type, so name it explicitly.
-    from openhands.sdk.event import StreamingDeltaEvent
-
     schemas.setdefault(
         "StreamingDeltaEvent",
         StreamingDeltaEvent.model_json_schema(mode="serialization"),
