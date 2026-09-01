@@ -193,12 +193,14 @@ class ClassifyAndSwitchLLMExecutor(ToolExecutor):
         self,
         meta_profile_store: MetaProfileStore,
         active_meta_profile: str | None = None,
+        meta_profile: MetaProfile | None = None,
     ) -> None:
         # Resolve the meta-profile lazily (at invocation), not at construction,
         # so a missing/renamed file under ~/.openhands/meta-profiles produces a
         # tool error instead of breaking conversation startup.
         self._store = meta_profile_store
         self._active_meta_profile = active_meta_profile
+        self._meta_profile = meta_profile
 
     def _resolve_meta_profile(self) -> MetaProfile:
         """Resolve the active meta-profile, falling back to the first available.
@@ -207,6 +209,9 @@ class ClassifyAndSwitchLLMExecutor(ToolExecutor):
             FileNotFoundError: If no meta-profile can be resolved.
             ValueError: If the resolved meta-profile is invalid.
         """
+        if self._meta_profile is not None:
+            return self._meta_profile
+
         name = self._active_meta_profile
         if not name:
             available = self._store.list()
@@ -383,13 +388,14 @@ class ClassifyAndSwitchLLMTool(
         cls,
         conv_state: "ConversationState | None" = None,  # noqa: ARG003
         active_meta_profile: str | None = None,
+        meta_profile: MetaProfile | dict[str, object] | None = None,
         meta_profile_store: MetaProfileStore | None = None,
         **params,
     ) -> Sequence[Self]:
         if params:
             raise ValueError(
-                "ClassifyAndSwitchLLMTool only accepts 'active_meta_profile' "
-                "and 'meta_profile_store'."
+                "ClassifyAndSwitchLLMTool only accepts 'active_meta_profile', "
+                "'meta_profile', and 'meta_profile_store'."
             )
 
         # Meta-profile resolution is deferred to invocation time (see
@@ -397,12 +403,19 @@ class ClassifyAndSwitchLLMTool(
         # ~/.openhands/meta-profiles cannot break conversation startup; a
         # missing/invalid profile surfaces as a tool error instead.
         store = meta_profile_store or MetaProfileStore()
+        inline_meta_profile = (
+            MetaProfile.model_validate(meta_profile)
+            if meta_profile is not None
+            else None
+        )
         return [
             cls(
                 description=_DESCRIPTION,
                 action_type=ClassifyAndSwitchLLMAction,
                 observation_type=ClassifyAndSwitchLLMObservation,
-                executor=ClassifyAndSwitchLLMExecutor(store, active_meta_profile),
+                executor=ClassifyAndSwitchLLMExecutor(
+                    store, active_meta_profile, inline_meta_profile
+                ),
                 annotations=ToolAnnotations(
                     readOnlyHint=False,
                     destructiveHint=False,

@@ -225,6 +225,7 @@ def test_delete_active_clears_nested_agent_settings(client, store):
     assert isinstance(agent, OpenHandsAgentSettings)
     assert agent.active_meta_profile is None
     assert agent.enable_classify_and_switch_llm_tool is False
+    assert agent.meta_profile is None
 
 
 # ── Activate ─────────────────────────────────────────────────────────────────
@@ -258,6 +259,7 @@ def test_activate_propagates_into_agent_settings(client, store):
     assert isinstance(agent, OpenHandsAgentSettings)
     assert agent.active_meta_profile == "p"
     assert agent.enable_classify_and_switch_llm_tool is True
+    assert agent.meta_profile == MetaProfile.model_validate(_meta())
 
 
 def test_activate_missing_returns_404(client):

@@ -108,7 +108,13 @@ def _set_active_meta_profile_if_matches(
         # propagates into agent_settings (active_meta_profile +
         # enable_classify_and_switch_llm_tool); a direct field assignment
         # would leave that nested state stale.
-        settings.update({"active_meta_profile": new_name})
+        agent_diff = {"meta_profile": None} if new_name is None else {}
+        settings.update(
+            {
+                "active_meta_profile": new_name,
+                "agent_settings_diff": agent_diff,
+            }
+        )
         return settings
 
     settings_store.update(update_active)
@@ -218,7 +224,7 @@ async def activate_meta_profile(
     store = _get_meta_profile_store()
     try:
         with _store_errors():
-            store.load(name)
+            meta_profile = store.load(name)
     except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -233,7 +239,14 @@ async def activate_meta_profile(
         # agent_settings (active_meta_profile + enable_classify_and_switch_llm_tool),
         # which is what actually attaches the routing tool. A direct field
         # assignment would record the active name but never enable the tool.
-        settings.update({"active_meta_profile": name})
+        settings.update(
+            {
+                "active_meta_profile": name,
+                "agent_settings_diff": {
+                    "meta_profile": meta_profile.model_dump(mode="json")
+                },
+            }
+        )
         return settings
 
     try:

@@ -8,7 +8,7 @@ from openhands.sdk import LLM, LocalConversation, OpenHandsAgentSettings
 from openhands.sdk.agent import Agent
 from openhands.sdk.llm import Message, TextContent, llm_profile_store
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
-from openhands.sdk.llm.meta_profile_store import MetaProfileStore
+from openhands.sdk.llm.meta_profile_store import MetaProfile, MetaProfileStore
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.tool.builtins import (
     ClassifyAndSwitchLLMAction,
@@ -240,6 +240,20 @@ def test_create_loads_meta_profile(meta_store: MetaProfileStore) -> None:
     assert tool.name == "classify_and_switch_llm"
     assert isinstance(tool.executor, ClassifyAndSwitchLLMExecutor)
     assert tool.executor._resolve_meta_profile().classifier_model == "classifier"
+
+
+def test_create_prefers_inline_meta_profile_over_filesystem(tmp_path: Path) -> None:
+    empty_store = MetaProfileStore(base_dir=tmp_path / "empty")
+    tool = ClassifyAndSwitchLLMTool.create(
+        active_meta_profile="cloud-router",
+        meta_profile=DIRECT_META,
+        meta_profile_store=empty_store,
+    )[0]
+
+    assert isinstance(tool.executor, ClassifyAndSwitchLLMExecutor)
+    assert tool.executor._resolve_meta_profile() == MetaProfile.model_validate(
+        DIRECT_META
+    )
 
 
 def test_create_uses_oh_persistence_dir_meta_profiles(
@@ -506,6 +520,20 @@ def test_create_agent_adds_tool_when_enabled(meta_store, monkeypatch) -> None:
     ).create_agent()
 
     assert any(t.name == "ClassifyAndSwitchLLMTool" for t in agent.tools)
+
+
+def test_create_agent_passes_inline_meta_profile_without_filesystem(tmp_path) -> None:
+    agent = OpenHandsAgentSettings(
+        llm=_make_llm("default-model", "default"),
+        enable_classify_and_switch_llm_tool=True,
+        active_meta_profile="cloud-router",
+        meta_profile=MetaProfile.model_validate(DIRECT_META),
+    ).create_agent()
+
+    tool = next(t for t in agent.tools if t.name == "ClassifyAndSwitchLLMTool")
+    assert MetaProfile.model_validate(tool.params["meta_profile"]) == (
+        MetaProfile.model_validate(DIRECT_META)
+    )
 
 
 def test_create_agent_adds_tool_when_enabled_without_active_profile(
