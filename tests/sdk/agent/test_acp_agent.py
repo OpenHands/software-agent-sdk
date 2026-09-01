@@ -4033,6 +4033,24 @@ class TestACPSessionConfigOptions:
         conn.set_config_option.assert_not_awaited()
         assert agent._session_id == "sess-new"
 
+    def test_claude_fresh_session_uses_meta_not_set_session_model(self, tmp_path):
+        """claude-agent-acp selects its model via new_session's ``claudeCode``
+        _meta, not the set_session_model protocol call used by other
+        providers.
+        """
+        agent = _make_agent(acp_model="claude-opus-4-6")
+        state = _make_state(tmp_path)
+        conn = _make_config_conn(agent_name="claude-agent-acp")
+
+        TestACPSessionIdPersistence._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.new_session.assert_awaited_once_with(
+            cwd=str(tmp_path),
+            claudeCode={"options": {"model": "claude-opus-4-6"}},
+        )
+        conn.set_session_model.assert_not_called()
+        conn.set_config_option.assert_not_called()
+
     def test_missing_option_fails_init_state_and_cleans_up(self, tmp_path):
         """A requested option the server does not expose aborts initialization."""
         from openhands.sdk.utils.async_executor import AsyncExecutor
