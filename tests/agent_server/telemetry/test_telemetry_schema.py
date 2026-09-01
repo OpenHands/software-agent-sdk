@@ -161,4 +161,5 @@ def test_payload_carries_schema_version_and_excludes_distinct_id():
     # distinct_id is the transport's addressing field, not a property.
     assert "distinct_id" not in payload
     assert "kind" not in payload
+    assert payload["deployment_kind"] == "local"
     assert set(payload) <= set(m.EXPECTED_PROPERTY_NAMES)

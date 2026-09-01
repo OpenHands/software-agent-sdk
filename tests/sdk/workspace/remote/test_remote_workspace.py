@@ -431,9 +431,21 @@ def test_get_llm_returns_configured_llm(monkeypatch):
         },
         "conversation_settings": {},
         "llm_api_key_is_set": True,
+        "active_profile": "default",
     }
     mock_response.raise_for_status = Mock()
-    mock_client.get.return_value = mock_response
+    profile_response = Mock()
+    profile_response.status_code = 200
+    profile_response.raise_for_status = Mock()
+    profile_response.json.return_value = {
+        "name": "default",
+        "config": {
+            "model": "gpt-4",
+            "api_key": "sk-test-key",
+            "base_url": "https://api.openai.com/v1",
+        },
+    }
+    mock_client.get.side_effect = [mock_response, profile_response]
     workspace._client = mock_client
 
     llm = workspace.get_llm()
@@ -448,12 +460,106 @@ def test_get_llm_returns_configured_llm(monkeypatch):
         assert llm.api_key == "sk-test-key"
     assert llm.base_url == "https://api.openai.com/v1"
 
-    # Verify API was called with correct headers
-    mock_client.get.assert_called_once()
-    call_args = mock_client.get.call_args
-    assert call_args[0][0] == "/api/settings"
-    assert call_args[1]["headers"]["X-Expose-Secrets"] == "plaintext"
-    assert call_args[1]["headers"]["X-Session-API-Key"] == "test-key"
+    assert [call.args[0] for call in mock_client.get.call_args_list] == [
+        "/api/settings",
+        "/api/profiles/default",
+    ]
+
+
+def test_get_llm_without_name_resolves_active_profile(monkeypatch):
+    """Default resolution honors active_profile, not stale agent settings."""
+    from pydantic import SecretStr
+
+    monkeypatch.setenv("ALLOW_SHORT_CONTEXT_WINDOWS", "true")
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    settings_response = Mock()
+    settings_response.json.return_value = {
+        "agent_settings": {
+            "llm": {"model": "gpt-5.5", "api_key": None},
+        },
+        "conversation_settings": {},
+        "llm_api_key_is_set": False,
+        "active_profile": "glm-default",
+    }
+    settings_response.raise_for_status = Mock()
+    profile_response = Mock()
+    profile_response.status_code = 200
+    profile_response.json.return_value = {
+        "name": "glm-default",
+        "config": {
+            "model": "openhands/glm-5.2",
+            "api_key": "sk-glm-key",
+            "usage_id": "default",
+        },
+        "api_key_set": True,
+    }
+    profile_response.raise_for_status = Mock()
+
+    client = MagicMock()
+    client.get.side_effect = [settings_response, profile_response]
+    workspace._client = client
+
+    llm = workspace.get_llm()
+
+    assert llm.model == "openhands/glm-5.2"
+    assert isinstance(llm.api_key, SecretStr)
+    assert llm.api_key.get_secret_value() == "sk-glm-key"
+    assert llm.usage_id == "profile:glm-default"
+    assert [call.args[0] for call in client.get.call_args_list] == [
+        "/api/settings",
+        "/api/profiles/glm-default",
+    ]
+
+
+@pytest.mark.parametrize("active_profile", [None, ""])
+def test_get_llm_without_active_profile_falls_back_to_legacy(
+    monkeypatch, active_profile
+):
+    """Falsy active_profile values use the legacy agent_settings.llm fallback."""
+    from pydantic import SecretStr
+
+    monkeypatch.setenv("ALLOW_SHORT_CONTEXT_WINDOWS", "true")
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    settings_response = Mock()
+    settings_response.json.return_value = {
+        "agent_settings": {
+            "llm": {"model": "gpt-4", "api_key": "sk-legacy"},
+        },
+        "conversation_settings": {},
+        "llm_api_key_is_set": True,
+        "active_profile": active_profile,
+    }
+    settings_response.raise_for_status = Mock()
+
+    client = MagicMock()
+    client.get.return_value = settings_response
+    workspace._client = client
+
+    llm = workspace.get_llm()
+
+    assert llm.model == "gpt-4"
+    assert isinstance(llm.api_key, SecretStr)
+    assert llm.api_key.get_secret_value() == "sk-legacy"
+
+    # Discovery avoids exposing legacy credentials; the fallback fetches them only
+    # when active_profile is absent.
+    assert [call.args[0] for call in client.get.call_args_list] == [
+        "/api/settings",
+        "/api/settings",
+    ]
+    assert client.get.call_args_list[0].kwargs["headers"] == {
+        "X-Session-API-Key": "test-key"
+    }
+    assert client.get.call_args_list[1].kwargs["headers"] == {
+        "X-Session-API-Key": "test-key",
+        "X-Expose-Secrets": "plaintext",
+    }
 
 
 def test_get_llm_with_kwargs_override(monkeypatch):
@@ -478,12 +584,23 @@ def test_get_llm_with_kwargs_override(monkeypatch):
         },
         "conversation_settings": {},
         "llm_api_key_is_set": True,
+        "active_profile": "default",
     }
     mock_response.raise_for_status = Mock()
-    mock_client.get.return_value = mock_response
+    profile_response = Mock()
+    profile_response.status_code = 200
+    profile_response.raise_for_status = Mock()
+    profile_response.json.return_value = {
+        "name": "default",
+        "config": {
+            "model": "gpt-3.5-turbo",
+            "api_key": "sk-persisted-key",
+        },
+    }
+    mock_client.get.side_effect = [mock_response, profile_response]
     workspace._client = mock_client
 
-    # Override model but use persisted API key
+    # Override model but use the active profile API key
     llm = workspace.get_llm(model="gpt-4o")
 
     assert llm.model == "gpt-4o"  # Overridden

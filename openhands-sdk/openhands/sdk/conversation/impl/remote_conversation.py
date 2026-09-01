@@ -584,18 +584,6 @@ class RemoteState(ConversationStateProtocol):
             )
         return ConversationExecutionStatus(status_str)
 
-    @execution_status.setter
-    def execution_status(self, value: ConversationExecutionStatus) -> None:
-        """Set execution status is No-OP for RemoteConversation.
-
-        # For remote conversations, execution status is managed server-side
-        # This setter is provided for test compatibility but doesn't actually change remote state  # noqa: E501
-        """  # noqa: E501
-        raise NotImplementedError(
-            f"Setting execution_status on RemoteState has no effect. "
-            f"Remote execution status is managed server-side. Attempted to set: {value}"
-        )
-
     @property
     def confirmation_policy(self) -> ConfirmationPolicyBase:
         """The confirmation policy."""

@@ -25,6 +25,18 @@ strong bias toward simplicity and maintainable code.
   matters, and what to do instead.
 </ROLE>
 
+## Cross-Repository Boundaries
+
+This repository owns the Python SDK and Agent Server: agent and tool behavior, conversations, workspaces, events, and the canonical REST/WebSocket API. Related responsibilities live elsewhere:
+
+- [`OpenHands/OpenHands`](https://github.com/OpenHands/OpenHands) owns Agent Canvas UI, frontend state, backend selection, and local-stack orchestration.
+- `clients/typescript/` mirrors the Agent Server API for browser-compatible TypeScript clients.
+- [`OpenHands/extensions`](https://github.com/OpenHands/extensions) owns reusable skills, plugins, automations, and integrations; [`OpenHands/automation`](https://github.com/OpenHands/automation) owns automation definitions, scheduling, webhooks, run history, dispatch, and sandbox lifecycle orchestration; this repository executes the dispatched conversations.
+
+The usual flow is SDK/Agent Server → OpenAPI contract → `clients/typescript` → Agent Canvas. Implement backend behavior and endpoints in the Python SDK or Agent Server packages first, then update the typed client and downstream applications as needed. If a PR is opened in the wrong repository, explicitly recommend closing and moving it to the repository that owns the change rather than merging it here.
+
+All pull requests must comply with [`.agents/skills/custom-codereview-guide.md`](.agents/skills/custom-codereview-guide.md), in addition to the repository's contribution requirements and CI checks.
+
 ## Repository Memory
 - Async LLM completions propagate through the full call chain: `LLM.acompletion()`/`LLM.aresponses()` → `_atransport_call()` (litellm `acompletion`/`aresponses`) → `RetryMixin.retry_decorator()` (tenacity `retry`, which wraps coroutines natively — there is no separate async retry path) → condenser `acondense()` → `Agent.astep()` → `LocalConversation.arun()` → `EventService.run()`. Every async method has a sync counterpart; base classes provide default delegations to sync so custom subclasses work without changes. Token callbacks use `AnyTokenCallbackType` (union of sync/async) with `_invoke_token_callback()` for transparent dispatch.
 - `conversation.interrupt()` cancels in-flight `arun()` by cancelling the tracked `_arun_task`. `asyncio.CancelledError` propagates through all layers (LLM HTTP stream → agent step → conversation loop) without needing per-layer interrupt APIs, because LLM and Agent are frozen/stateless Pydantic models that may be shared across conversations. `arun()` catches `CancelledError`, sets status to `PAUSED`, and emits `InterruptEvent`. The agent-server exposes this via `EventService.interrupt()` → `ConversationService.interrupt_conversation()` → `POST /{conversation_id}/interrupt`.
@@ -67,6 +79,7 @@ strong bias toward simplicity and maintainable code.
 - Keep path helpers split by purpose: `is_absolute_path_source()` is for cross-platform source/wire syntax detection, while local filesystem writes/validation (for example, the file editor) should use host-native absolute-path semantics so POSIX does not silently accept Windows drive paths as creatable files.
 - Tool availability filtering belongs in `openhands-sdk/openhands/sdk/tool/registry.py` via `list_usable_tools()`, which preserves registration order and defaults tools to usable unless they expose an `is_usable()` callable. Environment-specific checks like Chromium detection should live on the concrete tool class (`BrowserToolSet.is_usable()`), while agent-server surfaces such as `/server_info` should consume the registry helper rather than re-implement per-tool filtering.
 - Pydantic secret field helpers live in `openhands-sdk/openhands/sdk/utils/pydantic_secrets.py`. `serialize_secret()` handles serialization (cipher / `expose_secrets` / default Pydantic masking); `validate_secret()` handles deserialization (cipher decryption, redacted/empty → `None`); `is_redacted_secret()` checks for the sentinel; `REDACTED_SECRET_VALUE` is the canonical sentinel string. For `dict[str, str]` fields whose values are all secrets, wrap each value in `SecretStr` and call `serialize_secret` per value (see `LookupSecret._serialize_secrets`). Do not hand-roll redaction logic in field serializers.
+- Agent-server persistence detects whether settings or secret payloads contain values by exercising the real Pydantic secret-serialization pipeline with `_SecretProbeCipher` (`persistence/models.py`). Do not replace this with a hardcoded field list or a recursive `SecretStr` walk: fields such as `AgentContext.secrets` store plain strings and only become secret-bearing inside their serializers.
 
 - `LookupSecret` normalizes hostless URLs against `OH_INTERNAL_SERVER_URL` (set by `openhands-agent-server.__main__` from the bound host/port, rewriting wildcard binds to loopback) and otherwise falls back to `http://127.0.0.1:8000`, so relative secret URLs can safely target the current agent-server instance.
 
@@ -283,6 +296,7 @@ gh run rerun <RUN_ID> --repo <OWNER>/<REPO> --failed
 - DON'T write TEST CLASSES unless absolutely necessary!
 - If you find yourself duplicating logics in preparing mocks, loading data etc, these logic should be fixtures in conftest.py!
 - Please test only the logic implemented in the current codebase. Do not test functionality (e.g., BaseModel.model_dumps()) that is not implemented in this repository.
+- Assert observable behavior rather than source text, static implementation lists, private helpers or state, generic framework behavior, exhaustive default/export mirrors, or mock wiring. Tests should survive behavior-preserving refactors.
 - For changes to prompt templates, tool descriptions, or agent decision logic, add the `integration-test` label to trigger integration tests and verify no unexpected impact on benchmark performance.
 
 # Stress Tests
@@ -313,7 +327,8 @@ Note: This is separate from `persistence_dir` which is used for conversation sta
 
 <REPO>
 <PROJECT_STRUCTURE>
-- This is a `uv`-managed Python monorepo (single `uv.lock` at repo root) with multiple distributable packages: `openhands-sdk/` (SDK), `openhands-tools/` (built-in tools), `openhands-workspace/` (workspace impls), and `openhands-agent-server/` (server runtime).
+- This is a monorepo with a `uv`-managed Python workspace (single `uv.lock` at repo root) and a separately managed npm package under `clients/typescript/`. The Python distributable packages are: `openhands-sdk/` (SDK), `openhands-tools/` (built-in tools), `openhands-workspace/` (workspace impls), and `openhands-agent-server/` (server runtime).
+- `clients/typescript/` contains the browser-compatible TypeScript client, with its own `package-lock.json`, npm scripts, and Jest tests.
 - `examples/` contains runnable patterns; `tests/` is split by domain (`tests/sdk`, `tests/tools`, `tests/workspace`, `tests/agent_server`, etc.).
 - Python namespace is `openhands.*` across packages; keep new modules within the matching package and mirror test paths under `tests/`.
 </PROJECT_STRUCTURE>
@@ -321,7 +336,8 @@ Note: This is separate from `persistence_dir` which is used for conversation sta
 <QUICK_COMMANDS>
 - Set up the dev environment: `make build` (runs `uv sync --dev` and installs pre-commit; requires uv >= 0.8.13)
 - Lint/format: `make lint`, `make format`
-- Run tests: `uv run pytest`
+- Run Python tests: `uv run pytest`
+- Set up and validate the TypeScript client: `cd clients/typescript && npm ci && npm run lint && npm run build && npm test`
 - Run agent-server stress tests: `uv run pytest -m stress` (see [openhands-agent-server/AGENTS.md](openhands-agent-server/AGENTS.md))
 - Build agent-server: `make build-server` (output: `dist/agent-server/`)
 - Clean caches: `make clean`

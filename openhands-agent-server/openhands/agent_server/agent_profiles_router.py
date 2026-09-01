@@ -514,13 +514,17 @@ async def materialize_agent_profile(
     mcp_config = settings.agent_settings.mcp_config
 
     # Discover skills off the event loop so the dry-run can report which skills
-    # (catalog minus ``disabled_skills``) resolve. Only OpenHands profiles carry
-    # user/public skills; ACP profiles do not. A discovery failure must not 500
+    # (catalog minus ``disabled_skills``) resolve. Mirrors the launch rule in
+    # ``conversation_service._resolve_agent_from_profile`` so the preview matches
+    # a real launch: an ACP profile is only given a catalog where the CLI cannot
+    # read the user's own configuration (#4019). A discovery failure must not 500
     # the preview: pass ``available_skills=None`` and surface the failure as its
     # own diagnostic below.
     discovery_error: str | None = None
     available_skills = None
-    if profile.agent_kind == "openhands":
+    if profile.agent_kind == "openhands" or (
+        config.acp_skill_sourcing == "openhands_managed"
+    ):
         try:
             available_skills = await asyncio.to_thread(discover_profile_skills)
         except Exception as exc:

@@ -522,10 +522,14 @@ def normalize_tool_call(
                     for key, value in arguments.items()
                     if key in {"security_risk", "summary"}
                 }
-                if original_command:
-                    normalized_arguments["command"] = f"{base_name} {original_command}"
-                else:
+                if not original_command:
                     normalized_arguments["command"] = base_name
+                elif str(original_command).split(maxsplit=1)[:1] == [base_name]:
+                    # Already carries the executable, e.g. git(command="git status").
+                    # Comparing whole tokens keeps "github status" prefixed.
+                    normalized_arguments["command"] = original_command
+                else:
+                    normalized_arguments["command"] = f"{base_name} {original_command}"
         elif "terminal" in available_tools:
             terminal_command = _maybe_rewrite_as_terminal_command(
                 tool_name,

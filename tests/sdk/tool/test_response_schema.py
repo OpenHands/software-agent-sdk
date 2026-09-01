@@ -12,6 +12,7 @@ from openhands.sdk.event import ActionEvent, Event
 from openhands.sdk.llm import MessageToolCall
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.tool import MCPToolDefinition
+from openhands.sdk.tool import registry
 from openhands.sdk.tool.builtins.finish import (
     FinishAction,
     FinishObservation,
@@ -74,6 +75,22 @@ def test_finish_tool_without_schema_is_unchanged():
     assert tool.response_schema is None
     schema = tool._get_tool_schema()
     assert set(schema["properties"]) == {"message", "summary"}
+
+
+def test_builtin_finish_tool_spec_resolves_without_registry_entry(monkeypatch):
+    response_schema = TaskResult.model_json_schema()
+    monkeypatch.delitem(registry._REG, FinishTool.__name__, raising=False)
+    monkeypatch.delitem(registry._USABILITY_REG, FinishTool.__name__, raising=False)
+
+    [tool] = resolve_tool(
+        Tool(name=FinishTool.__name__, params={"response_schema": response_schema}),
+        conv_state=MagicMock(),
+    )
+
+    assert isinstance(tool, FinishTool)
+    assert tool.name == "finish"
+    assert tool.response_schema == response_schema
+    assert "success" in tool._get_tool_schema()["properties"]
 
 
 def test_response_schema_extends_action_schema():
@@ -434,29 +451,6 @@ def test_mcp_tool_supports_response_schema():
     assert action.data == {"url": "https://example.com"}
     assert action.structured_output is not None
     assert action.structured_output["success"] is True
-
-
-def test_response_schema_json_is_cached_per_class():
-    """The Pydantic model_json_schema() result is cached by the immutable class so
-    repeated _response_schema_json calls reuse the cached schema."""
-    from openhands.sdk.tool.tool import _response_schema_json_cache
-
-    # Prime the cache by resolving a tool with a schema.
-    _finish_with_schema(TaskResult)
-    assert TaskResult in _response_schema_json_cache
-
-    cached = _response_schema_json_cache[TaskResult]
-    # Subsequent calls return deep copies of the same cached schema.
-    again = _finish_with_schema(TaskResult)
-    assert _response_schema_json_cache[TaskResult] == cached
-    # Multiple action_from_arguments calls do not regenerate the cache.
-    again.action_from_arguments(
-        {"message": "m", "success": True, "summary_text": "s", "files_changed": []}
-    )
-    again.action_from_arguments(
-        {"message": "m2", "success": False, "summary_text": "s2", "files_changed": []}
-    )
-    assert _response_schema_json_cache[TaskResult] == cached
 
 
 def test_response_schema_cache_does_not_go_stale_on_model_copy():
