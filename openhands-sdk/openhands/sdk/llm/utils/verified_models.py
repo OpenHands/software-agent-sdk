@@ -69,6 +69,7 @@ VERIFIED_DEEPSEEK_MODELS = [
     "deepseek-chat",
     "deepseek-v3.2-reasoner",
     "deepseek-v4-pro",
+    "deepseek-v4-flash",
 ]
 
 VERIFIED_MOONSHOT_MODELS = [
@@ -131,6 +132,7 @@ VERIFIED_OPENHANDS_MODELS = [
     "deepseek-chat",
     "deepseek-v3.2-reasoner",
     "deepseek-v4-pro",
+    "deepseek-v4-flash",
     "kimi-k3",
     "kimi-k2-thinking",
     "kimi-k2.6",
