@@ -3790,6 +3790,7 @@ def _make_config_conn(
     session_id: str = "sess-new",
     options: list[SessionConfigOption] | None = None,
     models: SessionModelState | None = None,
+    load_exc: Exception | None = None,
 ):
     """MagicMock ACP connection whose session responses carry typed config state.
 
@@ -3797,6 +3798,8 @@ def _make_config_conn(
     ids, records the new value, and answers with the complete option state.
     The same *options* are reported by both ``new_session`` and
     ``load_session`` so fresh and resumed sessions can be compared directly.
+    If *load_exc* is given, ``load_session`` raises it instead of returning a
+    response, so a stale-session fallback to ``new_session`` can be exercised.
     """
     conn = MagicMock()
 
@@ -3812,9 +3815,12 @@ def _make_config_conn(
             session_id=session_id, config_options=options, models=models
         )
     )
-    conn.load_session = AsyncMock(
-        return_value=LoadSessionResponse(config_options=options, models=models)
-    )
+    if load_exc is not None:
+        conn.load_session = AsyncMock(side_effect=load_exc)
+    else:
+        conn.load_session = AsyncMock(
+            return_value=LoadSessionResponse(config_options=options, models=models)
+        )
 
     current = list(options or [])
 
@@ -3951,7 +3957,7 @@ class TestACPSessionConfigOptions:
         """A persisted session is configured exactly like a fresh one."""
         agent = _make_agent(
             acp_model="grok-4.6",
-            acp_config_options={"effort": "medium"},
+            acp_config_options={"effort": "medium", "fast": "false"},
         )
         state = _make_state(tmp_path)
         state.agent_state = {
@@ -3960,7 +3966,10 @@ class TestACPSessionConfigOptions:
             "acp_session_cwd": str(tmp_path),
         }
         conn = _make_config_conn(
-            options=[_config_option("effort", "low", ["low", "medium"])],
+            options=[
+                _config_option("effort", "low", ["low", "medium", "high"]),
+                _config_option("fast", "true", ["true", "false"]),
+            ],
             models=_GROK_MODELS,
         )
 
@@ -3972,10 +3981,45 @@ class TestACPSessionConfigOptions:
             model_id="grok-4.6",
             session_id="stored-sess",
         )
-        conn.set_config_option.assert_awaited_once_with(
-            config_id="effort",
+        assert [call.kwargs for call in conn.set_config_option.await_args_list] == [
+            {"config_id": "effort", "session_id": "stored-sess", "value": "medium"},
+            {"config_id": "fast", "session_id": "stored-sess", "value": "false"},
+        ]
+
+    def test_composer_resumed_session_applies_same_config(self, tmp_path):
+        """A persisted Composer session is configured exactly like a fresh one."""
+        agent = _make_agent(
+            acp_model="composer-2.5",
+            acp_config_options={"fast": "false"},
+        )
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            **state.agent_state,
+            "acp_session_id": "stored-sess",
+            "acp_session_cwd": str(tmp_path),
+        }
+        conn = _make_config_conn(
+            options=[_config_option("fast", "true", ["true", "false"])],
+            models=SessionModelState(
+                available_models=[
+                    ModelInfo(model_id="composer-2.5", name="Composer 2.5")
+                ],
+                current_model_id="auto",
+            ),
+        )
+
+        TestACPSessionIdPersistence._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.load_session.assert_awaited_once()
+        conn.new_session.assert_not_awaited()
+        conn.set_session_model.assert_awaited_once_with(
+            model_id="composer-2.5",
             session_id="stored-sess",
-            value="medium",
+        )
+        conn.set_config_option.assert_awaited_once_with(
+            config_id="fast",
+            session_id="stored-sess",
+            value="false",
         )
 
     def test_no_requested_options_leaves_session_untouched(self, tmp_path):
@@ -4007,6 +4051,78 @@ class TestACPSessionConfigOptions:
         assert agent._executor is None
         assert agent._initialized is False
         assert "acp_session_id" not in state.agent_state
+
+    @pytest.mark.parametrize(
+        ("acp_model", "acp_config_options", "expected_config_calls"),
+        [
+            (
+                "grok-4.6",
+                {"effort": "medium", "fast": "false"},
+                [
+                    {
+                        "config_id": "effort",
+                        "session_id": "replacement-sess",
+                        "value": "medium",
+                    },
+                    {
+                        "config_id": "fast",
+                        "session_id": "replacement-sess",
+                        "value": "false",
+                    },
+                ],
+            ),
+            (
+                "composer-2.5",
+                {"fast": "false"},
+                [
+                    {
+                        "config_id": "fast",
+                        "session_id": "replacement-sess",
+                        "value": "false",
+                    }
+                ],
+            ),
+        ],
+    )
+    def test_stale_load_session_falls_back_to_new_session_with_config(
+        self, tmp_path, acp_model, acp_config_options, expected_config_calls
+    ):
+        """A stale load_session id must not skip model/config setup on the
+        replacement session created via new_session.
+        """
+        agent = _make_agent(
+            acp_model=acp_model, acp_config_options=acp_config_options
+        )
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            **state.agent_state,
+            "acp_session_id": "stale-sess",
+            "acp_session_cwd": str(tmp_path),
+        }
+        conn = _make_config_conn(
+            session_id="replacement-sess",
+            options=[
+                _config_option("effort", "low", ["low", "medium", "high"]),
+                _config_option("fast", "true", ["true", "false"]),
+            ],
+            models=SessionModelState(
+                available_models=[ModelInfo(model_id=acp_model, name=acp_model)],
+                current_model_id="auto",
+            ),
+            load_exc=ACPRequestError(-32602, "unknown session"),
+        )
+
+        TestACPSessionIdPersistence._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.load_session.assert_awaited_once()
+        conn.new_session.assert_awaited_once()
+        conn.set_session_model.assert_awaited_once_with(
+            model_id=acp_model,
+            session_id="replacement-sess",
+        )
+        assert [
+            call.kwargs for call in conn.set_config_option.await_args_list
+        ] == expected_config_calls
 
 
 class TestApplySessionConfigOptions:
@@ -4191,6 +4307,7 @@ class TestFailedInitReapsSubprocess:
         agent = _make_agent(acp_config_options={"effort": "medium"})
         state = _make_state(tmp_path)
         conn = self._unverifiable_conn()
+        conn.prompt = AsyncMock()
         process = _FakeACPProcess()
 
         with TestACPSessionIdPersistence._transport_patches(conn, process):
@@ -4198,7 +4315,10 @@ class TestFailedInitReapsSubprocess:
                 agent.init_state(state, on_event=lambda _: None)
 
         # The verification failure itself still surfaces (asserted above) and
-        # the subprocess it spawned is gone rather than orphaned.
+        # the subprocess it spawned is gone rather than orphaned. Config is
+        # verified before any prompt could be sent, so a session that fails
+        # verification must never reach conn.prompt (fail-close).
+        conn.prompt.assert_not_awaited()
         conn.close.assert_awaited_once()
         assert process.terminated is True
         assert process.returncode is not None
