@@ -22,16 +22,16 @@ from openhands.sdk.tool.schema import Action
 from openhands.sdk.tool.tool import ToolDefinition
 
 
-class _Args(Action):
+class _CompositionArgs(Action):
     param: str
 
 
-class _MockTool(ToolDefinition[_Args, None]):
+class _CompositionMockTool(ToolDefinition[_CompositionArgs, None]):
     name: ClassVar[str] = "test_tool"
 
     @classmethod
-    def create(cls, conv_state=None, **params) -> Sequence["_MockTool"]:
-        return [cls(description="A test tool", action_type=_Args)]
+    def create(cls, conv_state=None, **params) -> Sequence["_CompositionMockTool"]:
+        return [cls(description="A test tool", action_type=_CompositionArgs)]
 
 
 def _make_llm(model: str = "gpt-4o") -> LLM:
@@ -52,7 +52,8 @@ def _sample_messages() -> list[Message]:
 def test_compute_prompt_composition_decomposes_into_components():
     formatted = _make_llm().format_messages_for_llm(_sample_messages())
     tools = [
-        t.to_openai_tool(add_security_risk_prediction=True) for t in _MockTool.create()
+        t.to_openai_tool(add_security_risk_prediction=True)
+        for t in _CompositionMockTool.create()
     ]
 
     composition = compute_prompt_composition(
@@ -117,7 +118,8 @@ def test_compute_prompt_composition_tool_schema_tokens_matches_controlled_delta(
     """tool_schema_tokens must equal the marginal cost of adding tools."""
     formatted = _make_llm().format_messages_for_llm(_sample_messages())
     tools = [
-        t.to_openai_tool(add_security_risk_prediction=True) for t in _MockTool.create()
+        t.to_openai_tool(add_security_risk_prediction=True)
+        for t in _CompositionMockTool.create()
     ]
 
     with_tools = compute_prompt_composition(
@@ -264,8 +266,8 @@ _OPENAI_TOOL = {
 
 _TOOL_DEFINITION_DUMP = {
     "description": "A test tool",
-    "action_type": "_Args",
-    "kind": "_MockTool",
+    "action_type": "_CompositionArgs",
+    "kind": "_CompositionMockTool",
     "title": "test_tool",
 }
 

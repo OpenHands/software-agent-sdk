@@ -196,16 +196,16 @@ def test_llm_log_completions_with_tool_calls():
         assert log_data["response"]["choices"][0]["message"]["tool_calls"] is not None
 
 
-class _Args(Action):
+class _LogCompletionsArgs(Action):
     param: str
 
 
-class _MockTool(ToolDefinition[_Args, None]):
+class _LogCompletionsMockTool(ToolDefinition[_LogCompletionsArgs, None]):
     name: ClassVar[str] = "test_tool"
 
     @classmethod
-    def create(cls, conv_state=None, **params) -> Sequence["_MockTool"]:
-        return [cls(description="A test tool", action_type=_Args)]
+    def create(cls, conv_state=None, **params) -> Sequence["_LogCompletionsMockTool"]:
+        return [cls(description="A test tool", action_type=_LogCompletionsArgs)]
 
 
 def _read_single_log(temp_dir: str) -> dict:
@@ -239,7 +239,7 @@ def test_log_completions_logs_openai_format_tool_schemas():
         ):
             llm.completion(
                 [Message(role="user", content=[TextContent(text="Call a tool")])],
-                tools=list(_MockTool.create()),
+                tools=list(_LogCompletionsMockTool.create()),
             )
 
         log_data = _read_single_log(temp_dir)
@@ -289,7 +289,7 @@ def test_log_completions_logs_responses_format_tool_schemas():
         ):
             llm.responses(
                 [Message(role="user", content=[TextContent(text="Call a tool")])],
-                tools=list(_MockTool.create()),
+                tools=list(_LogCompletionsMockTool.create()),
             )
 
         log_data = _read_single_log(temp_dir)
