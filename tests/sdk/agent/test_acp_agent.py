@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import json
+import os
 import threading
 import time
 import uuid
@@ -43,6 +44,7 @@ from openhands.sdk.agent.acp_agent import (
     _mcp_config_to_acp_servers,
     _OpenHandsACPBridge,
     _reapply_session_model_on_resume,
+    _resolve_executable,
     _select_auth_method,
     _serialize_tool_content,
     _stringify_acp_error_data,
@@ -5043,6 +5045,54 @@ class TestSelectAuthMethod:
         env = {"GEMINI_API_KEY": "g"}
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
             assert _select_auth_method(methods, env) == "gemini-api-key"
+
+
+# ---------------------------------------------------------------------------
+# _resolve_executable
+# ---------------------------------------------------------------------------
+
+
+class TestResolveExecutable:
+    """``create_subprocess_exec`` reaches ``CreateProcess`` on Windows, which
+    appends only ``.exe`` and never consults ``PATHEXT``. Every npm CLI entry
+    point is a ``.cmd`` shim, so the registry's ``npx -y <pkg>`` default is
+    unspawnable from a bare name there. ``shutil.which`` does honour ``PATHEXT``.
+    """
+
+    def test_bare_name_resolves_to_pathext_aware_which_result(self):
+        with patch(
+            "openhands.sdk.agent.acp_agent.shutil.which",
+            return_value=r"C:\Program Files\nodejs\npx.cmd",
+        ):
+            assert _resolve_executable("npx") == r"C:\Program Files\nodejs\npx.cmd"
+
+    def test_unresolvable_name_passes_through(self):
+        """Kept verbatim so a genuinely missing CLI still raises ACPSpawnError
+        from the spawn rather than being swallowed here."""
+        with patch(
+            "openhands.sdk.agent.acp_agent.shutil.which", return_value=None
+        ) as which:
+            assert _resolve_executable("definitely-not-installed") == (
+                "definitely-not-installed"
+            )
+            which.assert_called_once_with("definitely-not-installed")
+
+    @pytest.mark.parametrize(
+        "program",
+        [
+            "/usr/local/bin/codex-acp",
+            "./local-acp",
+            # Built with the host separator so the assertion holds on both
+            # flavours of os.path (ntpath does not treat "/" specially, and
+            # posixpath does not treat "\\" specially).
+            os.path.join("opt", "shims", "claude-agent-acp"),
+        ],
+    )
+    def test_path_qualified_program_is_not_looked_up(self, program: str):
+        """An explicit path is already what exec wants; no PATH search."""
+        with patch("openhands.sdk.agent.acp_agent.shutil.which") as which:
+            assert _resolve_executable(program) == program
+            which.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
