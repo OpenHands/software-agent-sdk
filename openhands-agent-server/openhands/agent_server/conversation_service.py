@@ -15,7 +15,7 @@ from weakref import WeakValueDictionary
 import httpx
 from pydantic import BaseModel
 
-from openhands.agent_server.config import Config, WebhookSpec
+from openhands.agent_server.config import ACPSkillSourcing, Config, WebhookSpec
 from openhands.agent_server.conversation_lease import (
     DEFAULT_LEASE_TTL_SECONDS,
     ConversationLeaseHeldError,
@@ -290,11 +290,53 @@ def _same_workspace(a: LocalWorkspace, b: LocalWorkspace) -> bool:
     return Path(a.working_dir).resolve() == Path(b.working_dir).resolve()
 
 
+def _apply_acp_skill_sourcing(
+    agent: "AgentBase", sourcing: ACPSkillSourcing
+) -> "AgentBase":
+    """Strip OpenHands-managed skills from an ACP agent under ``native`` sourcing.
+
+    A host-local ACP CLI reads the user's own skills from its home directory, so
+    a second, OpenHands-managed set injected into its prompt is at best noise —
+    and the catalog listing tells it to call ``invoke_skill``, a tool no ACP
+    agent has. Container runtimes set ``openhands_managed`` because that home
+    configuration is absent there. Project skills are excluded either way, by
+    ``ACPAgent`` itself (#4019).
+
+    A caller that sends ``agent`` / ``agent_settings`` puts its own skills on the
+    context, so the strip happens here rather than at profile resolution.
+    """
+    if sourcing != "native" or not isinstance(agent, ACPAgent):
+        return agent
+    context = agent.agent_context
+    if context is None:
+        return agent
+    if not (
+        context.skills
+        or context.load_user_skills
+        or context.load_public_skills
+        or context.registered_marketplaces
+    ):
+        return agent
+    return agent.model_copy(
+        update={
+            "agent_context": context.model_copy(
+                update={
+                    "skills": [],
+                    "load_user_skills": False,
+                    "load_public_skills": False,
+                    "registered_marketplaces": [],
+                }
+            )
+        }
+    )
+
+
 def _resolve_agent_from_profile(
     profile_id: "UUID",
     cipher: "Cipher | None",
     mcp_config: "dict[str, MCPServer]",
     load_memory: bool = False,
+    acp_skill_sourcing: ACPSkillSourcing = "native",
 ) -> "tuple[AgentBase, LaunchedAgentProfile]":
     """Load and resolve an agent profile by id, returning the built agent + provenance.
 
@@ -310,6 +352,9 @@ def _resolve_agent_from_profile(
             has no ``agent_context`` field, so the preference cannot ride the
             profile — it is stamped onto the resolved agent below, else a
             profile-launched conversation would silently ignore the setting.
+        acp_skill_sourcing: This deployment's ACP skill policy
+            (``Config.acp_skill_sourcing``).  Decides whether an ACP profile is
+            resolved with the server's managed skill catalog or with none.
 
     Raises:
         ProfileNotFound: No stored profile has ``profile_id``.
@@ -340,11 +385,15 @@ def _resolve_agent_from_profile(
         ) from exc
 
     # OpenHands profiles get the discovered catalog minus their ``disabled_skills``
-    # deny-list; ACP profiles carry no user/public skills so discovery is skipped.
-    # A genuine discovery failure fails the launch loudly rather than silently
-    # producing a zero-skill agent.
+    # deny-list. An ACP profile gets it only where the CLI cannot reach the user's
+    # own configuration (``openhands_managed``); under ``native`` it sources its
+    # own skills and OpenHands injects none (#4019). A genuine discovery failure
+    # fails the launch loudly rather than silently producing a zero-skill agent.
     available_skills = None
-    if profile.agent_kind == "openhands":
+    wants_skills = profile.agent_kind == "openhands" or (
+        acp_skill_sourcing == "openhands_managed"
+    )
+    if wants_skills:
         try:
             available_skills = discover_profile_skills()
         except Exception as exc:
@@ -641,6 +690,7 @@ class ConversationService:
     conversation_worktree_root: Path = field(
         default=Path("/tmp/conversation-worktrees")
     )
+    acp_skill_sourcing: ACPSkillSourcing = "native"
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_records: dict[UUID, _ConversationRecord] = field(
         default_factory=dict, init=False
@@ -1533,8 +1583,17 @@ class ConversationService:
                 self.cipher,
                 mcp_config,
                 load_memory=bool(stored_context and stored_context.load_memory),
+                acp_skill_sourcing=self.acp_skill_sourcing,
             )
             request = request.model_copy(update={"agent": resolved_agent})
+
+        request = request.model_copy(
+            update={
+                "agent": _apply_acp_skill_sourcing(
+                    request.agent, self.acp_skill_sourcing
+                )
+            }
+        )
 
         additions = request.agent_launch_additions
         suffix = (
@@ -2238,6 +2297,7 @@ class ConversationService:
             lease_ttl_seconds=config.lease_ttl_seconds,
             conversation_idle_ttl_seconds=config.conversation_idle_ttl_seconds,
             conversation_worktree_root=config.conversation_worktree_root,
+            acp_skill_sourcing=config.acp_skill_sourcing,
         )
 
     async def _start_event_service(

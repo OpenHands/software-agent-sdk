@@ -45,6 +45,7 @@ from openhands.sdk.profiles.resolver import (
     ProfileNotFound,
 )
 from openhands.sdk.settings.model import ACPAgentSettings, OpenHandsAgentSettings
+from openhands.sdk.skills import Skill
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -288,6 +289,65 @@ class TestResolveAgentFromProfile:
         # No model_copy/mutation attempted on an ACP (non-OpenHandsAgentSettings)
         # resolved settings object.
         mock_config.model_copy.assert_not_called()
+
+    def test_acp_profile_skips_discovery_under_native_sourcing(self):
+        """A host-local ACP CLI reads the user's own skills from its home
+        directory, so the server injects none and skips discovery entirely
+        (#4019)."""
+        from openhands.agent_server.conversation_service import (
+            _resolve_agent_from_profile,
+        )
+
+        profile = _make_acp_profile()
+
+        with (
+            patch(_STORE_PATH) as MockStore,
+            patch(_LLM_STORE_PATH),
+            patch(_RESOLVE_PATH) as MockResolve,
+            patch(_DISCOVER_PATH, return_value=[Skill(name="a", content="x")]) as Disc,
+        ):
+            store_inst = MockStore.return_value
+            store_inst.name_for_id.return_value = profile.name
+            store_inst.load.return_value = profile
+            MockResolve.return_value = MagicMock()
+
+            _resolve_agent_from_profile(
+                profile.id, cipher=None, mcp_config={}, acp_skill_sourcing="native"
+            )
+
+        Disc.assert_not_called()
+        assert MockResolve.call_args.kwargs["available_skills"] is None
+
+    def test_acp_profile_gets_catalog_under_managed_sourcing(self):
+        """In a container the CLI has no host home to read skills from, so the
+        server supplies its discovered catalog instead (#4019)."""
+        from openhands.agent_server.conversation_service import (
+            _resolve_agent_from_profile,
+        )
+
+        profile = _make_acp_profile()
+        catalog = [Skill(name="a", content="x")]
+
+        with (
+            patch(_STORE_PATH) as MockStore,
+            patch(_LLM_STORE_PATH),
+            patch(_RESOLVE_PATH) as MockResolve,
+            patch(_DISCOVER_PATH, return_value=catalog) as Disc,
+        ):
+            store_inst = MockStore.return_value
+            store_inst.name_for_id.return_value = profile.name
+            store_inst.load.return_value = profile
+            MockResolve.return_value = MagicMock()
+
+            _resolve_agent_from_profile(
+                profile.id,
+                cipher=None,
+                mcp_config={},
+                acp_skill_sourcing="openhands_managed",
+            )
+
+        Disc.assert_called_once()
+        assert MockResolve.call_args.kwargs["available_skills"] == catalog
 
     def test_openhands_default_tools_get_browser_when_usable(self):
         """A default-toolset (tools=None) OpenHands profile launch injects the

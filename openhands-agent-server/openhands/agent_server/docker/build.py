@@ -27,6 +27,7 @@ import time
 import tomllib
 from contextlib import chdir
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -46,6 +47,11 @@ VALID_TARGETS = {
     "base-image",
     "builder",
 }
+# Capability keys accepted by the Dockerfile's INSTALL_CAPABILITIES build arg
+# (the `base-image` stage's VSCode Web, browser, and Docker blocks). Kept
+# local to this module since, unlike ACP_PROVIDERS, no other repo/runtime
+# code needs this set.
+AGENT_SERVER_CAPABILITIES = ("vscode", "browser", "docker")
 _BUILDKIT_STEP_RE = re.compile(r"^#(?P<step>\d+)\s+(?P<message>.+)$")
 _BUILDKIT_DONE_RE = re.compile(r"^DONE\s+(?P<seconds>\d+(?:\.\d+)?)s$")
 _BUILDKIT_INLINE_DONE_RE = re.compile(
@@ -384,6 +390,7 @@ class BuildOptions(BaseModel):
         default="", description="Comma-separated list of custom tags."
     )
     image: str = Field(default="ghcr.io/openhands/agent-server")
+    image_flavor: Literal["default", "slim"] = Field(default="default")
     target: TargetType = Field(default="binary")
     platforms: list[PlatformType] = Field(default=["linux/amd64"])
     push: bool | None = Field(
@@ -456,6 +463,31 @@ class BuildOptions(BaseModel):
             )
         return v
 
+    install_capabilities: str = Field(
+        default="vscode,browser,docker",
+        description=(
+            "Comma-separated capability keys to bake into the `base-image` "
+            "stage (VSCode Web, browser, Docker Engine). Empty "
+            "string installs none."
+        ),
+    )
+
+    @field_validator("install_capabilities")
+    @classmethod
+    def _valid_install_capabilities(cls, v: str) -> str:
+        unknown = [
+            p
+            for p in (t.strip() for t in v.split(","))
+            if p and p not in AGENT_SERVER_CAPABILITIES
+        ]
+        if unknown:
+            raise ValueError(
+                f"Unknown capability(ies) in install_capabilities: "
+                f"{', '.join(unknown)}. "
+                f"Valid keys: {', '.join(AGENT_SERVER_CAPABILITIES)}"
+            )
+        return v
+
     @property
     def short_sha(self) -> str:
         return self.git_sha[:7] if self.git_sha != "unknown" else "unknown"
@@ -515,18 +547,22 @@ class BuildOptions(BaseModel):
         if not self.release_tag_source:
             return []
         return [
-            f"{release_tag}-{custom_tag}"
+            f"{release_tag}-{custom_tag}{self.flavor_suffix}"
             for custom_tag in self.custom_tag_list
             for release_tag in _release_tag_aliases(self.release_tag_source)
         ]
 
     @property
+    def flavor_suffix(self) -> str:
+        return "" if self.image_flavor == "default" else f"-{self.image_flavor}"
+
+    @property
     def base_tag(self) -> str:
-        return f"{self.short_sha}-{self.base_image_slug}"
+        return f"{self.short_sha}-{self.base_image_slug}{self.flavor_suffix}"
 
     @property
     def cache_tags(self) -> tuple[str, str]:
-        base = f"buildcache-{self.target}-{self.base_image_slug}"
+        base = f"buildcache-{self.target}-{self.base_image_slug}{self.flavor_suffix}"
         if self.git_ref in ("main", "refs/heads/main"):
             return f"{base}-main", base
         elif self.git_ref != "unknown":
@@ -540,6 +576,7 @@ class BuildOptions(BaseModel):
         arch_suffix = f"-{self.arch}" if self.arch else ""
 
         for custom_tag in self.custom_tag_list:
+            custom_tag = f"{custom_tag}{self.flavor_suffix}"
             tags.extend(
                 [
                     f"{self.image}:{self.short_sha}-{custom_tag}{arch_suffix}",
@@ -829,9 +866,16 @@ def build_with_telemetry(opts: BuildOptions) -> BuildResult:
 
     telemetry = BuildTelemetry()
     build_context_started = time.monotonic()
-    # Base-image targets don't need SDK source (no COPY from build context),
-    # so use an empty temp dir instead of running the expensive uv build --sdist.
-    is_base_only = opts.target in ("base-image-minimal", "base-image")
+    # Only base-image-minimal has zero context dependency (no COPY from the
+    # build context, direct or transitive). base-image is NOT eligible for
+    # this fast path even though it looked context-free at a glance: it pulls
+    # in the `builder` stage (for VSCode extensions), and `builder` itself
+    # COPYs the real SDK source from context. This dependency is
+    # unconditional at the Dockerfile level, so excluding vscode from
+    # INSTALL_CAPABILITIES shrinks the resulting image but not this
+    # build-context cost or the `builder` stage's own build time (a full SDK
+    # venv sync).
+    is_base_only = opts.target == "base-image-minimal"
     if is_base_only:
         ctx = Path(tempfile.mkdtemp(prefix="agent-base-ctx-"))
         shutil.copy2(dockerfile_path, ctx / "Dockerfile")
@@ -858,6 +902,8 @@ def build_with_telemetry(opts: BuildOptions) -> BuildResult:
         f"OPENHANDS_BUILD_GIT_REF={opts.git_ref}",
         "--build-arg",
         f"INSTALL_ACP_PROVIDERS={opts.install_acp_providers}",
+        "--build-arg",
+        f"INSTALL_CAPABILITIES={opts.install_capabilities}",
     ]
     if push:
         args += ["--platform", ",".join(opts.platforms), "--push"]
@@ -1022,6 +1068,12 @@ def main(argv: list[str]) -> int:
         help="Image repo/name (default from $IMAGE).",
     )
     parser.add_argument(
+        "--image-flavor",
+        default=_env("IMAGE_FLAVOR", "default"),
+        choices=("default", "slim"),
+        help="Image flavor (default from $IMAGE_FLAVOR).",
+    )
+    parser.add_argument(
         "--target",
         default=_env("TARGET", "binary"),
         choices=sorted(VALID_TARGETS),
@@ -1085,6 +1137,16 @@ def main(argv: list[str]) -> int:
             "(default from $INSTALL_ACP_PROVIDERS; empty string installs none)."
         ),
     )
+    parser.add_argument(
+        "--install-capabilities",
+        # os.environ.get, not _env(): an explicit empty string here means
+        # "install none" and must survive, but _env() treats blank as unset.
+        default=os.environ.get("INSTALL_CAPABILITIES", "vscode,browser,docker"),
+        help=(
+            "Comma-separated capability keys to bake into the image "
+            "(default from $INSTALL_CAPABILITIES; empty string installs none)."
+        ),
+    )
 
     args = parser.parse_args(argv)
 
@@ -1107,6 +1169,7 @@ def main(argv: list[str]) -> int:
             base_image=args.base_image,
             custom_tags=args.custom_tags,
             image=args.image,
+            image_flavor=args.image_flavor,
             target=args.target,  # type: ignore
             platforms=[p.strip() for p in args.platforms.split(",") if p.strip()],  # type: ignore
             push=None,  # Not relevant for build-ctx-only
@@ -1115,6 +1178,7 @@ def main(argv: list[str]) -> int:
             arch=args.arch or None,
             include_versioned_tag=args.versioned_tag,
             install_acp_providers=args.install_acp_providers,
+            install_capabilities=args.install_capabilities,
         )
 
         # If running in GitHub Actions, write outputs directly to GITHUB_OUTPUT
@@ -1156,6 +1220,7 @@ def main(argv: list[str]) -> int:
         base_image=args.base_image,
         custom_tags=args.custom_tags,
         image=args.image,
+        image_flavor=args.image_flavor,
         target=args.target,  # type: ignore
         platforms=[p.strip() for p in args.platforms.split(",") if p.strip()],  # type: ignore
         push=push,
@@ -1164,6 +1229,7 @@ def main(argv: list[str]) -> int:
         arch=args.arch or None,
         include_versioned_tag=args.versioned_tag,
         install_acp_providers=args.install_acp_providers,
+        install_capabilities=args.install_capabilities,
     )
     tags = build(opts)
 
