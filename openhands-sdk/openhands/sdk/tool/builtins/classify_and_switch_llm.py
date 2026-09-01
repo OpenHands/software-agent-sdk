@@ -9,7 +9,7 @@ profile mapped to the chosen class (falling back to ``default_model``).
 
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Self
 
 from pydantic import Field
@@ -409,8 +409,10 @@ class ClassifyAndSwitchLLMTool(
         cls,
         conv_state: "ConversationState | None" = None,  # noqa: ARG003
         active_meta_profile: str | None = None,
-        meta_profile: MetaProfile | dict[str, object] | None = None,
-        meta_profile_llms: dict[str, LLM | dict[str, object]] | None = None,
+        meta_profile: MetaProfile | Mapping[str, object] | None = None,
+        meta_profile_llms: Mapping[
+            str, LLM | Mapping[str, object]
+        ] | None = None,
         meta_profile_store: MetaProfileStore | None = None,
         **params,
     ) -> Sequence[Self]:
