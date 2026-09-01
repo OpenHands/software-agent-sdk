@@ -367,7 +367,23 @@ RUN --mount=type=bind,from=builder,source=/agent-server/openhands-agent-server/o
 RUN set -eux; \
     case ",$INSTALL_CAPABILITIES," in \
       *,docker,*) ;; \
-      *) echo "INSTALL_CAPABILITIES excludes docker; skipping Docker Engine"; exit 0;; \
+      *) echo "INSTALL_CAPABILITIES excludes docker; skipping Docker Engine"; \
+         # Stand in for the missing CLI. Without this the agent gets a bare
+         # "docker: command not found" and cannot tell a deliberately Docker-less
+         # image from a broken PATH, so it retries instead of adapting. Unlike
+         # every other gated capability, Docker cannot be recovered at runtime:
+         # dockerd needs --privileged (or Sysbox) at container start, which a
+         # running container cannot grant itself. This message is therefore the
+         # only recovery path, and its primary reader is the agent.
+         { \
+           echo '#!/bin/sh'; \
+           echo 'echo "docker: Docker Engine is not installed in this image." >&2'; \
+           echo 'echo "This image was built without the \"docker\" capability, so no Docker CLI or daemon is present. Container builds and \`docker compose\` cannot work here, and Docker cannot be installed at runtime: the daemon needs --privileged (or the Sysbox runtime) granted when the container starts." >&2'; \
+           echo 'echo "To use Docker: run an image built with \"docker\" in INSTALL_CAPABILITIES, and start the container with --privileged." >&2'; \
+           echo 'exit 127'; \
+         } > /usr/local/bin/docker; \
+         chmod +x /usr/local/bin/docker; \
+         exit 0;; \
     esac; \
     \
     # Determine OS type and install Docker accordingly
