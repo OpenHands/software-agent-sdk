@@ -410,9 +410,7 @@ class ClassifyAndSwitchLLMTool(
         conv_state: "ConversationState | None" = None,  # noqa: ARG003
         active_meta_profile: str | None = None,
         meta_profile: MetaProfile | Mapping[str, object] | None = None,
-        meta_profile_llms: Mapping[
-            str, LLM | Mapping[str, object]
-        ] | None = None,
+        meta_profile_llms: Mapping[str, LLM | Mapping[str, object]] | None = None,
         meta_profile_store: MetaProfileStore | None = None,
         **params,
     ) -> Sequence[Self]:
