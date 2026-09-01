@@ -410,6 +410,21 @@ async def _inbound_loop(
             except WebSocketDisconnect:
                 logger.info("session_socket_disconnected: %s", conversation_id)
                 return
+            except Exception as e:
+                # ``receive_json`` decodes with ``json.loads``, so a non-JSON
+                # text frame raises here rather than at validation below. The
+                # legacy endpoint catches this in its one broad handler; keep
+                # the connection and report it the same way.
+                logger.warning(
+                    "session_socket_bad_inbound_frame: %s: %s",
+                    e.__class__.__name__,
+                    e,
+                )
+                if not writer.send(
+                    ErrorFrame(code=e.__class__.__name__, detail=str(e))
+                ):
+                    return
+                continue
 
             if _is_auth_control_message(data):
                 continue

@@ -7,12 +7,15 @@ publisher never blocking on a wedged connection, and lossless resume.
 
 import asyncio
 import json
+from uuid import uuid4
 
 import pytest
+from fastapi import WebSocketDisconnect
 
 from openhands.agent_server.session_protocol import MAX_FRAME_BYTES
 from openhands.agent_server.session_socket import (
     _ConnectionWriter,
+    _inbound_loop,
     _read_page,
     _replay,
     _SessionSubscriber,
@@ -237,3 +240,42 @@ def test_replay_skips_unreadable_events_instead_of_failing():
 
     page = _read_page(log, 0, 3)  # type: ignore[arg-type]
     assert [seq for seq, _ in page] == [0, 2]
+
+
+@pytest.mark.asyncio
+async def test_malformed_inbound_frame_is_reported_not_raised():
+    """A non-JSON text frame must not escape the inbound loop.
+
+    ``receive_json`` decodes with ``json.loads``, so a garbage frame raises
+    ``JSONDecodeError`` — not ``WebSocketDisconnect``. The legacy endpoint
+    absorbs that in its one broad handler; this one has to as well, or a single
+    bad frame takes down the connection (and the handler) instead of earning an
+    ``ErrorFrame``.
+    """
+    ws = _FakeWebSocket()
+    writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
+    writer.start()
+
+    receives = 0
+
+    async def receive_json():
+        nonlocal receives
+        receives += 1
+        if receives == 1:
+            raise json.JSONDecodeError("Expecting value", "not json", 0)
+        raise WebSocketDisconnect()
+
+    ws.receive_json = receive_json  # type: ignore[attr-defined]
+
+    await asyncio.wait_for(
+        _inbound_loop(uuid4(), ws, object(), writer),  # type: ignore[arg-type]
+        timeout=5,
+    )
+    await _drain(writer)
+    await writer.aclose()
+
+    (frame,) = ws.frames()
+    assert frame["type"] == "error"
+    assert frame["code"] == "JSONDecodeError"
+    # The loop kept going after the bad frame rather than unwinding on it.
+    assert receives == 2
