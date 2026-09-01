@@ -396,7 +396,7 @@ async def test_direct_start_strips_reserved_conversation_secret(tmp_path) -> Non
         info, _ = await service.start_conversation(request)
         event_service = await service.get_event_service(info.id)
         assert event_service is not None
-        assert "CODEX_AUTH_JSON" not in event_service.stored.secrets
+        assert "CODEX_AUTH_JSON" not in event_service.secrets
         assert "CODEX_AUTH_JSON" in event_service.credential_bindings
         assert not event_service.stored.required_runtime_credential_bindings
 
@@ -430,7 +430,7 @@ async def test_pending_binding_is_ignored_for_regular_agent(tmp_path) -> None:
         event_service = await service.get_event_service(conversation_id)
         assert event_service is not None
         assert event_service.credential_bindings == {}
-        assert "CODEX_AUTH_JSON" in event_service.stored.secrets
+        assert "CODEX_AUTH_JSON" in event_service.secrets
 
         # Pending binding consumed when the unloaded conversation loads again.
         await service.prepare_for_sandbox_pause()
@@ -444,7 +444,8 @@ async def test_pending_binding_is_ignored_for_regular_agent(tmp_path) -> None:
 
         meta = json.loads(meta_file.read_text())
         assert meta["required_runtime_credential_bindings"] == []
-        assert "CODEX_AUTH_JSON" in meta["secrets"]
+        base_state = json.loads((meta_file.parent / "base_state.json").read_text())
+        assert "CODEX_AUTH_JSON" in base_state["secret_registry"]["secret_sources"]
         assert await service.get_event_service(conversation_id) is not None
 
 
@@ -578,10 +579,13 @@ async def test_one_off_credential_survives_cold_restart_without_binding(
         event_service = await restarted.get_event_service(info.id)
         assert event_service is not None
         assert not event_service.credential_bindings
-        assert (
-            event_service.stored.secrets["CODEX_AUTH_JSON"].get_value()
-            == "one-off-credential"
-        )
+        # secrets are now owned by ConversationState/base_state.json, not
+        # StoredConversation/meta.json; check the conversation registry.
+        assert event_service._conversation is not None
+        registry = event_service._conversation._state.secret_registry
+        secret = registry.secret_sources.get("CODEX_AUTH_JSON")
+        assert secret is not None
+        assert secret.get_value() == "one-off-credential"
 
 
 @pytest.mark.asyncio
@@ -616,8 +620,8 @@ async def test_managed_start_scrubs_all_durable_credential_copies(tmp_path) -> N
         assert event_service is not None
         state = await event_service.get_state()
 
-        assert "CODEX_AUTH_JSON" not in event_service.stored.secrets
-        assert "KEEP" in event_service.stored.secrets
+        assert "CODEX_AUTH_JSON" not in event_service.secrets
+        assert "KEEP" in event_service.secrets
         # The agent is no longer stored on meta.json; it lives on the live
         # conversation / base_state.json. Assert the scrub there.
         assert event_service._conversation is not None
@@ -633,7 +637,6 @@ async def test_managed_start_scrubs_all_durable_credential_copies(tmp_path) -> N
         conversation_dir = tmp_path / "conversations" / info.id.hex
         meta = json.loads((conversation_dir / "meta.json").read_text())
         base_state = json.loads((conversation_dir / "base_state.json").read_text())
-        assert "CODEX_AUTH_JSON" not in meta["secrets"]
         # meta.json no longer carries the agent at all.
         assert "agent" not in meta
         assert "CODEX_AUTH_JSON" not in base_state["agent"]["agent_context"]["secrets"]
@@ -715,7 +718,7 @@ async def test_late_binding_scrubs_open_uninitialized_conversation(tmp_path) -> 
 
         state = await event_service.get_state()
         assert event_service.credential_bindings["CODEX_AUTH_JSON"] is binding
-        assert "CODEX_AUTH_JSON" not in event_service.stored.secrets
+        assert "CODEX_AUTH_JSON" not in event_service.secrets
         assert "CODEX_AUTH_JSON" not in state.secret_registry.secret_sources
         # The agent is on the live conversation / base_state.json, not meta.json.
         assert event_service._conversation is not None
@@ -726,7 +729,6 @@ async def test_late_binding_scrubs_open_uninitialized_conversation(tmp_path) -> 
         conversation_dir = tmp_path / "conversations" / info.id.hex
         meta = json.loads((conversation_dir / "meta.json").read_text())
         base_state = json.loads((conversation_dir / "base_state.json").read_text())
-        assert "CODEX_AUTH_JSON" not in meta["secrets"]
         assert "agent" not in meta
         assert "CODEX_AUTH_JSON" not in base_state["agent"]["agent_context"]["secrets"]
         assert "CODEX_AUTH_JSON" not in base_state["secret_registry"]["secret_sources"]
@@ -968,7 +970,6 @@ async def test_resume_uses_plaintext_fallback_without_binding(tmp_path) -> None:
         assert resumed is not None
         state = await resumed.get_state()
         assert "CODEX_AUTH_JSON" not in resumed.credential_bindings
-        assert "CODEX_AUTH_JSON" in resumed.stored.secrets
         assert "CODEX_AUTH_JSON" in state.secret_registry.secret_sources
 
 
@@ -1014,7 +1015,6 @@ async def test_failed_resume_does_not_retain_plaintext_fallback(
             )
 
         record = service._conversation_records[info.id]
-        assert "CODEX_AUTH_JSON" not in record.stored.secrets
         assert "temporary-fallback" not in record.stored.model_dump_json()
 
 
@@ -1136,11 +1136,8 @@ async def test_resume_removes_legacy_persisted_credential(tmp_path) -> None:
         )
 
         assert not started
-        record = service._conversation_records[info.id]
-        assert "CODEX_AUTH_JSON" not in record.stored.secrets
         meta = json.loads((conversation_dir / "meta.json").read_text())
         base_state = json.loads((conversation_dir / "base_state.json").read_text())
-        assert "CODEX_AUTH_JSON" not in meta["secrets"]
         # meta.json no longer carries the agent; the agent (and its scrubbed
         # agent_context) lives solely in base_state.json.
         assert "agent" not in meta

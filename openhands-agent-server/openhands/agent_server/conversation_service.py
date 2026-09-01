@@ -29,6 +29,7 @@ from openhands.agent_server.launch import (
     is_codex_source,
     launch_source,
     live_launch_runtime,
+    request_secrets,
     scoped_secrets,
     server_launch_stores,
 )
@@ -87,6 +88,12 @@ from openhands.sdk.launch import LaunchedAgent, finalize
 from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
+from openhands.sdk.secret import SecretSource
+from openhands.sdk.security.analyzer import SecurityAnalyzerBase
+from openhands.sdk.security.confirmation_policy import (
+    ConfirmationPolicyBase,
+    NeverConfirm,
+)
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.tool.registry import get_tool_module_qualnames, is_tool_available
 from openhands.sdk.utils.cipher import Cipher
@@ -442,6 +449,29 @@ def _update_state_tags_sync(
     with state:
         state.tags = tags
     return state
+
+
+def _inheritable_state_config_sync(
+    state: ConversationState,
+) -> tuple[
+    ConfirmationPolicyBase, SecurityAnalyzerBase | None, dict[str, SecretSource]
+]:
+    """Copy the base_state.json-owned config a child conversation inherits."""
+    with state:
+        analyzer = state.security_analyzer
+        # Round-trip rather than share or deep-copy, as LocalConversation.fork()
+        # does: analyzers keep mutable PrivateAttr history, a guardrail LLM may
+        # hold a non-deep-copyable lock, and expose_secrets keeps its credentials
+        # for the child's cipher to re-encrypt.
+        if analyzer is not None:
+            analyzer = type(analyzer).model_validate(
+                analyzer.model_dump(context={"expose_secrets": True})
+            )
+        return (
+            state.confirmation_policy,
+            analyzer,
+            dict(state.secret_registry.secret_sources),
+        )
 
 
 def _compose_webhook_conversation_info_sync(
@@ -1115,6 +1145,7 @@ class ConversationService:
         *,
         require_runtime_bindings: bool = True,
         agent: AgentBase | None = None,
+        secrets: dict[str, SecretSource] | None = None,
     ) -> EventService | None:
         event_services = self._event_services
         if event_services is None:
@@ -1141,7 +1172,9 @@ class ConversationService:
 
         await asyncio.to_thread(self._prepare_persisted_runtime, record.stored)
         try:
-            return await self._start_event_service(record.stored, persisted_agent=agent)
+            return await self._start_event_service(
+                record.stored, persisted_agent=agent, secrets=secrets
+            )
         except ConversationLeaseHeldError as exc:
             logger.debug(
                 "Skipping active conversation %s owned by %s until %s",
@@ -1459,28 +1492,16 @@ class ConversationService:
         )
         fallback_secret = request.secrets.get(CODEX_AUTH_SECRET_NAME)
         if managed_codex_credential or fallback_secret is not None:
-            original_stored = existing_record.stored
-            injected_fallback = (
-                not managed_codex_credential and fallback_secret is not None
+            # Pass the fallback secret directly to the EventService; the stored
+            # record no longer carries secrets.
+            injected_secrets: dict[str, SecretSource] | None = None
+            if not managed_codex_credential and fallback_secret is not None:
+                injected_secrets = {CODEX_AUTH_SECRET_NAME: fallback_secret}
+            # Reuse the agent we already parsed from base_state.json
+            # above so the load path doesn't read and parse it again.
+            event_service = await self._get_or_load_event_service_locked(
+                conversation_id, agent=reattach_agent, secrets=injected_secrets
             )
-            if injected_fallback:
-                existing_record.stored = original_stored.model_copy(
-                    update={
-                        "secrets": {
-                            **original_stored.secrets,
-                            CODEX_AUTH_SECRET_NAME: fallback_secret,
-                        }
-                    }
-                )
-            try:
-                # Reuse the agent we already parsed from base_state.json
-                # above so the load path doesn't read and parse it again.
-                event_service = await self._get_or_load_event_service_locked(
-                    conversation_id, agent=reattach_agent
-                )
-            finally:
-                if injected_fallback:
-                    existing_record.stored = original_stored
             if event_service is not None:
                 state = await event_service.get_state()
                 return (
@@ -1590,7 +1611,7 @@ class ConversationService:
             lambda: server_launch_stores(settings, self.cipher),
             self.cipher,
         )
-        secrets = scoped_secrets(request.secrets, source)
+        secrets = scoped_secrets(request_secrets(request, self.cipher), source)
         managed_codex_credential = is_codex_source(source) and (
             CODEX_AUTH_SECRET_NAME in self._credential_bindings.get(conversation_id, {})
             or await self._has_local_codex_credential()
@@ -1721,6 +1742,18 @@ class ConversationService:
             },
         )
         launched_agent_profile = launched.profile or runtime_launched_profile
+
+        # Pull out the init-only fields that belong to base_state.json (not
+        # meta.json) so they are not splatted into StoredConversation. They go
+        # to the EventService directly, decrypted when the request was
+        # secrets_encrypted (``secrets`` above already is).
+        for field_name in (
+            "secrets",
+            "secrets_encrypted",
+            "confirmation_policy",
+            "security_analyzer",
+        ):
+            request_data.pop(field_name, None)
         if request.secrets_encrypted:
             stored = StoredConversation.model_validate(
                 {
@@ -1750,6 +1783,9 @@ class ConversationService:
                 if initial_message
                 else None
             ),
+            confirmation_policy=request.confirmation_policy,
+            security_analyzer=request.security_analyzer,
+            secrets=secrets,
             reuse_request=request,
             max_budget_per_run=request.max_budget_per_run,
         )
@@ -1761,6 +1797,9 @@ class ConversationService:
         *,
         run_slot: RunSlot,
         initial_message: Message | None,
+        confirmation_policy: ConfirmationPolicyBase,
+        security_analyzer: SecurityAnalyzerBase | None,
+        secrets: dict[str, SecretSource],
         reuse_request: StartConversationRequest | None = None,
         max_budget_per_run: float | None = None,
     ) -> tuple[ConversationInfo, bool]:
@@ -1789,12 +1828,17 @@ class ConversationService:
                 return await self._reuse_existing_conversation_locked(
                     stored.id, reuse_request
                 )
-            # New conversation: the agent is written to base_state.json (its
-            # single source of truth), not to meta.json. Pass it explicitly.
+            # New conversation: the agent, confirmation_policy,
+            # security_analyzer, and secrets are written to base_state.json
+            # (their single source of truth), not to meta.json. Pass them
+            # explicitly.
             event_service = await self._start_event_service(
                 stored,
                 is_new_conversation=True,
                 launched=launched,
+                confirmation_policy=confirmation_policy,
+                security_analyzer=security_analyzer,
+                secrets=secrets,
                 max_budget_per_run=max_budget_per_run,
             )
         if initial_message is not None:
@@ -2092,15 +2136,14 @@ class ConversationService:
             # _start_event_service will resume from the persisted fork directory.
             # Copy the source's stored metadata so request-level configuration
             # (client_tools, tool_module_qualnames, agent_definitions, plugins,
-            # secrets, ...) is preserved on the fork, then override only the
+            # ...) is preserved on the fork, then override only the
             # fork-specific fields. Without this, e.g. a fork of a client-tool
             # conversation would lose ``client_tools`` in meta.json and be unable
             # to re-register its tools after a server restart.
-            # Note: the agent is NOT stored in meta.json (StoredConversation) — the
-            # fork's agent is already persisted to the fork's base_state.json by
-            # ``source_conversation.fork`` above. It is passed to
-            # ``_start_event_service`` via ``agent=`` for the new-conversation
-            # path.
+            # Note: the agent, confirmation_policy, security_analyzer, and
+            # secrets are NOT stored in meta.json (StoredConversation).
+            # ``source_conversation.fork`` above copies them into the fork's
+            # base_state.json, which the fork's EventService resumes from.
             fork_overrides: dict[str, Any] = {
                 "id": fork_conv_id,
                 "workspace": fork_workspace,
@@ -2164,6 +2207,10 @@ class ConversationService:
         with await RunSlot.acquire(self._run_semaphore) as run_slot:
             parent_stored = parent_service.stored
             parent_agent = cast(AgentBase, parent_service.get_conversation().agent)
+            parent_state = await parent_service.get_state()
+            policy, analyzer, secrets = await asyncio.to_thread(
+                _inheritable_state_config_sync, parent_state
+            )
             # A child spends under the same cap as its parent.
             max_budget_per_run = parent_service.get_conversation().max_budget_per_run
             child_id = uuid4()
@@ -2219,6 +2266,9 @@ class ConversationService:
                 initial_message=Message(
                     role="user", content=[TextContent(text=request.task)]
                 ),
+                confirmation_policy=policy,
+                security_analyzer=analyzer,
+                secrets=secrets,
             )
 
         return StartChildConversationResponse(
@@ -2496,6 +2546,9 @@ class ConversationService:
         is_new_conversation: bool = False,
         launched: LaunchedAgent | None = None,
         persisted_agent: AgentBase | None = None,
+        confirmation_policy: ConfirmationPolicyBase | None = None,
+        security_analyzer: SecurityAnalyzerBase | None = None,
+        secrets: dict[str, SecretSource] | None = None,
         max_budget_per_run: float | None = None,
     ) -> EventService:
         event_services = self._event_services
@@ -2513,6 +2566,9 @@ class ConversationService:
             stored=stored,
             conversations_dir=self.conversations_dir,
             agent=launched.agent if launched is not None else None,
+            confirmation_policy=confirmation_policy or NeverConfirm(),
+            security_analyzer=security_analyzer,
+            secrets=secrets or {},
             initial_max_budget_per_run=max_budget_per_run,
             cipher=self._cipher_for(stored.id),
             mcp_tool_provider=self.mcp_tool_provider,
@@ -2624,11 +2680,21 @@ class ConversationService:
             live_agent = (
                 live_conversation.agent if live_conversation is not None else None
             )
+            live_policy = (
+                live_conversation._state.confirmation_policy
+                if live_conversation is not None
+                else None
+            )
             subscriber = TelemetrySubscriber(
                 conversation_id=stored.id,
                 sink=sink,
                 factory=factory,
-                context=_build_telemetry_context(stored, factory, agent=live_agent),
+                context=_build_telemetry_context(
+                    stored,
+                    factory,
+                    agent=live_agent,
+                    confirmation_policy=live_policy,
+                ),
             )
             await event_service.subscribe_to_events(subscriber)
             if is_new_conversation:
@@ -2641,6 +2707,7 @@ def _build_telemetry_context(
     stored: StoredConversation,
     factory: DiagnosticEventFactory,
     agent: AgentBase | None = None,
+    confirmation_policy: ConfirmationPolicyBase | None = None,
 ) -> ConversationTelemetryContext:
     """Reduce a stored conversation to its sanitized telemetry facts.
 
@@ -2677,7 +2744,9 @@ def _build_telemetry_context(
         workspace_kind=workspace_kind,
         # Policy kind, not a bool: a bool would collapse ConfirmRisky.
         confirmation_policy=safe_token(
-            type(getattr(stored, "confirmation_policy", None)).__name__.lower()
+            type(confirmation_policy).__name__.lower()
+            if confirmation_policy is not None
+            else None
         ),
         is_automation=is_automation,
     )
