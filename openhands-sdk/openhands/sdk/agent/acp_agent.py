@@ -242,8 +242,9 @@ _STREAM_READER_LIMIT: int = 100 * 1024 * 1024  # 100 MiB
 
 # Minimum interval between on_activity heartbeat signals (seconds).
 # Throttled to avoid excessive calls while still keeping the idle timer
-# well below the ~20 min runtime-api kill threshold.
-_ACTIVITY_SIGNAL_INTERVAL: float = 30.0
+# well below the ~20 min runtime-api kill threshold.  Shared with the
+# agent-server's streaming-delta heartbeat so both paths keep the same pace.
+ACTIVITY_SIGNAL_INTERVAL: Final[float] = 30.0
 
 # ACP tool-call statuses that represent a terminal outcome.  Non-terminal
 # statuses (``pending``, ``in_progress``) mean the call is still in flight
@@ -1429,13 +1430,13 @@ class _OpenHandsACPBridge:
         the server's idle_time grows unboundedly and the runtime-api kills
         the pod (default idle threshold ~20 min).
 
-        Throttled to at most once per _ACTIVITY_SIGNAL_INTERVAL seconds to
+        Throttled to at most once per ACTIVITY_SIGNAL_INTERVAL seconds to
         avoid excessive overhead on chatty ACP servers.
         """
         if self.on_activity is None:
             return
         now = time.monotonic()
-        if now - self._last_activity_signal >= _ACTIVITY_SIGNAL_INTERVAL:
+        if now - self._last_activity_signal >= ACTIVITY_SIGNAL_INTERVAL:
             self._last_activity_signal = now
             try:
                 self.on_activity()
