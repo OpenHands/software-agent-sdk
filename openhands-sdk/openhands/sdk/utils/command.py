@@ -15,7 +15,7 @@ logger = get_logger(__name__)
 
 # Env vars that should not be exposed to subprocesses (e.g., bash commands
 # executed by the agent). These credentials allow access to user secrets via
-# the SaaS API and/or decrypt persisted secrets, and must remain isolated to
+# the SaaS API and/or decrypting persisted secrets, and must remain isolated to
 # the SDK's Python process.
 #
 # - ``SESSION_API_KEY``: legacy (V0) session key name.
