@@ -42,6 +42,7 @@ from openhands.sdk.agent.acp_agent import (
     _mask_json_value,
     _maybe_set_session_model,
     _mcp_config_to_acp_servers,
+    _npx_package,
     _OpenHandsACPBridge,
     _reapply_session_model_on_resume,
     _select_auth_method,
@@ -180,6 +181,56 @@ def test_warns_when_acp_provider_version_differs_from_pin(caplog):
     assert "pinned_version='0.46.0'" in caplog.text
     assert "reported_version='0.38.0'" in caplog.text
     assert "probably installed at runtime via the npx fallback" in caplog.text
+
+
+def test_npx_package_skips_prefer_offline():
+    assert (
+        _npx_package(
+            ["npx", "-y", "--prefer-offline", "@agentclientprotocol/codex-acp@1.1.7"]
+        )
+        == "@agentclientprotocol/codex-acp@1.1.7"
+    )
+
+
+def test_acp_npm_cache_is_shared_across_conversations(tmp_path):
+    agent = _make_agent()
+    state = _make_state(tmp_path)
+    state.persistence_dir = str(tmp_path / "conversations" / "conversation-id")
+
+    assert agent._acp_npm_cache_dir(state) == tmp_path / "conversations" / "npm-cache"
+
+
+async def test_warm_npx_cache_uses_prefer_offline_and_durable_env(tmp_path):
+    agent = _make_agent()
+    process = MagicMock()
+    process.returncode = 0
+    process.wait = AsyncMock(return_value=0)
+    env = {"npm_config_cache": str(tmp_path / "npm-cache")}
+
+    with patch(
+        "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+        new=AsyncMock(return_value=process),
+    ) as create_process:
+        await agent._warm_npx_cache(
+            "@agentclientprotocol/codex-acp@1.1.7", "codex", env, str(tmp_path)
+        )
+
+    create_process.assert_awaited_once_with(
+        "npx",
+        "--yes",
+        "--prefer-offline",
+        "--package",
+        "@agentclientprotocol/codex-acp@1.1.7",
+        "--",
+        "node",
+        "-e",
+        "",
+        cwd=str(tmp_path),
+        env=env,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -278,17 +278,42 @@ jobs:
         strategy:
             fail-fast: false
             matrix:
-                # Explicit matrix: 3 variants × 2 architectures = 6 jobs
+                # Explicit matrix: 4 variants × 2 architectures = 8 jobs
                 # Each job specifies exactly what it builds and where it runs
                 include:
                     # Python variant
                     - variant: python
+                      custom_tags: python
+                      image_flavor: default
+                      acp_provider_flavor: default
                       arch: amd64
                       base_image: nikolaik/python-nodejs:python3.13-nodejs22-slim
                       runner: ubuntu-24.04
                       platform: linux/amd64
 
                     - variant: python
+                      custom_tags: python
+                      image_flavor: default
+                      acp_provider_flavor: default
+                      arch: arm64
+                      base_image: nikolaik/python-nodejs:python3.13-nodejs22-slim
+                      runner: ubuntu-24.04-arm
+                      platform: linux/arm64
+
+                    # Python variant without preinstalled ACP providers
+                    - variant: python-slim
+                      custom_tags: python
+                      image_flavor: slim
+                      acp_provider_flavor: none
+                      arch: amd64
+                      base_image: nikolaik/python-nodejs:python3.13-nodejs22-slim
+                      runner: ubuntu-24.04
+                      platform: linux/amd64
+
+                    - variant: python-slim
+                      custom_tags: python
+                      image_flavor: slim
+                      acp_provider_flavor: none
                       arch: arm64
                       base_image: nikolaik/python-nodejs:python3.13-nodejs22-slim
                       runner: ubuntu-24.04-arm
@@ -296,12 +321,18 @@ jobs:
 
                     # Java variant
                     - variant: java
+                      custom_tags: java
+                      image_flavor: default
+                      acp_provider_flavor: default
                       arch: amd64
                       base_image: eclipse-temurin:17-jdk
                       runner: ubuntu-24.04
                       platform: linux/amd64
 
                     - variant: java
+                      custom_tags: java
+                      image_flavor: default
+                      acp_provider_flavor: default
                       arch: arm64
                       base_image: eclipse-temurin:17-jdk
                       runner: ubuntu-24.04-arm
@@ -309,12 +340,18 @@ jobs:
 
                     # Golang variant
                     - variant: golang
+                      custom_tags: golang
+                      image_flavor: default
+                      acp_provider_flavor: default
                       arch: amd64
                       base_image: golang:1.21-bookworm
                       runner: ubuntu-24.04
                       platform: linux/amd64
 
                     - variant: golang
+                      custom_tags: golang
+                      image_flavor: default
+                      acp_provider_flavor: default
                       arch: arm64
                       base_image: golang:1.21-bookworm
                       runner: ubuntu-24.04-arm
@@ -334,7 +371,8 @@ jobs:
             # Same last-operand reasoning as INSTALL_ACP_PROVIDERS above: an
             # explicit "" dispatch input ("install none") must survive.
             INSTALL_CAPABILITIES: ${{ github.event_name != 'workflow_dispatch' && 'vscode,browser,docker' || inputs.install_capabilities }}
-            CUSTOM_TAGS: ${{ matrix.variant }}
+            CUSTOM_TAGS: ${{ matrix.custom_tags }}
+            IMAGE_FLAVOR: ${{ matrix.image_flavor }}
             VARIANT: ${{ matrix.variant }}
             ARCH: ${{ matrix.arch }}
             TARGET: binary
@@ -395,6 +433,12 @@ jobs:
                   VERSIONED_TAGS_CSV=$(grep '^versioned_tags_csv=' $GITHUB_OUTPUT | cut -d= -f2- || echo "")
                   echo "versioned_tags_csv=$VERSIONED_TAGS_CSV" >> $GITHUB_OUTPUT
 
+                  if [ "${{ matrix.acp_provider_flavor }}" = "none" ]; then
+                      echo "install_acp_providers=" >> $GITHUB_OUTPUT
+                  else
+                      echo "install_acp_providers=$INSTALL_ACP_PROVIDERS" >> $GITHUB_OUTPUT
+                  fi
+
                   # Verify outputs
                   echo "=== Build outputs ==="
                   echo "Build context: $(grep '^build_context=' $GITHUB_OUTPUT | cut -d= -f2-)"
@@ -413,13 +457,13 @@ jobs:
                   platforms: ${{ env.PLATFORM }}
                   push: true
                   tags: ${{ steps.prep.outputs.tags }}
-                  cache-from: type=gha
-                  cache-to: type=gha,mode=max
+                  cache-from: type=gha,scope=agent-server-${{ matrix.variant }}-${{ matrix.arch }}
+                  cache-to: type=gha,scope=agent-server-${{ matrix.variant }}-${{ matrix.arch }},mode=max
                   build-args: |
                       BASE_IMAGE=${{ env.BASE_IMAGE }}
                       OPENHANDS_BUILD_GIT_SHA=${{ env.SDK_SHA }}
                       OPENHANDS_BUILD_GIT_REF=${{ env.SDK_REF }}
-                      INSTALL_ACP_PROVIDERS=${{ env.INSTALL_ACP_PROVIDERS }}
+                      INSTALL_ACP_PROVIDERS=${{ steps.prep.outputs.install_acp_providers }}
                       INSTALL_CAPABILITIES=${{ env.INSTALL_CAPABILITIES }}
 
             - name: Cleanup build context
@@ -491,7 +535,7 @@ jobs:
         runs-on: ubuntu-24.04
         strategy:
             matrix:
-                variant: [python, java, golang]
+                variant: [python, python-slim, java, golang]
         env:
             IMAGE: ${{ inputs.image != '' && inputs.image || 'ghcr.io/openhands/agent-server' }}
 

@@ -144,3 +144,24 @@ def test_agent_server_dockerfile_acp_package_versions_match_registry() -> None:
             f"{AGENT_SERVER_DOCKERFILE}: ACP package {dockerfile_package} has version "
             f"{dockerfile_version}, but acp_providers.py pins {expected_version}"
         )
+
+
+def test_server_workflow_publishes_python_slim_without_acp_providers() -> None:
+    workflow_text = SERVER_WORKFLOW.read_text(encoding="utf-8")
+
+    assert re.search(
+        r"- variant: python-slim\n"
+        r"\s+custom_tags: python\n"
+        r"\s+image_flavor: slim\n"
+        r"\s+acp_provider_flavor: none",
+        workflow_text,
+    )
+    assert (
+        "INSTALL_ACP_PROVIDERS=${{ steps.prep.outputs.install_acp_providers }}"
+        in workflow_text
+    )
+    assert "INSTALL_CAPABILITIES=${{ env.INSTALL_CAPABILITIES }}" in workflow_text
+    assert (
+        "scope=agent-server-${{ matrix.variant }}-${{ matrix.arch }}" in workflow_text
+    )
+    assert "variant: [python, python-slim, java, golang]" in workflow_text

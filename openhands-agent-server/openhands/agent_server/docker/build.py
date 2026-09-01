@@ -27,6 +27,7 @@ import time
 import tomllib
 from contextlib import chdir
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -389,6 +390,7 @@ class BuildOptions(BaseModel):
         default="", description="Comma-separated list of custom tags."
     )
     image: str = Field(default="ghcr.io/openhands/agent-server")
+    image_flavor: Literal["default", "slim"] = Field(default="default")
     target: TargetType = Field(default="binary")
     platforms: list[PlatformType] = Field(default=["linux/amd64"])
     push: bool | None = Field(
@@ -545,18 +547,22 @@ class BuildOptions(BaseModel):
         if not self.release_tag_source:
             return []
         return [
-            f"{release_tag}-{custom_tag}"
+            f"{release_tag}-{custom_tag}{self.flavor_suffix}"
             for custom_tag in self.custom_tag_list
             for release_tag in _release_tag_aliases(self.release_tag_source)
         ]
 
     @property
+    def flavor_suffix(self) -> str:
+        return "" if self.image_flavor == "default" else f"-{self.image_flavor}"
+
+    @property
     def base_tag(self) -> str:
-        return f"{self.short_sha}-{self.base_image_slug}"
+        return f"{self.short_sha}-{self.base_image_slug}{self.flavor_suffix}"
 
     @property
     def cache_tags(self) -> tuple[str, str]:
-        base = f"buildcache-{self.target}-{self.base_image_slug}"
+        base = f"buildcache-{self.target}-{self.base_image_slug}{self.flavor_suffix}"
         if self.git_ref in ("main", "refs/heads/main"):
             return f"{base}-main", base
         elif self.git_ref != "unknown":
@@ -570,6 +576,7 @@ class BuildOptions(BaseModel):
         arch_suffix = f"-{self.arch}" if self.arch else ""
 
         for custom_tag in self.custom_tag_list:
+            custom_tag = f"{custom_tag}{self.flavor_suffix}"
             tags.extend(
                 [
                     f"{self.image}:{self.short_sha}-{custom_tag}{arch_suffix}",
@@ -1061,6 +1068,12 @@ def main(argv: list[str]) -> int:
         help="Image repo/name (default from $IMAGE).",
     )
     parser.add_argument(
+        "--image-flavor",
+        default=_env("IMAGE_FLAVOR", "default"),
+        choices=("default", "slim"),
+        help="Image flavor (default from $IMAGE_FLAVOR).",
+    )
+    parser.add_argument(
         "--target",
         default=_env("TARGET", "binary"),
         choices=sorted(VALID_TARGETS),
@@ -1156,6 +1169,7 @@ def main(argv: list[str]) -> int:
             base_image=args.base_image,
             custom_tags=args.custom_tags,
             image=args.image,
+            image_flavor=args.image_flavor,
             target=args.target,  # type: ignore
             platforms=[p.strip() for p in args.platforms.split(",") if p.strip()],  # type: ignore
             push=None,  # Not relevant for build-ctx-only
@@ -1206,6 +1220,7 @@ def main(argv: list[str]) -> int:
         base_image=args.base_image,
         custom_tags=args.custom_tags,
         image=args.image,
+        image_flavor=args.image_flavor,
         target=args.target,  # type: ignore
         platforms=[p.strip() for p in args.platforms.split(",") if p.strip()],  # type: ignore
         push=push,

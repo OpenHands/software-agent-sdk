@@ -145,6 +145,9 @@ _ACP_CANCEL_DRAIN_TIMEOUT: float = float(
 )
 
 _ACP_AUTH_TIMEOUT: float = float(os.environ.get("ACP_AUTH_TIMEOUT", "30.0"))
+_ACP_NPX_CACHE_WARM_TIMEOUT: float = float(
+    os.environ.get("ACP_NPX_CACHE_WARM_TIMEOUT", "300")
+)
 _ACP_VERSION_RE = re.compile(r"v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)")
 
 _ACP_PROMPT_RETRY_DELAYS: tuple[float, ...] = (5.0, 15.0, 30.0)  # seconds
@@ -415,6 +418,15 @@ def _log_acp_provider_version(agent_name: str, agent_version: str) -> None:
             agent_name,
             agent_version,
         )
+
+
+def _npx_package(command: list[str]) -> str | None:
+    if not command or command[0] != "npx":
+        return None
+    for arg in command[1:]:
+        if not arg.startswith("-"):
+            return arg
+    return None
 
 
 def _with_codex_base_url(
@@ -2396,6 +2408,59 @@ class ACPAgent(AgentBase):
             root = Path(state.workspace.working_dir) / ".openhands" / "acp" / subdir
         return Path(os.path.abspath(root))
 
+    def _acp_npm_cache_dir(self, state: ConversationState) -> Path:
+        if state.persistence_dir:
+            root = Path(state.persistence_dir).parent
+        else:
+            root = Path(state.workspace.working_dir) / ".openhands"
+        cache_dir = root / "npm-cache"
+        cache_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        return Path(os.path.abspath(cache_dir))
+
+    async def _warm_npx_cache(
+        self,
+        package: str,
+        provider_key: str,
+        env: dict[str, str],
+        cwd: str,
+    ) -> None:
+        logger.info(
+            "Warming ACP provider npx cache: provider=%s, package=%s; "
+            "first use may download the provider before session startup",
+            provider_key,
+            package,
+        )
+        process = await asyncio.create_subprocess_exec(
+            "npx",
+            "--yes",
+            "--prefer-offline",
+            "--package",
+            package,
+            "--",
+            "node",
+            "-e",
+            "",
+            cwd=cwd,
+            env=env,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            await asyncio.wait_for(process.wait(), timeout=_ACP_NPX_CACHE_WARM_TIMEOUT)
+        except TimeoutError as exc:
+            process.kill()
+            await process.wait()
+            raise RuntimeError(
+                "ACP provider cache warm timed out after "
+                f"{_ACP_NPX_CACHE_WARM_TIMEOUT:.0f}s for {provider_key}"
+            ) from exc
+        if process.returncode:
+            raise RuntimeError(
+                f"ACP provider cache warm failed for {provider_key} "
+                f"(exit code {process.returncode})"
+            )
+
     def _isolate_acp_data_dir(
         self, state: ConversationState, env: dict[str, str]
     ) -> None:
@@ -2721,6 +2786,14 @@ class ACPAgent(AgentBase):
         env = _with_codex_base_url(command, args, env)
 
         working_dir = str(state.workspace.working_dir)
+        provider = detect_acp_provider_by_command(self.acp_command)
+        package = _npx_package(self.acp_command)
+        if provider is not None and package is not None:
+            env["npm_config_cache"] = str(self._acp_npm_cache_dir(state))
+            self._executor.run_async(
+                self._warm_npx_cache(package, provider.key, env, working_dir),
+                timeout=_ACP_NPX_CACHE_WARM_TIMEOUT + 5,
+            )
 
         # Prior ACP session id — typically survives agent-server restarts via
         # ConversationState.agent_state (serialized into base_state.json).

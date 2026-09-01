@@ -454,6 +454,29 @@ def test_all_tags_include_short_long_sha_and_branch():
     ]
 
 
+def test_slim_flavor_has_distinct_image_and_cache_tags():
+    from openhands.agent_server.docker.build import BuildOptions
+
+    opts = BuildOptions(
+        base_image="python:3.13",
+        custom_tags="python",
+        git_sha="abc1234567890fedcba",
+        git_ref="refs/heads/main",
+        image_flavor="slim",
+        include_base_tag=False,
+    )
+
+    assert opts.all_tags == [
+        "ghcr.io/openhands/agent-server:abc1234-python-slim",
+        "ghcr.io/openhands/agent-server:abc1234567890fedcba-python-slim",
+        "ghcr.io/openhands/agent-server:main-python-slim",
+    ]
+    assert opts.cache_tags == (
+        "buildcache-binary-python_tag_3.13-slim-main",
+        "buildcache-binary-python_tag_3.13-slim",
+    )
+
+
 def test_all_tags_includes_versioned_tags():
     """Test that all_tags includes bare semver aliases when enabled for a tag build."""
     from openhands.agent_server.docker.build import BuildOptions
