@@ -174,11 +174,12 @@ class EventService:
             },
         )
 
-    async def save_meta(self):
+    async def save_meta(self, stored: StoredConversation | None = None) -> None:
+        payload = self.stored if stored is None else stored
         with self._write_guard():
             meta_file = self.conversation_dir / "meta.json"
             meta_file.write_text(
-                self.stored.model_dump_json(
+                payload.model_dump_json(
                     context={
                         "cipher": self.cipher,
                     }
