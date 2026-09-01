@@ -75,7 +75,7 @@ REPLAY_PAGE_SIZE: Final[int] = 100
 long history cannot starve the event loop."""
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True, slots=True)
 class _ConnectionWriter:
     """Byte-bounded, non-blocking admission in front of a single writer task.
 
@@ -196,7 +196,7 @@ class _ConnectionWriter:
                 pass
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True, slots=True)
 class _SessionSubscriber(Subscriber[Event]):
     """Converts events to frames and hands them to the writer.
 
