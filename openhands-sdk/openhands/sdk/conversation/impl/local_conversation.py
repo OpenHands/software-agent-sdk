@@ -425,7 +425,11 @@ class LocalConversation(BaseConversation):
                 self._state.last_user_message_id = e.id
 
         callback_list = list(callbacks) if callbacks else []
-        composed_list = callback_list + [_default_callback]
+        # _default_callback (persist) runs before the caller-supplied callbacks
+        # (e.g. a PubSub publish) so nothing is announced before it is durable.
+        # compose_callbacks' plain for-loop has no try/except, so if persist
+        # raises here, the callbacks after it in the list never run.
+        composed_list = [_default_callback] + callback_list
         # Handle visualization configuration
         if isinstance(visualizer, ConversationVisualizerBase):
             # Use custom visualizer instance
