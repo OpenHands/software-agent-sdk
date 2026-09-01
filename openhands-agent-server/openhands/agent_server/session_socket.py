@@ -1,34 +1,15 @@
 """``/sockets/session/{conversation_id}`` — the session socket.
 
-The legacy ``/sockets/events/{id}`` endpoint ships the durable record itself
-over the wire, subscribes *before* it replays history, and awaits the socket
-from inside the publisher. This endpoint fixes those three things and is
-otherwise deliberately boring:
+Fixes three things the legacy ``/sockets/events/{id}`` endpoint gets wrong,
+without touching it: frames are envelopes rather than the disk record; history
+and live traffic cannot interleave; and a slow consumer cannot wedge the
+publisher, because admission is byte-bounded and only this connection's writer
+task awaits the socket.
 
-* **The wire is not the disk.** Frames are ``session_protocol`` envelopes; the
-  ``Event`` rides inside one as an untouched payload.
-* **History and live traffic do not interleave.** The subscriber is registered
-  in buffering mode, the high-water sequence number is read *after* that, and
-  the buffer is flushed against it once replay is done. Nothing is lost and
-  nothing is duplicated.
-* **A slow consumer cannot wedge the publisher.** Admission is synchronous and
-  byte-bounded; the socket is awaited only by this connection's single writer
-  task. A connection that cannot keep up is dropped, not buffered, and the
-  client resumes losslessly with ``after_seq``.
-
-The legacy endpoint is untouched and keeps working. A client speaks one or the
-other — the URL is the protocol version.
-
-Not implemented here
---------------------
-``ItemStarted`` / ``Delta`` / ``ItemAborted`` are defined in
-``session_protocol`` and this endpoint will carry them, but nothing produces
-them yet: that needs ``StreamContext`` in the SDK, at all four streaming entry
-points (``Agent.step``, ``Agent.astep`` and both ACP equivalents). Until then
-this endpoint carries durable traffic only, and ``StreamingDeltaEvent`` is
-filtered out rather than forwarded — deltas do not belong on the durable
-channel, and forwarding them would recreate the coupling this endpoint exists
-to remove.
+``ItemStarted`` / ``Delta`` / ``ItemAborted`` are carried but never produced
+yet — that needs ``StreamContext`` (#4682). Until then this is a durable-only
+channel and ``StreamingDeltaEvent`` is dropped rather than forwarded, since
+putting it back on the wire would restore the coupling this endpoint removes.
 """
 
 import asyncio
@@ -72,27 +53,20 @@ session_router = APIRouter(prefix="/sockets", tags=["WebSockets"])
 logger = logging.getLogger(__name__)
 
 REPLAY_PAGE_SIZE: Final[int] = 100
-"""Events read from disk per executor hop. The loop yields between pages so a
-long history cannot starve the event loop."""
+"""Events read from disk per executor hop."""
 
 
 @dataclass(frozen=True, slots=True)
 class _ConnectionWriter:
     """Byte-bounded, non-blocking admission in front of a single writer task.
 
-    ``send`` is **synchronous on purpose**. It is called from the pub/sub fan-out,
-    and the entire point is that the fan-out never awaits this socket: today
-    ``_WebSocketSubscriber.__call__`` awaits ``websocket.send_json`` directly,
-    so one wedged browser tab stalls ``PubSub.__call__``'s ``gather`` and, with
-    it, the publisher.
+    ``send`` is synchronous on purpose: it runs in the pub/sub fan-out, which
+    must never await this socket or one wedged tab stalls the publisher.
+    Ordering comes from the queue plus exactly one draining task.
 
-    Ordering comes from the queue plus exactly one draining task, so frames
-    leave in the order they were admitted without any per-frame locking.
-
-    Overflow drops the *connection*, never a frame. Silently discarding a
-    ``Durable`` frame would break the one guarantee clients rely on; dropping
-    the connection is safe because the client reconnects with ``after_seq`` and
-    loses nothing. Disconnection is the backpressure mechanism.
+    Overflow drops the connection, never a frame — discarding a ``Durable``
+    would break the guarantee clients rely on, whereas a reconnect with
+    ``after_seq`` loses nothing. Disconnection is the backpressure.
     """
 
     websocket: WebSocket
@@ -112,16 +86,11 @@ class _ConnectionWriter:
         return self.closed_event.is_set()
 
     def start(self) -> None:
-        # frozen=True forbids plain attribute assignment outside __init__;
-        # object.__setattr__ is the sanctioned escape hatch for the few
-        # fields this class mutates after construction.
+        # object.__setattr__ throughout: frozen=True forbids plain assignment.
         object.__setattr__(self, "_task", asyncio.create_task(self._run()))
 
     def send(self, frame: SessionFrameBase) -> bool:
-        """Admit one frame. Returns False if the connection is finished.
-
-        Never blocks and never awaits.
-        """
+        """Admit one frame, never blocking. False if the connection is done."""
         if self.closed:
             return False
 
@@ -129,9 +98,7 @@ class _ConnectionWriter:
         size = len(payload.encode("utf-8"))
 
         if size > self.max_frame_bytes:
-            # Recoverable: the client comes back with its cursor and this event
-            # is re-sent from disk. Nothing is lost, but it is worth shouting
-            # about because it means a frame budget needs revisiting.
+            # Worth shouting about: it means the frame budget needs revisiting.
             logger.warning(
                 "session_socket_frame_too_large: %d bytes > %d",
                 size,
@@ -180,7 +147,7 @@ class _ConnectionWriter:
         except asyncio.CancelledError:
             raise
         except (RuntimeError, WebSocketDisconnect):
-            # Expected race: peer went away between the state check and the send.
+            # Peer went away between the state check and the send.
             self._fail("disconnected")
         except Exception:
             logger.exception("session_socket_writer_error", stack_info=True)
@@ -194,10 +161,8 @@ class _ConnectionWriter:
             try:
                 await task
             except asyncio.CancelledError:
-                # Swallow only the cancellation we just asked for. If the
-                # CancelledError is aimed at *this* task instead (server
-                # shutting the handler down), absorbing it would silently
-                # ignore that shutdown, so let it through.
+                # Swallow only the cancellation we asked for; one aimed at this
+                # task means shutdown and must not be absorbed.
                 if not task.cancelled():
                     raise
             except Exception:
@@ -208,9 +173,8 @@ class _ConnectionWriter:
 class _SessionSubscriber(Subscriber[Event]):
     """Converts events to frames and hands them to the writer.
 
-    Starts in buffering mode: events are held privately and nothing is sent,
-    so history can be replayed underneath without interleaving. ``go_live``
-    flushes the buffer against the replay mark and switches to pass-through.
+    Starts buffering so history can replay underneath without interleaving;
+    ``go_live`` flushes and switches to pass-through.
     """
 
     writer: _ConnectionWriter
@@ -220,9 +184,8 @@ class _SessionSubscriber(Subscriber[Event]):
 
     async def __call__(self, event: Event) -> None:
         if isinstance(event, StreamingDeltaEvent):
-            # Deltas never ride the durable channel. Progress frames come from
-            # StreamContext once it exists; forwarding a StreamingDeltaEvent
-            # here would put the disk record back on the wire.
+            # Deltas never ride the durable channel; progress frames will come
+            # from StreamContext instead.
             return
         if self._buffer is not None:
             self._buffer.append(event)
@@ -241,18 +204,11 @@ class _SessionSubscriber(Subscriber[Event]):
     def _seq_of(self, event: Event) -> int | None:
         """The event's index in the log, or None if it is not persisted.
 
-        Decided by lookup, never by type. Most ``ConversationStateUpdateEvent``
-        *are* appended (``ConversationState.append_event`` stores them and only
-        skips advancing HEAD), so treating the type as transient would strip a
-        real ``seq`` off every live state update and, worse, defeat the
-        ``seq <= through_seq`` dedupe in ``go_live`` — the same event would
-        arrive once from replay and again from the buffer.
-
-        The one genuinely unpersisted event is the snapshot
-        ``subscribe_to_events`` synthesises on connect; it is missing from the
-        log by construction, so it is expected to land here quietly. Anything
-        else missing means it was published before it was persisted, which
-        should not happen now that publish runs after persist, so it is logged.
+        By lookup, never by type: most ``ConversationStateUpdateEvent`` *are*
+        appended, so treating the type as transient would strip their ``seq``
+        and defeat the dedupe in ``go_live``. The one genuinely unpersisted
+        event is the snapshot ``subscribe_to_events`` synthesises on connect,
+        so only anything *else* missing is worth warning about.
         """
         try:
             return self.events.get_index(event.id)
@@ -277,19 +233,18 @@ class _SessionSubscriber(Subscriber[Event]):
 
 
 def _read_page(events: EventLog, start: int, stop: int) -> list[tuple[int, Event]]:
-    """Read one page of events by index, skipping unreadable ones.
+    """Read one page by index, skipping unreadable events.
 
-    Mirrors the tolerance of ``EventService._get_searchable_event``: a corrupt
-    or half-written file should cost one event, not the whole connection.
+    A corrupt or half-written file should cost one event, not the connection —
+    same tolerance as ``EventService._get_searchable_event``.
     """
     page: list[tuple[int, Event]] = []
     for idx in range(start, stop):
         try:
             page.append((idx, events[idx]))
         except (OSError, UnicodeDecodeError, ValidationError, IndexError):
-            # OSError covers the missing/half-written file this is really about
-            # and the transient read errors EventLog warns about on networked
-            # filesystems. One bad event must not cost the whole connection.
+            # OSError also covers the transient read errors EventLog warns
+            # about on networked filesystems.
             logger.warning("session_socket_skipping_unreadable_event: idx=%d", idx)
     return page
 
@@ -307,10 +262,9 @@ async def _replay(
         for seq, event in page:
             if not writer.send(DurableFrame(seq=seq, event=event)):
                 return False
-            # Yield per frame, not per page: the writer task is the only thing
-            # that drains the pending bytes, so replaying a whole page without
-            # letting it run can exhaust the budget on a page of large events
-            # and drop a client that was never actually slow.
+            # Per frame, not per page: only the writer task drains pending
+            # bytes, and a page of large events can otherwise blow the budget
+            # and drop a client that was never slow.
             await asyncio.sleep(0)
     return True
 
@@ -324,11 +278,10 @@ async def session_socket(
         int | None,
         Query(
             description=(
-                "Resume cursor. Send everything with seq > after_seq before "
-                "going live. Omit for live-only; use -1 for the full history. "
-                "This replaces the legacy resend_mode/after_timestamp pair, "
-                "which compared naive local timestamps and could not express "
-                "'exactly where I left off'."
+                "Resume cursor: everything with seq > after_seq is sent "
+                "before going live. Omit for live-only, -1 for full history. "
+                "Replaces the legacy resend_mode/after_timestamp pair, which "
+                "compared naive local timestamps."
             )
         ),
     ] = None,
@@ -356,9 +309,7 @@ async def session_socket(
     try:
         events = event_service.get_conversation().state.events
     except ValueError:
-        # The conversation can be closed between the lookup above and here;
-        # close like every other failure path rather than raising out of the
-        # handler.
+        # Closed between the lookup above and here.
         logger.warning("session_socket_conversation_inactive: %s", conversation_id)
         await _safe_close_websocket(
             websocket, code=4004, reason="Conversation not found"
@@ -369,10 +320,9 @@ async def session_socket(
     writer.start()
     subscriber = _SessionSubscriber(writer=writer, events=events)
 
-    # Subscribe FIRST (buffering), then read the high-water mark: no lock
-    # needed, since an event appended before subscribe is on disk before the
-    # mark is read (replay covers it), and one appended after lands in the
-    # buffer, deduped against the mark by seq once replay finishes.
+    # Subscribe FIRST (buffering), then read the mark: no lock needed, since
+    # anything appended before subscribe is on disk before the mark is read,
+    # and anything after lands in the buffer and is deduped by seq.
     try:
         subscriber_id = await event_service.subscribe_to_events(subscriber)
     except MaxSubscribersError:
@@ -383,15 +333,11 @@ async def session_socket(
         )
         return
     except Exception:
-        # subscribe_to_events registers the subscriber before it builds the
-        # state snapshot and only swallows TimeoutError, so a failure here
-        # (the conversation closing, say) lands before the try/finally below
-        # is entered — without this the writer task would be left running and
-        # the socket never closed. The registration itself cannot be reclaimed
-        # from here because the id is only returned on success; that belongs in
+        # subscribe_to_events registers before it can fail, and this lands
+        # before the try/finally below, so clean up the writer and socket here.
+        # The registration itself can't be reclaimed (the id is only returned
+        # on success); it is inert but holds a slot. Belongs in
         # subscribe_to_events, which has the same hole for the legacy endpoint.
-        # The stranded subscriber is inert (its writer is closed, so every
-        # send is a no-op) but does hold one of the per-conversation slots.
         logger.exception("session_socket_subscribe_failed: %s", conversation_id)
         await writer.aclose()
         await _safe_close_websocket(websocket, code=1011, reason="subscribe_failed")
@@ -411,11 +357,9 @@ async def session_socket(
                 return
             replayed = True
 
-        # Only dedupe against the mark if replay actually sent that range. A
-        # live-only client (no ``after_seq``) got nothing from disk, so passing
-        # the mark here would discard anything that landed in the buffer while
-        # ``subscribe_to_events`` was still awaiting — dropped for good, since
-        # such a client has no cursor to recover it with.
+        # Dedupe against the mark only if replay actually sent that range: a
+        # live-only client got nothing from disk, and has no cursor to recover
+        # whatever the mark would discard.
         subscriber.go_live(through_seq if replayed else None)
 
         await _inbound_loop(conversation_id, websocket, event_service, writer)
@@ -437,9 +381,8 @@ async def _inbound_loop(
 ) -> None:
     """Read client messages until the peer or the writer gives up.
 
-    The writer failing has to end the connection too, so the receive is raced
-    against it — otherwise a dropped slow consumer would sit here forever
-    holding a subscription.
+    Raced against the writer failing, or a dropped slow consumer would sit
+    here forever holding a subscription.
     """
     closed_waiter = asyncio.ensure_future(writer.closed_event.wait())
     try:
@@ -451,10 +394,9 @@ async def _inbound_loop(
             if closed_waiter in done:
                 receiver.cancel()
                 if receiver in done:
-                    # Both finished in the same wakeup. cancel() is a no-op on
-                    # a done future, so consume its outcome here — otherwise
-                    # asyncio logs "Task exception was never retrieved" on GC
-                    # for every peer close that races the writer failing.
+                    # Both finished at once: cancel() is a no-op on a done
+                    # future, so consume the outcome or asyncio logs
+                    # "Task exception was never retrieved" on GC.
                     with contextlib.suppress(Exception, asyncio.CancelledError):
                         receiver.result()
                 return
@@ -464,10 +406,9 @@ async def _inbound_loop(
                 logger.info("session_socket_disconnected: %s", conversation_id)
                 return
             except Exception as e:
-                # ``receive_json`` decodes with ``json.loads``, so a non-JSON
-                # text frame raises here rather than at validation below. The
-                # legacy endpoint catches this in its one broad handler; keep
-                # the connection and report it the same way.
+                # receive_json decodes with json.loads, so a non-JSON frame
+                # raises here, not at validation below. Keep the connection,
+                # as the legacy endpoint's one broad handler does.
                 logger.warning(
                     "session_socket_bad_inbound_frame: %s: %s",
                     e.__class__.__name__,
@@ -488,9 +429,8 @@ async def _inbound_loop(
             except WebSocketDisconnect:
                 return
             except Exception as e:
-                # A bad inbound message is not a reason to drop the connection,
-                # and the error is about this socket rather than about the
-                # conversation, so it is an ErrorFrame and not a durable event.
+                # About this socket, not the conversation, so an ErrorFrame
+                # rather than a durable event — and not worth dropping over.
                 logger.exception("session_socket_inbound_error", stack_info=True)
                 if not writer.send(
                     ErrorFrame(code=e.__class__.__name__, detail=str(e))

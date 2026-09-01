@@ -1,9 +1,4 @@
-"""Semantics of the session socket: framing, the replay boundary, backpressure.
-
-These cover four of the six streaming behaviours that have no test today:
-delta suppression on the durable channel, replay-vs-live interleave, the
-publisher never blocking on a wedged connection, and lossless resume.
-"""
+"""Session socket semantics: framing, the replay boundary, backpressure."""
 
 import asyncio
 import json
@@ -75,12 +70,9 @@ class _FakeEventLog:
 
 
 async def _drain(writer: _ConnectionWriter) -> None:
-    """Let the single writer task flush whatever has been admitted."""
+    """Let the writer task flush what has been admitted."""
     for _ in range(10):
         await asyncio.sleep(0)
-
-
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -100,13 +92,13 @@ async def test_durable_frame_carries_seq_and_untouched_event():
     (frame,) = ws.frames()
     assert frame["type"] == "durable"
     assert frame["seq"] == 0
-    # The payload is exactly what the legacy endpoint sends. Event is unchanged.
+    # Byte-identical to what the legacy endpoint sends.
     assert frame["event"] == event.model_dump(mode="json", exclude_none=True)
 
 
 @pytest.mark.asyncio
 async def test_deltas_never_reach_the_durable_channel():
-    """The bug that put token deltas on webhooks and telemetry, structurally."""
+    """The bug that put token deltas on webhooks and telemetry."""
     ws, log = _FakeWebSocket(), _FakeEventLog()
     writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
     writer.start()
@@ -140,10 +132,9 @@ async def test_unpersisted_event_is_transient_and_carries_no_seq():
 
 @pytest.mark.asyncio
 async def test_replay_and_live_do_not_interleave_or_duplicate():
-    """The seam: subscribe (buffering) -> read mark -> replay -> flush.
+    """Subscribe (buffering) -> read mark -> replay -> flush.
 
-    An event that lands *during* replay must arrive exactly once, after the
-    history, and an event already on disk must not be sent twice.
+    An event landing during replay arrives exactly once, after the history.
     """
     ws, log = _FakeWebSocket(), _FakeEventLog()
     history = [_msg(f"h{i}") for i in range(3)]
@@ -154,11 +145,9 @@ async def test_replay_and_live_do_not_interleave_or_duplicate():
     writer.start()
     sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
 
-    # Subscriber is registered and buffering; mark is read after that.
     through_seq = len(log) - 1
 
-    # Two events arrive while replay is in flight: one already on disk (the
-    # race the seq filter exists for) and one genuinely new.
+    # Two arrive mid-replay: one already on disk, one genuinely new.
     await sub(history[2])
     live = _msg("live")
     log.add(live)
@@ -176,12 +165,11 @@ async def test_replay_and_live_do_not_interleave_or_duplicate():
 
 @pytest.mark.asyncio
 async def test_persisted_state_update_is_durable_and_deduped():
-    """A ConversationStateUpdateEvent that *is* in the log must not be transient.
+    """A ConversationStateUpdateEvent in the log must not be transient.
 
-    ``ConversationState.append_event`` stores these (it only skips advancing
-    HEAD), so deciding by type rather than by lookup would strip their real
-    ``seq`` and, worse, defeat the ``seq <= through_seq`` dedupe: the same
-    event would arrive once from replay and again from the buffer flush.
+    append_event stores these, so deciding by type would strip their seq and
+    defeat the dedupe — the event would arrive from replay and again from the
+    buffer.
     """
     ws, log = _FakeWebSocket(), _FakeEventLog()
     state_update = ConversationStateUpdateEvent(key="execution_status", value="running")
@@ -192,8 +180,7 @@ async def test_persisted_state_update_is_durable_and_deduped():
     writer.start()
     sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
 
-    # It lands in the buffer while replay is in flight, and replay also sends
-    # it from disk — exactly one copy must reach the wire.
+    # Buffered mid-replay and also sent from disk: one copy must reach the wire.
     await sub(state_update)
     assert await _replay(log, 0, through_seq + 1, writer)  # type: ignore[arg-type]
     sub.go_live(through_seq)
@@ -209,10 +196,8 @@ async def test_persisted_state_update_is_durable_and_deduped():
 async def test_live_only_connection_keeps_events_buffered_during_subscribe():
     """No replay ran, so nothing may be discarded as 'already replayed'.
 
-    A client that omits ``after_seq`` gets no history from disk. Events that
-    land while ``subscribe_to_events`` is still awaiting are counted by the
-    high-water mark but never sent, so deduping against that mark would drop
-    them for good — the client has no cursor to recover them with.
+    A client omitting ``after_seq`` has no cursor to recover what deduping
+    against the mark would drop.
     """
     ws, log = _FakeWebSocket(), _FakeEventLog()
     for i in range(3):
@@ -222,12 +207,12 @@ async def test_live_only_connection_keeps_events_buffered_during_subscribe():
     writer.start()
     sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
 
-    # Arrived during subscribe, so its seq is below the mark the endpoint read.
+    # Arrived during subscribe, so its seq is below the mark.
     raced = _msg("landed during subscribe")
     log.add(raced)
     await sub(raced)
 
-    # Live-only: the endpoint passes None because no replay happened.
+    # Live-only: the endpoint passes None when no replay happened.
     sub.go_live(None)
     await _drain(writer)
     await writer.aclose()
@@ -241,19 +226,18 @@ async def test_live_only_connection_keeps_events_buffered_during_subscribe():
 async def test_wedged_connection_drops_instead_of_blocking_the_publisher():
     """Admission is synchronous: a stuck socket must never stall the caller.
 
-    This is the behaviour the legacy endpoint gets wrong — its subscriber
-    awaits websocket.send_json directly, so one wedged client stalls the
-    PubSub gather and with it the publisher.
+    What the legacy endpoint gets wrong by awaiting send_json in its
+    subscriber.
     """
     ws, log = _FakeWebSocket(), _FakeEventLog()
-    ws.gate = asyncio.Event()  # socket accepts nothing until released
+    ws.gate = asyncio.Event()  # accepts nothing until released
 
     writer = _ConnectionWriter(ws, max_pending_bytes=4096)  # type: ignore[arg-type]
     writer.start()
     sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
     sub.go_live(None)
 
-    # Publish far more than the budget, and time the publisher.
+    # Publish far past the budget, and time the publisher.
     started = asyncio.get_running_loop().time()
     for i in range(500):
         event = _msg(f"m{i}" * 50)
@@ -309,11 +293,8 @@ def test_replay_skips_unreadable_events_instead_of_failing():
 async def test_malformed_inbound_frame_is_reported_not_raised():
     """A non-JSON text frame must not escape the inbound loop.
 
-    ``receive_json`` decodes with ``json.loads``, so a garbage frame raises
-    ``JSONDecodeError`` — not ``WebSocketDisconnect``. The legacy endpoint
-    absorbs that in its one broad handler; this one has to as well, or a single
-    bad frame takes down the connection (and the handler) instead of earning an
-    ``ErrorFrame``.
+    receive_json raises JSONDecodeError, not WebSocketDisconnect, so catching
+    only the latter let one bad frame take down the connection.
     """
     ws = _FakeWebSocket()
     writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
@@ -340,5 +321,5 @@ async def test_malformed_inbound_frame_is_reported_not_raised():
     (frame,) = ws.frames()
     assert frame["type"] == "error"
     assert frame["code"] == "JSONDecodeError"
-    # The loop kept going after the bad frame rather than unwinding on it.
+    # The loop kept going rather than unwinding.
     assert receives == 2

@@ -296,14 +296,9 @@ async def test_agent_server_websocket_first_message_auth_malformed(agent_server)
     assert exc_info.value.rcvd.code == 4001
 
 
-# ===========================================================================
-# /sockets/session/{id} — the session socket, against the real server.
-#
-# The unit tests in test_session_socket.py cover the writer, the subscriber and
-# replay in isolation; nothing there executes the endpoint itself. These drive
-# it end to end: auth, conversation lookup, the sync frame, paged replay from
-# disk, resume by cursor, and the close codes.
-# ===========================================================================
+# /sockets/session/{id}. The unit tests cover the writer, subscriber and replay
+# in isolation; nothing there executes the endpoint. These drive it end to end:
+# auth, lookup, sync frame, replay from disk, resume by cursor, close codes.
 
 
 def _create_conversation(port: int, api_key: str) -> str:
@@ -330,12 +325,10 @@ def _create_conversation(port: int, api_key: str) -> str:
 async def _collect_frames(ws, *, until=None, seconds: float = 15.0) -> list[dict]:
     """Read frames until ``until`` is satisfied, or the deadline passes.
 
-    The conversation also runs an agent step that fails (there is no real LLM
-    behind ``test-provider``), so the exact frame sequence is not fixed and the
-    interesting frame is not necessarily the first: a transient state snapshot
-    lands almost immediately, while the durable message event follows once it
-    has been persisted. Waiting on a predicate rather than on a quiet period
-    keeps that from being a race.
+    The agent step fails (no real LLM behind ``test-provider``), so the frame
+    sequence is not fixed and the interesting frame is rarely the first — a
+    transient snapshot lands immediately, the durable event later. Waiting on
+    a predicate rather than a quiet period keeps that from being a race.
     """
     frames: list[dict] = []
     loop = asyncio.get_running_loop()
@@ -359,7 +352,7 @@ def _is_durable(frame: dict) -> bool:
 
 @pytest.mark.asyncio
 async def test_session_socket_opens_with_a_sync_frame(agent_server):
-    """The first frame is always ``sync``, before any replay or live traffic."""
+    """The first frame is always ``sync``."""
     port, api_key = agent_server["port"], agent_server["api_key"]
     conversation_id = _create_conversation(port, api_key)
 
@@ -379,9 +372,8 @@ async def test_session_socket_opens_with_a_sync_frame(agent_server):
 async def test_session_socket_durable_frame_carries_seq_over_the_wire(agent_server):
     """A message sent on the socket comes back as a durable frame with a seq.
 
-    This is the whole point of the endpoint — an ``Event`` inside an envelope,
-    with a resumable sequence number — exercised through the real server rather
-    than against the subscriber in isolation.
+    The point of the endpoint: an ``Event`` inside an envelope with a resumable
+    sequence number, through the real server.
     """
     port, api_key = agent_server["port"], agent_server["api_key"]
     conversation_id = _create_conversation(port, api_key)
@@ -399,12 +391,12 @@ async def test_session_socket_durable_frame_carries_seq_over_the_wire(agent_serv
 
     durable = [f for f in frames if f["type"] == "durable"]
     assert durable, f"no durable frame arrived; got {[f['type'] for f in frames]}"
-    # seq is real and monotonic, and the payload is the untouched Event.
+    # seq is real and monotonic; the payload is the untouched Event.
     seqs = [f["seq"] for f in durable]
     assert all(isinstance(s, int) for s in seqs)
     assert seqs == sorted(seqs)
     assert all("kind" in f["event"] and "id" in f["event"] for f in durable)
-    # A transient frame carries no seq (the state snapshot pushed on subscribe).
+    # The snapshot pushed on subscribe carries no seq.
     assert all("seq" not in f for f in frames if f["type"] == "transient")
 
 
@@ -419,7 +411,7 @@ async def test_session_socket_resumes_history_with_after_seq(agent_server):
         f"?session_api_key={api_key}"
     )
 
-    # First connection: produce some history.
+    # Produce some history.
     async with websockets.connect(base_url, open_timeout=5) as ws:
         await asyncio.wait_for(ws.recv(), timeout=5)  # sync
         await ws.send(json.dumps({"role": "user", "content": "first message"}))
@@ -428,7 +420,7 @@ async def test_session_socket_resumes_history_with_after_seq(agent_server):
     produced = [f["seq"] for f in first_pass if f["type"] == "durable"]
     assert produced, "expected the first connection to persist something"
 
-    # Reconnect asking for everything: after_seq=-1 means "from the start".
+    # after_seq=-1 means "from the start".
     async with websockets.connect(f"{base_url}&after_seq=-1", open_timeout=5) as ws:
         sync = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
         replayed = await _collect_frames(ws, until=_is_durable)
@@ -438,10 +430,10 @@ async def test_session_socket_resumes_history_with_after_seq(agent_server):
     assert sync["through_seq"] >= max(produced)
 
     replayed_seqs = [f["seq"] for f in replayed if f["type"] == "durable"]
-    # Replay starts at the very beginning and covers what the first pass saw.
+    # Starts at the beginning and covers what the first pass saw.
     assert replayed_seqs[:1] == [0]
     assert set(produced).issubset(set(replayed_seqs))
-    # Nothing is delivered twice across the replay/live seam.
+    # Nothing twice across the replay/live seam.
     assert len(replayed_seqs) == len(set(replayed_seqs))
 
 
@@ -480,7 +472,7 @@ async def test_session_socket_survives_a_malformed_inbound_frame(agent_server):
         errors = [f for f in frames if f["type"] == "error"]
         assert errors, f"expected an error frame; got {[f['type'] for f in frames]}"
 
-        # Still alive: a well-formed message afterwards is still processed.
+        # Still alive: a well-formed message is still processed.
         await ws.send(json.dumps({"role": "user", "content": "still here"}))
         after = await _collect_frames(ws, until=_is_durable)
         assert any(f["type"] == "durable" for f in after)
