@@ -10,9 +10,23 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from acp.exceptions import RequestError as ACPRequestError
+from acp.schema import (
+    ClientCapabilities,
+    ConfigOptionUpdate,
+    LoadSessionResponse,
+    ModelInfo,
+    NewSessionResponse,
+    SessionConfigOption,
+    SessionConfigOptionSelect,
+    SessionConfigSelectOption,
+    SessionModelState,
+    SetSessionConfigOptionResponse,
+)
 
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
+    ACPSessionConfigError,
+    _apply_session_config_options,
     _estimate_cost_from_tokens,
     _extract_token_usage,
     _image_url_to_acp_block,
@@ -2648,6 +2662,32 @@ class TestMaybeSetSessionModel:
         await _maybe_set_session_model(conn, "codex-acp", "session-1", None)
         conn.set_session_model.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_unregistered_agent_without_model_state_is_untouched(self):
+        """Servers that advertise no model state keep the legacy no-op path."""
+        conn = AsyncMock()
+        await _maybe_set_session_model(conn, "some-custom-acp", "session-1", "grok-4.6")
+        conn.set_session_model.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unregistered_agent_with_model_state_uses_protocol_override(self):
+        """``models`` in the session response is the signal to use set_model."""
+        conn = AsyncMock()
+        await _maybe_set_session_model(
+            conn,
+            "some-custom-acp",
+            "session-1",
+            "grok-4.6",
+            SessionModelState(
+                available_models=[ModelInfo(model_id="grok-4.6", name="Grok 4.6")],
+                current_model_id="auto",
+            ),
+        )
+        conn.set_session_model.assert_awaited_once_with(
+            model_id="grok-4.6",
+            session_id="session-1",
+        )
+
 
 # ---------------------------------------------------------------------------
 # acp_session_mode field
@@ -3066,18 +3106,22 @@ class TestACPSessionIdPersistence:
     """
 
     @staticmethod
-    def _transport_patches(conn):
+    def _transport_patches(conn, process=None):
         """Context manager stacking the transport-layer mocks that let
         _start_acp_server run without spawning a real subprocess.
+
+        *process* overrides the stand-in subprocess handle, for tests that
+        need to observe how the handle is torn down.
         """
         from contextlib import ExitStack
 
-        mock_process = MagicMock()
-        mock_process.stdin = MagicMock()
-        mock_process.stdout = MagicMock()
+        if process is None:
+            process = MagicMock()
+            process.stdin = MagicMock()
+            process.stdout = MagicMock()
 
         async def _fake_create_subprocess_exec(*_args, **_kwargs):
-            return mock_process
+            return process
 
         async def _fake_filter(_src, _dst):
             return None
@@ -3707,3 +3751,512 @@ class TestACPEnvConflictSuppression:
 
         assert env.get("ANTHROPIC_API_KEY") == "sk-valid"
         assert "CLAUDE_CONFIG_DIR" not in env
+
+
+# ---------------------------------------------------------------------------
+# Explicit client capabilities and session config options
+# ---------------------------------------------------------------------------
+
+
+def _config_option(
+    option_id: str,
+    current_value: str,
+    values: list[str] | None = None,
+) -> SessionConfigOption:
+    """Build one ACP select config option sitting at *current_value*."""
+    choices = values or [current_value]
+    return SessionConfigOption(
+        SessionConfigOptionSelect(
+            id=option_id,
+            name=option_id,
+            type="select",
+            current_value=current_value,
+            options=[SessionConfigSelectOption(name=v, value=v) for v in choices],
+        )
+    )
+
+
+def _config_update(**options: str) -> ConfigOptionUpdate:
+    """Build a ``config_option_update`` notification for a complete state."""
+    return ConfigOptionUpdate(
+        session_update="config_option_update",
+        config_options=[_config_option(k, v) for k, v in options.items()],
+    )
+
+
+def _make_config_conn(
+    *,
+    agent_name: str = "cursor-agent",
+    session_id: str = "sess-new",
+    options: list[SessionConfigOption] | None = None,
+    models: SessionModelState | None = None,
+):
+    """MagicMock ACP connection whose session responses carry typed config state.
+
+    ``set_config_option`` behaves like a real Agent: it rejects unknown option
+    ids, records the new value, and answers with the complete option state.
+    The same *options* are reported by both ``new_session`` and
+    ``load_session`` so fresh and resumed sessions can be compared directly.
+    """
+    conn = MagicMock()
+
+    init_response = MagicMock()
+    init_response.agent_info = MagicMock()
+    init_response.agent_info.name = agent_name
+    init_response.agent_info.version = "1.0"
+    init_response.auth_methods = []
+    conn.initialize = AsyncMock(return_value=init_response)
+
+    conn.new_session = AsyncMock(
+        return_value=NewSessionResponse(
+            session_id=session_id, config_options=options, models=models
+        )
+    )
+    conn.load_session = AsyncMock(
+        return_value=LoadSessionResponse(config_options=options, models=models)
+    )
+
+    current = list(options or [])
+
+    async def _set_config_option(*, config_id: str, session_id: str, value: str):
+        for i, option in enumerate(current):
+            if option.root.id == config_id:
+                current[i] = _config_option(config_id, value)
+                return SetSessionConfigOptionResponse(config_options=list(current))
+        raise ACPRequestError(-32602, f"unknown config option {config_id}")
+
+    conn.set_config_option = AsyncMock(side_effect=_set_config_option)
+    conn.set_session_mode = AsyncMock()
+    conn.set_session_model = AsyncMock()
+    conn.authenticate = AsyncMock()
+    conn.close = AsyncMock()
+    return conn
+
+
+_GROK_MODELS = SessionModelState(
+    available_models=[ModelInfo(model_id="grok-4.6", name="Grok 4.6")],
+    current_model_id="auto",
+)
+
+
+class TestACPClientCapabilities:
+    """``acp_client_capabilities`` reaches initialize() only when supplied."""
+
+    def test_defaults_are_empty(self):
+        agent = _make_agent()
+        assert agent.acp_client_capabilities is None
+        assert agent.acp_config_options == {}
+
+    def test_explicit_capabilities_passed_to_initialize(self, tmp_path):
+        capabilities = ClientCapabilities(field_meta={"parameterizedModelPicker": True})
+        agent = _make_agent(acp_client_capabilities=capabilities)
+        state = _make_state(tmp_path)
+        conn = _make_config_conn()
+
+        TestACPSessionIdPersistence._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.initialize.assert_awaited_once_with(
+            protocol_version=1,
+            client_capabilities=capabilities,
+        )
+
+    def test_absent_capabilities_preserve_initialize_call(self, tmp_path):
+        """No capabilities configured → the call is unchanged from before."""
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        conn = _make_config_conn()
+
+        TestACPSessionIdPersistence._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.initialize.assert_awaited_once_with(protocol_version=1)
+
+    def test_serialization_roundtrip(self):
+        agent = ACPAgent(
+            acp_command=["cursor-agent"],
+            acp_client_capabilities=ClientCapabilities(
+                field_meta={"parameterizedModelPicker": True}
+            ),
+            acp_config_options={"effort": "medium"},
+        )
+        restored = AgentBase.model_validate_json(agent.model_dump_json())
+        assert isinstance(restored, ACPAgent)
+        assert restored.acp_client_capabilities is not None
+        assert restored.acp_client_capabilities.field_meta == {
+            "parameterizedModelPicker": True
+        }
+        assert restored.acp_config_options == {"effort": "medium"}
+
+
+class TestACPSessionConfigOptions:
+    """Requested session config is applied and verified during initialization."""
+
+    def test_fresh_session_applies_and_verifies_config(self, tmp_path):
+        """Grok-like setup: model via acp_model, effort/fast via config options."""
+        agent = _make_agent(
+            acp_model="grok-4.6",
+            acp_client_capabilities=ClientCapabilities(
+                field_meta={"parameterizedModelPicker": True}
+            ),
+            acp_config_options={"effort": "medium", "fast": "false"},
+        )
+        state = _make_state(tmp_path)
+        conn = _make_config_conn(
+            options=[
+                _config_option("effort", "low", ["low", "medium", "high"]),
+                _config_option("fast", "true", ["true", "false"]),
+            ],
+            models=_GROK_MODELS,
+        )
+
+        TestACPSessionIdPersistence._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.set_session_model.assert_awaited_once_with(
+            model_id="grok-4.6",
+            session_id="sess-new",
+        )
+        assert [call.kwargs for call in conn.set_config_option.await_args_list] == [
+            {"config_id": "effort", "session_id": "sess-new", "value": "medium"},
+            {"config_id": "fast", "session_id": "sess-new", "value": "false"},
+        ]
+
+    def test_composer_model_and_fast_disabled(self, tmp_path):
+        agent = _make_agent(
+            acp_model="composer-2.5",
+            acp_config_options={"fast": "false"},
+        )
+        state = _make_state(tmp_path)
+        conn = _make_config_conn(
+            options=[_config_option("fast", "true", ["true", "false"])],
+            models=SessionModelState(
+                available_models=[
+                    ModelInfo(model_id="composer-2.5", name="Composer 2.5")
+                ],
+                current_model_id="auto",
+            ),
+        )
+
+        TestACPSessionIdPersistence._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.set_session_model.assert_awaited_once_with(
+            model_id="composer-2.5",
+            session_id="sess-new",
+        )
+        conn.set_config_option.assert_awaited_once_with(
+            config_id="fast",
+            session_id="sess-new",
+            value="false",
+        )
+
+    def test_resumed_session_applies_same_config(self, tmp_path):
+        """A persisted session is configured exactly like a fresh one."""
+        agent = _make_agent(
+            acp_model="grok-4.6",
+            acp_config_options={"effort": "medium"},
+        )
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            **state.agent_state,
+            "acp_session_id": "stored-sess",
+            "acp_session_cwd": str(tmp_path),
+        }
+        conn = _make_config_conn(
+            options=[_config_option("effort", "low", ["low", "medium"])],
+            models=_GROK_MODELS,
+        )
+
+        TestACPSessionIdPersistence._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.load_session.assert_awaited_once()
+        conn.new_session.assert_not_awaited()
+        conn.set_session_model.assert_awaited_once_with(
+            model_id="grok-4.6",
+            session_id="stored-sess",
+        )
+        conn.set_config_option.assert_awaited_once_with(
+            config_id="effort",
+            session_id="stored-sess",
+            value="medium",
+        )
+
+    def test_no_requested_options_leaves_session_untouched(self, tmp_path):
+        """Empty acp_config_options → no config traffic at all."""
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        conn = _make_config_conn(options=[_config_option("effort", "low")])
+
+        TestACPSessionIdPersistence._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.set_config_option.assert_not_awaited()
+        assert agent._session_id == "sess-new"
+
+    def test_missing_option_fails_init_state_and_cleans_up(self, tmp_path):
+        """A requested option the server does not expose aborts initialization."""
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent(acp_config_options={"effort": "medium"})
+        state = _make_state(tmp_path)
+        conn = _make_config_conn(options=[_config_option("fast", "true")])
+
+        agent._executor = AsyncExecutor()
+        with TestACPSessionIdPersistence._transport_patches(conn):
+            with pytest.raises(ACPSessionConfigError, match="effort"):
+                agent.init_state(state, on_event=lambda _: None)
+
+        conn.set_config_option.assert_not_awaited()
+        # init_state's failure handler ran the existing cleanup path.
+        assert agent._executor is None
+        assert agent._initialized is False
+        assert "acp_session_id" not in state.agent_state
+
+
+class TestApplySessionConfigOptions:
+    """Direct tests for the shared apply-and-verify helper."""
+
+    @staticmethod
+    def _conn(*responses):
+        conn = MagicMock()
+        conn.set_config_option = AsyncMock(side_effect=list(responses))
+        return conn
+
+    async def test_empty_request_is_a_noop(self):
+        conn = self._conn()
+        await _apply_session_config_options(
+            conn, _OpenHandsACPBridge(), "cursor", "sess-1", {}, None
+        )
+        conn.set_config_option.assert_not_awaited()
+
+    async def test_server_without_config_options_fails_closed(self):
+        conn = self._conn()
+        with pytest.raises(ACPSessionConfigError, match="no session configuration"):
+            await _apply_session_config_options(
+                conn,
+                _OpenHandsACPBridge(),
+                "cursor",
+                "sess-1",
+                {"effort": "medium"},
+                None,
+            )
+        conn.set_config_option.assert_not_awaited()
+
+    async def test_set_config_option_error_fails_closed(self):
+        conn = MagicMock()
+        conn.set_config_option = AsyncMock(
+            side_effect=ACPRequestError(-32603, "internal error")
+        )
+        with pytest.raises(ACPSessionConfigError, match="failed to set configuration"):
+            await _apply_session_config_options(
+                conn,
+                _OpenHandsACPBridge(),
+                "cursor",
+                "sess-1",
+                {"effort": "medium"},
+                [_config_option("effort", "low")],
+            )
+
+    async def test_reported_value_mismatch_fails_closed(self):
+        """Server acknowledges the set but still reports the old value."""
+        conn = self._conn(
+            SetSessionConfigOptionResponse(
+                config_options=[_config_option("effort", "low")]
+            )
+        )
+        with pytest.raises(ACPSessionConfigError, match="'effort'='low'"):
+            await _apply_session_config_options(
+                conn,
+                _OpenHandsACPBridge(),
+                "cursor",
+                "sess-1",
+                {"effort": "medium"},
+                [_config_option("effort", "low")],
+            )
+
+    async def test_option_revealed_by_an_earlier_set_is_accepted(self):
+        """Selecting the model can add options the initial state did not list."""
+        conn = self._conn(
+            SetSessionConfigOptionResponse(
+                config_options=[
+                    _config_option("model", "grok-4.6"),
+                    _config_option("effort", "low"),
+                ]
+            ),
+            SetSessionConfigOptionResponse(
+                config_options=[
+                    _config_option("model", "grok-4.6"),
+                    _config_option("effort", "medium"),
+                ]
+            ),
+        )
+        await _apply_session_config_options(
+            conn,
+            _OpenHandsACPBridge(),
+            "cursor",
+            "sess-1",
+            {"model": "grok-4.6", "effort": "medium"},
+            [_config_option("model", "auto")],
+        )
+        assert conn.set_config_option.await_count == 2
+
+    async def test_observed_update_verifies_a_stateless_response(self):
+        """Servers that publish state asynchronously still verify."""
+        bridge = _OpenHandsACPBridge()
+        await bridge.session_update("sess-1", _config_update(effort="medium"))
+        conn = self._conn(SetSessionConfigOptionResponse(config_options=[]))
+
+        await _apply_session_config_options(
+            conn,
+            bridge,
+            "cursor",
+            "sess-1",
+            {"effort": "medium"},
+            [_config_option("effort", "low")],
+        )
+
+        conn.set_config_option.assert_awaited_once()
+        assert bridge.get_config_options("sess-1") is not None
+        assert bridge.get_config_options("other-sess") is None
+
+    async def test_update_from_another_session_does_not_verify(self):
+        """A different session's update must never satisfy this session."""
+        bridge = _OpenHandsACPBridge()
+        await bridge.session_update("other-sess", _config_update(effort="medium"))
+        conn = self._conn(SetSessionConfigOptionResponse(config_options=[]))
+
+        with pytest.raises(ACPSessionConfigError, match="no configuration state"):
+            await _apply_session_config_options(
+                conn,
+                bridge,
+                "cursor",
+                "sess-1",
+                {"effort": "medium"},
+                [_config_option("effort", "low")],
+            )
+
+
+class _FakeACPProcess:
+    """Stand-in for the ACP subprocess handle ``_init`` spawns.
+
+    ``wait()`` only resolves once the process has been signalled, so a fake
+    built with ``exits_on_terminate=False`` reproduces a subprocess that
+    ignores SIGTERM and forces the teardown to escalate to ``kill``.
+    """
+
+    def __init__(self, *, exits_on_terminate: bool = True) -> None:
+        self.stdin = MagicMock()
+        self.stdout = MagicMock()
+        self.returncode: int | None = None
+        self.terminated = False
+        self.killed = False
+        self._exits_on_terminate = exits_on_terminate
+        self._exited = asyncio.Event()
+
+    def terminate(self) -> None:
+        self.terminated = True
+        if self._exits_on_terminate:
+            self.returncode = -15
+            self._exited.set()
+
+    def kill(self) -> None:
+        self.killed = True
+        self.returncode = -9
+        self._exited.set()
+
+    async def wait(self) -> int | None:
+        await self._exited.wait()
+        return self.returncode
+
+
+class TestFailedInitReapsSubprocess:
+    """A post-spawn init failure must not leak the ACP subprocess.
+
+    ``_init`` spawns the process and only hands its handles back to the
+    ACPAgent attributes on a successful return, so a failure in between
+    (config verification, auth, session setup, mode) leaves ``_cleanup``
+    with nothing to terminate — the teardown has to happen inside ``_init``.
+    """
+
+    @staticmethod
+    def _unverifiable_conn():
+        """Connection whose server acks the config set but reports the old value."""
+        conn = _make_config_conn(
+            options=[_config_option("effort", "low", ["low", "medium"])],
+        )
+        conn.set_config_option = AsyncMock(
+            return_value=SetSessionConfigOptionResponse(
+                config_options=[_config_option("effort", "low", ["low", "medium"])]
+            )
+        )
+        return conn
+
+    def test_config_verification_failure_closes_conn_and_reaps_process(self, tmp_path):
+        agent = _make_agent(acp_config_options={"effort": "medium"})
+        state = _make_state(tmp_path)
+        conn = self._unverifiable_conn()
+        process = _FakeACPProcess()
+
+        with TestACPSessionIdPersistence._transport_patches(conn, process):
+            with pytest.raises(ACPSessionConfigError, match="'effort'='low'"):
+                agent.init_state(state, on_event=lambda _: None)
+
+        # The verification failure itself still surfaces (asserted above) and
+        # the subprocess it spawned is gone rather than orphaned.
+        conn.close.assert_awaited_once()
+        assert process.terminated is True
+        assert process.returncode is not None
+        # Nothing was published to the agent, so only _init's teardown could
+        # have reaped the process.
+        assert agent._process is None
+        assert agent._conn is None
+        assert agent._initialized is False
+        # The existing outer cleanup path still runs.
+        assert agent._executor is None
+        assert "acp_session_id" not in state.agent_state
+
+    def test_unresponsive_process_is_killed(self, tmp_path):
+        """A subprocess that ignores terminate() is killed within the bound."""
+        agent = _make_agent(acp_config_options={"effort": "medium"})
+        state = _make_state(tmp_path)
+        conn = self._unverifiable_conn()
+        process = _FakeACPProcess(exits_on_terminate=False)
+
+        with patch("openhands.sdk.agent.acp_agent._ACP_INIT_ABORT_TIMEOUT", 0.05):
+            with TestACPSessionIdPersistence._transport_patches(conn, process):
+                with pytest.raises(ACPSessionConfigError):
+                    agent.init_state(state, on_event=lambda _: None)
+
+        assert process.terminated is True
+        assert process.killed is True
+        assert process.returncode == -9
+
+    def test_session_mode_failure_reaps_process(self, tmp_path):
+        """Non-config post-spawn failures take the same teardown path."""
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        conn = _make_config_conn(agent_name="claude-agent-acp")
+        conn.set_session_mode = AsyncMock(side_effect=ACPRequestError(-32603, "boom"))
+        process = _FakeACPProcess()
+
+        with TestACPSessionIdPersistence._transport_patches(conn, process):
+            with pytest.raises(ACPRequestError):
+                agent.init_state(state, on_event=lambda _: None)
+
+        conn.close.assert_awaited_once()
+        assert process.terminated is True
+
+    def test_successful_init_leaves_process_running(self, tmp_path):
+        """The teardown never fires on the normal path."""
+        agent = _make_agent(acp_config_options={"effort": "medium"})
+        state = _make_state(tmp_path)
+        conn = _make_config_conn(
+            options=[_config_option("effort", "low", ["low", "medium"])],
+        )
+        process = _FakeACPProcess()
+
+        with TestACPSessionIdPersistence._transport_patches(conn, process):
+            agent.init_state(state, on_event=lambda _: None)
+
+        assert process.terminated is False
+        assert process.killed is False
+        conn.close.assert_not_awaited()
+        assert agent._process is process
+        assert agent._conn is conn
+        assert state.agent_state["acp_session_id"] == "sess-new"

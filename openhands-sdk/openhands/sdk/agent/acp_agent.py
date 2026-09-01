@@ -33,9 +33,13 @@ from acp.schema import (
     AgentMessageChunk,
     AgentThoughtChunk,
     AllowedOutcome,
+    ClientCapabilities,
+    ConfigOptionUpdate,
     ImageContentBlock,
     PromptResponse,
     RequestPermissionResponse,
+    SessionConfigOption,
+    SessionModelState,
     TextContentBlock,
     ToolCallProgress,
     ToolCallStart,
@@ -133,6 +137,13 @@ _ENV_CONFLICT_MAP: dict[str, frozenset[str]] = {
 # for large tool output.
 _STREAM_READER_LIMIT: int = 100 * 1024 * 1024  # 100 MiB
 
+# Bound on each await performed while tearing down a partially initialized
+# ACP subprocess.  Initialization can fail after the process is spawned but
+# before its handles reach the ACPAgent attributes, so that teardown is the
+# only thing able to reap it — and it must not hang the failing init_state
+# call on a subprocess that is already wedged or gone.
+_ACP_INIT_ABORT_TIMEOUT: float = float(os.environ.get("ACP_INIT_ABORT_TIMEOUT", "5.0"))
+
 # Minimum interval between on_activity heartbeat signals (seconds).
 # Throttled to avoid excessive calls while still keeping the idle timer
 # well below the ~20 min runtime-api kill threshold.
@@ -201,11 +212,20 @@ def _select_auth_method(
     return None
 
 
+class ACPSessionConfigError(RuntimeError):
+    """A requested ACP session configuration could not be applied or verified.
+
+    Raised during initialization so the session is never prompted with a
+    configuration the ACP server did not confirm.
+    """
+
+
 async def _maybe_set_session_model(
     conn: ClientSideConnection,
     agent_name: str,
     session_id: str,
     acp_model: str | None,
+    model_state: SessionModelState | None = None,
 ) -> None:
     """Apply a protocol-level session model override when the server supports it.
 
@@ -213,12 +233,115 @@ async def _maybe_set_session_model(
     to check whether the server supports ``set_session_model``.
     claude-agent-acp uses session ``_meta`` via
     :func:`~openhands.sdk.settings.acp_providers.build_session_model_meta` instead.
+
+    Servers outside the provider registry are routed by capability rather than
+    by name: *model_state* is the ``models`` field the ACP server returned from
+    ``new_session`` / ``load_session``, and its presence is the protocol-level
+    signal that the server supports ``session/set_model``.  Registry providers
+    keep their existing routing, and servers that advertise no model state are
+    left untouched.
     """
     if not acp_model:
         return
     provider = detect_acp_provider_by_agent_name(agent_name)
-    if provider is not None and provider.supports_set_session_model:
+    if provider is not None:
+        if provider.supports_set_session_model:
+            await conn.set_session_model(model_id=acp_model, session_id=session_id)
+        return
+    if model_state is not None:
         await conn.set_session_model(model_id=acp_model, session_id=session_id)
+
+
+def _config_option_values(
+    options: list[SessionConfigOption] | None,
+) -> dict[str, str]:
+    """Map ``option id -> current value`` for a complete config option state."""
+    if not options:
+        return {}
+    return {option.root.id: option.root.current_value for option in options}
+
+
+async def _apply_session_config_options(
+    conn: ClientSideConnection,
+    client: _OpenHandsACPBridge,
+    agent_name: str,
+    session_id: str,
+    requested: dict[str, str],
+    initial_options: list[SessionConfigOption] | None,
+) -> None:
+    """Apply *requested* session config options and verify the observed state.
+
+    Runs once per session — after ``new_session`` and after a successful
+    ``load_session`` — so a resumed session is configured exactly like a fresh
+    one, before any prompt is sent.
+
+    Every requested option is set with ``set_config_option`` and then verified
+    against the *complete* option state the server reports back.  The state
+    returned by the response is preferred; the ``ConfigOptionUpdate``
+    notification recorded for this exact session is only consulted when the
+    response does not describe the option (some servers publish the new state
+    asynchronously, and selecting one option can reveal another).
+
+    Raises:
+        ACPSessionConfigError: if the server exposes no config options, a
+            requested option is absent, ``set_config_option`` fails, no
+            complete state comes back, or the reported value differs from the
+            requested one.  Never returns while a requested option is
+            unverified.
+    """
+    if not requested:
+        return
+
+    state = _config_option_values(initial_options)
+    observed = _config_option_values(client.get_config_options(session_id))
+    if not state and not observed:
+        raise ACPSessionConfigError(
+            f"ACP server {agent_name!r} session {session_id} reported no session "
+            f"configuration options, but {sorted(requested)} were requested."
+        )
+
+    for config_id, value in requested.items():
+        if config_id not in state and config_id in observed:
+            state = observed
+        if config_id not in state:
+            raise ACPSessionConfigError(
+                f"ACP server {agent_name!r} session {session_id} does not expose "
+                f"configuration option {config_id!r}; available options: "
+                f"{sorted(state)}."
+            )
+        try:
+            response = await conn.set_config_option(
+                config_id=config_id,
+                session_id=session_id,
+                value=value,
+            )
+        except Exception as e:
+            raise ACPSessionConfigError(
+                f"ACP server {agent_name!r} session {session_id} failed to set "
+                f"configuration option {config_id!r}={value!r}: {e}"
+            ) from e
+
+        observed = _config_option_values(client.get_config_options(session_id))
+        state = _config_option_values(response.config_options) or observed
+        if not state:
+            raise ACPSessionConfigError(
+                f"ACP server {agent_name!r} session {session_id} returned no "
+                f"configuration state after setting {config_id!r}={value!r}; "
+                "the requested configuration cannot be verified."
+            )
+        current = state.get(config_id)
+        if current != value:
+            raise ACPSessionConfigError(
+                f"ACP server {agent_name!r} session {session_id} reports "
+                f"configuration option {config_id!r}={current!r} after "
+                f"requesting {value!r}."
+            )
+        logger.info(
+            "ACP session config option verified: %s=%s (session %s)",
+            config_id,
+            value,
+            session_id,
+        )
 
 
 def _extract_token_usage(
@@ -343,6 +466,57 @@ async def _filter_jsonrpc_lines(source: Any, dest: Any) -> None:
         dest.feed_eof()
 
 
+def _signal_acp_process(process: Any, method: Literal["terminate", "kill"]) -> None:
+    """Send ``terminate``/``kill`` to *process*, ignoring any failure.
+
+    Deliberately synchronous: this is the one teardown step that still works
+    when the coroutine doing the cleanup is itself being cancelled.
+    """
+    try:
+        getattr(process, method)()
+    except Exception as e:
+        logger.debug("Error sending %s to ACP process: %s", method, e)
+
+
+async def _await_bounded(awaitable: Any, what: str) -> bool:
+    """Await *awaitable* under ``_ACP_INIT_ABORT_TIMEOUT``; report completion.
+
+    Teardown-only helper: a hung or already-broken transport must not keep a
+    failing initialization alive, so a timeout, a transport error, or a
+    non-awaitable is logged and reported as "did not complete" rather than
+    raised.  Cancellation still propagates so the caller can escalate.
+    """
+    try:
+        await asyncio.wait_for(awaitable, timeout=_ACP_INIT_ABORT_TIMEOUT)
+        return True
+    except Exception as e:
+        logger.debug("ACP init teardown: %s did not complete (%s)", what, e)
+        return False
+
+
+async def _abort_partial_acp_init(
+    process: Any,
+    conn: Any,
+    filter_task: asyncio.Task | None,
+) -> None:
+    """Close the connection and reap an ACP subprocess whose init failed.
+
+    Every step is best-effort and bounded, so the teardown can neither raise
+    over the original failure nor stall it: the stdout filter task is
+    cancelled, the JSON-RPC connection is closed, and the subprocess is
+    terminated — escalating to ``kill`` if it does not exit in time.
+    """
+    if filter_task is not None:
+        filter_task.cancel()
+    if conn is not None:
+        await _await_bounded(conn.close(), "closing the ACP connection")
+    _signal_acp_process(process, "terminate")
+    if await _await_bounded(process.wait(), "waiting for the ACP process to exit"):
+        return
+    _signal_acp_process(process, "kill")
+    await _await_bounded(process.wait(), "reaping the killed ACP process")
+
+
 class _OpenHandsACPBridge:
     """Bridge between OpenHands and ACP that accumulates session updates.
 
@@ -412,6 +586,10 @@ class _OpenHandsACPBridge:
         # Per-turn synchronization for UsageUpdate notifications.
         self._turn_usage_updates: dict[str, Any] = {}
         self._usage_received: dict[str, asyncio.Event] = {}
+        # Last complete session config option state observed per session id.
+        # Keyed by session so an update for a different session can never
+        # satisfy the verification of this one.
+        self._config_options_by_session: dict[str, list[SessionConfigOption]] = {}
         # Fork session state for ask_agent() — guarded by _fork_lock to
         # prevent concurrent ask_agent() calls from colliding.
         self._fork_lock = threading.Lock()
@@ -429,6 +607,7 @@ class _OpenHandsACPBridge:
         self._usage_received.clear()
         # Note: telemetry state (_last_cost, _context_window, _last_activity_signal,
         # etc.) is intentionally NOT cleared — it accumulates across turns.
+        # Session config option state is likewise session-scoped, not per-turn.
 
     def prepare_usage_sync(self, session_id: str) -> asyncio.Event:
         """Prepare per-turn UsageUpdate synchronization for a session."""
@@ -445,6 +624,10 @@ class _OpenHandsACPBridge:
         """Consume per-turn UsageUpdate synchronization state for a session."""
         self._usage_received.pop(session_id, None)
         return self._turn_usage_updates.pop(session_id, None)
+
+    def get_config_options(self, session_id: str) -> list[SessionConfigOption] | None:
+        """Return the last complete config option state seen for *session_id*."""
+        return self._config_options_by_session.get(session_id)
 
     # -- Client protocol methods ------------------------------------------
 
@@ -484,6 +667,11 @@ class _OpenHandsACPBridge:
             event = self._usage_received.get(session_id)
             if event is not None:
                 event.set()
+        elif isinstance(update, ConfigOptionUpdate):
+            # The Agent publishes the full option set on every change; record
+            # it per session so initialization can verify requested options
+            # even when the server answers set_config_option asynchronously.
+            self._config_options_by_session[session_id] = list(update.config_options)
         elif isinstance(update, ToolCallStart):
             entry = {
                 "tool_call_id": update.tool_call_id,
@@ -718,6 +906,28 @@ class ACPAgent(AgentBase):
             "'gpt-5.4'). For Claude ACP, passed via session _meta. For Codex "
             "ACP, applied via the protocol-level set_session_model call. "
             "If None, the server picks its default."
+        ),
+    )
+    acp_client_capabilities: ClientCapabilities | None = Field(
+        default=None,
+        description=(
+            "Explicit ACP client capabilities to send with initialize(). "
+            "When None (default) the argument is omitted and the ACP library's "
+            "own default capabilities apply. Capability flags that are not part "
+            "of the ACP schema travel through the protocol's extensibility "
+            "field, e.g. ClientCapabilities(field_meta="
+            "{'parameterizedModelPicker': True})."
+        ),
+    )
+    acp_config_options: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Session configuration options to apply before the first prompt, "
+            "as ACP config option id -> requested value (e.g. "
+            "{'effort': 'medium', 'fast': 'false'}). Applied in order and "
+            "verified against the option state the server reports, on both new "
+            "and resumed sessions. Initialization fails if a requested option "
+            "is missing or the session does not report the requested value."
         ),
     )
 
@@ -1020,119 +1230,181 @@ class ACPAgent(AgentBase):
             assert process.stdin is not None
             assert process.stdout is not None
 
-            # Wrap the subprocess stdout in a filtering reader that
-            # only passes lines starting with '{' (JSON-RPC messages).
-            filtered_reader = asyncio.StreamReader(limit=_STREAM_READER_LIMIT)
-            asyncio.get_event_loop().create_task(
-                _filter_jsonrpc_lines(process.stdout, filtered_reader)
-            )
+            # ``conn`` / ``filter_task`` stay None until they exist so the
+            # teardown below only touches what was actually created.
+            conn: ClientSideConnection | None = None
+            filter_task: asyncio.Task | None = None
+            try:
+                # Wrap the subprocess stdout in a filtering reader that
+                # only passes lines starting with '{' (JSON-RPC messages).
+                filtered_reader = asyncio.StreamReader(limit=_STREAM_READER_LIMIT)
+                filter_task = asyncio.get_event_loop().create_task(
+                    _filter_jsonrpc_lines(process.stdout, filtered_reader)
+                )
 
-            conn = ClientSideConnection(
-                client,
-                process.stdin,  # write to subprocess
-                filtered_reader,  # read filtered output
-            )
+                conn = ClientSideConnection(
+                    client,
+                    process.stdin,  # write to subprocess
+                    filtered_reader,  # read filtered output
+                )
 
-            # Initialize the protocol and discover server identity
-            init_response = await conn.initialize(protocol_version=1)
-            agent_name = ""
-            agent_version = ""
-            if init_response.agent_info is not None:
-                agent_name = init_response.agent_info.name or ""
-                agent_version = init_response.agent_info.version or ""
-            logger.info(
-                "ACP server initialized: agent_name=%r, agent_version=%r",
-                agent_name,
-                agent_version,
-            )
-
-            # Authenticate if the server requires it.  Some ACP servers
-            # (e.g. codex-acp) require an explicit authenticate call
-            # before session creation.  We auto-detect the method from
-            # the env vars that are available to the process.
-            auth_methods = init_response.auth_methods or []
-            if auth_methods:
-                method_id = _select_auth_method(auth_methods, env)
-                if method_id is not None:
-                    logger.info("Authenticating with ACP method: %s", method_id)
-                    auth_kwargs: dict[str, Any] = {}
-                    # gemini-cli: pass gateway baseUrl to route API calls
-                    # through LiteLLM proxy. claude-agent-acp and codex-acp
-                    # read their provider base URL from env vars directly.
-                    if method_id == "gemini-api-key":
-                        provider = detect_acp_provider_by_agent_name(agent_name)
-                        base_url_var = (
-                            provider.base_url_env_var if provider is not None else None
-                        )
-                        if base_url_var:
-                            base_url = env.get(base_url_var)
-                            if base_url:
-                                auth_kwargs["gateway"] = {"baseUrl": base_url}
-                    await conn.authenticate(method_id=method_id, **auth_kwargs)
+                # Initialize the protocol and discover server identity.  The
+                # capabilities argument is only sent when the caller supplied one,
+                # so servers keep seeing the library defaults otherwise.
+                if self.acp_client_capabilities is not None:
+                    init_response = await conn.initialize(
+                        protocol_version=1,
+                        client_capabilities=self.acp_client_capabilities,
+                    )
                 else:
-                    logger.warning(
-                        "ACP server offers auth methods %s but no matching "
-                        "env var is set — session creation may fail",
-                        [m.id for m in auth_methods],
-                    )
+                    init_response = await conn.initialize(protocol_version=1)
+                agent_name = ""
+                agent_version = ""
+                if init_response.agent_info is not None:
+                    agent_name = init_response.agent_info.name or ""
+                    agent_version = init_response.agent_info.version or ""
+                logger.info(
+                    "ACP server initialized: agent_name=%r, agent_version=%r",
+                    agent_name,
+                    agent_version,
+                )
 
-            # Resume the prior ACP session if we have its id.  If the server
-            # has forgotten it (state wiped, new host, etc.) fall through to
-            # new_session so the conversation still starts cleanly.
-            #
-            # We only swallow ACPRequestError here: that is the protocol-level
-            # "I don't know this session" signal and is recoverable by
-            # starting fresh.  Transport failures (broken pipe, EOF, timeout,
-            # subprocess crash) propagate — there is no working connection to
-            # fall back on, and the outer init_state handler cleans up.
-            session_id: str | None = None
-            if prior_session_id is not None:
+                # Authenticate if the server requires it.  Some ACP servers
+                # (e.g. codex-acp) require an explicit authenticate call
+                # before session creation.  We auto-detect the method from
+                # the env vars that are available to the process.
+                auth_methods = init_response.auth_methods or []
+                if auth_methods:
+                    method_id = _select_auth_method(auth_methods, env)
+                    if method_id is not None:
+                        logger.info("Authenticating with ACP method: %s", method_id)
+                        auth_kwargs: dict[str, Any] = {}
+                        # gemini-cli: pass gateway baseUrl to route API calls
+                        # through LiteLLM proxy. claude-agent-acp and codex-acp
+                        # read their provider base URL from env vars directly.
+                        if method_id == "gemini-api-key":
+                            provider = detect_acp_provider_by_agent_name(agent_name)
+                            base_url_var = (
+                                provider.base_url_env_var
+                                if provider is not None
+                                else None
+                            )
+                            if base_url_var:
+                                base_url = env.get(base_url_var)
+                                if base_url:
+                                    auth_kwargs["gateway"] = {"baseUrl": base_url}
+                        await conn.authenticate(method_id=method_id, **auth_kwargs)
+                    else:
+                        logger.warning(
+                            "ACP server offers auth methods %s but no matching "
+                            "env var is set — session creation may fail",
+                            [m.id for m in auth_methods],
+                        )
+
+                # Resume the prior ACP session if we have its id.  If the server
+                # has forgotten it (state wiped, new host, etc.) fall through to
+                # new_session so the conversation still starts cleanly.
+                #
+                # We only swallow ACPRequestError here: that is the protocol-level
+                # "I don't know this session" signal and is recoverable by
+                # starting fresh.  Transport failures (broken pipe, EOF, timeout,
+                # subprocess crash) propagate — there is no working connection to
+                # fall back on, and the outer init_state handler cleans up.
+                session_id: str | None = None
+                # Initial session state reported by load_session / new_session.
+                # Both are used to configure the session identically below.
+                config_options: list[SessionConfigOption] | None = None
+                model_state: SessionModelState | None = None
+                if prior_session_id is not None:
+                    try:
+                        load_response = await conn.load_session(
+                            cwd=working_dir,
+                            session_id=prior_session_id,
+                            mcp_servers=[],
+                        )
+                        session_id = prior_session_id
+                        config_options = load_response.config_options
+                        model_state = load_response.models
+                        logger.info(
+                            "Resumed ACP session: %s (cwd=%s)",
+                            session_id,
+                            working_dir,
+                        )
+                    except ACPRequestError as e:
+                        logger.warning(
+                            "ACP load_session(%s) failed (%s); starting fresh session",
+                            prior_session_id,
+                            e,
+                        )
+
+                if session_id is None:
+                    # Build _meta content for session options (e.g. model selection).
+                    # Extra kwargs to new_session() become the _meta dict in the
+                    # JSON-RPC request — do NOT wrap in _meta= (that double-nests).
+                    session_meta = build_session_model_meta(agent_name, self.acp_model)
+                    response = await conn.new_session(cwd=working_dir, **session_meta)
+                    session_id = response.session_id
+                    config_options = response.config_options
+                    model_state = response.models
+                await _maybe_set_session_model(
+                    conn,
+                    agent_name,
+                    session_id,
+                    self.acp_model,
+                    model_state,
+                )
+
+                # Resolve the permission mode.  Known providers each have their
+                # own mode ID (bypassPermissions, full-access, yolo …).
+                # Unknown/custom servers get None — skip the call rather than
+                # sending a provider-specific string they won't recognise.
+                provider = detect_acp_provider_by_agent_name(agent_name)
+                mode_id = self.acp_session_mode or (
+                    provider.default_session_mode if provider else None
+                )
+                if mode_id is not None:
+                    logger.info("Setting ACP session mode: %s", mode_id)
+                    await conn.set_session_mode(mode_id=mode_id, session_id=session_id)
+
+                # Requested session configuration is applied and verified here —
+                # part of initialization, so step() never prompts a session whose
+                # configuration the server did not confirm.  Runs last so options
+                # that depend on the selected model are resolved against the
+                # server's post-model state.
+                await _apply_session_config_options(
+                    conn,
+                    client,
+                    agent_name,
+                    session_id,
+                    self.acp_config_options,
+                    config_options,
+                )
+
+                return (
+                    conn,
+                    process,
+                    filtered_reader,
+                    session_id,
+                    agent_name,
+                    agent_version,
+                )
+            except BaseException:
+                # The subprocess is already running, but its handles have not
+                # been published to the ACPAgent attributes yet — ``init_state``
+                # cleanup cannot see them, so nothing else would ever reap the
+                # process.  Tear it down here before the failure propagates.
+                teardown = asyncio.ensure_future(
+                    _abort_partial_acp_init(process, conn, filter_task)
+                )
                 try:
-                    await conn.load_session(
-                        cwd=working_dir,
-                        session_id=prior_session_id,
-                        mcp_servers=[],
-                    )
-                    session_id = prior_session_id
-                    logger.info(
-                        "Resumed ACP session: %s (cwd=%s)",
-                        session_id,
-                        working_dir,
-                    )
-                except ACPRequestError as e:
-                    logger.warning(
-                        "ACP load_session(%s) failed (%s); starting a fresh session",
-                        prior_session_id,
-                        e,
-                    )
-
-            if session_id is None:
-                # Build _meta content for session options (e.g. model selection).
-                # Extra kwargs to new_session() become the _meta dict in the
-                # JSON-RPC request — do NOT wrap in _meta= (that double-nests).
-                session_meta = build_session_model_meta(agent_name, self.acp_model)
-                response = await conn.new_session(cwd=working_dir, **session_meta)
-                session_id = response.session_id
-            await _maybe_set_session_model(
-                conn,
-                agent_name,
-                session_id,
-                self.acp_model,
-            )
-
-            # Resolve the permission mode.  Known providers each have their
-            # own mode ID (bypassPermissions, full-access, yolo …).
-            # Unknown/custom servers get None — skip the call rather than
-            # sending a provider-specific string they won't recognise.
-            provider = detect_acp_provider_by_agent_name(agent_name)
-            mode_id = self.acp_session_mode or (
-                provider.default_session_mode if provider else None
-            )
-            if mode_id is not None:
-                logger.info("Setting ACP session mode: %s", mode_id)
-                await conn.set_session_mode(mode_id=mode_id, session_id=session_id)
-
-            return conn, process, filtered_reader, session_id, agent_name, agent_version
+                    await asyncio.shield(teardown)
+                except BaseException:
+                    # Cancelled while unwinding: the shielded teardown keeps
+                    # running, but the event loop may disappear with us, so
+                    # kill the subprocess without awaiting anything.
+                    _signal_acp_process(process, "kill")
+                # Re-raises the original failure, not anything from teardown.
+                raise
 
         result = self._executor.run_async(_init)
         (
