@@ -1,60 +1,40 @@
 """Wire protocol for ``/sockets/session/{conversation_id}``.
 
-This module defines the *wire* format for the session socket. It is
-deliberately **not** built on :class:`~openhands.sdk.event.base.Event`.
+Deliberately not built on :class:`~openhands.sdk.event.base.Event`: the legacy
+``/sockets/events/{id}`` endpoint sends ``event.model_dump(...)`` over the wire
+while ``event_store.py`` persists ``event.model_dump_json(...)`` and
+``remote_conversation.py`` decodes with ``Event.model_validate`` — one class,
+``extra="forbid"``, three roles, so every additive wire field becomes a
+storage migration. Here ``Event`` rides *inside* an envelope, untouched;
+everything protocol-specific (sequence number, stream identity, progress)
+lives on the envelope instead, where adding a field costs nothing.
 
-Why a separate hierarchy
-------------------------
-The legacy ``/sockets/events/{id}`` endpoint sends ``event.model_dump(...)``
-(``sockets.py``) while the event log persists ``event.model_dump_json(...)``
-(``event_store.py``) and the Python client decodes with ``Event.model_validate``
-(``remote_conversation.py``). One class, one serialization, three roles — and
-``Event`` is ``extra="forbid"``, so every additive wire field is a storage
-migration and every storage change is a wire break. That coupling is why a
-token delta cannot carry a stream identity today.
+There is no handshake and no ``protocol`` field: the URL is the protocol
+version. A client speaks ``/sockets/events/{id}`` or ``/sockets/session/{id}``,
+never both.
 
-Here the ``Event`` rides *inside* an envelope as a payload and is not modified
-in any way: the same class, the same ``extra="forbid"``, the same bytes on
-disk. Everything the protocol needs — sequence number, stream identity,
-progress — lives on the envelope, where adding a field costs nothing.
+``ItemStarted`` mints nothing — ``item_id`` *is* the ``id`` of the ``Event``
+that eventually carries the finished message, so a client retires an open slot
+on a single equality test: ``frame.event.id == slot.item_id``. No close frame,
+no watermark.
 
-Versioning
-----------
-There is no handshake and no ``protocol`` field: **the URL is the protocol
-version**. A client speaks ``/sockets/events/{id}`` or
-``/sockets/session/{id}``, never both, so there is no dual-decode path to
-maintain and no legacy client to negotiate with.
+Delivery rules:
 
-Frames, and the one rule that makes them work
----------------------------------------------
-``ItemStarted`` announces a stream and mints nothing — the ``item_id`` *is*
-the ``id`` of the ``Event`` that will eventually carry the finished message.
-So a client holding an open slot retires it on a single equality test::
-
-    frame.event.id == slot.item_id
-
-That is the entire close protocol. There is no close frame, no watermark and
-no text comparison. A stream that dies without producing a message is retired
-by ``ItemAborted`` instead; exactly one of the two always fires.
-
-Delivery rules
---------------
-1. ``Durable`` never goes missing *across a reconnect*. Within a connection it
-   may be dropped, because the client resumes with ``after_seq`` and loses
-   nothing — that permission is what lets the server drop a slow consumer
-   instead of blocking the publisher on it.
-2. ``Delta`` may be dropped freely. A gap marks the slot lossy; the real text
-   arrives with the message.
+1. ``Durable`` never goes missing across a reconnect (``after_seq`` covers
+   it); within a connection it may be dropped, which is what lets a slow
+   consumer be disconnected instead of blocking the publisher.
+2. ``Delta`` may be dropped freely — a gap just marks the slot lossy, and the
+   real text arrives with the durable message.
 3. Every ``ItemStarted`` is retired by exactly one ``Durable`` or one
-   ``ItemAborted`` — including on cancellation, provider failure, policy
+   ``ItemAborted``, including on cancellation, provider failure, policy
    rejection and unhandled exception.
-4. Progress frames are **never replayed**. On reconnect a client throws every
-   open slot away and waits; the message is coming on the cursor regardless.
-5. No ordering is promised *between* two open items beyond the order their
+4. Progress frames are never replayed; on reconnect a client discards every
+   open slot and waits for the message on the cursor.
+5. No ordering is promised between two open items beyond the order their
    ``ItemStarted`` frames arrived in.
 """
 
-from typing import Annotated, Literal
+from typing import Annotated, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -71,12 +51,12 @@ from openhands.sdk import Event
 # tuned; see the "reproductions and baselines" issue before relying on them.
 # --------------------------------------------------------------------------
 
-MAX_FRAME_BYTES = 4 * 1024 * 1024
+MAX_FRAME_BYTES: Final[int] = 4 * 1024 * 1024
 """Largest single frame the server will emit. A frame above this drops the
 connection rather than the frame, because ``Durable`` must survive a reconnect
 and the cursor makes reconnecting lossless."""
 
-MAX_PENDING_BYTES = 4 * MAX_FRAME_BYTES
+MAX_PENDING_BYTES: Final[int] = 4 * MAX_FRAME_BYTES
 """Per-connection write budget. Admission is synchronous: if a frame does not
 fit, the connection is dropped. It is never queued and the publisher never
 blocks."""

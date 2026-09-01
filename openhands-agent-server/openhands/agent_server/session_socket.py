@@ -35,7 +35,7 @@ import asyncio
 import logging
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Annotated
+from typing import Annotated, Final
 from uuid import UUID
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
@@ -70,17 +70,12 @@ from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 session_router = APIRouter(prefix="/sockets", tags=["WebSockets"])
 logger = logging.getLogger(__name__)
 
-REPLAY_PAGE_SIZE = 100
+REPLAY_PAGE_SIZE: Final[int] = 100
 """Events read from disk per executor hop. The loop yields between pages so a
 long history cannot starve the event loop."""
 
 
-# --------------------------------------------------------------------------
-# One writer per connection, bounded in bytes
-# --------------------------------------------------------------------------
-
-
-@dataclass
+@dataclass(slots=True, frozen=True)
 class _ConnectionWriter:
     """Byte-bounded, non-blocking admission in front of a single writer task.
 
@@ -116,7 +111,10 @@ class _ConnectionWriter:
         return self.closed_event.is_set()
 
     def start(self) -> None:
-        self._task = asyncio.create_task(self._run())
+        # frozen=True forbids plain attribute assignment outside __init__;
+        # object.__setattr__ is the sanctioned escape hatch for the few
+        # fields this class mutates after construction.
+        object.__setattr__(self, "_task", asyncio.create_task(self._run()))
 
     def send(self, frame: SessionFrameBase) -> bool:
         """Admit one frame. Returns False if the connection is finished.
@@ -152,13 +150,13 @@ class _ConnectionWriter:
             return False
 
         self._queue.append((payload, size))
-        self._pending_bytes += size
+        object.__setattr__(self, "_pending_bytes", self._pending_bytes + size)
         self._wake.set()
         return True
 
     def _fail(self, reason: str) -> None:
         if not self.closed:
-            self.drop_reason = reason
+            object.__setattr__(self, "drop_reason", reason)
             self.closed_event.set()
         self._wake.set()
 
@@ -171,7 +169,9 @@ class _ConnectionWriter:
                     if self.closed:
                         return
                     payload, size = self._queue.popleft()
-                    self._pending_bytes -= size
+                    object.__setattr__(
+                        self, "_pending_bytes", self._pending_bytes - size
+                    )
                     if not _is_websocket_connected(self.websocket):
                         self._fail("disconnected")
                         return
@@ -196,12 +196,7 @@ class _ConnectionWriter:
                 pass
 
 
-# --------------------------------------------------------------------------
-# Subscriber: buffers, then goes live
-# --------------------------------------------------------------------------
-
-
-@dataclass
+@dataclass(slots=True, frozen=True)
 class _SessionSubscriber(Subscriber[Event]):
     """Converts events to frames and hands them to the writer.
 
@@ -264,17 +259,13 @@ class _SessionSubscriber(Subscriber[Event]):
 
     def go_live(self, through_seq: int | None) -> None:
         """Flush the buffer, dropping anything already replayed from disk."""
-        buffered, self._buffer = self._buffer, None
+        buffered = self._buffer
+        object.__setattr__(self, "_buffer", None)
         for event in buffered or ():
             seq = self._seq_of(event)
             if seq is not None and through_seq is not None and seq <= through_seq:
                 continue  # already sent from disk during replay
             self._emit(event)
-
-
-# --------------------------------------------------------------------------
-# Replay
-# --------------------------------------------------------------------------
 
 
 def _read_page(events: EventLog, start: int, stop: int) -> list[tuple[int, Event]]:
@@ -307,11 +298,6 @@ async def _replay(
                 return False
         await asyncio.sleep(0)
     return True
-
-
-# --------------------------------------------------------------------------
-# The endpoint
-# --------------------------------------------------------------------------
 
 
 @session_router.websocket("/session/{conversation_id}")
@@ -358,20 +344,10 @@ async def session_socket(
     writer.start()
     subscriber = _SessionSubscriber(writer=writer, events=events)
 
-    # --- the atomic replay boundary -------------------------------------
-    #
-    # Subscribe FIRST (buffering), then read the mark. That ordering is what
-    # makes this lossless, and it needs no lock:
-    #
-    #   * appended before subscribe -> on disk before the mark is read, so
-    #     mark >= seq and replay covers it;
-    #   * appended after subscribe  -> in the buffer; if seq <= mark it is also
-    #     replayed and the buffered copy is dropped by seq, otherwise the
-    #     buffer is the only copy and the flush delivers it.
-    #
-    # The design called for taking the state lock across both steps. It is not
-    # required, and skipping it keeps one more consumer off a FIFOLock that
-    # already guards six unrelated things.
+    # Subscribe FIRST (buffering), then read the high-water mark: no lock
+    # needed, since an event appended before subscribe is on disk before the
+    # mark is read (replay covers it), and one appended after lands in the
+    # buffer, deduped against the mark by seq once replay finishes.
     try:
         subscriber_id = await event_service.subscribe_to_events(subscriber)
     except MaxSubscribersError:
