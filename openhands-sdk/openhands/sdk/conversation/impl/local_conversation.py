@@ -3034,7 +3034,13 @@ class LocalConversation(BaseConversation):
                      when a command references the secret key.
         """
         with self._state:
-            self._state.secret_registry.update_secrets(secrets)
+            registry = self._state.secret_registry.model_copy(
+                update={
+                    "secret_sources": dict(self._state.secret_registry.secret_sources)
+                }
+            )
+            registry.update_secrets(secrets)
+            self._state.secret_registry = registry
         logger.info(f"Added {len(secrets)} secrets to conversation")
 
     def set_security_analyzer(self, analyzer: SecurityAnalyzerBase | None) -> None:
