@@ -233,6 +233,43 @@ async def test_warm_npx_cache_uses_prefer_offline_and_durable_env(tmp_path):
     )
 
 
+def test_npx_cache_warm_failure_continues_with_normal_startup(tmp_path, caplog):
+    agent = ACPAgent(
+        acp_command=[
+            "npx",
+            "-y",
+            "--prefer-offline",
+            "@agentclientprotocol/codex-acp@1.1.7",
+        ],
+        acp_server="codex",
+    )
+    state = ConversationState.create(
+        id=uuid.uuid4(),
+        agent=agent,
+        workspace=LocalWorkspace(working_dir=str(tmp_path)),
+    )
+    conn = TestACPSessionIdPersistence._make_conn()
+
+    try:
+        with caplog.at_level("WARNING"):
+            with patch.object(
+                ACPAgent,
+                "_warm_npx_cache",
+                new=AsyncMock(side_effect=RuntimeError("registry unavailable")),
+            ):
+                TestACPSessionIdPersistence._patched_start_acp_server(
+                    agent, state, conn=conn
+                )
+    finally:
+        agent._unregister_atexit_cleanup()
+        assert agent._executor is not None
+        agent._executor.close()
+        agent._executor = None
+
+    assert "continuing with normal startup" in caplog.text
+    conn.initialize.assert_awaited_once()
+
+
 # ---------------------------------------------------------------------------
 # Instantiation
 # ---------------------------------------------------------------------------

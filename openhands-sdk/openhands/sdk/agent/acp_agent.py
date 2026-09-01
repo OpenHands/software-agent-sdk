@@ -2790,10 +2790,18 @@ class ACPAgent(AgentBase):
         package = _npx_package(self.acp_command)
         if provider is not None and package is not None:
             env["npm_config_cache"] = str(self._acp_npm_cache_dir(state))
-            self._executor.run_async(
-                self._warm_npx_cache(package, provider.key, env, working_dir),
-                timeout=_ACP_NPX_CACHE_WARM_TIMEOUT + 5,
-            )
+            try:
+                self._executor.run_async(
+                    self._warm_npx_cache(package, provider.key, env, working_dir),
+                    timeout=_ACP_NPX_CACHE_WARM_TIMEOUT + 5,
+                )
+            except Exception as error:
+                logger.warning(
+                    "ACP provider npx cache warm failed: provider=%s; "
+                    "continuing with normal startup: %s",
+                    provider.key,
+                    error,
+                )
 
         # Prior ACP session id — typically survives agent-server restarts via
         # ConversationState.agent_state (serialized into base_state.json).
