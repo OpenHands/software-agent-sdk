@@ -192,7 +192,14 @@ class _ConnectionWriter:
             task.cancel()
             try:
                 await task
-            except (asyncio.CancelledError, Exception):
+            except asyncio.CancelledError:
+                # Swallow only the cancellation we just asked for. If the
+                # CancelledError is aimed at *this* task instead (server
+                # shutting the handler down), absorbing it would silently
+                # ignore that shutdown, so let it through.
+                if not task.cancelled():
+                    raise
+            except Exception:
                 pass
 
 
@@ -278,7 +285,10 @@ def _read_page(events: EventLog, start: int, stop: int) -> list[tuple[int, Event
     for idx in range(start, stop):
         try:
             page.append((idx, events[idx]))
-        except (FileNotFoundError, UnicodeDecodeError, ValidationError, IndexError):
+        except (OSError, UnicodeDecodeError, ValidationError, IndexError):
+            # OSError covers the missing/half-written file this is really about
+            # and the transient read errors EventLog warns about on networked
+            # filesystems. One bad event must not cost the whole connection.
             logger.warning("session_socket_skipping_unreadable_event: idx=%d", idx)
     return page
 
@@ -296,7 +306,11 @@ async def _replay(
         for seq, event in page:
             if not writer.send(DurableFrame(seq=seq, event=event)):
                 return False
-        await asyncio.sleep(0)
+            # Yield per frame, not per page: the writer task is the only thing
+            # that drains the pending bytes, so replaying a whole page without
+            # letting it run can exhaust the budget on a page of large events
+            # and drop a client that was never actually slow.
+            await asyncio.sleep(0)
     return True
 
 
@@ -338,7 +352,17 @@ async def session_socket(
         )
         return
 
-    events = event_service.get_conversation().state.events
+    try:
+        events = event_service.get_conversation().state.events
+    except ValueError:
+        # The conversation can be closed between the lookup above and here;
+        # close like every other failure path rather than raising out of the
+        # handler.
+        logger.warning("session_socket_conversation_inactive: %s", conversation_id)
+        await _safe_close_websocket(
+            websocket, code=4004, reason="Conversation not found"
+        )
+        return
 
     writer = _ConnectionWriter(websocket)
     writer.start()

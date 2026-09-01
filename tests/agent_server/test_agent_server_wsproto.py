@@ -294,3 +294,193 @@ async def test_agent_server_websocket_first_message_auth_malformed(agent_server)
 
     assert exc_info.value.rcvd is not None
     assert exc_info.value.rcvd.code == 4001
+
+
+# ===========================================================================
+# /sockets/session/{id} — the session socket, against the real server.
+#
+# The unit tests in test_session_socket.py cover the writer, the subscriber and
+# replay in isolation; nothing there executes the endpoint itself. These drive
+# it end to end: auth, conversation lookup, the sync frame, paged replay from
+# disk, resume by cursor, and the close codes.
+# ===========================================================================
+
+
+def _create_conversation(port: int, api_key: str) -> str:
+    response = requests.post(
+        f"http://127.0.0.1:{port}/api/conversations",
+        headers={"X-Session-API-Key": api_key},
+        json={
+            "agent": {
+                "kind": "Agent",
+                "llm": {
+                    "usage_id": "test-llm",
+                    "model": "test-provider/test-model",
+                    "api_key": "test-key",
+                },
+                "tools": [],
+            },
+            "workspace": {"working_dir": "/tmp/test-workspace"},
+        },
+    )
+    assert response.status_code in [200, 201], response.text
+    return response.json()["id"]
+
+
+async def _collect_frames(ws, *, until=None, seconds: float = 15.0) -> list[dict]:
+    """Read frames until ``until`` is satisfied, or the deadline passes.
+
+    The conversation also runs an agent step that fails (there is no real LLM
+    behind ``test-provider``), so the exact frame sequence is not fixed and the
+    interesting frame is not necessarily the first: a transient state snapshot
+    lands almost immediately, while the durable message event follows once it
+    has been persisted. Waiting on a predicate rather than on a quiet period
+    keeps that from being a race.
+    """
+    frames: list[dict] = []
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + seconds
+    while loop.time() < deadline:
+        try:
+            raw = await asyncio.wait_for(ws.recv(), timeout=deadline - loop.time())
+        except TimeoutError:
+            break
+        except websockets.exceptions.ConnectionClosed:
+            break
+        frames.append(json.loads(raw))
+        if until is not None and any(until(f) for f in frames):
+            break
+    return frames
+
+
+def _is_durable(frame: dict) -> bool:
+    return frame["type"] == "durable"
+
+
+@pytest.mark.asyncio
+async def test_session_socket_opens_with_a_sync_frame(agent_server):
+    """The first frame is always ``sync``, before any replay or live traffic."""
+    port, api_key = agent_server["port"], agent_server["api_key"]
+    conversation_id = _create_conversation(port, api_key)
+
+    ws_url = (
+        f"ws://127.0.0.1:{port}/sockets/session/{conversation_id}"
+        f"?session_api_key={api_key}"
+    )
+    async with websockets.connect(ws_url, open_timeout=5) as ws:
+        first = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+
+    assert first["type"] == "sync"
+    # Nothing was requested, so the range is open at the bottom.
+    assert first.get("from_seq") is None
+
+
+@pytest.mark.asyncio
+async def test_session_socket_durable_frame_carries_seq_over_the_wire(agent_server):
+    """A message sent on the socket comes back as a durable frame with a seq.
+
+    This is the whole point of the endpoint — an ``Event`` inside an envelope,
+    with a resumable sequence number — exercised through the real server rather
+    than against the subscriber in isolation.
+    """
+    port, api_key = agent_server["port"], agent_server["api_key"]
+    conversation_id = _create_conversation(port, api_key)
+
+    ws_url = (
+        f"ws://127.0.0.1:{port}/sockets/session/{conversation_id}"
+        f"?session_api_key={api_key}"
+    )
+    async with websockets.connect(ws_url, open_timeout=5) as ws:
+        assert (
+            json.loads(await asyncio.wait_for(ws.recv(), timeout=5))["type"] == "sync"
+        )
+        await ws.send(json.dumps({"role": "user", "content": "hello session socket"}))
+        frames = await _collect_frames(ws, until=_is_durable)
+
+    durable = [f for f in frames if f["type"] == "durable"]
+    assert durable, f"no durable frame arrived; got {[f['type'] for f in frames]}"
+    # seq is real and monotonic, and the payload is the untouched Event.
+    seqs = [f["seq"] for f in durable]
+    assert all(isinstance(s, int) for s in seqs)
+    assert seqs == sorted(seqs)
+    assert all("kind" in f["event"] and "id" in f["event"] for f in durable)
+    # A transient frame carries no seq (the state snapshot pushed on subscribe).
+    assert all("seq" not in f for f in frames if f["type"] == "transient")
+
+
+@pytest.mark.asyncio
+async def test_session_socket_resumes_history_with_after_seq(agent_server):
+    """Reconnecting with ``after_seq`` replays from disk and loses nothing."""
+    port, api_key = agent_server["port"], agent_server["api_key"]
+    conversation_id = _create_conversation(port, api_key)
+
+    base_url = (
+        f"ws://127.0.0.1:{port}/sockets/session/{conversation_id}"
+        f"?session_api_key={api_key}"
+    )
+
+    # First connection: produce some history.
+    async with websockets.connect(base_url, open_timeout=5) as ws:
+        await asyncio.wait_for(ws.recv(), timeout=5)  # sync
+        await ws.send(json.dumps({"role": "user", "content": "first message"}))
+        first_pass = await _collect_frames(ws, until=_is_durable)
+
+    produced = [f["seq"] for f in first_pass if f["type"] == "durable"]
+    assert produced, "expected the first connection to persist something"
+
+    # Reconnect asking for everything: after_seq=-1 means "from the start".
+    async with websockets.connect(f"{base_url}&after_seq=-1", open_timeout=5) as ws:
+        sync = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+        replayed = await _collect_frames(ws, until=_is_durable)
+
+    assert sync["type"] == "sync"
+    assert sync["from_seq"] == -1
+    assert sync["through_seq"] >= max(produced)
+
+    replayed_seqs = [f["seq"] for f in replayed if f["type"] == "durable"]
+    # Replay starts at the very beginning and covers what the first pass saw.
+    assert replayed_seqs[:1] == [0]
+    assert set(produced).issubset(set(replayed_seqs))
+    # Nothing is delivered twice across the replay/live seam.
+    assert len(replayed_seqs) == len(set(replayed_seqs))
+
+
+@pytest.mark.asyncio
+async def test_session_socket_unknown_conversation_closes_4004(agent_server):
+    port, api_key = agent_server["port"], agent_server["api_key"]
+
+    ws_url = (
+        f"ws://127.0.0.1:{port}/sockets/session/{uuid4()}?session_api_key={api_key}"
+    )
+    async with websockets.connect(ws_url, open_timeout=5) as ws:
+        with pytest.raises(websockets.exceptions.ConnectionClosed) as exc_info:
+            await asyncio.wait_for(ws.recv(), timeout=5)
+
+    assert exc_info.value.rcvd is not None
+    assert exc_info.value.rcvd.code == 4004
+
+
+@pytest.mark.asyncio
+async def test_session_socket_survives_a_malformed_inbound_frame(agent_server):
+    """A garbage frame earns an error frame; the connection stays usable."""
+    port, api_key = agent_server["port"], agent_server["api_key"]
+    conversation_id = _create_conversation(port, api_key)
+
+    ws_url = (
+        f"ws://127.0.0.1:{port}/sockets/session/{conversation_id}"
+        f"?session_api_key={api_key}"
+    )
+    async with websockets.connect(ws_url, open_timeout=5) as ws:
+        assert (
+            json.loads(await asyncio.wait_for(ws.recv(), timeout=5))["type"] == "sync"
+        )
+
+        await ws.send("this is not json")
+        frames = await _collect_frames(ws, until=lambda f: f["type"] == "error")
+        errors = [f for f in frames if f["type"] == "error"]
+        assert errors, f"expected an error frame; got {[f['type'] for f in frames]}"
+
+        # Still alive: a well-formed message afterwards is still processed.
+        await ws.send(json.dumps({"role": "user", "content": "still here"}))
+        after = await _collect_frames(ws, until=_is_durable)
+        assert any(f["type"] == "durable" for f in after)

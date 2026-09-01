@@ -41,15 +41,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from openhands.sdk import Event
 
 
-# --------------------------------------------------------------------------
-# Size limits
-#
-# PROVISIONAL. The design calls for the pending-byte cap to be *derived* from
-# the observed frame-size distribution (a multiple of the largest legal frame)
-# rather than picked. That distribution has not been measured yet, so these are
-# placeholders with the right shape and the wrong numbers. Do not treat them as
-# tuned; see the "reproductions and baselines" issue before relying on them.
-# --------------------------------------------------------------------------
+# PROVISIONAL sizes. The design calls for the pending-byte cap to be *derived*
+# from the observed frame-size distribution (a multiple of the largest legal
+# frame) rather than picked. That distribution has not been measured yet, so
+# these are placeholders with the right shape and the wrong numbers. Do not
+# treat them as tuned; see the "reproductions and baselines" issue first.
 
 MAX_FRAME_BYTES: Final[int] = 4 * 1024 * 1024
 """Largest single frame the server will emit. A frame above this drops the
