@@ -305,6 +305,7 @@ jobs:
                       custom_tags: python
                       image_flavor: slim
                       acp_provider_flavor: none
+                      capability_flavor: no-docker
                       arch: amd64
                       base_image: nikolaik/python-nodejs:python3.13-nodejs22-slim
                       runner: ubuntu-24.04
@@ -314,6 +315,7 @@ jobs:
                       custom_tags: python
                       image_flavor: slim
                       acp_provider_flavor: none
+                      capability_flavor: no-docker
                       arch: arm64
                       base_image: nikolaik/python-nodejs:python3.13-nodejs22-slim
                       runner: ubuntu-24.04-arm
@@ -439,6 +441,16 @@ jobs:
                       echo "install_acp_providers=$INSTALL_ACP_PROVIDERS" >> $GITHUB_OUTPUT
                   fi
 
+                  # Docker Engine is dropped from the slim variant: dockerd cannot
+                  # start without --privileged (or Sysbox) granted at container
+                  # start, which the documented Canvas/OSS launch does not pass.
+                  # Images built without it carry a `docker` shim that says so.
+                  if [ "${{ matrix.capability_flavor }}" = "no-docker" ]; then
+                      echo "install_capabilities=$(echo "$INSTALL_CAPABILITIES" | sed -E 's/(^|,)docker(,|$)/\1/; s/,$//')" >> $GITHUB_OUTPUT
+                  else
+                      echo "install_capabilities=$INSTALL_CAPABILITIES" >> $GITHUB_OUTPUT
+                  fi
+
                   # Verify outputs
                   echo "=== Build outputs ==="
                   echo "Build context: $(grep '^build_context=' $GITHUB_OUTPUT | cut -d= -f2-)"
@@ -464,7 +476,7 @@ jobs:
                       OPENHANDS_BUILD_GIT_SHA=${{ env.SDK_SHA }}
                       OPENHANDS_BUILD_GIT_REF=${{ env.SDK_REF }}
                       INSTALL_ACP_PROVIDERS=${{ steps.prep.outputs.install_acp_providers }}
-                      INSTALL_CAPABILITIES=${{ env.INSTALL_CAPABILITIES }}
+                      INSTALL_CAPABILITIES=${{ steps.prep.outputs.install_capabilities }}
 
             - name: Cleanup build context
               if: always()
