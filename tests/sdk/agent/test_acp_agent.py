@@ -37,6 +37,7 @@ from openhands.sdk.agent.acp_agent import (
     _extract_session_models,
     _extract_token_usage,
     _image_url_to_acp_block,
+    _log_acp_provider_version,
     _log_acp_subprocess_stderr,
     _mask_json_value,
     _maybe_set_session_model,
@@ -159,6 +160,26 @@ def _make_state(tmp_path) -> ConversationState:
         agent=agent,
         workspace=workspace,
     )
+
+
+def test_logs_matching_acp_provider_version(caplog):
+    with caplog.at_level("INFO"):
+        _log_acp_provider_version("codex-acp", "1.1.7")
+
+    assert "provider=codex" in caplog.text
+    assert "pinned_version='1.1.7'" in caplog.text
+    assert "reported_version='1.1.7'" in caplog.text
+    assert "mismatch" not in caplog.text
+
+
+def test_warns_when_acp_provider_version_differs_from_pin(caplog):
+    with caplog.at_level("INFO"):
+        _log_acp_provider_version("gemini-cli 0.38.0", "")
+
+    assert "provider=gemini-cli" in caplog.text
+    assert "pinned_version='0.46.0'" in caplog.text
+    assert "reported_version='0.38.0'" in caplog.text
+    assert "probably installed at runtime via the npx fallback" in caplog.text
 
 
 # ---------------------------------------------------------------------------
