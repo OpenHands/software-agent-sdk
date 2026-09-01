@@ -1,8 +1,23 @@
+import re
 from pathlib import Path
+
+from openhands.sdk.settings.acp_providers import (
+    CLAUDE_AGENT_ACP_VERSION,
+    CODEX_ACP_VERSION,
+    GEMINI_CLI_VERSION,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SERVER_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "server.yml"
+AGENT_SERVER_DOCKERFILE = (
+    REPO_ROOT
+    / "openhands-agent-server"
+    / "openhands"
+    / "agent_server"
+    / "docker"
+    / "Dockerfile"
+)
 AGENT_SERVER_SPEC = (
     REPO_ROOT
     / "openhands-agent-server"
@@ -10,6 +25,17 @@ AGENT_SERVER_SPEC = (
     / "agent_server"
     / "agent-server.spec"
 )
+
+_DOCKERFILE_ACP_PACKAGE = re.compile(
+    r'^\s*(?P<key>[\w-]+)\) PACKAGES="\$PACKAGES '
+    r'(?P<package>@[^@\s]+)@(?P<version>[^\s";]+)";',
+    re.MULTILINE,
+)
+_REGISTRY_ACP_PACKAGES = {
+    "claude-code": ("@agentclientprotocol/claude-agent-acp", CLAUDE_AGENT_ACP_VERSION),
+    "codex": ("@agentclientprotocol/codex-acp", CODEX_ACP_VERSION),
+    "gemini-cli": ("@google/gemini-cli", GEMINI_CLI_VERSION),
+}
 
 
 def test_server_workflow_passes_git_metadata_build_args() -> None:
@@ -89,3 +115,53 @@ def test_agent_server_binary_copies_openhands_distribution_metadata() -> None:
         "openhands-workspace",
     ):
         assert f'*copy_metadata("{distribution}")' in spec_text
+
+
+def test_agent_server_dockerfile_acp_package_versions_match_registry() -> None:
+    dockerfile_text = AGENT_SERVER_DOCKERFILE.read_text(encoding="utf-8")
+    case_arms = dockerfile_text.partition('case "$provider" in')[2].partition("esac")[0]
+    dockerfile_packages = list(_DOCKERFILE_ACP_PACKAGE.finditer(case_arms))
+
+    assert dockerfile_packages, (
+        f"No ACP package versions found in {AGENT_SERVER_DOCKERFILE} "
+        "INSTALL_ACP_PROVIDERS case arms"
+    )
+
+    for match in dockerfile_packages:
+        provider_key = match["key"]
+        registry_package = _REGISTRY_ACP_PACKAGES.get(provider_key)
+        if registry_package is None:
+            continue
+        expected_package, expected_version = registry_package
+        dockerfile_package = match["package"]
+        dockerfile_version = match["version"]
+
+        assert dockerfile_package == expected_package, (
+            f"{AGENT_SERVER_DOCKERFILE}: ACP provider {provider_key!r} uses package "
+            f"{dockerfile_package}, but acp_providers.py uses {expected_package}"
+        )
+        assert dockerfile_version == expected_version, (
+            f"{AGENT_SERVER_DOCKERFILE}: ACP package {dockerfile_package} has version "
+            f"{dockerfile_version}, but acp_providers.py pins {expected_version}"
+        )
+
+
+def test_server_workflow_publishes_python_slim_without_acp_providers() -> None:
+    workflow_text = SERVER_WORKFLOW.read_text(encoding="utf-8")
+
+    assert re.search(
+        r"- variant: python-slim\n"
+        r"\s+custom_tags: python\n"
+        r"\s+image_flavor: slim\n"
+        r"\s+acp_provider_flavor: none",
+        workflow_text,
+    )
+    assert (
+        "INSTALL_ACP_PROVIDERS=${{ steps.prep.outputs.install_acp_providers }}"
+        in workflow_text
+    )
+    assert "INSTALL_CAPABILITIES=${{ env.INSTALL_CAPABILITIES }}" in workflow_text
+    assert (
+        "scope=agent-server-${{ matrix.variant }}-${{ matrix.arch }}" in workflow_text
+    )
+    assert "variant: [python, python-slim, java, golang]" in workflow_text

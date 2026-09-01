@@ -37,10 +37,12 @@ from openhands.sdk.agent.acp_agent import (
     _extract_session_models,
     _extract_token_usage,
     _image_url_to_acp_block,
+    _log_acp_provider_version,
     _log_acp_subprocess_stderr,
     _mask_json_value,
     _maybe_set_session_model,
     _mcp_config_to_acp_servers,
+    _npx_package,
     _OpenHandsACPBridge,
     _reapply_session_model_on_resume,
     _select_auth_method,
@@ -159,6 +161,113 @@ def _make_state(tmp_path) -> ConversationState:
         agent=agent,
         workspace=workspace,
     )
+
+
+def test_logs_matching_acp_provider_version(caplog):
+    with caplog.at_level("INFO"):
+        _log_acp_provider_version("codex-acp", "1.1.7")
+
+    assert "provider=codex" in caplog.text
+    assert "pinned_version='1.1.7'" in caplog.text
+    assert "reported_version='1.1.7'" in caplog.text
+    assert "mismatch" not in caplog.text
+
+
+def test_warns_when_acp_provider_version_differs_from_pin(caplog):
+    with caplog.at_level("INFO"):
+        _log_acp_provider_version("gemini-cli 0.38.0", "")
+
+    assert "provider=gemini-cli" in caplog.text
+    assert "pinned_version='0.46.0'" in caplog.text
+    assert "reported_version='0.38.0'" in caplog.text
+    assert "probably installed at runtime via the npx fallback" in caplog.text
+
+
+def test_npx_package_skips_prefer_offline():
+    assert (
+        _npx_package(
+            ["npx", "-y", "--prefer-offline", "@agentclientprotocol/codex-acp@1.1.7"]
+        )
+        == "@agentclientprotocol/codex-acp@1.1.7"
+    )
+
+
+def test_acp_npm_cache_is_shared_across_conversations(tmp_path):
+    agent = _make_agent()
+    state = _make_state(tmp_path)
+    state.persistence_dir = str(tmp_path / "conversations" / "conversation-id")
+
+    assert agent._acp_npm_cache_dir(state) == tmp_path / "conversations" / "npm-cache"
+
+
+async def test_warm_npx_cache_uses_prefer_offline_and_durable_env(tmp_path):
+    agent = _make_agent()
+    process = MagicMock()
+    process.returncode = 0
+    process.wait = AsyncMock(return_value=0)
+    env = {"npm_config_cache": str(tmp_path / "npm-cache")}
+
+    with patch(
+        "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+        new=AsyncMock(return_value=process),
+    ) as create_process:
+        await agent._warm_npx_cache(
+            "@agentclientprotocol/codex-acp@1.1.7", "codex", env, str(tmp_path)
+        )
+
+    create_process.assert_awaited_once_with(
+        "npx",
+        "--yes",
+        "--prefer-offline",
+        "--package",
+        "@agentclientprotocol/codex-acp@1.1.7",
+        "--",
+        "node",
+        "-e",
+        "",
+        cwd=str(tmp_path),
+        env=env,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+
+
+def test_npx_cache_warm_failure_continues_with_normal_startup(tmp_path, caplog):
+    agent = ACPAgent(
+        acp_command=[
+            "npx",
+            "-y",
+            "--prefer-offline",
+            "@agentclientprotocol/codex-acp@1.1.7",
+        ],
+        acp_server="codex",
+    )
+    state = ConversationState.create(
+        id=uuid.uuid4(),
+        agent=agent,
+        workspace=LocalWorkspace(working_dir=str(tmp_path)),
+    )
+    conn = TestACPSessionIdPersistence._make_conn()
+
+    try:
+        with caplog.at_level("WARNING"):
+            with patch.object(
+                ACPAgent,
+                "_warm_npx_cache",
+                new=AsyncMock(side_effect=RuntimeError("registry unavailable")),
+            ):
+                TestACPSessionIdPersistence._patched_start_acp_server(
+                    agent, state, conn=conn
+                )
+    finally:
+        agent._unregister_atexit_cleanup()
+        assert agent._executor is not None
+        agent._executor.close()
+        agent._executor = None
+
+    assert "continuing with normal startup" in caplog.text
+    conn.initialize.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
