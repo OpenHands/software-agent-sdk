@@ -175,6 +175,69 @@ async def test_replay_and_live_do_not_interleave_or_duplicate():
 
 
 @pytest.mark.asyncio
+async def test_persisted_state_update_is_durable_and_deduped():
+    """A ConversationStateUpdateEvent that *is* in the log must not be transient.
+
+    ``ConversationState.append_event`` stores these (it only skips advancing
+    HEAD), so deciding by type rather than by lookup would strip their real
+    ``seq`` and, worse, defeat the ``seq <= through_seq`` dedupe: the same
+    event would arrive once from replay and again from the buffer flush.
+    """
+    ws, log = _FakeWebSocket(), _FakeEventLog()
+    state_update = ConversationStateUpdateEvent(key="execution_status", value="running")
+    log.add(state_update)
+    through_seq = len(log) - 1
+
+    writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
+    writer.start()
+    sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
+
+    # It lands in the buffer while replay is in flight, and replay also sends
+    # it from disk — exactly one copy must reach the wire.
+    await sub(state_update)
+    assert await _replay(log, 0, through_seq + 1, writer)  # type: ignore[arg-type]
+    sub.go_live(through_seq)
+    await _drain(writer)
+    await writer.aclose()
+
+    frames = ws.frames()
+    assert [f["type"] for f in frames] == ["durable"], "sent twice, or sent transient"
+    assert frames[0]["seq"] == 0
+
+
+@pytest.mark.asyncio
+async def test_live_only_connection_keeps_events_buffered_during_subscribe():
+    """No replay ran, so nothing may be discarded as 'already replayed'.
+
+    A client that omits ``after_seq`` gets no history from disk. Events that
+    land while ``subscribe_to_events`` is still awaiting are counted by the
+    high-water mark but never sent, so deduping against that mark would drop
+    them for good — the client has no cursor to recover them with.
+    """
+    ws, log = _FakeWebSocket(), _FakeEventLog()
+    for i in range(3):
+        log.add(_msg(f"h{i}"))
+
+    writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
+    writer.start()
+    sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
+
+    # Arrived during subscribe, so its seq is below the mark the endpoint read.
+    raced = _msg("landed during subscribe")
+    log.add(raced)
+    await sub(raced)
+
+    # Live-only: the endpoint passes None because no replay happened.
+    sub.go_live(None)
+    await _drain(writer)
+    await writer.aclose()
+
+    frames = ws.frames()
+    assert [f["event"]["id"] for f in frames] == [raced.id]
+    assert frames[0]["seq"] == 3
+
+
+@pytest.mark.asyncio
 async def test_wedged_connection_drops_instead_of_blocking_the_publisher():
     """Admission is synchronous: a stuck socket must never stall the caller.
 

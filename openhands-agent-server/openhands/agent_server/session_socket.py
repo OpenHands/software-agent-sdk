@@ -32,6 +32,7 @@ to remove.
 """
 
 import asyncio
+import contextlib
 import logging
 from collections import deque
 from dataclasses import dataclass, field
@@ -240,28 +241,28 @@ class _SessionSubscriber(Subscriber[Event]):
     def _seq_of(self, event: Event) -> int | None:
         """The event's index in the log, or None if it is not persisted.
 
-        ``ConversationStateUpdateEvent`` is published but never appended — the
-        snapshot pushed by ``subscribe_to_events`` is synthesised on the fly —
-        so it is transient by construction rather than by lookup failure.
+        Decided by lookup, never by type. Most ``ConversationStateUpdateEvent``
+        *are* appended (``ConversationState.append_event`` stores them and only
+        skips advancing HEAD), so treating the type as transient would strip a
+        real ``seq`` off every live state update and, worse, defeat the
+        ``seq <= through_seq`` dedupe in ``go_live`` — the same event would
+        arrive once from replay and again from the buffer.
 
-        A lookup failure for anything else means the event was published before
-        it was appended. That is possible today because the callback that
-        publishes is composed *ahead* of the one that persists, so the index
-        may not exist yet. It degrades to a transient frame (the client still
-        renders the content, and gets the durable copy with its ``seq`` on the
-        next reconnect) and is logged, because it should not happen once
-        publish moves after persist.
+        The one genuinely unpersisted event is the snapshot
+        ``subscribe_to_events`` synthesises on connect; it is missing from the
+        log by construction, so it is expected to land here quietly. Anything
+        else missing means it was published before it was persisted, which
+        should not happen now that publish runs after persist, so it is logged.
         """
-        if isinstance(event, ConversationStateUpdateEvent):
-            return None
         try:
             return self.events.get_index(event.id)
         except KeyError:
-            logger.warning(
-                "session_socket_event_published_before_persist: kind=%s id=%s",
-                type(event).__name__,
-                event.id,
-            )
+            if not isinstance(event, ConversationStateUpdateEvent):
+                logger.warning(
+                    "session_socket_event_published_before_persist: kind=%s id=%s",
+                    type(event).__name__,
+                    event.id,
+                )
             return None
 
     def go_live(self, through_seq: int | None) -> None:
@@ -381,6 +382,20 @@ async def session_socket(
             websocket, code=1013, reason="Too many connections for this conversation"
         )
         return
+    except Exception:
+        # subscribe_to_events registers the subscriber before it builds the
+        # state snapshot and only swallows TimeoutError, so a failure here
+        # (the conversation closing, say) lands before the try/finally below
+        # is entered — without this the writer task would be left running and
+        # the socket never closed. The registration itself cannot be reclaimed
+        # from here because the id is only returned on success; that belongs in
+        # subscribe_to_events, which has the same hole for the legacy endpoint.
+        # The stranded subscriber is inert (its writer is closed, so every
+        # send is a no-op) but does hold one of the per-conversation slots.
+        logger.exception("session_socket_subscribe_failed: %s", conversation_id)
+        await writer.aclose()
+        await _safe_close_websocket(websocket, code=1011, reason="subscribe_failed")
+        return
 
     try:
         length = len(events)
@@ -389,12 +404,19 @@ async def session_socket(
         if not writer.send(SyncFrame(from_seq=after_seq, through_seq=through_seq)):
             return
 
+        replayed = False
         if after_seq is not None and through_seq is not None:
             start = max(after_seq + 1, 0)
             if not await _replay(events, start, through_seq + 1, writer):
                 return
+            replayed = True
 
-        subscriber.go_live(through_seq)
+        # Only dedupe against the mark if replay actually sent that range. A
+        # live-only client (no ``after_seq``) got nothing from disk, so passing
+        # the mark here would discard anything that landed in the buffer while
+        # ``subscribe_to_events`` was still awaiting — dropped for good, since
+        # such a client has no cursor to recover it with.
+        subscriber.go_live(through_seq if replayed else None)
 
         await _inbound_loop(conversation_id, websocket, event_service, writer)
     finally:
@@ -428,6 +450,13 @@ async def _inbound_loop(
             )
             if closed_waiter in done:
                 receiver.cancel()
+                if receiver in done:
+                    # Both finished in the same wakeup. cancel() is a no-op on
+                    # a done future, so consume its outcome here — otherwise
+                    # asyncio logs "Task exception was never retrieved" on GC
+                    # for every peer close that races the writer failing.
+                    with contextlib.suppress(Exception, asyncio.CancelledError):
+                        receiver.result()
                 return
             try:
                 data = receiver.result()
