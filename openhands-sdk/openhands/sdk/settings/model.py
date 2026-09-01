@@ -1328,6 +1328,13 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             "the control plane's meta-profile store."
         ),
     )
+    meta_profile_llms: dict[str, LLM] = Field(
+        default_factory=dict,
+        description=(
+            "Resolved LLM configurations referenced by the active meta-profile. "
+            "Cloud control planes hydrate this map for ephemeral runtimes."
+        ),
+    )
     tool_concurrency_limit: int = Field(
         default=1,
         ge=1,
@@ -1442,6 +1449,8 @@ class OpenHandsAgentSettings(AgentSettingsBase):
                 params["active_meta_profile"] = self.active_meta_profile
             if self.meta_profile:
                 params["meta_profile"] = self.meta_profile.model_dump(mode="json")
+            if self.meta_profile_llms:
+                params["meta_profile_llms"] = self.meta_profile_llms
             tools.append(Tool(name=ClassifyAndSwitchLLMTool.__name__, params=params))
 
         llm = create_subscription_llm_from_config(self.llm)

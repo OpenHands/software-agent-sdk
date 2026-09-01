@@ -301,6 +301,38 @@ def test_executor_switches_to_matched_class(
     assert conversation.agent.llm.model == "fast-model"
 
 
+def test_executor_uses_inline_cloud_llms_without_profile_store(tmp_path) -> None:
+    conversation = _make_conversation()
+    conversation._profile_store = LLMProfileStore(base_dir=tmp_path / "empty-profiles")
+    classifier = TestLLM.from_messages(
+        [Message(role="assistant", content=[TextContent(text="1")])],
+        model="classifier-model",
+        usage_id="classifier",
+    )
+    tool = ClassifyAndSwitchLLMTool.create(
+        active_meta_profile="cloud-router",
+        meta_profile=META,
+        meta_profile_llms={
+            "classifier": classifier,
+            "fast": _make_llm("cloud-fast-model", "fast"),
+            "slow": _make_llm("cloud-slow-model", "slow"),
+            "default": _make_llm("cloud-default-model", "default"),
+        },
+        meta_profile_store=MetaProfileStore(base_dir=tmp_path / "empty-meta"),
+    )[0]
+    conversation._ensure_agent_ready()
+    conversation.agent.add_runtime_tools([tool])
+
+    obs = conversation.execute_tool(
+        "classify_and_switch_llm", ClassifyAndSwitchLLMAction()
+    )
+
+    assert isinstance(obs, ClassifyAndSwitchLLMObservation)
+    assert not obs.is_error
+    assert obs.model == "fast"
+    assert conversation.agent.llm.model == "cloud-fast-model"
+
+
 def test_classifier_call_is_accounted_in_conversation_stats(
     profile_store, meta_store, monkeypatch
 ) -> None:
@@ -534,6 +566,20 @@ def test_create_agent_passes_inline_meta_profile_without_filesystem(tmp_path) ->
     assert MetaProfile.model_validate(tool.params["meta_profile"]) == (
         MetaProfile.model_validate(DIRECT_META)
     )
+
+
+def test_create_agent_passes_inline_cloud_llms() -> None:
+    inline_llm = _make_llm("cloud-model", "cloud")
+    agent = OpenHandsAgentSettings(
+        llm=_make_llm("default-model", "default"),
+        enable_classify_and_switch_llm_tool=True,
+        active_meta_profile="cloud-router",
+        meta_profile=MetaProfile.model_validate(DIRECT_META),
+        meta_profile_llms={"classifier": inline_llm},
+    ).create_agent()
+
+    tool = next(t for t in agent.tools if t.name == "ClassifyAndSwitchLLMTool")
+    assert tool.params["meta_profile_llms"]["classifier"] == inline_llm
 
 
 def test_create_agent_adds_tool_when_enabled_without_active_profile(

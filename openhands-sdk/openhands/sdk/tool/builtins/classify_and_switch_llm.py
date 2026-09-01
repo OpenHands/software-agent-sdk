@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Self
 from pydantic import Field
 from rich.text import Text
 
+from openhands.sdk.llm import LLM
+from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
 from openhands.sdk.llm.meta_profile_store import MetaProfile, MetaProfileStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.registry import register_tool
@@ -194,6 +196,7 @@ class ClassifyAndSwitchLLMExecutor(ToolExecutor):
         meta_profile_store: MetaProfileStore,
         active_meta_profile: str | None = None,
         meta_profile: MetaProfile | None = None,
+        meta_profile_llms: dict[str, LLM] | None = None,
     ) -> None:
         # Resolve the meta-profile lazily (at invocation), not at construction,
         # so a missing/renamed file under ~/.openhands/meta-profiles produces a
@@ -201,6 +204,7 @@ class ClassifyAndSwitchLLMExecutor(ToolExecutor):
         self._store = meta_profile_store
         self._active_meta_profile = active_meta_profile
         self._meta_profile = meta_profile
+        self._meta_profile_llms = meta_profile_llms or {}
 
     def _resolve_meta_profile(self) -> MetaProfile:
         """Resolve the active meta-profile, falling back to the first available.
@@ -261,9 +265,11 @@ class ClassifyAndSwitchLLMExecutor(ToolExecutor):
             classifier_llm = conversation.llm_registry.get(usage_id)
         except KeyError:
             try:
-                loaded = conversation._profile_store.load(
-                    meta.classifier_model, cipher=conversation._cipher
-                )
+                loaded = self._meta_profile_llms.get(meta.classifier_model)
+                if loaded is None:
+                    loaded = conversation._profile_store.load(
+                        meta.classifier_model, cipher=conversation._cipher
+                    )
             except (FileNotFoundError, ValueError) as exc:
                 return ClassifyAndSwitchLLMObservation.from_text(
                     text=(
@@ -272,8 +278,11 @@ class ClassifyAndSwitchLLMExecutor(ToolExecutor):
                     ),
                     is_error=True,
                 )
-            classifier_llm = loaded.model_copy(update={"usage_id": usage_id})
+            classifier_llm = create_subscription_llm_from_config(
+                loaded.model_copy(update={"usage_id": usage_id})
+            )
             conversation.llm_registry.add(classifier_llm)
+            conversation._bind_conversation_context(classifier_llm)
 
         # 2) Single classifier call over the recent conversation.
         transcript = _recent_messages_text(conversation) or "(no messages yet)"
@@ -324,7 +333,11 @@ class ClassifyAndSwitchLLMExecutor(ToolExecutor):
                 chosen_class = chosen.description
         else:
             target_profile = parse_direct_model(
-                reply, _saved_profile_names(conversation)
+                reply,
+                sorted(
+                    set(_saved_profile_names(conversation))
+                    | set(self._meta_profile_llms)
+                ),
             )
             if target_profile is None:
                 target_profile = meta.default_model
@@ -334,7 +347,15 @@ class ClassifyAndSwitchLLMExecutor(ToolExecutor):
 
         # 4) Switch the conversation to the target profile.
         try:
-            conversation.switch_profile(target_profile)
+            inline_target = self._meta_profile_llms.get(target_profile)
+            if inline_target is None:
+                conversation.switch_profile(target_profile)
+            else:
+                conversation.switch_llm(
+                    inline_target.model_copy(
+                        update={"usage_id": f"profile:{target_profile}"}
+                    )
+                )
         except FileNotFoundError:
             return ClassifyAndSwitchLLMObservation.from_text(
                 text=f"Target LLM profile '{target_profile}' was not found.",
@@ -389,13 +410,14 @@ class ClassifyAndSwitchLLMTool(
         conv_state: "ConversationState | None" = None,  # noqa: ARG003
         active_meta_profile: str | None = None,
         meta_profile: MetaProfile | dict[str, object] | None = None,
+        meta_profile_llms: dict[str, LLM | dict[str, object]] | None = None,
         meta_profile_store: MetaProfileStore | None = None,
         **params,
     ) -> Sequence[Self]:
         if params:
             raise ValueError(
                 "ClassifyAndSwitchLLMTool only accepts 'active_meta_profile', "
-                "'meta_profile', and 'meta_profile_store'."
+                "'meta_profile', 'meta_profile_llms', and 'meta_profile_store'."
             )
 
         # Meta-profile resolution is deferred to invocation time (see
@@ -408,13 +430,17 @@ class ClassifyAndSwitchLLMTool(
             if meta_profile is not None
             else None
         )
+        inline_llms = {
+            name: LLM.model_validate(llm)
+            for name, llm in (meta_profile_llms or {}).items()
+        }
         return [
             cls(
                 description=_DESCRIPTION,
                 action_type=ClassifyAndSwitchLLMAction,
                 observation_type=ClassifyAndSwitchLLMObservation,
                 executor=ClassifyAndSwitchLLMExecutor(
-                    store, active_meta_profile, inline_meta_profile
+                    store, active_meta_profile, inline_meta_profile, inline_llms
                 ),
                 annotations=ToolAnnotations(
                     readOnlyHint=False,
