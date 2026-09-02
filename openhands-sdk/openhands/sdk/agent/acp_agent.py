@@ -145,6 +145,10 @@ _ACP_CANCEL_DRAIN_TIMEOUT: float = float(
 )
 
 _ACP_AUTH_TIMEOUT: float = float(os.environ.get("ACP_AUTH_TIMEOUT", "30.0"))
+_ACP_NPX_CACHE_WARM_TIMEOUT: float = float(
+    os.environ.get("ACP_NPX_CACHE_WARM_TIMEOUT", "300")
+)
+_ACP_VERSION_RE = re.compile(r"v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)")
 
 _ACP_PROMPT_RETRY_DELAYS: tuple[float, ...] = (5.0, 15.0, 30.0)  # seconds
 
@@ -360,6 +364,69 @@ def _warn_auth_selection_failure(auth_methods: list[Any], env: dict[str, str]) -
         [m.id for m in auth_methods],
         _auth_selection_failure_reason(auth_methods, env),
     )
+
+
+def _log_acp_provider_version(agent_name: str, agent_version: str) -> None:
+    try:
+        provider = detect_acp_provider_by_agent_name(agent_name)
+        if provider is None:
+            return
+        pinned_version = None
+        for command_part in provider.default_command:
+            package, separator, version = command_part.rpartition("@")
+            if separator and package:
+                pinned_version = version
+                break
+        reported_version = next(
+            (
+                match.group(1)
+                for value in (agent_version, agent_name)
+                if (match := _ACP_VERSION_RE.search(value)) is not None
+            ),
+            None,
+        )
+        logger.info(
+            "ACP provider version: provider=%s, pinned_version=%r, "
+            "agent_name=%r, agent_version=%r, reported_version=%r",
+            provider.key,
+            pinned_version,
+            agent_name,
+            agent_version,
+            reported_version,
+        )
+        if reported_version is None:
+            logger.warning(
+                "Could not parse ACP provider version: provider=%s, "
+                "pinned_version=%r, agent_name=%r, agent_version=%r",
+                provider.key,
+                pinned_version,
+                agent_name,
+                agent_version,
+            )
+        elif pinned_version is not None and reported_version != pinned_version:
+            logger.warning(
+                "ACP provider version mismatch: provider=%s, pinned_version=%r, "
+                "reported_version=%r; provider was probably installed at runtime "
+                "via the npx fallback rather than preinstalled in the image",
+                provider.key,
+                pinned_version,
+                reported_version,
+            )
+    except Exception:
+        logger.warning(
+            "Could not verify ACP provider version: agent_name=%r, agent_version=%r",
+            agent_name,
+            agent_version,
+        )
+
+
+def _npx_package(command: list[str]) -> str | None:
+    if not command or command[0] != "npx":
+        return None
+    for arg in command[1:]:
+        if not arg.startswith("-"):
+            return arg
+    return None
 
 
 def _with_codex_base_url(
@@ -2341,6 +2408,59 @@ class ACPAgent(AgentBase):
             root = Path(state.workspace.working_dir) / ".openhands" / "acp" / subdir
         return Path(os.path.abspath(root))
 
+    def _acp_npm_cache_dir(self, state: ConversationState) -> Path:
+        if state.persistence_dir:
+            root = Path(state.persistence_dir).parent
+        else:
+            root = Path(state.workspace.working_dir) / ".openhands"
+        cache_dir = root / "npm-cache"
+        cache_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        return Path(os.path.abspath(cache_dir))
+
+    async def _warm_npx_cache(
+        self,
+        package: str,
+        provider_key: str,
+        env: dict[str, str],
+        cwd: str,
+    ) -> None:
+        logger.info(
+            "Warming ACP provider npx cache: provider=%s, package=%s; "
+            "first use may download the provider before session startup",
+            provider_key,
+            package,
+        )
+        process = await asyncio.create_subprocess_exec(
+            "npx",
+            "--yes",
+            "--prefer-offline",
+            "--package",
+            package,
+            "--",
+            "node",
+            "-e",
+            "",
+            cwd=cwd,
+            env=env,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            await asyncio.wait_for(process.wait(), timeout=_ACP_NPX_CACHE_WARM_TIMEOUT)
+        except TimeoutError as exc:
+            process.kill()
+            await process.wait()
+            raise RuntimeError(
+                "ACP provider cache warm timed out after "
+                f"{_ACP_NPX_CACHE_WARM_TIMEOUT:.0f}s for {provider_key}"
+            ) from exc
+        if process.returncode:
+            raise RuntimeError(
+                f"ACP provider cache warm failed for {provider_key} "
+                f"(exit code {process.returncode})"
+            )
+
     def _isolate_acp_data_dir(
         self, state: ConversationState, env: dict[str, str]
     ) -> None:
@@ -2666,6 +2786,22 @@ class ACPAgent(AgentBase):
         env = _with_codex_base_url(command, args, env)
 
         working_dir = str(state.workspace.working_dir)
+        provider = detect_acp_provider_by_command(self.acp_command)
+        package = _npx_package(self.acp_command)
+        if provider is not None and package is not None:
+            env["npm_config_cache"] = str(self._acp_npm_cache_dir(state))
+            try:
+                self._executor.run_async(
+                    self._warm_npx_cache(package, provider.key, env, working_dir),
+                    timeout=_ACP_NPX_CACHE_WARM_TIMEOUT + 5,
+                )
+            except Exception as error:
+                logger.warning(
+                    "ACP provider npx cache warm failed: provider=%s; "
+                    "continuing with normal startup: %s",
+                    provider.key,
+                    error,
+                )
 
         # Prior ACP session id — typically survives agent-server restarts via
         # ConversationState.agent_state (serialized into base_state.json).
@@ -2779,6 +2915,7 @@ class ACPAgent(AgentBase):
                 agent_name,
                 agent_version,
             )
+            _log_acp_provider_version(agent_name, agent_version)
 
             # Translate any configured MCP servers into ACP protocol objects,
             # gating remote (http/sse) transports on what this server advertised
