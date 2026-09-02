@@ -56,7 +56,7 @@ REPLAY_PAGE_SIZE: Final[int] = 100
 """Events read from disk per executor hop."""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class _ConnectionWriter:
     """Byte-bounded, non-blocking admission in front of a single writer task.
 
@@ -86,8 +86,7 @@ class _ConnectionWriter:
         return self.closed_event.is_set()
 
     def start(self) -> None:
-        # object.__setattr__ throughout: frozen=True forbids plain assignment.
-        object.__setattr__(self, "_task", asyncio.create_task(self._run()))
+        self._task = asyncio.create_task(self._run())
 
     def send(self, frame: SessionFrameBase) -> bool:
         """Admit one frame, never blocking. False if the connection is done."""
@@ -118,13 +117,13 @@ class _ConnectionWriter:
             return False
 
         self._queue.append((payload, size))
-        object.__setattr__(self, "_pending_bytes", self._pending_bytes + size)
+        self._pending_bytes += size
         self._wake.set()
         return True
 
     def _fail(self, reason: str) -> None:
         if not self.closed:
-            object.__setattr__(self, "drop_reason", reason)
+            self.drop_reason = reason
             self.closed_event.set()
         self._wake.set()
 
@@ -137,9 +136,7 @@ class _ConnectionWriter:
                     if self.closed:
                         return
                     payload, size = self._queue.popleft()
-                    object.__setattr__(
-                        self, "_pending_bytes", self._pending_bytes - size
-                    )
+                    self._pending_bytes -= size
                     if not _is_websocket_connected(self.websocket):
                         self._fail("disconnected")
                         return
@@ -169,7 +166,7 @@ class _ConnectionWriter:
                 pass
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class _SessionSubscriber(Subscriber[Event]):
     """Converts events to frames and hands them to the writer.
 
@@ -224,7 +221,7 @@ class _SessionSubscriber(Subscriber[Event]):
     def go_live(self, through_seq: int | None) -> None:
         """Flush the buffer, dropping anything already replayed from disk."""
         buffered = self._buffer
-        object.__setattr__(self, "_buffer", None)
+        self._buffer = None
         for event in buffered or ():
             seq = self._seq_of(event)
             if seq is not None and through_seq is not None and seq <= through_seq:
