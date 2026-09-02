@@ -574,6 +574,16 @@ def _extract_and_validate_params(
     return params
 
 
+# Kimi K3 can emit a <tool_call> wrapper with the tool name on its own line
+# instead of the prompted <function=NAME> opener (see issue #4540):
+#     <tool_call>file_editor
+#     <parameter=command>view</parameter>
+#     </tool_call>
+_TOOL_CALL_WRAPPER_PATTERN = re.compile(
+    r"<tool_call>\s*([A-Za-z_][\w.-]*)\s*\n(?=\s*<parameter=)"
+)
+
+
 def _preprocess_model_output(content: str) -> str:
     """Clean up model-specific formatting before parsing function calls.
 
@@ -589,6 +599,13 @@ def _preprocess_model_output(content: str) -> str:
     content = re.sub(r"<tool_call>\s*(?=<function=)", "", content)
     # Strip </tool_call> when it appears right after </function>
     content = re.sub(r"(?<=</function>)\s*</tool_call>", "", content)
+
+    if "<function=" not in content:
+        content, replaced = _TOOL_CALL_WRAPPER_PATTERN.subn(
+            r"<function=\1>\n", content, count=1
+        )
+        if replaced:
+            content = re.sub(r"</tool_call>(\s*)\Z", r"</function>\1", content, count=1)
     return content
 
 
