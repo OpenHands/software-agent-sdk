@@ -24,8 +24,12 @@ from openhands.agent_server.canvas_extensions.installed import (
     list_installed_canvas_extensions,
     uninstall_canvas_extension,
 )
-from openhands.agent_server.canvas_extensions.manifest import CanvasExtensionManifest
+from openhands.agent_server.canvas_extensions.manifest import (
+    MANIFEST_FILENAME,
+    CanvasExtensionManifest,
+)
 from openhands.sdk.extensions.fetch import ExtensionFetchError
+from openhands.sdk.utils.redact import redact_url_credentials
 
 
 canvas_extensions_router = APIRouter(
@@ -173,12 +177,24 @@ def install_canvas_extension_endpoint(
             status_code=409,
             detail="Canvas extension already installed. Use force=true to overwrite.",
         )
-    except ExtensionFetchError:
+    except ExtensionFetchError as e:
+        # Pass the specific reason through -- which of source/ref/repo_path is
+        # wrong is the whole diagnostic, and a generic message misattributes a
+        # bad repo_path to the source. Redacted in case a URL carried a token.
         raise HTTPException(
             status_code=400,
             detail=(
-                "Failed to fetch canvas extension source. "
-                "Check that the source is valid."
+                "Failed to fetch canvas extension source: "
+                f"{redact_url_credentials(str(e))}"
+            ),
+        )
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"No {MANIFEST_FILENAME} found at the resolved location. "
+                "Source plus Path must point at the extension's own "
+                "directory, not the repository root."
             ),
         )
     except (ValidationError, ValueError, OSError):
