@@ -49,7 +49,7 @@ describe('ACP provider credential descriptors', () => {
     ]);
     expect(codex.default_session_mode).toBe('agent-full-access');
     expect(codex.available_models.map((model) => model.id)).toEqual(
-      expect.arrayContaining(['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'])
+      expect.arrayContaining(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'])
     );
   });
 

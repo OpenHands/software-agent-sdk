@@ -324,14 +324,16 @@ _CLAUDE_MODELS: tuple[ACPModelOption, ...] = (
 # separate ``reasoning_effort`` configOption, not part of the model id, so it is
 # not encoded here. GPT-5.6 variants are rollout/account-dependent suggestions;
 # the adapter's live model list remains authoritative.
+#
+# ``gpt-5.6`` (bare), ``gpt-5.4``, and ``gpt-5.4-mini`` are dead entries the
+# live server's ``set_config_option`` rejects with "Invalid params" (#4830
+# P0-2 model-acceptance probe caught this) and have been removed; only the
+# GPT-5.6 tier's suffixed variants are live.
 _CODEX_MODELS: tuple[ACPModelOption, ...] = (
-    ACPModelOption(id="gpt-5.6", label="GPT-5.6"),
     ACPModelOption(id="gpt-5.6-sol", label="GPT-5.6 Sol"),
     ACPModelOption(id="gpt-5.6-terra", label="GPT-5.6 Terra"),
     ACPModelOption(id="gpt-5.6-luna", label="GPT-5.6 Luna"),
     ACPModelOption(id="gpt-5.5", label="GPT-5.5"),
-    ACPModelOption(id="gpt-5.4", label="GPT-5.4"),
-    ACPModelOption(id="gpt-5.4-mini", label="GPT-5.4 Mini"),
 )
 
 # Model IDs accepted by ``@google/gemini-cli --acp``. Mirrors the

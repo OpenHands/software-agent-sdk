@@ -70,7 +70,6 @@ class TestACPProviderInfo:
         assert info.supports_runtime_model_switch is True
         assert info.session_meta_key is None
         assert info.default_model == "gpt-5.5"
-        assert any(m.id == "gpt-5.6" for m in info.available_models)
         assert any(m.id == "gpt-5.6-sol" for m in info.available_models)
         assert any(m.id == "gpt-5.6-terra" for m in info.available_models)
         assert any(m.id == "gpt-5.6-luna" for m in info.available_models)
