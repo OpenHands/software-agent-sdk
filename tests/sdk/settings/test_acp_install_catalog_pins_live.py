@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import socket
 import subprocess
 
 import pytest
@@ -18,8 +19,17 @@ import pytest
 from openhands.sdk.settings.acp_install_catalog import ACP_INSTALL_CATALOG
 
 
+def _npm_registry_reachable(timeout: float = 3.0) -> bool:
+    try:
+        socket.create_connection(("registry.npmjs.org", 443), timeout=timeout).close()
+        return True
+    except OSError:
+        return False
+
+
 requires_npm = pytest.mark.skipif(
-    shutil.which("npm") is None, reason="npm not available"
+    shutil.which("npm") is None or not _npm_registry_reachable(),
+    reason="npm not available, or npm registry unreachable",
 )
 
 _ALL_PINS = [

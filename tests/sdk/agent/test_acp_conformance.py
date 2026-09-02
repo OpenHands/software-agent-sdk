@@ -18,6 +18,7 @@ skipped when unavailable.
 from __future__ import annotations
 
 import shutil
+import socket
 import time
 import uuid
 from pathlib import Path
@@ -39,8 +40,17 @@ from openhands.sdk.utils.async_executor import AsyncExecutor
 from openhands.sdk.workspace.local import LocalWorkspace
 
 
+def _npm_registry_reachable(timeout: float = 3.0) -> bool:
+    try:
+        socket.create_connection(("registry.npmjs.org", 443), timeout=timeout).close()
+        return True
+    except OSError:
+        return False
+
+
 requires_npx = pytest.mark.skipif(
-    shutil.which("npx") is None, reason="npx (Node.js) not available"
+    shutil.which("npx") is None or not _npm_registry_reachable(),
+    reason="npx (Node.js) not available, or npm registry unreachable",
 )
 
 # Syntactically valid-looking but non-functional credentials. Enough for each
