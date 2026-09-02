@@ -1,14 +1,9 @@
 {
   "claude-code": {
-    "key": "claude-code",
-    "display_name": "Claude Code",
-    "default_command": ["npx", "-y", "--prefer-offline", "@agentclientprotocol/claude-agent-acp@0.63.0"],
+    "agent_name_patterns": [
+      "claude-agent"
+    ],
     "api_key_env_var": "ANTHROPIC_API_KEY",
-    "base_url_env_var": "ANTHROPIC_BASE_URL",
-    "default_session_mode": "bypassPermissions",
-    "agent_name_patterns": ["claude-agent"],
-    "supports_set_session_model": true,
-    "session_meta_key": "claudeCode",
     "available_models": [
       {
         "id": "default",
@@ -31,22 +26,29 @@
         "label": "Claude Haiku"
       }
     ],
-    "default_model": "opus[1m]",
-    "supports_runtime_model_switch": true,
-    "file_secrets": [],
+    "base_url_env_var": "ANTHROPIC_BASE_URL",
     "binary_name": "claude-agent-acp",
-    "data_dir_env_var": "CLAUDE_CONFIG_DIR"
+    "data_dir_env_var": "CLAUDE_CONFIG_DIR",
+    "default_command": [
+      "npx",
+      "-y",
+      "--prefer-offline",
+      "@agentclientprotocol/claude-agent-acp@0.63.0"
+    ],
+    "default_model": "opus[1m]",
+    "default_session_mode": "bypassPermissions",
+    "display_name": "Claude Code",
+    "file_secrets": [],
+    "key": "claude-code",
+    "session_meta_key": "claudeCode",
+    "supports_runtime_model_switch": true,
+    "supports_set_session_model": true
   },
   "codex": {
-    "key": "codex",
-    "display_name": "Codex",
-    "default_command": ["npx", "-y", "--prefer-offline", "@agentclientprotocol/codex-acp@1.1.7"],
+    "agent_name_patterns": [
+      "codex-acp"
+    ],
     "api_key_env_var": "OPENAI_API_KEY",
-    "base_url_env_var": "OPENAI_BASE_URL",
-    "default_session_mode": "agent-full-access",
-    "agent_name_patterns": ["codex-acp"],
-    "supports_set_session_model": true,
-    "session_meta_key": null,
     "available_models": [
       {
         "id": "gpt-5.6",
@@ -77,31 +79,38 @@
         "label": "GPT-5.4 Mini"
       }
     ],
+    "base_url_env_var": "OPENAI_BASE_URL",
+    "binary_name": "codex-acp",
+    "data_dir_env_var": "CODEX_HOME",
+    "default_command": [
+      "npx",
+      "-y",
+      "--prefer-offline",
+      "@agentclientprotocol/codex-acp@1.1.7"
+    ],
     "default_model": "gpt-5.5",
-    "supports_runtime_model_switch": true,
+    "default_session_mode": "agent-full-access",
+    "display_name": "Codex",
     "file_secrets": [
       {
-        "secret_name": "CODEX_AUTH_JSON",
-        "filename": "auth.json",
-        "env_var": "CODEX_HOME",
-        "subdir": "codex",
         "env_points_to": "dir",
+        "env_var": "CODEX_HOME",
+        "filename": "auth.json",
+        "secret_name": "CODEX_AUTH_JSON",
+        "subdir": "codex",
         "warn_if_unset": []
       }
     ],
-    "binary_name": "codex-acp",
-    "data_dir_env_var": "CODEX_HOME"
+    "key": "codex",
+    "session_meta_key": null,
+    "supports_runtime_model_switch": true,
+    "supports_set_session_model": true
   },
   "gemini-cli": {
-    "key": "gemini-cli",
-    "display_name": "Gemini CLI",
-    "default_command": ["npx", "-y", "--prefer-offline", "@google/gemini-cli@0.46.0", "--acp"],
+    "agent_name_patterns": [
+      "gemini-cli"
+    ],
     "api_key_env_var": "GEMINI_API_KEY",
-    "base_url_env_var": "GEMINI_BASE_URL",
-    "default_session_mode": "default",
-    "agent_name_patterns": ["gemini-cli"],
-    "supports_set_session_model": true,
-    "session_meta_key": null,
     "available_models": [
       {
         "id": "auto",
@@ -132,19 +141,35 @@
         "label": "Gemini 2.5 Flash"
       }
     ],
+    "base_url_env_var": "GEMINI_BASE_URL",
+    "binary_name": "gemini",
+    "data_dir_env_var": "HOME",
+    "default_command": [
+      "npx",
+      "-y",
+      "--prefer-offline",
+      "@google/gemini-cli@0.46.0",
+      "--acp"
+    ],
     "default_model": "auto",
-    "supports_runtime_model_switch": true,
+    "default_session_mode": "default",
+    "display_name": "Gemini CLI",
     "file_secrets": [
       {
-        "secret_name": "GOOGLE_APPLICATION_CREDENTIALS_JSON",
-        "filename": "gcloud-credentials.json",
-        "env_var": "GOOGLE_APPLICATION_CREDENTIALS",
-        "subdir": "gemini-cli",
         "env_points_to": "file",
-        "warn_if_unset": ["GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"]
+        "env_var": "GOOGLE_APPLICATION_CREDENTIALS",
+        "filename": "gcloud-credentials.json",
+        "secret_name": "GOOGLE_APPLICATION_CREDENTIALS_JSON",
+        "subdir": "gemini-cli",
+        "warn_if_unset": [
+          "GOOGLE_CLOUD_PROJECT",
+          "GOOGLE_CLOUD_LOCATION"
+        ]
       }
     ],
-    "binary_name": "gemini",
-    "data_dir_env_var": "HOME"
+    "key": "gemini-cli",
+    "session_meta_key": null,
+    "supports_runtime_model_switch": true,
+    "supports_set_session_model": true
   }
 }
