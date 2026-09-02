@@ -246,3 +246,27 @@ def test_a_step_that_never_reaches_the_provider_opens_nothing(tmp_path):
     convo.agent.step(convo, on_event=lambda _: None)
 
     assert frames == []
+
+
+def test_a_resolved_secret_is_masked_in_the_deltas(tmp_path):
+    """The LLM stream path masked nothing before this; it does now.
+
+    Only values the registry has already resolved are masked — the snapshot
+    deliberately does not resolve a source mid-stream. In practice a secret
+    that can reach the model's output has been exported for a command first,
+    which is what puts it in that set.
+    """
+    frames: list = []
+    llm = _llm(
+        [Message(role="assistant", content=[TextContent(text="done")])],
+        ["the token is ", "hunter2"],
+    )
+    convo = _conversation(tmp_path, llm, frames)
+    convo.state.secret_registry.update_secrets({"TOKEN": "hunter2"})
+    # Resolution happens when a command references the name.
+    convo.state.secret_registry.get_secrets_as_env_vars("echo $TOKEN")
+
+    convo.agent.step(convo, on_event=lambda _: None)
+
+    streamed = "".join(f.content for f in frames if isinstance(f, StreamDelta))
+    assert streamed == "the token is <secret-hidden>"

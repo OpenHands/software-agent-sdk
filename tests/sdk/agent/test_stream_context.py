@@ -234,3 +234,30 @@ def test_a_broken_sink_does_not_fail_the_turn():
     # Including the abort in __exit__, which would otherwise replace whatever
     # exception the step is unwinding.
     assert len(forwarded) == 1
+
+
+def test_a_malformed_chunk_does_not_fail_the_turn():
+    class _Exploding:
+        @property
+        def choices(self):
+            raise ValueError("this provider payload is not what we expected")
+
+    frames: list = []
+    forwarded: list = []
+    stream = _make(frames, forwarded)
+    stream.on_chunk(_Exploding())
+
+    assert len(forwarded) == 1
+    assert frames == []
+
+
+def test_a_choice_without_a_delta_is_skipped():
+    choice = StreamingChoices(delta=Delta(role="assistant"), index=0)
+    object.__setattr__(choice, "delta", None)
+    chunk = ModelResponseStream(id="c", choices=[choice], model="test-model")
+
+    frames: list = []
+    stream = _make(frames)
+    stream.on_chunk(chunk)
+
+    assert frames == []

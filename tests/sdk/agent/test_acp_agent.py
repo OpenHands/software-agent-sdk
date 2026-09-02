@@ -2235,6 +2235,30 @@ class TestACPAgentStep:
         # The context is released with the turn.
         assert agent._stream is None
 
+    @pytest.mark.asyncio
+    async def test_astep_opens_and_retires_the_same_slot(self, tmp_path):
+        """The async entry point gets the same guarantee as the sync one."""
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        frames: list = []
+        conversation.on_stream = frames.append
+
+        async def _fake_astep(_self, _conv, _on_event, on_token=None, _prompt=None):
+            assert on_token is not None
+            on_token("streamed text")
+            raise RuntimeError("the prompt died after streaming")
+
+        with patch.object(ACPAgent, "_astep", _fake_astep):
+            with pytest.raises(RuntimeError):
+                await agent.astep(conversation, on_event=lambda _: None)
+
+        started = [f for f in frames if isinstance(f, StreamStarted)]
+        aborted = [f for f in frames if isinstance(f, StreamAborted)]
+        assert len(started) == len(aborted) == 1
+        assert aborted[0].item_id == started[0].item_id
+        assert aborted[0].reason == "RuntimeError"
+        assert agent._stream is None
+
 
 # ---------------------------------------------------------------------------
 # Async step (astep) — regression coverage for #3348
