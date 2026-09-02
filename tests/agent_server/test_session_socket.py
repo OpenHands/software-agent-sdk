@@ -11,11 +11,17 @@ from openhands.agent_server.session_protocol import MAX_FRAME_BYTES
 from openhands.agent_server.session_socket import (
     _ConnectionWriter,
     _inbound_loop,
+    _ProgressSubscriber,
     _read_page,
     _replay,
     _SessionSubscriber,
 )
 from openhands.sdk import Message, TextContent
+from openhands.sdk.agent.stream_context import (
+    StreamAborted,
+    StreamDelta,
+    StreamStarted,
+)
 from openhands.sdk.event import MessageEvent, StreamingDeltaEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 
@@ -323,3 +329,67 @@ async def test_malformed_inbound_frame_is_reported_not_raised():
     assert frame["code"] == "JSONDecodeError"
     # The loop kept going rather than unwinding.
     assert receives == 2
+
+
+@pytest.mark.asyncio
+async def test_progress_frames_reach_the_wire_with_their_identity():
+    """StreamContext's frames map onto the envelope, one for one."""
+    ws = _FakeWebSocket()
+    writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
+    writer.start()
+    sub = _ProgressSubscriber(writer)
+
+    await sub(StreamStarted(item_id="item-1", attempt=1, anchor_seq=4))
+    await sub(
+        StreamDelta(
+            item_id="item-1",
+            attempt=1,
+            order=0,
+            kind="reasoning",
+            content="thinking",
+            chunk_id="chatcmpl-9",
+            choice_index=0,
+        )
+    )
+    await sub(StreamAborted(item_id="item-1", attempt=1, reason="cancelled"))
+    await _drain(writer)
+    await writer.aclose()
+
+    started, delta, aborted = ws.frames()
+    assert started == {
+        "type": "item_started",
+        "item_id": "item-1",
+        "attempt": 1,
+        "anchor_seq": 4,
+    }
+    assert delta["type"] == "delta"
+    assert (delta["order"], delta["kind"], delta["content"]) == (
+        0,
+        "reasoning",
+        "thinking",
+    )
+    # The provider's own identity, carried through as corroboration.
+    assert (delta["chunk_id"], delta["choice_index"]) == ("chatcmpl-9", 0)
+    assert aborted["type"] == "item_aborted"
+    assert aborted["reason"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_a_dropped_progress_frame_does_not_drop_the_connection():
+    """Progress is recoverable from the durable event, so it is droppable."""
+    ws = _FakeWebSocket()
+    writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
+    writer.start()
+    sub = _ProgressSubscriber(writer)
+
+    await sub(
+        StreamDelta(
+            item_id="item-1",
+            attempt=1,
+            order=0,
+            kind="text",
+            content="x" * (MAX_FRAME_BYTES + 1),
+        )
+    )
+    await _drain(writer)
+    assert writer.closed

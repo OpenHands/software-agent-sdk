@@ -1,5 +1,6 @@
 """Secrets manager for handling sensitive data in conversations."""
 
+import re
 import time
 from collections.abc import Callable, Collection, Mapping
 from enum import Enum
@@ -218,6 +219,34 @@ class SecretRegistry(OpenHandsModel):
                 masked_text = masked_text.replace(value, "<secret-hidden>")
 
         return masked_text
+
+    def compile_output_mask(self) -> Callable[[str], str]:
+        """Return a masker over the values resolved *so far*.
+
+        For hot paths that cannot afford :meth:`mask_secrets_in_output`, which
+        resolves uncached sources first — ``get_value()`` may do blocking
+        network I/O, and on the synchronous agent path that runs under the
+        conversation state lock. The snapshot is taken once, matches in a
+        single pass, and takes no lock while masking.
+
+        A secret registered after the snapshot is not masked by it. Callers use
+        this for progress output only; the durable record still goes through
+        :meth:`mask_secrets_in_output`.
+        """
+        with self._exported_values_lock:
+            values = {value for value in self._exported_values.values() if value}
+        if not values:
+            return lambda text: text
+        # Longest first so an overlapping shorter value cannot mask half of a
+        # longer one and leave the rest in cleartext.
+        pattern = re.compile(
+            "|".join(re.escape(v) for v in sorted(values, key=len, reverse=True))
+        )
+
+        def mask(text: str) -> str:
+            return pattern.sub("<secret-hidden>", text) if text else text
+
+        return mask
 
     def mask_secrets_in_model[ModelT: BaseModel](self, model: ModelT) -> ModelT:
         """Return ``model`` with secret values masked in every nested string.

@@ -38,6 +38,14 @@ class MyCountingFailingSource(SecretSource):
         raise OSError("Secret retrieval failed")
 
 
+class MyCountingLazySource(SecretSource):
+    attempts: int = 0
+
+    def get_value(self):
+        type(self).attempts += 1
+        return "lazy-value"
+
+
 class MyRecoveringSource(SecretSource):
     fail: bool = True
 
@@ -451,3 +459,30 @@ def test_mask_secrets_retries_until_source_succeeds():
     assert secret_registry.mask_secrets_in_output("leak: recovered-value") == (
         "leak: <secret-hidden>"
     )
+
+
+def test_compile_output_mask_uses_only_already_resolved_values():
+    """The stream path cannot afford a resolve: get_value() may block on I/O."""
+    MyCountingLazySource.attempts = 0
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets(
+        {"RESOLVED": "abc123", "LAZY": MyCountingLazySource()}
+    )
+    secret_registry.get_secrets_as_env_vars("echo $RESOLVED")
+
+    mask = secret_registry.compile_output_mask()
+
+    assert mask("leak: abc123") == "leak: <secret-hidden>"
+    # The unresolved source is not consulted, so its value is not masked here.
+    assert mask("leak: lazy-value") == "leak: lazy-value"
+    assert MyCountingLazySource.attempts == 0
+
+
+def test_compile_output_mask_prefers_the_longest_overlapping_value():
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets({"SHORT": "abc", "LONG": "abc123"})
+    secret_registry.get_secrets_as_env_vars("echo $SHORT $LONG")
+
+    mask = secret_registry.compile_output_mask()
+
+    assert mask("leak: abc123") == "leak: <secret-hidden>"
