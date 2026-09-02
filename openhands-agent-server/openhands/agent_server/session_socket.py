@@ -5,11 +5,6 @@ without touching it: frames are envelopes rather than the disk record; history
 and live traffic cannot interleave; and a slow consumer cannot wedge the
 publisher, because admission is byte-bounded and only this connection's writer
 task awaits the socket.
-
-``ItemStarted`` / ``Delta`` / ``ItemAborted`` arrive over the event service's
-separate progress fan-out, never the event bus — so ``StreamingDeltaEvent`` is
-still dropped rather than forwarded, which would restore the coupling this
-endpoint removes.
 """
 
 import asyncio
@@ -190,8 +185,8 @@ class _SessionSubscriber(Subscriber[Event]):
 
     async def __call__(self, event: Event) -> None:
         if isinstance(event, StreamingDeltaEvent):
-            # Deltas never ride the durable channel; progress frames will come
-            # from StreamContext instead.
+            # Deltas never ride the durable channel; progress frames come from
+            # StreamContext, over their own fan-out.
             return
         if self._buffer is not None:
             self._buffer.append(event)

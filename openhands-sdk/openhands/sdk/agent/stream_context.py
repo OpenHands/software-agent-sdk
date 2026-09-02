@@ -17,6 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
+from openhands.sdk.llm.streaming import LLMStreamChunk
 from openhands.sdk.logger import get_logger
 
 
@@ -224,7 +225,7 @@ def _abort_reason(exc_type: type[BaseException] | None) -> str:
 
 
 def _split_chunk(
-    chunk: Any,
+    chunk: LLMStreamChunk | str,
 ) -> list[tuple[Literal["text", "reasoning"], str, str | None, int | None]]:
     """Break one token-callback payload into the deltas it carries.
 
@@ -234,17 +235,16 @@ def _split_chunk(
     if isinstance(chunk, str):
         return [("text", chunk, None, None)] if chunk else []
 
-    chunk_id = getattr(chunk, "id", None)
     out: list[tuple[Literal["text", "reasoning"], str, str | None, int | None]] = []
-    for choice in getattr(chunk, "choices", None) or ():
-        delta = getattr(choice, "delta", None)
+    for choice in chunk.choices or ():
+        delta = choice.delta
         if delta is None:
             continue
-        index = getattr(choice, "index", None)
+        # getattr, not attribute access: litellm *deletes* reasoning_content
+        # when the provider omits it, declared field or not.
         reasoning = getattr(delta, "reasoning_content", None)
         if isinstance(reasoning, str) and reasoning:
-            out.append(("reasoning", reasoning, chunk_id, index))
-        content = getattr(delta, "content", None)
-        if isinstance(content, str) and content:
-            out.append(("text", content, chunk_id, index))
+            out.append(("reasoning", reasoning, chunk.id, choice.index))
+        if isinstance(delta.content, str) and delta.content:
+            out.append(("text", delta.content, chunk.id, choice.index))
     return out
