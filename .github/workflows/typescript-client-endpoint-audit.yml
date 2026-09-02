@@ -53,13 +53,17 @@ jobs:
           # .audit/ is a dot-directory; upload-artifact@v4 skips hidden paths by default.
                   include-hidden-files: true
 
-      # Render the report into the run's job summary. This is the path that
-      # works everywhere: it needs no token, so it survives the read-only
-      # GITHUB_TOKEN a fork PR gets, and it is where a contributor whose build
-      # just went red will already be looking.
+      # Always surface the full report in the Actions run summary — the one
+      # place that works even on fork PRs, where the token cannot comment.
+      # Mirrors api-breakage.yml / agent-server-rest-api-breakage.yml /
+      # security-scan.yml, which pair this with the non-fork comment below.
             - name: Write audit report to the job summary
               if: always()
               uses: actions/github-script@v7
+              env:
+                  IS_FORK: >-
+                      ${{ github.event_name == 'pull_request'
+                      && github.event.pull_request.head.repo.full_name != github.repository }}
               with:
                   script: |
                       const fs = require('node:fs');
@@ -73,9 +77,17 @@ jobs:
                         './.github/scripts/post-typescript-endpoint-audit-report.cjs'
                       );
                       const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
-                      await core.summary
-                        .addRaw(renderEndpointAuditReport(report))
-                        .write();
+                      const summary = core.summary.addRaw(
+                        renderEndpointAuditReport(report)
+                      );
+                      if (process.env.IS_FORK === 'true') {
+                        summary.addRaw(
+                          '\n\n_Fork PR detected: sticky PR comment was skipped ' +
+                          'because the GitHub token is read-only for ' +
+                          '`pull_request` workflows from forks._\n'
+                        );
+                      }
+                      await summary.write();
 
       # Additionally post the report as a single, self-updating comment on the
       # PR. Runs even when the audit gate fails (the report is written before
