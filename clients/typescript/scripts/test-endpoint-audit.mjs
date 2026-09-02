@@ -11,7 +11,7 @@ const MONOREPO_ROOT = path.resolve(CLIENT_ROOT, '../..');
 const AUDIT_SCRIPT = path.join(CLIENT_ROOT, 'scripts/endpoint-audit.mjs');
 const require = createRequire(import.meta.url);
 const { renderEndpointAuditReport } = require(
-  path.join(MONOREPO_ROOT, '.github/scripts/post-typescript-endpoint-audit-report.cjs')
+  path.join(MONOREPO_ROOT, '.github/scripts/render-typescript-endpoint-audit-report.cjs')
 );
 const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'endpoint-audit-'));
 

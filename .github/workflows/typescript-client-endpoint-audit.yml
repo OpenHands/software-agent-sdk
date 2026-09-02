@@ -64,7 +64,7 @@ jobs:
                         return;
                       }
                       const { renderEndpointAuditReport } = require(
-                        './.github/scripts/post-typescript-endpoint-audit-report.cjs'
+                        './.github/scripts/render-typescript-endpoint-audit-report.cjs'
                       );
                       const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
                       await core.summary
