@@ -1390,6 +1390,7 @@ def test_acp_create_agent_uses_server_default_command(
     assert agent.acp_command == [
         "npx",
         "-y",
+        "--prefer-offline",
         "@agentclientprotocol/claude-agent-acp@0.63.0",
     ]
     assert agent.acp_model == "claude-opus-4-6"
@@ -1568,6 +1569,7 @@ def test_acp_resolve_command_keeps_npx_when_binary_absent(
     assert settings.resolve_acp_command() == [
         "npx",
         "-y",
+        "--prefer-offline",
         "@agentclientprotocol/codex-acp@1.1.7",
     ]
 
