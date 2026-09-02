@@ -771,14 +771,7 @@ def test_mcp_oauth_start_returns_authorization_url_and_final_state(
 def test_browser_coordinated_oauth_callback_handler_delegates_to_fastmcp(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """The override must publish the callback URL and return FastMCP's result as-is.
-
-    It used to reimplement FastMCP's callback_handler, which froze the return
-    type as a tuple. mcp 2.x expects an AuthorizationCodeResult and reads
-    `.state` off it, so the copy broke every OAuth install with
-    "'tuple' object has no attribute 'state'". Passing the base result through
-    untouched keeps this working across both contracts.
-    """
+    """Return FastMCP's result untouched; re-wrapping it broke mcp 2.x."""
     job = _MCPOAuthProbeJob(
         request=MCPTestRequest.model_validate(
             {"server": {"transport": "http", "url": "https://mcp.example.com/mcp"}}

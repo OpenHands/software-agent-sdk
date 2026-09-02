@@ -464,19 +464,11 @@ class _BrowserCoordinatedOAuth(OAuth):
         self._job.set_authorization_url(authorization_url)
 
     async def callback_handler(self):
-        """Expose callback readiness to the frontend, then defer to FastMCP.
+        """Publish the callback URL, then defer to FastMCP.
 
-        This used to reimplement FastMCP's own ``callback_handler`` so it could
-        publish the callback URL. That copy froze the return type as
-        ``tuple[str, str | None]``, which mcp 1.x unpacked but mcp 2.x rejects:
-        it expects an ``AuthorizationCodeResult`` and reads ``.state`` off it,
-        so every OAuth server install failed right after the user authorized
-        with ``'tuple' object has no attribute 'state'``. Delegating keeps the
-        return type in step with whichever fastmcp is installed, and stops the
-        RFC 9207 ``iss`` value from being dropped.
-
-        ``redirect_port`` is the only attribute read here because it is the one
-        FastMCP has exposed across every 3.x and 4.x release.
+        Reimplementing this froze the return type as a tuple, which mcp 2.x
+        rejects -- it wants an ``AuthorizationCodeResult``. Only
+        ``redirect_port`` is read: ``_callback_host`` is absent in fastmcp 3.2.0.
         """
         callback_url = f"http://localhost:{self.redirect_port}/callback"
         self._job.set_callback_ready(callback_url)
