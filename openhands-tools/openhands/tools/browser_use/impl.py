@@ -325,15 +325,10 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         self._close_lock = threading.Lock()
 
         def init_logic():
-            nonlocal headless
             executable_path = self._ensure_chromium_available()
             self._server = CustomBrowserUseServer(
                 session_timeout_minutes=session_timeout_minutes,
             )
-            if os.getenv("OH_ENABLE_VNC", "false").lower() in {"true", "1", "yes"}:
-                headless = False  # Force headless off if VNC is enabled
-                logger.info("VNC is enabled - running browser in non-headless mode")
-
             # Configure scripts to inject
             if inject_scripts:
                 self._server.set_inject_scripts(inject_scripts)
