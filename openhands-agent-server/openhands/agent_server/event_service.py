@@ -136,8 +136,7 @@ class EventService:
     _pub_sub: PubSub[Event] = field(
         default_factory=lambda: PubSub[Event](max_subscribers=50), init=False
     )
-    # Stream progress rides its own fan-out rather than the event bus: frames
-    # are not events, are never persisted and are never replayed, and only the
+    # Its own fan-out, not the event bus: frames are not events, and only the
     # session socket consumes them.
     _stream_pub_sub: PubSub[StreamProgress] = field(
         default_factory=lambda: PubSub[StreamProgress](max_subscribers=50), init=False
@@ -860,9 +859,8 @@ class EventService:
     ) -> UUID:
         """Register for stream-progress frames.
 
-        Unlike :meth:`subscribe_to_events` there is no initial push: progress
-        describes a stream in flight, and a client that connects mid-stream
-        gets the real text with the durable event instead.
+        No initial push, unlike :meth:`subscribe_to_events`: a client that
+        connects mid-stream gets the real text with the durable event.
         """
         return self._stream_pub_sub.subscribe(subscriber)
 
@@ -1097,9 +1095,8 @@ class EventService:
                 asyncio.run_coroutine_threadsafe(self._pub_sub(event), self._main_loop)
 
         def _publish_stream_progress(frame: StreamProgress) -> None:
-            # Same cross-thread hop as _publish_stream_delta: the sync agent
-            # path calls this from the run thread, the ACP bridge from the
-            # portal thread.
+            # Same cross-thread hop as _publish_stream_delta: called from the
+            # run thread, or the ACP portal thread.
             if not self._main_loop or not self._main_loop.is_running():
                 return
             with suppress(RuntimeError):  # main loop already closed during teardown

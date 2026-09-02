@@ -2555,10 +2555,8 @@ class LocalConversation(BaseConversation):
     def on_stream(self) -> StreamProgressCallbackType | None:
         """Sink for stream-progress frames, or ``None`` if nothing consumes them.
 
-        Read by the agent rather than passed to ``step``: ``StreamContext`` is
-        minted inside the agent (only it knows where the durable event is
-        built), and routing the sink through the agent signature would break
-        every third-party ``AgentBase`` subclass.
+        Read by the agent rather than passed to ``step``: a new ``step``
+        parameter would break every third-party ``AgentBase`` subclass.
         """
         return self._on_stream
 

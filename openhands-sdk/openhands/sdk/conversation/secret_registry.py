@@ -224,14 +224,9 @@ class SecretRegistry(OpenHandsModel):
         """Return a masker over the values resolved *so far*.
 
         For hot paths that cannot afford :meth:`mask_secrets_in_output`, which
-        resolves uncached sources first — ``get_value()`` may do blocking
-        network I/O, and on the synchronous agent path that runs under the
-        conversation state lock. The snapshot is taken once, matches in a
-        single pass, and takes no lock while masking.
-
-        A secret registered after the snapshot is not masked by it. Callers use
-        this for progress output only; the durable record still goes through
-        :meth:`mask_secrets_in_output`.
+        resolves uncached sources first — ``get_value()`` may block on network
+        I/O, and on the sync agent path that runs under the state lock. Masks
+        less in exchange: use it for progress, not for the durable record.
         """
         with self._exported_values_lock:
             values = {value for value in self._exported_values.values() if value}

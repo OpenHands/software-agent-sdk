@@ -6,10 +6,9 @@ and live traffic cannot interleave; and a slow consumer cannot wedge the
 publisher, because admission is byte-bounded and only this connection's writer
 task awaits the socket.
 
-``ItemStarted`` / ``Delta`` / ``ItemAborted`` come from ``StreamContext`` in
-the SDK, over the event service's separate progress fan-out. They never touch
-the event bus, so ``StreamingDeltaEvent`` is still dropped rather than
-forwarded: putting it back on the wire would restore the coupling this
+``ItemStarted`` / ``Delta`` / ``ItemAborted`` arrive over the event service's
+separate progress fan-out, never the event bus — so ``StreamingDeltaEvent`` is
+still dropped rather than forwarded, which would restore the coupling this
 endpoint removes.
 """
 
@@ -269,9 +268,8 @@ def _to_wire(frame: StreamProgress) -> SessionFrameBase:
 class _ProgressSubscriber(Subscriber[StreamProgress]):
     """Forwards stream progress straight to the writer.
 
-    No buffering and no replay boundary: progress is never replayed, and a
-    frame the writer drops costs at most a repaint — the real text arrives
-    with the durable event.
+    No buffering and no replay boundary: a dropped frame costs a repaint, and
+    the real text arrives with the durable event.
     """
 
     def __init__(self, writer: _ConnectionWriter) -> None:

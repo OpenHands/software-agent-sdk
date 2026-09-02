@@ -175,9 +175,8 @@ def clear_subclass_cache() -> None:
     DiscriminatedUnionMixin subclasses are defined.  This function exists
     for edge cases involving non-DiscriminatedUnionMixin hierarchies.
 
-    The entries are dropped rather than only superseded: a stale entry is a
-    *strong* reference to every subclass it captured, which keeps a
-    dynamically-created class alive after its registration is gone.
+    Entries are dropped, not just superseded: a stale one is a strong
+    reference to every subclass it captured.
     """
     _concrete_cache.clear()
     _checked_cache.clear()

@@ -1,8 +1,7 @@
 """The durable event a stream produces carries the id that stream minted.
 
-Covers both synchronous entry points of :class:`Agent` — the sync path streams
-too, so an async-only fix would cover half the problem — and the invariant that
-every opened slot is retired by exactly one durable event or one abort.
+Both :class:`Agent` entry points: the sync path streams too, so an async-only
+fix would cover half the problem.
 
 See https://github.com/OpenHands/software-agent-sdk/issues/4682.
 """
@@ -251,10 +250,8 @@ def test_a_step_that_never_reaches_the_provider_opens_nothing(tmp_path):
 def test_a_resolved_secret_is_masked_in_the_deltas(tmp_path):
     """The LLM stream path masked nothing before this; it does now.
 
-    Only values the registry has already resolved are masked — the snapshot
-    deliberately does not resolve a source mid-stream. In practice a secret
-    that can reach the model's output has been exported for a command first,
-    which is what puts it in that set.
+    Only already-resolved values are masked. A secret that can reach the
+    model's output was exported for a command first, which resolves it.
     """
     frames: list = []
     llm = _llm(

@@ -1,34 +1,11 @@
-"""Stream identity for one agent step.
+"""Stream identity for one agent step: mint it, stamp the deltas, close it once.
 
-A streamed turn leaves the agent on two channels: token deltas, published as
-they arrive, and the durable event, appended when the turn resolves. Nothing
-linked them, so a client had to guess which deltas belonged to which message.
+The durable event is built with the minted id, so a client retires its open
+slot on ``frame.event.id == slot.item_id``.
 
-``StreamContext`` mints the identity up front::
-
-    with StreamContext.open(conversation, on_token) as stream:
-        ...                                 # deltas reference stream.item_id
-        MessageEvent(id=stream.claim(), …)  # the message *is* the item
-
-Minting is not a write. ``Event.id`` is already client-minted in-process
-(``event/base.py``, ``default_factory=lambda: str(uuid.uuid4())``); the log
-never assigns ids, it receives events that already have one. This changes only
-*when* ``uuid4()`` runs. If the stream dies the id is simply never used and
-nothing on disk referenced it.
-
-Two invariants make the identity usable:
-
-* **Every opened stream closes.** ``__exit__`` emits exactly one
-  ``StreamAborted`` unless a durable event claimed the id, so cancellation, a
-  provider failure, a policy rejection or an unhandled exception can no longer
-  strand an open slot on a client.
-* **A stream opens lazily.** ``StreamStarted`` is emitted on the first delta,
-  not at ``open()``, so a step that never streams — an early condensation
-  return, a non-streaming model — has nothing to abort.
-
-The context is step-scoped: progress is never replayed, so there is nothing to
-keep consistent across a reconnect or a restart, and it needs no home on the
-conversation and no server-side registry of open items.
+Minting up front is safe against the append-only log because it is not a write:
+``Event.id`` is already client-minted in-process (``event/base.py``), so this
+changes only *when* ``uuid4()`` runs, and an unused id was never on disk.
 """
 
 from __future__ import annotations
@@ -52,10 +29,10 @@ logger = get_logger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class StreamStarted:
-    """A stream is opening. One per attempt, before that attempt's first token.
+    """A stream is opening. One per attempt, before its first token.
 
-    ``anchor_seq`` is the sequence number the slot sits after, so a user
-    message landing mid-stream cannot split it.
+    ``anchor_seq`` is the seq the slot sits after, so a user message landing
+    mid-stream cannot split it.
     """
 
     item_id: str
@@ -67,11 +44,8 @@ class StreamStarted:
 class StreamDelta:
     """One masked increment of a stream.
 
-    ``order`` is monotonic within (``item_id``, ``attempt``) so a client can
-    detect a gap, not repair one. ``chunk_id`` and ``choice_index`` are the
-    provider's own identity, carried through as corroboration only: litellm
-    issues a new completion id per retry attempt, so it cannot serve as the
-    durable id.
+    ``chunk_id`` is corroboration only: litellm mints a new completion id per
+    retry attempt, so it cannot identify the durable event.
     """
 
     item_id: str
@@ -141,18 +115,18 @@ class StreamContext:
         """The callback to hand the LLM, or ``None`` when nothing consumes it.
 
         ``llm.completion`` degrades a ``stream=True`` model to a non-streaming
-        call when ``on_token`` is ``None`` (#4014). Substituting an
-        unconditional wrapper here would silently take that fallback away.
+        call when ``on_token`` is ``None`` (#4014); an unconditional wrapper
+        would take that fallback away.
         """
         if self._on_token is None and self._on_stream is None:
             return None
         return self.on_chunk
 
     def on_chunk(self, chunk: Any) -> None:
-        """Forward a raw chunk downstream, then emit its stamped deltas.
+        """Forward the raw chunk downstream, then emit its stamped deltas.
 
-        The pass-through keeps ``on_token`` consumers — the CLI, the legacy
-        socket, user callbacks — receiving exactly what they receive today.
+        The pass-through is what keeps existing ``on_token`` consumers seeing
+        exactly what they see today.
         """
         if self._on_token is not None:
             self._on_token(chunk)
@@ -177,8 +151,8 @@ class StreamContext:
     def claim(self) -> str | None:
         """Take the minted id for a durable event, retiring the slot.
 
-        Returns ``None`` once the id has been taken, so a second durable event
-        in the same step keeps its own id rather than colliding.
+        ``None`` once taken, so a second durable event in the same step keeps
+        its own id rather than colliding.
         """
         if self._claimed or self._on_stream is None:
             return None
@@ -188,9 +162,8 @@ class StreamContext:
     def close(self, reason: str) -> None:
         """Emit ``StreamAborted`` unless a durable event claimed the id.
 
-        Keyed on whether the item was ever opened, not on the current attempt:
-        a retry that dies before its first token still owes the client an
-        answer for the attempt that did stream.
+        Keyed on ever-opened, not on the current attempt: a retry that dies
+        before its first token still owes an answer for the one that streamed.
         """
         if not self._opened or self._claimed:
             return
@@ -233,8 +206,8 @@ class StreamContext:
         )
 
     def _emit(self, frame: StreamProgress) -> None:
-        """Never raises: ``close()`` runs from ``__exit__``, where an escaping
-        sink error would replace the exception the step is unwinding."""
+        """Never raises: ``close()`` runs from ``__exit__``, where a sink error
+        would replace the exception the step is unwinding."""
         assert self._on_stream is not None
         try:
             self._on_stream(frame)
@@ -255,8 +228,8 @@ def _split_chunk(
 ) -> list[tuple[Literal["text", "reasoning"], str, str | None, int | None]]:
     """Break one token-callback payload into the deltas it carries.
 
-    The ACP bridge hands ``on_token`` a bare ``str`` and never enters the LLM
-    layer, which is why this lives above both rather than in ``llm.py``.
+    The ACP bridge passes a bare ``str`` and never enters the LLM layer, which
+    is why this lives above both rather than in ``llm.py``.
     """
     if isinstance(chunk, str):
         return [("text", chunk, None, None)] if chunk else []

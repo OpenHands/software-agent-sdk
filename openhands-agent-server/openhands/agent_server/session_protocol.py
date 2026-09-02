@@ -121,9 +121,8 @@ class DeltaFrame(SessionFrameBase):
     chunk_id: str | None = Field(
         default=None,
         description=(
-            "The provider's own completion id for this chunk. Corroboration "
-            "only: litellm mints a new one per retry attempt, so it cannot "
-            "identify the durable message."
+            "The provider's completion id for this chunk. Corroboration only: "
+            "litellm mints a new one per retry attempt."
         ),
     )
     choice_index: int | None = Field(
