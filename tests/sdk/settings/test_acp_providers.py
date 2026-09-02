@@ -25,6 +25,10 @@ class TestACPProviderInfo:
         for info in ACP_PROVIDERS.values():
             assert isinstance(info, ACPProviderInfo)
 
+    def test_default_commands_prefer_offline_cache(self):
+        for info in ACP_PROVIDERS.values():
+            assert info.default_command[:3] == ("npx", "-y", "--prefer-offline")
+
     def test_claude_code_metadata(self):
         info = ACP_PROVIDERS["claude-code"]
         assert info.key == "claude-code"
