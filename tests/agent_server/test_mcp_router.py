@@ -9,7 +9,6 @@ import time
 from collections.abc import Generator
 from types import SimpleNamespace
 
-import anyio
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
@@ -769,9 +768,17 @@ def test_mcp_oauth_start_returns_authorization_url_and_final_state(
     assert access_token != "oauth-access-token"
 
 
-def test_browser_coordinated_oauth_callback_handler_uses_fastmcp_callback_api(
+def test_browser_coordinated_oauth_callback_handler_delegates_to_fastmcp(
     monkeypatch: pytest.MonkeyPatch,
 ):
+    """The override must publish the callback URL and return FastMCP's result as-is.
+
+    It used to reimplement FastMCP's callback_handler, which froze the return
+    type as a tuple. mcp 2.x expects an AuthorizationCodeResult and reads
+    `.state` off it, so the copy broke every OAuth install with
+    "'tuple' object has no attribute 'state'". Passing the base result through
+    untouched keeps this working across both contracts.
+    """
     job = _MCPOAuthProbeJob(
         request=MCPTestRequest.model_validate(
             {"server": {"transport": "http", "url": "https://mcp.example.com/mcp"}}
@@ -783,48 +790,26 @@ def test_browser_coordinated_oauth_callback_handler_uses_fastmcp_callback_api(
         mcp_url="https://mcp.example.com/mcp",
         callback_port=64801,
     )
-    calls: list[dict[str, object]] = []
 
-    class FakeServer:
-        should_exit = False
+    sentinel = object()
+    seen: list[bool] = []
 
-        def __init__(self, *, result_container, result_ready):
-            self.result_container = result_container
-            self.result_ready = result_ready
-
-        async def serve(self):
-            self.result_container.code = "oauth-code"
-            self.result_container.state = "oauth-state"
-            self.result_ready.set()
-            while not self.should_exit:
-                await anyio.sleep(0.01)
-
-    def fake_create_oauth_callback_server(**kwargs):
-        calls.append(kwargs)
-        return FakeServer(
-            result_container=kwargs["result_container"],
-            result_ready=kwargs["result_ready"],
-        )
+    async def fake_base_callback_handler(self):
+        # The URL must be published before the base blocks on the callback,
+        # otherwise the frontend never learns where to send the browser.
+        seen.append(job.callback_ready.is_set())
+        return sentinel
 
     monkeypatch.setattr(
-        "openhands.agent_server.mcp_router.create_oauth_callback_server",
-        fake_create_oauth_callback_server,
+        "fastmcp.client.auth.oauth.OAuth.callback_handler",
+        fake_base_callback_handler,
     )
 
-    code, state = asyncio.run(oauth.callback_handler())
+    result = asyncio.run(oauth.callback_handler())
 
-    assert (code, state) == ("oauth-code", "oauth-state")
-    assert job.callback_ready.is_set()
+    assert result is sentinel
+    assert seen == [True]
     assert job.callback_url == "http://localhost:64801/callback"
-    assert calls == [
-        {
-            "port": 64801,
-            "server_url": "https://mcp.example.com/mcp",
-            "result_container": calls[0]["result_container"],
-            "result_ready": calls[0]["result_ready"],
-        }
-    ]
-    assert "host" not in calls[0]
 
 
 def test_mcp_oauth_callback_rejects_unknown_job(client: TestClient):
