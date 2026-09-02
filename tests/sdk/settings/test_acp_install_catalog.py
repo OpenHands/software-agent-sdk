@@ -116,6 +116,9 @@ _BINARY_NAME_BASENAME_EXEMPTIONS = {
     # @google/gemini-cli's bin is "gemini", not the package basename
     # "gemini-cli".
     "gemini-cli",
+    # @moonshot-ai/kimi-code's bin is "kimi", not the package basename
+    # "kimi-code".
+    "kimi-code",
 }
 
 

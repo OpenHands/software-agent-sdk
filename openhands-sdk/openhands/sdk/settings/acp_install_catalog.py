@@ -93,6 +93,7 @@ class ACPInstallSpec:
 CLAUDE_AGENT_ACP_VERSION = "0.63.0"
 CODEX_ACP_VERSION = "1.1.7"
 GEMINI_CLI_VERSION = "0.46.0"
+KIMI_CODE_VERSION = "0.39.1"
 
 
 ACP_INSTALL_CATALOG: Mapping[str, ACPInstallSpec] = {
@@ -115,6 +116,14 @@ ACP_INSTALL_CATALOG: Mapping[str, ACPInstallSpec] = {
         packages=(ACPPackagePin("@google/gemini-cli", GEMINI_CLI_VERSION),),
         binary_name="gemini",
         trailing_args=("--acp",),
+    ),
+    "kimi-code": ACPInstallSpec(
+        key="kimi-code",
+        # Scoped package only: the unscoped npm ``kimi-code`` is an unrelated
+        # third-party tool that also ships a ``kimi`` bin.
+        packages=(ACPPackagePin("@moonshot-ai/kimi-code", KIMI_CODE_VERSION),),
+        binary_name="kimi",
+        trailing_args=("acp",),
     ),
 }
 """Every ACP provider installable via npm. Registry membership only makes a
