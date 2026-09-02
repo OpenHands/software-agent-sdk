@@ -374,6 +374,19 @@ _CODEX_FILE_SECRETS: tuple[ACPFileSecretSpec, ...] = (
         env_points_to="dir",
     ),
 )
+_KIMI_FILE_SECRETS: tuple[ACPFileSecretSpec, ...] = (
+    # Kimi authenticates from its config file, not the environment: the ACP
+    # auth gate resolves credentials via ``provider.env`` inside config.toml
+    # and never reads ``process.env``. Verified on 0.38.0 — a session starts
+    # only when the key is inline in the file, even with KIMI_API_KEY exported.
+    ACPFileSecretSpec(
+        secret_name="KIMI_CODE_CONFIG_TOML",
+        filename="config.toml",
+        env_var="KIMI_CODE_HOME",
+        subdir="kimi-code",
+        env_points_to="dir",
+    ),
+)
 _GEMINI_FILE_SECRETS: tuple[ACPFileSecretSpec, ...] = (
     ACPFileSecretSpec(
         secret_name="GOOGLE_APPLICATION_CREDENTIALS_JSON",
@@ -474,14 +487,15 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             key="kimi-code",
             display_name="Kimi Code",
             default_command=ACP_INSTALL_CATALOG["kimi-code"].npx_command(),
-            # 0.38.0 reads these only for a provider already present in
-            # ``$KIMI_CODE_HOME/config.toml``; the ACP auth gate consults that
-            # config (or an OAuth token), never ``process.env``, so exporting
-            # the key alone still fails ``session/new`` with "Authentication
-            # required". Kimi's env-only path is ``KIMI_MODEL_NAME`` +
-            # ``KIMI_MODEL_API_KEY``, which pins one model and bypasses the
-            # picker. See #4819.
-            api_key_env_var="KIMI_API_KEY",
+            # No env-var API key: ``KIMI_API_KEY`` is read only from inside
+            # config.toml, so exporting it authenticates nothing (verified on
+            # 0.38.0, with and without a config file present). The credential
+            # is the file itself — see _KIMI_FILE_SECRETS. Kimi's env-only
+            # route is ``KIMI_MODEL_NAME`` + ``KIMI_MODEL_API_KEY``, which
+            # needs a second variable this field cannot express. See #4819.
+            api_key_env_var=None,
+            # Not an auth claim: a plain endpoint override the CLI honours as
+            # a fallback when config.toml declares no base_url.
             base_url_env_var="KIMI_BASE_URL",
             # Verified against Kimi Code CLI 0.38.0: ``session/set_mode``
             # accepts ``auto``/``yolo``/``default``/``plan``. ``yolo``
@@ -505,6 +519,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             # which it resolves against whatever provider is configured.
             available_models=(),
             default_model=None,
+            file_secrets=_KIMI_FILE_SECRETS,
             binary_name=ACP_INSTALL_CATALOG["kimi-code"].binary_name,
             # ``KIMI_CODE_HOME`` relocates the ``~/.kimi-code`` data root.
             data_dir_env_var="KIMI_CODE_HOME",

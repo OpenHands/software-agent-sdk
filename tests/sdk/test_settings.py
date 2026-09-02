@@ -1667,7 +1667,8 @@ def test_acp_api_key_env_var_maps_known_servers() -> None:
     )
     assert ACPAgentSettings(acp_server="codex").api_key_env_var == "OPENAI_API_KEY"
     assert ACPAgentSettings(acp_server="gemini-cli").api_key_env_var == "GEMINI_API_KEY"
-    assert ACPAgentSettings(acp_server="kimi-code").api_key_env_var == "KIMI_API_KEY"
+    # Kimi has no env-var API key; the credential is config.toml.
+    assert ACPAgentSettings(acp_server="kimi-code").api_key_env_var is None
     assert (
         ACPAgentSettings(acp_server="custom", acp_command=["x"]).api_key_env_var is None
     )
@@ -2198,7 +2199,8 @@ def test_acp_settings_api_key_env_var_from_registry() -> None:
     )
     assert ACPAgentSettings(acp_server="codex").api_key_env_var == "OPENAI_API_KEY"
     assert ACPAgentSettings(acp_server="gemini-cli").api_key_env_var == "GEMINI_API_KEY"
-    assert ACPAgentSettings(acp_server="kimi-code").api_key_env_var == "KIMI_API_KEY"
+    # Kimi has no env-var API key; the credential is config.toml.
+    assert ACPAgentSettings(acp_server="kimi-code").api_key_env_var is None
     assert (
         ACPAgentSettings(acp_server="custom", acp_command=["x"]).api_key_env_var is None
     )

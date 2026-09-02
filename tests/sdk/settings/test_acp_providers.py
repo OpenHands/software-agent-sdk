@@ -107,7 +107,7 @@ class TestACPProviderInfo:
         assert info.default_command[:3] == ("npx", "-y", "--prefer-offline")
         assert "@moonshot-ai/kimi-code@" in info.default_command[3]
         assert info.default_command[4] == "acp"
-        assert info.api_key_env_var == "KIMI_API_KEY"
+        assert info.api_key_env_var is None
         assert info.base_url_env_var == "KIMI_BASE_URL"
         assert info.default_session_mode == "yolo"
         assert "kimi" in info.agent_name_patterns
@@ -122,9 +122,13 @@ class TestACPProviderInfo:
         # The CLI's ACP binary is just ``kimi``; ``acp`` is a trailing arg.
         assert info.binary_name == "kimi"
         assert info.data_dir_env_var == "KIMI_CODE_HOME"
-        # Subscription credentials live under ~/.kimi-code/credentials/ in a
-        # nested layout the file-secret spec cannot express yet.
-        assert info.file_secrets == ()
+        # The credential is config.toml materialised into KIMI_CODE_HOME —
+        # the env var authenticates nothing on its own.
+        assert [s.secret_name for s in info.file_secrets] == ["KIMI_CODE_CONFIG_TOML"]
+        spec = info.file_secrets[0]
+        assert spec.filename == "config.toml"
+        assert spec.env_var == "KIMI_CODE_HOME"
+        assert spec.env_points_to == "dir"
 
     def test_provider_info_is_frozen(self):
         info = ACP_PROVIDERS["claude-code"]
@@ -404,13 +408,15 @@ class TestACPFileSecrets:
         assert {s.secret_name for s in specs} == {
             "CODEX_AUTH_JSON",
             "GOOGLE_APPLICATION_CREDENTIALS_JSON",
+            "KIMI_CODE_CONFIG_TOML",
         }
         # Deterministic concatenation in ACP_PROVIDERS registration order
-        # (codex before gemini-cli) — downstream callers can rely on a stable
-        # ordering of the built-in specs.
+        # (codex, gemini-cli, kimi-code) — downstream callers can rely on a
+        # stable ordering of the built-in specs.
         assert specs == (
             ACP_PROVIDERS["codex"].file_secrets
             + ACP_PROVIDERS["gemini-cli"].file_secrets
+            + ACP_PROVIDERS["kimi-code"].file_secrets
         )
 
     def test_file_secret_subdirs_are_unique_across_providers(self):

@@ -176,7 +176,7 @@
     "agent_name_patterns": [
       "kimi"
     ],
-    "api_key_env_var": "KIMI_API_KEY",
+    "api_key_env_var": null,
     "available_models": [],
     "base_url_env_var": "KIMI_BASE_URL",
     "binary_name": "kimi",
@@ -191,7 +191,16 @@
     "default_model": null,
     "default_session_mode": "yolo",
     "display_name": "Kimi Code",
-    "file_secrets": [],
+    "file_secrets": [
+      {
+        "env_points_to": "dir",
+        "env_var": "KIMI_CODE_HOME",
+        "filename": "config.toml",
+        "secret_name": "KIMI_CODE_CONFIG_TOML",
+        "subdir": "kimi-code",
+        "warn_if_unset": []
+      }
+    ],
     "key": "kimi-code",
     "session_meta_key": null,
     "supports_runtime_model_switch": true,
