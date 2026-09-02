@@ -146,5 +146,39 @@
     ],
     "binary_name": "gemini",
     "data_dir_env_var": "HOME"
+  },
+  "kimi-code": {
+    "key": "kimi-code",
+    "display_name": "Kimi Code",
+    "default_command": ["npx", "-y", "--prefer-offline", "@moonshot-ai/kimi-code@0.39.1", "acp"],
+    "api_key_env_var": "KIMI_API_KEY",
+    "base_url_env_var": "KIMI_BASE_URL",
+    "default_session_mode": "yolo",
+    "agent_name_patterns": ["kimi"],
+    "supports_set_session_model": true,
+    "session_meta_key": null,
+    "available_models": [
+      {
+        "id": "kimi-code/kimi-for-coding",
+        "label": "K2.7 Coding"
+      },
+      {
+        "id": "kimi-code/kimi-for-coding-highspeed",
+        "label": "K2.7 Coding Highspeed"
+      },
+      {
+        "id": "kimi-code/k3",
+        "label": "K3"
+      },
+      {
+        "id": "kimi-code/k3-256k",
+        "label": "K3-256k"
+      }
+    ],
+    "default_model": "kimi-code/kimi-for-coding",
+    "supports_runtime_model_switch": true,
+    "file_secrets": [],
+    "binary_name": "kimi",
+    "data_dir_env_var": "KIMI_CODE_HOME"
   }
 }

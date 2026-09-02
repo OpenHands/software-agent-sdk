@@ -5,6 +5,7 @@ from openhands.sdk.settings.acp_providers import (
     CLAUDE_AGENT_ACP_VERSION,
     CODEX_ACP_VERSION,
     GEMINI_CLI_VERSION,
+    KIMI_CODE_VERSION,
 )
 
 
@@ -35,6 +36,7 @@ _REGISTRY_ACP_PACKAGES = {
     "claude-code": ("@agentclientprotocol/claude-agent-acp", CLAUDE_AGENT_ACP_VERSION),
     "codex": ("@agentclientprotocol/codex-acp", CODEX_ACP_VERSION),
     "gemini-cli": ("@google/gemini-cli", GEMINI_CLI_VERSION),
+    "kimi-code": ("@moonshot-ai/kimi-code", KIMI_CODE_VERSION),
 }
 
 

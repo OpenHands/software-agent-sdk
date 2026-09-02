@@ -102,9 +102,9 @@ class TestACPProviderInfo:
         assert info.display_name == "Kimi Code"
         # Scoped package only: the unscoped npm ``kimi-code`` is a third-party
         # tool that also ships a ``kimi`` bin.
-        assert info.default_command[0] == "npx"
-        assert "@moonshot-ai/kimi-code@" in info.default_command[2]
-        assert info.default_command[3] == "acp"
+        assert info.default_command[:3] == ("npx", "-y", "--prefer-offline")
+        assert "@moonshot-ai/kimi-code@" in info.default_command[3]
+        assert info.default_command[4] == "acp"
         assert info.api_key_env_var == "KIMI_API_KEY"
         assert info.base_url_env_var == "KIMI_BASE_URL"
         assert info.default_session_mode == "yolo"

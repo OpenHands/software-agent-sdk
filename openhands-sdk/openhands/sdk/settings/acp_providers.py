@@ -509,9 +509,17 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             default_command=(
                 "npx",
                 "-y",
+                "--prefer-offline",
                 f"@moonshot-ai/kimi-code@{KIMI_CODE_VERSION}",
                 "acp",
             ),
+            # 0.39.1 reads these only for a provider already present in
+            # ``$KIMI_CODE_HOME/config.toml``; the ACP auth gate consults that
+            # config (or an OAuth token), never ``process.env``, so exporting
+            # the key alone still fails ``session/new`` with "Authentication
+            # required". Kimi's env-only path is ``KIMI_MODEL_NAME`` +
+            # ``KIMI_MODEL_API_KEY``, which pins one model and bypasses the
+            # picker. See #4819.
             api_key_env_var="KIMI_API_KEY",
             base_url_env_var="KIMI_BASE_URL",
             # Verified against Kimi Code CLI 0.39.1: ``session/set_mode``
