@@ -39,7 +39,6 @@ from openhands.agent_server.dependencies import (
     check_workspace_session,
 )
 from openhands.agent_server.desktop_router import desktop_router
-from openhands.agent_server.desktop_service import get_desktop_service
 from openhands.agent_server.event_router import event_router
 from openhands.agent_server.file_router import file_router
 from openhands.agent_server.git_router import git_router
@@ -167,7 +166,6 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
             emit_server_started()
 
         vscode_service = get_vscode_service()
-        desktop_service = get_desktop_service()
         tool_preload_service = get_tool_preload_service()
 
         # Define async functions for starting each service
@@ -183,18 +181,6 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
             else:
                 logger.info("VSCode service is disabled")
 
-        async def start_desktop_service():
-            if desktop_service is not None:
-                desktop_started = await desktop_service.start()
-                if desktop_started:
-                    logger.info("Desktop service started successfully")
-                else:
-                    logger.warning(
-                        "Desktop service failed to start, continuing without desktop"
-                    )
-            else:
-                logger.info("Desktop service is disabled")
-
         async def start_tool_preload_service():
             if tool_preload_service is not None:
                 tool_preload_started = await tool_preload_service.start()
@@ -208,7 +194,6 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         # Start all services concurrently
         results = await asyncio.gather(
             start_vscode_service(),
-            start_desktop_service(),
             start_tool_preload_service(),
             return_exceptions=True,
         )
@@ -231,17 +216,12 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
                 if vscode_service is not None:
                     await vscode_service.stop()
 
-            async def stop_desktop_service():
-                if desktop_service is not None:
-                    await desktop_service.stop()
-
             async def stop_tool_preload_service():
                 if tool_preload_service is not None:
                     await tool_preload_service.stop()
 
             await asyncio.gather(
                 stop_vscode_service(),
-                stop_desktop_service(),
                 stop_tool_preload_service(),
                 return_exceptions=True,
             )
