@@ -213,6 +213,8 @@ class TestDetectACPProviderByCommand:
         assert info.key == "codex"
 
     def test_detects_kimi_code_by_command(self):
+        # Deliberately not the pinned version: detection matches on package
+        # name, so a client may send any version.
         info = detect_acp_provider_by_command(
             ["npx", "-y", "@moonshot-ai/kimi-code@0.39.1", "acp"]
         )

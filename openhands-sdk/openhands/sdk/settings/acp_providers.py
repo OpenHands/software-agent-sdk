@@ -474,7 +474,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             key="kimi-code",
             display_name="Kimi Code",
             default_command=ACP_INSTALL_CATALOG["kimi-code"].npx_command(),
-            # 0.39.1 reads these only for a provider already present in
+            # 0.38.0 reads these only for a provider already present in
             # ``$KIMI_CODE_HOME/config.toml``; the ACP auth gate consults that
             # config (or an OAuth token), never ``process.env``, so exporting
             # the key alone still fails ``session/new`` with "Authentication
@@ -483,7 +483,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             # picker. See #4819.
             api_key_env_var="KIMI_API_KEY",
             base_url_env_var="KIMI_BASE_URL",
-            # Verified against Kimi Code CLI 0.39.1: ``session/set_mode``
+            # Verified against Kimi Code CLI 0.38.0: ``session/set_mode``
             # accepts ``auto``/``yolo``/``default``/``plan``. ``yolo``
             # auto-approves tool calls while still allowing question
             # elicitation; ``auto`` would suppress questions entirely.
@@ -497,7 +497,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             # ids are a property of the credential, not the plan tier: an
             # account login offers ``kimi-code/*`` aliases, while a
             # config.toml provider offers whatever alias the user named
-            # (verified on 0.39.1 — the ``model`` select returned the
+            # (verified on 0.38.0 — the ``model`` select returned the
             # user-chosen key). A static list would therefore be wrong, not
             # merely incomplete, for anyone not on an account login. Clients
             # render the picker from the live session's model select instead;

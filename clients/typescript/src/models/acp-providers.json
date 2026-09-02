@@ -185,7 +185,7 @@
       "npx",
       "-y",
       "--prefer-offline",
-      "@moonshot-ai/kimi-code@0.39.1",
+      "@moonshot-ai/kimi-code@0.38.0",
       "acp"
     ],
     "default_model": null,
