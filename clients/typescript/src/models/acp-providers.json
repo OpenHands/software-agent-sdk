@@ -177,24 +177,7 @@
       "kimi"
     ],
     "api_key_env_var": "KIMI_API_KEY",
-    "available_models": [
-      {
-        "id": "kimi-code/kimi-for-coding",
-        "label": "K2.7 Coding"
-      },
-      {
-        "id": "kimi-code/kimi-for-coding-highspeed",
-        "label": "K2.7 Coding Highspeed"
-      },
-      {
-        "id": "kimi-code/k3",
-        "label": "K3"
-      },
-      {
-        "id": "kimi-code/k3-256k",
-        "label": "K3-256k"
-      }
-    ],
+    "available_models": [],
     "base_url_env_var": "KIMI_BASE_URL",
     "binary_name": "kimi",
     "data_dir_env_var": "KIMI_CODE_HOME",
@@ -205,7 +188,7 @@
       "@moonshot-ai/kimi-code@0.39.1",
       "acp"
     ],
-    "default_model": "kimi-code/kimi-for-coding",
+    "default_model": null,
     "default_session_mode": "yolo",
     "display_name": "Kimi Code",
     "file_secrets": [],

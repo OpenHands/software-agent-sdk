@@ -114,12 +114,11 @@ class TestACPProviderInfo:
         assert info.supports_set_session_model is True
         assert info.supports_runtime_model_switch is True
         assert info.session_meta_key is None
-        assert info.default_model == "kimi-code/kimi-for-coding"
-        models = {model.id: model.label for model in info.available_models}
-        assert models["kimi-code/kimi-for-coding"] == "K2.7 Coding"
-        assert models["kimi-code/kimi-for-coding-highspeed"] == "K2.7 Coding Highspeed"
-        assert models["kimi-code/k3"] == "K3"
-        assert models["kimi-code/k3-256k"] == "K3-256k"
+        # Model ids follow the credential, not the plan tier, so nothing is
+        # curated and the CLI resolves its own default. See
+        # _UNCURATED_MODEL_PROVIDERS.
+        assert info.available_models == ()
+        assert info.default_model is None
         # The CLI's ACP binary is just ``kimi``; ``acp`` is a trailing arg.
         assert info.binary_name == "kimi"
         assert info.data_dir_env_var == "KIMI_CODE_HOME"
@@ -286,12 +285,36 @@ class TestProviderRegistryConsistency:
         assert set(get_args(ACPServerKind)) == set(ACP_PROVIDERS) | {"custom"}
 
 
+# Providers whose model ids depend on which credential the user supplies, so no
+# static list can be correct. Not the same as plan-tier variance, which the
+# curated lists already tolerate (they are suggestions, not access checks).
+_UNCURATED_MODEL_PROVIDERS = {
+    # An account login offers ``kimi-code/*`` aliases; a config.toml provider
+    # offers whatever alias the user named. A static list would be wrong, not
+    # merely incomplete, for anyone not on an account login.
+    "kimi-code",
+}
+
+
 class TestProviderModelLists:
     """Verify the curated ``available_models`` / ``default_model`` fields."""
 
     def test_every_builtin_provider_has_available_models(self):
         for key, info in ACP_PROVIDERS.items():
+            if key in _UNCURATED_MODEL_PROVIDERS:
+                assert not info.available_models, (
+                    f"{key}: now curates models — remove it from "
+                    "_UNCURATED_MODEL_PROVIDERS"
+                )
+                assert info.default_model is None, (
+                    f"{key}: an uncurated provider must leave default_model "
+                    "None so the CLI resolves its own default"
+                )
+                continue
             assert info.available_models, f"{key}: available_models must not be empty"
+
+    def test_every_uncurated_provider_is_a_real_registry_key(self):
+        assert _UNCURATED_MODEL_PROVIDERS <= set(ACP_PROVIDERS)
 
     def test_available_models_entries_are_model_options(self):
         for info in ACP_PROVIDERS.values():

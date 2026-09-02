@@ -386,22 +386,6 @@ _GEMINI_FILE_SECRETS: tuple[ACPFileSecretSpec, ...] = (
 )
 
 
-# Model ids accepted by ``kimi acp`` (Kimi Code CLI). Mirrors the ``model``
-# configOptions select reported at ``session/new`` on the pinned CLI version
-# (Kimi Code CLI 0.39.1): the bare ``kimi-code/*`` entries are the models
-# available to a Kimi account login. A custom ``acp_model`` outside this list
-# (e.g. a third-party provider alias) is still allowed; the CLI validates the
-# selection against its live select at session creation.
-_KIMI_MODELS: tuple[ACPModelOption, ...] = (
-    ACPModelOption(id="kimi-code/kimi-for-coding", label="K2.7 Coding"),
-    ACPModelOption(
-        id="kimi-code/kimi-for-coding-highspeed", label="K2.7 Coding Highspeed"
-    ),
-    ACPModelOption(id="kimi-code/k3", label="K3"),
-    ACPModelOption(id="kimi-code/k3-256k", label="K3-256k"),
-)
-
-
 # Pinned npm package/version and CLI-invocation shape for each built-in
 # launcher now lives in ACP_INSTALL_CATALOG (openhands.sdk.settings.
 # acp_install_catalog) — a dependency-free module also consumed directly by
@@ -509,8 +493,18 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             supports_set_session_model=True,
             supports_runtime_model_switch=True,
             session_meta_key=None,
-            available_models=_KIMI_MODELS,
-            default_model="kimi-code/kimi-for-coding",
+            # Deliberately uncurated. Unlike the other three, Kimi's model
+            # ids are a property of the credential, not the plan tier: an
+            # account login offers ``kimi-code/*`` aliases, while a
+            # config.toml provider offers whatever alias the user named
+            # (verified on 0.39.1 — the ``model`` select returned the
+            # user-chosen key). A static list would therefore be wrong, not
+            # merely incomplete, for anyone not on an account login. Clients
+            # render the picker from the live session's model select instead;
+            # ``default_model=None`` leaves the CLI to pick its own default,
+            # which it resolves against whatever provider is configured.
+            available_models=(),
+            default_model=None,
             binary_name=ACP_INSTALL_CATALOG["kimi-code"].binary_name,
             # ``KIMI_CODE_HOME`` relocates the ``~/.kimi-code`` data root.
             data_dir_env_var="KIMI_CODE_HOME",
