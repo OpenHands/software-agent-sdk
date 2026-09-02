@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import MappingProxyType
+from typing import get_args
 
 import pytest
 
@@ -15,6 +16,7 @@ from openhands.sdk.settings.acp_providers import (
     detect_acp_provider_by_command,
     get_acp_provider,
 )
+from openhands.sdk.settings.model import ACPServerKind
 
 
 class TestACPProviderInfo:
@@ -158,8 +160,9 @@ class TestDetectACPProviderByCommand:
     def test_detects_each_provider_from_default_command(self):
         for key, info in ACP_PROVIDERS.items():
             detected = detect_acp_provider_by_command(list(info.default_command))
-            assert detected is not None, key
-            assert detected.key == key
+            # Identity, not just a matching key: detect_acp_provider_by_command
+            # must resolve back to the very same ACP_PROVIDERS entry.
+            assert detected is info, key
 
     def test_tolerates_version_pin(self):
         info = detect_acp_provider_by_command(
@@ -228,6 +231,14 @@ class TestProviderRegistryConsistency:
                 assert detected.key == key, (
                     f"pattern {pattern!r} matched {detected.key!r}, expected {key!r}"
                 )
+
+    def test_acp_server_kind_matches_registry_keys(self):
+        # ACPServerKind (the ACPAgentSettings.acp_server discriminator) is a
+        # hand-maintained Literal, not derived from ACP_PROVIDERS — a provider
+        # added to one without the other would either be unselectable via
+        # settings (Literal missing it) or unrecognized at runtime (registry
+        # missing it). "custom" is the one non-registry value it also accepts.
+        assert set(get_args(ACPServerKind)) == set(ACP_PROVIDERS) | {"custom"}
 
 
 class TestProviderModelLists:
@@ -331,6 +342,15 @@ class TestACPFileSecrets:
             ACP_PROVIDERS["codex"].file_secrets
             + ACP_PROVIDERS["gemini-cli"].file_secrets
         )
+
+    def test_file_secret_subdirs_are_unique_across_providers(self):
+        # Each spec's subdir is a folder under the shared per-conversation
+        # acp/ root (see ACPFileSecretSpec.subdir); a collision would let two
+        # providers' credential files overwrite each other.
+        subdirs = [
+            spec.subdir for info in ACP_PROVIDERS.values() for spec in info.file_secrets
+        ]
+        assert len(subdirs) == len(set(subdirs)), subdirs
 
     def test_file_secret_spec_is_frozen(self):
         from pydantic import ValidationError

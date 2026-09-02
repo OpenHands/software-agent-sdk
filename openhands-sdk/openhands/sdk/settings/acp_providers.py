@@ -40,6 +40,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from openhands.sdk.settings.acp_install_catalog import (
+    ACP_INSTALL_CATALOG,
+    CLAUDE_AGENT_ACP_VERSION as CLAUDE_AGENT_ACP_VERSION,
+    CODEX_ACP_VERSION as CODEX_ACP_VERSION,
+    GEMINI_CLI_VERSION as GEMINI_CLI_VERSION,
+)
+
 
 @dataclass(frozen=True)
 class ACPModelOption:
@@ -378,21 +385,16 @@ _GEMINI_FILE_SECRETS: tuple[ACPFileSecretSpec, ...] = (
 )
 
 
-# Pinned npm versions for the built-in ACP launchers. Keep in sync with the
-# `npm install -g` line in
-# openhands-agent-server/openhands/agent_server/docker/Dockerfile — a bump must
-# edit both. The pin constrains the native (no pre-installed binary) path, where
-# the bare `npx -y <pkg>` would otherwise resolve npm `latest` at launch under a
-# permission-disabling session mode. In the image the binary rewrite in
-# `ACPAgentSettings.resolve_acp_command` runs the pinned `binary_name` instead,
-# so the `@version` suffix is a no-op there.
+# Pinned npm package/version and CLI-invocation shape for each built-in
+# launcher now lives in ACP_INSTALL_CATALOG (openhands.sdk.settings.
+# acp_install_catalog) — a dependency-free module also consumed directly by
+# the agent-server Dockerfile's `acp-providers` build stage. A version bump
+# only needs to happen there; `default_command`/`binary_name` below are
+# derived from it so both stay in sync automatically.
 #
 # claude-agent-acp 0.44+ / codex-acp select the model via a ``model``
 # ``configOptions`` entry (and retain the legacy ``session/set_model``
 # extension); the SDK detects which mechanism each session advertises.
-CLAUDE_AGENT_ACP_VERSION = "0.63.0"
-CODEX_ACP_VERSION = "1.1.7"
-GEMINI_CLI_VERSION = "0.46.0"
 
 
 ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
@@ -400,12 +402,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
         "claude-code": ACPProviderInfo(
             key="claude-code",
             display_name="Claude Code",
-            default_command=(
-                "npx",
-                "-y",
-                "--prefer-offline",
-                f"@agentclientprotocol/claude-agent-acp@{CLAUDE_AGENT_ACP_VERSION}",
-            ),
+            default_command=ACP_INSTALL_CATALOG["claude-code"].npx_command(),
             api_key_env_var="ANTHROPIC_API_KEY",
             base_url_env_var="ANTHROPIC_BASE_URL",
             default_session_mode="bypassPermissions",
@@ -424,18 +421,13 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             available_models=_CLAUDE_MODELS,
             # The CLI's own default (model configOptions ``currentValue``).
             default_model="opus[1m]",
-            binary_name="claude-agent-acp",
+            binary_name=ACP_INSTALL_CATALOG["claude-code"].binary_name,
             data_dir_env_var="CLAUDE_CONFIG_DIR",
         ),
         "codex": ACPProviderInfo(
             key="codex",
             display_name="Codex",
-            default_command=(
-                "npx",
-                "-y",
-                "--prefer-offline",
-                f"@agentclientprotocol/codex-acp@{CODEX_ACP_VERSION}",
-            ),
+            default_command=ACP_INSTALL_CATALOG["codex"].npx_command(),
             api_key_env_var="OPENAI_API_KEY",
             base_url_env_var="OPENAI_BASE_URL",
             default_session_mode="agent-full-access",
@@ -446,19 +438,13 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             available_models=_CODEX_MODELS,
             default_model="gpt-5.5",
             file_secrets=_CODEX_FILE_SECRETS,
-            binary_name="codex-acp",
+            binary_name=ACP_INSTALL_CATALOG["codex"].binary_name,
             data_dir_env_var="CODEX_HOME",
         ),
         "gemini-cli": ACPProviderInfo(
             key="gemini-cli",
             display_name="Gemini CLI",
-            default_command=(
-                "npx",
-                "-y",
-                "--prefer-offline",
-                f"@google/gemini-cli@{GEMINI_CLI_VERSION}",
-                "--acp",
-            ),
+            default_command=ACP_INSTALL_CATALOG["gemini-cli"].npx_command(),
             api_key_env_var="GEMINI_API_KEY",
             base_url_env_var="GEMINI_BASE_URL",
             # gemini-cli 0.46.0 rejects ``set_session_mode("yolo")`` at session
@@ -478,7 +464,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             # 0.46.0 ``availableModels``.
             default_model="auto",
             file_secrets=_GEMINI_FILE_SECRETS,
-            binary_name="gemini",
+            binary_name=ACP_INSTALL_CATALOG["gemini-cli"].binary_name,
             # Gemini CLI has no dedicated config-dir var; it hard-codes
             # ``~/.gemini`` (ignoring XDG), so only HOME relocates its state.
             data_dir_env_var="HOME",
