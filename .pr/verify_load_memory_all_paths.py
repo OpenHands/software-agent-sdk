@@ -118,25 +118,62 @@ async def main():
         assert content is not None and "propagated correctly" in content
         print("PASS\n")
 
-        print("=== Part B: does the real settings store reach the launched agent? ===")
-        for label, kwargs in [
-            ("agent", {"agent": make_agent()}),
+        print(
+            "=== Part B: does a real, on-disk preference reach the "
+            "launched agent, both ways? ==="
+        )
+        cases = [
+            (
+                "on",
+                True,
+                PersistedSettings(
+                    agent_settings=OpenHandsAgentSettings(
+                        agent_context=AgentContext(load_memory=True)
+                    )
+                ),
+            ),
+            (
+                "off",
+                False,
+                PersistedSettings(
+                    agent_settings=OpenHandsAgentSettings(
+                        agent_context=AgentContext(load_memory=False)
+                    )
+                ),
+            ),
+        ]
+        shapes = [
+            ("agent", lambda: {"agent": make_agent()}),
             (
                 "agent_settings",
-                {
+                lambda: {
                     "agent_settings": {
                         "agent_kind": "openhands",
                         "llm": {"model": "gpt-4o", "usage_id": "llm"},
                     }
                 },
             ),
-        ]:
-            agent = await launch_and_get_agent(workspace, **kwargs)
-            ok = agent.agent_context is not None and agent.agent_context.load_memory
-            print(f"{label:15s} -> agent_context.load_memory = {ok}")
-            assert ok, f"{label} did not inherit the persisted preference"
+        ]
 
-    print("\nAll checks passed.")
+        for case_label, expected, persisted in cases:
+            reset_stores()
+            get_settings_store().save(persisted)
+            for shape_label, kwargs_fn in shapes:
+                agent = await launch_and_get_agent(workspace, **kwargs_fn())
+                actual = bool(
+                    agent.agent_context is not None and agent.agent_context.load_memory
+                )
+                status = "PASS" if actual == expected else "FAIL"
+                print(
+                    f"[{status}] preference={case_label:3s} "
+                    f"shape={shape_label:15s} -> load_memory={actual}"
+                )
+                assert actual == expected, (
+                    f"{shape_label} with preference {case_label} expected "
+                    f"load_memory={expected}, got {actual}"
+                )
+
+    print("\nAll checks passed — both directions, both shapes.")
 
 
 if __name__ == "__main__":
