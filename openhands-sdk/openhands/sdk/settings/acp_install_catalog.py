@@ -167,9 +167,12 @@ def render_docker_install_plan(
 def _main(argv: list[str] | None = None) -> int:
     """CLI entry point used by the Dockerfile's ``acp-providers`` build stage.
 
-    Prints a shell-``eval``-able plan (``PACKAGES=...`` / ``WRAPPER_BINS=...``)
+    Prints a shell-``eval``-able plan (``PACKAGES="..."`` / ``WRAPPER_BINS="..."``)
     for the comma-separated provider keys in ``providers`` (empty string installs
-    none).
+    none). Values are double-quoted: without quotes, ``eval`` re-tokenizes each
+    line on whitespace, so a multi-package ``PACKAGES=a b c`` would parse as
+    "assign PACKAGES=a, then run command b with arg c" instead of one
+    space-separated assignment. Package/bin names never contain a ``"``.
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -182,8 +185,8 @@ def _main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 1
-    print("PACKAGES=" + " ".join(packages))
-    print("WRAPPER_BINS=" + " ".join(wrapper_bins))
+    print(f'PACKAGES="{" ".join(packages)}"')
+    print(f'WRAPPER_BINS="{" ".join(wrapper_bins)}"')
     return 0
 
 

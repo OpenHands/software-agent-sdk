@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 
@@ -173,17 +174,17 @@ class TestACPInstallCatalogCLI:
         assert code == 0
         out = capsys.readouterr().out
         assert out.splitlines() == [
-            "PACKAGES=@agentclientprotocol/claude-agent-acp@"
+            'PACKAGES="@agentclientprotocol/claude-agent-acp@'
             f"{CLAUDE_AGENT_ACP_VERSION} @agentclientprotocol/codex-acp@"
-            f"{CODEX_ACP_VERSION}",
-            "WRAPPER_BINS=claude-agent-acp codex-acp",
+            f'{CODEX_ACP_VERSION}"',
+            'WRAPPER_BINS="claude-agent-acp codex-acp"',
         ]
 
     def test_empty_string_installs_nothing(self, capsys):
         code = _main([""])
         assert code == 0
         out = capsys.readouterr().out
-        assert out.splitlines() == ["PACKAGES=", "WRAPPER_BINS="]
+        assert out.splitlines() == ['PACKAGES=""', 'WRAPPER_BINS=""']
 
     def test_unknown_provider_fails_clearly(self, capsys):
         code = _main(["bogus"])
@@ -204,6 +205,33 @@ class TestACPInstallCatalogCLI:
         )
         assert result.returncode == 0, result.stderr
         assert result.stdout.splitlines() == [
-            f"PACKAGES=@agentclientprotocol/claude-agent-acp@{CLAUDE_AGENT_ACP_VERSION}",
-            "WRAPPER_BINS=claude-agent-acp",
+            f'PACKAGES="@agentclientprotocol/claude-agent-acp@{CLAUDE_AGENT_ACP_VERSION}"',
+            'WRAPPER_BINS="claude-agent-acp"',
+        ]
+
+    def test_output_survives_a_real_shell_eval_multi_package(self):
+        """Regression test for the exact bug the Dockerfile hit: `eval`
+        re-tokenizes its argument on whitespace, so an unquoted multi-word
+        `PACKAGES=a b c` parses as "assign PACKAGES=a, then run command b
+        with arg c" (exit 127), not one space-separated assignment. Runs the
+        CLI's real stdout through `sh -c 'eval "$PLAN"; ...'`, exactly like
+        the Dockerfile's `PLAN=$(...) || exit 1; eval "$PLAN"`.
+        """
+        plan = subprocess.run(
+            [sys.executable, "-S", CATALOG_PY, "claude-code,codex,gemini-cli"],
+            capture_output=True,
+            text=True,
+        ).stdout
+        result = subprocess.run(
+            ["sh", "-c", 'eval "$PLAN"; echo "$PACKAGES"; echo "$WRAPPER_BINS"'],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PLAN": plan},
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == [
+            f"@agentclientprotocol/claude-agent-acp@{CLAUDE_AGENT_ACP_VERSION} "
+            f"@agentclientprotocol/codex-acp@{CODEX_ACP_VERSION} "
+            f"@google/gemini-cli@{GEMINI_CLI_VERSION}",
+            "claude-agent-acp codex-acp gemini",
         ]
