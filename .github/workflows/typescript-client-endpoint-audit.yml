@@ -53,9 +53,33 @@ jobs:
           # .audit/ is a dot-directory; upload-artifact@v4 skips hidden paths by default.
                   include-hidden-files: true
 
-      # Post the report as a single, self-updating comment on the PR. Runs even
-      # when the audit gate fails (the report is written before the gate), so
-      # reviewers see the mismatches that failed the check.
+      # Render the report into the run's job summary. This is the path that
+      # works everywhere: it needs no token, so it survives the read-only
+      # GITHUB_TOKEN a fork PR gets, and it is where a contributor whose build
+      # just went red will already be looking.
+            - name: Write audit report to the job summary
+              if: always()
+              uses: actions/github-script@v7
+              with:
+                  script: |
+                      const fs = require('node:fs');
+                      const reportPath =
+                        'clients/typescript/.audit/endpoint-audit.json';
+                      if (!fs.existsSync(reportPath)) {
+                        core.warning(`No audit report at ${reportPath}.`);
+                        return;
+                      }
+                      const { renderEndpointAuditReport } = require(
+                        './.github/scripts/post-typescript-endpoint-audit-report.cjs'
+                      );
+                      const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+                      await core.summary
+                        .addRaw(renderEndpointAuditReport(report))
+                        .write();
+
+      # Additionally post the report as a single, self-updating comment on the
+      # PR. Runs even when the audit gate fails (the report is written before
+      # the gate), so reviewers see the mismatches that failed the check.
       #
       # Skipped on forks: GitHub downgrades GITHUB_TOKEN to read-only for
       # pull_request events from a fork, so the `pull-requests: write` above is
