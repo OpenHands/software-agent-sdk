@@ -8,7 +8,6 @@ from openhands.sdk.llm.options.common import (
     apply_extra_body,
     apply_extra_headers,
 )
-from openhands.sdk.llm.utils.model_features import get_features
 
 
 if TYPE_CHECKING:
@@ -31,10 +30,13 @@ def select_responses_options(
         defaults["max_output_tokens"] = llm.effective_max_output_tokens
     out = apply_defaults_if_absent(user_kwargs, defaults)
 
-    # Enforce sampling/tool behavior for Responses path
-    # Note: temperature is not supported in subscription mode
-    if not llm.is_subscription:
-        out["temperature"] = 1.0
+    model_features = llm._model_features()
+    if not llm.is_subscription and model_features.supports_sampling_params is False:
+        out.pop("temperature", None)
+        out.pop("top_p", None)
+        out.pop("top_k", None)
+    elif not llm.is_subscription and llm.temperature is not None:
+        out.setdefault("temperature", llm.temperature)
     out["tool_choice"] = "auto"
 
     out = apply_extra_headers(out, llm)
@@ -44,8 +46,6 @@ def select_responses_options(
         out["store"] = bool(store)
     else:
         out.setdefault("store", False)
-
-    model_features = get_features(llm._model_name_for_capabilities())
 
     # Include encrypted reasoning only when the user enables it on the LLM,
     # and only for stateless calls (store=False). Respect user choice.

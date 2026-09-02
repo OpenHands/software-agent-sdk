@@ -94,6 +94,12 @@ class VSCodeService:
     ) -> str | None:
         """Get the VSCode URL with authentication token.
 
+        When ``server_base_path`` is configured, the server only answers under
+        that prefix (it is passed to openvscode-server as
+        ``--server-base-path``), so the prefix is included in the returned URL.
+        Without it, path-based-routing deployments are advertised a root URL
+        that the server does not serve.
+
         Args:
             base_url: Base URL for the VSCode server
             workspace_dir: Path to workspace directory
@@ -107,7 +113,11 @@ class VSCodeService:
         if base_url is None:
             base_url = f"http://localhost:{self.port}"
 
-        return f"{base_url}/?tkn={self.connection_token}&folder={workspace_dir}"
+        base = base_url.rstrip("/")
+        if self.server_base_path:
+            base = f"{base}/{self.server_base_path.strip('/')}"
+
+        return f"{base}/?tkn={self.connection_token}&folder={workspace_dir}"
 
     def is_running(self) -> bool:
         """Check if VSCode server is running.

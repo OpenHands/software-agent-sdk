@@ -194,7 +194,7 @@ repository.
 
 #### What is sent
 
-Events: `conversation_started`, `conversation_finished`, `conversation_failed`,
+Events: `conversation_created`, `conversation_finished`, `conversation_failed`,
 `conversation_error`, `request_failed`, `server_started`, `server_stopped` — all
 prefixed `agent_server.`.
 

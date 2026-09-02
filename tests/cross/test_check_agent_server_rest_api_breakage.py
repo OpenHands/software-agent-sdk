@@ -1089,6 +1089,104 @@ def test_main_passes_when_oasdiff_reports_only_response_union_artifacts(
     assert "Ignored 1 property-removal and 1 type-change artifact" in captured.out
 
 
+def test_mcp_contract_schema_repair_is_narrowly_scoped():
+    accepted = [
+        (
+            "the `agent/mcp_config/additionalProperties/` response's property "
+            "type/format changed from ``/`` to `object`/`` for status `200`"
+        ),
+        (
+            "the `oauth_state/anyOf[subschema #1]/` response's property type/format "
+            "changed from ``/`` to `object`/`` for status `200`"
+        ),
+        (
+            "removed `#/components/schemas/MCPNoneAuthCredential-Input` from the "
+            "`server/auth/anyOf[subschema #1]/` request property `oneOf` list"
+        ),
+        (
+            "removed `subschema #1` from the `agent_settings_diff` request property "
+            "`anyOf` list"
+        ),
+    ]
+    rejected = [
+        (
+            "the `agent/llm/` response's property type/format changed from ``/`` "
+            "to `object`/`` for status `200`"
+        ),
+        (
+            "removed `#/components/schemas/MCPBearerAuthCredential-Input` from the "
+            "`server/auth/anyOf[subschema #1]/` request property `oneOf` list"
+        ),
+        (
+            "removed `subschema #1` from the `conversation_settings_diff` request "
+            "property `anyOf` list"
+        ),
+    ]
+
+    assert all(
+        _prod._is_mcp_contract_schema_repair({"text": text}) for text in accepted
+    )
+    assert not any(
+        _prod._is_mcp_contract_schema_repair({"text": text}) for text in rejected
+    )
+
+
+def test_main_passes_for_mcp_contract_schema_repairs(monkeypatch, capsys):
+    monkeypatch.setattr(_prod, "_read_version_from_pyproject", lambda _path: "1.15.0")
+    monkeypatch.setattr(
+        _prod, "_get_baseline_version", lambda _distribution, _current: "1.14.0"
+    )
+    monkeypatch.setattr(_prod, "_find_sdk_deprecated_fastapi_routes", lambda _root: [])
+    monkeypatch.setattr(_prod, "_generate_current_openapi", lambda: {"paths": {}})
+    monkeypatch.setattr(_prod, "_find_deprecation_policy_errors", lambda _schema: [])
+    monkeypatch.setattr(
+        _prod,
+        "_generate_openapi_for_git_ref",
+        lambda _ref: {"paths": {}, "components": {"schemas": {}}},
+    )
+    monkeypatch.setattr(_prod, "_normalize_openapi_for_oasdiff", lambda schema: schema)
+    monkeypatch.setattr(
+        _prod,
+        "_run_oasdiff_breakage_check",
+        lambda _prev, _cur: (
+            [
+                {
+                    "id": "response-property-type-changed",
+                    "details": {},
+                    "text": (
+                        "the `agent/mcp_config/additionalProperties/` response's "
+                        "property type/format changed from ``/`` to `object`/`` "
+                        "for status `200`"
+                    ),
+                },
+                {
+                    "id": "request-property-one-of-updated",
+                    "details": {},
+                    "text": (
+                        "removed `#/components/schemas/"
+                        "MCPNoneAuthCredential-Input` from the `server/auth/"
+                        "anyOf[subschema #1]/` request property `oneOf` list"
+                    ),
+                },
+                {
+                    "id": "request-property-any-of-updated",
+                    "details": {},
+                    "text": (
+                        "removed `subschema #1` from the `agent_settings_diff` "
+                        "request property `anyOf` list"
+                    ),
+                },
+            ],
+            1,
+        ),
+    )
+
+    assert _prod.main() == 0
+
+    captured = capsys.readouterr()
+    assert "Typed historically opaque MCP/settings schemas" in captured.out
+
+
 def test_main_fails_when_additive_oneof_mixed_with_real_breakage(monkeypatch, capsys):
     monkeypatch.setattr(_prod, "_read_version_from_pyproject", lambda _path: "1.15.0")
     monkeypatch.setattr(

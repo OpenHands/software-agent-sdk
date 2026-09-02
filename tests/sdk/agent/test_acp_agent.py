@@ -29,6 +29,7 @@ from openhands.sdk.agent.acp_agent import (
     _acp_error_detail,
     _acp_error_indicates_auth,
     _apply_acp_model,
+    _auth_selection_failure_reason,
     _classify_acp_init_error,
     _classify_acp_turn_error,
     _codex_model_config_options,
@@ -36,15 +37,19 @@ from openhands.sdk.agent.acp_agent import (
     _extract_session_models,
     _extract_token_usage,
     _image_url_to_acp_block,
+    _log_acp_provider_version,
+    _log_acp_subprocess_stderr,
     _mask_json_value,
     _maybe_set_session_model,
     _mcp_config_to_acp_servers,
+    _npx_package,
     _OpenHandsACPBridge,
     _reapply_session_model_on_resume,
     _select_auth_method,
     _serialize_tool_content,
     _stringify_acp_error_data,
     _strip_inherited_npm_env,
+    _warn_auth_selection_failure,
     _with_codex_base_url,
 )
 from openhands.sdk.agent.acp_file_credentials import (
@@ -156,6 +161,113 @@ def _make_state(tmp_path) -> ConversationState:
         agent=agent,
         workspace=workspace,
     )
+
+
+def test_logs_matching_acp_provider_version(caplog):
+    with caplog.at_level("INFO"):
+        _log_acp_provider_version("codex-acp", "1.1.7")
+
+    assert "provider=codex" in caplog.text
+    assert "pinned_version='1.1.7'" in caplog.text
+    assert "reported_version='1.1.7'" in caplog.text
+    assert "mismatch" not in caplog.text
+
+
+def test_warns_when_acp_provider_version_differs_from_pin(caplog):
+    with caplog.at_level("INFO"):
+        _log_acp_provider_version("gemini-cli 0.38.0", "")
+
+    assert "provider=gemini-cli" in caplog.text
+    assert "pinned_version='0.46.0'" in caplog.text
+    assert "reported_version='0.38.0'" in caplog.text
+    assert "probably installed at runtime via the npx fallback" in caplog.text
+
+
+def test_npx_package_skips_prefer_offline():
+    assert (
+        _npx_package(
+            ["npx", "-y", "--prefer-offline", "@agentclientprotocol/codex-acp@1.1.7"]
+        )
+        == "@agentclientprotocol/codex-acp@1.1.7"
+    )
+
+
+def test_acp_npm_cache_is_shared_across_conversations(tmp_path):
+    agent = _make_agent()
+    state = _make_state(tmp_path)
+    state.persistence_dir = str(tmp_path / "conversations" / "conversation-id")
+
+    assert agent._acp_npm_cache_dir(state) == tmp_path / "conversations" / "npm-cache"
+
+
+async def test_warm_npx_cache_uses_prefer_offline_and_durable_env(tmp_path):
+    agent = _make_agent()
+    process = MagicMock()
+    process.returncode = 0
+    process.wait = AsyncMock(return_value=0)
+    env = {"npm_config_cache": str(tmp_path / "npm-cache")}
+
+    with patch(
+        "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+        new=AsyncMock(return_value=process),
+    ) as create_process:
+        await agent._warm_npx_cache(
+            "@agentclientprotocol/codex-acp@1.1.7", "codex", env, str(tmp_path)
+        )
+
+    create_process.assert_awaited_once_with(
+        "npx",
+        "--yes",
+        "--prefer-offline",
+        "--package",
+        "@agentclientprotocol/codex-acp@1.1.7",
+        "--",
+        "node",
+        "-e",
+        "",
+        cwd=str(tmp_path),
+        env=env,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+
+
+def test_npx_cache_warm_failure_continues_with_normal_startup(tmp_path, caplog):
+    agent = ACPAgent(
+        acp_command=[
+            "npx",
+            "-y",
+            "--prefer-offline",
+            "@agentclientprotocol/codex-acp@1.1.7",
+        ],
+        acp_server="codex",
+    )
+    state = ConversationState.create(
+        id=uuid.uuid4(),
+        agent=agent,
+        workspace=LocalWorkspace(working_dir=str(tmp_path)),
+    )
+    conn = TestACPSessionIdPersistence._make_conn()
+
+    try:
+        with caplog.at_level("WARNING"):
+            with patch.object(
+                ACPAgent,
+                "_warm_npx_cache",
+                new=AsyncMock(side_effect=RuntimeError("registry unavailable")),
+            ):
+                TestACPSessionIdPersistence._patched_start_acp_server(
+                    agent, state, conn=conn
+                )
+    finally:
+        agent._unregister_atexit_cleanup()
+        assert agent._executor is not None
+        agent._executor.close()
+        agent._executor = None
+
+    assert "continuing with normal startup" in caplog.text
+    conn.initialize.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -3426,6 +3538,60 @@ class TestFilterJsonrpcLines:
         assert result2 == b""
 
     @pytest.mark.asyncio
+    async def test_logs_non_jsonrpc_stdout(self, caplog):
+        source = asyncio.StreamReader()
+        dest = asyncio.StreamReader()
+        source.feed_data(b"codex-acp startup detail\n")
+        source.feed_eof()
+
+        with caplog.at_level("INFO"):
+            await acp_agent_module._filter_jsonrpc_lines(source, dest)
+
+        assert "ACP stdout (non-JSON): codex-acp startup detail" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_logs_subprocess_stderr(self, caplog):
+        source = asyncio.StreamReader()
+        source.feed_data(b"codex-acp diagnostic\n")
+        source.feed_eof()
+
+        with caplog.at_level("INFO"):
+            await _log_acp_subprocess_stderr(source)
+
+        assert "ACP stderr: codex-acp diagnostic" in caplog.text
+
+    def test_shutdown_cancels_stdout_and_stderr_drain_tasks(self):
+        """The stdout-filter and stderr-log tasks aren't referenced anywhere
+        else once started; _shutdown_runtime must cancel and clear them so
+        nothing keeps draining a closed subprocess's pipes indefinitely.
+        """
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        agent._executor = AsyncExecutor()
+
+        async def _never_ending():
+            await asyncio.sleep(3600)
+
+        async def _spawn_task():
+            # Mirrors how _init() schedules the real drain tasks: via
+            # asyncio.get_event_loop().create_task() from inside a coroutine
+            # already running on the executor's portal loop.
+            return asyncio.get_event_loop().create_task(_never_ending())
+
+        stdout_task = agent._executor.run_async(_spawn_task)
+        stderr_task = agent._executor.run_async(_spawn_task)
+        agent._stdout_filter_task = stdout_task
+        agent._stderr_log_task = stderr_task
+
+        agent._shutdown_runtime(discard_bindings=True)
+
+        assert agent._stdout_filter_task is None
+        assert agent._stderr_log_task is None
+        assert stdout_task.cancelled()
+        assert stderr_task.cancelled()
+
+    @pytest.mark.asyncio
     async def test_filters_pretty_printed_json(self):
         from openhands.sdk.agent.acp_agent import _filter_jsonrpc_lines
 
@@ -4765,6 +4931,38 @@ class TestSelectAuthMethod:
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
             assert _select_auth_method(methods, env) is None
 
+    def test_missing_codex_auth_reason(self, tmp_path, caplog):
+        methods = [
+            self._make_auth_method("chat-gpt"),
+            self._make_auth_method("api-key"),
+        ]
+        with (
+            patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path),
+            caplog.at_level("WARNING"),
+        ):
+            _warn_auth_selection_failure(methods, {})
+
+        assert (
+            f"Codex auth file {tmp_path / '.codex' / 'auth.json'} is missing"
+            in caplog.text
+        )
+        assert "CODEX_API_KEY and OPENAI_API_KEY are unset" in caplog.text
+
+    def test_invalid_codex_auth_reason(self, tmp_path):
+        auth_dir = tmp_path / ".codex"
+        auth_dir.mkdir()
+        auth_path = auth_dir / "auth.json"
+        auth_path.write_text('{"auth_mode": "apikey"}', encoding="utf-8")
+        methods = [
+            self._make_auth_method("chat-gpt"),
+            self._make_auth_method("api-key"),
+        ]
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            reason = _auth_selection_failure_reason(methods, {})
+
+        assert f"Codex auth file {auth_path} is not valid ChatGPT auth" in reason
+        assert "CODEX_API_KEY and OPENAI_API_KEY are unset" in reason
+
     def test_chatgpt_auth_file(self, tmp_path):
         methods = [self._make_auth_method("chat-gpt")]
         auth_dir = tmp_path / ".codex"
@@ -4970,7 +5168,7 @@ class TestWithCodexBaseUrl:
         original = env.copy()
         result = _with_codex_base_url(
             "npx",
-            ["-y", "@agentclientprotocol/codex-acp@1.1.2"],
+            ["-y", "@agentclientprotocol/codex-acp@1.1.7"],
             env,
         )
         assert json.loads(result["CODEX_CONFIG"]) == {
@@ -5006,7 +5204,7 @@ class TestWithCodexBaseUrl:
         }
         result = _with_codex_base_url(
             "npx",
-            ["-y", "@agentclientprotocol/codex-acp@1.1.2"],
+            ["-y", "@agentclientprotocol/codex-acp@1.1.7"],
             env,
         )
         assert json.loads(result["CODEX_CONFIG"])["openai_base_url"] == (
@@ -5021,7 +5219,7 @@ class TestWithCodexBaseUrl:
         }
         result = _with_codex_base_url(
             "npx",
-            ["-y", "@agentclientprotocol/codex-acp@1.1.2"],
+            ["-y", "@agentclientprotocol/codex-acp@1.1.7"],
             env,
         )
         assert result == env
@@ -6009,6 +6207,7 @@ class TestACPSessionIdPersistence:
         mock_process.wait = AsyncMock(return_value=0)
         mock_process.stdin = MagicMock()
         mock_process.stdout = MagicMock()
+        mock_process.stderr = MagicMock()
 
         async def _fake_create_subprocess_exec(*_args, **_kwargs):
             return mock_process
@@ -7129,6 +7328,7 @@ class TestACPSecretsEnvInjection:
         mock_process.wait = AsyncMock(return_value=0)
         mock_process.stdin = MagicMock()
         mock_process.stdout = MagicMock()
+        mock_process.stderr = MagicMock()
 
         async def _fake_create_subprocess_exec(*_args, env=None, **_kwargs):
             captured.update(env or {})
@@ -7286,6 +7486,7 @@ class TestACPSecretRegistryEnvInjection:
         mock_process.wait = AsyncMock(return_value=0)
         mock_process.stdin = MagicMock()
         mock_process.stdout = MagicMock()
+        mock_process.stderr = MagicMock()
 
         async def _fake_create_subprocess_exec(*_args, env=None, **_kwargs):
             captured.update(env or {})
@@ -7521,6 +7722,7 @@ class TestACPEnvConflictSuppression:
         mock_process.wait = AsyncMock(return_value=0)
         mock_process.stdin = MagicMock()
         mock_process.stdout = MagicMock()
+        mock_process.stderr = MagicMock()
 
         async def _fake_create_subprocess_exec(*_args, env=None, **_kwargs):
             captured.update(env or {})
@@ -8409,6 +8611,20 @@ class TestMcpConfigToAcpServers:
         assert len(out) == 1
         assert isinstance(out[0], HttpMcpServer)
 
+    def test_disabled_servers_not_forwarded(self):
+        cfg = {
+            "mcpServers": {
+                "fetch": {"command": "uvx"},
+                "switched_off": {"command": "uvx", "enabled": False},
+            }
+        }
+        # The subprocess owns the connection, so withholding the entry is the
+        # only way to keep a disabled server out of its reach.
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=True)
+        )
+        assert [s.name for s in out] == ["fetch"]
+
     def test_empty_configs(self):
         caps = self._caps(http=True, sse=True)
         assert _mcp_config_to_acp_servers({}, caps) == []
@@ -8522,6 +8738,7 @@ class TestACPFileSecretMaterialisation:
         mock_process.wait = AsyncMock(return_value=0)
         mock_process.stdin = MagicMock()
         mock_process.stdout = MagicMock()
+        mock_process.stderr = MagicMock()
 
         async def _fake_exec(*_args, **kwargs):
             captured["env"] = kwargs.get("env")

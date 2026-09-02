@@ -68,6 +68,7 @@ class SubAgentInfo(BaseModel):
     mcp_config: dict[str, MCPServer] | None = None
     mcp_servers: dict[str, MCPServer] | None = Field(
         default=None,
+        deprecated=True,
         description=(
             "Deprecated compatibility alias for mcp_config. "
             "Use mcp_config for new clients."

@@ -98,7 +98,8 @@ def test_openhands_provider_translates_only_for_litellm(mock_completion, mock_ge
     assert llm.model == "openhands/claude-haiku-4-5-20251001"
     assert llm.base_url is None
     _, kwargs = mock_completion.call_args
-    assert kwargs["model"] == "litellm_proxy/claude-haiku-4-5-20251001"
+    assert kwargs["model"] == "claude-haiku-4-5-20251001"
+    assert kwargs["custom_llm_provider"] == "litellm_proxy"
     assert kwargs["api_base"] == "https://llm-proxy.app.all-hands.dev"
     persisted = llm.to_persisted()
     assert persisted["model"] == "openhands/claude-haiku-4-5-20251001"
@@ -731,9 +732,145 @@ def test_llm_responses_forwards_extra_headers_to_litellm(mock_responses):
 
     assert mock_responses.call_count == 1
     _, kwargs = mock_responses.call_args
+    assert kwargs["model"] == "gpt-4o"
+    assert kwargs["custom_llm_provider"] == "openai"
     # See test_llm_forwards_extra_headers_to_litellm for the same rationale.
     forwarded = kwargs.get("extra_headers") or {}
     assert headers.items() <= forwarded.items()
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_llm_completion_does_not_forward_bedrock_api_key(mock_completion):
+    mock_response = create_mock_litellm_response("ok")
+    mock_completion.return_value = mock_response
+
+    llm = LLM(
+        usage_id="test-llm",
+        model="us.anthropic.claude-3-sonnet-20240229-v1:0",
+        api_key=SecretStr("sk-ant-not-a-bedrock-key"),
+        num_retries=0,
+    )
+
+    provider_info = llm._provider_info
+    assert provider_info is not None
+
+    messages = [Message(role="user", content=[TextContent(text="Hi")])]
+    _ = llm.completion(messages=messages)
+
+    assert mock_completion.call_count == 1
+    _, kwargs = mock_completion.call_args
+    assert kwargs["model"] == provider_info.model
+    if provider_info.name is not None:
+        assert kwargs["custom_llm_provider"] == provider_info.name
+    assert "api_key" not in kwargs
+
+
+def test_llm_initializes_transport_provider_info():
+    llm = LLM(
+        usage_id="test-llm",
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        num_retries=0,
+    )
+
+    provider_info = llm._provider_info
+    assert provider_info is not None
+    assert provider_info.name == "openai"
+    assert provider_info.model == "gpt-4o"
+
+
+@pytest.mark.parametrize("deep", [False, True])
+def test_llm_model_copy_refreshes_provider_for_model_update(deep: bool):
+    llm = LLM(
+        usage_id="test-llm",
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        num_retries=0,
+    )
+
+    copied = llm.model_copy(
+        update={"model": "anthropic/claude-3-5-sonnet-20241022"},
+        deep=deep,
+    )
+    response = create_mock_litellm_response("ok")
+    messages = [Message(role="user", content=[TextContent(text="Hi")])]
+
+    with (
+        patch(
+            "openhands.sdk.llm.llm.litellm_completion",
+            return_value=response,
+        ) as mock_completion,
+        patch(
+            "openhands.sdk.llm.utils.telemetry.litellm_completion_cost",
+            return_value=0.1,
+        ) as mock_cost,
+    ):
+        copied.completion(messages=messages)
+
+    assert copied.model == "anthropic/claude-3-5-sonnet-20241022"
+    completion_kwargs = mock_completion.call_args.kwargs
+    assert completion_kwargs["model"] == "claude-3-5-sonnet-20241022"
+    assert completion_kwargs["custom_llm_provider"] == "anthropic"
+    cost_kwargs = mock_cost.call_args.kwargs
+    assert cost_kwargs["model"] == "claude-3-5-sonnet-20241022"
+    assert cost_kwargs["custom_llm_provider"] == "anthropic"
+
+
+def test_llm_model_copy_refreshes_provider_for_base_url_update():
+    llm = LLM(
+        usage_id="test-llm",
+        model="unknown-model",
+        base_url="https://old.example.com",
+        api_key=SecretStr("test_key"),
+        num_retries=0,
+    )
+
+    copied = llm.model_copy(update={"base_url": "https://new.example.com"})
+    kwargs = copied._prepare_transport_kwargs(messages=[], enable_streaming=False)
+
+    assert copied.base_url == "https://new.example.com"
+    assert kwargs["model"] == "unknown-model"
+    assert kwargs["api_base"] == "https://new.example.com"
+
+
+@pytest.mark.parametrize(
+    ("model", "base_url"),
+    [
+        # OpenAI-compatible local endpoint: the common custom-base case.
+        ("openai/local-model", "http://localhost:8000/v1"),
+        # LiteLLM would append "/v1" to a custom mistral base during provider
+        # resolution; the SDK must still forward the user's value untouched.
+        ("mistral/mistral-small-latest", "https://myproxy.example.com"),
+    ],
+)
+def test_llm_forwards_custom_base_url_as_is(model: str, base_url: str):
+    llm = LLM(
+        usage_id="test-llm",
+        model=model,
+        base_url=base_url,
+        api_key=SecretStr("test_key"),
+        num_retries=0,
+    )
+
+    kwargs = llm._prepare_transport_kwargs(messages=[], enable_streaming=False)
+
+    assert kwargs["api_base"] == base_url
+
+
+def test_llm_forwards_none_api_base_when_no_base_url():
+    # LiteLLM knows default bases for many providers (e.g. mistral). The SDK
+    # must not bake them into the call; api_base stays None so LiteLLM keeps
+    # resolving env vars / defaults per call, exactly as on main.
+    llm = LLM(
+        usage_id="test-llm",
+        model="mistral/mistral-small-latest",
+        api_key=SecretStr("test_key"),
+        num_retries=0,
+    )
+
+    kwargs = llm._prepare_transport_kwargs(messages=[], enable_streaming=False)
+
+    assert kwargs["api_base"] is None
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
@@ -1014,11 +1151,19 @@ def test_llm_local_detection_based_on_model_name(default_llm):
     assert llm.temperature is None  # Uses provider default
 
     # Test with localhost base_url
-    local_llm = default_llm.model_copy(update={"base_url": "http://localhost:8000"})
+    local_llm = LLM(
+        model="gpt-4o",
+        base_url="http://localhost:8000",
+        usage_id="test-llm",
+    )
     assert local_llm.base_url == "http://localhost:8000"
 
     # Test with ollama model
-    ollama_llm = default_llm.model_copy(update={"model": "ollama/llama2"})
+    ollama_llm = LLM(
+        model="ollama/llama2",
+        usage_id="test-llm",
+        max_input_tokens=16384,
+    )
     assert ollama_llm.model == "ollama/llama2"
 
 

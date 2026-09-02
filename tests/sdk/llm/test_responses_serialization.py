@@ -55,7 +55,7 @@ def test_subscription_codex_transport_does_not_use_top_level_instructions_and_pr
     m_user = Message(role="user", content=[TextContent(text="USER")])
 
     llm = LLM(model="gpt-5.1-codex", base_url="https://chatgpt.com/backend-api/codex")
-    llm._is_subscription = True  # Mark as subscription-based
+    llm.is_subscription = True  # Mark as subscription-based
     instr, inputs = llm.format_messages_for_responses([m_sys, m_user])
 
     assert instr is not None
@@ -73,7 +73,7 @@ def test_subscription_codex_transport_injects_synthetic_user_message_when_none_e
     m_asst = Message(role="assistant", content=[TextContent(text="ASST")])
 
     llm = LLM(model="gpt-5.1-codex", base_url="https://chatgpt.com/backend-api/codex")
-    llm._is_subscription = True  # Mark as subscription-based
+    llm.is_subscription = True  # Mark as subscription-based
     instr, inputs = llm.format_messages_for_responses([m_sys, m_asst])
 
     assert instr is not None

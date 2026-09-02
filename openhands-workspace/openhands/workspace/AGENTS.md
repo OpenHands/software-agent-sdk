@@ -17,7 +17,7 @@ See the [project root AGENTS.md](../../../AGENTS.md) for repository-wide policie
 
 ## Coding Style & Naming Conventions
 
-- Python target is 3.12; keep code Ruff-compliant (line length 88) and Pyright-friendly.
+- Packages support Python 3.12 and later; repository tooling targets Python 3.13. Keep code Ruff-compliant (line length 88) and Pyright-friendly.
 - Prefer small, explicit wrappers around external interactions (Docker/Apptainer/HTTP). Validate inputs early and keep side-effecting operations out of module import time.
 
 ## Testing Guidelines

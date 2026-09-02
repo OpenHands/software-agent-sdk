@@ -23,6 +23,9 @@ from pydantic import Field, PrivateAttr
 from openhands.sdk.event import ActionEvent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
+from openhands.sdk.security.defense_in_depth.shell_semantics import (
+    scan_shell_command,
+)
 from openhands.sdk.security.defense_in_depth.utils import (
     _extract_content,
     _extract_exec_content,
@@ -229,6 +232,14 @@ class PatternSecurityAnalyzer(SecurityAnalyzerBase):
                 logger.debug("Pattern matched: %s -> HIGH", det_id)
                 return SecurityRisk.HIGH
 
+        # HIGH: AST resolution on executable fields, catching quoted,
+        # path-qualified and nested command names that word-boundary
+        # anchors cannot see.
+        shell_scan = scan_shell_command(exec_content, DET_EXEC_DESTRUCT_RM_RF)
+        if shell_scan.matched:
+            logger.debug("Shell AST matched: %s -> HIGH", shell_scan.detector_id)
+            return SecurityRisk.HIGH
+
         # MEDIUM: patterns on executable fields only
         for pattern, _desc, det_id in self._compiled_medium:
             if pattern.search(exec_content):
@@ -240,5 +251,12 @@ class PatternSecurityAnalyzer(SecurityAnalyzerBase):
             if pattern.search(all_content):
                 logger.debug("Pattern matched: %s -> MEDIUM", det_id)
                 return SecurityRisk.MEDIUM
+
+        # The destructive flag shape on a verb the scan could not resolve:
+        # UNKNOWN rather than a false LOW, since UNKNOWN fails safe under
+        # ConfirmRisky. Text that merely fails to parse stays LOW.
+        if shell_scan.uncertain:
+            logger.debug("Shell AST uncertain (unresolvable verb) -> UNKNOWN")
+            return SecurityRisk.UNKNOWN
 
         return SecurityRisk.LOW

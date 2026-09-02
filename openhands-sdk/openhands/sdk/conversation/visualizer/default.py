@@ -44,6 +44,19 @@ _ERROR_COLOR = "red"
 _ACTION_COLOR = "blue"
 _MESSAGE_ASSISTANT_COLOR = _ACTION_COLOR
 
+_MESSAGE_SOURCE_TITLES = {
+    "agent": "Message from Agent",
+    "user": "Message from User",
+    "environment": "Message from Environment",
+    "hook": "Message from Hook",
+}
+_MESSAGE_SOURCE_COLORS = {
+    "agent": _MESSAGE_ASSISTANT_COLOR,
+    "user": _MESSAGE_USER_COLOR,
+    "environment": _SYSTEM_COLOR,
+    "hook": _SYSTEM_COLOR,
+}
+
 DEFAULT_HIGHLIGHT_REGEX = {
     r"^Reasoning:": f"bold {_THOUGHT_COLOR}",
     r"^Thought:": f"bold {_THOUGHT_COLOR}",
@@ -178,24 +191,16 @@ def _get_action_title(event: Event) -> str:
 
 
 def _get_message_title(event: Event) -> str:
-    """Get title for MessageEvent based on role."""
+    """Get title for MessageEvent based on event attribution."""
     if isinstance(event, MessageEvent) and event.llm_message:
-        return (
-            "Message from User"
-            if event.llm_message.role == "user"
-            else "Message from Agent"
-        )
+        return _MESSAGE_SOURCE_TITLES[event.source]
     return "Message"
 
 
 def _get_message_color(event: Event) -> str:
-    """Get color for MessageEvent based on role."""
+    """Get color for MessageEvent based on event attribution."""
     if isinstance(event, MessageEvent) and event.llm_message:
-        return (
-            _MESSAGE_USER_COLOR
-            if event.llm_message.role == "user"
-            else _MESSAGE_ASSISTANT_COLOR
-        )
+        return _MESSAGE_SOURCE_COLORS[event.source]
     return "white"
 
 
@@ -338,7 +343,7 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
             self._skip_user_messages
             and isinstance(event, MessageEvent)
             and event.llm_message
-            and event.llm_message.role == "user"
+            and event.source == "user"
         ):
             return None
 

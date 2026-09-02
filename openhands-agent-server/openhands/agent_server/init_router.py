@@ -31,6 +31,7 @@ from openhands.agent_server.telemetry import (
     shutdown_telemetry_sink,
 )
 from openhands.sdk.logger import get_logger
+from openhands.sdk.observability import maybe_init_laminar
 
 
 logger = get_logger(__name__)
@@ -89,6 +90,13 @@ class InitRequest(BaseModel):
         description=(
             "Directory where bash events are persisted. Typically located "
             "inside the mounted user workspace."
+        ),
+    )
+    conversation_worktree_root: Path | None = Field(
+        default=None,
+        description=(
+            "Root directory for conversation git worktrees. Override this to "
+            "point at the mounted user workspace."
         ),
     )
     webhooks: list[WebhookSpec] | None = Field(
@@ -163,6 +171,8 @@ def _build_initialized_config(base: Config, req: InitRequest) -> Config:
         updates["conversations_path"] = req.conversations_path
     if req.bash_events_dir is not None:
         updates["bash_events_dir"] = req.bash_events_dir
+    if req.conversation_worktree_root is not None:
+        updates["conversation_worktree_root"] = req.conversation_worktree_root
     if req.webhooks is not None:
         updates["webhooks"] = req.webhooks
     if req.web_url is not None:
@@ -217,6 +227,7 @@ class InitService:
                 # tools pick up credentials.
                 for key, value in req.env.items():
                     os.environ[key] = value
+            maybe_init_laminar()
 
             # Must precede get_instance(), which captures the sink. The
             # matching emit_server_started() is deferred until the ``ready``

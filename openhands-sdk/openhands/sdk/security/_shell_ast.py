@@ -114,20 +114,22 @@ def command_basename(command: ShellCommand) -> str | None:
     return posixpath.basename(command.name.text)
 
 
-def split_short_flags(word: ShellWord) -> frozenset[str]:
-    """Split a non-opaque short flag word into individual flag characters."""
-    if word.opaque:
-        return frozenset()
+def split_short_flags(text: str) -> frozenset[str]:
+    """Split a short-flag word's literal text into individual flag characters.
 
-    text = word.text
+    Takes the literal the shell would produce after quote removal rather than
+    a ``ShellWord``, so a caller that resolves quotes gets the same answer for
+    ``-rf``, ``"-rf"`` and ``-r"f"`` -- which are the same argv. A caller that
+    cannot resolve a word must skip it rather than pass its raw source text.
+    """
     if len(text) <= 1 or not text.startswith("-") or text.startswith("--"):
         return frozenset()
     return frozenset(text[1:])
 
 
-def is_long_flag(word: ShellWord, name: str) -> bool:
-    """Return whether ``word`` is exactly ``--<name>``."""
-    return not word.opaque and word.text == f"--{name}"
+def is_long_flag(text: str, name: str) -> bool:
+    """Return whether a word's literal text is exactly ``--<name>``."""
+    return text == f"--{name}"
 
 
 def split_key_value_word(word: ShellWord) -> tuple[str, str] | None:

@@ -27,7 +27,7 @@
   <hr>
 </div>
 
-The OpenHands Software Agent SDK is a set of Python and REST APIs for **building agents that work with code**.
+The OpenHands Software Agent SDK provides Python, TypeScript, and REST APIs for **building agents that work with code**.
 
 You can use the OpenHands Software Agent SDK for:
 * One-off tasks, like building a README for your repo
@@ -79,6 +79,12 @@ print("All done!")
 
 For installation instructions and detailed setup, see the [Getting Started Guide](https://docs.openhands.dev/sdk/getting-started).
 For local development from this repository, run `make build` to install the workspace dependencies and pre-commit hooks.
+
+## Repository boundaries
+
+This repository owns the canonical Python SDK and Agent Server implementation as well as the browser-compatible [TypeScript client](clients/typescript/). It owns agents, tools, conversations, workspaces, events, the REST/WebSocket API, and typed client access to that API. [`OpenHands/OpenHands`](https://github.com/OpenHands/OpenHands) consumes the TypeScript client as Agent Canvas, while [`OpenHands/automation`](https://github.com/OpenHands/automation) owns scheduling, webhooks, run history, and dispatching. The SDK/Agent Server executes the conversations dispatched by automation.
+
+The normal flow is SDK/Agent Server → OpenAPI contract → `clients/typescript` → Agent Canvas. Backend behavior and endpoints belong in the Python SDK or Agent Server packages; browser-compatible client access belongs in `clients/typescript`, UI in Agent Canvas, and automation lifecycle behavior in `automation`.
 
 ## Documentation
 

@@ -105,8 +105,9 @@ def test_seed_is_idempotent(client):
     assert second["active_agent_profile_id"] == first["active_agent_profile_id"]
 
 
-def test_seed_references_active_llm_profile(client):
+def test_seed_references_active_llm_profile(client, default_llm_profile_store):
     """The seed references the active LLM profile when one is set."""
+    default_llm_profile_store.save("my-llm", LLM(model="gpt-4o-mini"))
     client.patch("/api/settings", json={"active_profile": "my-llm"})
 
     body = client.get("/api/agent-profiles").json()

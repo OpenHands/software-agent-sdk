@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 import warnings
+from dataclasses import dataclass
 from typing import Any, cast
 
 
@@ -9,22 +11,72 @@ with warnings.catch_warnings():
     import litellm
 
 
-def infer_litellm_provider(*, model: str, api_base: str | None) -> str | None:
-    """Infer the LiteLLM provider for a given model.
+logger = logging.getLogger(__name__)
 
-    This delegates to LiteLLM's provider inference logic (which includes model
-    list lookups like Bedrock's regional model identifiers).
+
+@dataclass(frozen=True)
+class LLMProvider:
+    """LiteLLM-parsed provider metadata for a model string.
+
+    The SDK accepts full model strings at the boundary, but internal provider
+    logic should work from LiteLLM's parsed ``provider`` + ``model`` view.
     """
 
-    try:
-        get_llm_provider = cast(Any, litellm).get_llm_provider
-        _model, provider, _dynamic_key, _api_base = get_llm_provider(
-            model=model,
-            custom_llm_provider=None,
-            api_base=api_base,
-            api_key=None,
-        )
-    except Exception:
-        return None
+    model: str
+    name: str | None
+    # The requested API base, forwarded to LiteLLM verbatim. The api_base that
+    # get_llm_provider returns is intentionally discarded: LiteLLM may rewrite
+    # it (e.g. mistral appends "/v1", some providers inject a default base),
+    # and forwarding that resolved value would freeze LiteLLM's per-call
+    # resolution at parse time and change what the user configured.
+    api_base: str | None
 
-    return provider
+    @classmethod
+    def from_model(cls, *, model: str, api_base: str | None) -> LLMProvider:
+        """Parse a model string using LiteLLM's provider inference logic."""
+        try:
+            get_llm_provider = cast(Any, litellm).get_llm_provider
+            parsed_model, provider_name, _dynamic_key, _resolved_api_base = (
+                get_llm_provider(
+                    model=model,
+                    custom_llm_provider=None,
+                    api_base=api_base,
+                    api_key=None,
+                )
+            )
+        except Exception as exc:
+            logger.debug(
+                "Failed to parse LiteLLM provider for model=%s: %s",
+                model,
+                exc,
+            )
+            parsed_model = model
+            provider_name = None
+
+        return cls(
+            model=parsed_model,
+            name=provider_name,
+            api_base=api_base,
+        )
+
+    @property
+    def is_bedrock(self) -> bool:
+        return self.name == "bedrock"
+
+    def api_key_for_litellm(self, api_key: str | None) -> str | None:
+        # LiteLLM treats api_key for Bedrock as an AWS bearer token.
+        # Passing a non-Bedrock key (e.g. OpenAI/Anthropic) can cause Bedrock
+        # to reject the request with an "Invalid API Key format" error.
+        # For IAM/SigV4 auth (the default Bedrock path), do not forward api_key.
+        if api_key is not None and self.is_bedrock:
+            return None
+        return api_key
+
+    def as_litellm_call_kwargs(self, *, api_key: str | None = None) -> dict[str, str]:
+        kwargs = {"model": self.model}
+        if self.name is not None:
+            kwargs["custom_llm_provider"] = self.name
+        normalized_api_key = self.api_key_for_litellm(api_key)
+        if normalized_api_key is not None:
+            kwargs["api_key"] = normalized_api_key
+        return kwargs

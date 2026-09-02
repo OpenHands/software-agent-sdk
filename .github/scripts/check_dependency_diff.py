@@ -138,11 +138,21 @@ def main() -> int:
         if before[n]["version"] != after[n]["version"]
     }
 
+    # First-party openhands-* packages are version-bumped on every release;
+    # exclude them from the external-dep count but still surface them below.
+    def _is_openhands(name: str) -> bool:
+        return name.lower().startswith("openhands-")
+
+    bumped_external = {n: v for n, v in bumped.items() if not _is_openhands(n)}
+    bumped_openhands = {n: v for n, v in bumped.items() if _is_openhands(n)}
+
     report.add(f"Baseline: `{baseline}`")
     report.add(
-        f"Added: **{len(added)}**, bumped: **{len(bumped)}**, "
+        f"Added: **{len(added)}**, bumped: **{len(bumped_external)}**, "
         f"removed: **{len(removed)}**."
     )
+    if bumped_openhands:
+        report.add(f"_(plus {len(bumped_openhands)} internal `openhands-*` bump(s))_")
     report.add("")
 
     # --- non-registry sources on new/changed packages (supply-chain surface) --
@@ -199,11 +209,17 @@ def main() -> int:
         for name in sorted(added):
             report.add(f"- `{name}=={added[name]['version']}`")
         report.add("\n</details>")
-    if bumped:
+    if bumped_external:
         report.add("<details><summary>Bumped dependencies</summary>\n")
-        for name in sorted(bumped):
-            old, new = bumped[name]
-            report.add(f"- `{name}`: {old} → {new}")
+        for name in sorted(bumped_external):
+            old_v, new_v = bumped_external[name]
+            report.add(f"- `{name}`: {old_v} → {new_v}")
+        report.add("\n</details>")
+    if bumped_openhands:
+        report.add("<details><summary>Internal `openhands-*` bumps</summary>\n")
+        for name in sorted(bumped_openhands):
+            old_v, new_v = bumped_openhands[name]
+            report.add(f"- `{name}`: {old_v} → {new_v}")
         report.add("\n</details>")
 
     sys.stdout.write(report.render())
