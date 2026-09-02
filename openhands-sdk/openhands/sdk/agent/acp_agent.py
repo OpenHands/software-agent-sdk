@@ -3760,7 +3760,7 @@ class ACPAgent(AgentBase):
         with StreamContext.open(conversation, on_token) as stream:
             self._stream = stream
             try:
-                self._step(conversation, on_event, stream.on_chunk)
+                self._step(conversation, on_event, stream.token_callback)
             finally:
                 self._stream = None
 
@@ -3936,7 +3936,7 @@ class ACPAgent(AgentBase):
             self._stream = stream
             try:
                 await self._astep(
-                    conversation, on_event, stream.on_chunk, prompt_message
+                    conversation, on_event, stream.token_callback, prompt_message
                 )
             finally:
                 self._stream = None

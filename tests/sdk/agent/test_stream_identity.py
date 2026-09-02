@@ -73,6 +73,7 @@ class StreamingTestLLM(TestLLM):
 
     _chunks: list[str] = PrivateAttr(default_factory=list)
     _raises: BaseException | None = PrivateAttr(default=None)
+    _seen_on_token: list = PrivateAttr(default_factory=list)
 
     def script(self, chunks: list[str], raises: BaseException | None = None):
         self._chunks = chunks
@@ -98,6 +99,7 @@ class StreamingTestLLM(TestLLM):
             )
 
     def completion(self, messages, tools=None, on_token=None, **kwargs):  # type: ignore[override]
+        self._seen_on_token.append(on_token)
         self._stream(on_token)
         if self._raises is not None:
             raise self._raises
@@ -216,6 +218,23 @@ def test_a_provider_failure_retires_the_slot_with_an_abort(tmp_path):
     aborted = [f for f in frames if isinstance(f, StreamAborted)]
     assert len(started) == len(aborted) == 1
     assert aborted[0].item_id == started[0].item_id
+
+
+def test_no_stream_consumer_leaves_the_llm_free_to_skip_streaming(tmp_path):
+    """Without a consumer the agent must not force a streaming completion."""
+    llm = _llm([Message(role="assistant", content=[TextContent(text="hi")])], ["hi"])
+    agent = Agent(llm=llm, tools=[])
+    convo = LocalConversation(
+        agent=agent,
+        workspace=str(tmp_path / "workspace"),
+        persistence_dir=str(tmp_path / "conversations"),
+        visualizer=None,
+    )
+    convo._ensure_agent_ready()
+
+    convo.agent.step(convo, on_event=lambda _: None)
+
+    assert llm._seen_on_token == [None]
 
 
 def test_a_step_that_never_reaches_the_provider_opens_nothing(tmp_path):

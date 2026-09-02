@@ -731,7 +731,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 self.llm,
                 _messages,
                 tools=list(self.tools_map.values()),
-                on_token=stream.on_chunk,
+                on_token=stream.token_callback,
                 call_context=call_context,
             )
         except FunctionCallValidationError as e:
@@ -938,7 +938,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     self.llm,
                     _messages,
                     tools=list(self.tools_map.values()),
-                    on_token=stream.on_chunk,
+                    on_token=stream.token_callback,
                     call_context=call_context,
                 )
         except FunctionCallValidationError as e:

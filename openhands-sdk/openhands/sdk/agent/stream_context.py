@@ -115,6 +115,7 @@ class StreamContext:
         self._attempt = 1
         self._order = itertools.count()
         self._started = False
+        self._opened = False
         self._claimed = False
         self._chunk_id: str | None = None
 
@@ -136,9 +137,16 @@ class StreamContext:
         )
 
     @property
-    def enabled(self) -> bool:
-        """Whether anything consumes progress frames from this stream."""
-        return self._on_stream is not None
+    def token_callback(self) -> Callable[[Any], None] | None:
+        """The callback to hand the LLM, or ``None`` when nothing consumes it.
+
+        ``llm.completion`` degrades a ``stream=True`` model to a non-streaming
+        call when ``on_token`` is ``None`` (#4014). Substituting an
+        unconditional wrapper here would silently take that fallback away.
+        """
+        if self._on_token is None and self._on_stream is None:
+            return None
+        return self.on_chunk
 
     def on_chunk(self, chunk: Any) -> None:
         """Forward a raw chunk downstream, then emit its stamped deltas.
@@ -159,7 +167,7 @@ class StreamContext:
 
     def new_attempt(self) -> None:
         """Start a new attempt for the same item; a higher one supersedes."""
-        if not self._started:
+        if not self._opened:
             return
         self._attempt += 1
         self._order = itertools.count()
@@ -178,8 +186,13 @@ class StreamContext:
         return self.item_id
 
     def close(self, reason: str) -> None:
-        """Emit ``StreamAborted`` unless a durable event claimed the id."""
-        if not self._started or self._claimed:
+        """Emit ``StreamAborted`` unless a durable event claimed the id.
+
+        Keyed on whether the item was ever opened, not on the current attempt:
+        a retry that dies before its first token still owes the client an
+        answer for the attempt that did stream.
+        """
+        if not self._opened or self._claimed:
             return
         self._claimed = True
         self._emit(StreamAborted(self.item_id, self._attempt, reason))
@@ -205,7 +218,7 @@ class StreamContext:
                 self.new_attempt()
         self._chunk_id = chunk_id
         if not self._started:
-            self._started = True
+            self._started = self._opened = True
             self._emit(StreamStarted(self.item_id, self._attempt, self._anchor_seq))
         self._emit(
             StreamDelta(
@@ -220,8 +233,13 @@ class StreamContext:
         )
 
     def _emit(self, frame: StreamProgress) -> None:
+        """Never raises: ``close()`` runs from ``__exit__``, where an escaping
+        sink error would replace the exception the step is unwinding."""
         assert self._on_stream is not None
-        self._on_stream(frame)
+        try:
+            self._on_stream(frame)
+        except Exception:
+            logger.debug("stream progress sink failed", exc_info=True)
 
 
 def _abort_reason(exc_type: type[BaseException] | None) -> str:

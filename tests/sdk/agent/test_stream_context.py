@@ -168,6 +168,22 @@ def test_the_raw_chunk_still_reaches_the_token_callback():
     assert forwarded == [chunk, "acp bare string"]
 
 
+def test_no_consumer_means_no_callback_for_the_llm():
+    """`llm.completion` degrades a stream=True model when on_token is None."""
+    silent = StreamContext(
+        item_id="item",
+        anchor_seq=None,
+        on_token=None,
+        on_stream=None,
+        mask=lambda t: t,
+    )
+    assert silent.token_callback is None
+
+    frames: list = []
+    assert _make(frames).token_callback is not None
+    assert _make(frames, forwarded=[]).token_callback is not None
+
+
 def test_without_a_sink_nothing_is_minted_and_chunks_still_flow():
     forwarded: list = []
     stream = StreamContext(
@@ -182,7 +198,23 @@ def test_without_a_sink_nothing_is_minted_and_chunks_still_flow():
         # No consumer, so the durable event keeps its own id.
         assert stream.claim() is None
     assert len(forwarded) == 1
-    assert stream.enabled is False
+
+
+def test_a_retry_that_dies_before_its_first_token_still_retires_the_slot():
+    """The attempt that did stream is still owed an answer."""
+    frames: list = []
+    stream = _make(frames)
+    try:
+        with stream:
+            stream.on_chunk(_chunk("half"))
+            stream.new_attempt()
+            raise RuntimeError("the retry never produced a token")
+    except RuntimeError:
+        pass
+
+    aborts = [f for f in frames if isinstance(f, StreamAborted)]
+    assert len(aborts) == 1
+    assert (aborts[0].item_id, aborts[0].attempt) == (stream.item_id, 2)
 
 
 def test_a_broken_sink_does_not_fail_the_turn():
@@ -197,5 +229,8 @@ def test_a_broken_sink_does_not_fail_the_turn():
         on_stream=explode,
         mask=lambda t: t,
     )
-    stream.on_chunk(_chunk("hello"))
+    with stream:
+        stream.on_chunk(_chunk("hello"))
+    # Including the abort in __exit__, which would otherwise replace whatever
+    # exception the step is unwinding.
     assert len(forwarded) == 1
