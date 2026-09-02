@@ -12,6 +12,6 @@ class EventsListBase(Sequence[Event], ABC):
     """
 
     @abstractmethod
-    def append(self, event: Event) -> None:
-        """Add a new event to the list."""
+    def append(self, event: Event) -> int:
+        """Add a new event to the list, returning its assigned sequence number."""
         ...

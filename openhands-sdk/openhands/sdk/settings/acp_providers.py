@@ -404,6 +404,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             default_command=(
                 "npx",
                 "-y",
+                "--prefer-offline",
                 f"@agentclientprotocol/claude-agent-acp@{CLAUDE_AGENT_ACP_VERSION}",
             ),
             api_key_env_var="ANTHROPIC_API_KEY",
@@ -433,6 +434,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             default_command=(
                 "npx",
                 "-y",
+                "--prefer-offline",
                 f"@agentclientprotocol/codex-acp@{CODEX_ACP_VERSION}",
             ),
             api_key_env_var="OPENAI_API_KEY",
@@ -454,6 +456,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             default_command=(
                 "npx",
                 "-y",
+                "--prefer-offline",
                 f"@google/gemini-cli@{GEMINI_CLI_VERSION}",
                 "--acp",
             ),

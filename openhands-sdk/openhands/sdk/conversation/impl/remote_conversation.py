@@ -461,9 +461,16 @@ class RemoteEventsList(EventsListBase):
             if event.id not in self._cached_event_ids:
                 self._add_event_unsafe(event)
 
-    def append(self, event: Event) -> None:
-        """Add a new event to the list (for compatibility with EventLog interface)."""
+    def append(self, event: Event) -> int:
+        """Add a new event to the list (for compatibility with EventLog interface).
+
+        Unlike ``EventLog``, this cache orders by event timestamp (not call
+        order) and merges some ACP pairs in place, so there is no per-event
+        sequence number to hand back. Returns the cache's length after the
+        write, only to satisfy ``EventsListBase``.
+        """
         self.add_event(event)
+        return len(self._cached_events) - 1
 
     def create_default_callback(self) -> ConversationCallbackType:
         """Create a default callback that adds events to this list."""
