@@ -109,45 +109,6 @@ class TestACPInstallCatalogMatchesACPProviders:
         assert GEMINI_CLI_VERSION == "0.46.0"
 
 
-# Single-package providers whose CLI binary name deliberately differs from
-# their npm package's basename. Keeps a real, permanent mismatch (rather than
-# a typo) from being confused with the general rule below.
-_BINARY_NAME_BASENAME_EXEMPTIONS = {
-    # @google/gemini-cli's bin is "gemini", not the package basename
-    # "gemini-cli".
-    "gemini-cli",
-}
-
-
-class TestBinaryNameMatchesPackageBasename:
-    """For a single-package provider, `npx -y <pkg>@<ver>` resolves the
-    package's OWN bin — so binary_name (the pre-installed wrapper the image
-    ships and resolve_acp_command() rewrites to) should normally just be that
-    package's basename, unless explicitly exempted. Multi-package specs are
-    exempt by construction: binary_name there is the entry command npx is
-    told to run, independent of any one package's own name."""
-
-    def test_binary_name_is_package_basename_or_exempted(self):
-        for key, spec in ACP_INSTALL_CATALOG.items():
-            if len(spec.packages) != 1:
-                continue
-            basename = spec.packages[0].name.rsplit("/", 1)[-1]
-            if key in _BINARY_NAME_BASENAME_EXEMPTIONS:
-                assert spec.binary_name != basename, (
-                    f"{key}: binary_name now matches the package basename "
-                    "— remove it from _BINARY_NAME_BASENAME_EXEMPTIONS"
-                )
-            else:
-                assert spec.binary_name == basename, (
-                    f"{key}: binary_name {spec.binary_name!r} does not match "
-                    f"package basename {basename!r}; add it to "
-                    "_BINARY_NAME_BASENAME_EXEMPTIONS if intentional"
-                )
-
-    def test_every_exemption_is_a_real_catalog_key(self):
-        assert _BINARY_NAME_BASENAME_EXEMPTIONS <= set(ACP_INSTALL_CATALOG)
-
-
 class TestDefaultPreinstalledACPProviders:
     def test_preserves_todays_default_image_contents(self):
         assert DEFAULT_PREINSTALLED_ACP_PROVIDERS == (

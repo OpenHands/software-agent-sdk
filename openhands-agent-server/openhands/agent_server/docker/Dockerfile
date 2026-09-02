@@ -146,6 +146,14 @@ RUN set -eux; \
     "$ACP_NODE_DIR/bin/node" --version; \
     PATH="$ACP_NODE_DIR/bin:$PATH" "$ACP_NODE_DIR/bin/npm" install -g $PACKAGES; \
     for bin in $WRAPPER_BINS; do \
+      # Fail the build rather than ship a wrapper that execs a missing target:
+      # a wrong binary_name is otherwise invisible until someone launches the
+      # provider, since the wrapper is only a shell script we chmod +x.
+      [ -x "$ACP_NODE_DIR/bin/$bin" ] || { \
+        echo "ACP wrapper target not installed: $ACP_NODE_DIR/bin/$bin" >&2; \
+        echo "(check binary_name in acp_install_catalog.py against the package's npm bin)" >&2; \
+        exit 1; \
+      }; \
       printf '#!/bin/sh\nPATH="%s/bin:$PATH" exec "%s/bin/%s" "$@"\n' \
         "$ACP_NODE_DIR" "$ACP_NODE_DIR" "$bin" \
         > "$ACP_WRAPPER_DIR/$bin"; \
