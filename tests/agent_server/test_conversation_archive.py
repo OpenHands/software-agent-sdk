@@ -14,8 +14,11 @@ from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.event_router import event_router
-from openhands.agent_server.models import StartConversationRequest
-from openhands.sdk import LLM, Agent, Message
+from openhands.agent_server.models import (
+    StartConversationRequest,
+    UpdateConversationRequest,
+)
+from openhands.sdk import LLM, Agent, Message, TextContent
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -53,13 +56,15 @@ async def _create_conversation(
             workspace=LocalWorkspace(working_dir=str(workspace)),
             confirmation_policy=NeverConfirm(),
             autotitle=False,
-            title=title,
             tags={"owner": "agent-a", "purpose": "archive-test"},
         )
     )
+    await service.update_conversation(info.id, UpdateConversationRequest(title=title))
     event_service = await service.get_event_service(info.id)
     assert event_service is not None
-    await event_service.send_message(Message(role="user", content="keep this history"))
+    await event_service.send_message(
+        Message(role="user", content=[TextContent(text="keep this history")])
+    )
     return info
 
 

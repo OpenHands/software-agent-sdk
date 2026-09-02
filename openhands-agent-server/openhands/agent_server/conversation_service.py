@@ -1840,9 +1840,11 @@ class ConversationService:
             if record is None and event_service is None:
                 return False
 
-            stored = (
-                event_service.stored if event_service is not None else record.stored
-            )
+            if event_service is not None:
+                stored = event_service.stored
+            else:
+                assert record is not None
+                stored = record.stored
             if (stored.archived_at is not None) == archived:
                 return True
 
