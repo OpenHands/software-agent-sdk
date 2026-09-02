@@ -4,6 +4,7 @@ See https://github.com/OpenHands/software-agent-sdk/issues/4682.
 """
 
 import asyncio
+import re
 import uuid
 
 import pytest
@@ -15,6 +16,18 @@ from openhands.sdk.agent.stream_context import (
     StreamDelta,
     StreamStarted,
 )
+from openhands.sdk.conversation.secret_registry import StreamOutputMask
+
+
+def _no_secrets() -> StreamOutputMask:
+    return StreamOutputMask(None, 0)
+
+
+def _masking(*values: str) -> StreamOutputMask:
+    pattern = re.compile(
+        "|".join(re.escape(v) for v in sorted(values, key=len, reverse=True))
+    )
+    return StreamOutputMask(pattern, max(len(v) for v in values))
 
 
 def _chunk(
@@ -34,7 +47,7 @@ def _chunk(
 
 
 def _make(
-    frames: list, forwarded: list | None = None, mask=lambda text: text
+    frames: list, forwarded: list | None = None, mask=_no_secrets
 ) -> StreamContext:
     return StreamContext(
         item_id=str(uuid.uuid4()),
@@ -69,14 +82,28 @@ def test_first_delta_opens_the_slot_with_the_anchor():
     assert isinstance(aborted, StreamAborted)
 
 
-def test_a_claimed_id_retires_the_slot_without_an_abort():
+def test_a_committed_id_retires_the_slot_without_an_abort():
     frames: list = []
     with _make(frames) as stream:
         stream.on_chunk(_chunk("hello"))
         claimed = stream.claim()
+        stream.commit()
 
     assert claimed == stream.item_id
     assert not any(isinstance(f, StreamAborted) for f in frames)
+
+
+def test_a_claim_that_never_commits_still_aborts():
+    """on_event can raise while persisting, after the id was handed out."""
+    frames: list = []
+    with pytest.raises(RuntimeError):
+        with _make(frames) as stream:
+            stream.on_chunk(_chunk("hello"))
+            stream.claim()
+            raise RuntimeError("persisting the durable event failed")
+
+    aborted = [f for f in frames if isinstance(f, StreamAborted)]
+    assert [f.reason for f in aborted] == ["RuntimeError"]
 
 
 def test_the_id_is_claimable_once():
@@ -145,9 +172,7 @@ def test_reasoning_and_text_are_separate_ordered_deltas():
 
 def test_deltas_are_masked_by_the_snapshot():
     frames: list = []
-    with _make(
-        frames, mask=lambda t: t.replace("hunter2", "<secret-hidden>")
-    ) as stream:
+    with _make(frames, mask=lambda: _masking("hunter2")) as stream:
         stream.on_chunk(_chunk("token is hunter2"))
         stream.claim()
 
@@ -175,7 +200,7 @@ def test_no_consumer_means_no_callback_for_the_llm():
         anchor_seq=None,
         on_token=None,
         on_stream=None,
-        mask=lambda t: t,
+        mask=_no_secrets,
     )
     assert silent.token_callback is None
 
@@ -191,7 +216,7 @@ def test_without_a_sink_nothing_is_minted_and_chunks_still_flow():
         anchor_seq=None,
         on_token=forwarded.append,
         on_stream=None,
-        mask=lambda t: t,
+        mask=_no_secrets,
     )
     with stream:
         stream.on_chunk(_chunk("hello"))
@@ -227,7 +252,7 @@ def test_a_broken_sink_does_not_fail_the_turn():
         anchor_seq=None,
         on_token=forwarded.append,
         on_stream=explode,
-        mask=lambda t: t,
+        mask=_no_secrets,
     )
     with stream:
         stream.on_chunk(_chunk("hello"))

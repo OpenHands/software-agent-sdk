@@ -3596,6 +3596,8 @@ class ACPAgent(AgentBase):
             llm_response_id=str(uuid.uuid4()),
         )
         on_event(action_event)
+        if self._stream is not None and minted:
+            self._stream.commit()
         on_event(
             ObservationEvent(
                 observation=FinishObservation.from_text(text=response_text),

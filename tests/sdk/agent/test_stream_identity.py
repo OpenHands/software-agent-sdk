@@ -219,6 +219,28 @@ def test_a_provider_failure_retires_the_slot_with_an_abort(tmp_path):
     assert aborted[0].item_id == started[0].item_id
 
 
+def test_a_persistence_failure_after_streaming_retires_the_slot(tmp_path):
+    """The id is handed out before the event is emitted; emitting can raise."""
+    frames: list = []
+    llm = _llm(
+        [Message(role="assistant", content=[TextContent(text="hello there")])],
+        ["hello ", "there"],
+    )
+    convo = _conversation(tmp_path, llm, frames)
+
+    def explode(event):
+        if isinstance(event, MessageEvent) and event.source == "agent":
+            raise RuntimeError("persisting the durable event failed")
+
+    with pytest.raises(RuntimeError):
+        convo.agent.step(convo, on_event=explode)
+
+    started = [f for f in frames if isinstance(f, StreamStarted)]
+    aborted = [f for f in frames if isinstance(f, StreamAborted)]
+    assert len(started) == len(aborted) == 1
+    assert aborted[0].item_id == started[0].item_id
+
+
 def test_no_stream_consumer_leaves_the_llm_free_to_skip_streaming(tmp_path):
     """Without a consumer the agent must not force a streaming completion."""
     llm = _llm([Message(role="assistant", content=[TextContent(text="hi")])], ["hi"])

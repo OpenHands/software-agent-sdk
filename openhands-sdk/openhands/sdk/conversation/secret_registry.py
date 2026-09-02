@@ -60,6 +60,52 @@ def _mask_model[ModelT: BaseModel](model: ModelT, mask: Callable[[str], str]) ->
     return model.model_copy(update=updates)
 
 
+class StreamOutputMask:
+    """Masks text that arrives in pieces.
+
+    A per-chunk masker cannot see a secret split across chunk boundaries, so
+    this holds back the shortest suffix that could still grow into one: the
+    longest registered value minus one character.
+    """
+
+    def __init__(self, pattern: re.Pattern[str] | None, max_len: int) -> None:
+        self._pattern = pattern
+        self._max_len = max_len
+        self._held = ""
+
+    def feed(self, text: str) -> str:
+        """Return the masked text that is safe to release now."""
+        pattern = self._pattern
+        if pattern is None:
+            return text
+        self._held += text
+        return self._release(pattern, max(len(self._held) - self._max_len + 1, 0))
+
+    def flush(self) -> str:
+        """Return what is still held back; no more input is coming."""
+        pattern = self._pattern
+        if pattern is None:
+            return ""
+        return self._release(pattern, len(self._held))
+
+    def _release(self, pattern: re.Pattern[str], cut: int) -> str:
+        out: list[str] = []
+        pos = 0
+        end = cut
+        for match in pattern.finditer(self._held):
+            # A match starting before the cut is already maximal: the cut
+            # leaves max_len-1 characters of lookahead behind it.
+            if match.start() >= cut:
+                break
+            out.append(self._held[pos : match.start()])
+            out.append("<secret-hidden>")
+            pos = match.end()
+            end = max(end, match.end())
+        out.append(self._held[pos:end])
+        self._held = self._held[end:]
+        return "".join(out)
+
+
 class SecretRegistry(OpenHandsModel):
     """Manages secrets and injects them into bash commands when needed.
 
@@ -220,8 +266,8 @@ class SecretRegistry(OpenHandsModel):
 
         return masked_text
 
-    def compile_output_mask(self) -> Callable[[str], str]:
-        """Return a masker over the values resolved *so far*.
+    def compile_stream_mask(self) -> StreamOutputMask:
+        """Return a streaming masker over the values resolved *so far*.
 
         For hot paths that cannot afford :meth:`mask_secrets_in_output`, which
         resolves uncached sources first — ``get_value()`` may block on network
@@ -231,17 +277,13 @@ class SecretRegistry(OpenHandsModel):
         with self._exported_values_lock:
             values = {value for value in self._exported_values.values() if value}
         if not values:
-            return lambda text: text
+            return StreamOutputMask(None, 0)
         # Longest first so an overlapping shorter value cannot mask half of a
         # longer one and leave the rest in cleartext.
         pattern = re.compile(
             "|".join(re.escape(v) for v in sorted(values, key=len, reverse=True))
         )
-
-        def mask(text: str) -> str:
-            return pattern.sub("<secret-hidden>", text) if text else text
-
-        return mask
+        return StreamOutputMask(pattern, max(len(v) for v in values))
 
     def mask_secrets_in_model[ModelT: BaseModel](self, model: ModelT) -> ModelT:
         """Return ``model`` with secret values masked in every nested string.

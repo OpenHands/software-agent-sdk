@@ -1368,6 +1368,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 )
 
         on_event(action_event)
+        if stream is not None and minted:
+            stream.commit()
         return action_event
 
     def _execute_action_event(

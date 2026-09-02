@@ -312,6 +312,10 @@ class ResponseDispatchMixin:
                     update={"critic_result": critic_result}
                 )
         on_event(msg_event)
+        # Retired only now: on_event can raise while persisting, and a slot
+        # retired before that leaves the client holding it open forever.
+        if stream is not None and minted:
+            stream.commit()
         return msg_event
 
     @staticmethod

@@ -17,6 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
+from openhands.sdk.conversation.secret_registry import StreamOutputMask
 from openhands.sdk.llm.streaming import LLMStreamChunk
 from openhands.sdk.logger import get_logger
 
@@ -80,17 +81,21 @@ class StreamContext:
         anchor_seq: int | None,
         on_token: Callable[[Any], None] | None,
         on_stream: StreamProgressCallbackType | None,
-        mask: Callable[[str], str],
+        mask: Callable[[], StreamOutputMask],
     ) -> None:
         self.item_id = item_id
         self._anchor_seq = anchor_seq
         self._on_token = on_token
         self._on_stream = on_stream
         self._mask = mask
+        # One masker per kind: text and reasoning are separately ordered, and a
+        # masker holds back a partial secret across the chunks of its own kind.
+        self._masks: dict[Literal["text", "reasoning"], StreamOutputMask] = {}
         self._attempt = 1
         self._order = itertools.count()
         self._started = False
         self._opened = False
+        self._reserved = False
         self._claimed = False
         self._chunk_id: str | None = None
 
@@ -108,7 +113,7 @@ class StreamContext:
             anchor_seq=length - 1 if length else None,
             on_token=on_token,
             on_stream=conversation.on_stream,
-            mask=state.secret_registry.compile_output_mask(),
+            mask=state.secret_registry.compile_stream_mask,
         )
 
     @property
@@ -148,20 +153,30 @@ class StreamContext:
         self._order = itertools.count()
         self._started = False
         self._chunk_id = None
+        # The new attempt re-streams the item, so the old tail is superseded.
+        self._masks.clear()
 
     def claim(self) -> str | None:
-        """Take the minted id for a durable event, retiring the slot.
+        """Reserve the minted id for a durable event being built.
 
-        ``None`` once taken, so a second durable event in the same step keeps
-        its own id rather than colliding.
+        ``None`` once reserved, so a second durable event in the same step
+        keeps its own id rather than colliding. Reserving does not retire the
+        slot: an event that is never emitted still owes an abort, so the
+        caller must :meth:`commit` once emission has succeeded.
         """
-        if self._claimed or self._on_stream is None:
+        if self._reserved or self._on_stream is None:
             return None
-        self._claimed = True
+        self._flush()
+        self._reserved = True
         return self.item_id
 
+    def commit(self) -> None:
+        """Retire the slot: the durable event carrying the id was emitted."""
+        if self._reserved:
+            self._claimed = True
+
     def close(self, reason: str) -> None:
-        """Emit ``StreamAborted`` unless a durable event claimed the id.
+        """Emit ``StreamAborted`` unless a durable event committed the id.
 
         Keyed on ever-opened, not on the current attempt: a retry that dies
         before its first token still owes an answer for the one that streamed.
@@ -169,6 +184,7 @@ class StreamContext:
         if not self._opened or self._claimed:
             return
         self._claimed = True
+        self._flush()
         self._emit(StreamAborted(self.item_id, self._attempt, reason))
 
     def __enter__(self) -> StreamContext:
@@ -194,13 +210,35 @@ class StreamContext:
         if not self._started:
             self._started = self._opened = True
             self._emit(StreamStarted(self.item_id, self._attempt, self._anchor_seq))
+        masker = self._masks.get(kind)
+        if masker is None:
+            masker = self._masks[kind] = self._mask()
+        released = masker.feed(text)
+        if released:
+            self._emit_content(kind, released, chunk_id, choice_index)
+
+    def _flush(self) -> None:
+        """Release the tail each masker holds back against a split secret."""
+        for kind, masker in self._masks.items():
+            held = masker.flush()
+            if held:
+                self._emit_content(kind, held, self._chunk_id, None)
+        self._masks.clear()
+
+    def _emit_content(
+        self,
+        kind: Literal["text", "reasoning"],
+        content: str,
+        chunk_id: str | None,
+        choice_index: int | None,
+    ) -> None:
         self._emit(
             StreamDelta(
                 item_id=self.item_id,
                 attempt=self._attempt,
                 order=next(self._order),
                 kind=kind,
-                content=self._mask(text),
+                content=content,
                 chunk_id=chunk_id,
                 choice_index=choice_index,
             )
