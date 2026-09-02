@@ -5,6 +5,7 @@ from logging import getLogger
 from typing import Any
 
 import httpx
+import litellm
 from litellm import model_cost
 from litellm.utils import get_model_info
 from pydantic import SecretStr
@@ -15,6 +16,23 @@ from openhands.sdk.llm.utils.openhands_provider import litellm_call_kwargs
 logger = getLogger(__name__)
 
 
+# Fields copied from the underlying model's pricing entry into a proxy alias
+# registration so the alias becomes priceable in litellm's global `model_cost`
+# map (which the cost instrumentation reads). Cache buckets are included even
+# when zero so litellm resolves providers such as `bedrock` that key cache
+# pricing off their presence (companion issue #4817 handles cache accuracy).
+_PRICING_FIELDS: tuple[str, ...] = (
+    "input_cost_per_token",
+    "output_cost_per_token",
+    "cache_read_input_token_cost",
+    "cache_creation_input_token_cost",
+    "max_input_tokens",
+    "max_output_tokens",
+    "litellm_provider",
+    "mode",
+)
+
+
 def _merge_raw_model_metadata(model_info: Mapping[str, Any]) -> dict[str, Any]:
     """Preserve raw LiteLLM capability fields."""
     key = model_info.get("key")
@@ -22,6 +40,82 @@ def _merge_raw_model_metadata(model_info: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return dict(model_info)
     return {**raw, **model_info}
+
+
+def _is_already_priceable(model: str) -> bool:
+    """True if litellm can already price `model` without SDK registration.
+
+    Covers both direct `model_cost` keys and provider-prefixed names that
+    litellm resolves by parsing the provider segment (e.g.
+    `anthropic/claude-sonnet-4-5-20250929`).
+    """
+    if model in model_cost:
+        return True
+    try:
+        litellm.cost_per_token(model=model, prompt_tokens=1, completion_tokens=1)
+        return True
+    except Exception:
+        return False
+
+
+def _register_proxy_alias_pricing(
+    alias: str,
+    underlying_model_info: Mapping[str, Any] | None,
+    proxy_model_info: Mapping[str, Any] | None,
+) -> None:
+    """Register a `litellm_proxy/*` alias into litellm's global `model_cost`.
+
+    A custom proxy model whose public name is not a litellm-known model id
+    (e.g. `prod/claude-sonnet-4-5-bedrock`) is silently priced `$0` by the
+    cost instrumentation: litellm strips the `litellm_proxy/` prefix, fails
+    to parse the first path segment as a provider, and `cost_per_token`
+    raises. Registering the alias with pricing derived from the underlying
+    model makes it priceable without renaming the proxy model. See #4816.
+    """
+    if not alias or _is_already_priceable(alias):
+        return
+
+    entry: dict[str, Any] = {}
+    if isinstance(underlying_model_info, Mapping):
+        entry.update(
+            {
+                f: underlying_model_info[f]
+                for f in _PRICING_FIELDS
+                if f in underlying_model_info
+            }
+        )
+    # Proxy-side overrides win when present (e.g. operator-set pricing).
+    if isinstance(proxy_model_info, Mapping):
+        entry.update(
+            {f: proxy_model_info[f] for f in _PRICING_FIELDS if f in proxy_model_info}
+        )
+
+    has_pricing = (
+        entry.get("input_cost_per_token") is not None
+        or entry.get("output_cost_per_token") is not None
+    )
+    if not has_pricing:
+        logger.debug(
+            "Could not derive pricing for litellm_proxy alias %r "
+            "(no underlying model pricing found); span cost will stay $0.",
+            alias,
+        )
+        return
+
+    entry.setdefault("mode", "chat")
+    try:
+        litellm.register_model({alias: entry})
+        logger.debug(
+            "Registered litellm_proxy alias %r into model_cost (provider=%s).",
+            alias,
+            entry.get("litellm_provider"),
+        )
+    except Exception as e:
+        logger.debug(
+            "Failed to register litellm_proxy alias %r into model_cost: %s",
+            alias,
+            e,
+        )
 
 
 @lru_cache
@@ -61,6 +155,24 @@ def _get_model_info_from_litellm_proxy(
         if current:
             model_info = current.get("model_info")
             logger.debug(f"Got model info from litellm proxy: {model_info}")
+
+            # Make custom proxy aliases priceable in litellm's global model_cost
+            # map so the cost instrumentation does not silently record $0 (#4816).
+            underlying_model = current.get("litellm_params", {}).get("model")
+            underlying_model_info = None
+            if isinstance(underlying_model, str) and underlying_model != stripped:
+                try:
+                    underlying_model_info = get_model_info(underlying_model)
+                except Exception as e:
+                    logger.debug(
+                        f"get_model_info(underlying={underlying_model}) failed: {e}"
+                    )
+            _register_proxy_alias_pricing(
+                alias=stripped,
+                underlying_model_info=underlying_model_info,
+                proxy_model_info=model_info,
+            )
+
             return model_info
     except Exception as e:
         logger.debug(
