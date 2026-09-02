@@ -5,6 +5,12 @@ version or a security deprecation is caught here instead of breaking the next
 agent-server image build. Credential-free; needs ``npm`` and network access to
 the registry (skipped when unavailable). See OpenHands/software-agent-sdk#4830
 P0-3.
+
+Deselected from the default run via the ``acp_live`` marker (see
+``tests/sdk/agent/test_acp_conformance.py`` for why): the SDK's default test
+job is a required merge check, and a live registry dependency must not be
+able to block unrelated PRs. Run explicitly with ``pytest -m acp_live``; CI
+runs it in the separate, non-required ``acp-live-tests`` job.
 """
 
 from __future__ import annotations
@@ -31,6 +37,8 @@ requires_npm = pytest.mark.skipif(
     shutil.which("npm") is None or not _npm_registry_reachable(),
     reason="npm not available, or npm registry unreachable",
 )
+
+pytestmark = pytest.mark.acp_live
 
 _ALL_PINS = [
     pytest.param(spec.key, pkg.name, pkg.version, id=f"{spec.key}:{pkg.pinned}")

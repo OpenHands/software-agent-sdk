@@ -13,6 +13,15 @@ set_session_mode / model selection) succeeds with a syntactically-present but
 invalid key, which is what makes this suite safe to run unauthenticated in
 fork PRs. Needs ``npx`` (Node.js) and network access to the npm registry;
 skipped when unavailable.
+
+Deselected from the default run via the ``acp_live`` marker (``addopts = -m
+'not stress and not acp_live'`` in pyproject.toml): the SDK's default test
+job is a *required* merge check, and an npm-registry blip or upstream ACP
+handshake hiccup — a real risk distinct from "registry unreachable," which
+the skip above already covers — must not be able to block unrelated PRs. Run
+explicitly with ``pytest -m acp_live``; CI runs it in the separate, non-
+required ``acp-live-tests`` job, gated on changes to ACP registry/catalog
+files (see ``.github/workflows/tests.yml``).
 """
 
 from __future__ import annotations
@@ -52,6 +61,8 @@ requires_npx = pytest.mark.skipif(
     shutil.which("npx") is None or not _npm_registry_reachable(),
     reason="npx (Node.js) not available, or npm registry unreachable",
 )
+
+pytestmark = pytest.mark.acp_live
 
 # Syntactically valid-looking but non-functional credentials. Enough for each
 # provider's auth-method selection to pick an env-var-backed method and clear
