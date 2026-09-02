@@ -137,6 +137,17 @@ async def test_archive_unarchive_is_reversible_filtered_and_idempotent(
         str(archived.id),
     }
 
+    default_count = await client.get("/api/conversations/count")
+    archived_count = await client.get(
+        "/api/conversations/count", params={"archive_filter": "ARCHIVED"}
+    )
+    all_count = await client.get(
+        "/api/conversations/count", params={"archive_filter": "ALL"}
+    )
+    assert default_count.json() == 1
+    assert archived_count.json() == 1
+    assert all_count.json() == 2
+
     events_after = await client.get(f"/api/conversations/{archived.id}/events/search")
     assert events_after.status_code == 200
     assert events_after.json()["items"] == history_before

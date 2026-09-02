@@ -23,6 +23,12 @@ export enum ConversationSortOrder {
   UPDATED_AT_DESC = 'UPDATED_AT_DESC',
 }
 
+export enum ConversationArchiveFilter {
+  ACTIVE = 'ACTIVE',
+  ARCHIVED = 'ARCHIVED',
+  ALL = 'ALL',
+}
+
 export interface ConversationInfo {
   id: ConversationID;
   /**
@@ -51,6 +57,7 @@ export interface ConversationInfo {
   title?: string;
   created_at?: string;
   updated_at?: string;
+  archived_at?: string | null;
   tags?: Record<string, string>;
   /**
    * HEAD of the conversation tree: the parent of the next appended event.
@@ -155,6 +162,12 @@ export interface ConversationSearchRequest {
   status?: ConversationExecutionStatus;
   sort_order?: ConversationSortOrder;
   tag?: string[];
+  archive_filter?: ConversationArchiveFilter;
+}
+
+export interface ConversationCountRequest {
+  status?: ConversationExecutionStatus;
+  archive_filter?: ConversationArchiveFilter;
 }
 
 export interface AskAgentRequest {

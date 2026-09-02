@@ -182,7 +182,7 @@ export type {
 export type { AgentOptions } from './agent/agent';
 
 export { EventSortOrder, AgentExecutionStatus, ConversationExecutionStatus } from './types/base';
-export { ConversationSortOrder } from './models/conversation';
+export { ConversationArchiveFilter, ConversationSortOrder } from './models/conversation';
 
 // Workspace models
 export type {
@@ -267,6 +267,7 @@ export type {
   LookupSecret,
   SecretObject,
   ConversationSearchRequest,
+  ConversationCountRequest,
   ConversationSearchResponse,
   ACPConversationSearchResponse,
   AskAgentRequest,

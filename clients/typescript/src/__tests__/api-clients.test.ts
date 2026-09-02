@@ -1,5 +1,6 @@
 import {
   Agent,
+  ConversationArchiveFilter,
   ConversationExecutionStatus,
   ConversationManager,
   HttpClient,
@@ -2313,6 +2314,44 @@ describe('Auxiliary API clients', () => {
       8,
       'http://example.com/api/conversations/c1',
       expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ title: 'New title' }) })
+    );
+  });
+
+  it('ConversationClient wraps conversation archive endpoints and filters', async () => {
+    global.fetch = jest.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ success: true, items: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+    ) as typeof fetch;
+
+    const client = new ConversationClient({ host: 'http://example.com' });
+    await client.searchConversations({ archive_filter: ConversationArchiveFilter.ALL });
+    await client.countConversations({ archive_filter: ConversationArchiveFilter.ARCHIVED });
+    await client.archiveConversation('c1');
+    await client.unarchiveConversation('c1');
+
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      'http://example.com/api/conversations/search?archive_filter=ALL',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://example.com/api/conversations/count?archive_filter=ARCHIVED',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      3,
+      'http://example.com/api/conversations/c1/archive',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ confirmed: true }) })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      4,
+      'http://example.com/api/conversations/c1/unarchive',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({}) })
     );
   });
 
