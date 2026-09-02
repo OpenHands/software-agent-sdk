@@ -1,10 +1,9 @@
 import re
 from pathlib import Path
 
-from openhands.sdk.settings.acp_providers import (
-    CLAUDE_AGENT_ACP_VERSION,
-    CODEX_ACP_VERSION,
-    GEMINI_CLI_VERSION,
+from openhands.sdk.settings.acp_install_catalog import (
+    ACP_INSTALL_CATALOG,
+    DEFAULT_PREINSTALLED_ACP_PROVIDERS,
 )
 
 
@@ -25,17 +24,14 @@ AGENT_SERVER_SPEC = (
     / "agent_server"
     / "agent-server.spec"
 )
-
-_DOCKERFILE_ACP_PACKAGE = re.compile(
-    r'^\s*(?P<key>[\w-]+)\) PACKAGES="\$PACKAGES '
-    r'(?P<package>@[^@\s]+)@(?P<version>[^\s";]+)";',
-    re.MULTILINE,
+ACP_INSTALL_CATALOG_PY = (
+    REPO_ROOT
+    / "openhands-sdk"
+    / "openhands"
+    / "sdk"
+    / "settings"
+    / "acp_install_catalog.py"
 )
-_REGISTRY_ACP_PACKAGES = {
-    "claude-code": ("@agentclientprotocol/claude-agent-acp", CLAUDE_AGENT_ACP_VERSION),
-    "codex": ("@agentclientprotocol/codex-acp", CODEX_ACP_VERSION),
-    "gemini-cli": ("@google/gemini-cli", GEMINI_CLI_VERSION),
-}
 
 
 def test_server_workflow_passes_git_metadata_build_args() -> None:
@@ -117,33 +113,56 @@ def test_agent_server_binary_copies_openhands_distribution_metadata() -> None:
         assert f'*copy_metadata("{distribution}")' in spec_text
 
 
-def test_agent_server_dockerfile_acp_package_versions_match_registry() -> None:
+def test_agent_server_dockerfile_has_no_hardcoded_acp_packages() -> None:
+    """The acp-providers stage must resolve packages/versions from the
+    dependency-free catalog at build time, not from Dockerfile-baked arms.
+    """
     dockerfile_text = AGENT_SERVER_DOCKERFILE.read_text(encoding="utf-8")
-    case_arms = dockerfile_text.partition('case "$provider" in')[2].partition("esac")[0]
-    dockerfile_packages = list(_DOCKERFILE_ACP_PACKAGE.finditer(case_arms))
+    acp_stage = dockerfile_text.partition("FROM python:3.13-bookworm AS acp-providers")[
+        2
+    ].partition("####")[0]
 
-    assert dockerfile_packages, (
-        f"No ACP package versions found in {AGENT_SERVER_DOCKERFILE} "
-        "INSTALL_ACP_PROVIDERS case arms"
+    assert 'case "$provider"' not in acp_stage, (
+        "acp-providers stage should no longer branch on a hardcoded provider-key list"
     )
+    for spec in ACP_INSTALL_CATALOG.values():
+        for pkg in spec.packages:
+            assert pkg.pinned not in acp_stage, (
+                f"{AGENT_SERVER_DOCKERFILE}: found hardcoded package pin "
+                f"{pkg.pinned!r} in the acp-providers stage; it should come "
+                "from acp_install_catalog.py at build time instead"
+            )
 
-    for match in dockerfile_packages:
-        provider_key = match["key"]
-        registry_package = _REGISTRY_ACP_PACKAGES.get(provider_key)
-        if registry_package is None:
-            continue
-        expected_package, expected_version = registry_package
-        dockerfile_package = match["package"]
-        dockerfile_version = match["version"]
 
-        assert dockerfile_package == expected_package, (
-            f"{AGENT_SERVER_DOCKERFILE}: ACP provider {provider_key!r} uses package "
-            f"{dockerfile_package}, but acp_providers.py uses {expected_package}"
-        )
-        assert dockerfile_version == expected_version, (
-            f"{AGENT_SERVER_DOCKERFILE}: ACP package {dockerfile_package} has version "
-            f"{dockerfile_version}, but acp_providers.py pins {expected_version}"
-        )
+def test_agent_server_dockerfile_acp_stage_uses_install_catalog() -> None:
+    dockerfile_text = AGENT_SERVER_DOCKERFILE.read_text(encoding="utf-8")
+
+    assert (
+        "COPY openhands-sdk/openhands/sdk/settings/acp_install_catalog.py "
+        "/tmp/acp_install_catalog.py" in dockerfile_text
+    )
+    assert "python3 /tmp/acp_install_catalog.py" in dockerfile_text
+    # The COPY path above is relative to the build context root; confirm it
+    # actually resolves, matching the relpath build.py stages for the
+    # empty-context `base-image-minimal` fast path.
+    assert ACP_INSTALL_CATALOG_PY.is_file()
+
+
+def test_default_preinstalled_acp_providers_matches_dockerfile_and_workflow() -> None:
+    """DEFAULT_PREINSTALLED_ACP_PROVIDERS is the single source for the
+    default `INSTALL_ACP_PROVIDERS` value baked into the Dockerfile ARG and
+    the server workflow's non-dispatch default; both are plain text (a
+    Dockerfile/workflow can't import Python), so this guards them from
+    drifting apart.
+    """
+    default_csv = ",".join(DEFAULT_PREINSTALLED_ACP_PROVIDERS)
+    assert default_csv == "claude-code,codex,gemini-cli"
+
+    dockerfile_text = AGENT_SERVER_DOCKERFILE.read_text(encoding="utf-8")
+    assert f"ARG INSTALL_ACP_PROVIDERS={default_csv}" in dockerfile_text
+
+    workflow_text = SERVER_WORKFLOW.read_text(encoding="utf-8")
+    assert f"'{default_csv}'" in workflow_text
 
 
 def test_server_workflow_publishes_python_slim_without_acp_providers() -> None:
