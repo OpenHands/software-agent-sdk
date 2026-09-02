@@ -312,15 +312,18 @@ class ConversationState(OpenHandsModel):
             parent = ROOT_PARENT_ID
         return event.model_copy(update={"parent_id": parent})
 
-    def append_event(self, event: Event) -> Event:
+    def append_event(self, event: Event) -> int:
         """Single storage chokepoint: stamp parent_id, append, advance HEAD.
 
         Stamping here (not only at the emit callback) ensures no event enters the
         log unstamped, even one a hook swaps in downstream. ``fork`` copies
         pre-stamped events and sets HEAD itself, so it bypasses this.
+
+        Returns:
+            The sequence number ``EventLog`` assigned to the appended event.
         """
         event = self._stamp_parent_id(event)
-        self._events.append(event)
+        seq = self._events.append(event)
         # ConversationStateUpdateEvent is a state-sync artifact, not a tree node;
         # advancing HEAD for it would recurse (moving HEAD re-emits one).
         from openhands.sdk.event.conversation_state import (
@@ -331,7 +334,7 @@ class ConversationState(OpenHandsModel):
             self.leaf_event_id = event.id
             if self.head_is_empty:  # HEAD now points at a real event again
                 self.head_is_empty = False
-        return event
+        return seq
 
     @property
     def view(self) -> View:
