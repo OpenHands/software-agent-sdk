@@ -5,7 +5,7 @@ members = ["openhands-sdk", "openhands-tools", "openhands-workspace", "openhands
 # Security: Apply workspace-wide dependency guardrails.
 [tool.uv]
 exclude-newer = "7 days"  # Avoid packages uploaded in the last 7 days.
-exclude-newer-package = { litellm = "2026-07-20T00:00:00Z" }  # Bump or remove when upgrading litellm past 1.93.0
+exclude-newer-package = { litellm = "2026-07-20T00:00:00Z", lmnr = "2026-08-23T00:00:00Z" }  # lmnr: allow 0.7.60 streaming-token fix through the 7-day guardrail
 constraint-dependencies = [
     "starlette>=0.49.1",  # CVE-2025-62727
     "aiohttp>=3.13.3",  # CVE-2025-69223 + 7 others
@@ -96,10 +96,11 @@ testpaths = [
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "-v --tb=short -m 'not stress'"
+addopts = "-v --tb=short -m 'not stress and not acp_live'"
 asyncio_mode = "auto"
 markers = [
     "stress: stress / scale tests, deselected by default. Run with `pytest -m stress` (see tests/agent_server/stress/__init__.py for details).",
+    "acp_live: live ACP conformance/pin-installability tests that launch real npx subprocesses and hit the npm registry, deselected by default. Run with `pytest -m acp_live` (see tests/sdk/agent/test_acp_conformance.py).",
 ]
 
 # Pyright configuration for PEP 420 namespace packages

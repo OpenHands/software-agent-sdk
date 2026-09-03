@@ -224,17 +224,15 @@ def get_git_changes(cwd: str | Path, ref: str | None = None) -> list[GitChange]:
     # First try the workspace directory
     changes = get_changes_in_repo(cwd, ref=ref)
 
-    # Filter out any changes which are in one of the git directories
+    # Filter out any changes which are inside one of the nested repositories.
+    # This compares path ancestry rather than string prefixes: a nested
+    # repository named "foo" must not swallow a root-repository change to
+    # "foobar/file.py" or "foo-config.yaml", which merely share its name as a
+    # prefix.
     changes = [
         change
         for change in changes
-        if next(
-            iter(
-                git_dir for git_dir in git_dirs if str(change.path).startswith(git_dir)
-            ),
-            None,
-        )
-        is None
+        if not any(Path(change.path).is_relative_to(git_dir) for git_dir in git_dirs)
     ]
 
     # Add changes from git directories

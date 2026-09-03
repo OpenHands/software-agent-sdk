@@ -1202,7 +1202,9 @@ class ConversationSettings(BaseModel):
 
 AgentKind = Literal["openhands", "llm", "acp"]
 
-ACPServerKind = Literal["claude-code", "codex", "gemini-cli", "custom"]
+ACPServerKind = Literal[
+    "claude-code", "codex", "gemini-cli", "kimi-code", "pi", "custom"
+]
 """Known ACP backend servers the GUI can pick from.
 
 ``custom`` means the user supplies the raw ``acp_command`` themselves;
@@ -1389,7 +1391,7 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             include_default_tools.append(SwitchLLMTool.__name__)
 
         llm = create_subscription_llm_from_config(self.llm)
-        condenser = None if llm.is_subscription else self.build_condenser(llm)
+        condenser = self.build_condenser(llm)
         return Agent(
             llm=llm,
             tools=tools,

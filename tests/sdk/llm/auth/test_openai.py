@@ -180,7 +180,7 @@ def test_openai_subscription_auth_create_llm_no_credentials(tmp_path):
     auth = OpenAISubscriptionAuth(credential_store=store)
 
     with pytest.raises(ValueError, match="No credentials available"):
-        auth.create_llm(model="gpt-5.6")
+        auth.create_llm(model="gpt-5.6-sol")
 
 
 def test_openai_subscription_auth_create_llm_success(tmp_path):
@@ -197,9 +197,9 @@ def test_openai_subscription_auth_create_llm_success(tmp_path):
     )
     store.save(creds)
 
-    llm = auth.create_llm(model="gpt-5.6")
+    llm = auth.create_llm(model="gpt-5.6-sol")
 
-    assert llm.model == "openai/gpt-5.6"
+    assert llm.model == "openai/gpt-5.6-sol"
     assert llm.api_key is None
     assert llm._get_litellm_api_key_value() == "test_access_token"
     assert llm.auth_type == "subscription"
