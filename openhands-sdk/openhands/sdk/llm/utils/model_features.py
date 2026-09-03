@@ -51,6 +51,7 @@ class ModelFeatures:
     # Effective capability from LiteLLM metadata plus SDK overrides.
     supports_vision: bool
     sources: Mapping[str, str] = field(default_factory=dict)
+    supports_dsml_tool_calls: bool = False
 
 
 LITELLM_PROXY_PREFIX = "litellm_proxy/"
@@ -313,6 +314,24 @@ def _optional_bool(source: Mapping[str, Any] | None, key: str) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
+def _resolved_bool(
+    key: str,
+    *,
+    overrides: Mapping[str, Any] | None,
+    metadata: Mapping[str, Any] | None,
+    fallback: bool,
+    metadata_key: str | None = None,
+) -> bool:
+    """Resolve a boolean capability without losing an explicit ``False``."""
+    override = _optional_bool(overrides, key)
+    if override is not None:
+        return override
+    discovered = _optional_bool(metadata, metadata_key or key)
+    if discovered is not None:
+        return discovered
+    return fallback
+
+
 ALLOWED_OPENAI_PARAMS_KEY = "allowed_openai_params"
 
 _REQUEST_PARAM_CAPABILITIES: dict[str, str] = {
@@ -443,4 +462,10 @@ def get_features(
         requires_inline_image_data=resolve("requires_inline_image_data", False),
         supports_vision=resolve("supports_vision", _model_supports_vision(model)),
         sources=sources,
+        supports_dsml_tool_calls=_resolved_bool(
+            "supports_dsml_tool_calls",
+            overrides=overrides,
+            metadata=model_info,
+            fallback=model_matches(model, ("deepseek-v4", "deepseek_v4")),
+        ),
     )
