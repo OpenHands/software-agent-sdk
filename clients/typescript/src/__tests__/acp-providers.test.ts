@@ -9,7 +9,9 @@ import type { ACPProviderKey } from '../index';
  * `api_key_env_var`, `base_url_env_var`, and `file_secrets`.
  */
 describe('ACP provider credential descriptors', () => {
-  const KEYS: ACPProviderKey[] = ['claude-code', 'codex', 'gemini-cli'];
+  // Derived, so a provider added to the registry is covered here without an
+  // edit — and cannot be added without these invariants applying to it.
+  const KEYS = Object.keys(ACP_PROVIDERS) as ACPProviderKey[];
 
   it('exposes an entry for each built-in provider', () => {
     for (const key of KEYS) {

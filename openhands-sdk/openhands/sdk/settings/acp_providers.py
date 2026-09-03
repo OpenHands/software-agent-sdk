@@ -8,7 +8,8 @@ Each record captures the static properties that are known at configuration time
 - ``default_command``       default ``npx``-based launch command
 - ``api_key_env_var``       env var the subprocess expects for its API key
 - ``base_url_env_var``      env var for proxy/base-URL routing (or ``None``)
-- ``default_session_mode``  ACP mode ID that disables permission prompts
+- ``default_session_mode``  ACP mode ID that disables permission prompts,
+                            or ``None`` when the server has no such mode
 - ``agent_name_patterns``   lowercase substrings in the runtime agent name;
                             used by ``ACPAgent`` to auto-detect mode / protocol
 - ``supports_set_session_model``  whether the provider applies its *initial*
@@ -188,14 +189,17 @@ class ACPProviderInfo:
     ``None`` if the provider does not support env-based base-URL override.
     """
 
-    default_session_mode: str
-    """ACP session-mode ID set right after ``session/new``.
+    default_session_mode: str | None
+    """ACP session-mode ID set right after ``session/new``, or ``None`` to skip
+    the call.
 
     For servers with a permission-suppressing mode that is the value:
     ``bypassPermissions`` (claude-agent-acp), ``agent-full-access``
     (@agentclientprotocol/codex-acp).
     gemini-cli uses ``default`` (its ``yolo`` mode errors at init); the ACP
     bridge auto-approves permission requests, so the mode doesn't gate prompts.
+    ``None`` for a server that exposes no permission mode at all — sending one
+    would fail session init to no purpose.
     """
 
     agent_name_patterns: tuple[str, ...]

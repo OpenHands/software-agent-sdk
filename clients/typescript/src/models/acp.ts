@@ -16,11 +16,18 @@ import providersData from './acp-providers.json';
 /**
  * Stable registry key for a built-in ACP provider.
  *
+ * Derived from the mirrored data, so a provider added to `acp-providers.json`
+ * (regenerated from the Python registry by `check-acp-drift.py --write`)
+ * widens this union too. Spelled out by hand the two could drift: the drift
+ * check compares only the JSON, so a provider present in the runtime map but
+ * missing from the union was a compile error for consumers while CI here
+ * stayed green.
+ *
  * Does **not** include `'custom'` — `custom` is a UI-side discriminator
  * meaning "user typed their own command" and intentionally has no registry
  * entry.
  */
-export type ACPProviderKey = 'claude-code' | 'codex' | 'gemini-cli';
+export type ACPProviderKey = keyof typeof providersData;
 
 /**
  * One selectable model for a built-in ACP provider's model picker. Mirrors
@@ -77,8 +84,11 @@ export interface ACPProviderInfo {
   readonly api_key_env_var: string | null;
   /** `null` if the provider does not support env-based base-URL override. */
   readonly base_url_env_var: string | null;
-  /** ACP session-mode ID that suppresses all permission prompts. */
-  readonly default_session_mode: string;
+  /**
+   * ACP session-mode ID that suppresses all permission prompts, or `null` when
+   * the server exposes no permission mode to set.
+   */
+  readonly default_session_mode: string | null;
   /** Lowercase substring fragments matched against the runtime agent name. */
   readonly agent_name_patterns: readonly string[];
   /**
