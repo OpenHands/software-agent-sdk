@@ -450,6 +450,10 @@ def test_install_reports_which_field_is_wrong_for_bad_repo_path(
     assert install.status_code == 400
     assert "demo-extensio" in install.json()["detail"]
     assert "not found" in install.json()["detail"]
+    # The canvas client classifies any message containing "failed to fetch" as
+    # a network outage and replaces it with a "Disconnected" toast, which would
+    # hide the reason we just went to the trouble of reporting.
+    assert "failed to fetch" not in install.json()["detail"].lower()
 
 
 def test_install_reports_missing_manifest_at_resolved_location(

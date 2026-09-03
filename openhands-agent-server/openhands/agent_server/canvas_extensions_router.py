@@ -148,7 +148,7 @@ class UninstallCanvasExtensionResponse(BaseModel):
     "/install",
     response_model=InstalledCanvasExtensionResponse,
     responses={
-        400: {"description": "Failed to fetch canvas extension source"},
+        400: {"description": "Could not read canvas extension source"},
         409: {"description": "Canvas extension already installed (use force=true)"},
         422: {"description": "Invalid canvas extension (bad manifest, etc.)"},
     },
@@ -181,10 +181,13 @@ def install_canvas_extension_endpoint(
         # Pass the specific reason through -- which of source/ref/repo_path is
         # wrong is the whole diagnostic, and a generic message misattributes a
         # bad repo_path to the source. Redacted in case a URL carried a token.
+        # Deliberately not worded "failed to fetch": the canvas client treats
+        # that phrase as a network outage and hides the reason behind a
+        # "Disconnected, check your network" toast.
         raise HTTPException(
             status_code=400,
             detail=(
-                "Failed to fetch canvas extension source: "
+                "Could not read canvas extension source: "
                 f"{redact_url_credentials(str(e))}"
             ),
         )
