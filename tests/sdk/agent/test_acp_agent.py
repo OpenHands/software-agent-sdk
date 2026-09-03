@@ -44,6 +44,7 @@ from openhands.sdk.agent.acp_agent import (
     _mcp_config_to_acp_servers,
     _npx_package,
     _OpenHandsACPBridge,
+    _preconfigured_credentials,
     _reapply_session_model_on_resume,
     _select_auth_method,
     _serialize_tool_content,
@@ -76,6 +77,7 @@ from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import ImageContent, Message, TextContent
 from openhands.sdk.mcp.config import coerce_mcp_config
 from openhands.sdk.secret import SecretSource
+from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
 from openhands.sdk.skills import KeywordTrigger, Skill
 from openhands.sdk.tool.builtins.finish import FinishAction
 from openhands.sdk.utils.cipher import Cipher
@@ -9636,3 +9638,130 @@ class TestACPStepMasksPersistedTurn:
         )
         assert "supersecret" not in finish.action.message
         assert finish.action.message == "the value is <secret-hidden> now"
+
+
+class TestPreconfiguredCredentials:
+    """A server whose advertised auth methods we cannot perform may still be
+    authenticated out of band, so the SDK must be able to tell "we could not
+    authenticate" from "we did not need to".
+
+    Sourced from the provider's registry record rather than provider names, so
+    it holds for a provider added later without touching this code.
+    """
+
+    def test_reports_the_provider_api_key_when_present(self):
+        provider = ACP_PROVIDERS["gemini-cli"]
+        assert _preconfigured_credentials(provider, (), {"GEMINI_API_KEY": "k"}) == [
+            "GEMINI_API_KEY"
+        ]
+
+    def test_ignores_another_providers_key(self):
+        provider = ACP_PROVIDERS["gemini-cli"]
+        assert _preconfigured_credentials(provider, (), {"OPENAI_API_KEY": "k"}) == []
+
+    def test_reports_a_materialised_file_secret_pointed_at_a_directory(self, tmp_path):
+        spec = ACP_PROVIDERS["codex"].file_secrets[0]
+        (tmp_path / spec.filename).write_text("{}", encoding="utf-8")
+        env = {spec.env_var: str(tmp_path)}
+        assert _preconfigured_credentials(None, (spec,), env) == [spec.secret_name]
+
+    def test_ignores_a_file_secret_whose_file_is_absent(self, tmp_path):
+        spec = ACP_PROVIDERS["codex"].file_secrets[0]
+        env = {spec.env_var: str(tmp_path)}
+        assert _preconfigured_credentials(None, (spec,), env) == []
+
+    def test_no_provider_and_no_specs_reports_nothing(self):
+        assert _preconfigured_credentials(None, (), {"ANTHROPIC_API_KEY": "k"}) == []
+
+
+class TestAuthSelectionFailureReason:
+    """The reason line must name what is actually missing.
+
+    Two shapes it could not describe before: a provider whose own key var is
+    unset, and a login only an interactive terminal can complete — which is
+    what every recently added harness advertises, so the old text ("no
+    supported credential source is available") implied a missing credential
+    where none was ever expected.
+    """
+
+    @staticmethod
+    def _method(method_id: str, method_type: str | None = None) -> MagicMock:
+        m = MagicMock()
+        m.id = method_id
+        m.type = method_type
+        return m
+
+    def test_names_the_providers_unset_key_var(self):
+        reason = _auth_selection_failure_reason(
+            [self._method("some-login")], {}, ACP_PROVIDERS["gemini-cli"]
+        )
+        assert "GEMINI_API_KEY is unset" in reason
+
+    def test_names_a_terminal_only_login(self):
+        reason = _auth_selection_failure_reason(
+            [self._method("login", "terminal")], {}, None
+        )
+        assert "login needs an interactive terminal" in reason
+
+    def test_falls_back_to_the_generic_reason(self):
+        assert (
+            _auth_selection_failure_reason([self._method("mystery")], {}, None)
+            == "no supported credential source is available"
+        )
+
+
+class TestUnperformableAuthMethodLogging:
+    """What the log says when the server's only auth method is one the runtime
+    cannot perform — an interactive login, which is what every recently added
+    harness advertises.
+
+    The session still starts, because these CLIs read their key from the
+    environment at generation time, so warning "no matching credential is
+    available ... session creation may fail" on every start was both alarming
+    and wrong.
+    """
+
+    @staticmethod
+    def _start_with_auth_method(agent, tmp_path, *, method_id: str, registry_secrets):
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+
+        state = _make_state(tmp_path)
+        for name, value in registry_secrets.items():
+            state.secret_registry.update_secrets(
+                {name: StaticSecret(value=SecretStr(value))}
+            )
+        conn = TestACPFileSecretMaterialisation._make_conn(
+            agent_name="gemini-cli", auth_method=method_id
+        )
+        with patch.dict("os.environ", {}, clear=True):
+            TestACPFileSecretMaterialisation._run_start(agent, state, conn=conn)
+
+    def test_reports_the_credential_in_use_instead_of_warning(self, tmp_path, caplog):
+        agent = _make_agent(acp_server="gemini-cli")
+        with caplog.at_level("INFO"):
+            self._start_with_auth_method(
+                agent,
+                tmp_path,
+                method_id="some-interactive-login",
+                registry_secrets={"GEMINI_API_KEY": "k"},
+            )
+
+        assert "using the already-configured credential(s) ['GEMINI_API_KEY']" in (
+            caplog.text
+        )
+        assert "session creation may fail" not in caplog.text
+
+    def test_still_warns_when_nothing_is_configured(self, tmp_path, caplog):
+        agent = _make_agent(acp_server="gemini-cli")
+        with caplog.at_level("INFO"):
+            self._start_with_auth_method(
+                agent,
+                tmp_path,
+                method_id="some-interactive-login",
+                registry_secrets={},
+            )
+
+        assert "session creation may fail" in caplog.text
+        assert "GEMINI_API_KEY is unset" in caplog.text

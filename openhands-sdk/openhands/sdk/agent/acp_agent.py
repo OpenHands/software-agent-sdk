@@ -27,7 +27,14 @@ import threading
 import time
 import uuid
 import weakref
-from collections.abc import Awaitable, Callable, Collection, Generator, Iterable
+from collections.abc import (
+    Awaitable,
+    Callable,
+    Collection,
+    Generator,
+    Iterable,
+    Sequence,
+)
 from concurrent.futures import Future
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
@@ -280,6 +287,35 @@ _AUTH_METHOD_ENV_MAP: dict[str, str] = {
 _GEMINI_OAUTH_PATH = Path(".gemini") / "oauth_creds.json"
 
 
+def _preconfigured_credentials(
+    provider: ACPProviderInfo | None,
+    specs: Sequence[ACPFileSecretSpec],
+    env: dict[str, str],
+) -> list[str]:
+    """Credential sources already in place, named as they were supplied.
+
+    A server whose advertised auth methods we cannot perform may still be
+    authenticated out of band — from a credential file seeded onto disk, or
+    from the provider key it reads straight out of its environment. Both make
+    "no credential is available" the wrong thing to say. Read off the registry
+    record rather than provider names, so this holds for any provider.
+    """
+    present: list[str] = []
+    for spec in specs:
+        location = env.get(spec.env_var)
+        if not location:
+            continue
+        path = Path(location)
+        if spec.env_points_to == "dir":
+            path = path / spec.filename
+        if path.is_file():
+            present.append(spec.secret_name)
+    api_key_var = provider.api_key_env_var if provider is not None else None
+    if api_key_var and env.get(api_key_var):
+        present.append(api_key_var)
+    return present
+
+
 def _select_auth_method(
     auth_methods: list[Any],
     env: dict[str, str],
@@ -325,7 +361,11 @@ def _select_auth_method(
     return None
 
 
-def _auth_selection_failure_reason(auth_methods: list[Any], env: dict[str, str]) -> str:
+def _auth_selection_failure_reason(
+    auth_methods: list[Any],
+    env: dict[str, str],
+    provider: ACPProviderInfo | None = None,
+) -> str:
     method_ids = {m.id for m in auth_methods}
     reasons: list[str] = []
     if "chat-gpt" in method_ids:
@@ -338,15 +378,33 @@ def _auth_selection_failure_reason(auth_methods: list[Any], env: dict[str, str])
         env.get(name) for name in ("CODEX_API_KEY", "OPENAI_API_KEY")
     ):
         reasons.append("CODEX_API_KEY and OPENAI_API_KEY are unset")
+    if provider is not None and provider.api_key_env_var:
+        if not env.get(provider.api_key_env_var):
+            reasons.append(f"{provider.api_key_env_var} is unset")
+    # ``type: "terminal"`` marks a login only an interactive TTY can complete,
+    # which the runtime does not have. Named so the log says why the method was
+    # never a candidate rather than implying a missing credential.
+    terminal_ids = sorted(
+        m.id for m in auth_methods if getattr(m, "type", None) == "terminal"
+    )
+    if terminal_ids:
+        reasons.append(
+            f"{', '.join(terminal_ids)} needs an interactive terminal, which the "
+            "headless runtime cannot provide"
+        )
     return "; ".join(reasons) or "no supported credential source is available"
 
 
-def _warn_auth_selection_failure(auth_methods: list[Any], env: dict[str, str]) -> None:
+def _warn_auth_selection_failure(
+    auth_methods: list[Any],
+    env: dict[str, str],
+    provider: ACPProviderInfo | None = None,
+) -> None:
     logger.warning(
         "ACP server offers auth methods %s but no matching credential is available "
         "(%s) — session creation may fail",
         [m.id for m in auth_methods],
-        _auth_selection_failure_reason(auth_methods, env),
+        _auth_selection_failure_reason(auth_methods, env, provider),
     )
 
 
@@ -2997,7 +3055,28 @@ class ACPAgent(AgentBase):
                         ) from exc
                     await self._flush_file_credentials()
                 else:
-                    _warn_auth_selection_failure(auth_methods, env)
+                    # A server whose advertised methods we cannot perform may
+                    # still be authenticated out of band — from a seeded
+                    # credential file or the provider key it reads out of the
+                    # environment — so warning about a login we cannot do
+                    # would be noise whenever either is present.
+                    auth_provider = (
+                        self._resolved_provider()
+                        or detect_acp_provider_by_agent_name(agent_name)
+                    )
+                    configured = _preconfigured_credentials(
+                        auth_provider, self.acp_file_secrets, env
+                    )
+                    if configured:
+                        logger.info(
+                            "ACP server offers auth methods %s that cannot be "
+                            "performed here; using the already-configured "
+                            "credential(s) %s instead",
+                            [m.id for m in auth_methods],
+                            configured,
+                        )
+                    else:
+                        _warn_auth_selection_failure(auth_methods, env, auth_provider)
 
             # Resume the prior ACP session if we have its id.  If the server
             # has forgotten it (state wiped, new host, etc.) fall through to
