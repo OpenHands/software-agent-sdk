@@ -38,6 +38,15 @@
     "default_model": "opus[1m]",
     "default_session_mode": "bypassPermissions",
     "display_name": "Claude Code",
+    "env_conflicts": [
+      {
+        "dominant": "CLAUDE_CODE_OAUTH_TOKEN",
+        "strip": [
+          "ANTHROPIC_API_KEY",
+          "ANTHROPIC_BASE_URL"
+        ]
+      }
+    ],
     "file_secrets": [],
     "key": "claude-code",
     "session_meta_key": "claudeCode",
@@ -79,6 +88,7 @@
     "default_model": "gpt-5.5",
     "default_session_mode": "agent-full-access",
     "display_name": "Codex",
+    "env_conflicts": [],
     "file_secrets": [
       {
         "env_points_to": "dir",
@@ -142,6 +152,7 @@
     "default_model": "auto",
     "default_session_mode": "default",
     "display_name": "Gemini CLI",
+    "env_conflicts": [],
     "file_secrets": [
       {
         "env_points_to": "file",
@@ -179,6 +190,7 @@
     "default_model": null,
     "default_session_mode": "yolo",
     "display_name": "Kimi Code",
+    "env_conflicts": [],
     "file_secrets": [
       {
         "env_points_to": "dir",

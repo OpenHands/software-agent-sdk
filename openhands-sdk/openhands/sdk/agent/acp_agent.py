@@ -94,11 +94,15 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.observability.laminar import maybe_init_laminar, observe
 from openhands.sdk.settings.acp_providers import (
+    ACP_PROVIDERS,
+    ACPEnvConflictSpec,
     ACPFileSecretSpec,
+    ACPProviderInfo,
     build_session_model_meta,
     default_acp_file_secrets,
     detect_acp_provider_by_agent_name,
     detect_acp_provider_by_command,
+    get_acp_provider,
 )
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
@@ -173,26 +177,6 @@ _RETRIABLE_SERVER_ERROR_CODES: frozenset[int] = frozenset({-32603})
 # used by the terminal tool and the default max_message_chars in LLM config.
 MAX_ACP_CONTENT_CHARS: int = 30_000
 _ACP_SUBPROCESS_LOG_LINE_CHARS = 4_000
-
-# Env vars that must be removed from the subprocess environment when a
-# particular "dominant" env var is present.
-#
-# Rationale: Claude Code's subscription auth uses CLAUDE_CODE_OAUTH_TOKEN, a
-# bearer validated against api.anthropic.com. A co-present ANTHROPIC_API_KEY
-# would take precedence over the token (silently bypassing the subscription),
-# and an ANTHROPIC_BASE_URL would route the bearer to a proxy that rejects it —
-# either silently breaks the intended OAuth auth. When the OAuth token is the
-# active credential we strip both so the subprocess authenticates with the
-# token against api.anthropic.com.
-#
-# Keyed on the credential itself (CLAUDE_CODE_OAUTH_TOKEN), NOT on
-# CLAUDE_CONFIG_DIR: the config dir is a *location* lever (data-dir isolation,
-# #1019) that is orthogonal to which credential is active. Keying the strip on
-# it wrongly fired during API-key isolation and missed the conflict when the
-# token arrived via env without isolation (#3588).
-_ENV_CONFLICT_MAP: dict[str, frozenset[str]] = {
-    "CLAUDE_CODE_OAUTH_TOKEN": frozenset({"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"}),
-}
 
 # Number of trailing characters of an ACP session id retained in log lines
 # for correlation.  ACP session ids are server-issued tokens whose possession
@@ -2508,6 +2492,42 @@ class ACPAgent(AgentBase):
         data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         env[env_var] = str(data_dir)
 
+    def _resolved_provider(self) -> ACPProviderInfo | None:
+        """The provider this agent runs, preferring the authoritative key.
+
+        ``acp_server`` is set by ``ACPAgentSettings.create_agent()`` and is the
+        only identity that survives a custom or aliased ``acp_command``; the
+        command is the fallback for an agent constructed directly.
+        """
+        return get_acp_provider(
+            self.acp_server or ""
+        ) or detect_acp_provider_by_command(self.acp_command)
+
+    def _strip_conflicting_env(self, env: dict[str, str]) -> None:
+        """Remove env vars that would defeat this provider's own credential.
+
+        Scoped to the resolved provider's :attr:`ACPProviderInfo.env_conflicts`:
+        the same variable is another provider's *credential* (a provider whose
+        ``api_key_env_var`` is ``ANTHROPIC_API_KEY``), and stripping it there
+        leaves it with nothing to authenticate with.
+
+        An unrecognised server keeps the conservative union: without an identity
+        we cannot tell whose credential a dominant variable belongs to, and a
+        directly-constructed ``ACPAgent`` running Claude Code is the case the
+        rule was written for (#3588).
+        """
+        provider = self._resolved_provider()
+        if provider is not None:
+            specs: tuple[ACPEnvConflictSpec, ...] = provider.env_conflicts
+        else:
+            specs = tuple(
+                spec for info in ACP_PROVIDERS.values() for spec in info.env_conflicts
+            )
+        for spec in specs:
+            if spec.dominant in env:
+                for name in spec.strip:
+                    env.pop(name, None)
+
     def _materialise_file_secrets(
         self, state: ConversationState, env: dict[str, str]
     ) -> None:
@@ -2770,13 +2790,7 @@ class ACPAgent(AgentBase):
         # Strip CLAUDECODE so nested Claude Code instances don't refuse to start
         env.pop("CLAUDECODE", None)
 
-        # Strip env vars that conflict with an active auth mechanism: an active
-        # CLAUDE_CODE_OAUTH_TOKEN must not coexist with ANTHROPIC_API_KEY (which
-        # takes precedence) or ANTHROPIC_BASE_URL (proxies the bearer). See #3588.
-        for dominant, conflicts in _ENV_CONFLICT_MAP.items():
-            if dominant in env:
-                for conflict in conflicts:
-                    env.pop(conflict, None)
+        self._strip_conflicting_env(env)
 
         command = self.acp_command[0]
         args = list(self.acp_command[1:]) + list(self.acp_args)

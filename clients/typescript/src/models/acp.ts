@@ -54,6 +54,18 @@ export interface ACPFileSecretSpec {
 }
 
 /**
+ * One provider's rule for env vars that must not coexist with a credential it
+ * authenticates with. Mirrors
+ * `openhands.sdk.settings.acp_providers.ACPEnvConflictSpec` field-for-field.
+ */
+export interface ACPEnvConflictSpec {
+  /** Env var whose presence means the provider authenticates with it. */
+  readonly dominant: string;
+  /** Env vars removed from the subprocess environment when `dominant` is present. */
+  readonly strip: readonly string[];
+}
+
+/**
  * Immutable metadata record for one built-in ACP provider. Mirrors
  * `openhands.sdk.settings.acp_providers.ACPProviderInfo` field-for-field.
  */
@@ -101,6 +113,8 @@ export interface ACPProviderInfo {
   readonly binary_name: string | null;
   /** Env var that relocates the provider's data/config directory, or `null`. */
   readonly data_dir_env_var: string | null;
+  /** Env vars this provider's own credentials must not coexist with. */
+  readonly env_conflicts: readonly ACPEnvConflictSpec[];
 }
 
 export const ACP_PROVIDERS: Readonly<Record<ACPProviderKey, ACPProviderInfo>> =

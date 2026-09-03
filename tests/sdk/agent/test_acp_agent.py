@@ -7887,6 +7887,40 @@ class TestACPEnvConflictSuppression:
         assert env["CLAUDE_CONFIG_DIR"] == "/tmp/claude-isolated"
         assert env.get("ANTHROPIC_API_KEY") == "sk-valid"
 
+    def test_rule_does_not_reach_another_provider(self, tmp_path):
+        """A provider that did not declare the conflict keeps the variable.
+
+        The rule belongs to claude-code, but the loop used to run for every
+        provider — so an ambient Claude subscription token deleted
+        ANTHROPIC_API_KEY out of any ACP subprocess. For a provider whose own
+        ``api_key_env_var`` is ANTHROPIC_API_KEY that is its only credential.
+        """
+        agent = _make_agent(acp_server="gemini-cli")
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={
+                "CLAUDE_CODE_OAUTH_TOKEN": "oauth-tok",
+                "ANTHROPIC_API_KEY": "sk-this-providers-credential",
+            },
+        )
+
+        assert env.get("ANTHROPIC_API_KEY") == "sk-this-providers-credential"
+
+    def test_claude_code_key_still_applies_the_rule(self, tmp_path):
+        """The declaring provider is unaffected by the scoping."""
+        agent = _make_agent(acp_server="claude-code")
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={
+                "CLAUDE_CODE_OAUTH_TOKEN": "oauth-tok",
+                "ANTHROPIC_API_KEY": "sk-leaked",
+            },
+        )
+
+        assert "ANTHROPIC_API_KEY" not in env
+
 
 class TestACPAgentCurrentModelIdProperty:
     """``current_model_id`` is a read-only property backed by a PrivateAttr.

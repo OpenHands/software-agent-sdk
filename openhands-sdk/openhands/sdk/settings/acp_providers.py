@@ -134,6 +134,33 @@ class ACPFileSecretSpec(BaseModel):
         return value
 
 
+class ACPEnvConflictSpec(BaseModel):
+    """One provider's rule for env vars that must not coexist with a credential.
+
+    Some CLIs accept more than one credential channel and pick between them by a
+    precedence the caller cannot see, so a variable that is merely *present*
+    silently defeats the credential the user intended. Claude Code is the case
+    that motivated this: ``CLAUDE_CODE_OAUTH_TOKEN`` is a bearer validated
+    against api.anthropic.com, a co-present ``ANTHROPIC_API_KEY`` takes
+    precedence over it, and an ``ANTHROPIC_BASE_URL`` routes the bearer to a
+    proxy that rejects it.
+
+    The rule belongs to the provider, not to the process: another provider may
+    legitimately read one of these variables as its *own* credential (a
+    provider whose ``api_key_env_var`` is ``ANTHROPIC_API_KEY``), and stripping
+    it there deletes the only credential that provider has.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    dominant: str = Field(min_length=1)
+    """Env var whose presence means this provider is authenticating with it."""
+
+    strip: tuple[str, ...] = Field(min_length=1)
+    """Env vars removed from the subprocess environment when :attr:`dominant`
+    is present."""
+
+
 @dataclass(frozen=True)
 class ACPProviderInfo:
     """Immutable metadata record for one built-in ACP provider."""
@@ -291,6 +318,14 @@ class ACPProviderInfo:
     :attr:`~openhands.sdk.agent.ACPAgent.acp_isolate_data_dir`.
     """
 
+    env_conflicts: tuple[ACPEnvConflictSpec, ...] = field(default=(), compare=False)
+    """Env vars this provider's own credentials must not coexist with.
+
+    Applied to the subprocess environment by
+    :class:`~openhands.sdk.agent.ACPAgent` only for the provider that declares
+    them — see :class:`ACPEnvConflictSpec`.
+    """
+
 
 # ---------------------------------------------------------------------------
 # Curated ``acp_model`` candidate lists for the built-in providers.
@@ -439,6 +474,17 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             default_model="opus[1m]",
             binary_name=ACP_INSTALL_CATALOG["claude-code"].binary_name,
             data_dir_env_var="CLAUDE_CONFIG_DIR",
+            # Keyed on the credential itself, NOT on CLAUDE_CONFIG_DIR: the
+            # config dir is a *location* lever (data-dir isolation, #1019)
+            # orthogonal to which credential is active. Keying the strip on it
+            # wrongly fired during API-key isolation and missed the conflict
+            # when the token arrived via env without isolation (#3588).
+            env_conflicts=(
+                ACPEnvConflictSpec(
+                    dominant="CLAUDE_CODE_OAUTH_TOKEN",
+                    strip=("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"),
+                ),
+            ),
         ),
         "codex": ACPProviderInfo(
             key="codex",
