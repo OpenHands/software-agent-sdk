@@ -462,13 +462,27 @@ def _log_acp_provider_version(agent_name: str, agent_version: str) -> None:
         )
 
 
-def _npx_package(command: list[str]) -> str | None:
+def _npx_packages(command: list[str]) -> list[str]:
+    """Pinned npm specs an ``npx`` command installs, for the cache warm.
+
+    ``--package=<spec>`` flags when present — pi pins its ACP adapter and the
+    engine it spawns separately, and its positional argument is the bare binary
+    name, which would warm an unpinned package. Otherwise the first positional,
+    which is the package for the single-package providers.
+    """
     if not command or command[0] != "npx":
-        return None
+        return []
+    pinned = [
+        arg.removeprefix("--package=")
+        for arg in command[1:]
+        if arg.startswith("--package=")
+    ]
+    if pinned:
+        return pinned
     for arg in command[1:]:
         if not arg.startswith("-"):
-            return arg
-    return None
+            return [arg]
+    return []
 
 
 def _with_codex_base_url(
@@ -2461,23 +2475,23 @@ class ACPAgent(AgentBase):
 
     async def _warm_npx_cache(
         self,
-        package: str,
+        packages: Sequence[str],
         provider_key: str,
         env: dict[str, str],
         cwd: str,
     ) -> None:
         logger.info(
-            "Warming ACP provider npx cache: provider=%s, package=%s; "
+            "Warming ACP provider npx cache: provider=%s, packages=%s; "
             "first use may download the provider before session startup",
             provider_key,
-            package,
+            list(packages),
         )
+        package_args = [arg for package in packages for arg in ("--package", package)]
         process = await asyncio.create_subprocess_exec(
             "npx",
             "--yes",
             "--prefer-offline",
-            "--package",
-            package,
+            *package_args,
             "--",
             "node",
             "-e",
@@ -2859,12 +2873,12 @@ class ACPAgent(AgentBase):
 
         working_dir = str(state.workspace.working_dir)
         provider = detect_acp_provider_by_command(self.acp_command)
-        package = _npx_package(self.acp_command)
-        if provider is not None and package is not None:
+        packages = _npx_packages(self.acp_command)
+        if provider is not None and packages:
             env["npm_config_cache"] = str(self._acp_npm_cache_dir(state))
             try:
                 self._executor.run_async(
-                    self._warm_npx_cache(package, provider.key, env, working_dir),
+                    self._warm_npx_cache(packages, provider.key, env, working_dir),
                     timeout=_ACP_NPX_CACHE_WARM_TIMEOUT + 5,
                 )
             except Exception as error:

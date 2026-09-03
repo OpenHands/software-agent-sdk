@@ -42,7 +42,7 @@ from openhands.sdk.agent.acp_agent import (
     _mask_json_value,
     _maybe_set_session_model,
     _mcp_config_to_acp_servers,
-    _npx_package,
+    _npx_packages,
     _OpenHandsACPBridge,
     _preconfigured_credentials,
     _reapply_session_model_on_resume,
@@ -77,6 +77,10 @@ from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import ImageContent, Message, TextContent
 from openhands.sdk.mcp.config import coerce_mcp_config
 from openhands.sdk.secret import SecretSource
+from openhands.sdk.settings.acp_install_catalog import (
+    ACPInstallSpec,
+    ACPPackagePin,
+)
 from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
 from openhands.sdk.skills import KeywordTrigger, Skill
 from openhands.sdk.tool.builtins.finish import FinishAction
@@ -185,13 +189,29 @@ def test_warns_when_acp_provider_version_differs_from_pin(caplog):
     assert "probably installed at runtime via the npx fallback" in caplog.text
 
 
-def test_npx_package_skips_prefer_offline():
-    assert (
-        _npx_package(
-            ["npx", "-y", "--prefer-offline", "@agentclientprotocol/codex-acp@1.1.7"]
-        )
-        == "@agentclientprotocol/codex-acp@1.1.7"
+def test_npx_packages_skips_prefer_offline():
+    assert _npx_packages(
+        ["npx", "-y", "--prefer-offline", "@agentclientprotocol/codex-acp@1.1.7"]
+    ) == ["@agentclientprotocol/codex-acp@1.1.7"]
+
+
+def test_npx_packages_prefers_pinned_package_flags():
+    """A multi-package spec's positional argument is the bare binary name;
+    warming that would fetch an unpinned package, so the ``--package=`` pins
+    win. ``npx_command`` emits that form whenever a provider pins more than one
+    package (an adapter plus the engine it spawns)."""
+    spec = ACPInstallSpec(
+        key="two-package",
+        packages=(
+            ACPPackagePin("adapter-acp", "1.2.3"),
+            ACPPackagePin("@scope/engine", "4.5.6"),
+        ),
+        binary_name="adapter-acp",
     )
+    assert _npx_packages(list(spec.npx_command())) == [
+        "adapter-acp@1.2.3",
+        "@scope/engine@4.5.6",
+    ]
 
 
 def test_acp_npm_cache_is_shared_across_conversations(tmp_path):
@@ -200,6 +220,36 @@ def test_acp_npm_cache_is_shared_across_conversations(tmp_path):
     state.persistence_dir = str(tmp_path / "conversations" / "conversation-id")
 
     assert agent._acp_npm_cache_dir(state) == tmp_path / "conversations" / "npm-cache"
+
+
+async def test_warm_npx_cache_passes_every_pinned_package(tmp_path):
+    agent = _make_agent()
+    process = MagicMock()
+    process.returncode = 0
+    process.wait = AsyncMock(return_value=0)
+
+    with patch(
+        "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+        new=AsyncMock(return_value=process),
+    ) as create_process:
+        await agent._warm_npx_cache(
+            ["adapter-acp@1.2.3", "@scope/engine@4.5.6"],
+            "two-package",
+            {},
+            str(tmp_path),
+        )
+
+    assert create_process.await_args is not None
+    assert create_process.await_args.args[:8] == (
+        "npx",
+        "--yes",
+        "--prefer-offline",
+        "--package",
+        "adapter-acp@1.2.3",
+        "--package",
+        "@scope/engine@4.5.6",
+        "--",
+    )
 
 
 async def test_warm_npx_cache_uses_prefer_offline_and_durable_env(tmp_path):
@@ -214,7 +264,7 @@ async def test_warm_npx_cache_uses_prefer_offline_and_durable_env(tmp_path):
         new=AsyncMock(return_value=process),
     ) as create_process:
         await agent._warm_npx_cache(
-            "@agentclientprotocol/codex-acp@1.1.7", "codex", env, str(tmp_path)
+            ["@agentclientprotocol/codex-acp@1.1.7"], "codex", env, str(tmp_path)
         )
 
     create_process.assert_awaited_once_with(
