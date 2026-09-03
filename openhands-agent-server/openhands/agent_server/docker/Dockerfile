@@ -13,11 +13,11 @@ ARG PORT=8000
 # to bundle google-cloud-aiplatform so the resulting binary supports
 # `vertex_ai/*` partner models (MiniMax, Qwen, Kimi MaaS endpoints).
 ARG ENABLE_VERTEX=0
-# Comma-separated ACP provider keys (see ACP_PROVIDERS in
-# openhands-sdk/openhands/sdk/settings/acp_providers.py) to bake into the
+# Comma-separated ACP provider keys (see ACP_INSTALL_CATALOG in
+# openhands-sdk/openhands/sdk/settings/acp_install_catalog.py) to bake into the
 # acp-providers stage below. The default reproduces the full provider set
-# shipped today; an unknown key fails the build rather than silently
-# installing nothing.
+# shipped today (DEFAULT_PREINSTALLED_ACP_PROVIDERS); an unknown key fails the
+# build rather than silently installing nothing.
 ARG INSTALL_ACP_PROVIDERS=claude-code,codex,gemini-cli
 # Comma-separated capability keys to include in the `base-image` stage below
 # (`base-image-minimal` is unaffected). The default reproduces today's full
@@ -112,23 +112,17 @@ ARG INSTALL_ACP_PROVIDERS
 # parent, mirroring /agent-server's own top-level placement in the builder
 # stage above.
 ENV ACP_NODE_DIR=/acp-node
+# The catalog module is dependency-free (stdlib only), so it can be COPYed
+# into this bare `python` image and run as-is — no pip install, and no need
+# to pull in the rest of the SDK source (which would break the zero-context
+# fast path `build.py` uses for the `base-image-minimal` target). Adding an
+# npm provider is a catalog edit only; this stage never needs to change.
+COPY openhands-sdk/openhands/sdk/settings/acp_install_catalog.py /tmp/acp_install_catalog.py
 RUN set -eux; \
     ACP_WRAPPER_DIR=/opt/acp-wrappers; \
     mkdir -p "$ACP_NODE_DIR" "$ACP_WRAPPER_DIR"; \
-    PACKAGES=""; \
-    WRAPPER_BINS=""; \
-    for provider in $(echo "$INSTALL_ACP_PROVIDERS" | tr ',' ' '); do \
-      case "$provider" in \
-        claude-code) PACKAGES="$PACKAGES @agentclientprotocol/claude-agent-acp@0.63.0"; \
-          WRAPPER_BINS="$WRAPPER_BINS claude-agent-acp";; \
-        codex) PACKAGES="$PACKAGES @agentclientprotocol/codex-acp@1.1.7"; \
-          WRAPPER_BINS="$WRAPPER_BINS codex-acp";; \
-        gemini-cli) PACKAGES="$PACKAGES @google/gemini-cli@0.46.0"; \
-          WRAPPER_BINS="$WRAPPER_BINS gemini";; \
-        *) echo "Unknown ACP provider '$provider' in INSTALL_ACP_PROVIDERS" \
-             "(expected one of: claude-code, codex, gemini-cli)" >&2; exit 1;; \
-      esac; \
-    done; \
+    PLAN=$(python3 /tmp/acp_install_catalog.py "$INSTALL_ACP_PROVIDERS") || exit 1; \
+    eval "$PLAN"; \
     if [ -z "$PACKAGES" ]; then \
       echo "INSTALL_ACP_PROVIDERS is empty; no ACP providers will be installed"; \
       exit 0; \
