@@ -63,6 +63,7 @@ class ModelFeatures:
     requires_inline_image_data: bool
     # Effective capability from LiteLLM metadata plus SDK overrides.
     supports_vision: bool
+    supports_dsml_tool_calls: bool
 
 
 LITELLM_PROXY_PREFIX = "litellm_proxy/"
@@ -402,5 +403,11 @@ def get_features(
             overrides=overrides,
             metadata=model_info,
             fallback=_model_supports_vision(model),
+        ),
+        supports_dsml_tool_calls=_resolved_bool(
+            "supports_dsml_tool_calls",
+            overrides=overrides,
+            metadata=model_info,
+            fallback=model_matches(model, ("deepseek-v4", "deepseek_v4")),
         ),
     )

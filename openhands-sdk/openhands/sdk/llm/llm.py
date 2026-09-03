@@ -111,6 +111,10 @@ from openhands.sdk.llm.streaming import (
     TokenCallbackType,
     _invoke_token_callback,
 )
+from openhands.sdk.llm.utils.dsml import (
+    DSMLStreamFilter,
+    normalize_deepseek_v4_response,
+)
 from openhands.sdk.llm.utils.image_inline import (
     amaybe_inline_image_urls,
     maybe_inline_image_urls,
@@ -1482,6 +1486,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 (Gemini sometimes returns empty choices; raising here
                 inside the retry boundary ensures it is retried).
         """
+        if self._model_features().supports_dsml_tool_calls:
+            resp = normalize_deepseek_v4_response(resp, model=self.model)
+
         raw_resp: ModelResponse | None = None
         if use_mock_tools:
             raw_resp = copy.deepcopy(resp)
@@ -2228,10 +2235,20 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
         )
         if enable_streaming and on_token is not None:
+            stream_filter = (
+                DSMLStreamFilter(on_token)
+                if self._model_features().supports_dsml_tool_calls
+                else None
+            )
             chunks: list[ModelResponseStream] = []
             stream = cast(Iterable[ModelResponseStream], ret)
             for chunk in stream:
-                on_token(chunk)
+                if stream_filter is not None:
+                    filtered_chunk = stream_filter.filter_chunk(chunk)
+                    if filtered_chunk is not None:
+                        on_token(filtered_chunk)
+                else:
+                    on_token(chunk)
                 chunks.append(chunk)
             ret = litellm.stream_chunk_builder(chunks, messages=messages)
 
@@ -2259,13 +2276,23 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
         )
         if enable_streaming and on_token is not None:
+            stream_filter = (
+                DSMLStreamFilter(on_token)
+                if self._model_features().supports_dsml_tool_calls
+                else None
+            )
             chunks: list[ModelResponseStream] = []
             # Some litellm wrappers (lmnr 0.7.47's instrumentor) hand
             # back a plain sync generator from ``litellm_acompletion``
             if hasattr(ret, "__aiter__"):
                 stream = cast(AsyncIterable[ModelResponseStream], ret)
                 async for chunk in stream:
-                    await _invoke_token_callback(on_token, chunk)
+                    if stream_filter is not None:
+                        filtered_chunk = stream_filter.filter_chunk(chunk)
+                        if filtered_chunk is not None:
+                            await _invoke_token_callback(on_token, filtered_chunk)
+                    else:
+                        await _invoke_token_callback(on_token, chunk)
                     chunks.append(chunk)
             else:
                 loop = asyncio.get_running_loop()
@@ -2273,7 +2300,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     None, list, cast(Iterable[ModelResponseStream], ret)
                 )
                 for chunk in synced_chunks:
-                    await _invoke_token_callback(on_token, chunk)
+                    if stream_filter is not None:
+                        filtered_chunk = stream_filter.filter_chunk(chunk)
+                        if filtered_chunk is not None:
+                            await _invoke_token_callback(on_token, filtered_chunk)
+                    else:
+                        await _invoke_token_callback(on_token, chunk)
                     chunks.append(chunk)
             ret = litellm.stream_chunk_builder(chunks, messages=messages)
 
