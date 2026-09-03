@@ -17,6 +17,7 @@ from openhands.sdk.conversation.types import (
     ConversationCallbackType,
     ConversationTokenCallbackType,
 )
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.llm_convertible import (
     ActionEvent,
     MessageEvent,
@@ -123,6 +124,32 @@ async def test_arun_picks_up_message_sent_during_the_llm_call(tmp_path):
     assert agent.steps[0] == ["first"]
     assert agent.steps[1] == ["first", MID_STEP_MESSAGE]
     assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+
+
+@pytest.mark.asyncio
+async def test_message_at_the_iteration_cap_leaves_the_run_idle(tmp_path):
+    """Out of iterations, go idle for a follow-up run, not MaxIterationsReached."""
+    agent = _LLMWindowAgent()
+    conversation = Conversation(
+        agent=agent, workspace=str(tmp_path), max_iteration_per_run=1
+    )
+    assert isinstance(conversation, LocalConversation)
+    conversation.send_message("first")
+
+    await conversation.arun()
+
+    assert len(agent.steps) == 1
+    assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
+    codes = [
+        event.code
+        for event in conversation.state.events
+        if isinstance(event, ConversationErrorEvent)
+    ]
+    assert codes == [], f"unexpected error events: {codes}"
+
+    # The follow-up run consumes the message that did not fit.
+    await conversation.arun()
+    assert agent.steps[1] == ["first", MID_STEP_MESSAGE]
 
 
 class _ToolCallAction(Action):

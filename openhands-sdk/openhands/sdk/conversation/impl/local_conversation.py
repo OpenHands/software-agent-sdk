@@ -1871,18 +1871,28 @@ class LocalConversation(BaseConversation):
             self._on_event(event)
 
     def _resume_for_message_sent_during_step(
-        self, last_user_message_id_before_step: EventID | None
-    ) -> None:
+        self,
+        last_user_message_id_before_step: EventID | None,
+        *,
+        at_iteration_cap: bool,
+    ) -> bool:
         """Don't let FINISHED close the run over input the step never read.
 
-        Call while holding the state lock.
+        Returns whether the caller should break. Out of iterations, go idle for
+        a follow-up run rather than fall through to MaxIterationsReached. Call
+        while holding the state lock.
         """
         if self._state.last_user_message_id == last_user_message_id_before_step:
-            return
+            return False
         if self._state.execution_status != ConversationExecutionStatus.FINISHED:
-            return
+            return False
+        if at_iteration_cap:
+            logger.info("User message arrived during step; leaving run idle")
+            self._state.execution_status = ConversationExecutionStatus.IDLE
+            return True
         logger.info("User message arrived during step; continuing run")
         self._state.execution_status = ConversationExecutionStatus.RUNNING
+        return False
 
     @contextlib.asynccontextmanager
     async def _released_state_lock_during_io(self):
@@ -2004,10 +2014,12 @@ class LocalConversation(BaseConversation):
                         )
                     finally:
                         self._step_holds_state_lock = False
-                    self._resume_for_message_sent_during_step(
-                        last_user_message_id_before_step
-                    )
                     iteration += 1
+                    if self._resume_for_message_sent_during_step(
+                        last_user_message_id_before_step,
+                        at_iteration_cap=iteration >= self.max_iteration_per_run,
+                    ):
+                        break
 
                     # Check for non-finished terminal conditions
                     # Note: We intentionally do NOT check for FINISHED status here.
@@ -2268,10 +2280,12 @@ class LocalConversation(BaseConversation):
                             )
                         finally:
                             self._step_holds_state_lock = False
-                        self._resume_for_message_sent_during_step(
-                            last_user_message_id_before_step
-                        )
                         iteration += 1
+                        if self._resume_for_message_sent_during_step(
+                            last_user_message_id_before_step,
+                            at_iteration_cap=(iteration >= self.max_iteration_per_run),
+                        ):
+                            break
 
                         if (
                             self.state.execution_status
