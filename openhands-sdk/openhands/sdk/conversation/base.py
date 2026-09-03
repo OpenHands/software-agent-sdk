@@ -407,6 +407,12 @@ class BaseConversation(ABC):
         """
         raise NotImplementedError("This conversation does not support loading plugins")
 
+    def refresh_mcp_tools(self) -> None:
+        """Re-fetch every MCP tool list between conversation runs."""
+        raise NotImplementedError(
+            "This conversation does not support refreshing MCP tools"
+        )
+
     @abstractmethod
     def fork(
         self,
