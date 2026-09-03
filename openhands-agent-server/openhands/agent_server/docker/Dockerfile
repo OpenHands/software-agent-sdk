@@ -158,7 +158,8 @@ RUN set -eux; \
         "$ACP_NODE_DIR" "$ACP_NODE_DIR" "$bin" \
         > "$ACP_WRAPPER_DIR/$bin"; \
       chmod +x "$ACP_WRAPPER_DIR/$bin"; \
-    done
+    done; \
+    printf '%s\n' $WRAPPER_BINS > "$ACP_NODE_DIR/acp-wrappers.txt"
 
 ####################################################################################
 # Base image (minimal)
@@ -251,11 +252,16 @@ COPY --from=acp-providers /opt/acp-wrappers/. /usr/local/bin/
 # glibc-modern stage, so a failure here means "incompatible with this specific
 # BASE_IMAGE", not "the ACP install failed". When that happens we remove the
 # copied payload and wrappers so the rest of the build (and non-ACP agents)
-# still work, rather than leaving binaries in place that cannot execute.
+# still work, rather than leaving binaries in place that cannot execute. The
+# wrapper names come from the manifest the acp-providers stage wrote, so this
+# tracks INSTALL_ACP_PROVIDERS instead of a list that goes stale per provider.
 RUN if ! "$ACP_NODE_DIR/bin/node" --version >/dev/null 2>&1; then \
       echo "Warning: ACP Node 22 runtime is not compatible with this base image (likely older glibc or musl libc); ACP agents will not be available" >&2; \
+      if [ -f "$ACP_NODE_DIR/acp-wrappers.txt" ]; then \
+        while read -r bin; do rm -f "/usr/local/bin/$bin"; done \
+          < "$ACP_NODE_DIR/acp-wrappers.txt"; \
+      fi; \
       rm -rf "$ACP_NODE_DIR"/*; \
-      rm -f /usr/local/bin/claude-agent-acp /usr/local/bin/codex-acp /usr/local/bin/gemini; \
     fi
 
 # Configure Claude Code managed settings for headless operation:

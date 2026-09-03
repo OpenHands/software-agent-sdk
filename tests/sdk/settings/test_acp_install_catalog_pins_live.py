@@ -88,3 +88,55 @@ def test_pinned_version_resolves_and_is_not_deprecated(
         f"{pinned!r} (provider={provider_key}) is deprecated on npm: "
         f"{deprecated!r} — bump ACP_INSTALL_CATALOG to a non-deprecated version"
     )
+
+
+def _npm_view_bins(pinned: str) -> set[str]:
+    """Return the executable names ``name@version`` declares in its ``bin`` field.
+
+    npm accepts either a string (one bin, named after the package) or an
+    object mapping bin name to path.
+    """
+    result = subprocess.run(
+        ["npm", "view", pinned, "bin", "--json"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if not result.stdout.strip():
+        return set()
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        raise AssertionError(
+            f"npm view {pinned!r} bin produced unparseable output "
+            f"(exit={result.returncode}): stdout={result.stdout!r} "
+            f"stderr={result.stderr!r}"
+        ) from None
+    if isinstance(data, dict):
+        return set(data)
+    if isinstance(data, str):
+        return {pinned.rsplit("@", 1)[0].rsplit("/", 1)[-1]}
+    return set()
+
+
+@requires_npm
+@pytest.mark.parametrize(
+    "spec", ACP_INSTALL_CATALOG.values(), ids=list(ACP_INSTALL_CATALOG)
+)
+def test_binary_name_is_declared_by_one_of_the_pinned_packages(spec) -> None:
+    """``binary_name`` must be a bin some pinned package actually declares.
+
+    The image build's own guard only covers providers a given build installs,
+    so a registry-only provider's ``binary_name`` is otherwise validated
+    nowhere — and a wrong one silently costs it the pinned-binary path
+    (``resolve_acp_command`` keeps the npx invocation) or, when preinstalled,
+    ships a wrapper pointing at nothing.
+    """
+    declared: set[str] = set()
+    for pkg in spec.packages:
+        declared |= _npm_view_bins(pkg.pinned)
+    assert spec.binary_name in declared, (
+        f"{spec.key}: binary_name {spec.binary_name!r} is not declared by any "
+        f"pinned package; npm reports {sorted(declared)} for "
+        f"{[p.pinned for p in spec.packages]}"
+    )
