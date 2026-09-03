@@ -2796,7 +2796,7 @@ vertex = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-client-protocol", specifier = ">=0.10.1" },
+    { name = "agent-client-protocol", specifier = ">=0.10.1,<0.11.0" },
     { name = "boto3", marker = "extra == 'boto3'", specifier = ">=1.35.0" },
     { name = "deprecation", specifier = ">=2.1.0" },
     { name = "fakeredis", extras = ["lua"], specifier = ">=2.32.1" },

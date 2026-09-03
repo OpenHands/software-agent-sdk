@@ -65,6 +65,7 @@ from openhands.agent_server.server_details_router import (
     mark_initialization_complete,
     server_details_router,
 )
+from openhands.agent_server.session_socket import session_router
 from openhands.agent_server.settings_router import settings_router
 from openhands.agent_server.skills_router import skills_router
 from openhands.agent_server.sockets import sockets_router
@@ -450,6 +451,8 @@ def _add_api_routes(app: FastAPI) -> None:
     app.include_router(workspace_api_router)
 
     app.include_router(sockets_router)
+
+    app.include_router(session_router)
 
 
 def _setup_static_files(app: FastAPI, config: Config) -> None:
