@@ -393,9 +393,6 @@ def test_list_installed_empty_and_multiple(client: TestClient, tmp_path: Path):
     assert names == {"ext-one", "ext-two"}
 
 
-# -- OSS-10405: Source + Path composition for local sources -------------------
-
-
 @pytest.mark.parametrize(
     "source_suffix,repo_path",
     [
