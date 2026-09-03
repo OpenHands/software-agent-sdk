@@ -107,6 +107,11 @@ CODEX_ACP_VERSION = "1.1.7"
 GEMINI_CLI_VERSION = "0.46.0"
 KIMI_CODE_VERSION = "0.38.0"
 
+# Pi is the one provider with two independent pins: pi-acp only adapts ACP and
+# spawns a separately installed `pi` engine off PATH.
+PI_ACP_VERSION = "0.0.33"
+PI_CODING_AGENT_VERSION = "0.83.0"
+
 
 ACP_INSTALL_CATALOG: Mapping[str, ACPInstallSpec] = {
     "claude-code": ACPInstallSpec(
@@ -137,6 +142,24 @@ ACP_INSTALL_CATALOG: Mapping[str, ACPInstallSpec] = {
         binary_name="kimi",
         trailing_args=("acp",),
         # @moonshot-ai/kimi-code declares `node >=22.19.0`.
+        min_node_version="22.19.0",
+    ),
+    "pi": ACPInstallSpec(
+        key="pi",
+        # Adapter first: the live conformance probe compares ``packages[0]``'s
+        # version against the ``agentInfo.version`` the server reports, which
+        # is pi-acp's, not the engine's.
+        packages=(
+            ACPPackagePin("pi-acp", PI_ACP_VERSION),
+            ACPPackagePin("@earendil-works/pi-coding-agent", PI_CODING_AGENT_VERSION),
+        ),
+        binary_name="pi-acp",
+        # @earendil-works/pi-coding-agent (and its undici dependency) declare
+        # `node >=22.19.0`. Below it the pi-acp adapter still starts, so the
+        # ACP handshake succeeds and the failure only lands at `session/new`
+        # as "Cannot call write after a stream was destroyed" — the engine
+        # having already died on `webidl.util.markAsUncloneable is not a
+        # function`.
         min_node_version="22.19.0",
     ),
 }

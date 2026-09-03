@@ -76,6 +76,7 @@ from openhands.sdk.agent.acp_file_credentials import (
     codex_auth_file,
     codex_auth_file_is_chatgpt,
     create_file_credential_lifecycle,
+    file_credential_looks_usable,
     write_secret_file,
 )
 from openhands.sdk.agent.acp_models import ACPModelInfo
@@ -308,7 +309,16 @@ def _preconfigured_credentials(
         path = Path(location)
         if spec.env_points_to == "dir":
             path = path / spec.filename
-        if path.is_file():
+        if not path.is_file():
+            continue
+        # A file that exists but cannot authenticate is the case that most
+        # needs the warning, so presence alone is not enough where the SDK
+        # knows the format.
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        if file_credential_looks_usable(spec.secret_name, text):
             present.append(spec.secret_name)
     api_key_var = provider.api_key_env_var if provider is not None else None
     if api_key_var and env.get(api_key_var):
@@ -1676,8 +1686,8 @@ class ACPAgent(AgentBase):
         default=None,
         description=(
             "Provider registry key identifying which ACP CLI this agent runs "
-            "('claude-code', 'codex', 'gemini-cli', or 'custom'); None when the "
-            "agent is built directly rather than via ACPAgentSettings. Set by "
+            "('claude-code', 'codex', 'gemini-cli', 'pi', or 'custom'); None "
+            "when the agent is built directly rather than via ACPAgentSettings. Set by "
             "ACPAgentSettings.create_agent() from ACPAgentSettings.acp_server so "
             "the authoritative key survives onto the agent — and thus onto "
             "ConversationInfo.agent — because the launch command in acp_command "
@@ -1696,7 +1706,8 @@ class ACPAgent(AgentBase):
             "Session mode ID to set after creating a session. "
             "If None (default), auto-detected from the ACP server type: "
             "'bypassPermissions' for claude-agent-acp, "
-            "'agent-full-access' for codex-acp."
+            "'agent-full-access' for codex-acp; a provider with no such mode "
+            "(pi-acp) skips the call."
         ),
     )
     acp_prompt_timeout: float = Field(
@@ -2543,8 +2554,9 @@ class ACPAgent(AgentBase):
         ``ANTHROPIC_API_KEY`` — API-key Claude gets the same per-conversation
         isolation (and pause/resume continuity) as OAuth Claude (#3588).
 
-        ``HOME`` (gemini-cli's only lever — it hard-codes ``~/.gemini`` and
-        ignores ``XDG``) has a wider blast radius than the surgical
+        ``HOME`` (the only lever for gemini-cli, which hard-codes ``~/.gemini``
+        and ignores ``XDG``, and for pi-acp, whose session map is hard-coded to
+        ``~/.pi/pi-acp``) has a wider blast radius than the surgical
         ``CODEX_HOME`` / ``CLAUDE_CONFIG_DIR``: it also relocates the home dir
         seen by anything the CLI subprocess itself spawns (``git``, ``npm``,
         ``node``, shells — e.g. ``~/.gitconfig``, ``~/.npmrc``, the npm cache).

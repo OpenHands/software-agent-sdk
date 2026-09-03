@@ -393,6 +393,7 @@ def test_export_agent_settings_schema_emits_variant_tagged_sections() -> None:
         "codex",
         "gemini-cli",
         "kimi-code",
+        "pi",
         "custom",
     }
 
@@ -1413,7 +1414,7 @@ def test_acp_create_agent_carries_provider_key() -> None:
     directly (not from settings) defaults to ``None``; and the key survives a
     serialization round-trip through the ``AgentBase`` discriminated union.
     """
-    for server in ("claude-code", "codex", "gemini-cli", "kimi-code", "custom"):
+    for server in ("claude-code", "codex", "gemini-cli", "kimi-code", "pi", "custom"):
         kwargs: dict[str, Any] = {"acp_server": server}
         if server == "custom":
             kwargs["acp_command"] = ["my-acp"]
@@ -1436,7 +1437,7 @@ def test_acp_resolve_command_for_known_servers(
     default stays the ``npx`` invocation.
     """
     monkeypatch.setattr(shutil, "which", lambda _: None)
-    for server in ("claude-code", "codex", "gemini-cli", "kimi-code"):
+    for server in ("claude-code", "codex", "gemini-cli", "kimi-code", "pi"):
         settings = ACPAgentSettings(acp_server=server)
         cmd = settings.resolve_acp_command()
         assert cmd, f"expected default command for {server}, got empty"
@@ -1511,6 +1512,7 @@ def _which_returning(*available: str):
         ("codex", "codex-acp", ["codex-acp"]),
         # gemini's default carries a trailing ``--acp`` that must be preserved.
         ("gemini-cli", "gemini", ["gemini", "--acp"]),
+        ("pi", "pi-acp", ["pi-acp"]),
     ],
 )
 def test_acp_resolve_command_rewrites_default_to_pinned_binary(
@@ -1669,6 +1671,9 @@ def test_acp_api_key_env_var_maps_known_servers() -> None:
     assert ACPAgentSettings(acp_server="gemini-cli").api_key_env_var == "GEMINI_API_KEY"
     # Kimi has no env-var API key; the credential is config.toml.
     assert ACPAgentSettings(acp_server="kimi-code").api_key_env_var is None
+    # pi is multi-provider but reads a plain provider key out of the process
+    # env; ANTHROPIC_API_KEY is the channel the registry provisions for it.
+    assert ACPAgentSettings(acp_server="pi").api_key_env_var == "ANTHROPIC_API_KEY"
     assert (
         ACPAgentSettings(acp_server="custom", acp_command=["x"]).api_key_env_var is None
     )
@@ -2225,14 +2230,29 @@ def test_acp_settings_base_url_env_var_from_registry() -> None:
 def test_acp_resolve_command_uses_registry_defaults(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from openhands.sdk.settings.acp_install_catalog import (
+        PI_ACP_VERSION,
+        PI_CODING_AGENT_VERSION,
+    )
     from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
 
     # No pinned binary on PATH → registry default is returned verbatim.
     monkeypatch.setattr(shutil, "which", lambda _: None)
-    for server_key in ("claude-code", "codex", "gemini-cli", "kimi-code"):
+    for server_key in ("claude-code", "codex", "gemini-cli", "kimi-code", "pi"):
         settings = ACPAgentSettings(acp_server=server_key)
         expected = list(ACP_PROVIDERS[server_key].default_command)
         assert settings.resolve_acp_command() == expected
+    # Pi is the only provider whose default installs two packages: the pi-acp
+    # adapter and the `pi` engine it spawns off PATH.
+    pi_settings = ACPAgentSettings(acp_server="pi")
+    assert pi_settings.resolve_acp_command() == [
+        "npx",
+        "-y",
+        "--prefer-offline",
+        f"--package=pi-acp@{PI_ACP_VERSION}",
+        f"--package=@earendil-works/pi-coding-agent@{PI_CODING_AGENT_VERSION}",
+        "pi-acp",
+    ]
 
 
 # ---------------------------------------------------------------------------

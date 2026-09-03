@@ -7,6 +7,10 @@ from typing import get_args
 
 import pytest
 
+from openhands.sdk.settings.acp_install_catalog import (
+    PI_ACP_VERSION,
+    PI_CODING_AGENT_VERSION,
+)
 from openhands.sdk.settings.acp_providers import (
     ACP_PROVIDERS,
     ACPModelOption,
@@ -136,6 +140,43 @@ class TestACPProviderInfo:
         assert spec.env_var == "KIMI_CODE_HOME"
         assert spec.env_points_to == "dir"
 
+    def test_pi_metadata(self):
+        info = ACP_PROVIDERS["pi"]
+        assert info.key == "pi"
+        assert info.display_name == "Pi"
+        # pi-acp only adapts; it spawns the separately pinned `pi` engine off
+        # PATH, so the npx default provisions both packages and runs pi-acp.
+        assert info.default_command == (
+            "npx",
+            "-y",
+            "--prefer-offline",
+            f"--package=pi-acp@{PI_ACP_VERSION}",
+            f"--package=@earendil-works/pi-coding-agent@{PI_CODING_AGENT_VERSION}",
+            "pi-acp",
+        )
+        assert info.api_key_env_var == "ANTHROPIC_API_KEY"
+        # pi takes its base URL from its own catalogue, not the environment.
+        assert info.base_url_env_var is None
+        # pi-acp maps ACP modes onto thinking levels and has no permission mode.
+        assert info.default_session_mode is None
+        assert info.agent_name_patterns == ("pi-acp",)
+        assert info.supports_set_session_model is True
+        assert info.supports_runtime_model_switch is True
+        assert info.session_meta_key is None
+        assert info.default_model is None
+        assert info.binary_name == "pi-acp"
+        assert info.data_dir_env_var == "HOME"
+        assert [spec.secret_name for spec in info.file_secrets] == ["PI_AUTH_JSON"]
+
+    def test_pi_credential_file_is_auth_json_in_the_config_dir(self):
+        """PI_CODING_AGENT_DIR names the directory pi reads auth.json from;
+        settings.json in the same directory does not authenticate."""
+        (spec,) = ACP_PROVIDERS["pi"].file_secrets
+        assert spec.filename == "auth.json"
+        assert spec.env_var == "PI_CODING_AGENT_DIR"
+        assert spec.env_points_to == "dir"
+        assert spec.subdir == "pi"
+
     def test_provider_info_is_frozen(self):
         info = ACP_PROVIDERS["claude-code"]
         with pytest.raises((AttributeError, TypeError)):
@@ -155,7 +196,7 @@ class TestACPProviderInfo:
 
 class TestGetACPProvider:
     def test_returns_info_for_known_keys(self):
-        for key in ("claude-code", "codex", "gemini-cli", "kimi-code"):
+        for key in ACP_PROVIDERS:
             result = get_acp_provider(key)
             assert result is not None
             assert result.key == key
@@ -281,6 +322,24 @@ class TestProviderRegistryConsistency:
             assert mode is None or (isinstance(mode, str) and mode.strip()), (
                 f"{key}: default_session_mode must be a non-empty id or None"
             )
+
+    def test_session_mode_is_a_non_empty_string_or_none(self):
+        """``None`` skips the ``session/set_mode`` call; an empty string would
+        be sent verbatim and rejected by the server."""
+        for key, info in ACP_PROVIDERS.items():
+            assert (
+                info.default_session_mode is None or info.default_session_mode.strip()
+            ), (  # noqa: E501
+                f"{key}: default_session_mode must be None or non-blank"
+            )
+
+    def test_session_modes_are_distinct(self):
+        modes = [
+            info.default_session_mode
+            for info in ACP_PROVIDERS.values()
+            if info.default_session_mode is not None
+        ]
+        assert len(modes) == len(set(modes)), "each provider should use a unique mode"
 
     def test_detect_returns_matching_provider_for_all_registered_patterns(self):
         """Every registered pattern should resolve back to its own provider."""
@@ -421,14 +480,16 @@ class TestACPFileSecrets:
             "CODEX_AUTH_JSON",
             "GOOGLE_APPLICATION_CREDENTIALS_JSON",
             "KIMI_CODE_CONFIG_TOML",
+            "PI_AUTH_JSON",
         }
         # Deterministic concatenation in ACP_PROVIDERS registration order
-        # (codex, gemini-cli, kimi-code) — downstream callers can rely on a
+        # (codex, gemini-cli, kimi-code, pi) — downstream callers can rely on a
         # stable ordering of the built-in specs.
         assert specs == (
             ACP_PROVIDERS["codex"].file_secrets
             + ACP_PROVIDERS["gemini-cli"].file_secrets
             + ACP_PROVIDERS["kimi-code"].file_secrets
+            + ACP_PROVIDERS["pi"].file_secrets
         )
 
     def test_file_secret_subdirs_are_unique_across_providers(self):

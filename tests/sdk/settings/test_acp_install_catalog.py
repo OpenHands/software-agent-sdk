@@ -14,6 +14,8 @@ from openhands.sdk.settings.acp_install_catalog import (
     CODEX_ACP_VERSION,
     DEFAULT_PREINSTALLED_ACP_PROVIDERS,
     GEMINI_CLI_VERSION,
+    PI_ACP_VERSION,
+    PI_CODING_AGENT_VERSION,
     ACPInstallSpec,
     ACPPackagePin,
     _main,
@@ -68,8 +70,8 @@ class TestACPInstallSpecNpxCommand:
         )
 
     def test_multi_package_uses_package_flags_and_entry_binary(self):
-        # Mirrors the shape Pi needs: an ACP adapter plus its engine package,
-        # both pinned, with the adapter's bin invoked positionally.
+        # The shape Pi needs: an ACP adapter plus its engine package, both
+        # pinned, with the adapter's bin invoked positionally.
         spec = ACPInstallSpec(
             key="pi",
             packages=(
@@ -86,6 +88,38 @@ class TestACPInstallSpecNpxCommand:
             "--package=@earendil-works/pi-coding-agent@0.2.0",
             "pi-acp",
         )
+
+
+class TestPiInstallSpec:
+    """Pi is the only registered provider with two independent pins: `pi-acp`
+    adapts ACP and spawns a separately installed `pi` engine off PATH."""
+
+    def test_pins_both_the_adapter_and_the_engine(self):
+        spec = ACP_INSTALL_CATALOG["pi"]
+        assert [(p.name, p.version) for p in spec.packages] == [
+            ("pi-acp", PI_ACP_VERSION),
+            ("@earendil-works/pi-coding-agent", PI_CODING_AGENT_VERSION),
+        ]
+        assert spec.binary_name == "pi-acp"
+        assert spec.trailing_args == ()
+
+    def test_adapter_is_listed_first(self):
+        """`test_acp_conformance_probe` compares `packages[0].version` to the
+        `agentInfo.version` the server reports — which is the adapter's. A
+        reorder would silently compare against the engine's version instead."""
+        spec = ACP_INSTALL_CATALOG["pi"]
+        assert spec.packages[0].name == spec.binary_name == "pi-acp"
+
+    def test_install_plan_installs_both_but_wraps_only_the_adapter(self):
+        """`pi` is never launched by OpenHands directly — pi-acp spawns it, and
+        the adapter's wrapper puts $ACP_NODE_DIR/bin on PATH for it, so a
+        second wrapper would be dead weight."""
+        packages, wrapper_bins = render_docker_install_plan(["pi"])
+        assert packages == [
+            f"pi-acp@{PI_ACP_VERSION}",
+            f"@earendil-works/pi-coding-agent@{PI_CODING_AGENT_VERSION}",
+        ]
+        assert wrapper_bins == ["pi-acp"]
 
 
 class TestACPInstallCatalogMatchesACPProviders:

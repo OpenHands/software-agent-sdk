@@ -205,5 +205,62 @@
     "session_meta_key": null,
     "supports_runtime_model_switch": true,
     "supports_set_session_model": true
+  },
+  "pi": {
+    "agent_name_patterns": [
+      "pi-acp"
+    ],
+    "api_key_env_var": "ANTHROPIC_API_KEY",
+    "available_models": [
+      {
+        "id": "anthropic/claude-opus-5",
+        "label": "Claude Opus 5"
+      },
+      {
+        "id": "anthropic/claude-opus-4-8",
+        "label": "Claude Opus 4.8"
+      },
+      {
+        "id": "anthropic/claude-sonnet-5",
+        "label": "Claude Sonnet 5"
+      },
+      {
+        "id": "anthropic/claude-sonnet-4-6",
+        "label": "Claude Sonnet 4.6"
+      },
+      {
+        "id": "anthropic/claude-haiku-4-5",
+        "label": "Claude Haiku 4.5"
+      }
+    ],
+    "base_url_env_var": null,
+    "binary_name": "pi-acp",
+    "data_dir_env_var": "HOME",
+    "default_command": [
+      "npx",
+      "-y",
+      "--prefer-offline",
+      "--package=pi-acp@0.0.33",
+      "--package=@earendil-works/pi-coding-agent@0.83.0",
+      "pi-acp"
+    ],
+    "default_model": null,
+    "default_session_mode": null,
+    "display_name": "Pi",
+    "env_conflicts": [],
+    "file_secrets": [
+      {
+        "env_points_to": "dir",
+        "env_var": "PI_CODING_AGENT_DIR",
+        "filename": "auth.json",
+        "secret_name": "PI_AUTH_JSON",
+        "subdir": "pi",
+        "warn_if_unset": []
+      }
+    ],
+    "key": "pi",
+    "session_meta_key": null,
+    "supports_runtime_model_switch": true,
+    "supports_set_session_model": true
   }
 }

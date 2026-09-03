@@ -31,14 +31,32 @@ describe('ACP provider credential descriptors', () => {
     }
   });
 
-  it.each<[ACPProviderKey, string, string]>([
+  it.each<[ACPProviderKey, string, string | null]>([
     ['claude-code', 'ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL'],
     ['codex', 'OPENAI_API_KEY', 'OPENAI_BASE_URL'],
     ['gemini-cli', 'GEMINI_API_KEY', 'GEMINI_BASE_URL'],
+    // pi reads a provider key out of the environment but resolves base URLs
+    // from its own catalogue, so it has no base-URL override var.
+    ['pi', 'ANTHROPIC_API_KEY', null],
   ])('%s declares its api_key/base_url env vars', (key, apiKeyEnvVar, baseUrlEnvVar) => {
     const provider = ACP_PROVIDERS[key];
     expect(provider.api_key_env_var).toBe(apiKeyEnvVar);
     expect(provider.base_url_env_var).toBe(baseUrlEnvVar);
+  });
+
+  it('pi pins both the ACP adapter and the engine it spawns', () => {
+    const pi = ACP_PROVIDERS.pi;
+    expect(pi.default_command).toEqual([
+      'npx',
+      '-y',
+      '--prefer-offline',
+      '--package=pi-acp@0.0.33',
+      '--package=@earendil-works/pi-coding-agent@0.83.0',
+      'pi-acp',
+    ]);
+    // pi-acp maps ACP modes onto pi's thinking levels, so there is no
+    // permission-suppressing mode to set at session start.
+    expect(pi.default_session_mode).toBeNull();
   });
 
   it('uses the maintained Codex adapter and exposes GPT-5.6 models', () => {
@@ -67,6 +85,17 @@ describe('ACP provider credential descriptors', () => {
         secret_name: 'CODEX_AUTH_JSON',
         filename: 'auth.json',
         env_var: 'CODEX_HOME',
+      });
+    });
+
+    it('pi declares its auth.json credential file secret', () => {
+      const fileSecrets = ACP_PROVIDERS['pi'].file_secrets;
+      expect(fileSecrets).toHaveLength(1);
+      expect(fileSecrets[0]).toMatchObject({
+        secret_name: 'PI_AUTH_JSON',
+        filename: 'auth.json',
+        env_var: 'PI_CODING_AGENT_DIR',
+        env_points_to: 'dir',
       });
     });
 

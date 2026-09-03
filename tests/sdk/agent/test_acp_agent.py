@@ -5392,6 +5392,24 @@ class TestMaybeSetSessionModel:
         assert applied is True
 
     @pytest.mark.asyncio
+    async def test_pi_model_switch_mechanism(self):
+        """pi-acp applies the model through set_config_option(config_id='model')."""
+        conn = AsyncMock()
+        applied = await _maybe_set_session_model(
+            conn,
+            "pi-acp",
+            "session-1",
+            "anthropic/claude-sonnet-4-6",
+            via_config_option=True,
+        )
+        conn.set_config_option.assert_awaited_once_with(
+            config_id="model",
+            value="anthropic/claude-sonnet-4-6",
+            session_id="session-1",
+        )
+        assert applied is True
+
+    @pytest.mark.asyncio
     async def test_missing_model_skips_protocol_override(self):
         conn = AsyncMock()
         applied = await _maybe_set_session_model(
@@ -8802,7 +8820,12 @@ class TestACPFileSecretMaterialisation:
     """
 
     @staticmethod
-    def _make_conn(*, agent_name: str = "codex-acp", auth_method: str | None = None):
+    def _make_conn(
+        *,
+        agent_name: str = "codex-acp",
+        auth_method: str | None = None,
+        auth_method_type: str | None = None,
+    ):
         conn = MagicMock()
         init_response = MagicMock()
         init_response.agent_info = MagicMock()
@@ -8812,6 +8835,7 @@ class TestACPFileSecretMaterialisation:
         # MagicMock(id=...) doesn't set .id; assign explicitly.
         for m in init_response.auth_methods:
             m.id = auth_method
+            m.type = auth_method_type
         conn.initialize = AsyncMock(return_value=init_response)
         new_response = MagicMock()
         new_response.session_id = "sess-new"
@@ -8967,6 +8991,143 @@ class TestACPFileSecretMaterialisation:
         assert gac.stat().st_mode & 0o777 == 0o600
         assert gac.parent.stat().st_mode & 0o777 == 0o700
         assert "GOOGLE_APPLICATION_CREDENTIALS_JSON" not in env
+
+    def test_pi_auth_json_materialises_into_the_agent_config_dir(self, tmp_path):
+        """PI_AUTH_JSON lands as auth.json with PI_CODING_AGENT_DIR on the dir."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
+        state.secret_registry.update_secrets(
+            {
+                "PI_AUTH_JSON": StaticSecret(
+                    value=SecretStr('{"anthropic": {"type": "api_key", "key": "k"}}')
+                )
+            }
+        )
+
+        env = self._run_start(
+            agent,
+            state,
+            conn=self._make_conn(
+                agent_name="pi-acp",
+                auth_method="pi_terminal_login",
+                auth_method_type="terminal",
+            ),
+        )
+
+        auth_file = Path(persist) / "acp" / "pi" / "auth.json"
+        assert Path(env["PI_CODING_AGENT_DIR"]) == Path(persist) / "acp" / "pi"
+        assert (
+            auth_file.read_text(encoding="utf-8")
+            == '{"anthropic": {"type": "api_key", "key": "k"}}'
+        )
+        assert auth_file.stat().st_mode & 0o777 == 0o600
+        assert "PI_AUTH_JSON" not in env
+
+    def test_terminal_only_auth_with_seeded_file_does_not_warn(self, tmp_path):
+        """pi-acp offers only an interactive login; a seeded auth.json is the
+        credential, so startup must not call authenticate() or warn."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"PI_AUTH_JSON": StaticSecret(value=SecretStr('{"anthropic": {}}'))}
+        )
+        conn = self._make_conn(
+            agent_name="pi-acp",
+            auth_method="pi_terminal_login",
+            auth_method_type="terminal",
+        )
+
+        with patch(
+            "openhands.sdk.agent.acp_agent._warn_auth_selection_failure"
+        ) as mock_warn:
+            self._run_start(agent, state, conn=conn)
+
+        conn.authenticate.assert_not_called()
+        mock_warn.assert_not_called()
+        conn.new_session.assert_called_once()
+
+    def test_terminal_only_auth_with_the_provider_api_key_does_not_warn(self, tmp_path):
+        """pi authenticates from ANTHROPIC_API_KEY in its own environment even
+        though the server advertises only an interactive login, so the
+        no-credential warning would fire on a working configuration."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"ANTHROPIC_API_KEY": StaticSecret(value=SecretStr("sk-ant-test"))}
+        )
+        conn = self._make_conn(
+            agent_name="pi-acp",
+            auth_method="pi_terminal_login",
+            auth_method_type="terminal",
+        )
+
+        with patch(
+            "openhands.sdk.agent.acp_agent._warn_auth_selection_failure"
+        ) as mock_warn:
+            env = self._run_start(agent, state, conn=conn)
+
+        assert env["ANTHROPIC_API_KEY"] == "sk-ant-test"
+        conn.authenticate.assert_not_called()
+        mock_warn.assert_not_called()
+        conn.new_session.assert_called_once()
+
+    def test_terminal_only_auth_without_seeded_file_warns(self, tmp_path):
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        conn = self._make_conn(
+            agent_name="pi-acp",
+            auth_method="pi_terminal_login",
+            auth_method_type="terminal",
+        )
+
+        with patch(
+            "openhands.sdk.agent.acp_agent._warn_auth_selection_failure"
+        ) as mock_warn:
+            self._run_start(agent, state, conn=conn)
+
+        conn.authenticate.assert_not_called()
+        mock_warn.assert_called_once()
+
+    def test_non_terminal_auth_still_warns_with_a_seeded_file(self, tmp_path):
+        """The suppression is scoped to terminal-only servers: codex with an
+        auth.json that isn't ChatGPT auth must keep warning."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": StaticSecret(value=SecretStr('{"tokens": null}'))}
+        )
+        conn = self._make_conn(agent_name="codex-acp", auth_method="chat-gpt")
+
+        with patch(
+            "openhands.sdk.agent.acp_agent._warn_auth_selection_failure"
+        ) as mock_warn:
+            self._run_start(agent, state, conn=conn)
+
+        mock_warn.assert_called_once()
+
+    def test_pi_initialization_skips_set_session_mode(self, tmp_path):
+        """Pi has default_session_mode=None, so set_session_mode is not called."""
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        conn = self._make_conn(
+            agent_name="pi-acp",
+            auth_method="pi_terminal_login",
+            auth_method_type="terminal",
+        )
+
+        self._run_start(agent, state, conn=conn)
+
+        conn.set_session_mode.assert_not_called()
 
     def test_seed_if_absent_does_not_clobber_existing_file(self, tmp_path):
         """A non-empty existing credential file (e.g. a token the CLI refreshed)
@@ -9373,6 +9534,33 @@ class TestACPDataDirIsolation:
             )
         assert Path(env["CLAUDE_CONFIG_DIR"]) == Path(persist) / "acp" / "claude-code"
 
+    def test_pi_isolates_data_dir(self, tmp_path):
+        """pi-acp's session map follows HOME; pi's own config dir follows
+        PI_CODING_AGENT_DIR, which only the file secret sets."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = self._agent(["npx", "-y", "pi-acp"])
+        state = self._H._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
+
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(
+                agent, state, conn=self._H._make_conn(agent_name="pi-acp")
+            )
+        assert Path(env["HOME"]) == Path(persist) / "acp" / "pi"
+        assert "PI_CODING_AGENT_DIR" not in env
+
+        state.secret_registry.update_secrets(
+            {"PI_AUTH_JSON": StaticSecret(value=SecretStr("{}"))}
+        )
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(
+                agent, state, conn=self._H._make_conn(agent_name="pi-acp")
+            )
+        assert Path(env["HOME"]) == Path(persist) / "acp" / "pi"
+        assert Path(env["PI_CODING_AGENT_DIR"]) == Path(persist) / "acp" / "pi"
+
 
 # ---------------------------------------------------------------------------
 # Secret masking (#1023)
@@ -9711,9 +9899,17 @@ class TestPreconfiguredCredentials:
 
     def test_reports_a_materialised_file_secret_pointed_at_a_directory(self, tmp_path):
         spec = ACP_PROVIDERS["codex"].file_secrets[0]
-        (tmp_path / spec.filename).write_text("{}", encoding="utf-8")
+        (tmp_path / spec.filename).write_text(_CHATGPT_AUTH_JSON, encoding="utf-8")
         env = {spec.env_var: str(tmp_path)}
         assert _preconfigured_credentials(None, (spec,), env) == [spec.secret_name]
+
+    def test_ignores_a_file_secret_that_cannot_authenticate(self, tmp_path):
+        """Present but unusable is the case that most needs the warning: the
+        server offered a method that consumes this very file and declined it."""
+        spec = ACP_PROVIDERS["codex"].file_secrets[0]
+        (tmp_path / spec.filename).write_text('{"tokens": null}', encoding="utf-8")
+        env = {spec.env_var: str(tmp_path)}
+        assert _preconfigured_credentials(None, (spec,), env) == []
 
     def test_ignores_a_file_secret_whose_file_is_absent(self, tmp_path):
         spec = ACP_PROVIDERS["codex"].file_secrets[0]

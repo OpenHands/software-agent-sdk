@@ -85,8 +85,8 @@ export interface ACPProviderInfo {
   /** `null` if the provider does not support env-based base-URL override. */
   readonly base_url_env_var: string | null;
   /**
-   * ACP session-mode ID that suppresses all permission prompts, or `null` when
-   * the server exposes no permission mode to set.
+   * ACP session-mode ID that suppresses all permission prompts, or `null` for a
+   * server that exposes no such mode (pi-acp maps modes onto thinking levels).
    */
   readonly default_session_mode: string | null;
   /** Lowercase substring fragments matched against the runtime agent name. */

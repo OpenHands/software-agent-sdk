@@ -97,12 +97,13 @@ def _skip_if_node_below_floor(provider_key: str) -> None:
     """Skip rather than fail when the host Node is below what this provider's
     packages declare.
 
-    Not a soft-pedal: below the floor the CLI's own dependencies break in ways
-    that surface as an unrelated-looking protocol error several calls later,
-    so a plain failure here would read as a conformance regression rather than
-    an unmet prerequisite. The image's own floor is asserted separately,
-    against the Dockerfile pin, in
-    tests/cross/test_agent_server_build_metadata.py.
+    Not a soft-pedal: the CLI's own dependencies break in ways that surface as
+    an unrelated-looking protocol error several calls later (pi's engine dies
+    on `webidl.util.markAsUncloneable`, and the adapter then reports
+    "Cannot call write after a stream was destroyed" from `session/new`), so a
+    plain failure here would read as a conformance regression rather than an
+    unmet prerequisite. The image's own floor is asserted separately, against
+    the Dockerfile pin, in tests/cross/test_agent_server_build_metadata.py.
     """
     floor = ACP_INSTALL_CATALOG[provider_key].min_node_version
     if floor is None:
