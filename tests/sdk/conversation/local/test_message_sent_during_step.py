@@ -1,12 +1,4 @@
-"""A user message sent while a step is in flight must be picked up.
-
-Regression for OpenHands/OpenHands#15432: the run loop held the single
-conversation state lock across the whole agent step, so message intake had to
-wait the step out and whether the message was seen came down to a lock race.
-The step now runs under a dedicated agent lock with the state lock released
-(#4674), and the loop refuses to close on the agent's FINISHED when a user
-message arrived after the step began.
-"""
+"""A user message sent while a step is in flight must be picked up."""
 
 import asyncio
 import threading
@@ -32,11 +24,10 @@ SECOND_MESSAGE = "sent while the step was in flight"
 
 
 class _MessageDuringStepAgent(AgentBase):
-    """Finishes on every step, but sends a user message from the first one.
+    """Finishes on every step; sends a user message from inside the first.
 
-    The message is sent from a *separate* thread and joined inside the step, so
-    the test never sleeps: if intake were still serialized behind the step, the
-    join would time out and ``intake_completed_during_step`` stays False.
+    Sent from a separate thread and joined, so the test never sleeps: if intake
+    were serialized behind the step, the join would time out.
     """
 
     def __init__(self) -> None:
@@ -49,7 +40,7 @@ class _MessageDuringStepAgent(AgentBase):
 
     @property
     def steps(self) -> list[list[str]]:
-        """User-message texts visible to the agent at the start of each step."""
+        """User-message texts seen at the start of each step."""
         return self._steps
 
     @property
@@ -110,13 +101,7 @@ class _MessageDuringStepAgent(AgentBase):
 
 
 class _MessageDuringLLMCallAgent(_MessageDuringStepAgent):
-    """Sends the message from inside the released-lock LLM window.
-
-    This is what ``Agent.astep`` really does: it hands the state lock back
-    around the provider round-trip via ``_released_state_lock_during_io``. A
-    message arriving there lands while the status is still RUNNING, so nothing
-    reset the FINISHED the step went on to set — OpenHands/OpenHands#15432.
-    """
+    """Sends the message from the released-lock window ``Agent.astep`` uses."""
 
     async def astep(
         self,
@@ -192,7 +177,7 @@ def test_state_lock_is_free_while_a_step_runs(tmp_path):
 
 @pytest.mark.asyncio
 async def test_arun_picks_up_message_sent_during_the_llm_call(tmp_path):
-    """The reported OpenHands/OpenHands#15432 symptom must not reproduce."""
+    """A message landing during the LLM round-trip must not be dropped."""
     conversation, agent = _make_conversation(tmp_path, _MessageDuringLLMCallAgent)
     await conversation.arun()
     _assert_picked_up(agent)

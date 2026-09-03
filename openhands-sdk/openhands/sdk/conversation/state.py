@@ -250,16 +250,9 @@ class ConversationState(OpenHandsModel):
     _write_guard: Callable[[], AbstractContextManager[None]] | None = PrivateAttr(
         default=None
     )
-    # ===== Locks, in acquisition order =====
-    # One lock used to guard every concern at once, so message intake contended
-    # with the run loop at every step boundary (#4674). They are now split by
-    # responsibility and must be acquired outer -> inner, never the reverse:
-    #   1. _agent_lock - the agent and the step it is running. Held for a whole
-    #      step by `agent_step()`, which releases `_lock` for that duration.
-    #   2. _lock - everything else: the event log, execution_status, the secret
-    #      registry, stats, HEAD, and the persistence writes they trigger.
-    _agent_lock: FIFOLock = PrivateAttr(default_factory=FIFOLock)
-    _lock: FIFOLock = PrivateAttr(default_factory=FIFOLock)
+    # Acquire outer -> inner, never the reverse.
+    _agent_lock: FIFOLock = PrivateAttr(default_factory=FIFOLock)  # the agent step
+    _lock: FIFOLock = PrivateAttr(default_factory=FIFOLock)  # everything else
     _save_depth: int = PrivateAttr(default=0)  # context-manager nesting depth
     _dirty: bool = PrivateAttr(default=False)  # pending unsaved field changes
 
@@ -752,7 +745,7 @@ class ConversationState(OpenHandsModel):
         return self
 
     def _flush_deferred_save(self) -> None:
-        """Persist the mutations a context-manager block batched, if any."""
+        """Persist what a context-manager block batched, if anything."""
         if not self._dirty:
             return
         fs = getattr(self, "_fs", None)
@@ -773,21 +766,13 @@ class ConversationState(OpenHandsModel):
     def agent_step(self) -> Generator[None]:
         """Run an agent step under ``_agent_lock``, with ``_lock`` released.
 
-        The run loop enters a step already holding the state lock and used to
-        keep it for the whole step, so message intake had to wait out the step
-        and pickup came down to a lock race (#4674). Hand the state lock back
-        for the duration instead: the step re-takes it per emitted event, and
-        concurrent steps are serialized on the dedicated agent lock.
-
-        A no-op beyond the agent lock when the caller does not hold ``_lock``
-        (a direct ``step()``/``astep()`` call).
+        Steps serialize on the agent lock; the state lock stays free so intake
+        does not wait out a step. The step re-takes it per emitted event.
         """
         depth = 0
         save_depth = 0
         if self._lock.owned():
-            # Batched mutations must not stay pending while the lock is open to
-            # other threads, and their `_save_depth` must not swallow the flush
-            # of a block another thread opens meanwhile.
+            # Don't leave batched mutations pending while others hold the lock.
             save_depth = self._save_depth
             self._save_depth = 0
             self._flush_deferred_save()

@@ -1873,14 +1873,9 @@ class LocalConversation(BaseConversation):
     def _resume_for_message_sent_during_step(
         self, last_user_message_id_before_step: EventID | None
     ) -> None:
-        """Keep the run alive for a user message that landed mid-step.
+        """Don't let FINISHED close the run over input the step never read.
 
-        Intake no longer waits out the step (#4674), so a message can arrive
-        after the agent has built its prompt. The agent's FINISHED would then
-        close the run over input it never read — the mechanism behind
-        OpenHands/OpenHands#15432. Clearing FINISHED here makes pickup on the
-        next step deterministic instead of a lock race. Call while holding the
-        state lock.
+        Call while holding the state lock.
         """
         if self._state.last_user_message_id == last_user_message_id_before_step:
             return
@@ -1998,11 +1993,8 @@ class LocalConversation(BaseConversation):
                             ConversationExecutionStatus.RUNNING
                         )
 
-                    # The step runs under the agent lock with the state lock
-                    # released (#4674), so message intake is not stuck behind
-                    # it and switch_llm can take the state lock normally rather
-                    # than skipping it to dodge a deadlock (#3485). Mutations
-                    # made by the step re-take the state lock per event.
+                    # State lock released for the step, so intake is not stuck
+                    # behind it; the step re-takes it per event.
                     last_user_message_id_before_step = self._state.last_user_message_id
                     with self._state.agent_step():
                         self.agent.step(
@@ -2246,17 +2238,12 @@ class LocalConversation(BaseConversation):
                             else None
                         )
                     else:
-                        # The agent lock, not the state lock, is held across
-                        # this await. It is still thread- (not task-) reentrant,
-                        # so a step awaited from another coroutine on this
-                        # event-loop thread would silently re-enter it; dispatch
-                        # such callers via run_in_executor onto a worker thread.
-                        # The step runs under the agent lock with the state
-                        # lock released (#4674), so message intake is not stuck
-                        # behind it and switch_llm can take the state lock
-                        # normally rather than skipping it to dodge a deadlock
-                        # (#3485). Mutations made by the step re-take the state
-                        # lock per event.
+                        # State lock released for the step, so intake is not
+                        # stuck behind it; the step re-takes it per event. The
+                        # agent lock held across this await is thread- (not
+                        # task-) reentrant, so a step awaited from another
+                        # coroutine on this thread would re-enter it: dispatch
+                        # such callers via run_in_executor.
                         last_user_message_id_before_step = (
                             self._state.last_user_message_id
                         )
