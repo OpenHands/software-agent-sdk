@@ -4,15 +4,11 @@ name: TypeScript client endpoint audit
 on:
     push:
         branches: [main]
-  # Required for the "Comment audit report on PR" step: it is gated on
-  # github.event_name == 'pull_request' and relies on the PR context
-  # (context.issue.number), neither of which exists on a push event.
     pull_request:
 
-# Needed so the audit can post its report as a comment on the PR.
+# The audit only reads the checked-out tree and writes to the job summary.
 permissions:
     contents: read
-    pull-requests: write
 
 defaults:
     run:
@@ -53,20 +49,24 @@ jobs:
           # .audit/ is a dot-directory; upload-artifact@v4 skips hidden paths by default.
                   include-hidden-files: true
 
-      # Post the report as a single, self-updating comment on the PR. Runs even
-      # when the audit gate fails (the report is written before the gate), so
-      # reviewers see the mismatches that failed the check.
-            - name: Comment audit report on PR
-              if: always() && github.event_name == 'pull_request'
+      # The report's only destination. A job summary needs no token, so it
+      # renders identically for fork and same-repo PRs.
+            - name: Write audit report to the job summary
+              if: always()
               uses: actions/github-script@v7
               with:
                   script: |
-                      const { postEndpointAuditReport } = require(
-                        './.github/scripts/post-typescript-endpoint-audit-report.cjs'
+                      const fs = require('node:fs');
+                      const reportPath =
+                        'clients/typescript/.audit/endpoint-audit.json';
+                      if (!fs.existsSync(reportPath)) {
+                        core.warning(`No audit report at ${reportPath}.`);
+                        return;
+                      }
+                      const { renderEndpointAuditReport } = require(
+                        './.github/scripts/render-typescript-endpoint-audit-report.cjs'
                       );
-                      await postEndpointAuditReport({
-                        github,
-                        context,
-                        core,
-                        reportPath: 'clients/typescript/.audit/endpoint-audit.json',
-                      });
+                      const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+                      await core.summary
+                        .addRaw(renderEndpointAuditReport(report))
+                        .write();
