@@ -65,6 +65,13 @@ def _register_proxy_alias_pricing(
         if isinstance(src, Mapping):
             entry.update({f: src[f] for f in _PRICING_FIELDS if f in src})
 
+    # litellm's `get_llm_provider` cannot resolve `bedrock_converse` as a
+    # provider label for an unknown alias id (only ``bedrock`` is accepted), so
+    # normalize it before registering or `cost_per_token` keeps raising.
+
+    if entry.get("litellm_provider") == "bedrock_converse":
+        entry["litellm_provider"] = "bedrock"
+
     if (
         entry.get("input_cost_per_token") is None
         and entry.get("output_cost_per_token") is None

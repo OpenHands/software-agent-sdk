@@ -174,6 +174,7 @@ def test_register_proxy_alias_makes_alias_priceable():
         underlying_model_info=underlying,
         proxy_model_info=None,
     )
+    cost = (0.0, 0.0)
     try:
         cost = litellm.cost_per_token(
             model=alias, prompt_tokens=100, completion_tokens=50
@@ -218,6 +219,50 @@ def test_register_proxy_proxy_overrides_win():
     assert entry["output_cost_per_token"] == 2.0
     # Underlying cache/max/provider fields still carried over.
     assert entry["litellm_provider"] == underlying["litellm_provider"]
+    _pop(alias)
+
+
+def test_register_proxy_alias_bedrock_converse_provider_normalized():
+    """A bedrock_converse provider label must be normalized to bedrock.
+
+    ``get_llm_provider`` resolves ``bedrock_converse`` only for model ids already
+    present in litellm's builtin bedrock_converse set; an unknown alias id with that
+    label raises, leaving the span priced $0. Registering with ``bedrock`` makes
+    ``cost_per_token`` resolve without an explicit ``custom_llm_provider`` (#4836).
+    """
+    alias = "prod/claude-sonnet-4-5-bedrock-e"
+    _pop(alias)
+    # Sanity: the alias is not priceable before registration.
+
+    try:
+        litellm.cost_per_token(model=alias, prompt_tokens=1, completion_tokens=1)
+        pre_raises = False
+    except Exception:
+        pre_raises = True
+    assert pre_raises
+
+    # The proxy advertises ``bedrock_converse`` (the Anthropic-on-Bedrock route),
+    # which would otherwise override the underlying provider in the merged entry.
+
+    underlying = model_cost["us.anthropic.claude-sonnet-4-5-20250929-v1:0"]
+    assert underlying["litellm_provider"] == "bedrock_converse"
+    _register_proxy_alias_pricing(
+        alias=alias,
+        underlying_model_info=underlying,
+        proxy_model_info={"litellm_provider": "bedrock_converse"},
+    )
+    assert model_cost[alias]["litellm_provider"] == "bedrock"
+    cost = (0.0, 0.0)
+    try:
+        cost = litellm.cost_per_token(
+            model=alias, prompt_tokens=100, completion_tokens=50
+        )
+        post_raises = False
+    except Exception:
+        post_raises = True
+    assert not post_raises
+    assert cost[0] > 0
+    assert cost[1] > 0
     _pop(alias)
 
 
