@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import ipaddress
 import socket
-from typing import Any, Literal
+from typing import Literal
 from urllib.parse import urljoin, urlparse
 
 import httpx
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, JsonValue, field_validator
 
 
 ALLOWED_RUNTIME_HOST_SUFFIXES = (
@@ -24,7 +24,7 @@ class CloudProxyRequest(BaseModel):
     method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
     path: str = Field(description="Upstream absolute path, including query string")
     headers: dict[str, str] = Field(default_factory=dict)
-    body: Any | None = None
+    body: JsonValue | None = None
     timeout_seconds: float | None = Field(default=None, gt=0)
 
     @field_validator("host")
@@ -84,7 +84,11 @@ def _ensure_public_dns_target(host: str) -> None:
             )
 
 
-@cloud_proxy_router.post("")
+@cloud_proxy_router.post(
+    "",
+    response_class=Response,
+    responses={200: {"description": "Upstream response"}},
+)
 async def proxy_cloud_request(request: CloudProxyRequest) -> Response:
     """Proxy a cloud/runtime request that cannot be made directly by the browser."""
     _ensure_public_dns_target(request.host)
