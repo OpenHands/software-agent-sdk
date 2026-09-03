@@ -86,8 +86,17 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         "OPENAI_API_KEY",
         "CODEX_API_KEY",
         "GEMINI_API_KEY",
+        # kimi-code's own KIMI_API_KEY is read only from inside
+        # $KIMI_CODE_HOME/config.toml, never from the environment, so it
+        # cannot clear the auth gate. KIMI_MODEL_NAME is the trigger for the
+        # CLI's env-only provider synthesis, and KIMI_MODEL_API_KEY is the
+        # key it pairs with — together they let session/new succeed with a
+        # bogus credential, which is what this suite needs. Setting the name
+        # without the key makes the CLI exit, so both must be set.
+        "KIMI_MODEL_API_KEY",
     ):
         monkeypatch.setenv(var, _BOGUS_KEY)
+    monkeypatch.setenv("KIMI_MODEL_NAME", "kimi-k2.7-code")
     for var in (
         "CLAUDE_CODE_OAUTH_TOKEN",
         "ANTHROPIC_BASE_URL",
@@ -96,6 +105,10 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         "GOOGLE_APPLICATION_CREDENTIALS",
         "CODEX_HOME",
         "CLAUDE_CONFIG_DIR",
+        "KIMI_API_KEY",
+        "KIMI_BASE_URL",
+        "KIMI_CODE_HOME",
+        "KIMI_MODEL_BASE_URL",
     ):
         monkeypatch.delenv(var, raising=False)
 
