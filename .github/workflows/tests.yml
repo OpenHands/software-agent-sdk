@@ -135,6 +135,53 @@ jobs:
                   path: coverage-sdk.dat
                   if-no-files-found: warn
 
+    # Deliberately NOT a required status check: these tests launch real npx
+    # subprocesses and hit the live npm registry (see the `acp_live` marker
+    # and tests/sdk/agent/test_acp_conformance.py's docstring). sdk-tests IS
+    # required, so a registry blip must not be able to block unrelated PRs;
+    # this job carries that live-network risk instead, gated to only run
+    # when ACP registry/catalog files actually change (OpenHands/
+    # software-agent-sdk#4830 P0-1/2/3).
+    acp-live-tests:
+        runs-on: blacksmith-2vcpu-ubuntu-2404
+        timeout-minutes: 15
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v7
+              with: {fetch-depth: 0}
+
+            - name: Detect ACP registry/catalog changes
+              id: changed
+              uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
+              with:
+                  files: |
+                      openhands-sdk/openhands/sdk/settings/acp_providers.py
+                      openhands-sdk/openhands/sdk/settings/acp_install_catalog.py
+                      tests/sdk/agent/test_acp_conformance.py
+                      tests/sdk/settings/test_acp_install_catalog_pins_live.py
+                      pyproject.toml
+                      uv.lock
+                      .github/workflows/tests.yml
+
+            - name: Install uv
+              if: steps.changed.outputs.any_changed == 'true'
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              with:
+                  enable-cache: true
+                  python-version: '3.13'
+
+            - name: Install deps
+              if: steps.changed.outputs.any_changed == 'true'
+              run: uv sync --frozen --group dev
+
+            - name: Run live ACP conformance + pin-installability tests
+              if: steps.changed.outputs.any_changed == 'true'
+              run: |
+                  CI=true uv run python -m pytest -vvs \
+                    -m acp_live \
+                    tests/sdk/agent/test_acp_conformance.py \
+                    tests/sdk/settings/test_acp_install_catalog_pins_live.py
+
     tools-tests:
         runs-on: blacksmith-2vcpu-ubuntu-2404
         timeout-minutes: 15
