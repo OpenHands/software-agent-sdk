@@ -3,11 +3,6 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from openhands.agent_server.desktop_service import get_desktop_service
-from openhands.sdk.logger import get_logger
-
-
-logger = get_logger(__name__)
 
 desktop_router = APIRouter(prefix="/desktop", tags=["Desktop"])
 
@@ -18,30 +13,16 @@ class DesktopUrlResponse(BaseModel):
     url: str | None
 
 
-@desktop_router.get("/url", response_model=DesktopUrlResponse)
+@desktop_router.get("/url", response_model=DesktopUrlResponse, deprecated=True)
 async def get_desktop_url(
-    base_url: str = "http://localhost:8002",
+    base_url: str = "http://localhost:8002",  # noqa: ARG001
 ) -> DesktopUrlResponse:
-    """Get the noVNC URL for desktop access.
+    """Deprecated since v1.44.1 and scheduled for removal in v1.49.0.
 
-    Args:
-        base_url: Base URL for the noVNC server (default: http://localhost:8002)
-
-    Returns:
-        noVNC URL if available, None otherwise
+    The VNC/desktop stack has been removed; this always returns 503, the
+    same response every deployment has always gotten since VNC defaults off.
     """
-    desktop_service = get_desktop_service()
-    if desktop_service is None:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Desktop is disabled in configuration. Set enable_vnc=true to enable."
-            ),
-        )
-
-    try:
-        url = desktop_service.get_vnc_url(base_url)
-        return DesktopUrlResponse(url=url)
-    except Exception as e:
-        logger.error(f"Error getting desktop URL: {e}")
-        raise HTTPException(status_code=500, detail="Failed to get desktop URL")
+    raise HTTPException(
+        status_code=503,
+        detail="Desktop is disabled. VNC/desktop support has been removed.",
+    )

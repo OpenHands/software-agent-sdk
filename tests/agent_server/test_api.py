@@ -265,10 +265,9 @@ class TestServiceParallelization:
     """Test that services are started and stopped in parallel."""
 
     async def test_services_start_in_parallel(self):
-        """Test that VSCode, Desktop, and Tool Preload services start concurrently."""
+        """Test that VSCode and Tool Preload services start concurrently."""
         # Create mock services that take some time to start
         mock_vscode_service = AsyncMock()
-        mock_desktop_service = AsyncMock()
         mock_tool_preload_service = AsyncMock()
         mock_conversation_service = AsyncMock()
 
@@ -290,7 +289,6 @@ class TestServiceParallelization:
             return True
 
         mock_vscode_service.start = AsyncMock(side_effect=slow_start)
-        mock_desktop_service.start = AsyncMock(side_effect=slow_start)
         mock_tool_preload_service.start = AsyncMock(side_effect=slow_start)
 
         # Mock the service getters
@@ -304,10 +302,6 @@ class TestServiceParallelization:
                 return_value=mock_vscode_service,
             ),
             patch(
-                "openhands.agent_server.api.get_desktop_service",
-                return_value=mock_desktop_service,
-            ),
-            patch(
                 "openhands.agent_server.api.get_tool_preload_service",
                 return_value=mock_tool_preload_service,
             ),
@@ -319,18 +313,16 @@ class TestServiceParallelization:
             async with api_lifespan(mock_app):
                 pass
 
-            assert max_concurrent_starts == 3
+            assert max_concurrent_starts == 2
 
             # Verify all services were started
             mock_vscode_service.start.assert_called_once()
-            mock_desktop_service.start.assert_called_once()
             mock_tool_preload_service.start.assert_called_once()
 
     async def test_services_stop_in_parallel(self):
-        """Test that VSCode, Desktop, and Tool Preload services stop concurrently."""
+        """Test that VSCode and Tool Preload services stop concurrently."""
         # Create mock services that take some time to stop
         mock_vscode_service = AsyncMock()
-        mock_desktop_service = AsyncMock()
         mock_tool_preload_service = AsyncMock()
         mock_conversation_service = AsyncMock()
 
@@ -339,10 +331,8 @@ class TestServiceParallelization:
             await asyncio.sleep(0.1)
 
         mock_vscode_service.start = AsyncMock(return_value=True)
-        mock_desktop_service.start = AsyncMock(return_value=True)
         mock_tool_preload_service.start = AsyncMock(return_value=True)
         mock_vscode_service.stop = AsyncMock(side_effect=slow_stop)
-        mock_desktop_service.stop = AsyncMock(side_effect=slow_stop)
         mock_tool_preload_service.stop = AsyncMock(side_effect=slow_stop)
 
         # Mock the service getters
@@ -354,10 +344,6 @@ class TestServiceParallelization:
             patch(
                 "openhands.agent_server.api.get_vscode_service",
                 return_value=mock_vscode_service,
-            ),
-            patch(
-                "openhands.agent_server.api.get_desktop_service",
-                return_value=mock_desktop_service,
             ),
             patch(
                 "openhands.agent_server.api.get_tool_preload_service",
@@ -374,7 +360,6 @@ class TestServiceParallelization:
 
             # Verify all services were stopped
             mock_vscode_service.stop.assert_called_once()
-            mock_desktop_service.stop.assert_called_once()
             mock_tool_preload_service.stop.assert_called_once()
 
     async def test_services_handle_none_values(self):
@@ -388,7 +373,6 @@ class TestServiceParallelization:
                 return_value=mock_conversation_service,
             ),
             patch("openhands.agent_server.api.get_vscode_service", return_value=None),
-            patch("openhands.agent_server.api.get_desktop_service", return_value=None),
             patch(
                 "openhands.agent_server.api.get_tool_preload_service", return_value=None
             ),
@@ -419,7 +403,6 @@ class TestServiceParallelization:
                 return_value=mock_conversation_service,
             ),
             patch("openhands.agent_server.api.get_vscode_service", return_value=None),
-            patch("openhands.agent_server.api.get_desktop_service", return_value=None),
             patch(
                 "openhands.agent_server.api.get_tool_preload_service", return_value=None
             ),

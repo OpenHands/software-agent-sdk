@@ -42,6 +42,17 @@ def test_event_log_empty_initialization():
         log[-1]
 
 
+def test_event_log_append_returns_assigned_index():
+    """``append`` returns the sequence number it assigned, so callers don't
+    need a separate ``get_index`` lookup right after appending."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+
+    assert log.append(create_test_event("event-1")) == 0
+    assert log.append(create_test_event("event-2")) == 1
+    assert log.append(create_test_event("event-3")) == 2
+
+
 def test_event_log_id_validation_duplicate_id():
     """Test that duplicate event IDs are prevented."""
     fs = InMemoryFileStore()
