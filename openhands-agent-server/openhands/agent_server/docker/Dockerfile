@@ -102,6 +102,11 @@ RUN test -x /agent-server/dist/openhands-agent-server
 # Failures here are fatal: there is no per-BASE_IMAGE fallback for a broken build of
 # the shared payload itself (see the compatibility probe in base-image-minimal for
 # the per-target-image fallback).
+#
+# The Node pin below is a floor, not a preference: this stage installs every
+# selected provider under one runtime, so it has to clear the highest
+# `min_node_version` in ACP_INSTALL_CATALOG (asserted by
+# tests/cross/test_agent_server_build_metadata.py).
 ####################################################################################
 FROM python:3.13-bookworm AS acp-providers
 ARG INSTALL_ACP_PROVIDERS
@@ -133,13 +138,13 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     ARCH=$(uname -m); \
     case "$ARCH" in \
-      x86_64|amd64) NARCH=x64; NODE_SHA256=69b09dba5c8dcb05c4e4273a4340db1005abeafe3927efda2bc5b249e80437ec;; \
-      aarch64|arm64) NARCH=arm64; NODE_SHA256=08bfbf538bad0e8cbb0269f0173cca28d705874a67a22f60b57d99dc99e30050;; \
+      x86_64|amd64) NARCH=x64; NODE_SHA256=c0649af18e6a24f6fe5535a3e86b341dd49a8e71117c8b68bde973ef834f16f2;; \
+      aarch64|arm64) NARCH=arm64; NODE_SHA256=0b2d9f564b6594222a62c82e1df2efe119dd4a4aff29644f4dd325bf360b6bcc;; \
       *) echo "Unsupported architecture for ACP providers: '$ARCH'" >&2; exit 1;; \
     esac; \
-    NODE_TARBALL="/tmp/node-v22.14.0-linux-${NARCH}.tar.xz"; \
+    NODE_TARBALL="/tmp/node-v22.19.0-linux-${NARCH}.tar.xz"; \
     curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused \
-        "https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-${NARCH}.tar.xz" -o "$NODE_TARBALL"; \
+        "https://nodejs.org/dist/v22.19.0/node-v22.19.0-linux-${NARCH}.tar.xz" -o "$NODE_TARBALL"; \
     echo "$NODE_SHA256  $NODE_TARBALL" | sha256sum -c -; \
     tar -xJ --strip-components=1 -C "$ACP_NODE_DIR" -f "$NODE_TARBALL"; \
     rm -f "$NODE_TARBALL"; \
@@ -233,7 +238,7 @@ RUN set -eux; \
     mkdir -p /workspace/project; \
     chown -R "${USERNAME}:${USERNAME}" /workspace
 
-# Install ACP servers for ACPAgent support (Claude Code, Codex, Gemini CLI).
+# Install the ACP servers selected by INSTALL_ACP_PROVIDERS (see the stage above).
 # The payload itself (Node.js 22 + the ACP npm packages, under $ACP_NODE_DIR) is
 # built once in the acp-providers stage above, independent of BASE_IMAGE, and
 # copied in here so the layer is byte-identical across every base image it lands

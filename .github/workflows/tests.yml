@@ -163,6 +163,16 @@ jobs:
                       uv.lock
                       .github/workflows/tests.yml
 
+            # The runner image's default Node is older than some providers'
+            # `engines.node`, and the npx path runs on whatever Node is on
+            # PATH. Must clear the highest `min_node_version` in
+            # ACP_INSTALL_CATALOG, otherwise those providers only skip.
+            - name: Use Node.js 22.19
+              if: steps.changed.outputs.any_changed == 'true'
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 22.19
+
             - name: Install uv
               if: steps.changed.outputs.any_changed == 'true'
               uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
