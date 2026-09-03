@@ -394,6 +394,7 @@ def test_export_agent_settings_schema_emits_variant_tagged_sections() -> None:
         "gemini-cli",
         "kimi-code",
         "pi",
+        "opencode",
         "custom",
     }
 
@@ -1414,7 +1415,15 @@ def test_acp_create_agent_carries_provider_key() -> None:
     directly (not from settings) defaults to ``None``; and the key survives a
     serialization round-trip through the ``AgentBase`` discriminated union.
     """
-    for server in ("claude-code", "codex", "gemini-cli", "kimi-code", "pi", "custom"):
+    for server in (
+        "claude-code",
+        "codex",
+        "gemini-cli",
+        "kimi-code",
+        "pi",
+        "opencode",
+        "custom",
+    ):
         kwargs: dict[str, Any] = {"acp_server": server}
         if server == "custom":
             kwargs["acp_command"] = ["my-acp"]
@@ -1437,7 +1446,7 @@ def test_acp_resolve_command_for_known_servers(
     default stays the ``npx`` invocation.
     """
     monkeypatch.setattr(shutil, "which", lambda _: None)
-    for server in ("claude-code", "codex", "gemini-cli", "kimi-code", "pi"):
+    for server in ("claude-code", "codex", "gemini-cli", "kimi-code", "pi", "opencode"):
         settings = ACPAgentSettings(acp_server=server)
         cmd = settings.resolve_acp_command()
         assert cmd, f"expected default command for {server}, got empty"
@@ -1513,6 +1522,9 @@ def _which_returning(*available: str):
         # gemini's default carries a trailing ``--acp`` that must be preserved.
         ("gemini-cli", "gemini", ["gemini", "--acp"]),
         ("pi", "pi-acp", ["pi-acp"]),
+        # opencode's trailing arg is an ``acp`` subcommand, preserved the same
+        # way as gemini's ``--acp`` flag.
+        ("opencode", "opencode", ["opencode", "acp"]),
     ],
 )
 def test_acp_resolve_command_rewrites_default_to_pinned_binary(
@@ -2238,7 +2250,14 @@ def test_acp_resolve_command_uses_registry_defaults(
 
     # No pinned binary on PATH → registry default is returned verbatim.
     monkeypatch.setattr(shutil, "which", lambda _: None)
-    for server_key in ("claude-code", "codex", "gemini-cli", "kimi-code", "pi"):
+    for server_key in (
+        "claude-code",
+        "codex",
+        "gemini-cli",
+        "kimi-code",
+        "pi",
+        "opencode",
+    ):
         settings = ACPAgentSettings(acp_server=server_key)
         expected = list(ACP_PROVIDERS[server_key].default_command)
         assert settings.resolve_acp_command() == expected

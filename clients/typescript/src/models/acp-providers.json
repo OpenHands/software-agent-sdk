@@ -206,6 +206,61 @@
     "supports_runtime_model_switch": true,
     "supports_set_session_model": true
   },
+  "opencode": {
+    "agent_name_patterns": [
+      "opencode"
+    ],
+    "api_key_env_var": "OPENCODE_API_KEY",
+    "available_models": [
+      {
+        "id": "opencode/big-pickle",
+        "label": "Big Pickle"
+      },
+      {
+        "id": "opencode/claude-opus-5",
+        "label": "Claude Opus 5"
+      },
+      {
+        "id": "opencode/claude-sonnet-5",
+        "label": "Claude Sonnet 5"
+      },
+      {
+        "id": "opencode/gpt-5.5",
+        "label": "GPT-5.5"
+      },
+      {
+        "id": "opencode/gemini-3.1-pro",
+        "label": "Gemini 3.1 Pro"
+      },
+      {
+        "id": "opencode/kimi-k3",
+        "label": "Kimi K3"
+      },
+      {
+        "id": "opencode/nemotron-3-ultra-free",
+        "label": "Nemotron 3 Ultra (free)"
+      }
+    ],
+    "base_url_env_var": null,
+    "binary_name": "opencode",
+    "data_dir_env_var": "HOME",
+    "default_command": [
+      "npx",
+      "-y",
+      "--prefer-offline",
+      "opencode-ai@1.18.23",
+      "acp"
+    ],
+    "default_model": "opencode/big-pickle",
+    "default_session_mode": "build",
+    "display_name": "OpenCode",
+    "env_conflicts": [],
+    "file_secrets": [],
+    "key": "opencode",
+    "session_meta_key": null,
+    "supports_runtime_model_switch": true,
+    "supports_set_session_model": true
+  },
   "pi": {
     "agent_name_patterns": [
       "pi-acp"

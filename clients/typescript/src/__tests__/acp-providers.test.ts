@@ -38,6 +38,9 @@ describe('ACP provider credential descriptors', () => {
     // pi reads a provider key out of the environment but resolves base URLs
     // from its own catalogue, so it has no base-URL override var.
     ['pi', 'ANTHROPIC_API_KEY', null],
+    // opencode's own gateway (OpenCode Zen) resolves its endpoint from the
+    // model catalogue, so it has no base-URL override var either.
+    ['opencode', 'OPENCODE_API_KEY', null],
   ])('%s declares its api_key/base_url env vars', (key, apiKeyEnvVar, baseUrlEnvVar) => {
     const provider = ACP_PROVIDERS[key];
     expect(provider.api_key_env_var).toBe(apiKeyEnvVar);
@@ -57,6 +60,19 @@ describe('ACP provider credential descriptors', () => {
     // pi-acp maps ACP modes onto pi's thinking levels, so there is no
     // permission-suppressing mode to set at session start.
     expect(pi.default_session_mode).toBeNull();
+  });
+
+  it('opencode enters ACP mode via an acp subcommand', () => {
+    const opencode = ACP_PROVIDERS.opencode;
+    expect(opencode.default_command).toEqual([
+      'npx',
+      '-y',
+      '--prefer-offline',
+      'opencode-ai@1.18.23',
+      'acp',
+    ]);
+    expect(opencode.default_session_mode).toBe('build');
+    expect(opencode.file_secrets).toEqual([]);
   });
 
   it('uses the maintained Codex adapter and exposes GPT-5.6 models', () => {

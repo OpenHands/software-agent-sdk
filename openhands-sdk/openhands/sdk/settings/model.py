@@ -1203,7 +1203,7 @@ class ConversationSettings(BaseModel):
 AgentKind = Literal["openhands", "llm", "acp"]
 
 ACPServerKind = Literal[
-    "claude-code", "codex", "gemini-cli", "kimi-code", "pi", "custom"
+    "claude-code", "codex", "gemini-cli", "kimi-code", "pi", "opencode", "custom"
 ]
 """Known ACP backend servers the GUI can pick from.
 

@@ -177,6 +177,41 @@ class TestACPProviderInfo:
         assert spec.env_points_to == "dir"
         assert spec.subdir == "pi"
 
+    def test_opencode_metadata(self):
+        info = ACP_PROVIDERS["opencode"]
+        assert info.key == "opencode"
+        assert info.display_name == "OpenCode"
+        assert info.default_command[:3] == ("npx", "-y", "--prefer-offline")
+        assert "opencode-ai@" in info.default_command[3]
+        # ``acp`` is the subcommand that puts the CLI into ACP mode; it is
+        # preserved as a trailing arg when resolve_acp_command rewrites to the
+        # pinned binary.
+        assert info.default_command[4] == "acp"
+        assert info.api_key_env_var == "OPENCODE_API_KEY"
+        # OpenCode Zen resolves its endpoint from the model catalogue, so there
+        # is no base-URL override var.
+        assert info.base_url_env_var is None
+        # OpenCode's only modes are ``build`` and ``plan``.
+        assert info.default_session_mode == "build"
+        assert "opencode" in info.agent_name_patterns
+        assert info.supports_set_session_model is True
+        assert info.supports_runtime_model_switch is True
+        # session/new ignores a _meta model selection.
+        assert info.session_meta_key is None
+        assert info.default_model == "opencode/big-pickle"
+        model_ids = [m.id for m in info.available_models]
+        assert "opencode/big-pickle" in model_ids
+        assert "opencode/claude-opus-5" in model_ids
+        # One free-tier id, which is the only kind that works with no key.
+        assert "opencode/nemotron-3-ultra-free" in model_ids
+        assert info.binary_name == "opencode"
+        # OPENCODE_CONFIG_DIR relocates only the config file; auth, sessions and
+        # caches follow XDG dirs that fall back to HOME.
+        assert info.data_dir_env_var == "HOME"
+        # OPENCODE_AUTH_CONTENT carries the auth store, so there is no
+        # credential file to materialise.
+        assert info.file_secrets == ()
+
     def test_provider_info_is_frozen(self):
         info = ACP_PROVIDERS["claude-code"]
         with pytest.raises((AttributeError, TypeError)):
@@ -229,6 +264,12 @@ class TestDetectACPProviderByAgentName:
         info = detect_acp_provider_by_agent_name("Kimi Code CLI")
         assert info is not None
         assert info.key == "kimi-code"
+
+    def test_detects_opencode_by_agent_name(self):
+        # ``opencode acp`` reports agentInfo.name "OpenCode".
+        info = detect_acp_provider_by_agent_name("OpenCode")
+        assert info is not None
+        assert info.key == "opencode"
 
     def test_case_insensitive_detection(self):
         assert detect_acp_provider_by_agent_name("CLAUDE-AGENT-ACP") is not None

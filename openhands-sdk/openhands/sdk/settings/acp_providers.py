@@ -414,6 +414,27 @@ _PI_MODELS: tuple[ACPModelOption, ...] = (
     ACPModelOption(id="anthropic/claude-haiku-4-5", label="Claude Haiku 4.5"),
 )
 
+# Model IDs accepted by ``opencode acp``, mirroring the ``model`` configOptions
+# select OpenCode reports at ``session/new``. Every id is ``<provider>/<model>``
+# and the offered set is credential-dependent, but unlike Kimi's it is not
+# *user-defined*: these are OpenCode Zen ids, the catalogue that
+# ``OPENCODE_API_KEY`` — the provider's own credential — unlocks, so a curated
+# list is meaningful. Without a key the server offers only the free tier, which
+# is why ``nemotron-3-ultra-free`` is kept. A user may still configure any
+# ``<provider>/<model>`` the CLI knows (e.g. ``anthropic/...`` with
+# ANTHROPIC_API_KEY supplied as a conversation secret).
+_OPENCODE_MODELS: tuple[ACPModelOption, ...] = (
+    ACPModelOption(id="opencode/big-pickle", label="Big Pickle"),
+    ACPModelOption(id="opencode/claude-opus-5", label="Claude Opus 5"),
+    ACPModelOption(id="opencode/claude-sonnet-5", label="Claude Sonnet 5"),
+    ACPModelOption(id="opencode/gpt-5.5", label="GPT-5.5"),
+    ACPModelOption(id="opencode/gemini-3.1-pro", label="Gemini 3.1 Pro"),
+    ACPModelOption(id="opencode/kimi-k3", label="Kimi K3"),
+    ACPModelOption(
+        id="opencode/nemotron-3-ultra-free", label="Nemotron 3 Ultra (free)"
+    ),
+)
+
 
 # ---------------------------------------------------------------------------
 # Reserved file-content credential secrets for the built-in providers.
@@ -630,6 +651,48 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             default_model=None,
             file_secrets=_PI_FILE_SECRETS,
             binary_name=ACP_INSTALL_CATALOG["pi"].binary_name,
+            data_dir_env_var="HOME",
+        ),
+        "opencode": ACPProviderInfo(
+            key="opencode",
+            display_name="OpenCode",
+            default_command=ACP_INSTALL_CATALOG["opencode"].npx_command(),
+            # OpenCode Zen, the CLI's own gateway and the provider its model
+            # ids are namespaced under. Third-party keys (ANTHROPIC_API_KEY,
+            # OPENAI_API_KEY, ...) also enable their providers inside OpenCode,
+            # but none of them is OpenCode's own credential.
+            api_key_env_var="OPENCODE_API_KEY",
+            # Zen's endpoint comes from the model catalogue, not the
+            # environment: verified against a local sink that neither
+            # OPENCODE_BASE_URL nor OPENAI_BASE_URL diverts it. A per-provider
+            # ``options.baseURL`` in the config file is the only override.
+            base_url_env_var=None,
+            # OpenCode exposes exactly two modes, ``build`` and ``plan``.
+            # ``build`` is the tool-executing default and raised no permission
+            # requests for read/write/bash under the stock permission config.
+            default_session_mode="build",
+            # ``opencode acp`` reports ``agentInfo.name = "OpenCode"``; the
+            # pattern also prefixes the package basename ``opencode-ai`` and the
+            # binary ``opencode`` for command-time detection.
+            agent_name_patterns=("opencode",),
+            supports_set_session_model=True,
+            supports_runtime_model_switch=True,
+            # ``session/new`` ignores a ``_meta`` model selection (tried under
+            # three plausible keys); the configOptions select is the only path
+            # that takes effect.
+            session_meta_key=None,
+            available_models=_OPENCODE_MODELS,
+            # The CLI's own default (model configOptions ``currentValue``),
+            # both with and without a key.
+            default_model="opencode/big-pickle",
+            # No ``file_secrets``: OpenCode reads its whole auth store from
+            # OPENCODE_AUTH_CONTENT when set, ahead of the on-disk auth.json, so
+            # the credential rides the ordinary env-var channel.
+            binary_name=ACP_INSTALL_CATALOG["opencode"].binary_name,
+            # OPENCODE_CONFIG_DIR exists but points at a config *file* only;
+            # auth, sessions, the SQLite store and caches follow
+            # XDG_{DATA,CONFIG,CACHE,STATE}_HOME, which all fall back to HOME.
+            # Relocating HOME is the only single lever that moves all of them.
             data_dir_env_var="HOME",
         ),
     }
