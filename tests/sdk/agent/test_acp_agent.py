@@ -3128,6 +3128,20 @@ class TestACPAgentAstep:
 # ---------------------------------------------------------------------------
 
 
+def _own_finalize_calls(finalize_mock, agent) -> list:
+    """Calls to an autospec'd ACPAgent._finalize made by *agent* itself.
+
+    ``_finalize`` must be patched on the class (ACPAgent is a frozen pydantic
+    model, so the instance attribute cannot be replaced), which means the mock
+    also records calls from *other* agents. Unrelated tests leave agents
+    holding MagicMock executors/connections; when one of those is collected,
+    ``__del__`` calls ``_finalize`` on it, and with a plain class patch that
+    lands on this mock at an unpredictable point in the run. ``autospec=True``
+    records ``self``, so the caller can count only its own.
+    """
+    return [c for c in finalize_mock.call_args_list if c.args[:1] == (agent,)]
+
+
 class TestACPAgentCleanup:
     def test_close_during_credential_materialization_discards_lifecycle(
         self, tmp_path, monkeypatch
@@ -3418,11 +3432,11 @@ class TestACPAgentCleanup:
 
         with (
             patch.object(threading.Thread, "start", side_effect=RuntimeError),
-            patch.object(ACPAgent, "_finalize") as finalize,
+            patch.object(ACPAgent, "_finalize", autospec=True) as finalize,
         ):
             agent.__del__()
 
-        finalize.assert_called_once_with()
+        assert _own_finalize_calls(finalize, agent) == [call(agent)]
         agent._executor = None
 
     def test_atexit_cleanup_is_weak_and_inline(self):
@@ -3431,14 +3445,14 @@ class TestACPAgentCleanup:
         with (
             patch.object(acp_agent_module.atexit, "register") as register,
             patch.object(acp_agent_module.atexit, "unregister") as unregister,
-            patch.object(ACPAgent, "_finalize") as finalize,
+            patch.object(ACPAgent, "_finalize", autospec=True) as finalize,
         ):
             agent._register_atexit_cleanup()
             callback = register.call_args.args[0]
             callback()
             agent._unregister_atexit_cleanup()
 
-        finalize.assert_called_once_with()
+        assert _own_finalize_calls(finalize, agent) == [call(agent)]
         unregister.assert_called_once_with(callback)
 
     def test_atexit_callback_does_not_retain_agent(self):
