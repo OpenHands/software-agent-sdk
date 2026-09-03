@@ -530,7 +530,15 @@ def _extract_and_validate_params(
         param_name = param_match.group(1)
         param_value: Any = param_match.group(2).strip()
 
-        if allowed_params and param_name not in allowed_params:
+        # security_risk is excluded here for the same reason it's excluded from
+        # missing_params below: read-only tools (e.g. finish) never declare it
+        # as an allowed parameter (see add_security_risk_prediction in
+        # tool.py), but models include it on every call regardless of tool.
+        if (
+            allowed_params
+            and param_name not in allowed_params
+            and param_name != "security_risk"
+        ):
             raise FunctionCallValidationError(
                 f"Parameter '{param_name}' is not allowed for function '{fn_name}'. "
                 f"Allowed parameters: {allowed_params}"

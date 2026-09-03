@@ -181,8 +181,11 @@ class EventLog(EventsListBase):
             self._event_cache[i] = evt
             yield evt
 
-    def append(self, event: Event) -> None:
+    def append(self, event: Event) -> int:
         """Append an event with locking for thread/process safety.
+
+        Returns:
+            The sequence number (index) the log assigned to ``event``.
 
         Raises:
             TimeoutError: If the lock cannot be acquired within LOCK_TIMEOUT_SECONDS.
@@ -218,13 +221,15 @@ class EventLog(EventsListBase):
                 write_guard = (
                     nullcontext() if self._write_guard is None else self._write_guard()
                 )
+                idx = self._length
                 with write_guard:
-                    target_path = self._path(self._length, event_id=evt_id)
+                    target_path = self._path(idx, event_id=evt_id)
                     self._fs.write(target_path, payload)
-                self._idx_to_id[self._length] = evt_id
-                self._id_to_idx[evt_id] = self._length
-                self._event_cache[self._length] = event
+                self._idx_to_id[idx] = evt_id
+                self._id_to_idx[evt_id] = idx
+                self._event_cache[idx] = event
                 self._length += 1
+                return idx
         except TimeoutError:
             logger.error(
                 f"Failed to acquire EventLog lock within {LOCK_TIMEOUT_SECONDS}s "

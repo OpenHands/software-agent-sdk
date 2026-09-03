@@ -20,7 +20,7 @@ ALLOWED_RUNTIME_HOST_SUFFIXES = (
 class CloudProxyRequest(BaseModel):
     """Request envelope for proxying browser calls to cloud/runtime hosts."""
 
-    host: str = Field(description="Absolute upstream host, for example https://x")
+    host: str = Field(description="Absolute upstream OpenHands runtime host")
     method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
     path: str = Field(description="Upstream absolute path, including query string")
     headers: dict[str, str] = Field(default_factory=dict)

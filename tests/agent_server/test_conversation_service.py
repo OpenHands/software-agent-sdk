@@ -615,6 +615,58 @@ async def test_conversation_lifecycle_serializes_only_matching_ids(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_conversation_read_completes_while_another_conversation_starts(
+    tmp_path,
+):
+    """A conversation-scoped read must not queue behind an unrelated start.
+
+    Lifecycle work once ran under a single process-wide lock, so any request
+    that resolved an ``EventService`` waited for a start, fork, delete or
+    eviction happening elsewhere in the process — for an unrelated
+    conversation. Drive the public API rather than the lock helper so the
+    guarantee is checked where callers actually hit it.
+    """
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    def request() -> StartConversationRequest:
+        return StartConversationRequest(
+            agent=_sample_agent(),
+            workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+            confirmation_policy=NeverConfirm(),
+        )
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        live, _ = await service.start_conversation(request())
+
+        start_entered = asyncio.Event()
+        release_start = asyncio.Event()
+        start_event_service = service._start_event_service
+
+        async def blocking_start(stored: StoredConversation, **kwargs) -> EventService:
+            # Wedge the *other* conversation inside its own lifecycle section.
+            if stored.id != live.id:
+                start_entered.set()
+                await release_start.wait()
+            return await start_event_service(stored, **kwargs)
+
+        with patch.object(service, "_start_event_service", side_effect=blocking_start):
+            starting = asyncio.create_task(service.start_conversation(request()))
+            await asyncio.wait_for(start_entered.wait(), timeout=5)
+            try:
+                assert (
+                    await asyncio.wait_for(
+                        service.get_event_service(live.id), timeout=5
+                    )
+                    is not None
+                )
+            finally:
+                release_start.set()
+                await asyncio.wait_for(starting, timeout=5)
+
+
+@pytest.mark.asyncio
 async def test_prepare_for_sandbox_pause_blocks_new_hydration(
     persisted_conversation,
 ):

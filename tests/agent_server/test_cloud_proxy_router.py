@@ -14,6 +14,10 @@ def make_client() -> TestClient:
     return TestClient(app)
 
 
+def public_dns_result(ip: str = "93.184.216.34"):
+    return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 443))]
+
+
 def test_cloud_proxy_forwards_upstream_post_request():
     client = make_client()
     response = httpx.Response(
@@ -22,7 +26,8 @@ def test_cloud_proxy_forwards_upstream_post_request():
         headers={"content-type": "application/json"},
         request=httpx.Request(
             "POST",
-            "https://runtime.example.com/api/conversations/convo-1/events/respond_to_confirmation",
+            "https://abc123.prod-runtime.all-hands.dev"
+            "/api/conversations/convo-1/events/respond_to_confirmation",
         ),
     )
 
@@ -31,7 +36,10 @@ def test_cloud_proxy_forwards_upstream_post_request():
     async_client.__aexit__ = AsyncMock(return_value=None)
     async_client.request = AsyncMock(return_value=response)
 
-    with patch("httpx.AsyncClient", return_value=async_client):
+    with (
+        patch("socket.getaddrinfo", return_value=public_dns_result()),
+        patch("httpx.AsyncClient", return_value=async_client),
+    ):
         result = client.post(
             "/api/cloud-proxy",
             json={
@@ -47,7 +55,8 @@ def test_cloud_proxy_forwards_upstream_post_request():
     assert result.json() == {"success": True}
     async_client.request.assert_awaited_once_with(
         "POST",
-        "https://abc123.prod-runtime.all-hands.dev/api/conversations/convo-1/events/respond_to_confirmation",
+        "https://abc123.prod-runtime.all-hands.dev"
+        "/api/conversations/convo-1/events/respond_to_confirmation",
         headers={"X-Session-API-Key": "session-key"},
         json={"accept": True},
     )
@@ -86,24 +95,30 @@ def test_cloud_proxy_rejects_non_runtime_host():
 def test_cloud_proxy_rejects_runtime_host_resolving_to_loopback():
     client = make_client()
 
-    with patch(
-        "socket.getaddrinfo",
-        return_value=[
-            (
-                socket.AF_INET,
-                socket.SOCK_STREAM,
-                6,
-                "",
-                ("127.0.0.1", 443),
-            )
-        ],
-    ):
+    with patch("socket.getaddrinfo", return_value=public_dns_result("127.0.0.1")):
         result = client.post(
             "/api/cloud-proxy",
             json={
                 "host": "https://abc123.prod-runtime.all-hands.dev",
                 "method": "GET",
                 "path": "/api/server_info",
+            },
+        )
+
+    assert result.status_code == 400
+    assert result.json()["detail"] == "host resolves to a non-public address"
+
+
+def test_cloud_proxy_rejects_runtime_host_resolving_to_link_local_metadata():
+    client = make_client()
+
+    with patch("socket.getaddrinfo", return_value=public_dns_result("169.254.169.254")):
+        result = client.post(
+            "/api/cloud-proxy",
+            json={
+                "host": "https://abc123.prod-runtime.all-hands.dev",
+                "method": "GET",
+                "path": "/latest/meta-data/",
             },
         )
 
