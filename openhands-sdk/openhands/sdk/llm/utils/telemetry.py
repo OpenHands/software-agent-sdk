@@ -1,9 +1,11 @@
 import json
 import os
+import threading
 import time
 import traceback
 import uuid
 import warnings
+from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any, ClassVar
 
@@ -24,7 +26,18 @@ logger = get_logger(__name__)
 # Per-response authoritative span cost, populated by the litellm success
 # callback (ahead of the lmnr span ending) and consumed once by the
 # observability span-cost processor at span end. Keyed by ``response_id``.
-_SPAN_COST_BY_RESPONSE_ID: dict[str, tuple[float | None, int, int]] = {}
+#
+# Entries are normally consumed within the same request, but a recorded entry
+# can leak if no span ever ends for it (observability disabled, or an export
+# path that never calls ``consume``). The map is therefore bounded: it is an
+# insertion-ordered dict capped at ``_SPAN_COST_MAX_ENTRIES``; recording past
+# the cap evicts the oldest entry. Access is guarded by a lock because the
+# success callback may run on a different thread than ``on_response``/``on_end``.
+_SPAN_COST_MAX_ENTRIES = 2048
+_SPAN_COST_BY_RESPONSE_ID: OrderedDict[str, tuple[float | None, int, int]] = (
+    OrderedDict()
+)
+_SPAN_COST_LOCK = threading.Lock()
 
 
 def record_llm_span_cost(
@@ -32,8 +45,13 @@ def record_llm_span_cost(
 ) -> None:
     """Publish the authoritative cost + cache buckets for one LLM response."""
 
-    if response_id:
+    if not response_id:
+        return
+    with _SPAN_COST_LOCK:
         _SPAN_COST_BY_RESPONSE_ID[response_id] = (cost, cache_read, cache_write)
+        _SPAN_COST_BY_RESPONSE_ID.move_to_end(response_id)
+        while len(_SPAN_COST_BY_RESPONSE_ID) > _SPAN_COST_MAX_ENTRIES:
+            _SPAN_COST_BY_RESPONSE_ID.popitem(last=False)
 
 
 def consume_llm_span_cost(
@@ -41,7 +59,8 @@ def consume_llm_span_cost(
 ) -> tuple[float | None, int, int] | None:
     """Pop and return the recorded cost for a response (once per span)."""
 
-    return _SPAN_COST_BY_RESPONSE_ID.pop(response_id, None)
+    with _SPAN_COST_LOCK:
+        return _SPAN_COST_BY_RESPONSE_ID.pop(response_id, None)
 
 
 class Telemetry(BaseModel):
@@ -133,13 +152,6 @@ class Telemetry(BaseModel):
             self._record_usage(
                 usage, response_id, self._req_ctx.get("context_window", 0)
             )
-            # Publish the same bookkeeping for the observability span; the
-            # success callback already did this pre-span-end, so this re-record
-            # only guards against the callback path failing. Then consume to avoid
-            # leaking entries when observability is disabled (no span consumes).
-            cache_read, cache_write = self._cache_buckets(usage)
-            record_llm_span_cost(response_id, cost, cache_read, cache_write)
-            consume_llm_span_cost(response_id)
 
         # 4) optional logging
         if self.log_enabled:

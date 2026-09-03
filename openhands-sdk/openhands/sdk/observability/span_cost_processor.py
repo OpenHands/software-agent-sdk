@@ -89,7 +89,7 @@ def install_llm_span_cost_processor() -> None:
         processors = getattr(active_processor, "_span_processors", None)
         if processors is not None and isinstance(processors, tuple):
             # Prepend so ``on_end`` runs before the LaminarSpanProcessor (needed
-            # when lmnr runs in simple/non-batched export mode)..
+            # when lmnr runs in simple/non-batched export mode).
             with active_processor._lock:  # type: ignore[attr-defined]
                 active_processor._span_processors = (processor,) + processors  # type: ignore[method-assign,attr-defined]
         else:

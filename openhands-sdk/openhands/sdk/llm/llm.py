@@ -2218,17 +2218,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         }
 
     def _add_span_cost_callback(self, kwargs: dict[str, Any], *, async_: bool) -> None:
-        """Attach a litellm success callback that publishes the authoritative span cost.
-
+        """Attach a litellm success callback that publishes the span cost.
 
         lmnr's LiteLLM instrumentation ends its ``litellm.completion`` span inside
         the completion call, ahead of ``Telemetry.on_response``. A success callback
         (which litellm runs before returning the response) makes the cost available to
-        the observability span processor before the span ends (Ordering requirement of
-        ``LLMSpanCostProcessor``). Plain callablesare run for sync completions only,
-        so async completions get an async twin routed to litellm's async hook.
-
-
+        the observability span processor before the span ends (ordering requirement of
+        ``LLMSpanCostProcessor``). Plain callables run for sync completions only, so
+        async completions get an async twin routed to litellm's async hook.
         """
         if self._telemetry is None:
             return
