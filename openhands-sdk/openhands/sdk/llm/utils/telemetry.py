@@ -21,6 +21,29 @@ from openhands.sdk.logger import get_logger
 logger = get_logger(__name__)
 
 
+# Per-response authoritative span cost, populated by the litellm success
+# callback (ahead of the lmnr span ending) and consumed once by the
+# observability span-cost processor at span end. Keyed by ``response_id``.
+_SPAN_COST_BY_RESPONSE_ID: dict[str, tuple[float | None, int, int]] = {}
+
+
+def record_llm_span_cost(
+    response_id: str, cost: float | None, cache_read: int, cache_write: int
+) -> None:
+    """Publish the authoritative cost + cache buckets for one LLM response."""
+
+    if response_id:
+        _SPAN_COST_BY_RESPONSE_ID[response_id] = (cost, cache_read, cache_write)
+
+
+def consume_llm_span_cost(
+    response_id: str,
+) -> tuple[float | None, int, int] | None:
+    """Pop and return the recorded cost for a response (once per span)."""
+
+    return _SPAN_COST_BY_RESPONSE_ID.pop(response_id, None)
+
+
 class Telemetry(BaseModel):
     """
     Handles latency, token/cost accounting, and optional logging.
@@ -110,6 +133,13 @@ class Telemetry(BaseModel):
             self._record_usage(
                 usage, response_id, self._req_ctx.get("context_window", 0)
             )
+            # Publish the same bookkeeping for the observability span; the
+            # success callback already did this pre-span-end, so this re-record
+            # only guards against the callback path failing. Then consume to avoid
+            # leaking entries when observability is disabled (no span consumes).
+            cache_read, cache_write = self._cache_buckets(usage)
+            record_llm_span_cost(response_id, cost, cache_read, cache_write)
+            consume_llm_span_cost(response_id)
 
         # 4) optional logging
         if self.log_enabled:
@@ -217,16 +247,7 @@ class Telemetry(BaseModel):
             or 0
         )
 
-        cache_read = 0
-        p_details = getattr(usage, "prompt_tokens_details", None) or getattr(
-            usage, "input_tokens_details", None
-        )
-        if p_details is not None:
-            cache_read = int(getattr(p_details, "cached_tokens", 0) or 0)
-
-        # Kimi-K2-thinking populate usage.cached_tokens field
-        if not cache_read and hasattr(usage, "cached_tokens"):
-            cache_read = int(getattr(usage, "cached_tokens", 0) or 0)
+        cache_read, cache_write = self._cache_buckets(usage)
 
         reasoning_tokens = 0
         c_details = getattr(usage, "completion_tokens_details", None) or getattr(
@@ -234,9 +255,6 @@ class Telemetry(BaseModel):
         )
         if c_details is not None:
             reasoning_tokens = int(getattr(c_details, "reasoning_tokens", 0) or 0)
-
-        # Chat-specific: litellm may set a hidden cache write field
-        cache_write = int(getattr(usage, "_cache_creation_input_tokens", 0) or 0)
 
         self.metrics.add_token_usage(
             prompt_tokens=prompt_tokens,
@@ -247,6 +265,36 @@ class Telemetry(BaseModel):
             context_window=context_window,
             response_id=response_id,
         )
+
+    @staticmethod
+    def _cache_buckets(usage: Usage | ResponseAPIUsage) -> tuple[int, int]:
+        """Return ``(cache_read, cache_write)`` for either usage shape.
+
+
+        Single source of truth for both ``metrics`` and the span, so the trace
+        and the app's cost cannot disagree about the buckets.
+        """
+        cache_read = 0
+        p_details = getattr(usage, "prompt_tokens_details", None) or getattr(
+            usage, "input_tokens_details", None
+        )
+        if p_details is not None:
+            cache_read = int(getattr(p_details, "cached_tokens", 0) or 0)
+        # Kimi-K2-thinking populates usage.cached_tokens instead.
+
+        if not cache_read:
+            cache_read = int(getattr(usage, "cached_tokens", 0) or 0)
+        if not cache_read:
+            cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
+
+        # litellm mirrors this onto a private attr; the public one and the
+        # details dict are both populated on some provider shapes only.
+        cache_write = int(getattr(usage, "_cache_creation_input_tokens", 0) or 0)
+        if not cache_write:
+            cache_write = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
+        if not cache_write and p_details is not None:
+            cache_write = int(getattr(p_details, "cache_creation_tokens", 0) or 0)
+        return cache_read, cache_write
 
     def _compute_cost(
         self,

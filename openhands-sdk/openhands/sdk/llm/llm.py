@@ -125,7 +125,10 @@ from openhands.sdk.llm.utils.openhands_provider import (
     litellm_call_kwargs,
 )
 from openhands.sdk.llm.utils.retry_mixin import RetryMixin
-from openhands.sdk.llm.utils.telemetry import Telemetry
+from openhands.sdk.llm.utils.telemetry import (
+    Telemetry,
+    record_llm_span_cost,
+)
 from openhands.sdk.llm.utils.vertex_preflight import assert_vertex_sdk_available
 from openhands.sdk.logger import ENV_LOG_DIR, get_logger
 
@@ -2214,6 +2217,56 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             **kwargs,
         }
 
+    def _add_span_cost_callback(self, kwargs: dict[str, Any], *, async_: bool) -> None:
+        """Attach a litellm success callback that publishes the authoritative span cost.
+
+
+        lmnr's LiteLLM instrumentation ends its ``litellm.completion`` span inside
+        the completion call, ahead of ``Telemetry.on_response``. A success callback
+        (which litellm runs before returning the response) makes the cost available to
+        the observability span processor before the span ends (Ordering requirement of
+        ``LLMSpanCostProcessor``). Plain callablesare run for sync completions only,
+        so async completions get an async twin routed to litellm's async hook.
+
+
+        """
+        if self._telemetry is None:
+            return
+        telemetry = self._telemetry
+        existing = kwargs.get("success_callback")
+        merged = [existing] if callable(existing) else list(existing or [])
+
+        def _record(kwargs: dict[str, Any], response_obj: Any) -> None:
+            try:
+                if response_obj is None:
+                    response_obj = kwargs.get("response") or kwargs.get(
+                        "complete_streaming_response"
+                    )
+                response_id = getattr(response_obj, "id", None)
+                if not response_id:
+                    return
+                usage = getattr(response_obj, "usage", None)
+                cache_read = cache_write = 0
+                if usage is not None:
+                    cache_read, cache_write = telemetry._cache_buckets(usage)
+                cost = telemetry._compute_cost(response_obj)
+                record_llm_span_cost(str(response_id), cost, cache_read, cache_write)
+            except Exception:
+                logger.debug("Failed to record LLM span cost", exc_info=True)
+
+        if async_:
+
+            async def _async_record(
+                kwargs: dict[str, Any], response_obj: Any, _start: Any, _end: Any
+            ) -> None:
+                _record(kwargs, response_obj)
+
+            merged.append(_async_record)
+
+        else:
+            merged.append(_record)
+        kwargs["success_callback"] = merged
+
     def _transport_call(
         self,
         *,
@@ -2222,11 +2275,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         on_token: TokenCallbackType | None = None,
         **kwargs,
     ) -> ModelResponse:
-        ret = litellm_completion(
-            **self._prepare_transport_kwargs(
-                messages=messages, enable_streaming=enable_streaming, **kwargs
-            )
+        transport_kwargs = self._prepare_transport_kwargs(
+            messages=messages, enable_streaming=enable_streaming, **kwargs
         )
+        self._add_span_cost_callback(transport_kwargs, async_=False)
+        ret = litellm_completion(**transport_kwargs)
         if enable_streaming and on_token is not None:
             chunks: list[ModelResponseStream] = []
             stream = cast(Iterable[ModelResponseStream], ret)
@@ -2250,14 +2303,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     ) -> ModelResponse:
         """Async variant of :meth:`_transport_call`."""
         auth_values = await self._aget_litellm_auth_values()
-        ret = await litellm_acompletion(
-            **self._prepare_transport_kwargs(
-                messages=messages,
-                enable_streaming=enable_streaming,
-                auth_values=auth_values,
-                **kwargs,
-            )
+        transport_kwargs = self._prepare_transport_kwargs(
+            messages=messages,
+            enable_streaming=enable_streaming,
+            auth_values=auth_values,
+            **kwargs,
         )
+        self._add_span_cost_callback(transport_kwargs, async_=True)
+        ret = await litellm_acompletion(**transport_kwargs)
         if enable_streaming and on_token is not None:
             chunks: list[ModelResponseStream] = []
             # Some litellm wrappers (lmnr 0.7.47's instrumentor) hand

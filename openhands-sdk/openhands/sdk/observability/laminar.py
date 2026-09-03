@@ -134,6 +134,20 @@ def maybe_init_laminar():
             force_http=force_http,
         )
 
+    _install_llm_span_cost_processor()
+
+
+def _install_llm_span_cost_processor() -> None:
+    """Register the span-cost rewrite ahead of lmnr's own span processor."""
+    try:
+        from openhands.sdk.observability.span_cost_processor import (
+            install_llm_span_cost_processor,
+        )
+
+        install_llm_span_cost_processor()
+    except Exception:
+        logger.debug("Failed to install LLM span cost processor", exc_info=True)
+
 
 def observe[**P, R](
     *,
