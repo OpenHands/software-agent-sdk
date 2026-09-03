@@ -1,8 +1,8 @@
 # state.py
 import json
 import threading
-from collections.abc import Callable, Generator, Sequence
-from contextlib import AbstractContextManager, contextmanager
+from collections.abc import Callable, Sequence
+from contextlib import AbstractContextManager
 from enum import Enum
 from pathlib import Path
 from typing import Any, Self
@@ -250,9 +250,9 @@ class ConversationState(OpenHandsModel):
     _write_guard: Callable[[], AbstractContextManager[None]] | None = PrivateAttr(
         default=None
     )
-    # Acquire outer -> inner, never the reverse.
-    _agent_lock: FIFOLock = PrivateAttr(default_factory=FIFOLock)  # the agent step
-    _lock: FIFOLock = PrivateAttr(default_factory=FIFOLock)  # everything else
+    _lock: FIFOLock = PrivateAttr(
+        default_factory=FIFOLock
+    )  # FIFO lock for thread safety
     _save_depth: int = PrivateAttr(default=0)  # context-manager nesting depth
     _dirty: bool = PrivateAttr(default=False)  # pending unsaved field changes
 
@@ -744,46 +744,18 @@ class ConversationState(OpenHandsModel):
         self._save_depth += 1
         return self
 
-    def _flush_deferred_save(self) -> None:
-        """Persist what a context-manager block batched, if anything."""
-        if not self._dirty:
-            return
-        fs = getattr(self, "_fs", None)
-        if getattr(self, "_autosave_enabled", False) and fs is not None:
-            self._save_base_state(fs)
-        self._dirty = False
-
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         """Context manager exit — flushes any deferred save."""
         try:
             self._save_depth -= 1
-            if self._save_depth == 0:
-                self._flush_deferred_save()
+            if self._save_depth == 0 and self._dirty:
+                fs = getattr(self, "_fs", None)
+                autosave_enabled = getattr(self, "_autosave_enabled", False)
+                if autosave_enabled and fs is not None:
+                    self._save_base_state(fs)
+                self._dirty = False
         finally:
             self._lock.release()
-
-    @contextmanager
-    def agent_step(self) -> Generator[None]:
-        """Run an agent step under ``_agent_lock``, with ``_lock`` released.
-
-        Steps serialize on the agent lock; the state lock stays free so intake
-        does not wait out a step. The step re-takes it per emitted event.
-        """
-        depth = 0
-        save_depth = 0
-        if self._lock.owned():
-            # Don't leave batched mutations pending while others hold the lock.
-            save_depth = self._save_depth
-            self._save_depth = 0
-            self._flush_deferred_save()
-            depth = self._lock.release_all()
-        try:
-            with self._agent_lock:
-                yield
-        finally:
-            if depth:
-                self._lock.reacquire(depth)
-                self._save_depth = save_depth
 
     def locked(self) -> bool:
         """

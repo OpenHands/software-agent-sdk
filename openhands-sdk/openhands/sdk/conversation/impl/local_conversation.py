@@ -1993,15 +1993,17 @@ class LocalConversation(BaseConversation):
                             ConversationExecutionStatus.RUNNING
                         )
 
-                    # State lock released for the step, so intake is not stuck
-                    # behind it; the step re-takes it per event.
+                    # Mark the step as holding the state lock so state-mutating
+                    # tools (e.g. switch_llm) running on worker threads skip
+                    # re-acquiring it instead of deadlocking (#3485).
+                    self._step_holds_state_lock = True
                     last_user_message_id_before_step = self._state.last_user_message_id
-                    with self._state.agent_step():
+                    try:
                         self.agent.step(
-                            self,
-                            on_event=self._on_event_with_state_lock,
-                            on_token=self._on_token,
+                            self, on_event=self._on_event, on_token=self._on_token
                         )
+                    finally:
+                        self._step_holds_state_lock = False
                     self._resume_for_message_sent_during_step(
                         last_user_message_id_before_step
                     )
@@ -2238,21 +2240,34 @@ class LocalConversation(BaseConversation):
                             else None
                         )
                     else:
-                        # State lock released for the step, so intake is not
-                        # stuck behind it; the step re-takes it per event. The
-                        # agent lock held across this await is thread- (not
-                        # task-) reentrant, so a step awaited from another
-                        # coroutine on this thread would re-enter it: dispatch
-                        # such callers via run_in_executor.
+                        # The state lock is held across this await. Mutations
+                        # performed inside astep() (including native async
+                        # Agent.astep / ACPAgent.astep that mutate on the
+                        # event-loop thread) are intentional and part of this
+                        # critical section. The invariant is only that no
+                        # *unrelated* state mutator may run concurrently while
+                        # the lock is held: because FIFOLock is thread- (not
+                        # task-) reentrant, any unrelated state-mutating
+                        # coroutine awaited on this event-loop thread would
+                        # silently re-enter the lock and corrupt history. Such
+                        # unrelated mutators must be dispatched via
+                        # run_in_executor onto a worker thread.
+                        # Mark the step as holding the state lock so
+                        # state-mutating tools (e.g. switch_llm) running on
+                        # worker threads skip re-acquiring it instead of
+                        # deadlocking while this await holds it (#3485).
+                        self._step_holds_state_lock = True
                         last_user_message_id_before_step = (
                             self._state.last_user_message_id
                         )
-                        with self._state.agent_step():
+                        try:
                             await self.agent.astep(
                                 self,
-                                on_event=self._on_event_with_state_lock,
+                                on_event=self._on_event,
                                 on_token=self._on_token,
                             )
+                        finally:
+                            self._step_holds_state_lock = False
                         self._resume_for_message_sent_during_step(
                             last_user_message_id_before_step
                         )

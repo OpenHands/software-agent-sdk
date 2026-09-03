@@ -1,6 +1,7 @@
 """A user message sent while a step is in flight must be picked up."""
 
 import asyncio
+import json
 import threading
 
 import pytest
@@ -16,36 +17,54 @@ from openhands.sdk.conversation.types import (
     ConversationCallbackType,
     ConversationTokenCallbackType,
 )
-from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
-from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.event.llm_convertible import (
+    ActionEvent,
+    MessageEvent,
+    ObservationEvent,
+    SystemPromptEvent,
+)
+from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
+from openhands.sdk.tool import Action, Observation
 
 
-SECOND_MESSAGE = "sent while the step was in flight"
+MID_STEP_MESSAGE = "sent while the step was in flight"
 
 
-class _MessageDuringStepAgent(AgentBase):
-    """Finishes on every step; sends a user message from inside the first.
+def _llm() -> LLM:
+    return LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
 
-    Sent from a separate thread and joined, so the test never sleeps: if intake
-    were serialized behind the step, the join would time out.
+
+def _user_messages(conversation: LocalConversation) -> list[str]:
+    return [
+        event.llm_message.content[0].text  # type: ignore[union-attr]
+        for event in conversation.state.events
+        if isinstance(event, MessageEvent) and event.source == "user"
+    ]
+
+
+def _send_and_wait(conversation: LocalConversation, text: str) -> bool:
+    """Send from another thread and join; True if it completed."""
+    thread = threading.Thread(target=conversation.send_message, args=(text,))
+    thread.start()
+    thread.join(timeout=10.0)
+    return not thread.is_alive()
+
+
+class _LLMWindowAgent(AgentBase):
+    """Sends a user message from the window ``Agent.astep`` releases the lock in.
+
+    ``Agent.astep`` hands the state lock back around the provider round-trip, so
+    a message can be appended there. It lands while the status is still RUNNING,
+    which is why nothing resets the FINISHED the step goes on to set.
     """
 
     def __init__(self) -> None:
-        llm = LLM(
-            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
-        )
-        super().__init__(llm=llm, tools=[])
+        super().__init__(llm=_llm(), tools=[])
         self._steps: list[list[str]] = []
-        self._intake_completed_during_step = False
 
     @property
     def steps(self) -> list[list[str]]:
-        """User-message texts seen at the start of each step."""
         return self._steps
-
-    @property
-    def intake_completed_during_step(self) -> bool:
-        return self._intake_completed_during_step
 
     def init_state(
         self, state: ConversationState, on_event: ConversationCallbackType
@@ -56,22 +75,87 @@ class _MessageDuringStepAgent(AgentBase):
             )
         )
 
-    def _record_step(self, conversation: LocalConversation) -> None:
-        self._steps.append(
-            [
-                event.llm_message.content[0].text  # type: ignore[union-attr]
-                for event in conversation.state.events
-                if isinstance(event, MessageEvent) and event.source == "user"
-            ]
-        )
+    def step(
+        self,
+        conversation: LocalConversation,
+        on_event: ConversationCallbackType,
+        on_token: ConversationTokenCallbackType | None = None,
+    ) -> None:
+        raise NotImplementedError
 
-    def _send_from_another_thread(self, conversation: LocalConversation) -> None:
-        thread = threading.Thread(
-            target=conversation.send_message, args=(SECOND_MESSAGE,)
+    async def astep(
+        self,
+        conversation: LocalConversation,
+        on_event: ConversationCallbackType,
+        on_token: ConversationTokenCallbackType | None = None,
+        prompt_message: MessageEvent | None = None,
+    ) -> None:
+        self._steps.append(_user_messages(conversation))
+        async with conversation._released_state_lock_during_io():
+            if len(self._steps) == 1:
+                assert await asyncio.to_thread(
+                    _send_and_wait, conversation, MID_STEP_MESSAGE
+                )
+        on_event(
+            MessageEvent(
+                source="agent",
+                llm_message=Message(role="assistant", content=[TextContent(text="ok")]),
+            )
         )
-        thread.start()
-        thread.join(timeout=10.0)
-        self._intake_completed_during_step = not thread.is_alive()
+        conversation.state.execution_status = ConversationExecutionStatus.FINISHED
+
+
+@pytest.mark.asyncio
+async def test_arun_picks_up_message_sent_during_the_llm_call(tmp_path):
+    """A message landing during the LLM round-trip must not be dropped."""
+    agent = _LLMWindowAgent()
+    conversation = Conversation(
+        agent=agent, workspace=str(tmp_path), max_iteration_per_run=5
+    )
+    assert isinstance(conversation, LocalConversation)
+    conversation.send_message("first")
+
+    await conversation.arun()
+
+    assert len(agent.steps) == 2, (
+        f"expected a second step for the mid-step message, saw {agent.steps}"
+    )
+    assert agent.steps[0] == ["first"]
+    assert agent.steps[1] == ["first", MID_STEP_MESSAGE]
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+
+
+class _ToolCallAction(Action):
+    command: str
+
+
+class _ToolCallObservation(Observation):
+    result: str
+
+    @property
+    def to_llm_content(self):
+        return [TextContent(text=self.result)]
+
+
+class _ToolCallAgent(AgentBase):
+    """Emits one action, waits as a tool would, then emits its observation."""
+
+    def __init__(self) -> None:
+        super().__init__(llm=_llm(), tools=[])
+        self._intake_completed_mid_tool_call = False
+
+    @property
+    def intake_completed_mid_tool_call(self) -> bool:
+        return self._intake_completed_mid_tool_call
+
+    def init_state(
+        self, state: ConversationState, on_event: ConversationCallbackType
+    ) -> None:
+        on_event(
+            SystemPromptEvent(
+                source="agent", system_prompt=TextContent(text="dummy"), tools=[]
+            )
+        )
 
     def step(
         self,
@@ -79,105 +163,59 @@ class _MessageDuringStepAgent(AgentBase):
         on_event: ConversationCallbackType,
         on_token: ConversationTokenCallbackType | None = None,
     ) -> None:
-        self._record_step(conversation)
-        if len(self._steps) == 1:
-            self._send_from_another_thread(conversation)
-        on_event(
-            MessageEvent(
-                source="agent",
-                llm_message=Message(role="assistant", content=[TextContent(text="ok")]),
-            )
+        action = ActionEvent(
+            source="agent",
+            thought=[TextContent(text="t")],
+            action=_ToolCallAction(command="sleep"),
+            tool_name="bash",
+            tool_call_id="call_1",
+            tool_call=MessageToolCall(
+                id="call_1",
+                name="bash",
+                arguments=json.dumps({"command": "sleep"}),
+                origin="completion",
+            ),
+            llm_response_id="resp_1",
         )
-        conversation.state.execution_status = ConversationExecutionStatus.FINISHED
-
-    async def astep(
-        self,
-        conversation: LocalConversation,
-        on_event: ConversationCallbackType,
-        on_token: ConversationTokenCallbackType | None = None,
-        prompt_message: MessageEvent | None = None,
-    ) -> None:
-        await asyncio.to_thread(self.step, conversation, on_event, on_token)
-
-
-class _MessageDuringLLMCallAgent(_MessageDuringStepAgent):
-    """Sends the message from the released-lock window ``Agent.astep`` uses."""
-
-    async def astep(
-        self,
-        conversation: LocalConversation,
-        on_event: ConversationCallbackType,
-        on_token: ConversationTokenCallbackType | None = None,
-        prompt_message: MessageEvent | None = None,
-    ) -> None:
-        self._record_step(conversation)
-        async with conversation._released_state_lock_during_io():
-            if len(self._steps) == 1:
-                await asyncio.to_thread(self._send_from_another_thread, conversation)
+        on_event(action)
+        # The tool is "executing" here.
+        self._intake_completed_mid_tool_call = _send_and_wait(
+            conversation, MID_STEP_MESSAGE
+        )
         on_event(
-            MessageEvent(
-                source="agent",
-                llm_message=Message(role="assistant", content=[TextContent(text="ok")]),
+            ObservationEvent(
+                source="environment",
+                observation=_ToolCallObservation(result="done"),
+                action_id=action.id,
+                tool_name="bash",
+                tool_call_id="call_1",
             )
         )
         conversation.state.execution_status = ConversationExecutionStatus.FINISHED
 
 
-def _make_conversation(
-    tmp_path, agent_cls: type[_MessageDuringStepAgent] = _MessageDuringStepAgent
-) -> tuple[LocalConversation, _MessageDuringStepAgent]:
-    agent = agent_cls()
+def test_user_message_never_splits_a_tool_call(tmp_path):
+    """Intake must not append between an action and its observation.
+
+    Providers require a tool result to follow its tool call directly. A user
+    message spliced in between yields assistant(tool_calls) -> user -> tool.
+    """
+    agent = _ToolCallAgent()
     conversation = Conversation(
-        agent=agent, workspace=str(tmp_path), max_iteration_per_run=5
+        agent=agent, workspace=str(tmp_path), max_iteration_per_run=1
     )
     assert isinstance(conversation, LocalConversation)
-    conversation.send_message("first")
-    return conversation, agent
+    conversation.send_message("go")
 
-
-def _assert_picked_up(agent: _MessageDuringStepAgent) -> None:
-    assert agent.intake_completed_during_step, (
-        "send_message() blocked until the step finished; intake is still "
-        "serialized behind the run loop"
-    )
-    assert len(agent.steps) == 2, (
-        f"expected a second step for the mid-step message, saw {agent.steps}"
-    )
-    assert agent.steps[0] == ["first"]
-    assert agent.steps[1] == ["first", SECOND_MESSAGE]
-
-
-def test_sync_run_picks_up_message_sent_during_step(tmp_path):
-    conversation, agent = _make_conversation(tmp_path)
     conversation.run()
-    _assert_picked_up(agent)
-    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
 
-
-@pytest.mark.asyncio
-async def test_arun_picks_up_message_sent_during_step(tmp_path):
-    conversation, agent = _make_conversation(tmp_path)
-    await conversation.arun()
-    _assert_picked_up(agent)
-    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
-
-
-def test_state_lock_is_free_while_a_step_runs(tmp_path):
-    """``agent_step()`` hands the state lock back for the step's duration."""
-    conversation, _ = _make_conversation(tmp_path)
-    state = conversation._state
-    with state:
-        assert state.owned()
-        with state.agent_step():
-            assert not state.owned()
-            assert state._agent_lock.owned()
-        assert state.owned()
-    assert not state.locked()
-
-
-@pytest.mark.asyncio
-async def test_arun_picks_up_message_sent_during_the_llm_call(tmp_path):
-    """A message landing during the LLM round-trip must not be dropped."""
-    conversation, agent = _make_conversation(tmp_path, _MessageDuringLLMCallAgent)
-    await conversation.arun()
-    _assert_picked_up(agent)
+    assert not agent.intake_completed_mid_tool_call, (
+        "send_message() completed while a tool call was in flight; it can now "
+        "split the action/observation pair"
+    )
+    order = [type(event).__name__ for event in conversation.state.events]
+    action_at = order.index("ActionEvent")
+    observation_at = order.index("ObservationEvent")
+    assert observation_at == action_at + 1, (
+        f"an event was appended between the action and its observation: {order}"
+    )
