@@ -38,6 +38,15 @@
     "default_model": "opus[1m]",
     "default_session_mode": "bypassPermissions",
     "display_name": "Claude Code",
+    "env_conflicts": [
+      {
+        "dominant": "CLAUDE_CODE_OAUTH_TOKEN",
+        "strip": [
+          "ANTHROPIC_API_KEY",
+          "ANTHROPIC_BASE_URL"
+        ]
+      }
+    ],
     "file_secrets": [],
     "key": "claude-code",
     "session_meta_key": "claudeCode",
@@ -50,10 +59,6 @@
     ],
     "api_key_env_var": "OPENAI_API_KEY",
     "available_models": [
-      {
-        "id": "gpt-5.6",
-        "label": "GPT-5.6"
-      },
       {
         "id": "gpt-5.6-sol",
         "label": "GPT-5.6 Sol"
@@ -69,14 +74,6 @@
       {
         "id": "gpt-5.5",
         "label": "GPT-5.5"
-      },
-      {
-        "id": "gpt-5.4",
-        "label": "GPT-5.4"
-      },
-      {
-        "id": "gpt-5.4-mini",
-        "label": "GPT-5.4 Mini"
       }
     ],
     "base_url_env_var": "OPENAI_BASE_URL",
@@ -91,6 +88,7 @@
     "default_model": "gpt-5.5",
     "default_session_mode": "agent-full-access",
     "display_name": "Codex",
+    "env_conflicts": [],
     "file_secrets": [
       {
         "env_points_to": "dir",
@@ -154,6 +152,7 @@
     "default_model": "auto",
     "default_session_mode": "default",
     "display_name": "Gemini CLI",
+    "env_conflicts": [],
     "file_secrets": [
       {
         "env_points_to": "file",
@@ -168,6 +167,98 @@
       }
     ],
     "key": "gemini-cli",
+    "session_meta_key": null,
+    "supports_runtime_model_switch": true,
+    "supports_set_session_model": true
+  },
+  "kimi-code": {
+    "agent_name_patterns": [
+      "kimi"
+    ],
+    "api_key_env_var": null,
+    "available_models": [],
+    "base_url_env_var": "KIMI_BASE_URL",
+    "binary_name": "kimi",
+    "data_dir_env_var": "KIMI_CODE_HOME",
+    "default_command": [
+      "npx",
+      "-y",
+      "--prefer-offline",
+      "@moonshot-ai/kimi-code@0.38.0",
+      "acp"
+    ],
+    "default_model": null,
+    "default_session_mode": "yolo",
+    "display_name": "Kimi Code",
+    "env_conflicts": [],
+    "file_secrets": [
+      {
+        "env_points_to": "dir",
+        "env_var": "KIMI_CODE_HOME",
+        "filename": "config.toml",
+        "secret_name": "KIMI_CODE_CONFIG_TOML",
+        "subdir": "kimi-code",
+        "warn_if_unset": []
+      }
+    ],
+    "key": "kimi-code",
+    "session_meta_key": null,
+    "supports_runtime_model_switch": true,
+    "supports_set_session_model": true
+  },
+  "pi": {
+    "agent_name_patterns": [
+      "pi-acp"
+    ],
+    "api_key_env_var": "ANTHROPIC_API_KEY",
+    "available_models": [
+      {
+        "id": "anthropic/claude-opus-5",
+        "label": "Claude Opus 5"
+      },
+      {
+        "id": "anthropic/claude-opus-4-8",
+        "label": "Claude Opus 4.8"
+      },
+      {
+        "id": "anthropic/claude-sonnet-5",
+        "label": "Claude Sonnet 5"
+      },
+      {
+        "id": "anthropic/claude-sonnet-4-6",
+        "label": "Claude Sonnet 4.6"
+      },
+      {
+        "id": "anthropic/claude-haiku-4-5",
+        "label": "Claude Haiku 4.5"
+      }
+    ],
+    "base_url_env_var": null,
+    "binary_name": "pi-acp",
+    "data_dir_env_var": "HOME",
+    "default_command": [
+      "npx",
+      "-y",
+      "--prefer-offline",
+      "--package=pi-acp@0.0.33",
+      "--package=@earendil-works/pi-coding-agent@0.83.0",
+      "pi-acp"
+    ],
+    "default_model": null,
+    "default_session_mode": null,
+    "display_name": "Pi",
+    "env_conflicts": [],
+    "file_secrets": [
+      {
+        "env_points_to": "dir",
+        "env_var": "PI_CODING_AGENT_DIR",
+        "filename": "auth.json",
+        "secret_name": "PI_AUTH_JSON",
+        "subdir": "pi",
+        "warn_if_unset": []
+      }
+    ],
+    "key": "pi",
     "session_meta_key": null,
     "supports_runtime_model_switch": true,
     "supports_set_session_model": true
