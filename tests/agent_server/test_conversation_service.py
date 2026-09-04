@@ -4207,6 +4207,7 @@ async def test_api_mutations_survive_a_server_restart(tmp_path):
         conversations_dir=conversations_dir, cipher=cipher
     ) as restarted:
         event_service = await restarted._get_or_load_event_service(conv_id)
+        assert event_service is not None
         stored = event_service.stored
 
         assert isinstance(stored.confirmation_policy, AlwaysConfirm)
@@ -4254,6 +4255,7 @@ async def test_a_plain_string_secret_is_stored_as_a_secret_source(tmp_path):
         conversations_dir=conversations_dir, cipher=Cipher("string-secret-test-key")
     ) as restarted:
         event_service = await restarted._get_or_load_event_service(conv_id)
+        assert event_service is not None
         source = event_service.stored.secrets["MY_TOKEN"]
 
     assert not isinstance(source, str)
