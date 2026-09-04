@@ -1,9 +1,10 @@
 import { HttpClient, HttpError } from './http-client';
-import { ConversationExecutionStatus, LLM, Success } from '../types/base';
+import { LLM, Success } from '../types/base';
 import type {
   AgentResponseResult,
   AskAgentResponse,
   ConfirmationResponseRequest,
+  ConversationCountRequest,
   ConversationEvent,
   ConversationEventCountOptions,
   ConversationEventPage,
@@ -83,9 +84,7 @@ export class ConversationClient {
     return response.data;
   }
 
-  async countConversations(
-    options: { status?: ConversationExecutionStatus } = {}
-  ): Promise<number> {
+  async countConversations(options: ConversationCountRequest = {}): Promise<number> {
     const response = await this.client.get<number>('/api/conversations/count', {
       params: options as Record<string, unknown>,
     });
@@ -368,6 +367,22 @@ export class ConversationClient {
     await this.client.post<Success>(`/api/conversations/${conversationId}/switch_acp_model`, {
       model,
     });
+  }
+
+  async archiveConversation(conversationId: string): Promise<Success> {
+    const response = await this.client.post<Success>(
+      `/api/conversations/${conversationId}/archive`,
+      { confirmed: true }
+    );
+    return response.data;
+  }
+
+  async unarchiveConversation(conversationId: string): Promise<Success> {
+    const response = await this.client.post<Success>(
+      `/api/conversations/${conversationId}/unarchive`,
+      {}
+    );
+    return response.data;
   }
 
   async deleteConversation(conversationId: string): Promise<void> {
