@@ -77,6 +77,27 @@ def test_current_model_id_is_lifted_from_acp_agent():
     assert info.current_model_id == "claude-opus-4-1"
 
 
+@pytest.mark.parametrize(
+    ("status", "was_read", "expected"),
+    [
+        (ConversationExecutionStatus.RUNNING, None, False),
+        (ConversationExecutionStatus.FINISHED, None, True),
+        (ConversationExecutionStatus.FINISHED, True, False),
+    ],
+)
+def test_unread_requires_terminal_output_newer_than_last_read(
+    status, was_read, expected
+):
+    state = _make_state(ACPAgent(acp_command=["echo", "test"]))
+    state.execution_status = status
+    stored = _make_stored(state)
+    stored.last_read_at = utc_now() if was_read else None
+
+    info = _compose_conversation_info(stored, state)
+
+    assert info.unread is expected
+
+
 def test_current_model_id_is_none_when_acp_agent_has_no_model():
     """Older ACP servers don't surface the field — we propagate ``None``."""
     agent = ACPAgent(acp_command=["echo", "test"])
