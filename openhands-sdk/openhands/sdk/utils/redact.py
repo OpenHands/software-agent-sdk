@@ -302,18 +302,25 @@ def redact_text_secrets(text: str) -> str:
     text = re.sub(r"api_key='[^']*'", "api_key='<redacted>'", text)
     text = re.sub(r'api_key="[^"]*"', 'api_key="<redacted>"', text)
 
-    # Dict entries with sensitive key names (case-insensitive, like is_secret_key)
+    # Dict entries with sensitive key names (case-insensitive, like is_secret_key).
+    # The keyword must be an underscore-separated component of the key name
+    # (e.g. api_key, MY_SECRET) or a PascalCase/camelCase component (e.g.
+    # UserPassword, apiKey).  A bare substring match is NOT enough — otherwise
+    # keys like "monkey", "secretary", "keyboard", or "tokenizer" would be
+    # over-redacted.
+    _dict_key_single = (
+        r"(?i:(?:[A-Za-z0-9]+_)*(?:KEY|SECRET|TOKEN|PASSWORD)(?:_[A-Za-z0-9]+)*)"
+    )
+    _dict_key_camel = r"[A-Za-z]*?(?:Key|Secret|Token|Password)[A-Za-z]*"
     text = re.sub(
-        r"('[A-Z_]*(?:KEY|SECRET|TOKEN|PASSWORD)[A-Z_]*':\s*')[^']*(')",
+        rf"('(?:{_dict_key_single}|{_dict_key_camel})':\s*')[^']*(')",
         r"\g<1><redacted>\2",
         text,
-        flags=re.IGNORECASE,
     )
     text = re.sub(
-        r'("[A-Z_]*(?:KEY|SECRET|TOKEN|PASSWORD)[A-Z_]*":\s*")[^"]*(")',
+        rf'("(?:{_dict_key_single}|{_dict_key_camel})":\s*")[^"]*(")',
         r"\g<1><redacted>\2",
         text,
-        flags=re.IGNORECASE,
     )
 
     # URL query params
