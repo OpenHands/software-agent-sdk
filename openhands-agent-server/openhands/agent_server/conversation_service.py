@@ -130,6 +130,16 @@ def _append_system_message_suffix(agent: AgentBase, addition: str) -> AgentBase:
     return agent.model_copy(update={"agent_context": updated_context})
 
 
+def _client_set_load_memory(agent: AgentBase) -> bool:
+    """Whether the caller spelled ``load_memory`` out on this agent's context.
+
+    The stored preference is a default, so an explicit client value wins over
+    it rather than being silently overwritten.
+    """
+    context = agent.agent_context
+    return context is not None and "load_memory" in context.model_fields_set
+
+
 def _with_load_memory(agent: AgentBase) -> AgentBase:
     """Stamp the global persistent-memory preference onto an agent.
 
@@ -137,7 +147,10 @@ def _with_load_memory(agent: AgentBase) -> AgentBase:
     client payload, so it is applied here regardless of how the agent reached
     the request.
     """
-    context = agent.agent_context or AgentContext()
+    # current_datetime stays suppressed on a synthesized context: a null
+    # agent_context means "no prompt context", and ACPAgent._render_suffix
+    # relies on that to keep a <CURRENT_DATETIME> block out of the prompt.
+    context = agent.agent_context or AgentContext(current_datetime=None)
     return agent.model_copy(
         update={"agent_context": context.model_copy(update={"load_memory": True})}
     )
@@ -1572,9 +1585,19 @@ class ConversationService:
 
         # get_settings_store() is safe here: get_instance() initialises the
         # singleton with the server cipher before any conversation can start.
-        settings = await asyncio.to_thread(
-            lambda: get_settings_store().load() or PersistedSettings()
-        )
+        # FileSettingsStore.load re-raises PermissionError/OSError by design;
+        # now that every launch reads it, a bad file mode must not take down
+        # request shapes that need nothing from settings.
+        try:
+            settings = await asyncio.to_thread(
+                lambda: get_settings_store().load() or PersistedSettings()
+            )
+        except (PermissionError, OSError):
+            logger.warning(
+                "Cannot read settings; starting without the stored agent preferences",
+                exc_info=True,
+            )
+            settings = PersistedSettings()
 
         # ``ACPAgentSettings.agent_context`` is nullable, hence the guard.
         stored_context = settings.agent_settings.agent_context
@@ -1591,7 +1614,18 @@ class ConversationService:
             )
             request = request.model_copy(update={"agent": resolved_agent})
 
-        if load_memory and request.agent is not None:
+        # A profile launch carries no client-supplied agent_context (an
+        # AgentProfile has no such field), so the preference always applies
+        # there. For the ``agent``/``agent_settings`` shapes the client *can*
+        # express the setting, and an explicit value must not be clobbered.
+        if (
+            load_memory
+            and request.agent is not None
+            and (
+                launched_agent_profile is not None
+                or not _client_set_load_memory(request.agent)
+            )
+        ):
             request = request.model_copy(
                 update={"agent": _with_load_memory(request.agent)}
             )

@@ -88,7 +88,13 @@ async def launch_and_get_agent(tmp_path: Path, **request_kwargs):
 
 
 async def main():
-    with tempfile.TemporaryDirectory() as settings_dir:
+    # One scope for both temp dirs: the later save() calls still write through
+    # OH_PERSISTENCE_DIR, so settings_dir must outlive them or it is deleted and
+    # then silently recreated (and leaked) outside the context manager.
+    with (
+        tempfile.TemporaryDirectory() as settings_dir,
+        tempfile.TemporaryDirectory() as workspace_dir,
+    ):
         os.environ["OH_PERSISTENCE_DIR"] = settings_dir
         reset_stores()
         get_settings_store().save(
@@ -103,7 +109,6 @@ async def main():
             f"{Path(settings_dir) / 'settings.json'} (throwaway temp dir)\n"
         )
 
-    with tempfile.TemporaryDirectory() as workspace_dir:
         workspace = Path(workspace_dir)
         memory_dir = workspace / ".openhands" / "memory"
         memory_dir.mkdir(parents=True)
