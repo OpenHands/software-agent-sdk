@@ -134,20 +134,6 @@ def maybe_init_laminar():
             force_http=force_http,
         )
 
-    _install_llm_span_cost_processor()
-
-
-def _install_llm_span_cost_processor() -> None:
-    """Register the span-cost rewrite ahead of lmnr's own span processor."""
-    try:
-        from openhands.sdk.observability.span_cost_processor import (
-            install_llm_span_cost_processor,
-        )
-
-        install_llm_span_cost_processor()
-    except Exception:
-        logger.debug("Failed to install LLM span cost processor", exc_info=True)
-
 
 def observe[**P, R](
     *,
@@ -416,6 +402,34 @@ def start_child_span(
                     Laminar.set_span_tags(tags)
     except Exception:
         logger.debug("Failed to create observability child span", exc_info=True)
+
+
+@contextlib.contextmanager
+def llm_call_span(name: str) -> Iterator[Any]:
+    """Open a span that stays current for the duration of one LLM call.
+
+    lmnr's LiteLLM instrumentation builds its span with ``Laminar.start_span``
+    (detached from the OTel context) and ends it in a ``finally`` before
+    ``litellm.completion`` returns, so attributes cannot be attached to it
+    afterwards -- OTel silently drops writes to an ended span. This span is
+    *current* while the call runs, so lmnr's span nests underneath it, and it
+    stays open long enough for Telemetry to attach the authoritative cost.
+
+    Yields ``None`` when observability is disabled, so callers stay branch-free.
+    """
+    if not should_enable_observability():
+        yield None
+        return
+    try:
+        from lmnr import Laminar
+
+        cm = Laminar.start_as_current_span(name=name, span_type="LLM")
+    except Exception:
+        logger.debug("Failed to open LLM observability span", exc_info=True)
+        yield None
+        return
+    with cm as span:
+        yield span
 
 
 # Trace-metadata key set by software-agent-sdk#4010 on the parent's `task`

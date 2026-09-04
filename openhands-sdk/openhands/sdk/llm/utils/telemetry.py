@@ -1,11 +1,9 @@
 import json
 import os
-import threading
 import time
 import traceback
 import uuid
 import warnings
-from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any, ClassVar
 
@@ -21,128 +19,6 @@ from openhands.sdk.logger import get_logger
 
 
 logger = get_logger(__name__)
-
-
-# Per-response authoritative span cost, populated by the litellm success
-# callback (ahead of the lmnr span ending) and consumed once by the
-# observability span-cost processor at span end. Keyed by ``response_id``.
-#
-# Entries are normally consumed within the same request, but a recorded entry
-# can leak if no span ever ends for it (observability disabled, or an export
-# path that never calls ``consume``). The map is therefore bounded: it is an
-# insertion-ordered dict capped at ``_SPAN_COST_MAX_ENTRIES``; recording past
-# the cap evicts the oldest entry. Access is guarded by a lock because the
-# success callback may run on a different thread than ``on_response``/``on_end``.
-_SPAN_COST_MAX_ENTRIES = 2048
-_SPAN_COST_BY_RESPONSE_ID: OrderedDict[str, tuple[float | None, int, int]] = (
-    OrderedDict()
-)
-_SPAN_COST_LOCK = threading.Lock()
-
-
-def record_llm_span_cost(
-    response_id: str, cost: float | None, cache_read: int, cache_write: int
-) -> None:
-    """Publish the authoritative cost + cache buckets for one LLM response."""
-
-    if not response_id:
-        return
-    with _SPAN_COST_LOCK:
-        _SPAN_COST_BY_RESPONSE_ID[response_id] = (cost, cache_read, cache_write)
-        _SPAN_COST_BY_RESPONSE_ID.move_to_end(response_id)
-        while len(_SPAN_COST_BY_RESPONSE_ID) > _SPAN_COST_MAX_ENTRIES:
-            _SPAN_COST_BY_RESPONSE_ID.popitem(last=False)
-
-
-def consume_llm_span_cost(
-    response_id: str,
-) -> tuple[float | None, int, int] | None:
-    """Pop and return the recorded cost for a response (once per span)."""
-
-    with _SPAN_COST_LOCK:
-        return _SPAN_COST_BY_RESPONSE_ID.pop(response_id, None)
-
-
-_COST_CALLBACK_INSTALLED = False
-_COST_CALLBACK_LOCK = threading.Lock()
-
-
-def _publish_llm_span_cost(kwargs: dict[str, Any], response_obj: Any) -> None:
-    """Publish one response's authoritative cost from a litellm success event."""
-    try:
-        response_id = getattr(response_obj, "id", None)
-        if not response_id:
-            return
-        # litellm injects its own authoritative per-call cost here; it honors any
-        # pricing registered for a custom ``litellm_proxy`` alias (#4816). Fall
-        # back to a direct calculation only when it is missing or zero.
-        cost = kwargs.get("response_cost")
-        if not cost:
-            try:
-                cost = float(litellm_completion_cost(completion_response=response_obj))
-            except Exception:
-                cost = None
-        usage = getattr(response_obj, "usage", None)
-        cache_read, cache_write = (
-            Telemetry._cache_buckets(usage) if usage is not None else (0, 0)
-        )
-        record_llm_span_cost(str(response_id), cost, cache_read, cache_write)
-    except Exception:
-        logger.debug("Failed to publish LLM span cost", exc_info=True)
-
-
-def install_llm_cost_callback() -> None:
-    """Register a global litellm ``CustomLogger`` that publishes span cost.
-
-    lmnr's LiteLLM instrumentation ends the ``litellm.completion`` span before
-    ``Telemetry.on_response`` runs, so the authoritative cost is published from a
-    litellm success event (keyed by ``gen_ai.response.id``) and stamped onto the
-    ended span by ``LLMSpanCostProcessor``. litellm's global ``callbacks`` fire
-    reliably for both sync and async completions with a stable 4-argument
-    signature, unlike a per-request ``success_callback`` kwarg (which is only
-    dispatched when a global callback is already configured, and which litellm
-    invokes with 4 positional args regardless of the callback's arity).
-    """
-    global _COST_CALLBACK_INSTALLED
-    if _COST_CALLBACK_INSTALLED:
-        return
-    with _COST_CALLBACK_LOCK:
-        if _COST_CALLBACK_INSTALLED:
-            return
-        try:
-            import litellm
-            from litellm.integrations.custom_logger import CustomLogger
-        except Exception:
-            logger.debug("litellm CustomLogger unavailable; span cost disabled")
-            return
-
-        class _LLMSpanCostCallback(CustomLogger):
-            # litellm invokes these with (kwargs, response_obj, start_time,
-            # end_time); only the first two are needed here.
-            def log_success_event(
-                self,
-                kwargs,
-                response_obj,
-                start_time,
-                end_time,  # noqa: ARG002
-            ) -> None:
-                _publish_llm_span_cost(kwargs, response_obj)
-
-            async def async_log_success_event(
-                self,
-                kwargs,
-                response_obj,
-                start_time,
-                end_time,  # noqa: ARG002
-            ) -> None:
-                _publish_llm_span_cost(kwargs, response_obj)
-
-        already = any(
-            type(cb).__name__ == "_LLMSpanCostCallback" for cb in litellm.callbacks
-        )
-        if not already:
-            litellm.callbacks.append(_LLMSpanCostCallback())
-        _COST_CALLBACK_INSTALLED = True
 
 
 class Telemetry(BaseModel):
@@ -174,6 +50,8 @@ class Telemetry(BaseModel):
         default=None
     )
     _stats_update_callback: Callable[[], None] | None = PrivateAttr(default=None)
+    _span_cm: Any = PrivateAttr(default=None)
+    _span: Any = PrivateAttr(default=None)
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="forbid", arbitrary_types_allowed=True
@@ -203,6 +81,7 @@ class Telemetry(BaseModel):
     def on_request(self, telemetry_ctx: dict | None) -> None:
         self._req_start = time.time()
         self._req_ctx = telemetry_ctx or {}
+        self._open_span()
 
     def on_response(
         self,
@@ -239,7 +118,11 @@ class Telemetry(BaseModel):
         if self.log_enabled:
             self.log_llm_call(resp, cost, raw_resp=raw_resp)
 
-        # 5) notify about stats update
+        # 5) authoritative cost + cache buckets onto the span, before it closes
+        self._annotate_span(cost, usage)
+        self._close_span()
+
+        # 6) notify about stats update
         if self._stats_update_callback is not None:
             try:
                 self._stats_update_callback()
@@ -252,6 +135,7 @@ class Telemetry(BaseModel):
         # Best-effort logging for failed requests (so we can debug malformed
         # request payloads, e.g. orphaned Responses reasoning items).
         self._last_latency = time.time() - (self._req_start or time.time())
+        self._close_span(_err)
 
         if not self.log_enabled:
             return
@@ -364,7 +248,6 @@ class Telemetry(BaseModel):
     def _cache_buckets(usage: Usage | ResponseAPIUsage) -> tuple[int, int]:
         """Return ``(cache_read, cache_write)`` for either usage shape.
 
-
         Single source of truth for both ``metrics`` and the span, so the trace
         and the app's cost cannot disagree about the buckets.
         """
@@ -375,7 +258,6 @@ class Telemetry(BaseModel):
         if p_details is not None:
             cache_read = int(getattr(p_details, "cached_tokens", 0) or 0)
         # Kimi-K2-thinking populates usage.cached_tokens instead.
-
         if not cache_read:
             cache_read = int(getattr(usage, "cached_tokens", 0) or 0)
         if not cache_read:
@@ -389,6 +271,60 @@ class Telemetry(BaseModel):
         if not cache_write and p_details is not None:
             cache_write = int(getattr(p_details, "cache_creation_tokens", 0) or 0)
         return cache_read, cache_write
+
+    # ---------- Observability span ----------
+    # These bracket one LLM call: ``on_request`` -> transport -> ``on_response``
+    # all run inside a single retry attempt, so the span is current while
+    # litellm executes and still open when the cost is known.
+    def _open_span(self) -> None:
+        self._close_span()  # a retry re-enters on_request; never leak the old one
+        try:
+            # Imported lazily: openhands.sdk.observability pulls in
+            # openhands.sdk.event, which imports this module.
+            from openhands.sdk.observability.laminar import llm_call_span
+
+            cm = llm_call_span(f"llm.{self.model_name}")
+            self._span = cm.__enter__()
+            self._span_cm = cm
+        except Exception:
+            logger.debug("Failed to open LLM span", exc_info=True)
+            self._span = self._span_cm = None
+
+    def _annotate_span(
+        self, cost: float | None, usage: Usage | ResponseAPIUsage | None
+    ) -> None:
+        span = self._span
+        if span is None:
+            return
+        try:
+            if cost:
+                # Authoritative: _compute_cost prefers the proxy's
+                # x-litellm-response-cost header, which is already cache-aware
+                # and priced by the real backend rather than by a name lookup.
+                span.set_attribute("gen_ai.usage.cost", float(cost))
+            if usage is not None:
+                cache_read, cache_write = self._cache_buckets(usage)
+                # Emitted unconditionally: lmnr only reports these when
+                # prompt_tokens_details is populated, which not every provider
+                # shape does.
+                span.set_attribute("gen_ai.usage.cache_read_input_tokens", cache_read)
+                span.set_attribute(
+                    "gen_ai.usage.cache_creation_input_tokens", cache_write
+                )
+        except Exception:
+            logger.debug("Failed to annotate LLM span", exc_info=True)
+
+    def _close_span(self, err: BaseException | None = None) -> None:
+        cm, self._span_cm, self._span = self._span_cm, None, None
+        if cm is None:
+            return
+        try:
+            if err is not None:
+                cm.__exit__(type(err), err, err.__traceback__)
+            else:
+                cm.__exit__(None, None, None)
+        except Exception:
+            logger.debug("Failed to close LLM span", exc_info=True)
 
     def _compute_cost(
         self,
