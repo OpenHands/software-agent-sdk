@@ -106,7 +106,7 @@ class DockerWorkspace(RemoteWorkspace):
     )
     extra_ports: bool = Field(
         default=False,
-        description="Whether to expose additional ports (VSCode, VNC).",
+        description="Whether to expose the additional VSCode port.",
     )
     enable_gpu: bool = Field(
         default=False,
@@ -196,10 +196,6 @@ class DockerWorkspace(RemoteWorkspace):
                 raise RuntimeError(
                     f"Port {self.host_port + 1} is not available for VSCode"
                 )
-            if not check_port_available(self.host_port + 2):
-                raise RuntimeError(
-                    f"Port {self.host_port + 2} is not available for VNC"
-                )
 
         # Ensure docker is available
         docker_ver = execute_command(["docker", "version"]).returncode
@@ -224,8 +220,6 @@ class DockerWorkspace(RemoteWorkspace):
             ports += [
                 "-p",
                 f"{self.host_port + 1}:8001",  # VSCode
-                "-p",
-                f"{self.host_port + 2}:8002",  # Desktop VNC
             ]
         flags += ports
 

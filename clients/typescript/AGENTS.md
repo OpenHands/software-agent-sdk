@@ -2,9 +2,9 @@
 
 ## General Purpose
 
-This repository contains a TypeScript client library for the OpenHands Agent Server. It provides a complete, type-safe interface for interacting with the OpenHands Agent Server API, enabling developers to build applications that can create and manage AI agent conversations, workspaces, and real-time event streams.
+This directory contains the TypeScript client library for the OpenHands Agent Server. It provides a complete, type-safe interface for interacting with the OpenHands Agent Server API, enabling developers to build applications that can create and manage AI agent conversations, workspaces, and real-time event streams.
 
-The client is designed to mirror the structure and functionality of the Python SDK (`software-agent-sdk`) while providing idiomatic TypeScript/JavaScript APIs with full type safety and modern development tooling.
+The client is designed to mirror the structure and functionality of the Python SDK in this monorepo while providing idiomatic TypeScript/JavaScript APIs with full type safety and modern development tooling.
 
 ## Cross-Repository Boundaries
 
@@ -60,7 +60,7 @@ This TypeScript client is based on the following source materials:
 
 ### 2. Python SDK Reference Implementation
 
-- **Source**: [OpenHands Software Agent SDK](https://github.com/OpenHands/software-agent-sdk)
+- **Source**: `openhands-sdk/` in this repository
 - **Key Components**:
   - `RemoteConversation` class - Main conversation management
   - `RemoteWorkspace` class - Workspace file operations
@@ -70,7 +70,7 @@ This TypeScript client is based on the following source materials:
 
 ### 3. Agent Server Implementation
 
-- **Source**: Located within the `software-agent-sdk` repository as `agent-server`
+- **Source**: `openhands-agent-server/` in this repository
 - **Purpose**: The actual server implementation that this client communicates with
 - **Usage**: Reference for understanding expected request/response formats and WebSocket event structures
 
@@ -270,55 +270,19 @@ src/hooks/
 
 ## Release Process
 
-Releases are driven by
-[release-please](https://github.com/googleapis/release-please) via OpenHands'
-centralized reusable workflows in
-[`OpenHands/release-actions`](https://github.com/OpenHands/release-actions). The
-version is **derived from Conventional-Commit PR titles** — nobody picks a
-version, pushes `vX.Y.Z` tags, or drafts GitHub releases by hand. The full
-reference lives in
-[`.github/workflows/README-RELEASE.md`](.github/workflows/README-RELEASE.md);
-the summary:
+TypeScript client releases are driven from the monorepo root by
+`.github/workflows/typescript-client-release.yml`, which delegates to OpenHands'
+centralized release-please workflow. The component configuration and state live
+in `.github/release-please/typescript-client-config.json` and
+`.github/release-please/typescript-client-manifest.json`.
 
-```
-PR (conventional title) ─▶ pr.yml (lint + type: label)
-        │ merge
-push to main ─▶ release.yml (release-please) ─▶ "release PR" ─(merge)─▶ Release + tag vX.Y.Z
-                                                                              │ release: published
-                                                              ┌───────────────┴───────────────┐
-                                                       npm-publish.yml          publish-github-packages.yml
-                                                       (npmjs.org)              (GitHub Packages)
-```
-
-1. **PR titles** (`pr.yml` → `release-actions/.github/workflows/pr-title.yml@main`):
-   every PR title is linted for Conventional Commits (`feat:`, `fix:`, …) and
-   labeled `type: <type>`. `fix:` → patch, `feat:` → minor, `feat!:` /
-   `BREAKING CHANGE` → major.
-2. **release-please** (`release.yml` → `release-actions/.github/workflows/release-please.yml@main`,
-   on push to `main`): keeps a **release PR** open that derives the next version
-   from the merged PR titles and bumps `package.json` + `package-lock.json`.
-   Merging it creates the GitHub Release `vX.Y.Z` (notes grouped by the `type:`
-   labels via `.github/release.yml`). It authors the PR, tag, and release with
-   the org release **App token** so the `release: published` event actually
-   fires the publish jobs.
-3. **Publish** (on `release: published`, skipping pre-releases): `npm-publish.yml`
-   publishes to **npmjs.org** (OIDC trusted publishing, with provenance) and
-   `publish-github-packages.yml` publishes to **GitHub Packages**. Both also
-   accept a `workflow_dispatch` `version` input for manual recovery.
-
-State lives in `release-please-config.json` (`release-type: node`,
-`include-component-in-tag: false` → `vX.Y.Z` tags), `.release-please-manifest.json`
-(last released version), and `.github/release.yml` (notes categories).
-
-**To cut a release:** merge PRs with conventional titles as usual, then merge the
-`chore(main): release X.Y.Z` PR that release-please maintains. Everything after
-that is automatic.
-
-**Prerequisites:** the org-level `RELEASE_APP_ID` / `RELEASE_APP_PRIVATE_KEY`
-secrets (inherited org-wide — nothing to create) and the one-time squash-merge
-setting (`squash_merge_commit_title=PR_TITLE`) so release-please reads the PR
-title as the commit. See README-RELEASE.md for the exact `gh api` command.
-Downstream consumers (e.g. `agent-canvas`) are **not** bumped automatically.
+Release-please maintains the client release PR and creates component tags named
+`typescript-client-vX.Y.Z`. Publishing that GitHub release triggers
+`.github/workflows/typescript-client-npm-publish.yml` and
+`.github/workflows/typescript-client-github-packages-publish.yml`; both workflows
+also accept a `workflow_dispatch` version for manual recovery. The npm package
+version is independent of the Python SDK release and the tracked Agent Server
+image version.
 
 ### Tracking the agent-server / SDK version
 
@@ -326,16 +290,16 @@ This client is tested and documented against a specific `software-agent-sdk`
 release, expressed as the agent-server image tag
 (`ghcr.io/openhands/agent-server:<version>-python`, where `<version>` equals the
 SDK release `vX.Y.Z`). The **source of truth** is `package.json` →
-`config.agentServerImage`; `integration-tests.yml`, `AGENTS.md`, and `README.md`
+`config.agentServerImage`; `AGENTS.md`, `README.md`, and the generated schema
 mirror the same version.
 
-Bumps are pushed **from the SDK side**: when `software-agent-sdk` publishes a
-new release, its release automation opens a `bump-agent-server-X.Y.Z` PR here
-that updates all four references (once the matching agent-server image is
-published to GHCR). That PR's CI + integration tests run against the new image,
-so merging it means the client has been validated against that server version.
-This is independent of the npm package version — bumping the tracked server does
-**not** cut a client release.
+After an SDK release, the root `.github/workflows/version-bump-prs.yml` workflow
+opens a `bump-typescript-agent-server-X.Y.Z` PR in this repository. It updates
+the pinned image and mirrors, regenerates the transport contract from the
+release's `openapi.json`, and includes an API-change summary. The client CI and
+integration workflows validate that PR against the new image. This is
+independent of the npm package version — bumping the tracked server does **not**
+cut a client release.
 
 The generated transport contract in
 `src/generated/agent-server-schema.ts` comes from that same exact pin. Run
@@ -351,13 +315,14 @@ never reads from that moving target. The generator never reads from an unpinned
 
 ## Local Setup and Validation
 
-Use the same bootstrap command as CI and `.openhands/setup.sh`:
+Run client commands from `clients/typescript/`. Install dependencies with the
+same command used by `.github/workflows/typescript-client-ci.yml`:
 
 ```bash
 npm ci
 ```
 
-Use the same fast checks as `.github/workflows/ci.yml` and `.openhands/pre-commit.sh` before committing:
+Before committing, run the client CI checks:
 
 ```bash
 npm run lint
@@ -366,13 +331,15 @@ npm run test:coverage
 npm run format:check
 ```
 
-For Docker-backed server coverage, run the deterministic integration subset from `.github/workflows/integration-tests.yml` first:
+For Docker-backed server coverage, run the deterministic integration subset from
+`.github/workflows/typescript-client-integration-tests.yml` first:
 
 ```bash
 npm run test:integration:deterministic
 ```
 
-LLM-backed integration tests additionally require `LLM_API_KEY`, with optional `LLM_MODEL` and `LLM_BASE_URL` overrides.
+LLM-backed integration tests additionally require `LLM_API_KEY`, with optional
+`LLM_MODEL` and `LLM_BASE_URL` overrides.
 
 ## Testing
 
@@ -413,7 +380,8 @@ Integration tests cover:
 
 ### CI/CD
 
-The GitHub Action workflow `integration-tests.yml` automatically:
+The root GitHub Actions workflow
+`.github/workflows/typescript-client-integration-tests.yml` automatically:
 
 1. Starts an agent-server container with a mounted workspace
 2. Runs all integration tests against the real server
@@ -442,9 +410,8 @@ The agent should focus on code development, testing, and documentation tasks. On
 
 ## Related Repositories
 
-- **[OpenHands/OpenHands](https://github.com/OpenHands/OpenHands)**: Core OpenHands application
-- **[OpenHands/software-agent-sdk](https://github.com/OpenHands/software-agent-sdk)**: Python SDK and Agent Server
-- **[OpenHands/docs](https://github.com/OpenHands/docs)**: Documentation and OpenAPI specifications
+- **[OpenHands/OpenHands](https://github.com/OpenHands/OpenHands)**: Agent Canvas application
+- **[OpenHands/docs](https://github.com/OpenHands/docs)**: User documentation
 
 ## Usage Context
 

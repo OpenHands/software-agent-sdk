@@ -96,10 +96,11 @@ testpaths = [
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "-v --tb=short -m 'not stress'"
+addopts = "-v --tb=short -m 'not stress and not acp_live'"
 asyncio_mode = "auto"
 markers = [
     "stress: stress / scale tests, deselected by default. Run with `pytest -m stress` (see tests/agent_server/stress/__init__.py for details).",
+    "acp_live: live ACP conformance/pin-installability tests that launch real npx subprocesses and hit the npm registry, deselected by default. Run with `pytest -m acp_live` (see tests/sdk/agent/test_acp_conformance.py).",
 ]
 
 # Pyright configuration for PEP 420 namespace packages

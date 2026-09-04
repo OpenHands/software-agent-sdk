@@ -82,7 +82,6 @@ You'll need an AgentServer running somewhere for the client to connect to. You c
 
 ```bash
 docker run -p 127.0.0.1:8000:8000 -p 127.0.0.1:8001:8001 \
-  -e OH_ENABLE_VNC=false \
   -e SESSION_API_KEY="$SESSION_API_KEY" \
   -e OH_ALLOW_CORS_ORIGINS='["*"]' \
   ghcr.io/openhands/agent-server:71b070d-python

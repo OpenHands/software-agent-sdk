@@ -28,7 +28,7 @@ jobs:
         if: >-
             github.event_name == 'workflow_dispatch' ||
             (!github.event.release.prerelease &&
-             startsWith(github.event.release.tag_name, 'typescript-client-v'))
+             startsWith(github.event.release.tag_name, 'v'))
         runs-on: ubuntu-latest
         timeout-minutes: 15
         steps:
@@ -60,7 +60,7 @@ jobs:
                   if [ "${{ github.event_name }}" = workflow_dispatch ]; then
                     target_version="$DISPATCH_VERSION"
                   else
-                    target_version="${RELEASE_TAG#typescript-client-v}"
+                    target_version="${RELEASE_TAG#v}"
                   fi
                   npm version "$target_version" --no-git-tag-version --allow-same-version
 
