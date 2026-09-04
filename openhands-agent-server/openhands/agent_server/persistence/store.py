@@ -799,16 +799,13 @@ _store_lock = threading.Lock()
 
 def _get_persistence_dir(config: Config | None = None) -> Path:
     """Get the persistence directory from config or default."""
-    # Check environment variable first
-    env_dir = os.environ.get("OH_PERSISTENCE_DIR")
-    if env_dir:
-        return Path(env_dir)
-
-    # Use config's conversations_path parent if available
-    if config is not None:
-        return config.conversations_path.parent / ".openhands"
-
-    return DEFAULT_PERSISTENCE_DIR
+    # Absent OH_PERSISTENCE_DIR, fall back to config's conversations_path parent.
+    default = (
+        config.conversations_path.parent / ".openhands"
+        if config is not None
+        else DEFAULT_PERSISTENCE_DIR
+    )
+    return get_user_persistence_dir(default)
 
 
 def _get_profile_persistence_dir() -> Path:

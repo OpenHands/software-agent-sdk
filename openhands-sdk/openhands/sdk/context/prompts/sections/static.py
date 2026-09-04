@@ -10,8 +10,8 @@ for every block here (the dynamic tier is ported separately).
 # the rendered bytes, so line-length (E501) is disabled for this whole file.
 # ruff: noqa: E501
 
-import os
 import re
+from pathlib import Path
 from typing import ClassVar
 
 from openhands.sdk.context.prompts.section import (
@@ -19,7 +19,7 @@ from openhands.sdk.context.prompts.section import (
     Platform,
     PromptContext,
 )
-from openhands.sdk.utils.path import get_user_persistence_dir
+from openhands.sdk.utils.path import get_user_persistence_dir, to_posix_path
 
 
 __all__ = [
@@ -142,14 +142,11 @@ Maintenance habits:
         Resolved via ``get_user_persistence_dir()`` so the instructed write path
         matches what ``load_memory`` reads. When ``OH_PERSISTENCE_DIR`` is set the
         line carries its concrete ``<base>/memory/`` directory (a deployment mount
-        that is constant within any warm-cache window); otherwise it is the literal
-        ``~/.openhands/memory/`` so the static block leaks no per-user home path.
+        that is constant within any warm-cache window); otherwise the unexpanded
+        ``~/.openhands`` fallback keeps the per-user home path out of the block.
         """
-        if os.environ.get("OH_PERSISTENCE_DIR"):
-            user_memory_dir = get_user_persistence_dir() / "memory"
-            location = f"`{user_memory_dir}/`"
-        else:
-            location = "`~/.openhands/memory/`"
+        user_memory_dir = get_user_persistence_dir(Path("~/.openhands")) / "memory"
+        location = f"`{to_posix_path(user_memory_dir)}/`"
         return (
             f"* User memory: {location} — knowledge and preferences that apply "
             "across all projects."

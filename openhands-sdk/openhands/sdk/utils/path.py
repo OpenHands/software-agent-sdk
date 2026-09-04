@@ -10,21 +10,25 @@ from pathlib import Path, PureWindowsPath
 _URL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 
 
-def get_user_persistence_dir() -> Path:
+def get_user_persistence_dir(default: Path | None = None) -> Path:
     """Return the base directory for user-level OpenHands persistence.
 
     Honors the ``OH_PERSISTENCE_DIR`` environment variable when set (used by
     ephemeral/isolated sandboxes to redirect state onto a persistent volume),
-    otherwise falls back to ``~/.openhands``. ``OH_PERSISTENCE_DIR`` replaces
-    the ``~/.openhands`` base directory; callers append their usual
-    subdirectories (e.g. ``profiles``, ``cache/skills``) to the result.
+    otherwise returns ``default``, or ``~/.openhands`` when no ``default`` is
+    given. ``OH_PERSISTENCE_DIR`` replaces the ``~/.openhands`` base directory;
+    callers append their usual subdirectories (e.g. ``profiles``,
+    ``cache/skills``) to the result.
 
-    Resolved at call time so the environment variable is honored even when it
-    is set after this module is imported.
+    Call sites that store the result in a module-level constant freeze it at
+    import time, so ``OH_PERSISTENCE_DIR`` must be set before ``openhands.sdk``
+    is imported; only call-time call sites pick up a later change.
     """
     env_dir = os.environ.get("OH_PERSISTENCE_DIR")
     if env_dir:
-        return Path(env_dir)
+        return Path(env_dir).expanduser()
+    if default is not None:
+        return default
     return Path.home() / ".openhands"
 
 

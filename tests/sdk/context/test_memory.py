@@ -16,11 +16,14 @@ def isolated_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     """Point the user memory tier (``~/.openhands/memory/``) at a temp home.
 
     USERPROFILE is what ``Path.home()`` reads on Windows, where HOME is a no-op.
+    ``OH_PERSISTENCE_DIR`` is cleared too: it overrides the home-relative base,
+    so a developer with it exported would otherwise run different tests.
     """
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("OH_PERSISTENCE_DIR", raising=False)
     return home
 
 

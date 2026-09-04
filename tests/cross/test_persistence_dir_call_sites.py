@@ -159,14 +159,6 @@ _AGENTS_DIR_CALL_SITES: dict[str, tuple[str, str, str]] = {
 }
 
 
-def _resolve_attr(module: object, attr: str) -> object:
-    """Resolve ``name`` or ``name[index]`` against an imported module."""
-    if attr.endswith("]"):
-        base, index = attr[:-1].split("[")
-        return getattr(module, base)[int(index)]
-    return getattr(module, attr)
-
-
 def _probe_constants_in_subprocess(env: dict[str, str]) -> dict[str, str]:
     """Import each call site's module in a subprocess and return its path.
 

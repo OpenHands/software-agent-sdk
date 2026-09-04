@@ -92,13 +92,19 @@ def load_user_agents() -> list[AgentDefinition]:
         A list of ``AgentDefinition`` objects, or an empty list if no
         directories exist.
     """
-    home = Path.home()
-    return _load_agents_from_dirs(
-        [
-            home / ".agents" / "agents",
-            get_user_persistence_dir() / "agents",
-        ]
-    )
+    return _load_agents_from_dirs([_user_agents_dir(d) for d in _FILE_BASED_AGENTS_DIR])
+
+
+def _user_agents_dir(relative: str) -> Path:
+    """Map a file-based agents dir onto its user-level base.
+
+    ``.openhands/agents`` goes under the persistence dir, which replaces the
+    ``~/.openhands`` base; every other entry stays home-relative.
+    """
+    base, _, rest = relative.partition("/")
+    if base == ".openhands":
+        return get_user_persistence_dir() / rest
+    return Path.home() / relative
 
 
 def _load_agents_from_dirs(dirs: list[Path]) -> list[AgentDefinition]:

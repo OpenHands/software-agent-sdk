@@ -42,6 +42,29 @@ def test_get_user_persistence_dir_resolved_at_call_time(
     assert get_user_persistence_dir() == override
 
 
+def test_get_user_persistence_dir_expands_tilde_in_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake_home = tmp_path / "home"
+    # expanduser() reads HOME/USERPROFILE, not Path.home's patched classmethod.
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", "~/persist")
+    assert get_user_persistence_dir() == fake_home / "persist"
+
+
+def test_get_user_persistence_dir_default_overrides_home_fallback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("OH_PERSISTENCE_DIR", raising=False)
+    fallback = tmp_path / "fallback"
+    assert get_user_persistence_dir(fallback) == fallback
+
+    override = tmp_path / "persist"
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(override))
+    assert get_user_persistence_dir(fallback) == override
+
+
 def test_to_posix_path_normalizes_backslashes_without_resolving():
     assert to_posix_path(r"C:\work\repo\file.py") == "C:/work/repo/file.py"
 
