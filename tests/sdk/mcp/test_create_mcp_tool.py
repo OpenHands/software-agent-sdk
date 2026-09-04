@@ -520,6 +520,31 @@ def test_create_mcp_tools_mixed_servers(
     assert "sse_server_multiply" in tool_names
 
 
+def test_create_mcp_tools_skips_unreachable_server(
+    http_mcp_server: MCPTestServer,
+):
+    """A failed server must not hide tools from healthy MCP servers."""
+    config = {
+        "mcpServers": {
+            "http_server": {
+                "transport": "http",
+                "url": f"http://127.0.0.1:{http_mcp_server.port}/mcp",
+            },
+            "unreachable": {
+                "transport": "http",
+                "url": "http://127.0.0.1:59999/mcp",
+            },
+        }
+    }
+
+    tools = create_mcp_tools(native_mcp_config(config), timeout=10.0)
+
+    assert {tool.name for tool in tools} == {
+        "http_server_greet",
+        "http_server_add_numbers",
+    }
+
+
 def test_create_mcp_tools_http_schema_validation(http_mcp_server: MCPTestServer):
     """Test that tool schemas are properly loaded from HTTP server."""
     config = {
