@@ -48,6 +48,11 @@ logger = get_logger(__name__)
 _SUBAGENTS_DIR: Final[str] = "subagents"
 
 
+def _definition_has_model_profile(factory: "AgentFactory") -> bool:
+    """Return whether the agent definition selects its own model profile."""
+    return bool(factory.definition.model) and factory.definition.model != "inherit"
+
+
 class TaskStatus(StrEnum):
     """Represents the lifecycle states of a task."""
 
@@ -73,6 +78,11 @@ class Task(BaseModel):
     )
     result: str | None = Field(default=None, description="Result of the task.")
     error: str | None = Field(default=None, description="Error if task failed.")
+    llm_profile: str | None = Field(
+        default=None,
+        description="Effective per-call LLM profile the task's worker runs on. "
+        "A bare resume keeps it; an explicit resume-time override replaces it.",
+    )
     conversation: LocalConversation | None = Field(
         default=None,
         exclude=True,
@@ -168,6 +178,7 @@ class TaskManager:
         resume: str | None = None,
         description: str | None = None,
         conversation: LocalConversation | None = None,
+        llm_profile: str | None = None,
     ) -> Task:
         """Start a blocking sub-agent task.
 
@@ -177,6 +188,11 @@ class TaskManager:
             resume: Task ID to resume (continues existing conversation).
             description: Short label for the task.
             conversation: Parent conversation (set on first call).
+            llm_profile: Optional saved LLM profile to run the sub-agent on
+                instead of inheriting the parent's model. This conflicts with
+                a ``model:`` pin in the sub-agent definition. On resume,
+                omitting it keeps the profile the task was created with;
+                passing one explicitly switches the resumed worker to it.
 
         Returns:
             TaskState with the final result.
@@ -188,11 +204,13 @@ class TaskManager:
             task = self._resume_task(
                 resume=resume,
                 subagent_type=subagent_type,
+                llm_profile=llm_profile,
             )
         else:
             task = self._create_task(
                 subagent_type=subagent_type,
                 description=description,
+                llm_profile=llm_profile,
             )
 
         return self._run_task(
@@ -200,8 +218,16 @@ class TaskManager:
             prompt=prompt,
         )
 
-    def _resume_task(self, resume: str, subagent_type: str) -> Task:
-        """Resume a sub-agent task."""
+    def _resume_task(
+        self, resume: str, subagent_type: str, llm_profile: str | None = None
+    ) -> Task:
+        """Resume a sub-agent task.
+
+        A None llm_profile keeps the profile the task was created with when the
+        selected definition inherits its model. Definitions that pin a model
+        discard the stored profile. An explicit profile overrides the stored
+        one, but conflicts with a definition-pinned model.
+        """
         with self._tasks_lock:
             if resume not in self._tasks:
                 raise ValueError(
@@ -209,8 +235,14 @@ class TaskManager:
                     f"Available tasks: {', '.join(sorted(self._tasks))}"
                 )
 
+            stored = self._tasks[resume]
             factory = get_agent_factory(subagent_type)
-            worker_agent = self._get_sub_agent_from_factory(factory)
+            requested_profile = llm_profile
+            if requested_profile is None and not _definition_has_model_profile(factory):
+                requested_profile = stored.llm_profile
+            worker_agent = self._get_sub_agent_from_factory(
+                factory, llm_profile=requested_profile
+            )
             conversation_id = self._tasks[resume].conversation_id
             with detached_delegate_context() as link:
                 conversation = LocalConversation(
@@ -231,10 +263,11 @@ class TaskManager:
                 factory.definition.get_confirmation_policy(),
             )
 
-            self._tasks[resume] = self._tasks[resume].model_copy(
+            self._tasks[resume] = stored.model_copy(
                 update={
                     "conversation": conversation,
                     "status": TaskStatus.RUNNING,
+                    "llm_profile": requested_profile,
                 }
             )
 
@@ -244,6 +277,7 @@ class TaskManager:
         self,
         subagent_type: str,
         description: str | None,
+        llm_profile: str | None = None,
     ) -> Task:
         """Create a fresh task.
 
@@ -252,7 +286,9 @@ class TaskManager:
         2. The parent conversation's ``max_iteration_per_run``
         """
         factory = get_agent_factory(subagent_type)
-        worker_agent = self._get_sub_agent_from_factory(factory)
+        worker_agent = self._get_sub_agent_from_factory(
+            factory, llm_profile=llm_profile
+        )
 
         effective_max_iter = (
             factory.definition.max_iteration_per_run
@@ -289,6 +325,7 @@ class TaskManager:
                 conversation_id=conversation_id,
                 conversation=sub_conversation,
                 status=TaskStatus.RUNNING,
+                llm_profile=llm_profile,
             )
             return self._tasks[task_id]
 
@@ -349,25 +386,45 @@ class TaskManager:
             **link,
         }
 
-    def _get_sub_agent(self, subagent_type: str) -> Agent:
+    def _get_sub_agent(
+        self, subagent_type: str, llm_profile: str | None = None
+    ) -> Agent:
         """Return the subagent assigned to the task.
 
         Raises:
             ValueError: If the subagent type is invalid.
         """
         factory = get_agent_factory(subagent_type)
-        return self._get_sub_agent_from_factory(factory)
+        return self._get_sub_agent_from_factory(factory, llm_profile=llm_profile)
 
-    def _get_sub_agent_from_factory(self, factory: "AgentFactory") -> Agent:
+    def _get_sub_agent_from_factory(
+        self, factory: "AgentFactory", llm_profile: str | None = None
+    ) -> Agent:
         """Create a sub-agent from an AgentFactory."""
         parent = self.parent_conversation
         parent_llm = parent.agent.llm
 
-        llm_updates: dict = {"stream": False}
-        sub_agent_llm = parent_llm.model_copy(update=llm_updates)
-        # Reset metrics such that the sub-agent has its own
-        # Metrics object
-        sub_agent_llm.reset_metrics()
+        definition_has_model = _definition_has_model_profile(factory)
+        if llm_profile is not None and definition_has_model:
+            raise ValueError(
+                f"Agent '{factory.definition.name}' already selects model profile "
+                f"'{factory.definition.model}'; remove llm_profile or choose an "
+                "agent definition that inherits the parent model."
+            )
+
+        if llm_profile is not None:
+            # Injected pre-factory so the factory derives the default condenser
+            # LLM from the selected profile.
+            sub_agent_llm = parent.load_profile_llm(
+                llm_profile,
+                profile_store_dir=factory.definition.profile_store_dir,
+            )
+            sub_agent_llm.reset_metrics()
+        else:
+            sub_agent_llm = parent_llm.model_copy(update={"stream": False})
+            # Reset metrics such that the sub-agent has its own
+            # Metrics object
+            sub_agent_llm.reset_metrics()
 
         sub_agent = factory.factory_func(sub_agent_llm)
 
