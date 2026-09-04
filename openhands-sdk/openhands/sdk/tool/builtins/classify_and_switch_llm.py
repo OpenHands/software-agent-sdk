@@ -307,7 +307,7 @@ class ClassifyAndSwitchLLMExecutor(ToolExecutor):
         else:
             messages = [
                 Message(
-                    role="user",
+                    role="system",
                     content=[TextContent(text=render_direct_prompt(meta, transcript))],
                 )
             ]
