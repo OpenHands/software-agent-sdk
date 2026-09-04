@@ -9,11 +9,16 @@ Run locally:
     pip install -r scripts/requirements-acp-check.txt
     python scripts/check-acp-drift.py
 
+Pass --write to regenerate src/models/acp-providers.json from ACP_PROVIDERS
+instead of just checking for drift (e.g. after bumping a provider's pinned
+version or adding a new one to the SDK registry).
+
 CI runs this as the `validate-acp-providers` job on every PR + push to main.
 """
 
 from __future__ import annotations
 
+import argparse
 import dataclasses
 import difflib
 import json
@@ -38,7 +43,16 @@ def _dump_json(obj) -> str:
     return json.dumps(obj, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--write",
+        action="store_true",
+        help="Regenerate src/models/acp-providers.json from ACP_PROVIDERS "
+        "instead of failing on drift.",
+    )
+    args = parser.parse_args(argv)
+
     try:
         from openhands.sdk.settings.acp_providers import (
             ACP_PROVIDERS,  # type: ignore[import-not-found]
@@ -54,11 +68,17 @@ def main() -> int:
 
     repo_root = pathlib.Path(__file__).resolve().parent.parent
     ts_json_path = repo_root / "src" / "models" / "acp-providers.json"
-    ts_data = _normalize(json.loads(ts_json_path.read_text()))
     py_data = _normalize(dict(ACP_PROVIDERS))
-
-    ts_text = _dump_json(ts_data)
     py_text = _dump_json(py_data)
+
+    if args.write:
+        ts_json_path.write_text(py_text)
+        n = len(py_data) if isinstance(py_data, dict) else 0
+        print(f"Wrote {ts_json_path} from openhands-sdk ACP_PROVIDERS ({n} providers).")
+        return 0
+
+    ts_data = _normalize(json.loads(ts_json_path.read_text()))
+    ts_text = _dump_json(ts_data)
 
     if ts_text == py_text:
         n = len(ts_data) if isinstance(ts_data, dict) else 0

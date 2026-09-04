@@ -25,7 +25,7 @@ logger = get_logger(__name__)
 
 #: Marks a span as produced by an ACP agent rather than the native loop.
 AGENT_KIND_METADATA_KEY = "agent_kind"
-#: Which ACP CLI produced it ('claude-code', 'codex', 'gemini-cli', 'custom').
+#: Which ACP CLI produced it ('claude-code', 'codex', 'gemini-cli', 'pi', 'custom').
 ACP_SERVER_METADATA_KEY = "acp_server"
 #: Model the ACP CLI reported for the turn, when it reports one.
 ACP_MODEL_METADATA_KEY = "acp_model"
